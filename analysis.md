@@ -90,6 +90,47 @@ Macro is a code editor designed specifically for "organized vibe-coding." Unlike
 34. How do we ensure Macro doesn't become "bloatware" over time?
 35. Should there be a built-in "Learning Path" that explains code as it's generated?
 
+### 4.5 Project Management (inspired by Speckle's Workspaces)
+36. Should Macro support **multi-workspace** (like Speckle) for different teams/companies or single-project focus?
+37. How should **project organization** work — single-project-per-window, VS Code workspace style, or custom "collections"?
+38. Should projects have **metadata** (tags, description, team members, creation date) for search/filtering?
+39. Do we need **project templates** (React app, Tauri app, Rust library) with predefined structures and best practices?
+40. Should projects be **local-only** by default with optional cloud sync, or cloud-first with local cache?
+41. How to handle **project switching** — sidebar, command palette, or dedicated "Project Manager" window?
+42. Should we support **guest access** or sharing (read-only views, comment access) for code reviews, like Speckle?
+43. Do we need **role management** (Owner, Contributor, Viewer) for team collaboration features?
+44. Should projects track **"AI sessions"** as entities — linking each AI generation to intent, files, and commits?
+45. How to handle **project import/export** — zip export, JSON manifest, or custom format for easy sharing?
+
+### 4.6 Git & Version Control Integration
+46. Should Git be **deeply integrated** into Macro (like VS Code Git extension) or basic status only?
+47. How should AI-generated changes interact with Git — automatic commits per intent, manual review before commit, or staging area?
+48. Do we want **Git branch visualization** (graph, diff, branch management) integrated in the UI?
+49. Should Macro support **commit message templates** using AI (summarizing changes in structured format)?
+50. Should we implement **"Intent-based branching"** — each AI task creates a feature branch automatically?
+51. How to handle **conflict resolution** — custom UI or delegate to standard Git tools?
+52. Should we provide **"Time-Travel"** like Speckle — visual history of changes with ability to inspect older versions?
+53. Do we need **Git hooks integration** (pre-commit lint/tests, post-commit notifications) built into workflow gates?
+54. Should we support **stashing / worktree management** for quick context switches during AI tasks?
+55. How to link **AI suggestions to Git commits** — store suggestion ID, commit hash, and review status for auditability?
+56. Should we offer **"Undo Commit"** or revert options that integrate with Git history and AI review logs?
+57. How to handle **large repositories** — shallow clone, sparse checkout, or full repo with smart caching?
+58. Do we need **remote Git integration** (GitHub/GitLab PRs, issues, CI status) visible in Macro?
+59. Should we store **Git metadata** (branch, commit, status) in SQLite for fast UI rendering and search?
+60. How should **CodeMirror decorations** reflect Git status (added/modified lines, blame info) — inline or gutter?
+
+### 4.7 Collaboration & Team Features
+61. Should we support **real-time collaboration** (multiple developers editing same file, cursor presence, cursors)?
+62. Do we need **"Share Intent"** — ability to export AI intent/prompt + generated code as a reusable workflow?
+63. Should we implement **"Review Mode"** like Speckle — side-by-side diff with threaded comments per change?
+64. How to handle **offline-first collaboration** — conflict resolution when rejoining after editing offline?
+65. Should there be **"Team Templates"** — shared project structures and AI prompt templates across organizations?
+66. Do we want **"Project Dashboards"** showing metrics (commits, AI usage, quality gates, team activity)?
+67. How to manage **"Suggested Edits"** from team members — notification system, accept/reject workflow, tracking?
+68. Should we support **"Follow Mode"** for code reviews — follow a developer's cursor and changes in real-time?
+69. How to handle **external collaborators** (guests, contractors) — permissions, expiration, audit trail?
+70. Do we need **"Team Onboarding"** flows — share project setups, AI preferences, and coding standards?
+
 ---
 
 ## 5. Implementation Roadmap (Detailed)
