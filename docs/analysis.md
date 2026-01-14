@@ -50,21 +50,21 @@ Macro is a code editor designed specifically for "organized vibe-coding." Unlike
 
 ### 4.1 UI/UX Design
 1.  Should the layout be "Classic IDE" (File tree on left, editor center, chat on right) or something more innovative (especially for multi-project workspaces)?
-Single central chat is always visible. Left panel has vertical tab groups for projects (like Chrome tab groups but vertical). Projects can be grouped: independent projects in separate groups for simultaneous work, or interdependent projects in same vertical tab group. Clicking on a multiprojet visually marks all its sub-projects as open. Right panel has git tree(s) - one per project being worked on.
+Single central chat is always visible. Left panel has vertical tab groups for projects (like Chrome tab groups but vertical). Projects can be grouped: independent projects in separate groups for simultaneous work, or interdependent projects in same vertical tab group. Clicking on a multiprojet visually marks all its sub-projects as open. Right panel has git repository graph(s) - one per project being worked on. Commits are color-coded: green (completed), blue (planned), orange (in progress).
 2.  Do we want a "Zen Mode" where the code disappears and only the "Intent" is visible for high-level planning (with optional cross-project overview)?
 The code is always hidden unless the user wants to see it. The user should rarely do the work himself. But when he does, the code should be there and easy to access.
 On the left side there is tabs with all the projects within the workspace. The user can switch between them to operate different task on it.
 3.  How should the editor present code to the developer?
 The editor should be mostly read-only. The user should only be able to make small adjustments if necessary. All major changes go through the task execution flow.
 4.  How should the plan and task workflow work?
-User enters "Architect mode" to create a high-level plan. AI generates a plan with all features and predicted git tree. Developer then goes into each task to provide more details before executing. In "Implement mode", AI executes tasks. AI may ask questions through chat that developer must answer. Code changes are shown for review before the AI applies them.
+User enters "Architect mode" to create a high-level plan. AI generates a plan with all features and predicted git repository graph. Developer then goes into each task to provide more details before executing. In "Implement mode", AI executes tasks. AI may ask questions through chat that developer must answer. Code changes are shown for review before the AI applies them.
 5.  What transparency levels do we want for overlapping AI vs. Human changes, especially across project boundaries?
 We don't want the human to make changes directly. The human is only the architect, not the builder. The human should be able to suggest changes to the AI, but not make them directly.
 6.  Should we support "Canvas" style editing for visual project mapping, including cross-project dependency visualization?
 No. The user should not be making changes directly. The user is the architect, not the builder. The user should be able to see the project structure and dependencies, but not make changes directly.
 7.  How should we visualize the plan structure?
-The plan should show all tasks, their dependencies, and predicted git tree structure. The visual should be in the chat/plan area, not the code area.7.1. How should we organize and display tasks across multiple projects?
-Single unified task list for all projects. Tasks are marked to show which sub-project they belong to. User can choose display order: priority order, creation order, last update date, etc. Tasks can be mixed between projects. A task that affects multiple projects appears once in the task list but is reflected in each project's predicted git tree.8.  How should we handle mobile/tablet UI if we go cross-platform later, especially with multi-project complexity?
+The plan should show all tasks, their dependencies, and predicted git repository graph structure. The visual should be in the chat/plan area, not the code area.7.1. How should we organize and display tasks across multiple projects?
+Single unified task list for all projects. Tasks are marked to show which sub-project they belong to. User can choose display order: priority order, creation order, last update date, etc. Tasks can be mixed between projects. A task that affects multiple projects appears once in the task list but is reflected in each project's predicted git repository graph.8.  How should we handle mobile/tablet UI if we go cross-platform later, especially with multi-project complexity?
 The mobile/tablet UI should be a simplified version of the desktop UI. The user should be able to view plans and tasks, but not make major changes. The user can answer AI questions through chat, but the code area should be read-only.
 9.  Should there be a "Focus Mode" that hides the file tree and chat during active coding, with options to show only one project or all active projects?
 No. The user should not be making changes directly. The user is the architect, not the builder. The user should be able to see the project structure and dependencies, but not make changes directly.
@@ -95,7 +95,7 @@ Not necessary. The AI should generate code directly in the context of the curren
 
 ### 4.3 Architecture & Performance
 21. Should we use SQLite via Tauri for storing project state and history, including workspace-level cross-project relationships and metadata?
-SQLite stores only local data that should not be shared (e.g., chat history). Everything that must be shared for team work is stored in git: plans, tasks, predicted git trees, project metadata, team templates. These are committed to dedicated branches (.macro-plans, .macro-templates) with versioning and auditability.
+SQLite stores only local data that should not be shared (e.g., chat history). Everything that must be shared for team work is stored in git: plans, tasks, predicted git repository graphs, project metadata, team templates. These are committed to dedicated branches (.macro-plans, .macro-templates) with versioning and auditability.
 Yes. SQLite should store only informations that should stay local, like chat history. To improve collaboration, we should store plans, tasks, and project relationships in git via branching and a special folder structure.
 22. How do we handle large file systems and multiple projects without blocking the UI thread, especially during cross-project indexing?
 We should implement background indexing using Rust threads in the Tauri backend. The indexing process should be incremental and only index files that have changed. The AI should also be able to request specific files or directories to be indexed on-demand. Additionally, we can use a vector database for efficient semantic search across multiple projects.
@@ -140,19 +140,19 @@ Yes. Project metadata stored in `.project-meta.yaml` file committed to git. This
 41. How to handle **project switching** — sidebar, command palette, or dedicated "Project Manager" window, especially when switching between projects within the same workspace?
 42. Should we support **guest access** or sharing (read-only views, comment access) for code reviews, like Speckle, at the project or workspace level?
 43. Do we need **role management** (Owner, Contributor, Viewer) for team collaboration features, with workspace-level vs. project-level permissions?
-44. Should projects track **"AI sessions"** as entities at the workspace level — linking each plan, task, files, commits, and affected projects?Yes. Plans, tasks, and predicted git trees stored in dedicated branches (e.g., `.macro-plans/` branch). Each plan with its tasks and predictions is committed to this branch. Team members can clone and switch to `.macro-plans` branch to view all historical plans. Branches can be merged to main for permanent archiving.45. How to handle **project import/export** — zip export, JSON manifest, or custom format for easy sharing, and should we support workspace-level import/export?
+44. Should projects track **"AI sessions"** as entities at the workspace level — linking each plan, task, files, commits, and affected projects?Yes. Plans, tasks, and predicted git repository graphs stored in dedicated branches (e.g., `.macro-plans/` branch). Each plan with its tasks and predictions is committed to this branch. Team members can clone and switch to `.macro-plans` branch to view all historical plans. Branches can be merged to main for permanent archiving.45. How to handle **project import/export** — zip export, JSON manifest, or custom format for easy sharing, and should we support workspace-level import/export?
 
 ### 4.6 Git & Version Control Integration
 46. Should Git be **deeply integrated** into Macro (like VS Code Git extension) or basic status only, especially for multi-repo workspaces?
 47. How should AI-generated changes interact with Git — automatic commits per intent, manual review before commit, or staging area, and how does this apply to cross-project atomic operations?
-Automatic commits to dedicated branches. Each plan and its tasks are committed to a dedicated feature branch automatically. Predicted git tree is updated in `.macro-plans` branch. For cross-project operations, each project has its own branch but they are linked by plan ID.
+Automatic commits to dedicated branches. Each plan and its tasks are committed to a dedicated feature branch automatically. Predicted git repository graph is updated in `.macro-plans` branch. For cross-project operations, each project has its own branch but they are linked by plan ID.
 48. Do we want **Git branch visualization** (graph, diff, branch management) integrated in the UI, including cross-project branch visualization?
 49. Should Macro support **commit message templates** using AI (summarizing changes in structured format), especially for cross-project commits?
 50. Should we implement **"Plan-based branching"** — each AI plan creates a feature branch automatically, including cross-project branches?
-Yes. Each plan creates a dedicated feature branch automatically (e.g., `plan/user-profile-feature/`). For multi-project plans, each project has its own branch but they share the same plan ID. The predicted git tree is committed to `.macro-plans` branch. When plan is completed, branches can be merged to main.
+Yes. Each plan creates a dedicated feature branch automatically (e.g., `plan/user-profile-feature/`). For multi-project plans, each project has its own branch but they share same plan ID. The predicted git repository graph is committed to `.macro-plans` branch. When plan is completed, branches can be merged to main.
 51. How to handle **conflict resolution** — custom UI or delegate to standard Git tools, especially for cross-project merge conflicts?
 52. Should we provide **"Time-Travel"** like Speckle — visual history of changes with ability to inspect older versions, including cross-project intent history?
-Yes. Use git history for Time-Travel. Navigate through `.macro-plans` branch to view historical plans, tasks, and their predicted git trees. Each plan is committed as a separate commit in this branch. Can checkout specific plan commit to see exact state of plan and predictions.
+Yes. Use git history for Time-Travel. Navigate through `.macro-plans` branch to view historical plans, tasks, and their predicted git repository graphs. Each plan is committed as a separate commit in this branch. Can checkout specific plan commit to see exact state of plan and predictions.
 53. Do we need **Git hooks integration** (pre-commit lint/tests, post-commit notifications) built into workflow gates, and how do hooks work across multiple repos?
 54. Should we support **stashing / worktree management** for quick context switches during AI tasks, across multiple projects?
 55. How to link **AI-generated changes to Git commits** — store plan ID, task ID, commit hash, review status, and cross-project relationships for auditability?
@@ -168,8 +168,8 @@ No. Use git directly. Git stores all metadata needed. For fast UI rendering, cac
 ### 4.7 Collaboration & Team Features
 61. Should we support **real-time collaboration** (multiple developers editing same file, cursor presence, cursors), and how does this work across multiple projects in a workspace?
 No. Focus on asynchronous collaboration via git. Team members work on their own copies of the codebase and share changes through git commits and pushes. Real-time collaboration adds complexity and is not aligned with the "Macro Method" of structured planning and task execution.
-62. Do we need **"Share Plan"** — ability to share AI plan + tasks + predicted git tree as a reusable workflow, including cross-project workflows?
-No. Plans, tasks, and predicted git trees are stored in `.macro-plans` branch. Team members simply checkout this branch to view historical plans. To share a plan, commit it to `.macro-plans` and push to remote.
+62. Do we need **"Share Plan"** — ability to share AI plan + tasks + predicted git repository graph as a reusable workflow, including cross-project workflows?
+No. Plans, tasks, and predicted git repository graphs are stored in `.macro-plans` branch. Team members simply checkout this branch to view historical plans. To share a plan, commit it to `.macro-plans` and push to remote.
 63. Should we implement **"Review Mode"** like Speckle — side-by-side diff with threaded comments per change, especially for cross-project changes?
 Out of scope for now.
 64. How to handle **offline-first collaboration** — conflict resolution when rejoining after editing offline, in multi-project scenarios?
@@ -226,13 +226,13 @@ Out of scope for now.
    - a) Unified timeline with project tags/labels per change
    - b) Separate timelines per project + dedicated "Cross-Plan" view
    - c) Plan tree with branches spanning multiple projects
-   The predicted git tree will be shown on the right panel. There will be multiple git trees - one per project being worked on. Each tree shows predicted git structure based on tasks in that project. Tasks affecting multiple projects are reflected in each tree.
-   However, the task list is unified for all projects. Tasks are marked to show which sub-project they belong to. User can choose display order: priority order, creation order, last update date, etc. Tasks can be mixed between projects. A task that affects multiple projects appears once in the task list but is reflected in each project's predicted git tree.
+   The predicted git repository graph will be shown on the right panel. There will be multiple git repository graphs - one per project being worked on. Each graph shows predicted git structure based on tasks in that project. Tasks affecting multiple projects are reflected in each graph. Commits are color-coded: green (completed), blue (planned), orange (in progress).
+   However, the task list is unified for all projects. Tasks are marked to show which sub-project they belong to. User can choose display order: priority order, creation order, last update date, etc. Tasks can be mixed between projects. A task that affects multiple projects appears once in the task list but is reflected in each project's predicted git repository graph.
 
 **Q77**. How should we handle simultaneous modifications across projects?
    - a) Diff view grouped by project in a single unified view
    - b) Composer-style (like Cursor) with multiple files from different projects side-by-side
-   - c) "Plan Map" visual representation showing all affected projects and files. Tasks that affect multiple projects appear once in unified task list but are reflected in each project's predicted git tree
+   - c) "Plan Map" visual representation showing all affected projects and files. Tasks that affect multiple projects appear once in unified task list but are reflected in each project's predicted git repository graph
    The modifications will be shown in the chat. Important modifications will be selected by the AI and shown in the chat for review. The user can click on each modification to see the full diff in pop-up window. The user can approve or reject each modification before it is applied.
 
 **Q78**. Should we support "atomic cross-project operations"?
@@ -246,7 +246,7 @@ Out of scope for now.
    - a) Vertical tab groups on left panel: Independent multiprojets in separate groups can advance simultaneously on different things while AI works. Interdependent projects are grouped together in same vertical tab group (like Chrome tab groups but vertical). Clicking on a multiprojet visually marks all its sub-projects as open.
    - b) Project tabs at the top of the editor (like browser tabs)
    - c) Visual canvas showing all projects and their interconnections
-   There is no navigation between projects. The user can see all projects in the left panel and switch between them by clicking on the project name. The user can also see the predicted git tree for each project on the right panel. The user can work on tasks from multiple projects simultaneously.
+   There is no navigation between projects. The user can see all projects in the left panel and switch between them by clicking on the project name. The user can also see the predicted git repository graph for each project on the right panel. The user can work on tasks from multiple projects simultaneously.
 
 **Q80**. Should we provide a "Cross-Project Dependency Graph" view?
    - Yes: interactive graph showing API dependencies, shared types, and cross-project calls
@@ -274,10 +274,10 @@ Out of scope for now.
    a) Yes: feature branches that exist across all affected projects. Each project has its own branch, but they share the same branch name for cross-project features (e.g., `feature/user-authentication/`). This allows for coordinated development across projects while maintaining project independence.
 
 **Q84**. How should we display git status across multiple repositories?
-   - a) Multiple git trees on right panel - one per project being worked on. Each tree shows predicted git structure based on tasks in that project. Tasks affecting multiple projects are reflected in each tree.
+   - a) Multiple git repository graphs on right panel - one per project being worked on. Each graph shows predicted git structure based on tasks in that project. Tasks affecting multiple projects are reflected in each graph. Commits are color-coded: green (completed), blue (planned), orange (in progress).
    - b) Separate panels per repo with cross-project notification badges
    - c) Tabbed view with per-repo and "All Repos" summary
-   a) Multiple git trees on right panel - one per project being worked on. Each tree shows predicted git structure based on tasks in that project. Tasks affecting multiple projects are reflected in each tree. Each tree is in a different tab on the right panel. The user can switch between tabs to see the git status for each project.
+   a) Multiple git repository graphs on right panel - one per project being worked on. Each graph shows predicted git structure based on tasks in that project. Tasks affecting multiple projects are reflected in each graph. Each graph is in a different tab on the right panel. The user can switch between tabs to see the git status for each project.
 
 **Q85**. Should we implement "cross-project cherry-pick" and "cross-project revert"?
    - a) Yes: ability to revert a specific intent across all affected projects
@@ -351,7 +351,7 @@ Out of scope for now.
 ### Step 3: AI Bridge
 *   Secure API key storage (Tauri `store` or OS Keyring).
 *   Streaming response integration.
-*   Plan generation with git tree prediction.
+*   Plan generation with git repository graph prediction.
 *   Task execution with chat-based questions.
 
 ### Step 4: The Organized Layer

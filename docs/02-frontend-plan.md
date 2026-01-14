@@ -53,7 +53,7 @@ src/
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ ╔═══════════════════════════════╗  ╔══════════════════════════════════╗ │
 │ ║ Panneau Gauche               ║  ║ Panneau Droit                   ║ │
-│ ║ (Groupes de Projets)         ║  ║ (Arbres Git)                   ║ │
+│ ║ (Groupes de Projets)         ║  ║ (Graphes du Dépôt Git)        ║ │
 │ ║                              ║  ║                                 ║ │
 │ ║ ┌──────────────────────────┐ ║  ║ ┌─────────────────────────────┐ ║ │
 │ ║ │ Groupe 1                 │ ║  ║ │ Projet A [main]             │ ║ │
@@ -101,7 +101,7 @@ src/
 1. **Créer un Plan** (Mode Architecte)
    - L'utilisateur entre une description de feature
    - L'IA génère un plan structuré avec tâches
-   - L'arbre git prédit apparaît dans le panneau droit
+   - Le graphe du dépôt git prédit apparaît dans le panneau droit
 
 2. **Naviguer les Tâches**
    - Liste de tâches unifiée dans la zone chat
@@ -164,25 +164,26 @@ src/
 <CodeEditor readOnly={true} />
 ```
 
-### 4. RightPanel - Arbres Git
+### 4. RightPanel - Graphes du Dépôt Git
 ```tsx
 // Responsabilités:
-// - Afficher arbre git prédit par projet
+// - Afficher graphe du dépôt git prédit par projet
 // - Visualiser les modifications prévues
 // - Onglets pour basculer entre projets
 // - Statistiques (nombre de fichiers modifiés)
+// - Couleurs des commits: vert (faits), bleu (planifiés), orange (en cours)
 
 // Structure:
-<GitTrees>
+<GitGraphs>
   <Tabs>
     <Tab title="Projet A">
-      <GitTree structure={predictedTree} />
+      <GitGraph structure={predictedGraph} />
     </Tab>
     <Tab title="Projet B">
-      <GitTree structure={predictedTree} />
+      <GitGraph structure={predictedGraph} />
     </Tab>
   </Tabs>
-</GitTrees>
+</GitGraphs>
 ```
 
 ### 5. ArchitectMode - Création de Plans
@@ -191,14 +192,14 @@ src/
 // - Input pour description de feature
 // - Visualisation du plan généré
 // - Validation des tâches avant exécution
-// - Prédiction d'arbre git
+// - Prédiction de graphe du dépôt git
 
 // Structure:
 <PlanCreator>
   <TextInput placeholder="Décrivez la feature..." />
   <GeneratedPlan>
     <TaskList />
-    <PredictedGitTree />
+    <PredictedGitGraph />
   </GeneratedPlan>
   <ValidationActions />
 </PlanCreator>
@@ -300,10 +301,11 @@ src/
 - [ ] CodeEditor read-only intégré
 
 ### Phase 1.6: Right Panel
-- [ ] Composant GitTree
-- [ ] Composant GitTreeTab
-- [ ] Visualisation arbre git prédit
+- [ ] Composant GitGraph
+- [ ] Composant GitGraphTab
+- [ ] Visualisation graphe du dépôt git prédit
 - [ ] Statistiques modifications
+- [ ] Couleurs des commits (vert/faits, bleu/planifiés, orange/en cours)
 
 ### Phase 2: Modes Architecte & Implémentation
 - [ ] Mode Architecte complet
