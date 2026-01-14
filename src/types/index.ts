@@ -121,3 +121,15 @@ export interface EditorState {
   language: string;
   readOnly: boolean;
 }
+
+export type CommitStatus = 'done' | 'planned' | 'in-progress';
+
+export interface GitCommit {
+  id: string;
+  hash: string;
+  message: string;
+  author: string;
+  date: string;
+  status: CommitStatus;
+  task_id?: string;
+}
