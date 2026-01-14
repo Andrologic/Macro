@@ -1,4 +1,5 @@
 import React from 'react';
+import { Header } from './components/layout/Header';
 import { LeftPanel } from './components/layout/LeftPanel';
 import { ChatZone } from './components/chat/ChatZone';
 import { RightPanel } from './components/layout/RightPanel';
@@ -8,15 +9,21 @@ const App: React.FC = () => {
   const { mode } = useAppStore();
 
   return (
-    <div className="h-screen w-screen bg-background flex overflow-hidden">
-      {/* Left Panel - Projects */}
-      <LeftPanel />
+    <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr] overflow-hidden">
+      {/* Header */}
+      <Header />
 
-      {/* Center - Chat Zone */}
-      <ChatZone />
+      {/* Main Content Area */}
+      <div className="flex overflow-hidden">
+        {/* Left Panel - Projects */}
+        <LeftPanel />
 
-      {/* Right Panel - Git Trees */}
-      <RightPanel />
+        {/* Center - Chat Zone */}
+        <ChatZone />
+
+        {/* Right Panel - Git Trees */}
+        <RightPanel />
+      </div>
     </div>
   );
 };
