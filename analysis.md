@@ -194,163 +194,147 @@ Out of scope for now.
    - a) `.macro-workspace` file referencing multiple folders (like VS Code multi-root)
    - b) Central file with metadata + shared vector index for all projects
    - c) Hybrid approach: workspace file + SQLite DB for relationships and cross-project indexing
+   The user will choose where each project is located on disk when creating or opening a multi-project workspace. The workspace file will only store which projects are part of the workspace. The actual projects can be anywhere on disk.
 
 **Q72**. How should the AI "see" and understand multiple projects?
    - a) As distinct entities with explicit bridges (e.g., "backend exposes API X → frontend consumes it")
    - b) As a semantic dependency graph with automatic relationship discovery
    - c) As a meta-project with clearly marked boundaries and explicit cross-project definitions
+   There will be markdown files in each project that define its API contracts, shared types, and dependencies on other projects. The AI will use these files to understand the relationships between projects. This file will be committed to git so that it is versioned and shareable across the team. It is generated and updated by the AI as needed.
 
 #### 4.8.2 AI Context Management
 **Q73**. How should the AI select which files to include for a multi-project intent?
    - a) Automatic dependency analysis (imports, API calls, shared types, etc.)
    - b) Explicitly specified by the developer per intent
    - c) Hybrid: auto-inclusion with suggestions for additional relevant files
+   The AI will automatically include files based on dependency analysis. The user can also specify additional files to include or exclude for each intent.
 
 **Q74**. How to avoid "context pollution" when focusing on a specific project?
    - a) Automatic filtering based on the active intent's scope
    - b) Explicit "Focus Mode" vs. "Cross-Project Mode" toggle
    - c) Adaptive token limit with intelligent context pruning
+   a and c
 
 **Q75**. How should we handle shared code/types between projects?
    - a) Monorepo-style with shared packages
    - b) Separate repos with automated sync/deduplication detection
    - c) Virtual shared modules that AI understands as "common code"
+   b
 
 #### 4.8.3 Cross-Project Intents
 **Q76**. How should we visually represent multi-project plans?
    - a) Unified timeline with project tags/labels per change
    - b) Separate timelines per project + dedicated "Cross-Plan" view
    - c) Plan tree with branches spanning multiple projects
+   The predicted git tree will be shown on the right panel. There will be multiple git trees - one per project being worked on. Each tree shows predicted git structure based on tasks in that project. Tasks affecting multiple projects are reflected in each tree.
+   However, the task list is unified for all projects. Tasks are marked to show which sub-project they belong to. User can choose display order: priority order, creation order, last update date, etc. Tasks can be mixed between projects. A task that affects multiple projects appears once in the task list but is reflected in each project's predicted git tree.
 
 **Q77**. How should we handle simultaneous modifications across projects?
    - a) Diff view grouped by project in a single unified view
    - b) Composer-style (like Cursor) with multiple files from different projects side-by-side
    - c) "Plan Map" visual representation showing all affected projects and files. Tasks that affect multiple projects appear once in unified task list but are reflected in each project's predicted git tree
+   The modifications will be shown in the chat. Important modifications will be selected by the AI and shown in the chat for review. The user can click on each modification to see the full diff in pop-up window. The user can approve or reject each modification before it is applied.
 
 **Q78**. Should we support "atomic cross-project operations"?
    - a) Yes: all changes across projects must be accepted/rejected together
    - b) No: project-level granular acceptance is required
    - c) Hybrid: atomic by intent, but with project-level override options
+   a) All changes across projects must be accepted/rejected together. The user can review all changes in the chat and approve or reject them as a whole. This ensures consistency across projects and prevents partial updates that could lead to broken functionality.
 
 #### 4.8.4 UX & Navigation
 **Q79**. How should users navigate between projects in a multi-project workspace?
    - a) Vertical tab groups on left panel: Independent multiprojets in separate groups can advance simultaneously on different things while AI works. Interdependent projects are grouped together in same vertical tab group (like Chrome tab groups but vertical). Clicking on a multiprojet visually marks all its sub-projects as open.
    - b) Project tabs at the top of the editor (like browser tabs)
    - c) Visual canvas showing all projects and their interconnections
+   There is no navigation between projects. The user can see all projects in the left panel and switch between them by clicking on the project name. The user can also see the predicted git tree for each project on the right panel. The user can work on tasks from multiple projects simultaneously.
 
 **Q80**. Should we provide a "Cross-Project Dependency Graph" view?
    - Yes: interactive graph showing API dependencies, shared types, and cross-project calls
    - No: keep it simple with traditional navigation
    - Optional: power-user feature for complex architectures
+   No
 
 **Q81**. How should we handle file operations (move, rename, delete) across projects?
    - a) Explicit warnings when operations span projects
    - b) Allow freely but track as cross-project operations in intent history
    - c) Restrict to within-project only unless explicitly enabled
+   Tracking will be managed by git. Each project has its own git repository. File operations are tracked as part of the git history. If a file is moved or renamed across projects, the user must commit the changes in both projects' git repositories. The AI will assist in generating the necessary git commands to reflect these changes.
 
 #### 4.8.5 Git & Version Control
 **Q82**. How should we handle commits in a multi-project workspace?
    - a) Atomic cross-project commits (single commit touches multiple git repos)
    - b) Separate commits per project with relational tracking
    - c) User choice per intent: atomic or per-project
+   b) Separate commits per project with relational tracking. Each project has its own git repository and commits are made separately. The AI tracks the relationship between commits across projects using plan and task IDs. This allows for clear auditability and versioning while maintaining project independence.
 
 **Q83**. Should we support "cross-project branches"?
    - a) Yes: feature branches that exist across all affected projects
    - b) No: too complex, maintain independent branches
    - c) Optional: with guard rails and conflict resolution strategies
+   a) Yes: feature branches that exist across all affected projects. Each project has its own branch, but they share the same branch name for cross-project features (e.g., `feature/user-authentication/`). This allows for coordinated development across projects while maintaining project independence.
 
 **Q84**. How should we display git status across multiple repositories?
    - a) Multiple git trees on right panel - one per project being worked on. Each tree shows predicted git structure based on tasks in that project. Tasks affecting multiple projects are reflected in each tree.
    - b) Separate panels per repo with cross-project notification badges
    - c) Tabbed view with per-repo and "All Repos" summary
+   a) Multiple git trees on right panel - one per project being worked on. Each tree shows predicted git structure based on tasks in that project. Tasks affecting multiple projects are reflected in each tree. Each tree is in a different tab on the right panel. The user can switch between tabs to see the git status for each project.
 
 **Q85**. Should we implement "cross-project cherry-pick" and "cross-project revert"?
    - a) Yes: ability to revert a specific intent across all affected projects
    - b) No: handle per-project revert only
    - c: Conditional: only for intents marked as "atomic cross-project"
+   a) Yes: ability to revert a specific intent across all affected projects. The user can select an intent from the plan history and choose to revert it. The AI generates the necessary git commands to revert the changes in all affected projects' git repositories, ensuring consistency across the workspace.
 
 #### 4.8.6 AI Intelligence & Orchestration
 **Q86**. Should the AI be "architecture-aware" of the multi-project setup?
    - a) Always: AI understands relationships and suggests cross-project changes
    - b) Explicit only: AI acts cross-project only when explicitly instructed
    - c) Hybrid: learns patterns over time but requires explicit confirmation for cross-project changes
+   a) Always: AI understands relationships and suggests cross-project changes. The AI uses the project metadata files to understand the relationships between projects. It automatically suggests cross-project changes when working on tasks that affect multiple projects. The user can review and approve these suggestions before they are applied.
 
 **Q87**. How should we handle API contract changes between projects?
    - a) Automatic detection + suggestions for all affected code across projects
    - b) Explicit API contract files (OpenAPI, GraphQL schema, etc.) with AI validation
    - c) User-driven: developer specifies contract, AI suggests implementations
+   b) Explicit API contract files (OpenAPI, GraphQL schema, etc.) with AI validation. Each project has a dedicated file that defines its API contracts. The AI uses these files to validate changes and suggest implementations in other projects that consume the API. This ensures consistency and reduces the risk of breaking changes.
 
 **Q88**. Should we implement "cross-project type synchronization"?
    - a) Yes: shared types automatically sync across projects (TypeScript, Rust structs, etc.)
    - b) Manual: developer triggers sync when needed
    - c) Suggestion-based: AI detects inconsistencies and proposes syncs
+   c) Suggestion-based: AI detects inconsistencies and proposes syncs. The AI analyzes the codebases of all projects in the workspace and detects inconsistencies in shared types. When it finds discrepancies, it suggests updates to synchronize the types across projects. The user can review and approve these suggestions before they are applied.
 
 #### 4.8.7 Architecture & Technical Implementation
 **Q89**. How should we store multi-project workspace state?
    - a) SQLite database in workspace root folder
    - b) JSON workspace file + separate vector database for indexing
    - c) Combined: workspace file for structure + SQLite for relationships + vector DB for search
+   c) Combined: workspace file for structure + SQLite for relationships + vector DB for search. The workspace file stores the list of projects and their metadata. SQLite database tracks relationships between projects, intents, tasks, and git commits. The vector database indexes code snippets from all projects for efficient semantic search.
 
 **Q90**. How to handle large projects without saturating the cross-project index?
    - a) Incremental intelligent indexing (only index what changed)
    - b) On-demand indexing (index when user works on specific area)
    - c) Partial indexing by "intent zones" (index based on recent and active intents)
+   a) Incremental intelligent indexing (only index what changed). The vector database only indexes files that have changed since the last indexing operation. The AI can also request specific files or directories to be indexed on-demand when working on tasks that require them. This approach minimizes resource usage while ensuring relevant context is available.
 
 **Q91**. How should we manage project-specific settings in a multi-project workspace?
    - a) Inherit from workspace + per-project overrides
    - b) Independent per-project settings with workspace recommendations
    - c) Layered: workspace defaults → project defaults → folder overrides
-
-#### 4.8.8 Specific Use Case: Mobile + Backend Web
-**Q92**. For mobile + backend web scenarios, which cross-project features are critical?
-   - a) API sync: generate mobile client code from backend API definitions
-   - b) Shared types: TypeScript types/interfaces that work across both projects
-   - c) Cross-project testing: E2E tests that span both mobile and backend
-   - d) Live API documentation: auto-generated docs from backend, consumed by mobile team
-
-**Q93**. How should the AI suggest modifications when working on mobile + backend?
-   - a) "Change backend API" → automatically suggest "update mobile API client"
-   - b) "Add endpoint" → generate "client wrapper + mobile UI screen for this endpoint"
-   - c) All suggestions grouped by "Mission" with clear cross-project impact analysis
-
-**Q94**. Should we support "preview mode" for cross-project changes?
-   - a) Yes: simulate API changes and show mobile app with updated behavior
-   - b) No: too complex, rely on testing
-   - c: Optional: for API contract changes only
+   a) Inherit from workspace + per-project overrides. The workspace has default settings that apply to all projects. Each project can override these settings as needed. This allows for consistency across the workspace while still providing flexibility for individual projects.
 
 #### 4.8.9 Performance & Scalability
 **Q95**. How many projects should a single workspace support?
    - a) Small (2-5): optimized for focused cross-project work
    - b) Medium (5-20): balanced approach
    - c) Large (20+): full monorepo support with scalability features
+   a) Small (2-5): optimized for focused cross-project work. The initial implementation will focus on supporting a small number of projects per workspace to ensure optimal performance and usability. As the product matures, we can explore scaling to support more projects if there is demand.
 
 **Q96**. How should we handle file search across multiple projects?
    - a) Global search with project filters
    - b) Per-project search with "search all" option
    - c) Semantic search that understands project boundaries automatically
-
-**Q97**. What is the strategy for workspace file watching across multiple git repos?
-   - a) Single watcher process with per-repo git tracking
-   - b) Separate watchers per project with aggregation
-   - c: Git hook integration for efficient change detection
-
-#### 4.8.10 Documentation & Knowledge Sharing
-**Q98**. Should we support cross-project documentation?
-   - a) Yes: unified docs that span multiple projects
-   - b) No: per-project docs with cross-references
-   - c: Hybrid: per-project docs with "workspace-level" overview
-
-**Q99**. How should we handle API documentation in multi-project workspaces?
-   - a) Auto-generate from backend, available to all projects
-   - b) Manual documentation with AI assistance for keeping it updated
-   - c: Contract-driven: API definition is source of truth, docs are auto-generated
-
-**Q100**. Should we implement "workspace-level onboarding" for new team members?
-   - a) Yes: explain architecture, project relationships, and development workflows
-   - b) No: per-project onboarding only
-   - c: Optional: team-configured onboarding flows
-
----
+   c) Semantic search that understands project boundaries automatically. The vector database enables semantic search across all projects in the workspace. The AI understands the relationships between projects and can provide relevant results based on the current task. The user can also filter results by project if needed.
 
 ## 5. Implementation Roadmap (Detailed)
 
