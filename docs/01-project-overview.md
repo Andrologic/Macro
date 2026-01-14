@@ -60,12 +60,15 @@ Le "pourquoi" derrière chaque décision IA est tracé avec le code.
 **Layout**
 - **Panneau gauche**: Groupes d'onglets verticaux pour les projets
 - **Centre**: Chat toujours visible avec liste de tâches unifiée
-- **Panneau droit**: Arbres git multiples (un par projet)
+- **Panneau droit**: Graphes du dépôt git multiples (un par projet)
+  - Commits faits : affichés en vert
+  - Commits planifiés : affichés en bleu
+  - Commits en cours : affichés en orange
 
 **Organisation**
 - Projets indépendants → groupes séparés (travail simultané)
 - Projets interdépendants → même groupe vertical
-- Tâches affectant plusieurs projets apparaissent une fois dans la liste mais reflétées dans chaque arbre git
+- Tâches affectant plusieurs projets apparaissent une fois dans la liste mais reflétées dans chaque graphe du dépôt git
 
 ### Principes de Conception
 
@@ -86,7 +89,7 @@ Le "pourquoi" derrière chaque décision IA est tracé avec le code.
 - Plans et tâques → branche `.macro-plans`
 - Métadonnées projet → `.project-meta.yaml`
 - Contrats API → fichiers OpenAPI/GraphQL par projet
-- Arbre git prédit → commité dans `.macro-plans`
+- Graphe du dépôt git prédit → commité dans `.macro-plans`
 
 ---
 

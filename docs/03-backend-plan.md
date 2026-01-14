@@ -158,7 +158,7 @@ async fn list_plans(project_id: String) -> Result<Vec<Plan>, Error>
 async fn update_plan_status(plan_id: String, status: PlanStatus) -> Result<(), Error>
 
 #[tauri::command]
-async fn predict_git_tree(plan_id: String) -> Result<PredictedGitTree, Error>
+async fn predict_git_graph(plan_id: String) -> Result<PredictedGitGraph, Error>
 ```
 
 ---
@@ -220,7 +220,7 @@ pub struct PlanService {
 
 impl PlanService {
     pub async fn create(&self, description: String, project_ids: Vec<String>) -> Result<Plan>
-    pub async fn predict_git_tree(&self, plan_id: String) -> Result<PredictedGitTree>
+    pub async fn predict_git_graph(&self, plan_id: String) -> Result<PredictedGitGraph>
     pub async fn update_status(&self, plan_id: String, status: PlanStatus) -> Result<()>
     pub async fn get_tasks(&self, plan_id: String) -> Result<Vec<Task>>
 }
@@ -289,7 +289,7 @@ pub struct Plan {
     pub status: PlanStatus,
     pub project_ids: Vec<String>,
     pub tasks: Vec<Task>,
-    pub predicted_git_trees: HashMap<String, PredictedGitTree>,
+    pub predicted_git_graphs: HashMap<String, PredictedGitGraph>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -358,6 +358,14 @@ pub struct Commit {
     pub plan_id: Option<String>,
     pub task_id: Option<String>,
     pub changed_files: Vec<String>,
+    pub status: CommitStatus, // vert (faits), bleu (planifiés), orange (en cours)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum CommitStatus {
+    Completed,    // vert - commits faits
+    Planned,      // bleu - commits planifiés
+    InProgress,   // orange - commits en cours
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -492,17 +500,18 @@ CREATE TABLE git_commits (
     author TEXT NOT NULL,
     date TEXT NOT NULL,
     changed_files TEXT, -- JSON array
+    status TEXT NOT NULL, -- 'completed' (vert), 'planned' (bleu), 'in_progress' (orange)
     FOREIGN KEY (project_id) REFERENCES projects(id),
     FOREIGN KEY (plan_id) REFERENCES plans(id),
     FOREIGN KEY (task_id) REFERENCES tasks(id)
 );
 
--- Predicted Git Trees (SQLite only - local cache)
-CREATE TABLE predicted_git_trees (
+-- Predicted Git Graphs (SQLite only - local cache)
+CREATE TABLE predicted_git_graphs (
     id TEXT PRIMARY KEY,
     plan_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
-    tree_structure TEXT NOT NULL, -- JSON
+    graph_structure TEXT NOT NULL, -- JSON
     created_at TEXT NOT NULL,
     FOREIGN KEY (plan_id) REFERENCES plans(id),
     FOREIGN KEY (project_id) REFERENCES projects(id)
