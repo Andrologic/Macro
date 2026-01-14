@@ -26,10 +26,13 @@ import {
   PanelRightOpen,
   FileCode,
   FileText,
+  ArrowUp,
   ArrowUpRight,
   ArrowDownRight,
   Zap,
   Shield,
+  Wrench,
+  Cpu,
 } from 'lucide-react';
 
 export type IconName =
@@ -59,10 +62,13 @@ export type IconName =
   | 'panel-right-open'
   | 'file-code'
   | 'file-text'
+  | 'arrow-up'
   | 'arrow-up-right'
   | 'arrow-down-right'
   | 'zap'
-  | 'shield';
+  | 'shield'
+  | 'tool'
+  | 'cpu';
 
 interface IconProps {
   name: IconName;
@@ -97,10 +103,13 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'panel-right-open': PanelRightOpen,
   'file-code': FileCode,
   'file-text': FileText,
+  'arrow-up': ArrowUp,
   'arrow-up-right': ArrowUpRight,
   'arrow-down-right': ArrowDownRight,
   'zap': Zap,
   'shield': Shield,
+  'tool': Wrench,
+  'cpu': Cpu,
 };
 
 export const Icon: React.FC<IconProps> = ({ name, size = 16, className }) => {
