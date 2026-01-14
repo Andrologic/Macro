@@ -4,7 +4,7 @@ import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 
 export const LeftPanel: React.FC = () => {
-  const { projectGroups, toggleProjectGroup, selectedProjectId } =
+  const { projectGroups, toggleProjectGroup, selectedGroupId, setSelectedGroup } =
     useAppStore();
 
   return (
@@ -23,37 +23,59 @@ export const LeftPanel: React.FC = () => {
       {/* Project Groups */}
       <div className="flex-1 overflow-y-auto">
         {projectGroups.map((group) => (
-          <div key={group.id} className="border-b border-zinc-800/50">
-            {/* Group Header */}
-            <button
-              onClick={() => toggleProjectGroup(group.id)}
+          <div
+            key={group.id}
+            className={cn(
+              'border-b border-zinc-800/50',
+              selectedGroupId === group.id && 'bg-zinc-800/30'
+            )}
+          >
+            {/* Group Header - Click to select group */}
+            <div
+              onClick={() => setSelectedGroup(group.id)}
               className={cn(
                 'w-full h-10 px-4 flex items-center justify-between',
                 'hover:bg-zinc-800/50 transition-colors',
-                'text-xs font-medium text-zinc-400'
+                'text-xs font-medium cursor-pointer',
+                selectedGroupId === group.id
+                  ? 'text-indigo-500'
+                  : 'text-zinc-400'
               )}
             >
-              <span>{group.name}</span>
-              <Icon
-                name={group.isOpen ? 'chevron-down' : 'chevron-right'}
-                size={14}
-                className="text-zinc-500"
-              />
-            </button>
+              <div className="flex items-center gap-2">
+                <Icon
+                  name="folder"
+                  size={14}
+                  className={cn(
+                    selectedGroupId === group.id
+                      ? 'text-indigo-500'
+                      : 'text-zinc-500'
+                  )}
+                />
+                <span>{group.name}</span>
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleProjectGroup(group.id);
+                }}
+                className="p-1 hover:bg-zinc-700 rounded transition-colors"
+              >
+                <Icon
+                  name={group.isOpen ? 'chevron-down' : 'chevron-right'}
+                  size={14}
+                  className="text-zinc-500"
+                />
+              </button>
+            </div>
 
-            {/* Project List */}
+            {/* Project List - Collapsible */}
             {group.isOpen && (
               <div className="py-1">
                 {group.projects.map((project) => (
-                  <button
+                  <div
                     key={project.id}
-                    className={cn(
-                      'w-full h-9 px-6 flex items-center justify-between',
-                      'transition-colors text-sm',
-                      selectedProjectId === project.id
-                        ? 'bg-indigo-500/10 text-indigo-500 border-r-2 border-indigo-500'
-                        : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/30'
-                    )}
+                    className="w-full h-9 px-6 flex items-center justify-between text-sm text-zinc-400"
                   >
                     <div className="flex items-center gap-2">
                       <Icon
@@ -72,7 +94,7 @@ export const LeftPanel: React.FC = () => {
                     {project.status === 'active' && (
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                     )}
-                  </button>
+                  </div>
                 ))}
               </div>
             )}
