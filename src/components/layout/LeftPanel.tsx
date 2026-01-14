@@ -26,8 +26,10 @@ export const LeftPanel: React.FC = () => {
           <div
             key={group.id}
             className={cn(
-              'border-b border-zinc-800/50',
-              selectedGroupId === group.id && 'bg-zinc-800/30'
+              'border-b border-zinc-800/50 transition-all duration-200',
+              selectedGroupId === group.id
+                ? 'bg-indigo-500/10 border-l-2 border-l-indigo-500 border-r-0 border-t-0 border-b-0'
+                : 'hover:bg-zinc-800/30'
             )}
           >
             {/* Group Header - Click to select group */}
@@ -35,10 +37,10 @@ export const LeftPanel: React.FC = () => {
               onClick={() => setSelectedGroup(group.id)}
               className={cn(
                 'w-full h-10 px-4 flex items-center justify-between',
-                'hover:bg-zinc-800/50 transition-colors',
-                'text-xs font-medium cursor-pointer',
+                'transition-colors cursor-pointer',
+                'text-xs font-medium',
                 selectedGroupId === group.id
-                  ? 'text-indigo-500'
+                  ? 'text-zinc-100'
                   : 'text-zinc-400'
               )}
             >
@@ -48,7 +50,7 @@ export const LeftPanel: React.FC = () => {
                   size={14}
                   className={cn(
                     selectedGroupId === group.id
-                      ? 'text-indigo-500'
+                      ? 'text-indigo-400'
                       : 'text-zinc-500'
                   )}
                 />
