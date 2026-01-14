@@ -1,11 +1,18 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/Tabs';
 import { GitTree } from '../git/GitTree';
+import { GitGraph } from '../git/GitGraph';
 import { Icon } from '../ui/Icon';
+import { mockCommits } from '../../mock-data/auth-scenario';
+import { cn } from '../../utils/cn';
+
+type GitView = 'tree' | 'graph';
 
 export const RightPanel: React.FC = () => {
   const { currentPlan, projectGroups } = useAppStore();
+  const [gitView, setGitView] = useState<GitView>('tree');
+  const [selectedCommitId, setSelectedCommitId] = useState<string | null>(null);
 
   if (!currentPlan) {
     return (
@@ -29,38 +36,78 @@ export const RightPanel: React.FC = () => {
       <div className="h-12 border-b border-zinc-800 flex items-center justify-between px-4">
         <h1 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
           <Icon name="git-commit" size={16} className="text-indigo-500" />
-          Predicted Changes
+          Repository
         </h1>
       </div>
 
-      {/* Project Tabs */}
-      <div className="flex-1 overflow-y-auto">
-        <Tabs defaultValue={activeProjects[0]?.id || ''} className="h-full flex flex-col">
-          <div className="px-4 pt-4">
-            <TabsList className="w-full">
-              {activeProjects.map((project) => (
-                <TabsTrigger key={project.id} value={project.id} className="flex-1">
-                  {project.name}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </div>
+      {/* View Toggle */}
+      <div className="h-10 border-b border-zinc-800 flex items-center px-4">
+        <button
+          onClick={() => setGitView(gitView === 'tree' ? 'graph' : 'tree')}
+          className={cn(
+            'flex-1 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200',
+            gitView === 'tree' ? 'bg-indigo-500/10 text-indigo-500' : 'text-zinc-400 hover:text-zinc-100'
+          )}
+        >
+          <Icon name={gitView === 'tree' ? 'git-branch' : 'git-commit'} size={14} className="mr-2" />
+          {gitView === 'tree' ? 'Git Tree' : 'Commit Graph'}
+        </button>
+      </div>
 
-          {activeProjects.map((project) => {
-            const gitTree = currentPlan.predicted_git_trees[project.id];
-            if (!gitTree) return null;
+      {/* Content */}
+      <div className="flex-1 overflow-hidden">
+        {gitView === 'tree' && (
+          <Tabs defaultValue={activeProjects[0]?.id || ''} className="h-full flex flex-col">
+            <div className="px-4 pt-2">
+              <TabsList className="w-full">
+                {activeProjects.map((project) => (
+                  <TabsTrigger key={project.id} value={project.id} className="flex-1">
+                    {project.name}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
 
-            return (
+            {activeProjects.map((project) => {
+              const gitTree = currentPlan.predicted_git_trees[project.id];
+              if (!gitTree) return null;
+
+              return (
+                <TabsContent key={project.id} value={project.id} className="flex-1 mt-0">
+                  <GitTree
+                    nodes={gitTree.structure}
+                    modifiedFilesCount={gitTree.modified_files_count}
+                    branch={gitTree.branch}
+                  />
+                </TabsContent>
+              );
+            })}
+          </Tabs>
+        )}
+
+        {gitView === 'graph' && (
+          <Tabs defaultValue={activeProjects[0]?.id || ''} className="h-full flex flex-col">
+            <div className="px-4 pt-2">
+              <TabsList className="w-full">
+                {activeProjects.map((project) => (
+                  <TabsTrigger key={project.id} value={project.id} className="flex-1">
+                    {project.name}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+
+            {activeProjects.map((project) => (
               <TabsContent key={project.id} value={project.id} className="flex-1 mt-0">
-                <GitTree
-                  nodes={gitTree.structure}
-                  modifiedFilesCount={gitTree.modified_files_count}
-                  branch={gitTree.branch}
+                <GitGraph
+                  commits={mockCommits}
+                  selectedCommitId={selectedCommitId}
+                  onCommitClick={(commit) => setSelectedCommitId(commit.id)}
                 />
               </TabsContent>
-            );
-          })}
-        </Tabs>
+            ))}
+          </Tabs>
+        )}
       </div>
 
       {/* Footer */}

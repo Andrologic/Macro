@@ -5,6 +5,7 @@ import {
   Task,
   ChatMessage,
   PredictedGitTree,
+  GitCommit,
 } from '../types';
 
 // Detailed mock data for "Add User Authentication" scenario
@@ -815,6 +816,63 @@ export const getGitTree = (
 export const getTaskById = (taskId: string): Task | undefined => {
   return mockAuthPlan.tasks.find((t) => t.id === taskId);
 };
+
+export const mockCommits: GitCommit[] = [
+  {
+    id: 'commit-1',
+    hash: 'a1b2c3d4e5f6',
+    message: 'feat: Add user authentication system with JWT tokens',
+    author: 'AI Assistant',
+    date: '2026-01-14T10:30:00Z',
+    status: 'done',
+    task_id: 'task-1',
+  },
+  {
+    id: 'commit-2',
+    hash: 'd4e5f6g7h8i9',
+    message: 'feat: Create login page component with form validation',
+    author: 'AI Assistant',
+    date: '2026-01-14T10:35:00Z',
+    status: 'done',
+    task_id: 'task-1',
+  },
+  {
+    id: 'commit-3',
+    hash: 'j7k8l9m2n3o4',
+    message: 'feat: Create registration page with password validation',
+    author: 'AI Assistant',
+    date: '2026-01-14T10:40:00Z',
+    status: 'done',
+    task_id: 'task-2',
+  },
+  {
+    id: 'commit-4',
+    hash: 'p1o2i3u4y5t6',
+    message: 'feat: Implement auth context with auto-refresh logic',
+    author: 'AI Assistant',
+    date: '2026-01-14T10:45:00Z',
+    status: 'done',
+    task_id: 'task-3',
+  },
+  {
+    id: 'commit-5',
+    hash: 'q5r6s7w8e9u1i',
+    message: 'feat: Create auth API endpoints (login, register, logout)',
+    author: 'AI Assistant',
+    date: '2026-01-14T11:00:00Z',
+    status: 'done',
+    task_id: 'task-4',
+  },
+  {
+    id: 'commit-6',
+    hash: 't8u9v2x0y3z2',
+    message: 'feat: Implement JWT token generation with HS256 algorithm',
+    author: 'AI Assistant',
+    date: '2026-01-14T11:15:00Z',
+    status: 'in-progress',
+    task_id: 'task-5',
+  },
+];
 
 export const getProjectById = (
   projectId: string
