@@ -6,11 +6,11 @@ interface AppStore {
   mode: AppMode;
   currentPlan: Plan | null;
   projectGroups: ProjectGroup[];
-  selectedProjectId: string | null;
+  selectedGroupId: string | null;
   setMode: (mode: AppMode) => void;
   setCurrentPlan: (plan: Plan | null) => void;
   setProjectGroups: (groups: ProjectGroup[]) => void;
-  setSelectedProject: (projectId: string | null) => void;
+  setSelectedGroup: (groupId: string | null) => void;
   toggleProjectGroup: (groupId: string) => void;
   getProjectById: (id: string) => Project | undefined;
 }
@@ -19,7 +19,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   mode: 'Implement',
   currentPlan: mockAuthPlan,
   projectGroups: mockProjects,
-  selectedProjectId: 'proj-1',
+  selectedGroupId: 'group-1',
 
   setMode: (mode) => set({ mode }),
 
@@ -27,7 +27,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   setProjectGroups: (groups) => set({ projectGroups: groups }),
 
-  setSelectedProject: (projectId) => set({ selectedProjectId: projectId }),
+  setSelectedGroup: (groupId) => set({ selectedGroupId: groupId }),
 
   toggleProjectGroup: (groupId) =>
     set((state) => ({
