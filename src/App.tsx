@@ -6,7 +6,7 @@ import { RightPanel } from './components/layout/RightPanel';
 import { useAppStore } from './stores/useAppStore';
 
 const App: React.FC = () => {
-  const { mode } = useAppStore();
+  useAppStore();
 
   return (
     <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr] overflow-hidden">

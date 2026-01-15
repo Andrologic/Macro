@@ -2,6 +2,11 @@ import React from 'react';
 import {
   ChevronRight,
   ChevronDown,
+  ChevronLeft,
+  CheckSquare,
+  List,
+  ListTodo,
+  Sparkles,
   FolderOpen,
   Folder,
   File,
@@ -38,6 +43,11 @@ import {
 export type IconName =
   | 'chevron-right'
   | 'chevron-down'
+  | 'chevron-left'
+  | 'check-square'
+  | 'list-todo'
+  | 'list'
+  | 'sparkles'
   | 'folder-open'
   | 'folder'
   | 'file'
@@ -79,6 +89,11 @@ interface IconProps {
 const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; className?: string }>> = {
   'chevron-right': ChevronRight,
   'chevron-down': ChevronDown,
+  'chevron-left': ChevronLeft,
+  'check-square': CheckSquare,
+  'list-todo': ListTodo,
+  'list': List,
+  'sparkles': Sparkles,
   'folder-open': FolderOpen,
   'folder': Folder,
   'file': File,

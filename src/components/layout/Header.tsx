@@ -1,6 +1,5 @@
 import { useAppStore } from '../../stores/useAppStore';
 import { Icon } from '../ui/Icon';
-import { Badge } from '../ui/Badge';
 import type { AppMode } from '../../types';
 
 export function Header() {

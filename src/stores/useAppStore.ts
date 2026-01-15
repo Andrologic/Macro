@@ -2,15 +2,21 @@ import { create } from 'zustand';
 import { AppMode, Plan, ProjectGroup, Project } from '../types';
 import { mockAuthPlan, mockProjects } from '../mock-data/auth-scenario';
 
+export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
+
 interface AppStore {
   mode: AppMode;
   currentPlan: Plan | null;
   projectGroups: ProjectGroup[];
   selectedGroupId: string | null;
+  selectedTaskId: string | null;
+  taskSortOption: TaskSortOption;
   setMode: (mode: AppMode) => void;
   setCurrentPlan: (plan: Plan | null) => void;
   setProjectGroups: (groups: ProjectGroup[]) => void;
   setSelectedGroup: (groupId: string | null) => void;
+  setSelectedTask: (taskId: string | null) => void;
+  setTaskSortOption: (option: TaskSortOption) => void;
   toggleProjectGroup: (groupId: string) => void;
   getProjectById: (id: string) => Project | undefined;
 }
@@ -20,6 +26,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   currentPlan: mockAuthPlan,
   projectGroups: mockProjects,
   selectedGroupId: 'group-1',
+  selectedTaskId: null,
+  taskSortOption: 'date',
 
   setMode: (mode) => set({ mode }),
 
@@ -28,6 +36,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setProjectGroups: (groups) => set({ projectGroups: groups }),
 
   setSelectedGroup: (groupId) => set({ selectedGroupId: groupId }),
+
+  setSelectedTask: (taskId) => set({ selectedTaskId: taskId }),
+
+  setTaskSortOption: (option) => set({ taskSortOption: option }),
 
   toggleProjectGroup: (groupId) =>
     set((state) => ({
