@@ -289,7 +289,34 @@ export const ChatZone: React.FC = () => {
 
         {/* Input Area */}
         <footer className="border-t border-zinc-800/50 bg-zinc-900/30 p-3">
-          <div className="w-full max-w-3xl mx-auto">
+          <div className="w-full max-w-3xl mx-auto space-y-3">
+            {/* Control Buttons Row */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {/* AI Mode/Skill Selector */}
+                <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors">
+                  <Icon name="zap" size={12} className="text-indigo-500" />
+                  <span className="text-xs text-zinc-300">Default</span>
+                  <Icon name="chevron-down" size={10} className="text-zinc-500" />
+                </button>
+
+                {/* Model Selector */}
+                <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors">
+                  <Icon name="tool" size={12} className="text-zinc-500" />
+                  <span className="text-xs text-zinc-300">GPT-4</span>
+                  <Icon name="chevron-down" size={10} className="text-zinc-500" />
+                </button>
+              </div>
+
+              {/* Tools Selector */}
+              <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors">
+                <Icon name="tool" size={12} className="text-zinc-500" />
+                <span className="text-xs text-zinc-300">Tools</span>
+                <span className="text-xs text-zinc-500">(3)</span>
+              </button>
+            </div>
+
+            {/* Input Field */}
             <div className="flex items-center gap-3 bg-zinc-900/80 border border-zinc-800 rounded-xl p-2">
               <input
                 type="text"
