@@ -97,11 +97,23 @@ export interface CodeDiff {
 export interface ChatMessage {
   id: string;
   task_id: string;
+  conversation_id: string;
   role: MessageRole;
   content: string;
   timestamp: string;
   code_diff?: CodeDiff;
   choices?: AIChoice[];
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  task_id: string | null;
+  project_id: string | null;
+  last_message: string;
+  message_count: number;
+  updated_at: string;
+  is_unread: boolean;
 }
 
 export interface AIChoice {

@@ -6,6 +6,7 @@ import {
   ChatMessage,
   PredictedGitTree,
   GitCommit,
+  Conversation,
 } from '../types';
 
 // Detailed mock data for "Add User Authentication" scenario
@@ -536,277 +537,6 @@ pub async fn logout() -> Result<(), String> {
   },
 };
 
-export const mockChatMessages: ChatMessage[] = [
-  {
-    id: 'msg-1',
-    task_id: '',
-    role: 'user',
-    content:
-      "I want to add user authentication to my e-commerce platform. Users should be able to register with email/password and login. Use JWT tokens for session management.",
-    timestamp: '2026-01-14T10:00:00Z',
-  },
-  {
-    id: 'msg-2',
-    task_id: '',
-    role: 'assistant',
-    content: `I've created a plan for adding user authentication. Here's what I'll implement:
-
-**Frontend Tasks:**
-1. Create login page component
-2. Create registration page component  
-3. Implement auth context and hooks for state management
-
-**Backend Tasks:**
-4. Create user authentication API endpoints (/auth/login, /auth/register)
-5. Implement JWT token generation and validation
-
-**Predicted Git Changes:**
-- Frontend: 7 new/modified files
-- Backend: 4 new/modified files
-
-Ready to proceed to Implementation Mode?`,
-    timestamp: '2026-01-14T10:01:00Z',
-  },
-  {
-    id: 'msg-3',
-    task_id: '',
-    role: 'user',
-    content: 'Yes, looks good. Let\'s proceed.',
-    timestamp: '2026-01-14T10:02:00Z',
-  },
-  {
-    id: 'msg-4',
-    task_id: 'task-1',
-    role: 'assistant',
-    content: `Starting Task 1: Create login page component...
-
-I've created \`src/components/auth/LoginPage.tsx\` with:
-- Email input field with validation
-- Password input field
-- Login button with loading state
-- Error message display
-- Link to registration page
-
-**Code Preview:**
-\`\`\`tsx
-const LoginPage: React.FC = () => {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  // ... implementation
-};
-\`\`\`
-
-Should I apply this change?`,
-    timestamp: '2026-01-14T10:05:00Z',
-  },
-  {
-    id: 'msg-5',
-    task_id: 'task-1',
-    role: 'user',
-    content: 'Approved.',
-    timestamp: '2026-01-14T10:06:00Z',
-  },
-  {
-    id: 'msg-6',
-    task_id: 'task-2',
-    role: 'assistant',
-    content: `Starting Task 2: Create registration page component...
-
-**Question:** What password requirements should I implement for registration?
-- A) Minimum 8 characters
-- B) Minimum 8 characters + 1 uppercase letter
-- C) Minimum 8 characters + 1 uppercase + 1 number + 1 special character
-- D) Custom requirements`,
-    timestamp: '2026-01-14T10:08:00Z',
-    choices: [
-      { id: 'a', text: 'A) Minimum 8 characters' },
-      { id: 'b', text: 'B) Minimum 8 characters + 1 uppercase letter' },
-      { id: 'c', text: 'C) Minimum 8 characters + 1 uppercase + 1 number + 1 special character' },
-      { id: 'd', text: 'D) Custom requirements' },
-    ],
-  },
-  {
-    id: 'msg-7',
-    task_id: 'task-2',
-    role: 'user',
-    content: 'B - Minimum 8 characters + 1 uppercase letter.',
-    timestamp: '2026-01-14T10:09:00Z',
-  },
-  {
-    id: 'msg-8',
-    task_id: 'task-2',
-    role: 'assistant',
-    content: `Got it! I've created \`src/components/auth/RegisterPage.tsx\` with:
-- Email and password inputs
-- Password confirmation field
-- Password requirements validation (8+ chars, 1+ uppercase)
-- Real-time validation feedback
-- Registration button
-- Link to login page
-
-**Code Preview:**
-\`\`\`tsx
-const validatePassword = (password: string) => {
-  return password.length >= 8 && /[A-Z]/.test(password);
-};
-\`\`\`
-
-Should I apply this change?`,
-    timestamp: '2026-01-14T10:10:00Z',
-  },
-  {
-    id: 'msg-9',
-    task_id: 'task-2',
-    role: 'user',
-    content: 'Approved.',
-    timestamp: '2026-01-14T10:11:00Z',
-  },
-  {
-    id: 'msg-10',
-    task_id: 'task-3',
-    role: 'assistant',
-    content: `Starting Task 3: Implement auth context and hooks...
-
-I'll create:
-- \`AuthContext.tsx\`: Context provider for auth state
-- \`useAuth.ts\`: Custom hook for accessing auth
-
-**Question:** How should token refresh be handled?
-- A) Auto-refresh 5 minutes before expiration
-- B) Refresh only on API error (401)
-- C) Manual refresh button
-- D) Custom refresh strategy`,
-    timestamp: '2026-01-14T10:13:00Z',
-    choices: [
-      { id: 'a', text: 'A) Auto-refresh 5 minutes before expiration' },
-      { id: 'b', text: 'B) Refresh only on API error (401)' },
-      { id: 'c', text: 'C) Manual refresh button' },
-      { id: 'd', text: 'D) Custom refresh strategy' },
-    ],
-  },
-  {
-    id: 'msg-11',
-    task_id: 'task-3',
-    role: 'user',
-    content: 'A - Auto-refresh 5 minutes before expiration.',
-    timestamp: '2026-01-14T10:14:00Z',
-  },
-  {
-    id: 'msg-12',
-    task_id: 'task-3',
-    role: 'assistant',
-    content: `I've implemented auth context with auto-refresh logic:
-- \`AuthContext\` provides login, logout, and token state
-- \`useAuth\` hook for component access
-- Auto-refresh 5 minutes before token expiration
-- Token stored in localStorage
-
-Should I apply this change?`,
-    timestamp: '2026-01-14T10:15:00Z',
-  },
-  {
-    id: 'msg-13',
-    task_id: 'task-3',
-    role: 'user',
-    content: 'Approved.',
-    timestamp: '2026-01-14T10:16:00Z',
-  },
-  {
-    id: 'msg-14',
-    task_id: 'task-4',
-    role: 'assistant',
-    content: `Starting Task 4: Create user authentication API endpoints...
-
-I'll create \`src-tauri/src/commands/auth.rs\` with:
-- \`register(email, password)\`: Creates new user
-- \`login(email, password)\`: Returns JWT token
-- \`logout()\`: Invalidates session
-
-**Code Preview:**
-\`\`\`rust
-#[tauri::command]
-async fn login(email: String, password: String) -> Result<AuthResponse, Error> {
-    // Validate credentials
-    // Generate JWT token
-    // Return token and user info
-}
-\`\`\`
-
-Should I apply this change?`,
-    timestamp: '2026-01-14T10:18:00Z',
-  },
-  {
-    id: 'msg-15',
-    task_id: 'task-4',
-    role: 'user',
-    content: 'Approved.',
-    timestamp: '2026-01-14T10:19:00Z',
-  },
-  {
-    id: 'msg-16',
-    task_id: 'task-5',
-    role: 'assistant',
-    content: `Starting Task 5: Implement JWT token generation and validation...
-
-**Question:** What should be the JWT token expiration time?
-- A) 1 hour
-- B) 24 hours
-- C) 7 days
-- D) 30 days`,
-    timestamp: '2026-01-14T10:21:00Z',
-    choices: [
-      { id: 'a', text: 'A) 1 hour' },
-      { id: 'b', text: 'B) 24 hours' },
-      { id: 'c', text: 'C) 7 days' },
-      { id: 'd', text: 'D) 30 days' },
-    ],
-  },
-  {
-    id: 'msg-17',
-    task_id: 'task-5',
-    role: 'user',
-    content: 'B - 24 hours.',
-    timestamp: '2026-01-14T10:22:00Z',
-  },
-  {
-    id: 'msg-18',
-    task_id: 'task-5',
-    role: 'assistant',
-    content: `Got it! I'll implement JWT with 24-hour expiration.
-
-**Question:** What JWT signing algorithm should I use?
-- A) HS256 (HMAC with SHA-256)
-- B) RS256 (RSA signature with SHA-256)
-- C) ES256 (ECDSA signature with SHA-256)`,
-    timestamp: '2026-01-14T10:23:00Z',
-    choices: [
-      { id: 'a', text: 'A) HS256 (HMAC with SHA-256)' },
-      { id: 'b', text: 'B) RS256 (RSA signature with SHA-256)' },
-      { id: 'c', text: 'C) ES256 (ECDSA signature with SHA-256)' },
-    ],
-  },
-  {
-    id: 'msg-19',
-    task_id: 'task-5',
-    role: 'user',
-    content: 'HS256 is fine for now.',
-    timestamp: '2026-01-14T10:24:00Z',
-  },
-  {
-    id: 'msg-20',
-    task_id: 'task-5',
-    role: 'assistant',
-    content: `I've implemented JWT utilities in \`src-tauri/src/jwt.rs\`:
-- Token generation with HS256 algorithm
-- Token validation and decoding
-- 24-hour expiration
-- Secret key from environment variable
-
-Should I apply this change?`,
-    timestamp: '2026-01-14T10:25:00Z',
-  },
-];
-
 export const getGitTree = (
   projectId: string
 ): PredictedGitTree | undefined => {
@@ -883,3 +613,158 @@ export const getProjectById = (
   }
   return undefined;
 };
+
+// Mock conversations data
+export const mockConversations: Conversation[] = [
+  {
+    id: 'conv-1',
+    title: 'Create login page component',
+    task_id: 'task-1',
+    project_id: 'proj-1',
+    last_message: 'Approved.',
+    message_count: 4,
+    updated_at: '2026-01-14T10:06:00Z',
+    is_unread: false,
+  },
+  {
+    id: 'conv-2',
+    title: 'Create registration page component',
+    task_id: 'task-2',
+    project_id: 'proj-1',
+    last_message: 'Should I apply this change?',
+    message_count: 3,
+    updated_at: '2026-01-14T10:12:00Z',
+    is_unread: false,
+  },
+  {
+    id: 'conv-3',
+    title: 'Implement auth context',
+    task_id: 'task-3',
+    project_id: 'proj-1',
+    last_message: 'Approved. This looks good.',
+    message_count: 3,
+    updated_at: '2026-01-14T10:20:00Z',
+    is_unread: false,
+  },
+  {
+    id: 'conv-4',
+    title: 'Create auth API endpoints',
+    task_id: 'task-4',
+    project_id: 'proj-2',
+    last_message: 'Starting backend implementation...',
+    message_count: 2,
+    updated_at: '2026-01-14T10:22:00Z',
+    is_unread: false,
+  },
+  {
+    id: 'conv-5',
+    title: 'Implement JWT token generation',
+    task_id: 'task-5',
+    project_id: 'proj-2',
+    last_message: 'Should I apply this change?',
+    message_count: 5,
+    updated_at: '2026-01-14T10:25:00Z',
+    is_unread: false,
+  },
+  {
+    id: 'conv-free-1',
+    title: 'Code review: Refactor user service',
+    task_id: null,
+    project_id: 'proj-1',
+    last_message: 'I think we should split it into smaller functions.',
+    message_count: 7,
+    updated_at: '2026-01-15T09:30:00Z',
+    is_unread: true,
+  },
+  {
+    id: 'conv-free-2',
+    title: 'Database optimization discussion',
+    task_id: null,
+    project_id: 'proj-2',
+    last_message: 'Let me check the query performance metrics first.',
+    message_count: 12,
+    updated_at: '2026-01-15T10:15:00Z',
+    is_unread: true,
+  },
+  {
+    id: 'conv-free-3',
+    title: 'Deployment strategy planning',
+    task_id: null,
+    project_id: null,
+    last_message: 'We should use blue-green deployment.',
+    message_count: 5,
+    updated_at: '2026-01-14T16:45:00Z',
+    is_unread: false,
+  },
+];
+
+// Mock messages with conversation_id
+export const mockChatMessages: ChatMessage[] = [
+  {
+    id: 'msg-0',
+    task_id: '',
+    conversation_id: 'conv-plan',
+    role: 'assistant',
+    content: `I've analyzed your request and created a plan:
+
+**Plan: Add User Authentication with JWT Tokens**
+
+**Frontend Tasks:**
+1. Create login page component
+2. Create registration page component  
+3. Implement auth context and hooks for state management
+
+**Backend Tasks:**
+4. Create user authentication API endpoints (/auth/login, /auth/register)
+5. Implement JWT token generation and validation
+
+**Predicted Git Changes:**
+- Frontend: 7 new/modified files
+- Backend: 4 new/modified files
+
+Ready to proceed to Implementation Mode?`,
+    timestamp: '2026-01-14T10:01:00Z',
+  },
+  {
+    id: 'msg-1',
+    task_id: '',
+    conversation_id: 'conv-plan',
+    role: 'user',
+    content: 'Yes, looks good. Let\'s proceed.',
+    timestamp: '2026-01-14T10:02:00Z',
+  },
+  {
+    id: 'msg-2',
+    task_id: 'task-1',
+    conversation_id: 'conv-1',
+    role: 'assistant',
+    content: `Starting Task 1: Create login page component...
+
+I've created \`src/components/auth/LoginPage.tsx\` with:
+- Email input field with validation
+- Password input field
+- Login button with loading state
+- Error message display
+- Link to registration page
+
+**Code Preview:**
+\`\`\`tsx
+const LoginPage: React.FC = () => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  // ... implementation
+};
+\`\`\`
+
+Should I apply this change?`,
+    timestamp: '2026-01-14T10:05:00Z',
+  },
+  {
+    id: 'msg-3',
+    task_id: 'task-1',
+    conversation_id: 'conv-1',
+    role: 'user',
+    content: 'Approved.',
+    timestamp: '2026-01-14T10:06:00Z',
+  },
+];
