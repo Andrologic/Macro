@@ -136,6 +136,20 @@ export interface EditorState {
 
 export type CommitStatus = 'done' | 'planned' | 'in-progress';
 
+export type AIProviderStatus = 'online' | 'offline' | 'degraded';
+
+export interface AIProvider {
+  id: string;
+  name: string;
+  status: AIProviderStatus;
+}
+
+export interface AIModel {
+  id: string;
+  name: string;
+  provider_id: string;
+}
+
 export interface GitCommit {
   id: string;
   hash: string;

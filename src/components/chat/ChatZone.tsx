@@ -1,20 +1,39 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
+import { useTaskStore } from '../../stores/useTaskStore';
+import { useEditorStore } from '../../stores/useEditorStore';
+import { useAIStore } from '../../stores/useAIStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
+import { UnifiedTaskList } from '../tasks/UnifiedTaskList';
+import { Skeleton } from '../shared/Skeleton';
 
 export const ChatZone: React.FC = () => {
-  const { currentPlan } = useAppStore();
+  const { currentPlan, mode, selectedTaskId, setSelectedTask } = useAppStore();
   const {
     conversations,
     selectedConversationId,
     selectConversation,
     createConversation,
+    addMessage,
     getConversationMessages,
+    isLoading,
   } = useChatStore();
+  const { tasks } = useTaskStore();
+  const { openDiffViewer } = useEditorStore();
+  const {
+    providers,
+    models,
+    selectedProviderId,
+    selectedModelId,
+    cycleProvider,
+    cycleModel,
+  } = useAIStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [tasksOpen, setTasksOpen] = useState(true);
+  const [inputValue, setInputValue] = useState('');
 
   // Filter messages by selected conversation
   const currentMessages = selectedConversationId
@@ -26,9 +45,66 @@ export const ChatZone: React.FC = () => {
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
 
+  const selectedTask = selectedTaskId
+    ? tasks.find((task) => task.id === selectedTaskId)
+    : null;
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentMessages]);
+
+  const ensureConversation = () => {
+    if (selectedConversationId) return selectedConversationId;
+    const conversation = createConversation('New Conversation', selectedTaskId, null);
+    return conversation.id;
+  };
+
+  const handleSend = () => {
+    if (!inputValue.trim()) return;
+    const conversationId = ensureConversation();
+    addMessage({
+      id: `msg-${Date.now()}`,
+      task_id: selectedTaskId ?? '',
+      conversation_id: conversationId,
+      role: 'user',
+      content: inputValue,
+      timestamp: new Date().toISOString(),
+    });
+    setInputValue('');
+
+    setTimeout(() => {
+      addMessage({
+        id: `msg-${Date.now()}-ai`,
+        task_id: selectedTaskId ?? '',
+        conversation_id: conversationId,
+        role: 'assistant',
+        content:
+          mode === 'Architect'
+            ? 'Plan draft generated. Review the tasks above and confirm.'
+            : 'Task analysis complete. Ready to generate the diff.',
+        timestamp: new Date().toISOString(),
+      });
+    }, 400);
+  };
+
+  const handleGeneratePlan = () => {
+    const conversationId = ensureConversation();
+    addMessage({
+      id: `msg-${Date.now()}-plan`,
+      task_id: '',
+      conversation_id: conversationId,
+      role: 'assistant',
+      content:
+        'Here is the proposed plan (mock). You can validate it or refine the tasks above.',
+      timestamp: new Date().toISOString(),
+    });
+  };
+
+  const handleReviewDiff = () => {
+    if (selectedTask?.code_diff) {
+      openDiffViewer(selectedTask.code_diff);
+    }
+  };
 
   if (!currentPlan) {
     return (
@@ -67,7 +143,13 @@ export const ChatZone: React.FC = () => {
 
           {/* Conversation List */}
           <div className="flex-1 overflow-y-auto">
-            {conversations.length === 0 ? (
+            {isLoading ? (
+              <div className="p-3 space-y-2">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : conversations.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full px-6 text-center">
                 <Icon name="message-square" size={32} className="text-zinc-600 mb-3" />
                 <p className="text-sm text-zinc-500">No conversations yet</p>
@@ -200,6 +282,34 @@ export const ChatZone: React.FC = () => {
           )}
         </header>
 
+        {/* Unified Tasks */}
+        <section className="border-b border-zinc-800/50 bg-zinc-950">
+          <div className="h-11 flex items-center justify-between px-4">
+            <div className="flex items-center gap-2">
+              <Icon name="list" size={14} className="text-indigo-500" />
+              <span className="text-xs font-medium text-zinc-200">
+                Unified Tasks
+              </span>
+            </div>
+            <button
+              onClick={() => setTasksOpen((prev) => !prev)}
+              className="p-1.5 rounded-lg hover:bg-zinc-900 transition-colors"
+            >
+              <Icon
+                name={tasksOpen ? 'chevron-down' : 'chevron-right'}
+                size={14}
+                className="text-zinc-500"
+              />
+            </button>
+          </div>
+
+          {tasksOpen && (
+            <div className="max-h-64 overflow-y-auto px-4 pb-4">
+              <UnifiedTaskList />
+            </div>
+          )}
+        </section>
+
         {/* Conversation Content */}
         <div className="flex-1 overflow-y-auto px-12 py-8">
           {selectedConversationId && currentMessages.length > 0 ? (
@@ -290,20 +400,50 @@ export const ChatZone: React.FC = () => {
         {/* Input Area */}
         <footer className="border-t border-zinc-800/50 bg-zinc-900/30 p-3">
           <div className="w-full max-w-3xl mx-auto space-y-3">
+            {/* Mode Context */}
+            <div className="flex items-center justify-between text-xs text-zinc-500">
+              <div className="flex items-center gap-2">
+                <Icon name={mode === 'Architect' ? 'sparkles' : 'tool'} size={12} />
+                <span>{mode === 'Architect' ? 'Architect Mode' : 'Implementation Mode'}</span>
+              </div>
+              {selectedTask && (
+                <div className="flex items-center gap-2">
+                  <Icon name="check-square" size={12} className="text-indigo-400" />
+                  <span className="truncate max-w-[220px]">{selectedTask.title}</span>
+                  <button
+                    onClick={() => setSelectedTask(null)}
+                    className="text-zinc-600 hover:text-zinc-300"
+                  >
+                    clear
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Control Buttons Row */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 {/* AI Mode/Skill Selector */}
-                <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors">
+                <button
+                  onClick={cycleProvider}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors"
+                >
                   <Icon name="zap" size={12} className="text-indigo-500" />
-                  <span className="text-xs text-zinc-300">Default</span>
+                  <span className="text-xs text-zinc-300">
+                    {providers.find((p) => p.id === selectedProviderId)?.name ?? 'Provider'}
+                  </span>
                   <Icon name="chevron-down" size={10} className="text-zinc-500" />
                 </button>
 
                 {/* Model Selector */}
-                <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors">
+                <button
+                  onClick={cycleModel}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors"
+                >
                   <Icon name="tool" size={12} className="text-zinc-500" />
-                  <span className="text-xs text-zinc-300">GPT-4</span>
+                  <span className="text-xs text-zinc-300">
+                    {models.find((m) => m.id === selectedModelId)?.name ?? 'Model'}
+                  </span>
                   <Icon name="chevron-down" size={10} className="text-zinc-500" />
                 </button>
               </div>
@@ -316,16 +456,41 @@ export const ChatZone: React.FC = () => {
               </button>
             </div>
 
+            {/* Architect / Implement Actions */}
+            <div className="flex items-center gap-2">
+              {mode === 'Architect' ? (
+                <button
+                  onClick={handleGeneratePlan}
+                  className="px-3 py-1.5 rounded-lg bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 text-xs"
+                >
+                  Generate plan
+                </button>
+              ) : (
+                <button
+                  onClick={handleReviewDiff}
+                  disabled={!selectedTask?.code_diff}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 text-xs disabled:opacity-40"
+                >
+                  Review diff
+                </button>
+              )}
+            </div>
+
             {/* Input Field */}
             <div className="flex items-center gap-3 bg-zinc-900/80 border border-zinc-800 rounded-xl p-2">
               <input
                 type="text"
-                placeholder="Type a message..."
+                placeholder={
+                  mode === 'Architect'
+                    ? 'Describe the plan you want to build...'
+                    : 'Ask the AI to execute a task...'
+                }
                 className="flex-1 bg-transparent border-0 outline-none text-sm text-zinc-100 placeholder-zinc-500 h-9 px-2"
-                disabled
+                value={inputValue}
+                onChange={(event) => setInputValue(event.target.value)}
               />
               <button
-                disabled
+                onClick={handleSend}
                 className="rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white px-3 h-9 flex items-center"
               >
                 <Icon name="arrow-up" size={14} />

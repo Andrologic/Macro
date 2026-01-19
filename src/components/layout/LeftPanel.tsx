@@ -3,12 +3,16 @@ import { useAppStore } from '../../stores/useAppStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 
-export const LeftPanel: React.FC = () => {
+interface LeftPanelProps {
+  className?: string;
+}
+
+export const LeftPanel: React.FC<LeftPanelProps> = ({ className }) => {
   const { projectGroups, toggleProjectGroup, selectedGroupId, setSelectedGroup } =
     useAppStore();
 
   return (
-    <aside className="w-[280px] h-full bg-zinc-900 border-r border-zinc-800 flex flex-col">
+    <aside className={cn('w-[280px] h-full bg-zinc-900 border-r border-zinc-800 flex flex-col', className)}>
       {/* Header */}
       <div className="h-12 border-b border-zinc-800 flex items-center justify-between px-4">
         <h1 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
