@@ -1,29 +1,57 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Header } from './components/layout/Header';
+import { Footer } from './components/layout/Footer';
 import { LeftPanel } from './components/layout/LeftPanel';
 import { ChatZone } from './components/chat/ChatZone';
 import { RightPanel } from './components/layout/RightPanel';
+import { DiffModal } from './components/modals/DiffModal';
 import { useAppStore } from './stores/useAppStore';
+import { useChatStore } from './stores/useChatStore';
+import { useTaskStore } from './stores/useTaskStore';
+import { useAIStore } from './stores/useAIStore';
 
 const App: React.FC = () => {
-  useAppStore();
+  const [isLeftOpen, setIsLeftOpen] = useState(true);
+  const [isRightOpen, setIsRightOpen] = useState(true);
+  const initializeApp = useAppStore((state) => state.initialize);
+  const initializeChat = useChatStore((state) => state.initialize);
+  const initializeTasks = useTaskStore((state) => state.initialize);
+  const initializeAI = useAIStore((state) => state.initialize);
+
+  useEffect(() => {
+    void initializeApp();
+    void initializeChat();
+    void initializeTasks();
+    void initializeAI();
+  }, [initializeApp, initializeChat, initializeTasks, initializeAI]);
 
   return (
-    <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr] overflow-hidden">
+    <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr_32px] overflow-hidden">
       {/* Header */}
-      <Header />
+      <Header
+        isLeftOpen={isLeftOpen}
+        isRightOpen={isRightOpen}
+        onToggleLeft={() => setIsLeftOpen((prev) => !prev)}
+        onToggleRight={() => setIsRightOpen((prev) => !prev)}
+      />
 
       {/* Main Content Area */}
       <div className="flex overflow-hidden">
         {/* Left Panel - Projects */}
-        <LeftPanel />
+        {isLeftOpen && <LeftPanel className="hidden md:flex" />}
 
         {/* Center - Chat Zone */}
         <ChatZone />
 
         {/* Right Panel - Git Trees */}
-        <RightPanel />
+        {isRightOpen && <RightPanel className="hidden lg:flex" />}
       </div>
+
+      {/* Footer */}
+      <Footer />
+
+      {/* Modals */}
+      <DiffModal />
     </div>
   );
 };

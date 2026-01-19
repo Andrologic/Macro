@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { AppMode, Plan, ProjectGroup, Project } from '../types';
-import { mockAuthPlan, mockProjects } from '../mock-data/auth-scenario';
+import { services } from '../services';
+import { toServiceError } from '../services/contracts/errors';
 
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
 
@@ -11,6 +12,8 @@ interface AppStore {
   selectedGroupId: string | null;
   selectedTaskId: string | null;
   taskSortOption: TaskSortOption;
+  isLoading: boolean;
+  lastError: string | null;
   setMode: (mode: AppMode) => void;
   setCurrentPlan: (plan: Plan | null) => void;
   setProjectGroups: (groups: ProjectGroup[]) => void;
@@ -19,15 +22,18 @@ interface AppStore {
   setTaskSortOption: (option: TaskSortOption) => void;
   toggleProjectGroup: (groupId: string) => void;
   getProjectById: (id: string) => Project | undefined;
+  initialize: () => Promise<void>;
 }
 
 export const useAppStore = create<AppStore>((set, get) => ({
   mode: 'Implement',
-  currentPlan: mockAuthPlan,
-  projectGroups: mockProjects,
-  selectedGroupId: 'group-1',
+  currentPlan: null,
+  projectGroups: [],
+  selectedGroupId: null,
   selectedTaskId: null,
   taskSortOption: 'date',
+  isLoading: false,
+  lastError: null,
 
   setMode: (mode) => set({ mode }),
 
@@ -57,5 +63,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (project) return project;
     }
     return undefined;
+  },
+
+  initialize: async () => {
+    set({ isLoading: true, lastError: null });
+    try {
+      const { plan, projectGroups } = await services.getAppBootstrap();
+      set({
+        currentPlan: plan,
+        projectGroups,
+        selectedGroupId: projectGroups[0]?.id ?? null,
+        isLoading: false,
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
+    }
   },
 }));

@@ -1,19 +1,27 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
+import { useGitStore } from '../../stores/useGitStore';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/Tabs';
 import { GitTree } from '../git/GitTree';
 import { GitGraph } from '../git/GitGraph';
-import { TaskListView } from '../project/TaskListView';
 import { Icon } from '../ui/Icon';
-import { mockCommits } from '../../mock-data/auth-scenario';
 import { cn } from '../../utils/cn';
 
-type PanelView = 'tree' | 'graph' | 'tasks';
+type PanelView = 'tree' | 'graph';
 
-export const RightPanel: React.FC = () => {
+interface RightPanelProps {
+  className?: string;
+}
+
+export const RightPanel: React.FC<RightPanelProps> = ({ className }) => {
   const { currentPlan, projectGroups } = useAppStore();
-  const [panelView, setPanelView] = useState<PanelView>('tasks');
+  const [panelView, setPanelView] = useState<PanelView>('tree');
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(null);
+  const { commits, loadCommits } = useGitStore();
+
+  useEffect(() => {
+    void loadCommits();
+  }, [loadCommits]);
 
   if (!currentPlan) {
     return (
@@ -32,30 +40,21 @@ export const RightPanel: React.FC = () => {
     .filter((project) => currentPlan.project_ids.includes(project.id));
 
   return (
-    <aside className="w-[320px] h-full bg-zinc-900 border-l border-zinc-800 flex flex-col">
+    <aside className={cn('w-[320px] h-full bg-zinc-900 border-l border-zinc-800 flex flex-col', className)}>
       {/* Header */}
       <div className="h-12 border-b border-zinc-800 flex items-center justify-between px-4">
         <h1 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-          <Icon name={
-            panelView === 'tasks' ? 'list' :
-            panelView === 'tree' ? 'git-branch' : 'git-commit'
-          } size={16} className="text-indigo-500" />
-          {panelView === 'tasks' ? 'Tasks' : 'Repository'}
+          <Icon
+            name={panelView === 'tree' ? 'git-branch' : 'git-commit'}
+            size={16}
+            className="text-indigo-500"
+          />
+          Repository
         </h1>
       </div>
 
       {/* View Toggle */}
       <div className="h-10 border-b border-zinc-800 flex items-center px-4 gap-2">
-        <button
-          onClick={() => setPanelView('tasks')}
-          className={cn(
-            'flex-1 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200',
-            panelView === 'tasks' ? 'bg-indigo-500/10 text-indigo-500' : 'text-zinc-400 hover:text-zinc-100'
-          )}
-        >
-          <Icon name="list" size={14} className="mr-2" />
-          Tasks
-        </button>
         <button
           onClick={() => setPanelView('tree')}
           className={cn(
@@ -80,26 +79,6 @@ export const RightPanel: React.FC = () => {
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">
-        {panelView === 'tasks' && (
-          <Tabs defaultValue={activeProjects[0]?.id || ''} className="h-full flex flex-col">
-            <div className="px-4 pt-2">
-              <TabsList className="w-full">
-                {activeProjects.map((project) => (
-                  <TabsTrigger key={project.id} value={project.id} className="flex-1">
-                    {project.name}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </div>
-
-            {activeProjects.map((project) => (
-              <TabsContent key={project.id} value={project.id} className="flex-1 mt-0">
-                <TaskListView projectId={project.id} />
-              </TabsContent>
-            ))}
-          </Tabs>
-        )}
-
         {panelView === 'tree' && (
           <Tabs defaultValue={activeProjects[0]?.id || ''} className="h-full flex flex-col">
             <div className="px-4 pt-2">
@@ -144,7 +123,7 @@ export const RightPanel: React.FC = () => {
             {activeProjects.map((project) => (
               <TabsContent key={project.id} value={project.id} className="flex-1 mt-0">
                 <GitGraph
-                  commits={mockCommits}
+                  commits={commits}
                   selectedCommitId={selectedCommitId}
                   onCommitClick={(commit) => setSelectedCommitId(commit.id)}
                 />
@@ -156,25 +135,16 @@ export const RightPanel: React.FC = () => {
 
       {/* Footer */}
       <div className="h-12 border-t border-zinc-800 flex items-center justify-between px-4 bg-zinc-900">
-        {panelView === 'tasks' ? (
-          <div className="flex items-center gap-2">
-            <Icon name="list" size={14} className="text-zinc-500" />
-            <span className="text-xs text-zinc-500">
-              {currentPlan.tasks.filter((t) => t.status === 'Completed').length}/{currentPlan.tasks.length} completed
-            </span>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2">
-            <Icon name="git-branch" size={14} className="text-zinc-500" />
-            <span className="text-xs text-zinc-500">
-              {Object.values(currentPlan.predicted_git_trees).reduce(
-                (acc, tree) => acc + tree.modified_files_count,
-                0
-              )}{' '}
-              total changes
-            </span>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          <Icon name="git-branch" size={14} className="text-zinc-500" />
+          <span className="text-xs text-zinc-500">
+            {Object.values(currentPlan.predicted_git_trees).reduce(
+              (acc, tree) => acc + tree.modified_files_count,
+              0
+            )}{' '}
+            total changes
+          </span>
+        </div>
       </div>
     </aside>
   );

@@ -2,7 +2,19 @@ import { useAppStore } from '../../stores/useAppStore';
 import { Icon } from '../ui/Icon';
 import type { AppMode } from '../../types';
 
-export function Header() {
+interface HeaderProps {
+  isLeftOpen: boolean;
+  isRightOpen: boolean;
+  onToggleLeft: () => void;
+  onToggleRight: () => void;
+}
+
+export function Header({
+  isLeftOpen,
+  isRightOpen,
+  onToggleLeft,
+  onToggleRight,
+}: HeaderProps) {
   const mode = useAppStore((state) => state.mode);
   const setMode = useAppStore((state) => state.setMode);
 
@@ -41,8 +53,29 @@ export function Header() {
         </div>
       </div>
 
-      {/* Right: Empty for future features */}
-      <div className="w-48" />
+      {/* Right: Panel toggles */}
+      <div className="w-48 flex items-center justify-end gap-2">
+        <button
+          onClick={onToggleLeft}
+          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+        >
+          <Icon
+            name={isLeftOpen ? 'panel-left-close' : 'panel-left-open'}
+            size={16}
+            className="text-zinc-400"
+          />
+        </button>
+        <button
+          onClick={onToggleRight}
+          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+        >
+          <Icon
+            name={isRightOpen ? 'panel-right-close' : 'panel-right-open'}
+            size={16}
+            className="text-zinc-400"
+          />
+        </button>
+      </div>
     </header>
   );
 }

@@ -157,6 +157,34 @@
     text-wrap: balance;
   }
 
+  .bg-elevated {
+    @apply bg-zinc-900;
+  }
+
+  .text-text-primary {
+    @apply text-zinc-100;
+  }
+
+  .text-text-secondary {
+    @apply text-zinc-400;
+  }
+
+  .text-text-muted {
+    @apply text-zinc-500;
+  }
+
+  .text-accent-primary {
+    @apply text-indigo-500;
+  }
+
+  .bg-accent-primary {
+    @apply bg-indigo-500;
+  }
+
+  .bg-border {
+    @apply bg-zinc-800;
+  }
+
   .gradient-border {
     @apply relative;
   }
