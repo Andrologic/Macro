@@ -89,48 +89,25 @@ Les **infobulles** apparaissent au survol de la souris pour fournir des informat
 
 3. **Configurer les métadonnées** :
    - Nom du projet
+   - Type de projet (Frontend, Backend, Fullstack, Mobile, etc.)
    - Description
-   - Stack technique
-   - Dépendances (packages, frameworks)
+   - Extensions Macro
 
 4. **Localisation** : Choisir le dossier où le projet sera créé
 
 ### Étape 2 : Configuration Initiale
 
 Macro génère automatiquement :
-- Une **branche Macro dédiée** (ex: `.macro`) pour les plans et métadonnées
+- Une **branche `.macro` dédiée** pour les plans et métadonnées
 - La **structure de dossiers** dans cette branche (voir section Stockage et Collaboration)
 - La **structure de base** du projet selon le template choisi
-- Le **fichier de métadonnées du projet** dans la branche Macro
+- Le **fichier de métadonnées du projet** dans la branche `.macro`
 
-> **Note** : Le fonctionnement détaillé de la branche Macro (nom exact, organisation interne, synchronisation avec la branche principale) reste à définir. Cette documentation sera mise à jour dès que l'architecture finale sera décidée.
+> **Note** : Le développeur utilise Macro pour aller au bout du plan dans une session continue. Il n'y a pas de gestion de modifications externes au workflow Macro - l'application est l'environnement unique de développement.
 
-### Exemple de Métadonnées du Projet (dans la branche Macro)
+### Exemple de Métadonnées du Projet (dans la branche `.macro`)
 
-```markdown
-# Métadonnées du Projet
-
-## Informations Générales
-
-**Nom** : Mon Application Web
-**Description** : Application e-commerce avec React
-**Type** : Frontend
-
-## Stack Technique
-
-- **Framework** : React 18
-- **Langage** : TypeScript
-- **Build Tool** : Vite
-- **Styling** : TailwindCSS
-
-## Configuration
-
-- **Date de création** : 2026-01-15T10:00:00Z
-- **Version** : 1.0.0
-- **Branche principale** : main
-```
-
----
+TODO
 
 ## Mode Architecte
 
@@ -148,14 +125,13 @@ Le Mode Architecte est la phase de planification où vous définissez **QUOI** f
 
 3. **L'IA génère un plan structuré**
    - Liste des features à implémenter
-   - Structure de fichiers prédite
-   - Graphe du dépôt git avec les commits planifiés
+   - Plan des commits nécessaires
    - Dépendances entre les tâches
-   - Le plan est créé dans la branche Macro sous forme de fichiers Markdown
+   - Le plan est créé dans la branche `.macro` sous forme de fichiers Markdown
 
 ### Structure d'un Plan
 
-L'IA crée un fichier `plan.md` dans la branche Macro :
+L'IA crée un fichier `plan.md` dans la branche `.macro` :
 
 ```markdown
 # Plan : Système d'Authentification
@@ -224,6 +200,8 @@ Implémentation complète de l'authentification utilisateur avec inscription, co
    - Fusionner des tâches similaires
 
 4. **Valider le plan** quand il correspond à votre vision
+5. **Enregistrer le plan** dans la branche `.macro`
+6. **Passer au Mode Implémentation**
 
 ### Préparer une Tâche
 
@@ -263,6 +241,8 @@ Une fois le plan validé, passez en Mode Implémentation pour l'exécution.
    - Fournissez des réponses directes et précises
    - L'IA ajuste son implémentation en conséquence
 
+Il faut parfois plusieurs échanges pour finaliser une tâche. Les echanges doivent entre priorité sous forme de questions à choix pour faciliter les réponses rapides. On doit pouvoir proposer plusieurs options depuis l'interface avec des boutons.
+
 ### Exemple de Dialogue en Mode Implémentation
 
 ```
@@ -290,15 +270,17 @@ L'éditeur montre :
 - **Lignes supprimées** en rouge
 - **Lignes modifiées** en jaune
 
+Par défaut, l'IA sélectionne et présente les modifications les plus intéressantes à partir du diff. On peut voir tout en détail en cliquant sur un fichier.
+
 ### Valider ou Rejeter
 
 Pour chaque fichier ou pour l'ensemble :
 
-- **✓ Accepter** : Appliquer les modifications
+- **✓ Accepter** : Appliquer les modifications proposées par l'IA
 - **✗ Rejeter** : Annuler les modifications
 - **Modifier** : Faire de petits ajustements manuels
 
-⚠️ **Important** : Rejeter une tâche la marque comme "Échouée" dans le plan, mais vous pouvez la relancer ultérieurement.
+⚠️ **Important** : Rejeter une tâche la marque comme "Échouée" dans le plan (affichée en rouge). Le développeur interagit alors avec le chat pour comprendre et résoudre le problème, puis relance la tâche.
 
 ### Opérations Atomiques
 
@@ -311,16 +293,32 @@ Toutes les modifications d'une tâche sont appliquées **ensemble** :
 
 ## Organisation Multi-Projets
 
-Macro excelle dans la gestion de workspaces avec plusieurs projets interdépendants.
+Macro excelle dans la gestion de workspaces avec plusieurs projets interdépendants, inspirée du Git Flow.
+
+### Philosophie Git Flow Multi-Branches
+
+Chaque sous-projet du groupe possède son propre dépôt git avec sa propre branche principale.
+
+En **Mode Architecte**, l'IA agit comme un chef de projet qui :
+- Identifie les grandes features indépendantes
+- Crée des branches git parallèles dans les dépôts concernés pour chaque groupe de features
+- Planifie les tâches dans chaque branche selon leurs dépendances internes
+
+En **Mode Implémentation**, l'IA agit comme une équipe de développeurs :
+- Peut exécuter plusieurs tâches en parallèle sur des branches différentes
+- Respecte les dépendances au sein de chaque branche
+- Gère les merges successifs vers la branche principale
 
 ### Créer des Groupes de Projets
 
 Dans le panneau gauche :
 
-1. **Créer un groupe** : Cliquez sur "Nouveau Groupe"
+1. **Créer un groupe** : Glisser-déposer des projets dans un groupe
 2. **Ajouter des projets** au groupe :
    - Projets indépendants → groupes séparés (travail simultané)
    - Projets interdépendants → même groupe
+
+On peut séparer un projet en cliquant droit sur un projet et en sélectionnant "Séparer du groupe".
 
 ### Structure Multi-Projets
 
@@ -335,15 +333,96 @@ Groupe "Mobile"
 └─ Android App (Kotlin) ✓
 ```
 
+### Branches Multi-Projets
+
+Chaque sous-projet possède son propre dépôt git. Durant la planification, l'IA crée des branches dans les dépôts concernés.
+
+**Exemple : Feature multi-projets (Frontend + Backend)**
+
+La feature "authentication" nécessite des modifications sur Frontend et Backend. L'IA crée une branche `feature/authentication` dans les deux dépôts :
+
+```
+Dépôt Git Frontend                   Dépôt Git Backend
+main                                  develop
+├─ develop                          ├─ feature/authentication
+│   └─ feature/authentication       │   ├─ Commit A: login API endpoint
+│       ├─ Commit A: login UI        │   ├─ Commit B: register API endpoint
+│       ├─ Commit B: register UI     │   └─ Commit C: password reset API
+│       └─ Commit C: password UI     └─ (sera mergé dans develop, puis release)
+└─ (sera mergé dans develop, puis release)
+
+Production release :
+main                                   main
+├─ tagged: v1.0.0                    ├─ tagged: v1.0.0
+└─ release/1.0.0 (merge)             └─ release/1.0.0 (merge)
+```
+
+**Exemple : Feature mono-projet (Frontend uniquement)**
+
+La feature "ui-design-refresh" ne modifie que le Frontend. Aucune branche n'est créée dans les autres dépôts :
+
+```
+Dépôt Git Frontend                   Dépôt Git Backend
+develop                               develop
+├─ feature/ui-refresh                (aucune branche créée)
+│   ├─ Commit A: new header
+│   ├─ Commit B: new footer
+│   └─ Commit C: updated cards
+└─ (sera mergé dans develop)
+```
+
+### Philosophie Git Flow
+
+Macro adopte le modèle **Git Flow** pour la gestion des branches dans chaque dépôt git.
+
+**Branches principales :**
+
+- **`main`** : Branche de production, toujours dans un état "production-ready"
+- **`develop`** : Branche d'intégration pour la prochaine release
+
+**Branches de support :**
+
+- **`feature/*`** : Développement de nouvelles features (partent de `develop`, fusionnent dans `develop`)
+- **`release/*`** : Préparation d'une release (partent de `develop`, fusionnent dans `develop` ET `main`)
+- **`hotfix/*`** : Corrections urgentes en production (partent de `main`, fusionnent dans `develop` ET `main`)
+
+**Cycle de vie d'une feature :**
+
+```
+1. Feature créée depuis develop :
+   develop → feature/authentication
+
+2. Tâches exécutées sur la feature :
+   feature/authentication → commits A, B, C
+
+3. Feature terminée, merge dans develop :
+   feature/authentication → develop
+
+4. Release préparée quand develop est prêt :
+   develop → release/1.0.0
+
+5. Release terminée, merge dans develop ET main :
+   release/1.0.0 → develop (pour les bugfixes)
+   release/1.0.0 → main (tagged: v1.0.0)
+```
+
+**Avantages de Git Flow pour Macro :**
+
+- **Séparation claire** entre développement et production
+- **Releases planifiées** avec branches dédiées
+- **Hotfix possibles** sans interrompre le développement
+- **Collaboration d'équipe** facilitée avec des branches parallèles
+
 ### Tâches Multi-Projets
 
-Une tâche peut affecter plusieurs projets :
+Une tâche peut affecter un ou plusieurs sous-projets :
 
-- Affichée **une seule fois** dans la liste de tâches unifiée
-- Marquée avec tous les projets concernés
-- Visible dans chaque graphe git des projets affectés
+- **Tâche multi-projets** : Affichée une seule fois dans la liste de tâches unifiée, marquée avec tous les projets concernés
+- **Tâche mono-projet** : Affichée uniquement dans le contexte du sous-projet concerné
 
-**Exemple de tâche multi-projets** :
+Les tâches sont visibles dans chaque graphe git des dépôts affectés.
+
+**Exemple de tâche multi-projets (Frontend + Backend)** :
 
 ```
 ○ [Frontend + Backend] Implémenter l'API de produits
@@ -352,21 +431,75 @@ Une tâche peut affecter plusieurs projets :
   └─ Définir le contrat OpenAPI partagé
 ```
 
+**Exemple de tâche mono-projet (Frontend uniquement)** :
+
+```
+○ [Frontend] Rafraîchir le design des cartes produits
+  ├─ Créer le composant ProductCard
+  └─ Mettre à jour les styles Tailwind
+```
+
 ### Navigation Entre Projets
 
 1. **Cliquez sur un projet** dans le panneau gauche pour le sélectionner
-2. **Le panneau droit** affiche le graphe git de ce projet
-3. **La zone de chat** reste unifiée avec toutes les tâches
-4. **L'éditeur** affiche le code du projet sélectionné
+2. **Le panneau droit** affiche les détails contextuels selon le mode :
+- En **Mode Architecte** : Le plan spécifique au projet sélectionné avec le graphe des tâches
+- En **Mode Implémentation** : La liste des tâches du projet sélectionné
+3. **La zone de chat** est globale à tous les projets du groupe. On peut poser des questions sur n'importe quel sous-projet et l'IA répond en contexte. L'historique est partagé au niveau du groupe de projets.
 
 ### Commits Multi-Projets
 
 Les commits sont color-codés :
 - 🟢 **Vert** : Commits effectués
-- 🔵 **Bleu** : Commits planifiés (dans .macro-plans)
+- 🔵 **Bleu** : Commits planifiés (dans `.macro`)
 - 🟠 **Orange** : Commits en cours
 
-Le graphe git de chaque projet montre les commits spécifiques à ce projet.
+Le graphe git de chaque projet montre :
+- Les branches principales (`main`, `develop`)
+- Les branches de support (`feature/*`, `release/*`, `hotfix/*`)
+- Les commits spécifiques à chaque branche
+- Les points de merge vers `develop` puis `main`
+- Les tags de release sur `main`
+
+### Interaction avec la Branche `.macro`
+
+La branche `.macro` est **indépendante** du workflow Git Flow des branches de code. Elle sert uniquement à stocker :
+
+- **Les plans** de développement pour chaque branche de code (`main`, `develop`, `feature/*`, `release/*`, `hotfix/*`)
+- **Les tâches** planifiées et leur état (Planned, In Progress, Success, Failed)
+- **Les métadonnées** des projets Macro (type de projet, préférences, extensions)
+- **Les fichiers d'exécution** (`planned.md`, `executed.md`) pour chaque commit de code
+
+**Structure parallèle :**
+
+```
+Dépôt Git de Code                Branche .macro
+main (production)                    branches/
+├─ develop                        ├─ main/
+│   ├─ feature/auth                │   ├─ plan.md
+│   │   └─ (merge vers main)        │   └─ commits/
+├─ release/1.0.0                   │       └─ hotfix-critical-bug/
+│   ├─ (merge vers develop)            │           ├── planned.md
+│   └─ (merge vers main, tagged)        │           └── executed.md
+└─ hotfix/critical-bug               └─ develop/
+    ├─ (merge vers develop)            │       └── plan.md
+    └─ (merge vers main, tagged)        │       └── commits/
+                                            │           └── feature-auth/
+                                            │               ├── planned.md
+                                            │               └── executed.md
+```
+
+**Correspondance entre branches :**
+
+- Chaque branche de code (`feature/auth`, `release/1.0.0`, `hotfix/critical-bug`) a son dossier correspondant dans `.macro/branches/`
+- Chaque commit de code a son dossier avec `planned.md` et `executed.md` dans `.macro/branches/<nom_branche>/commits/`
+- Les ID de commits de code sont référencés dans les fichiers `executed.md` pour la traçabilité
+
+**Indépendance :**
+
+- La branche `.macro` ne contient jamais de code source
+- Les branches de code ne contiennent jamais de métadonnées Macro
+- Les deux sont complètement indépendantes et peuvent être manipulées séparément
 
 ---
 
@@ -381,23 +514,11 @@ Après l'exécution d'une tâche :
 3. **Consulter les tests générés** par l'IA
 4. **Valider la tâche** ou demander des révisions
 
-### Tests Automatiques
-
-Macro peut exécuter automatiquement :
-- Tests unitaires
-- Tests d'intégration
-- Linting (ESLint, Pylint, etc.)
-- Type checking (TypeScript, mypy, etc.)
-
-Si les tests échouent, l'IA peut corriger automatiquement.
-
 ### Suivi du Progrès
 
-Dans la zone de chat, voyez en temps réel :
-- Tâches en cours (🟠)
-- Tâches terminées (✓)
-- Tâches en attente (○)
-- Tâches échouées (✗)
+Dans le panneau droit :
+- **En mode Architecte** : Voir l'état de chaque tâche (Planned, In Progress, Success, Failed) dans le graphe des tâches
+- **En mode Implémentation** : Voir les tâches restantes et leur statut, avec des indicateurs visuels et en dessous toutes les tâches effectuées.
 
 ### Revenir en Arrière
 
@@ -420,16 +541,16 @@ Macro stocke localement dans SQLite :
 
 Ces données ne sont **jamais partagées**.
 
-### Stockage Git (Branche Macro Spéciale)
+### Stockage Git (Branche `.macro` Spéciale)
 
-Macro utilise une **branche dédiée sans code** pour stocker toutes ses métadonnées et données de planification. Cette branche ne contient que les données de Macro, pas le code source du projet.
+Macro utilise une **branche `.macro` dédiée sans code** pour stocker toutes ses métadonnées et données de planification. Cette branche ne contient que les données de Macro, pas le code source du projet.
 
-#### Structure de la Branche Macro
+#### Structure de la Branche `.macro`
 
-La branche utilise une structure de dossiers organisée en fichiers Markdown :
+La branche `.macro` utilise une structure de dossiers organisée en fichiers Markdown, parallèle aux branches git du projet :
 
 ```
-.macro-plans/
+.macro/
 ├── branches/
 │   ├── main/
 │   │   ├── plan.md                    # Plan global de la branche
@@ -536,17 +657,17 @@ La branche principale du projet contient uniquement :
 
 #### Flux de Collaboration
 
-1. **Création de plan** : Architecte crée un plan dans la branche Macro
-2. **Discussion** : L'équipe peut discuter du plan via PR sur la branche Macro
-3. **Exécution** : Développeurs exécutent les tâches via Macro
+1. **Création de plan** : Architecte crée un plan dans la branche `.macro`
+2. **Discussion** : L'équipe peut discuter du plan via PR sur la branche `.macro`
+3. **Exécution** : Développeurs exécutent les tâches via Macro (mode implémentation)
 4. **Mise à jour** : Les fichiers `executed.md` sont créés automatiquement
-5. **Code review** : Revue traditionnelle sur la branche principale du code
-6. **Merge** : Code merge sur la branche principale, branche Macro mise à jour
+5. **Code review** : Revue traditionnelle sur les branches de features du code
+6. **Merge** : Code merge vers la branche principale, branche `.macro` mise à jour
 
 #### Versioning des Plans
 
-Les plans sont entièrement versionnés via Git :
-- Chaque modification de plan est un commit sur la branche Macro
+Les plans sont entièrement versionnés via Git dans la branche `.macro` :
+- Chaque modification de plan est un commit sur la branche `.macro`
 - Chaque exécution de tâche met à jour les fichiers `executed.md`
 - Historique complet des décisions et réalisations
 - Possibilité de revenir à une version précédente du plan
@@ -554,9 +675,9 @@ Les plans sont entièrement versionnés via Git :
 
 #### Synchronisation Plan → Code
 
-La branche Macro et la branche principale sont synchronisées par leurs commits :
-- Chaque dossier de commit dans Macro correspond à un commit dans la branche principale
-- L'ID du commit principal est référencé dans `executed.md`
+La branche `.macro` et les branches de code sont synchronisées par leurs commits :
+- Chaque dossier de commit dans `.macro` correspond à un commit dans une branche de code
+- L'ID du commit de code est référencé dans `executed.md`
 - Permet de tracer exactement quelle implémentation correspond à quel plan
 
 ---
@@ -613,6 +734,15 @@ Voici un exemple complet de création d'une fonctionnalité dans Macro.
 
 Vous voulez ajouter une fonctionnalité de "panier d'achat" à votre application e-commerce avec un Frontend React et un Backend Node.js.
 
+**Structure des dépôts git avant la planification :**
+
+```
+Dépôt Git Frontend          Dépôt Git Backend
+main                         main
+```
+
+**Les deux dépôts sont synchronisés dans le groupe "E-Commerce" dans l'interface Macro.**
+
 ### Étape 1 : Mode Architecte - Création du Plan
 
 ```
@@ -622,7 +752,7 @@ Vous voulez ajouter une fonctionnalité de "panier d'achat" à votre application
            - Calcul du total
            - Persistance dans localStorage côté client
 
-🤖 IA : Voici le plan proposé. Je vais le créer dans la branche Macro sous branches/main/plan.md :
+🤖 IA : Voici le plan proposé. Je vais le créer dans la branche `.macro` sous branches/main/plan.md :
 
 # Plan : Panier d'Achat
 
@@ -689,26 +819,31 @@ Implémentation complète du système de panier avec gestion des articles et cal
 
 Voulez-vous que je modifie quelque chose ?
 
-👤 Vous : C'est parfait, garde ce plan tel quel. Prêt à passer en mode implémentation ?
+👤 Vous : C'est parfait, garde ce plan tel quel.
+
+🤖 IA : Excellent ! Je vais créer la branche `feature-cart` dans les dépôts concernés et enregistrer le plan dans la branche `.macro`.
+
+**Branches créées :**
+
+```
+Dépôt Git Frontend          Dépôt Git Backend
+main                         main
+└─ feature-cart            └─ feature-cart
+```
+
+**Plan enregistré dans la branche `.macro` :**
+- `.macro/branches/feature-cart/plan.md`
+- `.macro/branches/feature-cart/commits/feat-cart-store/planned.md`
+- `.macro/branches/feature-cart/commits/feat-cart-ui/planned.md`
+- ... (un dossier planned.md par commit prévu)
+
+Prêt à passer en mode implémentation ?
+```
+
+👤 Vous : Oui, prêt !
 ```
 
 ### Étape 2 : Préparation des Tâches
-
-```
-👤 Vous : Oui, commençons par le store Zustand.
-
-🤖 IA : Quelques questions avant de générer le store :
-1. Voulez-vous utiliser immer avec Zustand pour les updates immutables ?
-2. Le panier doit-il supporter des variants (couleur, taille) du même produit ?
-
-👤 Vous : 
-1. Oui, utilise immer
-2. Non, juste des quantités simples pour l'instant
-
-🤖 IA : Parfait, je vais créer le store avec immer et une structure simple.
-```
-
-### Étape 3 : Exécution de la Tâche
 
 ```
 👤 Vous : Oui, commençons par le store Zustand.
@@ -847,9 +982,15 @@ Voulez-vous appliquer ces modifications ?
 
 🤖 IA : ✅ Modifications appliquées avec succès !
 
-Fichier créé : stores/useCartStore.ts
-Commit créé sur la branche principale : feat(frontend): add cart store
-Fichier executed.md créé dans la branche Macro
+**Dépôt Git Frontend :**
+- Fichier créé : stores/useCartStore.ts
+- Commit créé sur la branche feature-cart : feat(frontend): add cart store
+- Commit ID : abc123def456...
+
+**Dépôt Git Backend :** (aucun changement)
+
+**Branche `.macro` :**
+- Fichier executed.md créé : .macro/branches/feature-cart/commits/feat-cart-store/executed.md
 
 Voici le contenu du fichier executed.md créé :
 
@@ -859,7 +1000,7 @@ Voici le contenu du fichier executed.md créé :
 2026-01-15T11:30:00Z
 
 ## Fichiers Créés
-- stores/useCartStore.ts
+- stores/useCartStore.ts (dans dépôt Frontend)
 
 ## Changements par rapport au plan
 - Aucun changement
@@ -868,10 +1009,19 @@ Voici le contenu du fichier executed.md créé :
 - useCartStore.test.ts : 8/8 tests passants
 
 ## Commit ID
-abc123def456... (référence au commit sur la branche principale)
+abc123def456... (référence au commit sur la branche feature-cart du dépôt Frontend)
 
 ## Statut
 Success
+
+**État des dépôts après cette tâche :**
+
+```
+Dépôt Git Frontend          Dépôt Git Backend
+main                         main
+└─ feature-cart            └─ feature-cart
+    └─ abc123: add store    (aucun commit)
+```
 
 Prêt pour la tâche suivante ?
 ```
@@ -891,8 +1041,6 @@ Le processus se répète pour chaque tâche, avec :
 
 ✅ Panier d'achat implémenté avec succès
 ✅ Tests unitaires générés et passants
-✅ Linting OK
-✅ Types vérifiés
 
 ## Résumé des Opérations
 
@@ -903,25 +1051,17 @@ Le processus se répète pour chaque tâche, avec :
 - [green] jkl012: feat(frontend): add cart page with checkout
 - [green] mno345: feat(backend): add order creation endpoint
 
-### Fichiers Exécution dans la Branche Macro
+### Fichiers Exécution dans la Branche `.macro`
 Chaque commit a son dossier avec :
 - `planned.md` : Ce qui était prévu avant l'exécution
 - `executed.md` : Ce qui a été réellement fait après l'exécution
 
 Le graphe git de la branche principale montre maintenant 5 commits verts (effectués).
-Le plan dans la branche Macro contient tous les fichiers d'exécution correspondants.
+Le plan dans la branche `.macro` contient tous les fichiers d'exécution correspondants.
 
 Voulez-vous tester la fonctionnalité maintenant ?
 
-👤 Vous : Oui, lançons les tests.
-
-🤖 IA : Exécution des tests...
-
-✅ useCartStore.test.ts : 8/8 tests passants
-✅ Cart.test.tsx : 12/12 tests passants
-✅ API tests : 5/5 tests passants
-
-Tous les tests sont OK ! La fonctionnalité est prête à être déployée.
+👤 Vous : Oui, testons-la.
 ```
 
 ---
@@ -937,16 +1077,9 @@ Le workflow Macro transforme la manière de développer en :
 
 En suivant ce workflow, vous maintenez un code de haute qualité tout en bénéficiant de la puissance de l'IA pour la génération et l'implémentation.
 
-### À Propos de la Branche Macro
+### À Propos de la Branche `.macro`
 
-> **Note Importante** : Le fonctionnement détaillé de la branche Macro (nom exact, organisation interne, synchronisation avec la branche principale) reste à définir. Cette documentation sera mise à jour dès que l'architecture finale sera décidée.
-
-Les éléments suivants sont actuellement en cours de définition :
-- Nom exact de la branche Macro (`.macro`, `.macro-plans`, ou autre)
-- Structure précise des dossiers et fichiers
-- Mécanisme de synchronisation entre la branche Macro et la branche principale
-- Format exact des fichiers de métadonnées
-- Stratégie de gestion des conflits lors des merges
+> **Note Importante** : La branche `.macro` contient toutes les métadonnées de Macro, indépendamment du code source. Son organisation interne est parallèle aux branches git du projet (main, feature/*, etc.).
 
 ---
 
