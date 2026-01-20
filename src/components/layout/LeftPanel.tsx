@@ -5,14 +5,18 @@ import { cn } from '../../utils/cn';
 
 interface LeftPanelProps {
   className?: string;
+  width?: number;
 }
 
-export const LeftPanel: React.FC<LeftPanelProps> = ({ className }) => {
+export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
   const { projectGroups, toggleProjectGroup, selectedGroupId, setSelectedGroup } =
     useAppStore();
 
   return (
-    <aside className={cn('w-[280px] h-full bg-zinc-900 border-r border-zinc-800 flex flex-col', className)}>
+    <aside
+      className={cn('h-full bg-zinc-900 border-r border-zinc-800 flex flex-col', className)}
+      style={{ width: width ? `${width}px` : '280px' }}
+    >
       {/* Header */}
       <div className="h-12 border-b border-zinc-800 flex items-center justify-between px-4">
         <h1 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
