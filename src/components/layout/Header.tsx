@@ -1,4 +1,5 @@
 import { useAppStore } from '../../stores/useAppStore';
+import { useAuthStore } from '../../stores/useAuthStore';
 import { Icon } from '../ui/Icon';
 import type { AppMode } from '../../types';
 
@@ -17,6 +18,9 @@ export function Header({
 }: HeaderProps) {
   const mode = useAppStore((state) => state.mode);
   const setMode = useAppStore((state) => state.setMode);
+  const openSettings = useAppStore((state) => state.openSettings);
+  const openAccount = useAppStore((state) => state.openAccount);
+  const { user } = useAuthStore((state) => state);
 
   const modes: { value: AppMode; label: string }[] = [
     { value: 'Architect', label: 'Architect' },
@@ -53,8 +57,9 @@ export function Header({
         </div>
       </div>
 
-      {/* Right: Panel toggles */}
+      {/* Right: Panel toggles, settings, and account */}
       <div className="w-48 flex items-center justify-end gap-2">
+        {/* Panel toggles */}
         <button
           onClick={onToggleLeft}
           className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
@@ -74,6 +79,27 @@ export function Header({
             size={16}
             className="text-zinc-400"
           />
+        </button>
+
+        {/* Divider */}
+        <div className="w-px h-6 bg-zinc-800 mx-1" />
+
+        {/* Settings button */}
+        <button
+          onClick={openSettings}
+          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+          title="Settings"
+        >
+          <Icon name="settings" size={16} className="text-zinc-400" />
+        </button>
+
+        {/* Account button */}
+        <button
+          onClick={openAccount}
+          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+          title="Account"
+        >
+          <Icon name="user" size={16} className="text-zinc-400" />
         </button>
       </div>
     </header>

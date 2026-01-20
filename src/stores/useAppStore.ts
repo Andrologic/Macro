@@ -14,6 +14,8 @@ interface AppStore {
   taskSortOption: TaskSortOption;
   isLoading: boolean;
   lastError: string | null;
+  settingsOpen: boolean;
+  accountOpen: boolean;
   setMode: (mode: AppMode) => void;
   setCurrentPlan: (plan: Plan | null) => void;
   setProjectGroups: (groups: ProjectGroup[]) => void;
@@ -22,6 +24,10 @@ interface AppStore {
   setTaskSortOption: (option: TaskSortOption) => void;
   toggleProjectGroup: (groupId: string) => void;
   getProjectById: (id: string) => Project | undefined;
+  openSettings: () => void;
+  closeSettings: () => void;
+  openAccount: () => void;
+  closeAccount: () => void;
   initialize: () => Promise<void>;
 }
 
@@ -34,6 +40,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   taskSortOption: 'date',
   isLoading: false,
   lastError: null,
+  settingsOpen: false,
+  accountOpen: false,
 
   setMode: (mode) => set({ mode }),
 
@@ -55,6 +63,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
           : group
       ),
     })),
+
+  openSettings: () => set({ settingsOpen: true }),
+
+  closeSettings: () => set({ settingsOpen: false }),
+
+  openAccount: () => set({ accountOpen: true }),
+
+  closeAccount: () => set({ accountOpen: false }),
 
   getProjectById: (id) => {
     const state = get();
