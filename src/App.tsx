@@ -5,10 +5,13 @@ import { LeftPanel } from './components/layout/LeftPanel';
 import { ChatZone } from './components/chat/ChatZone';
 import { RightPanel } from './components/layout/RightPanel';
 import { DiffModal } from './components/modals/DiffModal';
+import { SettingsModal } from './components/modals/SettingsModal';
+import { AccountModal } from './components/modals/AccountModal';
 import { useAppStore } from './stores/useAppStore';
 import { useChatStore } from './stores/useChatStore';
 import { useTaskStore } from './stores/useTaskStore';
 import { useAIStore } from './stores/useAIStore';
+import { useAuthStore } from './stores/useAuthStore';
 
 const App: React.FC = () => {
   const [isLeftOpen, setIsLeftOpen] = useState(true);
@@ -17,13 +20,15 @@ const App: React.FC = () => {
   const initializeChat = useChatStore((state) => state.initialize);
   const initializeTasks = useTaskStore((state) => state.initialize);
   const initializeAI = useAIStore((state) => state.initialize);
+  const checkSession = useAuthStore((state) => state.checkSession);
 
   useEffect(() => {
     void initializeApp();
     void initializeChat();
     void initializeTasks();
     void initializeAI();
-  }, [initializeApp, initializeChat, initializeTasks, initializeAI]);
+    void checkSession();
+  }, [initializeApp, initializeChat, initializeTasks, initializeAI, checkSession]);
 
   return (
     <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr_32px] overflow-hidden">
@@ -52,6 +57,8 @@ const App: React.FC = () => {
 
       {/* Modals */}
       <DiffModal />
+      <SettingsModal />
+      <AccountModal />
     </div>
   );
 };

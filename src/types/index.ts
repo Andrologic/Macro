@@ -7,6 +7,9 @@ export type MessageRole = 'user' | 'assistant';
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement';
+export type AuthStatus = 'authenticated' | 'unauthenticated' | 'loading';
+export type ThemeMode = 'light' | 'dark' | 'system';
+export type Language = 'en' | 'fr';
 
 export interface ApiContract {
   id: string;
@@ -158,4 +161,32 @@ export interface GitCommit {
   date: string;
   status: CommitStatus;
   task_id?: string;
+}
+
+export interface UserPreferences {
+  theme: ThemeMode;
+  language: Language;
+  notifications: boolean;
+  emailUpdates: boolean;
+}
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  avatar?: string;
+  preferences: UserPreferences;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Session {
+  user: User;
+  token: string;
+  expires_at: string;
+}
+
+export interface AuthCredentials {
+  email: string;
+  password: string;
 }

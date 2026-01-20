@@ -38,6 +38,8 @@ import {
   Shield,
   Wrench,
   Cpu,
+  User,
+  Download,
 } from 'lucide-react';
 
 export type IconName =
@@ -78,7 +80,9 @@ export type IconName =
   | 'zap'
   | 'shield'
   | 'tool'
-  | 'cpu';
+  | 'cpu'
+  | 'user'
+  | 'download';
 
 interface IconProps {
   name: IconName;
@@ -125,6 +129,8 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'shield': Shield,
   'tool': Wrench,
   'cpu': Cpu,
+  'user': User,
+  'download': Download,
 };
 
 export const Icon: React.FC<IconProps> = ({ name, size = 16, className }) => {
