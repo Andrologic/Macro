@@ -4,6 +4,7 @@ import { Footer } from './components/layout/Footer';
 import { LeftPanel } from './components/layout/LeftPanel';
 import { ChatZone } from './components/chat/ChatZone';
 import { RightPanel } from './components/layout/RightPanel';
+import { PanelResizer } from './components/layout/PanelResizer';
 import { DiffModal } from './components/modals/DiffModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { AccountModal } from './components/modals/AccountModal';
@@ -21,6 +22,10 @@ const App: React.FC = () => {
   const initializeTasks = useTaskStore((state) => state.initialize);
   const initializeAI = useAIStore((state) => state.initialize);
   const checkSession = useAuthStore((state) => state.checkSession);
+  const leftPanelWidth = useAppStore((state) => state.leftPanelWidth);
+  const rightPanelWidth = useAppStore((state) => state.rightPanelWidth);
+  const setLeftPanelWidth = useAppStore((state) => state.setLeftPanelWidth);
+  const setRightPanelWidth = useAppStore((state) => state.setRightPanelWidth);
 
   useEffect(() => {
     void initializeApp();
@@ -43,13 +48,31 @@ const App: React.FC = () => {
       {/* Main Content Area */}
       <div className="flex overflow-hidden">
         {/* Left Panel - Projects */}
-        {isLeftOpen && <LeftPanel className="hidden md:flex" />}
+        {isLeftOpen && (
+          <>
+            <LeftPanel className="hidden md:flex" width={leftPanelWidth} />
+            <PanelResizer
+              direction="horizontal"
+              onResize={(delta) => setLeftPanelWidth(leftPanelWidth + delta)}
+              className="hidden md:flex"
+            />
+          </>
+        )}
 
         {/* Center - Chat Zone */}
         <ChatZone />
 
         {/* Right Panel - Git Trees */}
-        {isRightOpen && <RightPanel className="hidden lg:flex" />}
+        {isRightOpen && (
+          <>
+            <PanelResizer
+              direction="horizontal"
+              onResize={(delta) => setRightPanelWidth(rightPanelWidth - delta)}
+              className="hidden lg:flex"
+            />
+            <RightPanel className="hidden lg:flex" width={rightPanelWidth} />
+          </>
+        )}
       </div>
 
       {/* Footer */}

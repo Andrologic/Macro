@@ -16,6 +16,8 @@ interface AppStore {
   lastError: string | null;
   settingsOpen: boolean;
   accountOpen: boolean;
+  leftPanelWidth: number;
+  rightPanelWidth: number;
   setMode: (mode: AppMode) => void;
   setCurrentPlan: (plan: Plan | null) => void;
   setProjectGroups: (groups: ProjectGroup[]) => void;
@@ -28,6 +30,8 @@ interface AppStore {
   closeSettings: () => void;
   openAccount: () => void;
   closeAccount: () => void;
+  setLeftPanelWidth: (width: number) => void;
+  setRightPanelWidth: (width: number) => void;
   initialize: () => Promise<void>;
 }
 
@@ -42,6 +46,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   lastError: null,
   settingsOpen: false,
   accountOpen: false,
+  leftPanelWidth: 280,
+  rightPanelWidth: 320,
 
   setMode: (mode) => set({ mode }),
 
@@ -71,6 +77,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   openAccount: () => set({ accountOpen: true }),
 
   closeAccount: () => set({ accountOpen: false }),
+
+  setLeftPanelWidth: (width) => set({ leftPanelWidth: Math.max(200, Math.min(600, width)) }),
+
+  setRightPanelWidth: (width) => set({ rightPanelWidth: Math.max(200, Math.min(600, width)) }),
 
   getProjectById: (id) => {
     const state = get();

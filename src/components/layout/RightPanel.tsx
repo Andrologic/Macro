@@ -11,9 +11,10 @@ type PanelView = 'tree' | 'graph';
 
 interface RightPanelProps {
   className?: string;
+  width?: number;
 }
 
-export const RightPanel: React.FC<RightPanelProps> = ({ className }) => {
+export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
   const { currentPlan, projectGroups } = useAppStore();
   const [panelView, setPanelView] = useState<PanelView>('tree');
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(null);
@@ -25,7 +26,10 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className }) => {
 
   if (!currentPlan) {
     return (
-      <aside className="w-[320px] h-full bg-zinc-900 border-l border-zinc-800 flex items-center justify-center">
+      <aside
+        className="h-full bg-zinc-900 border-l border-zinc-800 flex items-center justify-center"
+        style={{ width: width ? `${width}px` : '320px' }}
+      >
         <div className="text-center">
           <Icon name="git-branch" size={48} className="text-zinc-500 mx-auto mb-4" />
           <p className="text-zinc-500 text-sm">No plan selected</p>
@@ -40,7 +44,10 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className }) => {
     .filter((project) => currentPlan.project_ids.includes(project.id));
 
   return (
-    <aside className={cn('w-[320px] h-full bg-zinc-900 border-l border-zinc-800 flex flex-col', className)}>
+    <aside
+      className={cn('h-full bg-zinc-900 border-l border-zinc-800 flex flex-col', className)}
+      style={{ width: width ? `${width}px` : '320px' }}
+    >
       {/* Header */}
       <div className="h-12 border-b border-zinc-800 flex items-center justify-between px-4">
         <h1 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
