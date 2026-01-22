@@ -18,6 +18,10 @@ export const services = {
   listModels: provider.listModels,
   createProject: provider.createProject,
   importGitRepo: provider.importGitRepo,
+  getToolSettings: provider.getToolSettings,
+  updateToolSettings: provider.updateToolSettings,
+  getMCPServerSettings: provider.getMCPServerSettings,
+  updateMCPServerSettings: provider.updateMCPServerSettings,
 };
 
 export type Services = typeof services;

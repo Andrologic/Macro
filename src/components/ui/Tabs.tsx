@@ -97,12 +97,14 @@ interface TabsContentProps {
   value: string;
   children: React.ReactNode;
   className?: string;
+  fullHeight?: boolean;
 }
 
 export const TabsContent: React.FC<TabsContentProps> = ({
   value,
   children,
   className,
+  fullHeight = false,
 }) => {
   const context = useContext(TabsContext);
   if (!context) throw new Error('TabsContent must be used within Tabs');
@@ -111,6 +113,14 @@ export const TabsContent: React.FC<TabsContentProps> = ({
   if (activeTab !== value) return null;
 
   return (
-    <div className={cn('mt-4 animate-fade-in', className)}>{children}</div>
+    <div 
+      className={cn(
+        'animate-fade-in',
+        fullHeight ? 'h-full min-h-0 flex flex-col' : 'mt-4',
+        className
+      )}
+    >
+      {children}
+    </div>
   );
 };
