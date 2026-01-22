@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import { Icon } from '../ui/Icon';
+import { SearchBar } from '../ui/SearchBar';
 import { cn } from '../../utils/cn';
 
 interface LeftPanelProps {
@@ -11,6 +12,29 @@ interface LeftPanelProps {
 export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
   const { projectGroups, toggleProjectGroup, selectedGroupId, setSelectedGroup, openProjectModal } =
     useAppStore();
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Filter groups and projects based on search query
+  const filteredGroups = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return projectGroups;
+    }
+
+    const query = searchQuery.toLowerCase();
+    return projectGroups
+      .map((group) => ({
+        ...group,
+        projects: group.projects.filter(
+          (project) =>
+            project.name.toLowerCase().includes(query) ||
+            project.path.toLowerCase().includes(query) ||
+            group.name.toLowerCase().includes(query)
+        ),
+      }))
+      .filter((group) => group.projects.length > 0);
+  }, [projectGroups, searchQuery]);
+
+  const hasNoResults = searchQuery.trim() && filteredGroups.length === 0;
 
   return (
     <aside
@@ -28,9 +52,27 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
         </button>
       </div>
 
+      {/* Search Bar */}
+      <div className="p-3 border-b border-zinc-800">
+        <SearchBar
+          value={searchQuery}
+          onChange={setSearchQuery}
+          placeholder="Search projects..."
+        />
+      </div>
+
       {/* Project Groups */}
       <div className="flex-1 overflow-y-auto">
-        {projectGroups.map((group) => (
+        {hasNoResults ? (
+          <div className="flex flex-col items-center justify-center h-48 px-4 text-center">
+            <Icon name="search" size={32} className="text-zinc-600 mb-3" />
+            <p className="text-sm text-zinc-500">No projects found</p>
+            <p className="text-xs text-zinc-600 mt-1">
+              Try a different search term
+            </p>
+          </div>
+        ) : (
+          filteredGroups.map((group) => (
           <div
             key={group.id}
             className={cn(
@@ -109,7 +151,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
               </div>
             )}
           </div>
-        ))}
+        )))}
       </div>
 
       {/* Footer */}
@@ -117,7 +159,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
         <div className="flex items-center gap-2">
           <Icon name="code" size={14} className="text-zinc-500" />
           <span className="text-xs text-zinc-500">
-            {projectGroups.reduce((acc, g) => acc + g.projects.length, 0)}{' '}
+            {filteredGroups.reduce((acc, g) => acc + g.projects.length, 0)}{' '}
             projects
           </span>
         </div>
