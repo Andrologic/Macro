@@ -107,10 +107,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   closeProjectModal: () => set({ projectModalOpen: false }),
 
-  openToolsSettings: () => set({ toolsSettingsOpen: true }),
-
-  closeToolsSettings: () => set({ toolsSettingsOpen: false }),
-
   createProject: async (data: CreateProjectData) => {
     set({ isLoading: true, lastError: null });
     try {
