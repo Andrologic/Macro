@@ -1,7 +1,8 @@
 import { useAppStore } from '../../stores/useAppStore';
-import { useAuthStore } from '../../stores/useAuthStore';
 import { Icon } from '../ui/Icon';
 import { Logo } from '../ui/Logo';
+import { WindowControls } from './WindowControls';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { AppMode } from '../../types';
 
 interface HeaderProps {
@@ -21,7 +22,16 @@ export function Header({
   const setMode = useAppStore((state) => state.setMode);
   const openSettings = useAppStore((state) => state.openSettings);
   const openAccount = useAppStore((state) => state.openAccount);
-  const { user } = useAuthStore((state) => state);
+
+  // Check if Tauri API is available
+  const isTauriAvailable = typeof window !== 'undefined' && window.__TAURI__;
+  const tauriWindow = isTauriAvailable ? getCurrentWindow() : null;
+
+  const handleHeaderDoubleClick = () => {
+    if (tauriWindow) {
+      tauriWindow.toggleMaximize();
+    }
+  };
 
   const modes: { value: AppMode; label: string }[] = [
     { value: 'Architect', label: 'Architect' },
@@ -29,7 +39,11 @@ export function Header({
   ];
 
   return (
-    <header className="h-12 bg-zinc-900 border-b border-zinc-800 flex items-center px-4 shrink-0">
+    <header 
+      className="h-12 bg-zinc-900 border-b border-zinc-800 flex items-center px-4 shrink-0 select-none"
+      data-tauri-drag-region
+      onDoubleClick={handleHeaderDoubleClick}
+    >
       {/* Left: Logo and App Name */}
       <div className="flex items-center gap-2 w-48">
         <Logo size={20} />
@@ -43,6 +57,7 @@ export function Header({
             <button
               key={m.value}
               onClick={() => setMode(m.value)}
+              data-tauri-drag-region="false"
               className={`
                 px-4 py-1 rounded-md text-xs font-medium transition-all duration-200
                 ${
@@ -64,6 +79,7 @@ export function Header({
         <button
           onClick={onToggleLeft}
           className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+          data-tauri-drag-region="false"
         >
           <Icon
             name={isLeftOpen ? 'panel-left-close' : 'panel-left-open'}
@@ -74,6 +90,7 @@ export function Header({
         <button
           onClick={onToggleRight}
           className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+          data-tauri-drag-region="false"
         >
           <Icon
             name={isRightOpen ? 'panel-right-close' : 'panel-right-open'}
@@ -83,13 +100,14 @@ export function Header({
         </button>
 
         {/* Divider */}
-        <div className="w-px h-6 bg-zinc-800 mx-1" />
+        <div className="w-px h-5 bg-zinc-700 mx-1" />
 
         {/* Settings button */}
         <button
           onClick={openSettings}
           className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
           title="Settings"
+          data-tauri-drag-region="false"
         >
           <Icon name="settings" size={16} className="text-zinc-400" />
         </button>
@@ -99,9 +117,16 @@ export function Header({
           onClick={openAccount}
           className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
           title="Account"
+          data-tauri-drag-region="false"
         >
           <Icon name="user" size={16} className="text-zinc-400" />
         </button>
+
+        {/* Divider before window controls - only show in Tauri mode */}
+        {isTauriAvailable && <div className="w-px h-5 bg-zinc-700 mx-1" />}
+
+        {/* Window Controls */}
+        <WindowControls />
       </div>
     </header>
   );
