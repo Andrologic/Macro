@@ -1,6 +1,7 @@
 import { useAppStore } from '../../stores/useAppStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { Icon } from '../ui/Icon';
+import { Logo } from '../ui/Logo';
 import type { AppMode } from '../../types';
 
 interface HeaderProps {
@@ -31,7 +32,7 @@ export function Header({
     <header className="h-12 bg-zinc-900 border-b border-zinc-800 flex items-center px-4 shrink-0">
       {/* Left: Logo and App Name */}
       <div className="flex items-center gap-2 w-48">
-        <Icon name="zap" size={20} className="text-indigo-500" />
+        <Logo size={20} />
         <span className="text-sm font-semibold text-zinc-100">Macro</span>
       </div>
 
