@@ -16,6 +16,8 @@ export const services = {
   listCommits: provider.listCommits,
   listProviders: provider.listProviders,
   listModels: provider.listModels,
+  createProject: provider.createProject,
+  importGitRepo: provider.importGitRepo,
 };
 
 export type Services = typeof services;

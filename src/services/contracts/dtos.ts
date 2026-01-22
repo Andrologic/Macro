@@ -8,6 +8,7 @@ import type {
   Task,
   AIProvider,
   AIModel,
+  Project,
 } from '../../types';
 
 export interface AppBootstrapDto {
@@ -41,4 +42,8 @@ export interface ProvidersDto {
 
 export interface ModelsDto {
   models: AIModel[];
+}
+
+export interface ProjectDto {
+  project: Project;
 }

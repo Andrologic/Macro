@@ -8,6 +8,7 @@ import { PanelResizer } from './components/layout/PanelResizer';
 import { DiffModal } from './components/modals/DiffModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { AccountModal } from './components/modals/AccountModal';
+import { ProjectModal } from './components/modals/ProjectModal';
 import { useAppStore } from './stores/useAppStore';
 import { useChatStore } from './stores/useChatStore';
 import { useTaskStore } from './stores/useTaskStore';
@@ -82,6 +83,7 @@ const App: React.FC = () => {
       <DiffModal />
       <SettingsModal />
       <AccountModal />
+      <ProjectModal />
     </div>
   );
 };
