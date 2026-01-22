@@ -47,3 +47,11 @@ export interface ModelsDto {
 export interface ProjectDto {
   project: Project;
 }
+
+export interface ToolSettingsDto {
+  tools: Record<string, boolean>;
+}
+
+export interface MCPServerSettingsDto {
+  servers: Record<string, MCPServer>;
+}

@@ -9,11 +9,13 @@ import { DiffModal } from './components/modals/DiffModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { AccountModal } from './components/modals/AccountModal';
 import { ProjectModal } from './components/modals/ProjectModal';
+import { ToolsSettingsModal } from './components/modals/ToolsSettingsModal';
 import { useAppStore } from './stores/useAppStore';
 import { useChatStore } from './stores/useChatStore';
 import { useTaskStore } from './stores/useTaskStore';
 import { useAIStore } from './stores/useAIStore';
 import { useAuthStore } from './stores/useAuthStore';
+import { useToolsStore } from './stores/useToolsStore';
 
 const App: React.FC = () => {
   const [isLeftOpen, setIsLeftOpen] = useState(true);
@@ -22,6 +24,7 @@ const App: React.FC = () => {
   const initializeChat = useChatStore((state) => state.initialize);
   const initializeTasks = useTaskStore((state) => state.initialize);
   const initializeAI = useAIStore((state) => state.initialize);
+  const initializeTools = useToolsStore((state) => state.loadSettings);
   const checkSession = useAuthStore((state) => state.checkSession);
   const leftPanelWidth = useAppStore((state) => state.leftPanelWidth);
   const rightPanelWidth = useAppStore((state) => state.rightPanelWidth);
@@ -33,8 +36,9 @@ const App: React.FC = () => {
     void initializeChat();
     void initializeTasks();
     void initializeAI();
+    void initializeTools();
     void checkSession();
-  }, [initializeApp, initializeChat, initializeTasks, initializeAI, checkSession]);
+  }, [initializeApp, initializeChat, initializeTasks, initializeAI, initializeTools, checkSession]);
 
   return (
     <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr_32px] overflow-hidden">
@@ -84,6 +88,7 @@ const App: React.FC = () => {
       <SettingsModal />
       <AccountModal />
       <ProjectModal />
+      <ToolsSettingsModal />
     </div>
   );
 };

@@ -4,6 +4,7 @@ import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { useEditorStore } from '../../stores/useEditorStore';
 import { useAIStore } from '../../stores/useAIStore';
+import { useToolsStore } from '../../stores/useToolsStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { UnifiedTaskList } from '../tasks/UnifiedTaskList';
@@ -12,7 +13,7 @@ import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
 
 export const ChatZone: React.FC = () => {
-  const { currentPlan, mode, selectedTaskId, setSelectedTask } = useAppStore();
+  const { currentPlan, mode, selectedTaskId, setSelectedTask, openToolsSettings } = useAppStore();
   const {
     conversations,
     selectedConversationId,
@@ -30,10 +31,17 @@ export const ChatZone: React.FC = () => {
     selectedProviderId,
     selectedModelId,
   } = useAIStore();
+  const { internalTools, mcpServers } = useToolsStore();
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [tasksOpen, setTasksOpen] = useState(true);
   const [inputValue, setInputValue] = useState('');
+
+  // Count active tools and servers
+  const activeInternalCount = Object.values(internalTools).filter(t => (t.config as any)?.enabled !== false).length;
+  const activeMCPCount = mcpServers.filter(s => (s.config as any)?.enabled !== false).length;
+  const totalActiveTools = activeInternalCount + activeMCPCount;
 
   // Filter messages by selected conversation
   const currentMessages = selectedConversationId
@@ -431,10 +439,18 @@ export const ChatZone: React.FC = () => {
               </div>
 
               {/* Tools Selector */}
-              <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors">
+              <button 
+                onClick={openToolsSettings}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors"
+                title="Manage AI Tools & MCP Servers"
+              >
                 <Icon name="tool" size={12} className="text-zinc-500" />
                 <span className="text-xs text-zinc-300">Tools</span>
-                <span className="text-xs text-zinc-500">(3)</span>
+                {totalActiveTools > 0 && (
+                  <span className="text-xs text-indigo-400 font-medium">
+                    ({totalActiveTools})
+                  </span>
+                )}
               </button>
             </div>
 

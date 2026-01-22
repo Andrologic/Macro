@@ -17,6 +17,7 @@ interface AppStore {
   settingsOpen: boolean;
   accountOpen: boolean;
   projectModalOpen: boolean;
+  toolsSettingsOpen: boolean;
   leftPanelWidth: number;
   rightPanelWidth: number;
   setMode: (mode: AppMode) => void;
@@ -33,6 +34,8 @@ interface AppStore {
   closeAccount: () => void;
   openProjectModal: () => void;
   closeProjectModal: () => void;
+  openToolsSettings: () => void;
+  closeToolsSettings: () => void;
   createProject: (data: CreateProjectData) => Promise<void>;
   importProject: (data: ImportProjectData) => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
@@ -67,6 +70,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   settingsOpen: false,
   accountOpen: false,
   projectModalOpen: false,
+  toolsSettingsOpen: false,
   leftPanelWidth: 280,
   rightPanelWidth: 320,
 
@@ -91,9 +95,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       ),
     })),
 
-  openSettings: () => set({ settingsOpen: true }),
+  openToolsSettings: () => set({ toolsSettingsOpen: true }),
 
-  closeSettings: () => set({ settingsOpen: false }),
+  closeToolsSettings: () => set({ toolsSettingsOpen: false }),
 
   openAccount: () => set({ accountOpen: true }),
 
@@ -102,6 +106,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   openProjectModal: () => set({ projectModalOpen: true }),
 
   closeProjectModal: () => set({ projectModalOpen: false }),
+
+  openToolsSettings: () => set({ toolsSettingsOpen: true }),
+
+  closeToolsSettings: () => set({ toolsSettingsOpen: false }),
 
   createProject: async (data: CreateProjectData) => {
     set({ isLoading: true, lastError: null });

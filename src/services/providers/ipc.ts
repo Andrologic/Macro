@@ -47,3 +47,12 @@ export const importGitRepo = async (data: {
   groupId: string | null;
   path?: string;
 }): Promise<ProjectDto> => notReady();
+
+// Tools & MCP Settings
+export const getToolSettings = async (): Promise<ToolSettingsDto> => notReady();
+
+export const updateToolSettings = async (settings: ToolSettingsDto): Promise<void> => notReady();
+
+export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => notReady();
+
+export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): Promise<void> => notReady();

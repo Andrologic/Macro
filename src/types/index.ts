@@ -11,11 +11,48 @@ export type AuthStatus = 'authenticated' | 'unauthenticated' | 'loading';
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type Language = 'en' | 'fr';
 
+// Tools & MCP types
+export type ToolStatus = 'enabled' | 'disabled' | 'error' | 'loading';
+export type ToolCategory = 'git' | 'filesystem' | 'web' | 'database' | 'terminal' | 'ai' | 'productivity' | 'external';
+export type MCPServerStatus = 'online' | 'offline' | 'degraded' | 'unconfigured';
+export type MCPServerCategory = 'database' | 'productivity' | 'communication' | 'development' | 'ai' | 'other';
+
 export interface ApiContract {
   id: string;
   name: string;
   endpoint: string;
   method: string;
+}
+
+// Tools interfaces
+export interface Tool {
+  id: string;
+  name: string;
+  category: ToolCategory;
+  status: ToolStatus;
+  description: string;
+  icon: string;
+  config?: Record<string, unknown>;
+}
+
+export interface ToolSettings {
+  tools: Record<string, Tool>;
+}
+
+// MCP Server interfaces
+export interface MCPServer {
+  id: string;
+  name: string;
+  category: MCPServerCategory;
+  status: MCPServerStatus;
+  description: string;
+  icon: string;
+  website?: string;
+  config?: Record<string, unknown>;
+}
+
+export interface MCPServerSettings {
+  servers: Record<string, MCPServer>;
 }
 
 export interface ProjectDependency {

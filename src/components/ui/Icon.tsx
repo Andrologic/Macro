@@ -42,6 +42,7 @@ import {
   Cpu,
   User,
   Download,
+  RotateCcw,
 } from 'lucide-react';
 
 export type IconName =
@@ -86,7 +87,8 @@ export type IconName =
   | 'tool'
   | 'cpu'
   | 'user'
-  | 'download';
+  | 'download'
+  | 'rotate-ccw';
 
 interface IconProps {
   name: IconName;
@@ -137,6 +139,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'cpu': Cpu,
   'user': User,
   'download': Download,
+  'rotate-ccw': RotateCcw,
 };
 
 export const Icon: React.FC<IconProps> = ({ name, size = 16, className }) => {

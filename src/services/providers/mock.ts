@@ -7,6 +7,7 @@ import {
   getGitTree,
 } from '../../mock-data/auth-scenario';
 import { mockProviders, mockModels } from '../../mock-data/ai';
+import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
 import type {
   AppBootstrapDto,
   ConversationsDto,
@@ -17,6 +18,8 @@ import type {
   ProvidersDto,
   ModelsDto,
   ProjectDto,
+  ToolSettingsDto,
+  MCPServerSettingsDto,
 } from '../contracts/dtos';
 import type { Project } from '../../types';
 import { delay, maybeFail } from '../utils';
@@ -131,4 +134,88 @@ export const importGitRepo = async (data: {
   };
 
   return simulate({ project: newProject });
+};
+
+// Tools & MCP Settings
+export const getToolSettings = async (): Promise<any> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+  
+  // Return mock tool settings from localStorage or defaults
+  const savedTools = localStorage.getItem('macro_tool_settings');
+  let enabledTools: Record<string, boolean> = {};
+  
+  try {
+    if (savedTools && savedTools !== "undefined") {
+      enabledTools = JSON.parse(savedTools);
+    }
+  } catch (e) {
+    console.error("Failed to parse tool settings", e);
+  }
+
+  const tools: Record<string, any> = {};
+  Object.entries(mockInternalTools).forEach(([id, tool]) => {
+    tools[id] = {
+      ...tool,
+      status: enabledTools[id] !== false ? 'enabled' : 'disabled',
+      config: {
+        ...tool.config,
+        enabled: enabledTools[id] !== false,
+      }
+    };
+  });
+  
+  return simulate({ tools });
+};
+
+export const updateToolSettings = async (settings: ToolSettingsDto): Promise<void> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+  
+  localStorage.setItem('macro_tool_settings', JSON.stringify(settings.tools || {}));
+  return simulate(undefined);
+};
+
+export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+  
+  const savedServers = localStorage.getItem('macro_mcp_server_settings');
+  let enabledServers: Record<string, boolean> = {};
+  
+  try {
+    if (savedServers && savedServers !== "undefined") {
+      enabledServers = JSON.parse(savedServers);
+    }
+  } catch (e) {
+    console.error("Failed to parse MCP server settings", e);
+  }
+  
+  const servers = mockMCPServers.map((server) => ({
+    ...server,
+    status: enabledServers[server.id] ? 'online' : 'offline',
+    config: {
+      ...server.config,
+      enabled: enabledServers[server.id] ?? false,
+    },
+  }));
+  
+  return simulate({ servers });
+};
+
+export const updateMCPServerSettings = async (settings: any): Promise<void> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+  
+  const enabledMap: Record<string, boolean> = {};
+  Object.entries(settings.servers).forEach(([id, value]) => {
+    if (typeof value === 'boolean') {
+      enabledMap[id] = value;
+    } else {
+      enabledMap[id] = (value as any)?.config?.enabled ?? false;
+    }
+  });
+  
+  localStorage.setItem('macro_mcp_server_settings', JSON.stringify(enabledMap));
+  return simulate(undefined);
 };
