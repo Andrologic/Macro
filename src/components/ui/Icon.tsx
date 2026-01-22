@@ -3,6 +3,8 @@ import {
   ChevronRight,
   ChevronDown,
   ChevronLeft,
+  Minus,
+  Square,
   CheckSquare,
   List,
   ListTodo,
@@ -46,6 +48,8 @@ export type IconName =
   | 'chevron-right'
   | 'chevron-down'
   | 'chevron-left'
+  | 'minus'
+  | 'maximize'
   | 'check-square'
   | 'list-todo'
   | 'list'
@@ -94,6 +98,8 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'chevron-right': ChevronRight,
   'chevron-down': ChevronDown,
   'chevron-left': ChevronLeft,
+  'minus': Minus,
+  'maximize': Square,
   'check-square': CheckSquare,
   'list-todo': ListTodo,
   'list': List,
