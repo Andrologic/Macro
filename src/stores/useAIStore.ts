@@ -13,6 +13,8 @@ interface AIStore {
   initialize: () => Promise<void>;
   cycleProvider: () => void;
   cycleModel: () => void;
+  selectProvider: (providerId: string) => void;
+  selectModel: (modelId: string) => void;
 }
 
 export const useAIStore = create<AIStore>((set, get) => ({
@@ -62,5 +64,25 @@ export const useAIStore = create<AIStore>((set, get) => ({
     const index = models.findIndex((m) => m.id === selectedModelId);
     const next = models[(index + 1) % models.length];
     set({ selectedModelId: next.id });
+  },
+
+  selectProvider: (providerId: string) => {
+    const { providers } = get();
+    const provider = providers.find((p) => p.id === providerId);
+    if (!provider) return;
+    set({ selectedProviderId: providerId, selectedModelId: null });
+    services
+      .listModels(providerId)
+      .then(({ models }) =>
+        set({ models, selectedModelId: models[0]?.id ?? null })
+      )
+      .catch(() => undefined);
+  },
+
+  selectModel: (modelId: string) => {
+    const { models } = get();
+    const model = models.find((m) => m.id === modelId);
+    if (!model) return;
+    set({ selectedModelId: modelId });
   },
 }));

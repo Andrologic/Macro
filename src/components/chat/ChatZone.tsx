@@ -8,6 +8,8 @@ import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { UnifiedTaskList } from '../tasks/UnifiedTaskList';
 import { Skeleton } from '../shared/Skeleton';
+import { ProviderDropdown } from '../ai/ProviderDropdown';
+import { ModelDropdown } from '../ai/ModelDropdown';
 
 export const ChatZone: React.FC = () => {
   const { currentPlan, mode, selectedTaskId, setSelectedTask } = useAppStore();
@@ -27,8 +29,6 @@ export const ChatZone: React.FC = () => {
     models,
     selectedProviderId,
     selectedModelId,
-    cycleProvider,
-    cycleModel,
   } = useAIStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -423,29 +423,11 @@ export const ChatZone: React.FC = () => {
             {/* Control Buttons Row */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                {/* AI Mode/Skill Selector */}
-                <button
-                  onClick={cycleProvider}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors"
-                >
-                  <Icon name="zap" size={12} className="text-indigo-500" />
-                  <span className="text-xs text-zinc-300">
-                    {providers.find((p) => p.id === selectedProviderId)?.name ?? 'Provider'}
-                  </span>
-                  <Icon name="chevron-down" size={10} className="text-zinc-500" />
-                </button>
+                {/* Provider Selector */}
+                <ProviderDropdown />
 
                 {/* Model Selector */}
-                <button
-                  onClick={cycleModel}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors"
-                >
-                  <Icon name="tool" size={12} className="text-zinc-500" />
-                  <span className="text-xs text-zinc-300">
-                    {models.find((m) => m.id === selectedModelId)?.name ?? 'Model'}
-                  </span>
-                  <Icon name="chevron-down" size={10} className="text-zinc-500" />
-                </button>
+                <ModelDropdown />
               </div>
 
               {/* Tools Selector */}

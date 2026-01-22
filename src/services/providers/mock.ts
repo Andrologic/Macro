@@ -73,6 +73,8 @@ export const listModels = async (providerId?: string): Promise<ModelsDto> => {
     id: model.id,
     name: model.name,
     provider_id: model.providerId,
+    description: model.description,
+    capabilities: model.capabilities,
   })) });
 };
 

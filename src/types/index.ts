@@ -151,6 +151,8 @@ export interface AIModel {
   id: string;
   name: string;
   provider_id: string;
+  description?: string;
+  capabilities?: string[];
 }
 
 export interface GitCommit {
