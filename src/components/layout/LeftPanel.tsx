@@ -9,7 +9,7 @@ interface LeftPanelProps {
 }
 
 export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
-  const { projectGroups, toggleProjectGroup, selectedGroupId, setSelectedGroup } =
+  const { projectGroups, toggleProjectGroup, selectedGroupId, setSelectedGroup, openProjectModal } =
     useAppStore();
 
   return (
@@ -23,7 +23,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
           <Icon name="layers" size={16} className="text-indigo-500" />
           Projects
         </h1>
-        <button className="p-1 hover:bg-zinc-800 rounded-md transition-colors">
+        <button onClick={openProjectModal} className="p-1 hover:bg-zinc-800 rounded-md transition-colors">
           <Icon name="plus" size={16} className="text-zinc-500" />
         </button>
       </div>

@@ -7,6 +7,7 @@ import type {
   CommitsDto,
   ProvidersDto,
   ModelsDto,
+  ProjectDto,
 } from '../contracts/dtos';
 
 const notReady = () => {
@@ -31,3 +32,18 @@ export const listCommits = async (): Promise<CommitsDto> => notReady();
 export const listProviders = async (): Promise<ProvidersDto> => notReady();
 
 export const listModels = async (): Promise<ModelsDto> => notReady();
+
+export const createProject = async (data: {
+  name: string;
+  description: string;
+  groupId: string | null;
+  path?: string;
+}): Promise<ProjectDto> => notReady();
+
+export const importGitRepo = async (data: {
+  gitUrl: string;
+  projectName: string;
+  branch: string;
+  groupId: string | null;
+  path?: string;
+}): Promise<ProjectDto> => notReady();
