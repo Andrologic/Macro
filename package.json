@@ -11,7 +11,6 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@codemirror/basic-setup": "^0.20.0",
     "@codemirror/autocomplete": "^6.20.0",
     "@codemirror/commands": "^6.10.1",
     "@codemirror/lang-javascript": "^6.2.4",
@@ -24,6 +23,7 @@
     "@tauri-apps/plugin-opener": "^2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "codemirror": "^6.0.2",
     "jotai": "^2.16.2",
     "lucide-react": "^0.562.0",
     "react": "^18.3.1",
@@ -35,11 +35,11 @@
     "@tauri-apps/cli": "^2",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@vitejs/plugin-react": "^5.1.2",
     "autoprefixer": "^10.4.23",
     "postcss": "^8.5.6",
     "tailwindcss": "3.4.0",
-    "typescript": "~5.6.2",
-    "vite": "^6.0.3"
+    "typescript": "~5.9.3",
+    "vite": "^7.3.1"
   }
 }
