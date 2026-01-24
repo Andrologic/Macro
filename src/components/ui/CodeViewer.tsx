@@ -4,7 +4,7 @@ import { EditorState } from '@codemirror/state';
 import { javascript } from '@codemirror/lang-javascript';
 import { rust } from '@codemirror/lang-rust';
 import { oneDark } from '@codemirror/theme-one-dark';
-import { basicSetup } from '@codemirror/basic-setup';
+import { basicSetup } from 'codemirror';
 import { cn } from '../../utils/cn';
 
 interface CodeViewerProps {
