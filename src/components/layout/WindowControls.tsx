@@ -1,42 +1,27 @@
-import { useState } from 'react';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Icon } from '../ui/Icon';
+import { useTauriWindow } from '../../hooks/useTauriWindow';
 
 export function WindowControls() {
-  // Check if Tauri API is available
-  const isTauriAvailable = typeof window !== 'undefined' && window.__TAURI__;
-  const tauriWindow = isTauriAvailable ? getCurrentWindow() : null;
-  const [isMaximized, setIsMaximized] = useState(false);
-
-  const handleMinimize = () => {
-    if (tauriWindow) {
-      tauriWindow.minimize();
-    }
-  };
-
-  const handleMaximize = () => {
-    if (tauriWindow) {
-      tauriWindow.toggleMaximize();
-      setIsMaximized(!isMaximized);
-    }
-  };
-
-  const handleClose = () => {
-    if (tauriWindow) {
-      tauriWindow.close();
-    }
-  };
+  const { isAvailable, isMaximized, minimize, maximize, unmaximize, close } = useTauriWindow();
 
   // Don't render window controls in web mode
-  if (!isTauriAvailable) {
+  if (!isAvailable) {
     return null;
   }
+
+  const handleMaximize = () => {
+    if (isMaximized) {
+      unmaximize();
+    } else {
+      maximize();
+    }
+  };
 
   return (
     <div className="flex items-center gap-0.5">
       {/* Minimize Button */}
       <button
-        onClick={handleMinimize}
+        onClick={minimize}
         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-accent transition-colors group active:scale-[0.98]"
         title="Minimize"
         data-tauri-drag-region="false"
@@ -64,7 +49,7 @@ export function WindowControls() {
 
       {/* Close Button */}
       <button
-        onClick={handleClose}
+        onClick={close}
         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-accent transition-colors group active:scale-[0.98]"
         title="Close"
         data-tauri-drag-region="false"
