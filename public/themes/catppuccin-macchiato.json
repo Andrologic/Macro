@@ -1,0 +1,25 @@
+{
+  "name": "Catppuccin Macchiato",
+  "type": "dark",
+  "colors": {
+    "background": "#24273a",
+    "foreground": "#cad3f5",
+    "card": "#24273a",
+    "cardForeground": "#cad3f5",
+    "popover": "#24273a",
+    "popoverForeground": "#cad3f5",
+    "primary": "#8aadf4",
+    "primaryForeground": "#24273a",
+    "secondary": "#363a4f",
+    "secondaryForeground": "#cad3f5",
+    "muted": "#363a4f",
+    "mutedForeground": "#a5adcb",
+    "accent": "#91d7e3",
+    "accentForeground": "#24273a",
+    "destructive": "#ed8796",
+    "destructiveForeground": "#24273a",
+    "border": "#363a4f",
+    "input": "#363a4f",
+    "ring": "#8aadf4"
+  }
+}

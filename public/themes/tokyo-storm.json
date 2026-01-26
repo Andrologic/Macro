@@ -1,0 +1,25 @@
+{
+  "name": "Tokyo Storm",
+  "type": "dark",
+  "colors": {
+    "background": "#24283b",
+    "foreground": "#c0caf5",
+    "card": "#24283b",
+    "cardForeground": "#c0caf5",
+    "popover": "#24283b",
+    "popoverForeground": "#c0caf5",
+    "primary": "#7aa2f7",
+    "primaryForeground": "#24283b",
+    "secondary": "#2f354b",
+    "secondaryForeground": "#c0caf5",
+    "muted": "#2f354b",
+    "mutedForeground": "#565f89",
+    "accent": "#bb9af7",
+    "accentForeground": "#24283b",
+    "destructive": "#f7768e",
+    "destructiveForeground": "#c0caf5",
+    "border": "#2f354b",
+    "input": "#2f354b",
+    "ring": "#7aa2f7"
+  }
+}
