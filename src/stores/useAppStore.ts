@@ -95,6 +95,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       ),
     })),
 
+  // Settings modal
+  openSettings: () => set({ settingsOpen: true }),
+  closeSettings: () => set({ settingsOpen: false }),
+
   openToolsSettings: () => set({ toolsSettingsOpen: true }),
 
   closeToolsSettings: () => set({ toolsSettingsOpen: false }),
