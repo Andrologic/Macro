@@ -3,7 +3,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { TaskStatus } from '../../types';
 import { Icon } from '../ui/Icon';
-
+import { Select } from '../ui/Select';
 import { cn } from '../../utils/cn';
 
 type TaskSortOption = 'updated' | 'created' | 'status';
@@ -89,15 +89,16 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
       <div className="h-12 border-b border-border flex items-center justify-between px-4">
         <h2 className="text-sm font-semibold text-foreground">Tasks</h2>
         <div className="flex items-center gap-1">
-          <select
+          <Select
             value={sortOption}
             onChange={(e) => setSortOption(e.target.value as TaskSortOption)}
-            className="text-xs bg-muted border border-border rounded-md px-2 py-1 text-muted-foreground outline-none focus:border-primary"
+            fullWidth={false}
+            className="text-xs rounded-md px-2 py-1"
           >
             <option value="updated">Updated</option>
             <option value="created">Created</option>
             <option value="status">Status</option>
-          </select>
+          </Select>
         </div>
       </div>
 

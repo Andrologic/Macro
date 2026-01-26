@@ -3,6 +3,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
+import { Select } from '../ui/Select';
 import type { Language } from '../../types';
 import { ThemeManifest } from '../../types/theme';
 
@@ -66,11 +67,9 @@ export const SettingsModal: React.FC = () => {
             
             {/* Theme */}
             <div className="mb-4">
-              <label className="block text-sm text-muted-foreground mb-2">Theme</label>
-              <select
+              <Select
                 value={activeThemeId}
                 onChange={(e) => setTheme(e.target.value)}
-                className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
               >
                  {manifest?.themes.map((t) => (
                     <option key={t.id} value={t.id}>
@@ -78,20 +77,19 @@ export const SettingsModal: React.FC = () => {
                     </option>
                  ))}
                  {!manifest && <option value="macro-dark">Macro Dark</option>}
-              </select>
+              </Select>
             </div>
 
             {/* Language */}
             <div>
-              <label className="block text-sm text-muted-foreground mb-2">Language</label>
-              <select
+              <Select
+                label="Language"
                 value={language}
                 onChange={(e) => setLanguage(e.target.value as Language)}
-                className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
               >
                 <option value="en">English</option>
                 <option value="fr">Français</option>
-              </select>
+              </Select>
             </div>
           </section>
 
