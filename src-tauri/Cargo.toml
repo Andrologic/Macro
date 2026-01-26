@@ -23,3 +23,33 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Core
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
+
+# Git
+git2 = "0.18"
+
+# File System
+notify = "6"
+
+# Indexing (placeholder - will add tree-sitter later)
+# tree-sitter = "0.20"
+
+# AI
+reqwest = { version = "0.11", features = ["stream", "json"] }
+futures = "0.3"
+
+# Config
+config = "0.13"
+
+# Utils
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
