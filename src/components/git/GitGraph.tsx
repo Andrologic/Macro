@@ -11,7 +11,7 @@ interface GitGraphProps {
 
 const statusConfig: Record<CommitStatus, { icon: string; color: string; bgColor: string }> = {
   done: { icon: 'check', color: 'text-emerald-500', bgColor: 'bg-emerald-500' },
-  planned: { icon: 'shield', color: 'text-indigo-500', bgColor: 'bg-indigo-500' },
+  planned: { icon: 'shield', color: 'text-primary', bgColor: 'bg-primary' },
   'in-progress': { icon: 'loader', color: 'text-amber-500', bgColor: 'bg-amber-500' },
 };
 
@@ -22,8 +22,8 @@ export const GitGraph: React.FC<GitGraphProps> = ({
 }) => {
   if (commits.length === 0) {
     return (
-      <div className="flex-1 items-center justify-center text-zinc-500">
-        <Icon name="git-commit" size={48} className="text-zinc-500 mx-auto mb-4" />
+      <div className="flex-1 items-center justify-center text-muted-foreground">
+        <Icon name="git-commit" size={48} className="text-muted-foreground mx-auto mb-4" />
         <p className="text-sm">No commits in this branch</p>
       </div>
     );
@@ -53,7 +53,7 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                   y1={y + 20}
                   x2={x}
                   y2={y + 60}
-                  stroke="#71717a"
+                  stroke="rgb(var(--border) / 1)"
                   strokeWidth="2"
                 />
               )}
@@ -69,7 +69,7 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                 fill={config.bgColor}
                 onClick={() => onCommitClick?.(commit)}
                 style={{
-                  stroke: isSelected ? '#f4f4f5' : '#27272a',
+                  stroke: isSelected ? 'rgb(var(--foreground) / 1)' : 'rgb(var(--border) / 1)',
                   strokeWidth: isSelected ? '3' : '2',
                 }}
               />
@@ -79,7 +79,7 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                 x={x + 35}
                 y={y + 4}
                 textAnchor="start"
-                className="fill-zinc-300 pointer-events-none select-none"
+                className="fill-muted-foreground pointer-events-none select-none"
                 style={{
                   fontSize: '11px',
                   fontFamily: 'monospace',
@@ -96,7 +96,7 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                 textAnchor="start"
                 className={cn(
                   'fill-current pointer-events-none select-none',
-                  isSelected ? 'fill-zinc-100' : 'fill-zinc-400'
+                  isSelected ? 'fill-foreground' : 'fill-muted-foreground'
                 )}
                 style={{
                   fontSize: '12px',
@@ -116,7 +116,7 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                   width="65"
                   height="20"
                   rx="4"
-                  className="fill-zinc-800 pointer-events-none"
+                  className="fill-card pointer-events-none"
                 />
               )}
 
@@ -125,7 +125,7 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                   x={x + 67}
                   y={y + 34}
                   textAnchor="middle"
-                  className="fill-zinc-400 pointer-events-none select-none"
+                  className="fill-muted-foreground pointer-events-none select-none"
                   style={{ fontSize: '10px' }}
                 >
                   {commit.task_id.substring(0, 8)}
@@ -138,7 +138,7 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                   x={x + 35}
                   y={y + 55}
                   textAnchor="start"
-                  className="fill-zinc-500 pointer-events-none select-none"
+                  className="fill-muted-foreground pointer-events-none select-none"
                   style={{ fontSize: '9px' }}
                 >
                   {commit.author} • {new Date(commit.date).toLocaleDateString('fr-FR', {
@@ -153,20 +153,20 @@ export const GitGraph: React.FC<GitGraphProps> = ({
       </svg>
 
       {/* Legend */}
-      <div className="absolute bottom-4 left-4 bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-        <div className="text-xs font-medium text-zinc-200 mb-2">Légende</div>
+      <div className="absolute bottom-4 left-4 bg-card border border-border rounded-lg p-3">
+        <div className="text-xs font-medium text-foreground mb-2">Légende</div>
         <div className="flex gap-4">
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded-full bg-emerald-500" />
-            <span className="text-xs text-zinc-400">Fait</span>
+            <span className="text-xs text-muted-foreground">Fait</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-indigo-500" />
-            <span className="text-xs text-zinc-400">Planifié</span>
+            <div className="w-3 h-3 rounded-full bg-primary" />
+            <span className="text-xs text-muted-foreground">Planifié</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded-full bg-amber-500 animate-pulse-slow" />
-            <span className="text-xs text-zinc-400">En cours</span>
+            <span className="text-xs text-muted-foreground">En cours</span>
           </div>
         </div>
       </div>

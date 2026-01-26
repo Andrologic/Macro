@@ -37,19 +37,19 @@ export const ModelDropdown: React.FC = () => {
       {/* Trigger Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors"
+        className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-muted/80 border border-border hover:border-primary/50 transition-colors"
       >
-        <span className="text-xs text-zinc-300 truncate max-w-[120px]">
+        <span className="text-xs text-muted-foreground truncate max-w-[120px]">
           {selectedModel?.name ?? 'Model'}
         </span>
-        <Icon name="chevron-down" size={10} className="text-zinc-500" />
+        <Icon name="chevron-down" size={10} className="text-muted-foreground" />
       </button>
 
       {/* Dropdown */}
       {isOpen && (
         <div
           className={cn(
-            'absolute z-50 w-[320px] bottom-full mb-1 bg-zinc-800 border border-zinc-700',
+            'absolute z-50 w-[320px] bottom-full mb-1 bg-card border border-border',
             'rounded-lg shadow-xl max-h-96 overflow-y-auto',
             'flex flex-col'
           )}
@@ -62,8 +62,8 @@ export const ModelDropdown: React.FC = () => {
                 'w-full px-3 py-2 text-left text-sm',
                 'flex flex-col gap-1 transition-colors',
                 selectedModelId === model.id
-                  ? 'bg-indigo-500 text-white'
-                  : 'text-zinc-300 hover:bg-zinc-700'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent'
               )}
             >
               <span className="font-medium">{model.name}</span>
@@ -76,7 +76,7 @@ export const ModelDropdown: React.FC = () => {
           ))}
 
           {validModels.length === 0 && (
-            <div className="px-3 py-2 text-sm text-zinc-500">
+            <div className="px-3 py-2 text-sm text-muted-foreground">
               {selectedProviderId ? 'No models available for this provider' : 'Select a provider first'}
             </div>
           )}

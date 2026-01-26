@@ -1,0 +1,25 @@
+{
+  "name": "Macro Dark",
+  "type": "dark",
+  "colors": {
+    "background": "#09090b",
+    "foreground": "#fafafa",
+    "card": "#09090b",
+    "cardForeground": "#fafafa",
+    "popover": "#09090b",
+    "popoverForeground": "#fafafa",
+    "primary": "#6366f1",
+    "primaryForeground": "#fafafa",
+    "secondary": "#27272a",
+    "secondaryForeground": "#fafafa",
+    "muted": "#27272a",
+    "mutedForeground": "#a1a1aa",
+    "accent": "#27272a",
+    "accentForeground": "#fafafa",
+    "destructive": "#ef4444",
+    "destructiveForeground": "#fafafa",
+    "border": "#27272a",
+    "input": "#27272a",
+    "ring": "#6366f1"
+  }
+}

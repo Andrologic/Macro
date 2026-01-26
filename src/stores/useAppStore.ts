@@ -18,9 +18,11 @@ interface AppStore {
   accountOpen: boolean;
   projectModalOpen: boolean;
   toolsSettingsOpen: boolean;
+  activeThemeId: string;
   leftPanelWidth: number;
   rightPanelWidth: number;
   setMode: (mode: AppMode) => void;
+  setTheme: (themeId: string) => void;
   setCurrentPlan: (plan: Plan | null) => void;
   setProjectGroups: (groups: ProjectGroup[]) => void;
   setSelectedGroup: (groupId: string | null) => void;
@@ -71,10 +73,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   accountOpen: false,
   projectModalOpen: false,
   toolsSettingsOpen: false,
+  activeThemeId: localStorage.getItem('theme-id') || 'macro-dark',
   leftPanelWidth: 280,
   rightPanelWidth: 320,
 
   setMode: (mode) => set({ mode }),
+  setTheme: (themeId) => {
+    localStorage.setItem('theme-id', themeId);
+    set({ activeThemeId: themeId });
+  },
 
   setCurrentPlan: (plan) => set({ currentPlan: plan }),
 

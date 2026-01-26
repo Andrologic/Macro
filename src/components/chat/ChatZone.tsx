@@ -116,36 +116,36 @@ export const ChatZone: React.FC = () => {
 
   if (!currentPlan) {
     return (
-      <main className="flex-1 flex items-center justify-center bg-zinc-950">
+      <main className="flex-1 flex items-center justify-center bg-background">
         <div className="text-center space-y-3">
-          <div className="w-16 h-16 mx-auto rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-            <Icon name="layers" size={24} className="text-zinc-600" />
+          <div className="w-16 h-16 mx-auto rounded-xl bg-card border border-border flex items-center justify-center">
+            <Icon name="layers" size={24} className="text-muted-foreground" />
           </div>
-          <p className="text-zinc-600 text-sm">No plan selected</p>
+          <p className="text-muted-foreground text-sm">No plan selected</p>
         </div>
       </main>
     );
   }
 
   return (
-    <main className="flex-1 flex bg-zinc-950">
+    <main className="flex-1 flex bg-background">
       {/* Conversation Sidebar */}
       {sidebarOpen && (
-        <aside className="w-72 bg-zinc-900 border-r border-zinc-800 flex flex-col shrink-0">
+        <aside className="w-72 bg-card border-r border-border flex flex-col shrink-0">
           {/* Sidebar Header */}
-          <div className="h-14 border-b border-zinc-800 flex items-center justify-between px-3">
+          <div className="h-14 border-b border-border flex items-center justify-between px-3">
             <button
               onClick={() => createConversation('New Conversation', null, null)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-medium transition-colors"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-medium transition-colors"
             >
               <Icon name="plus" size={12} />
               New Chat
             </button>
             <button
               onClick={() => setSidebarOpen(false)}
-              className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+              className="p-1.5 rounded-lg hover:bg-accent transition-colors"
             >
-              <Icon name="chevron-left" size={16} className="text-zinc-500" />
+              <Icon name="chevron-left" size={16} className="text-muted-foreground" />
             </button>
           </div>
 
@@ -159,8 +159,8 @@ export const ChatZone: React.FC = () => {
               </div>
             ) : conversations.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full px-6 text-center">
-                <Icon name="message-square" size={32} className="text-zinc-600 mb-3" />
-                <p className="text-sm text-zinc-500">No conversations yet</p>
+                <Icon name="message-square" size={32} className="text-muted-foreground mb-3" />
+                <p className="text-sm text-muted-foreground">No conversations yet</p>
               </div>
             ) : (
               <div className="p-2 space-y-1">
@@ -173,20 +173,20 @@ export const ChatZone: React.FC = () => {
                       className={cn(
                         'w-full text-left px-3 py-2.5 rounded-lg border transition-all duration-200 group',
                         isSelected
-                          ? 'bg-indigo-500/10 border-indigo-500/30'
-                          : 'border-transparent hover:bg-zinc-800'
+                          ? 'bg-primary/10 border-primary/30'
+                          : 'border-transparent hover:bg-accent'
                       )}
                     >
                       <div className="flex items-start gap-3">
                         {/* Icon */}
                         <div className="mt-0.5 shrink-0">
                           {conv.task_id ? (
-                            <div className="w-6 h-6 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center">
-                              <Icon name="check-square" size={10} className="text-indigo-500" />
+                            <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center">
+                              <Icon name="check-square" size={10} className="text-primary" />
                             </div>
                           ) : (
-                            <div className="w-6 h-6 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center">
-                              <Icon name="message-square" size={10} className="text-zinc-500" />
+                            <div className="w-6 h-6 rounded-lg bg-muted border border-border flex items-center justify-center">
+                              <Icon name="message-square" size={10} className="text-muted-foreground" />
                             </div>
                           )}
                         </div>
@@ -195,28 +195,28 @@ export const ChatZone: React.FC = () => {
                         <div className="flex-1 min-w-0">
                           {/* Title */}
                           <div className="flex items-center gap-2 mb-1">
-                            <h3 className="text-sm font-medium text-zinc-100 truncate">
+                            <h3 className="text-sm font-medium text-foreground truncate">
                               {conv.title}
                             </h3>
                             {conv.is_unread && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0" />
+                              <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
                             )}
                           </div>
 
                           {/* Last message */}
                           {conv.last_message && (
-                            <p className="text-xs text-zinc-500 truncate">
+                            <p className="text-xs text-muted-foreground truncate">
                               {conv.last_message}
                             </p>
                           )}
 
                           {/* Metadata */}
                           <div className="flex items-center gap-2 mt-1.5">
-                            <span className="text-xs text-zinc-600">
+                            <span className="text-xs text-muted-foreground/70">
                               {new Date(conv.updated_at).toLocaleDateString()}
                             </span>
                             {conv.message_count > 0 && (
-                              <span className="text-xs text-zinc-600 flex items-center gap-1">
+                              <span className="text-xs text-muted-foreground/70 flex items-center gap-1">
                                 <Icon name="message-square" size={8} />
                                 {conv.message_count}
                               </span>
@@ -229,7 +229,7 @@ export const ChatZone: React.FC = () => {
                           name="chevron-right"
                           size={12}
                           className={cn(
-                            'text-zinc-600 transition-transform duration-200 mt-2',
+                            'text-muted-foreground/70 transition-transform duration-200 mt-2',
                             isSelected ? 'rotate-90' : 'opacity-0 group-hover:opacity-100'
                           )}
                         />
@@ -246,32 +246,32 @@ export const ChatZone: React.FC = () => {
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <header className="h-14 border-b border-zinc-800/50 flex items-center justify-between px-4 bg-zinc-900/30">
+        <header className="h-14 border-b border-border/50 flex items-center justify-between px-4 bg-card/30">
           <div className="flex items-center gap-3 min-w-0">
             {!sidebarOpen && (
               <button
                 onClick={() => setSidebarOpen(true)}
-                className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+                className="p-1.5 rounded-lg hover:bg-accent transition-colors"
               >
-                <Icon name="chevron-right" size={16} className="text-zinc-500" />
+                <Icon name="chevron-right" size={16} className="text-muted-foreground" />
               </button>
             )}
             {currentConversation && (
               <>
-                <div className="w-6 h-6 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center shrink-0">
+                <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
                   {currentConversation.task_id ? (
-                    <Icon name="check-square" size={10} className="text-indigo-500" />
+                    <Icon name="check-square" size={10} className="text-primary" />
                   ) : (
-                    <Icon name="message-square" size={10} className="text-indigo-500" />
+                    <Icon name="message-square" size={10} className="text-primary" />
                   )}
                 </div>
                 <div className="min-w-0">
-                  <h1 className="text-sm font-medium text-zinc-100 truncate">
+                  <h1 className="text-sm font-medium text-foreground truncate">
                     {currentConversation.title}
                   </h1>
                   {currentPlan && currentConversation.task_id && (
                     <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-zinc-500 text-xs">
+                      <span className="text-muted-foreground text-xs">
                         Task {currentConversation.task_id}
                       </span>
                     </div>
@@ -283,7 +283,7 @@ export const ChatZone: React.FC = () => {
 
           {currentPlan && (
             <div className="flex items-center gap-2">
-              <span className="text-xs text-zinc-500 font-mono">
+              <span className="text-xs text-muted-foreground font-mono">
                 {currentPlan.tasks.filter((t) => t.status === 'Completed').length}/{currentPlan.tasks.length}
               </span>
             </div>
@@ -291,22 +291,22 @@ export const ChatZone: React.FC = () => {
         </header>
 
         {/* Unified Tasks */}
-        <section className="border-b border-zinc-800/50 bg-zinc-950">
+        <section className="border-b border-border/50 bg-background">
           <div className="h-11 flex items-center justify-between px-4">
             <div className="flex items-center gap-2">
-              <Icon name="list" size={14} className="text-indigo-500" />
-              <span className="text-xs font-medium text-zinc-200">
+              <Icon name="list" size={14} className="text-primary" />
+              <span className="text-xs font-medium text-foreground">
                 Unified Tasks
               </span>
             </div>
             <button
               onClick={() => setTasksOpen((prev) => !prev)}
-              className="p-1.5 rounded-lg hover:bg-zinc-900 transition-colors"
+              className="p-1.5 rounded-lg hover:bg-accent transition-colors"
             >
               <Icon
                 name={tasksOpen ? 'chevron-down' : 'chevron-right'}
                 size={14}
-                className="text-zinc-500"
+                className="text-muted-foreground"
               />
             </button>
           </div>
@@ -336,7 +336,7 @@ export const ChatZone: React.FC = () => {
                         className={cn(
                           'relative p-4 rounded-lg',
                           message.role === 'user'
-                            ? 'bg-zinc-800/80 border border-zinc-700/50'
+                            ? 'bg-muted/80 border border-border/50'
                             : 'bg-transparent border-0'
                         )}
                       >
@@ -345,8 +345,8 @@ export const ChatZone: React.FC = () => {
                           className={cn(
                             'text-sm leading-relaxed',
                             message.role === 'user'
-                              ? 'text-zinc-100'
-                              : 'text-zinc-300'
+                              ? 'text-foreground'
+                              : 'text-muted-foreground'
                           )}
                         >
                           {message.content.split('\n').map((line, i) => (
@@ -362,9 +362,9 @@ export const ChatZone: React.FC = () => {
                             {message.choices.map((choice) => (
                               <button
                                 key={choice.id}
-                                className="w-full text-left px-4 py-3 rounded-lg bg-zinc-900/50 border border-zinc-800 hover:border-indigo-500/50 hover:bg-zinc-900 transition-all duration-200"
+                                className="w-full text-left px-4 py-3 rounded-lg bg-card/50 border border-border hover:border-primary/50 hover:bg-card transition-all duration-200"
                               >
-                                <span className="text-sm text-zinc-400 font-mono">
+                                <span className="text-sm text-muted-foreground font-mono">
                                   {choice.text}
                                 </span>
                               </button>
@@ -381,18 +381,18 @@ export const ChatZone: React.FC = () => {
           ) : (
             <div className="flex items-center justify-center h-full">
               <div className="text-center space-y-4">
-                <div className="w-16 h-16 mx-auto rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-                  <Icon name={selectedConversationId ? 'message-square' : 'sparkles'} size={24} className="text-zinc-600" />
+                <div className="w-16 h-16 mx-auto rounded-xl bg-card border border-border flex items-center justify-center">
+                  <Icon name={selectedConversationId ? 'message-square' : 'sparkles'} size={24} className="text-muted-foreground" />
                 </div>
                 <div>
                   {selectedConversationId ? (
-                    <p className="text-zinc-600 text-sm">Start a conversation</p>
+                    <p className="text-muted-foreground text-sm">Start a conversation</p>
                   ) : (
                     <div>
-                      <p className="text-zinc-600 text-sm mb-1">Select or create a conversation</p>
+                      <p className="text-muted-foreground text-sm mb-1">Select or create a conversation</p>
                       <button
                         onClick={() => createConversation('New Conversation', null, null)}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white text-sm font-medium transition-colors"
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors"
                       >
                         <Icon name="plus" size={12} />
                         New Conversation
@@ -406,21 +406,21 @@ export const ChatZone: React.FC = () => {
         </div>
 
         {/* Input Area */}
-        <footer className="border-t border-zinc-800/50 bg-zinc-900/30 p-3">
+        <footer className="border-t border-border/50 bg-card/30 p-3">
           <div className="w-full max-w-3xl mx-auto space-y-3">
             {/* Mode Context */}
-            <div className="flex items-center justify-between text-xs text-zinc-500">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
               <div className="flex items-center gap-2">
                 <Icon name={mode === 'Architect' ? 'sparkles' : 'tool'} size={12} />
                 <span>{mode === 'Architect' ? 'Architect Mode' : 'Implementation Mode'}</span>
               </div>
               {selectedTask && (
                 <div className="flex items-center gap-2">
-                  <Icon name="check-square" size={12} className="text-indigo-400" />
+                  <Icon name="check-square" size={12} className="text-primary" />
                   <span className="truncate max-w-[220px]">{selectedTask.title}</span>
                   <button
                     onClick={() => setSelectedTask(null)}
-                    className="text-zinc-600 hover:text-zinc-300"
+                    className="text-muted-foreground/70 hover:text-foreground"
                   >
                     clear
                   </button>
@@ -441,13 +441,13 @@ export const ChatZone: React.FC = () => {
               {/* Tools Selector */}
               <button 
                 onClick={openToolsSettings}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/80 border border-border hover:border-primary/50 transition-colors"
                 title="Manage AI Tools & MCP Servers"
               >
-                <Icon name="tool" size={12} className="text-zinc-500" />
-                <span className="text-xs text-zinc-300">Tools</span>
+                <Icon name="tool" size={12} className="text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">Tools</span>
                 {totalActiveTools > 0 && (
-                  <span className="text-xs text-indigo-400 font-medium">
+                  <span className="text-xs text-primary font-medium">
                     ({totalActiveTools})
                   </span>
                 )}
@@ -459,7 +459,7 @@ export const ChatZone: React.FC = () => {
               {mode === 'Architect' ? (
                 <button
                   onClick={handleGeneratePlan}
-                  className="px-3 py-1.5 rounded-lg bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 text-xs"
+                  className="px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 text-xs"
                 >
                   Generate plan
                 </button>
@@ -475,7 +475,7 @@ export const ChatZone: React.FC = () => {
             </div>
 
             {/* Input Field */}
-            <div className="flex items-center gap-3 bg-zinc-900/80 border border-zinc-800 rounded-xl p-2">
+            <div className="flex items-center gap-3 bg-card/80 border border-border rounded-xl p-2">
               <input
                 type="text"
                 placeholder={
@@ -483,13 +483,13 @@ export const ChatZone: React.FC = () => {
                     ? 'Describe the plan you want to build...'
                     : 'Ask the AI to execute a task...'
                 }
-                className="flex-1 bg-transparent border-0 outline-none text-sm text-zinc-100 placeholder-zinc-500 h-9 px-2"
+                className="flex-1 bg-transparent border-0 outline-none text-sm text-foreground placeholder:text-muted-foreground h-9 px-2"
                 value={inputValue}
                 onChange={(event) => setInputValue(event.target.value)}
               />
               <button
                 onClick={handleSend}
-                className="rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white px-3 h-9 flex items-center"
+                className="rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground px-3 h-9 flex items-center"
               >
                 <Icon name="arrow-up" size={14} />
               </button>

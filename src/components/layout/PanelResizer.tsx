@@ -73,10 +73,10 @@ export function PanelResizer({ direction, onResize, className, disabled = false 
       ref={resizerRef}
       className={cn(
         'relative flex items-center justify-center transition-colors',
-        'hover:bg-zinc-700/50 active:bg-zinc-600/50',
+        'hover:bg-accent/50 active:bg-accent/60',
         'cursor-col-resize select-none',
         'z-10',
-        isDragging && 'bg-zinc-600/50',
+        isDragging && 'bg-accent/60',
         disabled && 'cursor-default hover:bg-transparent',
         className
       )}
@@ -84,10 +84,10 @@ export function PanelResizer({ direction, onResize, className, disabled = false 
     >
       <GripVertical
         className={cn(
-          'w-4 h-4 text-zinc-500 transition-opacity',
-          'hover:text-zinc-400',
+          'w-4 h-4 text-muted-foreground transition-opacity',
+          'hover:text-foreground',
           disabled && 'opacity-30',
-          isDragging && 'text-zinc-400'
+          isDragging && 'text-foreground'
         )}
       />
     </div>
