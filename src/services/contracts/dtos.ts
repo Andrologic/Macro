@@ -48,6 +48,11 @@ export interface ProjectDto {
   project: Project;
 }
 
+export interface FileContentDto {
+  content: string;
+  language: string;
+}
+
 export interface ToolSettingsDto {
   tools: Record<string, boolean>;
 }

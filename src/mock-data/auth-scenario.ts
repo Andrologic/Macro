@@ -537,10 +537,26 @@ pub async fn logout() -> Result<(), String> {
   },
 };
 
+const addPaths = (nodes: GitNode[], parentPath = ''): GitNode[] => {
+  return nodes.map((node) => {
+    const path = parentPath ? `${parentPath}/${node.name}` : node.name;
+    return {
+      ...node,
+      path,
+      children: node.children ? addPaths(node.children, path) : undefined,
+    };
+  });
+};
+
 export const getGitTree = (
   projectId: string
 ): PredictedGitTree | undefined => {
-  return mockAuthPlan.predicted_git_trees[projectId];
+  const tree = mockAuthPlan.predicted_git_trees[projectId];
+  if (!tree) return undefined;
+  return {
+    ...tree,
+    structure: addPaths(tree.structure),
+  };
 };
 
 export const getTaskById = (taskId: string): Task | undefined => {

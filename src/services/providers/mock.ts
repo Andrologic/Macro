@@ -6,6 +6,7 @@ import {
   mockCommits,
   getGitTree,
 } from '../../mock-data/auth-scenario';
+import { MOCK_CODE_FILES } from '../../mock-data/code-files';
 import { mockProviders, mockModels } from '../../mock-data/ai';
 import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
 import type {
@@ -20,6 +21,7 @@ import type {
   ProjectDto,
   ToolSettingsDto,
   MCPServerSettingsDto,
+  FileContentDto,
 } from '../contracts/dtos';
 import type { Project } from '../../types';
 import { delay, maybeFail } from '../utils';
@@ -58,6 +60,13 @@ export const getGitTreeForProject = async (
   projectId: string
 ): Promise<GitTreeDto> => {
   return simulate({ tree: getGitTree(projectId) ?? null });
+};
+
+export const getFileContent = async (
+  path: string
+): Promise<FileContentDto> => {
+  const file = MOCK_CODE_FILES[path] || MOCK_CODE_FILES['demo-feature.tsx'];
+  return simulate(file);
 };
 
 export const listCommits = async (): Promise<CommitsDto> => {

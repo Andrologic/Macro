@@ -13,6 +13,7 @@ export const services = {
   listMessages: provider.listMessages,
   listTasks: provider.listTasks,
   getGitTreeForProject: provider.getGitTreeForProject,
+  getFileContent: provider.getFileContent,
   listCommits: provider.listCommits,
   listProviders: provider.listProviders,
   listModels: provider.listModels,

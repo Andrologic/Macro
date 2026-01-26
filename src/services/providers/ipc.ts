@@ -8,6 +8,7 @@ import type {
   ProvidersDto,
   ModelsDto,
   ProjectDto,
+  FileContentDto,
 } from '../contracts/dtos';
 
 const notReady = () => {
@@ -26,6 +27,8 @@ export const listMessages = async (): Promise<MessagesDto> => notReady();
 export const listTasks = async (): Promise<TasksDto> => notReady();
 
 export const getGitTreeForProject = async (): Promise<GitTreeDto> => notReady();
+
+export const getFileContent = async (path: string): Promise<FileContentDto> => notReady();
 
 export const listCommits = async (): Promise<CommitsDto> => notReady();
 

@@ -10,6 +10,7 @@ import { SettingsModal } from './components/modals/SettingsModal';
 import { AccountModal } from './components/modals/AccountModal';
 import { ProjectModal } from './components/modals/ProjectModal';
 import { ToolsSettingsModal } from './components/modals/ToolsSettingsModal';
+import { CodeFileViewerModal } from './components/modals/CodeFileViewerModal';
 import { useAppStore } from './stores/useAppStore';
 import { useChatStore } from './stores/useChatStore';
 import { useTaskStore } from './stores/useTaskStore';
@@ -89,6 +90,7 @@ const App: React.FC = () => {
       <AccountModal />
       <ProjectModal />
       <ToolsSettingsModal />
+      <CodeFileViewerModal />
     </div>
   );
 };
