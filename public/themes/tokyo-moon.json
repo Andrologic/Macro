@@ -1,0 +1,25 @@
+{
+  "name": "Tokyo Moon",
+  "type": "dark",
+  "colors": {
+    "background": "#222436",
+    "foreground": "#c8d3f5",
+    "card": "#222436",
+    "cardForeground": "#c8d3f5",
+    "popover": "#222436",
+    "popoverForeground": "#c8d3f5",
+    "primary": "#82aaff",
+    "primaryForeground": "#222436",
+    "secondary": "#2a2e3f",
+    "secondaryForeground": "#c8d3f5",
+    "muted": "#2a2e3f",
+    "mutedForeground": "#787c99",
+    "accent": "#c099ff",
+    "accentForeground": "#222436",
+    "destructive": "#ff757f",
+    "destructiveForeground": "#c8d3f5",
+    "border": "#2a2e3f",
+    "input": "#2a2e3f",
+    "ring": "#82aaff"
+  }
+}

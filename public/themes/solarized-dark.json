@@ -1,0 +1,25 @@
+{
+  "name": "Solarized Dark",
+  "type": "dark",
+  "colors": {
+    "background": "#002b36",
+    "foreground": "#839496",
+    "card": "#002b36",
+    "cardForeground": "#839496",
+    "popover": "#002b36",
+    "popoverForeground": "#839496",
+    "primary": "#268bd2",
+    "primaryForeground": "#002b36",
+    "secondary": "#073642",
+    "secondaryForeground": "#839496",
+    "muted": "#073642",
+    "mutedForeground": "#586e75",
+    "accent": "#2aa198",
+    "accentForeground": "#002b36",
+    "destructive": "#dc322f",
+    "destructiveForeground": "#839496",
+    "border": "#073642",
+    "input": "#073642",
+    "ring": "#268bd2"
+  }
+}
