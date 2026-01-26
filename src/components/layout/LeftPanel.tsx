@@ -155,7 +155,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
       </div>
 
       {/* Footer */}
-      <div className="h-12 border-t border-zinc-800 flex items-center justify-between px-4 bg-zinc-900">
+      <div className="h-12 border-t border-zinc-800 flex items-center px-4 bg-zinc-900">
         <div className="flex items-center gap-2">
           <Icon name="code" size={14} className="text-zinc-500" />
           <span className="text-xs text-zinc-500">
@@ -163,9 +163,6 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
             projects
           </span>
         </div>
-        <button className="p-1 hover:bg-zinc-800 rounded-md transition-colors">
-          <Icon name="settings" size={14} className="text-zinc-500" />
-        </button>
       </div>
     </aside>
   );
