@@ -3,6 +3,8 @@ import { Icon } from '../ui/Icon';
 import { Badge } from '../ui/Badge';
 import { cn } from '../../utils/cn';
 import { GitNode, GitNodeStatus } from '../../types';
+import { useCodeFileStore } from '../../stores/useCodeFileStore';
+import { services } from '../../services';
 
 interface GitTreeProps {
   nodes: GitNode[];
@@ -25,16 +27,35 @@ interface GitTreeNodeProps {
 
 const GitTreeNode: React.FC<GitTreeNodeProps> = ({ node, depth = 0 }) => {
   const [isOpen, setIsOpen] = React.useState(true);
+  const openFileViewer = useCodeFileStore((state) => state.openFileViewer);
 
   const hasChildren = node.children && node.children.length > 0;
   const status = node.status ? statusConfig[node.status] : null;
+
+  const handleNodeClick = async () => {
+    if (hasChildren) {
+      setIsOpen(!isOpen);
+      return;
+    }
+
+    if (node.type === 'file') {
+      try {
+        const fileContent = await services.getFileContent(node.path);
+        openFileViewer(node.path, fileContent.content, fileContent.language as any);
+      } catch (error) {
+        console.error('Failed to load file content:', error);
+        // Fallback for demo
+        openFileViewer(node.path, "// Erreur de chargement ou fichier non trouvé dans le mock.", 'typescript');
+      }
+    }
+  };
 
   return (
     <div>
       <div
         className="flex items-center gap-2 py-1.5 hover:bg-border/50 rounded px-2 transition-colors cursor-pointer"
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
-        onClick={() => hasChildren && setIsOpen(!isOpen)}
+        onClick={handleNodeClick}
       >
         {/* Expand/Collapse Icon */}
         {hasChildren ? (

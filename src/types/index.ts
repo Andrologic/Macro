@@ -105,6 +105,7 @@ export interface Task {
 
 export interface GitNode {
   name: string;
+  path: string;
   type: 'file' | 'directory';
   status?: GitNodeStatus;
   children?: GitNode[];

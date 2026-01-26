@@ -1,10 +1,8 @@
 import React, { useRef, useEffect } from 'react';
-import { EditorView } from '@codemirror/view';
-import { EditorState } from '@codemirror/state';
+import { EditorView, EditorState, basicSetup } from 'codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { rust } from '@codemirror/lang-rust';
 import { oneDark } from '@codemirror/theme-one-dark';
-import { basicSetup } from '@codemirror/basic-setup';
 import { cn } from '../../utils/cn';
 
 interface CodeViewerProps {
