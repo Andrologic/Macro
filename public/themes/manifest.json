@@ -1,0 +1,22 @@
+{
+  "themes": [
+    {
+      "id": "macro-dark",
+      "name": "Macro Dark",
+      "path": "/themes/macro-dark.json",
+      "type": "dark"
+    },
+    {
+      "id": "macro-light",
+      "name": "Macro Light",
+      "path": "/themes/macro-light.json",
+      "type": "light"
+    },
+    {
+      "id": "dracula",
+      "name": "Dracula",
+      "path": "/themes/dracula.json",
+      "type": "dark"
+    }
+  ]
+}

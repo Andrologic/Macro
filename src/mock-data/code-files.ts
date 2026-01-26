@@ -55,11 +55,11 @@ export const FeatureDemo = () => {
   const [active, setActive] = React.useState(false);
 
   return (
-    <div className="p-6 bg-zinc-900 rounded-xl border border-zinc-800">
-      <h2 className="text-xl font-bold text-white mb-4">
+    <div className="p-6 bg-card rounded-xl border border-border">
+      <h2 className="text-xl font-bold text-foreground mb-4">
         Visualiseur de Code
       </h2>
-      <p className="text-zinc-400 mb-6">
+      <p className="text-muted-foreground mb-6">
         Cette modal permet de consulter le code source directement
         depuis l'arborescence Git.
       </p>

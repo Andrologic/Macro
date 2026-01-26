@@ -40,19 +40,19 @@ export function Header({
 
   return (
     <header 
-      className="h-12 bg-zinc-900 border-b border-zinc-800 flex items-center px-4 shrink-0 select-none"
+      className="h-12 bg-card border-b border-border flex items-center px-4 shrink-0 select-none"
       data-tauri-drag-region
       onDoubleClick={handleHeaderDoubleClick}
     >
       {/* Left: Logo and App Name */}
       <div className="flex items-center gap-2 w-48">
         <Logo size={20} />
-        <span className="text-sm font-semibold text-zinc-100">Macro</span>
+        <span className="text-sm font-semibold text-foreground">Macro</span>
       </div>
 
       {/* Center: Mode Switch (Segment Control) */}
       <div className="flex-1 flex justify-center">
-        <div className="inline-flex bg-zinc-800 rounded-lg p-1">
+        <div className="inline-flex bg-secondary rounded-lg p-1">
           {modes.map((m) => (
             <button
               key={m.value}
@@ -62,8 +62,8 @@ export function Header({
                 px-4 py-1 rounded-md text-xs font-medium transition-all duration-200
                 ${
                   mode === m.value
-                    ? 'bg-indigo-500 text-white shadow-sm'
-                    : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/50'
+                    ? 'bg-primary text-primary-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
                 }
               `}
             >
@@ -78,52 +78,52 @@ export function Header({
         {/* Panel toggles */}
         <button
           onClick={onToggleLeft}
-          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+          className="p-1.5 rounded-lg hover:bg-accent transition-colors"
           data-tauri-drag-region="false"
         >
           <Icon
             name={isLeftOpen ? 'panel-left-close' : 'panel-left-open'}
             size={16}
-            className="text-zinc-400"
+            className="text-muted-foreground"
           />
         </button>
         <button
           onClick={onToggleRight}
-          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+          className="p-1.5 rounded-lg hover:bg-accent transition-colors"
           data-tauri-drag-region="false"
         >
           <Icon
             name={isRightOpen ? 'panel-right-close' : 'panel-right-open'}
             size={16}
-            className="text-zinc-400"
+            className="text-muted-foreground"
           />
         </button>
 
         {/* Divider */}
-        <div className="w-px h-5 bg-zinc-700 mx-1" />
+        <div className="w-px h-5 bg-border mx-1" />
 
         {/* Settings button */}
         <button
           onClick={openSettings}
-          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+          className="p-1.5 rounded-lg hover:bg-accent transition-colors"
           title="Settings"
           data-tauri-drag-region="false"
         >
-          <Icon name="settings" size={16} className="text-zinc-400" />
+          <Icon name="settings" size={16} className="text-muted-foreground" />
         </button>
 
         {/* Account button */}
         <button
           onClick={openAccount}
-          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+          className="p-1.5 rounded-lg hover:bg-accent transition-colors"
           title="Account"
           data-tauri-drag-region="false"
         >
-          <Icon name="user" size={16} className="text-zinc-400" />
+          <Icon name="user" size={16} className="text-muted-foreground" />
         </button>
 
         {/* Divider before window controls - only show in Tauri mode */}
-        {isTauriAvailable && <div className="w-px h-5 bg-zinc-700 mx-1" />}
+        {isTauriAvailable && <div className="w-px h-5 bg-border mx-1" />}
 
         {/* Window Controls */}
         <WindowControls />

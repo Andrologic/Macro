@@ -17,7 +17,7 @@ const statusConfig: Record<GitNodeStatus, { icon: string; color: string; label: 
   added: { icon: 'arrow-up-right', color: 'text-accent-success', label: 'added' },
   modified: { icon: 'arrow-up-right', color: 'text-accent-warning', label: 'modified' },
   deleted: { icon: 'arrow-down-right', color: 'text-accent-error', label: 'deleted' },
-  renamed: { icon: 'arrow-up-right', color: 'text-accent-primary', label: 'renamed' },
+  renamed: { icon: 'arrow-up-right', color: 'text-primary', label: 'renamed' },
 };
 
 interface GitTreeNodeProps {
@@ -76,7 +76,7 @@ const GitTreeNode: React.FC<GitTreeNodeProps> = ({ node, depth = 0 }) => {
           size={14}
           className={cn(
             node.type === 'directory'
-              ? 'text-accent-primary'
+              ? 'text-primary'
               : status?.color || 'text-text-muted'
           )}
         />
@@ -126,7 +126,7 @@ export const GitTree: React.FC<GitTreeProps> = ({
       {/* Header */}
       <div className="h-12 border-b border-border bg-elevated flex items-center justify-between px-4">
         <div className="flex items-center gap-2">
-          <Icon name="git-branch" size={14} className="text-accent-primary" />
+          <Icon name="git-branch" size={14} className="text-primary" />
           <span className="text-sm font-medium text-text-primary">
             {branch}
           </span>

@@ -68,13 +68,13 @@ export const ToolsSettingsModal: React.FC = () => {
         return <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />;
       case 'disabled':
       case 'offline':
-        return <div className="w-2 h-2 rounded-full bg-zinc-700" />;
+        return <div className="w-2 h-2 rounded-full bg-muted" />;
       case 'error':
         return <div className="w-2 h-2 rounded-full bg-red-500" />;
       case 'loading':
         return <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />;
       default:
-        return <div className="w-2 h-2 rounded-full bg-zinc-700" />;
+        return <div className="w-2 h-2 rounded-full bg-muted" />;
     }
   };
 
@@ -82,23 +82,23 @@ export const ToolsSettingsModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-fade-in">
-      <div className="w-[800px] h-[85vh] bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden ring-1 ring-white/5">
+      <div className="w-[800px] h-[85vh] bg-card border border-border rounded-2xl shadow-2xl flex flex-col overflow-hidden ring-1 ring-white/5">
         
         {/* Header Section */}
-        <header className="shrink-0 border-b border-zinc-800 bg-zinc-900/50">
+        <header className="shrink-0 border-b border-border bg-card/50">
           <div className="flex items-center justify-between px-6 py-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+              <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
                 <Icon name="tool" size={20} />
               </div>
               <div>
-                <h2 className="text-lg font-semibold text-zinc-100">Tools Configuration</h2>
-                <p className="text-xs text-zinc-500">Manage available capabilities and MCP servers</p>
+                <h2 className="text-lg font-semibold text-foreground">Tools Configuration</h2>
+                <p className="text-xs text-muted-foreground">Manage available capabilities and MCP servers</p>
               </div>
             </div>
             <button
               onClick={closeToolsSettings}
-              className="p-2 rounded-lg hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
+              className="p-2 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
             >
               <Icon name="x" size={18} />
             </button>
@@ -112,27 +112,27 @@ export const ToolsSettingsModal: React.FC = () => {
               onValueChange={(v) => setActiveTab(v as any)} 
               className="w-auto"
             >
-              <TabsList className="bg-zinc-900 border-zinc-800 p-1">
+              <TabsList className="bg-card border-border p-1">
                 <TabsTrigger value="tools" className="px-4 py-1.5 text-xs">Internal Tools</TabsTrigger>
                 <TabsTrigger value="mcp" className="px-4 py-1.5 text-xs">MCP Servers</TabsTrigger>
               </TabsList>
             </Tabs>
 
             <div className="relative flex-1 max-w-xs group">
-              <Icon name="search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 group-focus-within:text-zinc-300 transition-colors" />
+              <Icon name="search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground group-focus-within:text-foreground transition-colors" />
               <input 
                 type="text" 
                 placeholder="Search tools..." 
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 transition-all"
+                className="w-full bg-muted border border-border rounded-lg pl-9 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all"
               />
             </div>
           </div>
         </header>
 
         {/* content area - Using absolute positioning for reliable scroll */}
-        <div className="flex-1 relative bg-zinc-950/50">
+        <div className="flex-1 relative bg-background/50">
           <div className="absolute inset-0 overflow-y-auto px-6 py-6 custom-scrollbar">
              {/* List Container */}
             <div className="space-y-2 pb-20">
@@ -148,16 +148,16 @@ export const ToolsSettingsModal: React.FC = () => {
                         className={cn(
                           "group relative flex items-center gap-4 p-4 rounded-xl border transition-all duration-200 cursor-pointer select-none",
                           isEnabled 
-                            ? "bg-zinc-900/40 border-indigo-500/20 hover:border-indigo-500/30 hover:bg-zinc-900/60" 
-                            : "bg-transparent border-zinc-800/50 hover:bg-zinc-900/30 hover:border-zinc-700 opacity-70 hover:opacity-100"
+                            ? "bg-card/40 border-primary/20 hover:border-primary/30 hover:bg-card/60" 
+                            : "bg-transparent border-border/50 hover:bg-card/30 hover:border-border opacity-70 hover:opacity-100"
                         )}
                       >
                         {/* Icon Box */}
                         <div className={cn(
                           "w-12 h-12 rounded-lg flex items-center justify-center shrink-0 transition-colors duration-300",
                           isEnabled 
-                            ? "bg-gradient-to-br from-indigo-500/20 to-indigo-600/5 text-indigo-400 ring-1 ring-inset ring-indigo-500/20" 
-                            : "bg-zinc-900 text-zinc-600 border border-zinc-800"
+                            ? "bg-gradient-to-br from-primary/20 to-primary/5 text-primary ring-1 ring-inset ring-primary/20" 
+                            : "bg-card text-muted-foreground border border-border"
                         )}>
                           <Icon name={tool.icon as any} size={22} />
                         </div>
@@ -167,27 +167,27 @@ export const ToolsSettingsModal: React.FC = () => {
                           <div className="flex items-center gap-3">
                             <h4 className={cn(
                               "text-sm font-medium transition-colors",
-                              isEnabled ? "text-zinc-100" : "text-zinc-400 group-hover:text-zinc-300"
+                              isEnabled ? "text-foreground" : "text-muted-foreground group-hover:text-foreground"
                             )}>
                               {tool.name}
                             </h4>
                             <span className={cn(
                               "text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full border",
                               isEnabled
-                                ? "bg-indigo-500/10 text-indigo-400 border-indigo-500/10"
-                                : "bg-zinc-800 text-zinc-500 border-zinc-700"
+                                ? "bg-primary/10 text-primary border-primary/10"
+                                : "bg-muted text-muted-foreground border-border"
                             )}>
                               {tool.category}
                             </span>
                           </div>
-                          <p className="text-xs text-zinc-500 mt-1 line-clamp-1">{tool.description}</p>
+                          <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{tool.description}</p>
                         </div>
 
                         {/* Switch */}
-                        <div className="pl-4 border-l border-zinc-800/50">
+                        <div className="pl-4 border-l border-border/50">
                            <div className={cn(
                              "w-10 h-5 rounded-full relative transition-colors duration-300",
-                             isEnabled ? "bg-indigo-500" : "bg-zinc-700"
+                             isEnabled ? "bg-primary" : "bg-muted"
                            )}>
                              <div className={cn(
                                "absolute top-0.5 w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-300",
@@ -213,8 +213,8 @@ export const ToolsSettingsModal: React.FC = () => {
                         className={cn(
                           "group relative flex items-center gap-4 p-4 rounded-xl border transition-all duration-200 cursor-pointer select-none",
                           isEnabled 
-                            ? "bg-zinc-900/40 border-purple-500/20 hover:border-purple-500/30 hover:bg-zinc-900/60" 
-                            : "bg-transparent border-zinc-800/50 hover:bg-zinc-900/30 hover:border-zinc-700 opacity-70 hover:opacity-100"
+                            ? "bg-card/40 border-primary/20 hover:border-primary/30 hover:bg-card/60" 
+                            : "bg-transparent border-border/50 hover:bg-card/30 hover:border-border opacity-70 hover:opacity-100"
                         )}
                       >
                          {/* Icon Box */}
@@ -222,7 +222,7 @@ export const ToolsSettingsModal: React.FC = () => {
                           "w-12 h-12 rounded-lg flex items-center justify-center shrink-0 transition-colors duration-300",
                           isEnabled 
                             ? "bg-gradient-to-br from-purple-500/20 to-purple-600/5 text-purple-400 ring-1 ring-inset ring-purple-500/20" 
-                            : "bg-zinc-900 text-zinc-600 border border-zinc-800"
+                            : "bg-card text-muted-foreground border border-border"
                         )}>
                           <Icon name={server.icon as any} size={22} />
                         </div>
@@ -232,7 +232,7 @@ export const ToolsSettingsModal: React.FC = () => {
                           <div className="flex items-center gap-3">
                             <h4 className={cn(
                               "text-sm font-medium transition-colors",
-                              isEnabled ? "text-zinc-100" : "text-zinc-400 group-hover:text-zinc-300"
+                              isEnabled ? "text-foreground" : "text-muted-foreground group-hover:text-foreground"
                             )}>
                               {server.name}
                             </h4>
@@ -240,20 +240,20 @@ export const ToolsSettingsModal: React.FC = () => {
                               "text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full border",
                               isEnabled
                                 ? "bg-purple-500/10 text-purple-400 border-purple-500/10"
-                                : "bg-zinc-800 text-zinc-500 border-zinc-700"
+                                : "bg-muted text-muted-foreground border-border"
                             )}>
                               {server.category}
                             </span>
                           </div>
-                           <p className="text-xs text-zinc-500 mt-1 line-clamp-1">{server.description}</p>
+                           <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{server.description}</p>
                         </div>
 
                          {/* Status & Switch */}
-                        <div className="flex items-center gap-4 pl-4 border-l border-zinc-800/50">
+                        <div className="flex items-center gap-4 pl-4 border-l border-border/50">
                            <div className="flex items-center">
                               <span className={cn(
                                 "text-[10px] font-medium",
-                                isEnabled ? "text-emerald-500" : "text-zinc-600"
+                                isEnabled ? "text-emerald-500" : "text-muted-foreground/70"
                               )}>
                                 {server.status === 'online' ? 'Online' : 'Offline'}
                               </span>
@@ -262,7 +262,7 @@ export const ToolsSettingsModal: React.FC = () => {
                            {/* Custom Switch */}
                            <div className={cn(
                              "w-10 h-5 rounded-full relative transition-colors duration-300",
-                             isEnabled ? "bg-purple-500" : "bg-zinc-700"
+                             isEnabled ? "bg-primary" : "bg-muted"
                            )}>
                              <div className={cn(
                                "absolute top-0.5 w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-300",
@@ -282,17 +282,17 @@ export const ToolsSettingsModal: React.FC = () => {
         </div>
 
         {/* Footer */}
-        <footer className="shrink-0 h-16 bg-zinc-900/80 border-t border-zinc-800 px-6 flex items-center justify-between backdrop-blur-sm">
+        <footer className="shrink-0 h-16 bg-card/80 border-t border-border px-6 flex items-center justify-between backdrop-blur-sm">
           <div className="flex items-center gap-4">
              <button
               onClick={handleReset}
               disabled={saving}
-              className="text-xs font-medium text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-2"
+              className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2"
             >
               <Icon name="rotate-ccw" size={12} />
               Reset defaults
             </button>
-            <span className="text-xs text-zinc-700 border-l border-zinc-800 pl-4 h-4 flex items-center">
+            <span className="text-xs text-muted-foreground/70 border-l border-border pl-4 h-4 flex items-center">
               Changes auto-save
             </span>
           </div>
@@ -302,7 +302,7 @@ export const ToolsSettingsModal: React.FC = () => {
               variant="ghost"
               size="sm"
               onClick={closeToolsSettings}
-              className="text-zinc-400 hover:text-zinc-100"
+              className="text-muted-foreground hover:text-foreground"
             >
               Close
             </Button>
@@ -311,7 +311,7 @@ export const ToolsSettingsModal: React.FC = () => {
               size="sm"
               onClick={handleSave}
               isLoading={saving}
-              className="bg-indigo-500 hover:bg-indigo-600 text-white min-w-[100px]"
+              className="min-w-[100px]"
             >
                {saving ? 'Saving...' : 'Done'}
             </Button>
@@ -325,11 +325,11 @@ export const ToolsSettingsModal: React.FC = () => {
 // Helper for empty list
 const EmptyState = ({ query }: { query: string }) => (
   <div className="flex flex-col items-center justify-center py-20 text-center">
-    <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-4">
-      <Icon name="search" size={24} className="text-zinc-600" />
+    <div className="w-16 h-16 rounded-2xl bg-card border border-border flex items-center justify-center mb-4">
+      <Icon name="search" size={24} className="text-muted-foreground" />
     </div>
-    <h3 className="text-zinc-300 font-medium mb-1">No tools found</h3>
-    <p className="text-zinc-500 text-xs max-w-[200px]">
+    <h3 className="text-foreground font-medium mb-1">No tools found</h3>
+    <p className="text-muted-foreground text-xs max-w-[200px]">
       We couldn't find any tools matching "{query}". Try a different search term.
     </p>
   </div>

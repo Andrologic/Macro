@@ -1,0 +1,54 @@
+import { useEffect } from 'react';
+import { useAuthStore } from '../../stores/useAuthStore';
+
+/**
+ * ThemeProvider - Applies the user's theme preference to the document
+ * 
+ * Theme modes:
+ * - 'light': Force light theme
+ * - 'dark': Force dark theme (default)
+ * - 'system': Use system preference via prefers-color-scheme media query
+ */
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((state) => state.user);
+
+  useEffect(() => {
+    const applyTheme = () => {
+      const themePreference = user?.preferences.theme || 'dark';
+
+      // Determine effective theme based on preference
+      const isDark = () => {
+        if (themePreference === 'system') {
+          return window.matchMedia('(prefers-color-scheme: dark)').matches;
+        }
+        return themePreference === 'dark';
+      };
+
+      const shouldUseDark = isDark();
+
+      if (shouldUseDark) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    };
+
+    // Apply initial theme
+    applyTheme();
+
+    // Listen for system theme changes when in 'system' mode
+    const themePreference = user?.preferences.theme;
+    if (themePreference === 'system') {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      const handleChange = () => applyTheme();
+
+      mediaQuery.addEventListener('change', handleChange);
+
+      return () => {
+        mediaQuery.removeEventListener('change', handleChange);
+      };
+    }
+  }, [user]);
+
+  return <>{children}</>;
+}

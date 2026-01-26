@@ -103,9 +103,9 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           className={cn(
-            'w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2',
-            'text-sm text-zinc-200 placeholder-zinc-500',
-            'focus:outline-none focus:border-indigo-500',
+            'w-full bg-muted border border-border rounded-lg px-3 py-2',
+            'text-sm text-foreground placeholder:text-muted-foreground',
+            'focus:outline-none focus:border-primary',
             'pr-8'
           )}
         />
@@ -114,13 +114,13 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
           className={cn(
             'absolute right-2 top-1/2 -translate-y-1/2',
             'p-1 rounded transition-colors',
-            isOpen ? 'bg-zinc-700' : 'hover:bg-zinc-700'
+            isOpen ? 'bg-accent' : 'hover:bg-accent'
           )}
         >
           <Icon
             name={isOpen ? 'arrow-up' : 'chevron-down'}
             size={12}
-            className="text-zinc-500"
+            className="text-muted-foreground"
           />
         </button>
       </div>
@@ -129,7 +129,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
       {isOpen && (
         <div
           className={cn(
-            'absolute z-50 w-full mt-1 bg-zinc-800 border border-zinc-700',
+            'absolute z-50 w-full mt-1 bg-card border border-border',
             'rounded-lg shadow-xl max-h-60 overflow-y-auto',
             'flex flex-col'
           )}
@@ -141,8 +141,8 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
               'w-full px-3 py-2 text-left text-sm',
               'flex items-center gap-2 transition-colors',
               selectedGroupId === null
-                ? 'bg-indigo-500 text-white'
-                : 'text-zinc-300 hover:bg-zinc-700'
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-accent'
             )}
           >
             <Icon name="x" size={14} />
@@ -158,8 +158,8 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
                 'w-full px-3 py-2 text-left text-sm',
                 'flex items-center gap-2 transition-colors',
                 selectedGroupId === group.id
-                  ? 'bg-indigo-500 text-white'
-                  : 'text-zinc-300 hover:bg-zinc-700'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent'
               )}
             >
               <Icon name="folder" size={14} />
@@ -170,13 +170,13 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
           {/* Create new group option */}
           {showCreateOption && (
             <>
-              <div className="border-t border-zinc-700 my-1" />
+              <div className="border-t border-border my-1" />
               <button
                 onClick={handleCreateNew}
                 className={cn(
                   'w-full px-3 py-2 text-left text-sm',
                   'flex items-center gap-2 transition-colors',
-                  'text-indigo-400 hover:bg-zinc-700'
+                  'text-primary hover:bg-accent'
                 )}
               >
                 <Icon name="plus" size={14} />
@@ -186,7 +186,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
           )}
 
           {filteredGroups.length === 0 && !showCreateOption && (
-            <div className="px-3 py-2 text-sm text-zinc-500">
+            <div className="px-3 py-2 text-sm text-muted-foreground">
               No groups found
             </div>
           )}

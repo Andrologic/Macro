@@ -1,14 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
-import type { ThemeMode, Language } from '../../types';
+import type { Language } from '../../types';
+import { ThemeManifest } from '../../types/theme';
 
 export const SettingsModal: React.FC = () => {
-  const { settingsOpen, closeSettings } = useAppStore();
+  const { settingsOpen, closeSettings, activeThemeId, setTheme } = useAppStore();
   const { user, updatePreferences, isLoading } = useAuthStore();
-  const [theme, setTheme] = useState<ThemeMode>(user?.preferences.theme || 'dark');
+  const [manifest, setManifest] = useState<ThemeManifest | null>(null);
+
+  // Load manifest for global theme selector
+  useEffect(() => {
+    fetch('/themes/manifest.json')
+      .then((res) => res.json())
+      .then((data: ThemeManifest) => setManifest(data))
+      .catch(console.error);
+  }, []);
+
   const [language, setLanguage] = useState<Language>(user?.preferences.language || 'en');
   const [notifications, setNotifications] = useState(user?.preferences.notifications ?? true);
   const [emailUpdates, setEmailUpdates] = useState(user?.preferences.emailUpdates ?? false);
@@ -17,12 +27,14 @@ export const SettingsModal: React.FC = () => {
 
   const handleSave = async () => {
     try {
-      await updatePreferences({
-        theme,
-        language,
-        notifications,
-        emailUpdates,
-      });
+      if (user) {
+        // Theme is stored locally; keep preferences update for language + notifications.
+        await updatePreferences({
+          language,
+          notifications,
+          emailUpdates,
+        });
+      }
       closeSettings();
     } catch (error) {
       console.error('Failed to save preferences:', error);
@@ -31,57 +43,51 @@ export const SettingsModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-[480px] max-h-[85vh] bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
-        <header className="h-12 px-4 border-b border-zinc-800 flex items-center justify-between">
+      <div className="w-[480px] max-h-[85vh] bg-card border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+        <header className="h-12 px-4 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Icon name="settings" size={16} className="text-indigo-400" />
-            <span className="text-sm text-zinc-200">Settings</span>
+            <Icon name="settings" size={16} className="text-primary" />
+            <span className="text-sm text-foreground">Settings</span>
           </div>
           <button
             onClick={closeSettings}
-            className="p-1.5 rounded-lg hover:bg-zinc-900 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-accent transition-colors"
           >
-            <Icon name="x" size={14} className="text-zinc-500" />
+            <Icon name="x" size={14} className="text-muted-foreground" />
           </button>
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-6">
           {/* Appearance Section */}
           <section>
-            <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
               Appearance
             </h3>
             
             {/* Theme */}
             <div className="mb-4">
-              <label className="block text-sm text-zinc-300 mb-2">Theme</label>
-              <div className="flex gap-2">
-                {(['light', 'dark', 'system'] as ThemeMode[]).map((themeOption) => (
-                  <button
-                    key={themeOption}
-                    onClick={() => setTheme(themeOption)}
-                    className={`
-                      flex-1 px-3 py-2 rounded-lg text-sm font-medium capitalize transition-all
-                      ${
-                        theme === themeOption
-                          ? 'bg-indigo-500 text-white'
-                          : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
-                      }
-                    `}
-                  >
-                    {themeOption}
-                  </button>
-                ))}
-              </div>
+              <label className="block text-sm text-muted-foreground mb-2">Theme</label>
+              <select
+                value={activeThemeId}
+                onChange={(e) => setTheme(e.target.value)}
+                className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
+              >
+                 {manifest?.themes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                 ))}
+                 {!manifest && <option value="macro-dark">Macro Dark</option>}
+              </select>
             </div>
 
             {/* Language */}
             <div>
-              <label className="block text-sm text-zinc-300 mb-2">Language</label>
+              <label className="block text-sm text-muted-foreground mb-2">Language</label>
               <select
                 value={language}
                 onChange={(e) => setLanguage(e.target.value as Language)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-indigo-500"
+                className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
               >
                 <option value="en">English</option>
                 <option value="fr">Français</option>
@@ -91,21 +97,21 @@ export const SettingsModal: React.FC = () => {
 
           {/* Notifications Section */}
           <section>
-            <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
               Notifications
             </h3>
             
             {/* In-app Notifications */}
             <div className="flex items-center justify-between py-2">
               <div>
-                <label className="block text-sm text-zinc-200">In-app notifications</label>
-                <p className="text-xs text-zinc-500 mt-0.5">Receive notifications in the app</p>
+                <label className="block text-sm text-foreground">In-app notifications</label>
+                <p className="text-xs text-muted-foreground mt-0.5">Receive notifications in the app</p>
               </div>
               <button
                 onClick={() => setNotifications(!notifications)}
                 className={`
                   relative w-11 h-6 rounded-full transition-colors duration-200
-                  ${notifications ? 'bg-indigo-500' : 'bg-zinc-700'}
+                  ${notifications ? 'bg-primary' : 'bg-muted'}
                 `}
               >
                 <span
@@ -120,14 +126,14 @@ export const SettingsModal: React.FC = () => {
             {/* Email Updates */}
             <div className="flex items-center justify-between py-2">
               <div>
-                <label className="block text-sm text-zinc-200">Email updates</label>
-                <p className="text-xs text-zinc-500 mt-0.5">Receive email notifications</p>
+                <label className="block text-sm text-foreground">Email updates</label>
+                <p className="text-xs text-muted-foreground mt-0.5">Receive email notifications</p>
               </div>
               <button
                 onClick={() => setEmailUpdates(!emailUpdates)}
                 className={`
                   relative w-11 h-6 rounded-full transition-colors duration-200
-                  ${emailUpdates ? 'bg-indigo-500' : 'bg-zinc-700'}
+                  ${emailUpdates ? 'bg-primary' : 'bg-muted'}
                 `}
               >
                 <span
@@ -142,23 +148,23 @@ export const SettingsModal: React.FC = () => {
 
           {/* About Section */}
           <section>
-            <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
               About
             </h3>
-            <div className="bg-zinc-800/50 rounded-lg p-3 space-y-1">
+            <div className="bg-card/50 rounded-lg p-3 space-y-1">
               <div className="flex justify-between text-xs">
-                <span className="text-zinc-500">Version</span>
-                <span className="text-zinc-300">1.0.0</span>
+                <span className="text-muted-foreground">Version</span>
+                <span className="text-foreground">1.0.0</span>
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-zinc-500">Build</span>
-                <span className="text-zinc-300">2026.01.20</span>
+                <span className="text-muted-foreground">Build</span>
+                <span className="text-foreground">2026.01.20</span>
               </div>
             </div>
           </section>
         </div>
 
-        <footer className="h-12 border-t border-zinc-800 px-4 flex items-center justify-end gap-2">
+        <footer className="h-12 border-t border-border px-4 flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={closeSettings}>
             Cancel
           </Button>
