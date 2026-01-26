@@ -1,5 +1,7 @@
 import React, { useRef, useEffect } from 'react';
-import { EditorView, EditorState, basicSetup } from 'codemirror';
+import { EditorView } from '@codemirror/view';
+import { EditorState } from '@codemirror/state';
+import { basicSetup } from 'codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { rust } from '@codemirror/lang-rust';
 import { oneDark } from '@codemirror/theme-one-dark';
