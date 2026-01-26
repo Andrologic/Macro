@@ -138,6 +138,8 @@ Stocker les données locales non partagées (chat, préférences, cache, index l
 - Ajouter commandes `db_*` pour chat, settings, cache.
 
 ## 9) File System (FS)
+> **⚠️ TÂCHE CRITIQUE** : À implémenter manuellement sans assistance IA. Nécessite une attention particulière à la sécurité et aux permissions Tauri.
+
 ### Objectif
 Accès sécurisé à l’arborescence du workspace + watchers.
 
@@ -151,6 +153,8 @@ Accès sécurisé à l’arborescence du workspace + watchers.
 - Ajout permissions Tauri nécessaires dans `capabilities`.
 
 ## 10) Git (libgit2)
+> **⚠️ TÂCHE CRITIQUE** : À implémenter manuellement sans assistance IA. Nécessite une expertise approfondie en libgit2 et gestion d'erreurs complexes.
+
 ### Objectif
 Opérations Git robustes et rapides (multi-repo).
 
@@ -211,6 +215,8 @@ Support multi-repo, metadata, relations entre projets.
 - Filtrer toute commande sensible.
 
 ## 15) Plan d’implémentation (phases)
+
+> **⚠️ NOTE IMPORTANTE** : Les phases 2 (FS) et 3 (Git) sont des **tâches critiques** à implémenter manuellement sans assistance IA. Elles nécessitent une expertise spécialisée en sécurité système et gestion d'erreurs complexes.
 
 ### Phase 0 — Bootstrap technique
 - Ajouter dépendances Rust de base.
