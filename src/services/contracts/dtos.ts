@@ -9,6 +9,7 @@ import type {
   AIProvider,
   AIModel,
   Project,
+  MCPServer,
 } from '../../types';
 
 export interface AppBootstrapDto {

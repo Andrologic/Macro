@@ -2,7 +2,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { Icon } from '../ui/Icon';
 import { Logo } from '../ui/Logo';
 import { WindowControls } from './WindowControls';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { useTauriWindow } from '../../hooks/useTauriWindow';
 import type { AppMode } from '../../types';
 
 interface HeaderProps {
@@ -22,14 +22,11 @@ export function Header({
   const setMode = useAppStore((state) => state.setMode);
   const openSettings = useAppStore((state) => state.openSettings);
   const openAccount = useAppStore((state) => state.openAccount);
-
-  // Check if Tauri API is available
-  const isTauriAvailable = typeof window !== 'undefined' && window.__TAURI__;
-  const tauriWindow = isTauriAvailable ? getCurrentWindow() : null;
+  const { isAvailable: isTauriAvailable, toggleMaximize } = useTauriWindow();
 
   const handleHeaderDoubleClick = () => {
-    if (tauriWindow) {
-      tauriWindow.toggleMaximize();
+    if (isTauriAvailable) {
+      toggleMaximize();
     }
   };
 

@@ -9,6 +9,8 @@ import type {
   ModelsDto,
   ProjectDto,
   FileContentDto,
+  ToolSettingsDto,
+  MCPServerSettingsDto,
 } from '../contracts/dtos';
 
 const notReady = () => {
