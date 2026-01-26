@@ -4,6 +4,7 @@ import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/Tabs';
 import { GroupCombobox } from '../ui/GroupCombobox';
+import { Select } from '../ui/Select';
 
 export const ProjectModal: React.FC = () => {
   const { projectModalOpen, closeProjectModal, projectGroups, createProject, importProject } = useAppStore();
@@ -282,17 +283,16 @@ export const ProjectModal: React.FC = () => {
 
               {/* Branch */}
               <div>
-                <label className="block text-sm text-muted-foreground mb-2">Branch</label>
-                <select
+                <Select
+                  label="Branch"
                   value={gitBranch}
                   onChange={(e) => setGitBranch(e.target.value)}
-                  className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
                 >
                   <option value="main">main</option>
                   <option value="master">master</option>
                   <option value="develop">develop</option>
                   <option value="custom">Custom...</option>
-                </select>
+                </Select>
               </div>
 
               {/* Group */}
