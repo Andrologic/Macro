@@ -5,6 +5,8 @@
 use std::path::{Path, PathBuf};
 use std::io::Result;
 
+use tauri::ipc::private::ResultFutureTag;
+
 pub mod watcher;
 
 /// Resolve path to absolute path, checks if path is within workspace using `canonicalize`
@@ -35,6 +37,89 @@ fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf>{
     }
 }
 
+/// Convert path to OS-specific format
+/// Resolve `.` and `..` segments
+/// Handle UNC paths on Windows
+/// # Arguments
+/// * `path` - The input path to convert
+/// # Returns
+/// * `PathBuf` - The OS-specific path
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {} // Ignore "."
+            std::path::Component::ParentDir => { result.pop(); } // Résout ".."
+            _ => result.push(component),
+        }
+    }
+    result
+}
+
+///Extract file extension
+/// Map extensions to languages  (e.g., `.rs` -> `Rust`, `.ts` -> `TypeScript`)
+/// Support for common programming languages
+/// # Arguments
+/// * `path` - The input file path
+/// # Returns
+/// * `Option<String>` - The detected language or None
+fn get_file_language(path: &Path) -> Result<String> {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext_str| match ext_str {
+            "rs" => "Rust",
+            "ts" | "tsx" => "TypeScript",
+            "js" | "jsx" => "JavaScript",
+            "py" => "Python",
+            "java" => "Java",
+            "cpp" | "cc" | "cxx" | "c" => "C/C++",
+            "go" => "Go",
+            "cs" => "C#",
+            "html" | "htm" => "HTML",
+            "css" => "CSS",
+            "json" => "JSON",
+            "xml" => "XML",
+            "yaml" | "yml" => "YAML",
+            "md" => "Markdown",
+            "sh" => "Shell",
+            "kt" | "kts" => "Kotlin",
+            "dart" => "Dart",
+            "rb" => "Ruby",
+            "toml" => "TOML",
+            "typ" => "Typst",
+            "tex" => "LaTeX",
+            "r" => "R",
+            "scala" => "Scala",
+            "hs" => "Haskell",
+            "php" => "PHP",
+            "pl" => "Perl",
+            "lua" => "Lua",
+            "swift" => "Swift",
+            "sql" => "SQL",
+            "vue" => "Vue.js",
+            "svelte" => "Svelte",
+            "asm" | "s" => "Assembly",
+            "f" | "f90" | "f95" => "Fortran",
+            "cob" | "cbl" => "COBOL",
+            "clj" => "Clojure",
+            "erl" => "Erlang",
+            "ex" | "exs" => "Elixir",
+            "jl" => "Julia",
+            "m" => "MATLAB",
+            "mm" => "Objective-C",
+            "ps1" => "PowerShell",
+            "bat" | "cmd" => "Batch",
+            "cr" => "Crystal",
+            "nim" => "Nim",
+            "zig" => "Zig",
+            _ => "Unknown",
+        }.to_string())
+        .ok_or_else(|| std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "File has no extension",
+        ))
+}
+
 // Test for validate_path function
 #[cfg(test)]
 mod tests {
@@ -61,4 +146,23 @@ mod tests {
         fs::remove_file(&valid_file).unwrap();
         fs::remove_dir(&workspace).unwrap();
     }
-}   
+
+    #[test]
+    fn test_normalize_path() {
+        let path = Path::new("a/./b/../c/");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, PathBuf::from("a/c"));
+    }
+    #[test]
+    fn test_get_file_language() {
+        let path = Path::new("example.rs");
+        let language = get_file_language(path).unwrap();
+        assert_eq!(language, "Rust");
+        let path = Path::new("example.unknownext");
+        let language = get_file_language(path).unwrap();
+        assert_eq!(language, "Unknown");
+        let path = Path::new("example");
+        let result = get_file_language(path);
+        assert!(result.is_err());
+    }   
+}
