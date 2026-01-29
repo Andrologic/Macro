@@ -9,6 +9,8 @@ use tauri::ipc::private::ResultFutureTag;
 
 pub mod watcher;
 
+// Core Path Validation and Normalization Functions
+
 /// Resolve path to absolute path, checks if path is within workspace using `canonicalize`
 /// Prevents path traversal attacks (`../`,symlinks outside workspace)
 /// Return normalized absolute path if valid, else error

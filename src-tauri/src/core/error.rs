@@ -1,4 +1,5 @@
 use serde::Serialize;
+use serde_json::error;
 use thiserror::Error;
 
 /// Backend error type that can be serialized and sent to the frontend
@@ -21,6 +22,18 @@ pub enum BackendError {
 
     #[error("File system error: {message}")]
     Filesystem { message: String },
+
+    #[error("File system path outside workspace: {message}")]
+    FilesystemPathOutsideWorkspace { message: String },
+
+    #[error("File system Not Found: {message}")]
+    FilesystemNotFound { message: String },
+
+    #[error("File system Permission denied: {message}")]
+    FilesystemPermissionDenied { message: String },
+
+    #[error("File system Directory not found: {message}")]
+    FilesystemDirectoryNotFound { message: String },
 
     #[error("Index error: {message}")]
     Index { message: String },
@@ -78,3 +91,4 @@ impl From<config::ConfigError> for BackendError {
 }
 
 pub type Result<T> = std::result::Result<T, BackendError>;
+
