@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
-import { useEditorStore } from '../../stores/useEditorStore';
 import { useAIStore } from '../../stores/useAIStore';
 import { useToolsStore } from '../../stores/useToolsStore';
 import { Icon } from '../ui/Icon';
@@ -24,7 +23,6 @@ export const ChatZone: React.FC = () => {
     isLoading,
   } = useChatStore();
   const { tasks } = useTaskStore();
-  const { openDiffViewer } = useEditorStore();
   const {
     providers,
     models,
@@ -93,25 +91,6 @@ export const ChatZone: React.FC = () => {
         timestamp: new Date().toISOString(),
       });
     }, 400);
-  };
-
-  const handleGeneratePlan = () => {
-    const conversationId = ensureConversation();
-    addMessage({
-      id: `msg-${Date.now()}-plan`,
-      task_id: '',
-      conversation_id: conversationId,
-      role: 'assistant',
-      content:
-        'Here is the proposed plan (mock). You can validate it or refine the tasks above.',
-      timestamp: new Date().toISOString(),
-    });
-  };
-
-  const handleReviewDiff = () => {
-    if (selectedTask?.code_diff) {
-      openDiffViewer(selectedTask.code_diff);
-    }
   };
 
   if (!currentPlan) {
@@ -408,26 +387,6 @@ export const ChatZone: React.FC = () => {
         {/* Input Area */}
         <footer className="border-t border-border/50 bg-card/30 p-3">
           <div className="w-full max-w-3xl mx-auto space-y-3">
-            {/* Mode Context */}
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <div className="flex items-center gap-2">
-                <Icon name={mode === 'Architect' ? 'sparkles' : 'tool'} size={12} />
-                <span>{mode === 'Architect' ? 'Architect Mode' : 'Implementation Mode'}</span>
-              </div>
-              {selectedTask && (
-                <div className="flex items-center gap-2">
-                  <Icon name="check-square" size={12} className="text-primary" />
-                  <span className="truncate max-w-[220px]">{selectedTask.title}</span>
-                  <button
-                    onClick={() => setSelectedTask(null)}
-                    className="text-muted-foreground/70 hover:text-foreground"
-                  >
-                    clear
-                  </button>
-                </div>
-              )}
-            </div>
-
             {/* Control Buttons Row */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -452,26 +411,6 @@ export const ChatZone: React.FC = () => {
                   </span>
                 )}
               </button>
-            </div>
-
-            {/* Architect / Implement Actions */}
-            <div className="flex items-center gap-2">
-              {mode === 'Architect' ? (
-                <button
-                  onClick={handleGeneratePlan}
-                  className="px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 text-xs"
-                >
-                  Generate plan
-                </button>
-              ) : (
-                <button
-                  onClick={handleReviewDiff}
-                  disabled={!selectedTask?.code_diff}
-                  className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 text-xs disabled:opacity-40"
-                >
-                  Review diff
-                </button>
-              )}
             </div>
 
             {/* Input Field */}
