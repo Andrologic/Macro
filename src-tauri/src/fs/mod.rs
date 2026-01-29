@@ -4,22 +4,17 @@
 
 use std::path::{Path, PathBuf};
 
-use tokio::fs::canonicalize;
-
 use crate::core::error::{BackendError, Result};
 
-pub mod watcher;
 pub mod dto;
-
+pub mod watcher;
 
 // Core Path Validation and Normalization Functions
 
 // Basic helper to resolve absolute path
 fn resolve_absolute(path: &Path, workspace: &Path) -> Result<(PathBuf, PathBuf)> {
-    let canonical_workspace = workspace.canonicalize().map_err(|e| {
-        BackendError::Config {
-            message: format!("Workspace path invalid: {}", e)
-        }
+    let canonical_workspace = workspace.canonicalize().map_err(|e| BackendError::Config {
+        message: format!("Workspace path invalid: {}", e),
     })?;
     let abs_path = if path.is_absolute() {
         path.to_path_buf()
@@ -34,14 +29,17 @@ fn validate_parent(abs_path: &Path, canonical_workspace: &Path) -> Result<PathBu
     let parent = abs_path.parent().ok_or_else(|| BackendError::Filesystem {
         message: format!("Path {:?} has no parent directory", abs_path),
     })?;
-    let canonical_parent = parent.canonicalize().map_err(|_| {
-        BackendError::FilesystemNotFound {
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|_| BackendError::FilesystemNotFound {
             message: format!("Parent directory {:?} does not exist", parent),
-        }
-    })?;
+        })?;
     if !canonical_parent.starts_with(canonical_workspace) {
         return Err(BackendError::FilesystemPathOutsideWorkspace {
-            message: format!("Parent of path {:?} is outside workspace {:?}", abs_path, canonical_workspace),
+            message: format!(
+                "Parent of path {:?} is outside workspace {:?}",
+                abs_path, canonical_workspace
+            ),
         });
     }
     Ok(canonical_parent)
@@ -63,18 +61,23 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
                 Ok(normalize_path(&canonical_path))
             } else {
                 Err(BackendError::FilesystemPathOutsideWorkspace {
-                    message: format!("Path {:?} is outside workspace {:?}", canonical_path, canonical_workspace),
+                    message: format!(
+                        "Path {:?} is outside workspace {:?}",
+                        canonical_path, canonical_workspace
+                    ),
                 })
             }
-        },
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Fichier n'existe pas : on valide le parent et on reconstruit le chemin
             let canonical_parent = validate_parent(&abs_path, &canonical_workspace)?;
-            let file_name = abs_path.file_name().ok_or_else(|| {
-                BackendError::Filesystem { message: "Invalid file path".to_string() }
-            })?;
+            let file_name = abs_path
+                .file_name()
+                .ok_or_else(|| BackendError::Filesystem {
+                    message: "Invalid file path".to_string(),
+                })?;
             Ok(normalize_path(&canonical_parent.join(file_name)))
-        },
+        }
         Err(e) => Err(BackendError::Io {
             message: format!("Failed to canonicalize path {:?}: {}", abs_path, e),
             source: e,
@@ -94,11 +97,11 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
 /// * `Result<PathBuf>` - The validated path or an error
 pub fn validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf> {
     let (abs_path, canonical_workspace) = resolve_absolute(path, workspace)?;
-    
+
     // To write, we just check that the parent is clean
     // We return abs_path as is (since the file may not exist yet)
     validate_parent(&abs_path, &canonical_workspace)?;
-    
+
     Ok(normalize_path(&abs_path))
 }
 
@@ -120,119 +123,451 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             std::path::Component::CurDir => {} // Ignore `.` components
-            std::path::Component::ParentDir => {result.pop();} // Remove the last component for `..`
+            std::path::Component::ParentDir => {
+                result.pop();
+            } // Remove the last component for `..`
             _ => result.push(component),
         }
     }
     result
 }
 
-///Extract file extension
-/// Map extensions to languages  (e.g., `.rs` -> `Rust`, `.ts` -> `TypeScript`)
-/// Support for common programming languages
+/// Extract file extension and map to programming language
+/// Case-insensitive matching (e.g., `.RS`, `.rs`, `.Rs` all → "Rust")
 /// # Arguments
 /// * `path` - The input file path
 /// # Returns
-/// * `Option<String>` - The detected language or None
-pub fn get_file_language(path: &Path) -> Result<String> {
+/// * `Option<String>` - The detected language, or None if no extension
+pub fn get_file_language(path: &Path) -> Option<String> {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext_str| match ext_str {
-            "rs" => "Rust",
-            "ts" | "tsx" => "TypeScript",
-            "js" | "jsx" => "JavaScript",
-            "py" => "Python",
-            "java" => "Java",
-            "cpp" | "cc" | "cxx" | "c" => "C/C++",
-            "go" => "Go",
-            "cs" => "C#",
-            "html" | "htm" => "HTML",
-            "css" => "CSS",
-            "json" => "JSON",
-            "xml" => "XML",
-            "yaml" | "yml" => "YAML",
-            "md" => "Markdown",
-            "sh" => "Shell",
-            "kt" | "kts" => "Kotlin",
-            "dart" => "Dart",
-            "rb" => "Ruby",
-            "toml" => "TOML",
-            "typ" => "Typst",
-            "tex" => "LaTeX",
-            "r" => "R",
-            "scala" => "Scala",
-            "hs" => "Haskell",
-            "php" => "PHP",
-            "pl" => "Perl",
-            "lua" => "Lua",
-            "swift" => "Swift",
-            "sql" => "SQL",
-            "vue" => "Vue.js",
-            "svelte" => "Svelte",
-            "asm" | "s" => "Assembly",
-            "f" | "f90" | "f95" => "Fortran",
-            "cob" | "cbl" => "COBOL",
-            "clj" => "Clojure",
-            "erl" => "Erlang",
-            "ex" | "exs" => "Elixir",
-            "jl" => "Julia",
-            "m" => "MATLAB",
-            "mm" => "Objective-C",
-            "ps1" => "PowerShell",
-            "bat" | "cmd" => "Batch",
-            "cr" => "Crystal",
-            "nim" => "Nim",
-            "zig" => "Zig",
-            _ => "Unknown",
-        }.to_string())
-        .ok_or_else(|| BackendError::Filesystem {
-            message: format!("File {:?} has no extension", path),
+        .map(|ext_str| {
+            match ext_str.to_ascii_lowercase().as_str() {
+                // Data formats
+                "csv" => "CSV",
+                "json" => "JSON",
+                "xml" => "XML",
+                "yaml" | "yml" => "YAML",
+                "toml" => "TOML",
+
+                // Web
+                "html" | "htm" => "HTML",
+                "css" | "scss" | "sass" | "less" => "CSS",
+                "js" | "mjs" | "cjs" => "JavaScript",
+                "jsx" => "JavaScript (JSX)",
+                "ts" | "mts" | "cts" => "TypeScript",
+                "tsx" => "TypeScript (TSX)",
+                "vue" => "Vue",
+                "svelte" => "Svelte",
+                "astro" => "Astro",
+
+                // Systems
+                "rs" => "Rust",
+                "c" | "h" => "C",
+                "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => "C++",
+                "go" => "Go",
+                "zig" => "Zig",
+                "nim" => "Nim",
+                "cr" => "Crystal",
+                "asm" | "s" => "Assembly",
+
+                // JVM
+                "java" => "Java",
+                "kt" | "kts" => "Kotlin",
+                "scala" | "sc" => "Scala",
+                "clj" | "cljs" | "cljc" | "edn" => "Clojure",
+                "groovy" | "gvy" | "gy" | "gsh" => "Groovy",
+
+                // .NET
+                "cs" => "C#",
+                "fs" | "fsi" | "fsx" => "F#",
+                "vb" => "Visual Basic",
+
+                // Scripting
+                "py" | "pyw" | "pyi" => "Python",
+                "rb" | "rake" | "gemspec" => "Ruby",
+                "php" => "PHP",
+                "pl" | "pm" => "Perl",
+                "lua" => "Lua",
+                "tcl" => "Tcl",
+                "r" | "rmd" => "R",
+
+                // Functional
+                "hs" | "lhs" => "Haskell",
+                "ml" | "mli" => "OCaml",
+                "erl" | "hrl" => "Erlang",
+                "ex" | "exs" => "Elixir",
+                "elm" => "Elm",
+                "purs" => "PureScript",
+                "jl" => "Julia",
+                "lisp" | "lsp" | "cl" => "Lisp",
+                "scm" | "ss" => "Scheme",
+                "rkt" => "Racket",
+
+                // Mobile
+                "swift" => "Swift",
+                "m" => "Objective-C",
+                "mm" => "Objective-C++",
+                "dart" => "Dart",
+
+                // Shell & Scripts
+                "sh" | "bash" | "zsh" | "fish" => "Shell",
+                "ps1" | "psm1" | "psd1" => "PowerShell",
+                "bat" | "cmd" => "Batch",
+
+                // Config & DevOps
+                "dockerfile" => "Dockerfile",
+                "tf" | "tfvars" => "Terraform",
+                "nix" => "Nix",
+                "dhall" => "Dhall",
+
+                // Query & Data
+                "sql" => "SQL",
+                "graphql" | "gql" => "GraphQL",
+                "prisma" => "Prisma",
+
+                // Documentation
+                "md" | "markdown" => "Markdown",
+                "rst" => "reStructuredText",
+                "adoc" | "asciidoc" => "AsciiDoc",
+                "tex" | "latex" => "LaTeX",
+                "typ" => "Typst",
+                "org" => "Org",
+
+                // Legacy
+                "f" | "for" | "f90" | "f95" | "f03" | "f08" => "Fortran",
+                "cob" | "cbl" | "cpy" => "COBOL",
+                "pas" | "pp" => "Pascal",
+                "ada" | "adb" | "ads" => "Ada",
+
+                // Other
+                "v" | "sv" | "svh" => "Verilog/SystemVerilog",
+                "vhd" | "vhdl" => "VHDL",
+                "proto" => "Protocol Buffers",
+                "thrift" => "Thrift",
+                "wasm" | "wat" => "WebAssembly",
+                "sol" => "Solidity",
+                "vy" => "Vyper",
+                "move" => "Move",
+
+                _ => "Unknown",
+            }
+            .to_string()
         })
 }
 
-// Test for validate_path function
+// Tests
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::env;
+    use std::fs::{self, File};
     use std::io::Write;
-    #[test]
-    fn test_validate_path() {
-        let workspace = env::temp_dir().join("workspace_test");
+
+    // Helper to create a temporary workspace
+    fn setup_workspace(name: &str) -> PathBuf {
+        let workspace = env::temp_dir().join(format!("macro_test_{}", name));
+        let _ = fs::remove_dir_all(&workspace); // Clean up if exists
         fs::create_dir_all(&workspace).unwrap();
-        let valid_file = workspace.join("file.txt");
-        let mut file = fs::File::create(&valid_file).unwrap();
-        writeln!(file, "Test content").unwrap();
-        // Test valid relative path
-        let result = validate_path(Path::new("file.txt"), &workspace).unwrap();
-        assert_eq!(result, valid_file.canonicalize().unwrap());
-        // Test valid absolute path
-        let result = validate_path(&valid_file, &workspace).unwrap();
-        assert_eq!(result, valid_file.canonicalize().unwrap());
-        // Test path traversal attempt
-        let result = validate_path(Path::new("../outside.txt"), &workspace);
-        assert!(result.is_err());
-        fs::remove_file(&valid_file).unwrap();
-        fs::remove_dir(&workspace).unwrap();
+        workspace
+    }
+
+    fn cleanup_workspace(workspace: &Path) {
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    // ============ validate_path tests ============
+
+    #[test]
+    fn test_validate_path_valid_relative() {
+        let workspace = setup_workspace("validate_rel");
+        let file_path = workspace.join("test.txt");
+        File::create(&file_path).unwrap();
+
+        let result = validate_path(Path::new("test.txt"), &workspace).unwrap();
+        assert_eq!(result, file_path.canonicalize().unwrap());
+
+        cleanup_workspace(&workspace);
     }
 
     #[test]
-    fn test_normalize_path() {
-        let path = Path::new("a/./b/../c/");
-        let normalized = normalize_path(path);
-        assert_eq!(normalized, PathBuf::from("a/c"));
+    fn test_validate_path_valid_absolute() {
+        let workspace = setup_workspace("validate_abs");
+        let file_path = workspace.join("test.txt");
+        File::create(&file_path).unwrap();
+
+        let result = validate_path(&file_path, &workspace).unwrap();
+        assert_eq!(result, file_path.canonicalize().unwrap());
+
+        cleanup_workspace(&workspace);
     }
+
     #[test]
-    fn test_get_file_language() {
-        let path = Path::new("example.rs");
-        let language = get_file_language(path).unwrap();
-        assert_eq!(language, "Rust");
-        let path = Path::new("example.unknownext");
-        let language = get_file_language(path).unwrap();
-        assert_eq!(language, "Unknown");
-        let path = Path::new("example");
-        let result = get_file_language(path);
+    fn test_validate_path_traversal_rejected() {
+        let workspace = setup_workspace("validate_traversal");
+
+        let result = validate_path(Path::new("../outside.txt"), &workspace);
         assert!(result.is_err());
-    }   
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[test]
+    fn test_validate_path_nonexistent_file_valid_parent() {
+        let workspace = setup_workspace("validate_nonexist");
+
+        // File doesn't exist but parent does
+        let result = validate_path(Path::new("new_file.txt"), &workspace);
+        assert!(result.is_ok());
+        assert!(result.unwrap().ends_with("new_file.txt"));
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[test]
+    fn test_validate_path_nested_directory() {
+        let workspace = setup_workspace("validate_nested");
+        let nested = workspace.join("a/b/c");
+        fs::create_dir_all(&nested).unwrap();
+        let file_path = nested.join("deep.txt");
+        File::create(&file_path).unwrap();
+
+        let result = validate_path(Path::new("a/b/c/deep.txt"), &workspace).unwrap();
+        assert_eq!(result, file_path.canonicalize().unwrap());
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[test]
+    fn test_validate_path_with_dots() {
+        let workspace = setup_workspace("validate_dots");
+        let file_path = workspace.join("test.txt");
+        File::create(&file_path).unwrap();
+
+        let result = validate_path(Path::new("./test.txt"), &workspace).unwrap();
+        assert_eq!(result, file_path.canonicalize().unwrap());
+
+        cleanup_workspace(&workspace);
+    }
+
+    // ============ validate_path_for_write tests ============
+
+    #[test]
+    fn test_validate_path_for_write_new_file() {
+        let workspace = setup_workspace("write_new");
+
+        let result = validate_path_for_write(Path::new("new_file.txt"), &workspace);
+        assert!(result.is_ok());
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[test]
+    fn test_validate_path_for_write_nested_parent_exists() {
+        let workspace = setup_workspace("write_nested");
+        let subdir = workspace.join("subdir");
+        fs::create_dir_all(&subdir).unwrap();
+
+        let result = validate_path_for_write(Path::new("subdir/new_file.txt"), &workspace);
+        assert!(result.is_ok());
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[test]
+    fn test_validate_path_for_write_parent_not_exists() {
+        let workspace = setup_workspace("write_no_parent");
+
+        let result = validate_path_for_write(Path::new("nonexistent_dir/file.txt"), &workspace);
+        assert!(result.is_err());
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[test]
+    fn test_validate_path_for_write_traversal_rejected() {
+        let workspace = setup_workspace("write_traversal");
+
+        let result = validate_path_for_write(Path::new("../outside.txt"), &workspace);
+        assert!(result.is_err());
+
+        cleanup_workspace(&workspace);
+    }
+
+    // ============ normalize_path tests ============
+
+    #[test]
+    fn test_normalize_path_dots() {
+        assert_eq!(
+            normalize_path(Path::new("a/./b/../c")),
+            PathBuf::from("a/c")
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_empty() {
+        assert_eq!(normalize_path(Path::new("")), PathBuf::new());
+    }
+
+    #[test]
+    fn test_normalize_path_trailing_slash() {
+        assert_eq!(normalize_path(Path::new("a/b/c/")), PathBuf::from("a/b/c"));
+    }
+
+    #[test]
+    fn test_normalize_path_multiple_parent() {
+        assert_eq!(
+            normalize_path(Path::new("a/b/c/../../d")),
+            PathBuf::from("a/d")
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_only_dots() {
+        assert_eq!(normalize_path(Path::new("./././.")), PathBuf::new());
+    }
+
+    #[test]
+    fn test_normalize_path_absolute() {
+        let path = normalize_path(Path::new("/a/b/../c"));
+        assert!(path.is_absolute());
+        assert!(path.ends_with("a/c"));
+    }
+
+    // ============ get_file_language tests ============
+
+    #[test]
+    fn test_get_file_language_rust() {
+        assert_eq!(
+            get_file_language(Path::new("main.rs")),
+            Some("Rust".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_file_language_case_insensitive() {
+        assert_eq!(
+            get_file_language(Path::new("Main.RS")),
+            Some("Rust".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("app.TS")),
+            Some("TypeScript".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("style.CSS")),
+            Some("CSS".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_file_language_typescript_variants() {
+        assert_eq!(
+            get_file_language(Path::new("app.ts")),
+            Some("TypeScript".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("app.tsx")),
+            Some("TypeScript (TSX)".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("app.mts")),
+            Some("TypeScript".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_file_language_javascript_variants() {
+        assert_eq!(
+            get_file_language(Path::new("app.js")),
+            Some("JavaScript".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("app.jsx")),
+            Some("JavaScript (JSX)".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("app.mjs")),
+            Some("JavaScript".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("app.cjs")),
+            Some("JavaScript".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_file_language_unknown() {
+        assert_eq!(
+            get_file_language(Path::new("file.xyz")),
+            Some("Unknown".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_file_language_no_extension() {
+        assert_eq!(get_file_language(Path::new("Makefile")), None);
+        assert_eq!(get_file_language(Path::new("README")), None);
+    }
+
+    #[test]
+    fn test_get_file_language_hidden_file() {
+        // .gitignore has no extension (the dot is part of the filename)
+        assert_eq!(get_file_language(Path::new(".gitignore")), None);
+        // Hidden file WITH extension
+        assert_eq!(
+            get_file_language(Path::new(".eslintrc.json")),
+            Some("JSON".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_file_language_multiple_dots() {
+        assert_eq!(
+            get_file_language(Path::new("app.test.ts")),
+            Some("TypeScript".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("file.spec.js")),
+            Some("JavaScript".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_file_language_various() {
+        assert_eq!(
+            get_file_language(Path::new("a.py")),
+            Some("Python".to_string())
+        );
+        assert_eq!(get_file_language(Path::new("a.go")), Some("Go".to_string()));
+        assert_eq!(
+            get_file_language(Path::new("a.java")),
+            Some("Java".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("a.cpp")),
+            Some("C++".to_string())
+        );
+        assert_eq!(get_file_language(Path::new("a.c")), Some("C".to_string()));
+        assert_eq!(
+            get_file_language(Path::new("a.swift")),
+            Some("Swift".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("a.kt")),
+            Some("Kotlin".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("a.sql")),
+            Some("SQL".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("a.graphql")),
+            Some("GraphQL".to_string())
+        );
+        assert_eq!(
+            get_file_language(Path::new("a.proto")),
+            Some("Protocol Buffers".to_string())
+        );
+    }
 }

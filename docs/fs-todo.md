@@ -72,8 +72,8 @@ src-tauri/src/
 - [x] Return `"Unknown"` for unrecognized extensions
 - [x] Return error for files without extension
 - [x] **FIX**: Return `BackendError` instead of `std::io::Error`
-- [ ] **ADD**: Consider returning `Option<String>` instead of error for no extension
-- [ ] **ADD**: Handle case-insensitive extensions (`.RS` vs `.rs`)
+- [x] **ADD**: Consider returning `Option<String>` instead of error for no extension
+- [x] **ADD**: Handle case-insensitive extensions (`.RS` vs `.rs`)
 - [ ] **ADD**: Add more extensions:
   - `.astro` → "Astro"
   - `.graphql`, `.gql` → "GraphQL"
