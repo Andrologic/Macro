@@ -47,7 +47,7 @@ src-tauri/src/
 - [x] **FIX**: Handle case where file doesn't exist yet (for write operations)
   - Use `normalize_path` + manual prefix check when `canonicalize` fails with NotFound
   - Only allow if the *parent* directory exists and is within workspace
-- [ ] **ADD**: Handle symlinks that point outside workspace (currently relies on canonicalize)
+- [x] **ADD**: Handle symlinks that point outside workspace (currently relies on canonicalize)
 
 ### 1.3 `validate_path_for_write` Function (NEW)
 - [ ] Implement `validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf>`
