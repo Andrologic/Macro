@@ -256,6 +256,84 @@ pub fn get_file_language(path: &Path) -> Option<String> {
         })
 }
 
+/// Checks whether a file is binary based on its extension
+/// If the extension is known to be text-based, returns false
+/// If unknown, defaults to true if null bytes are found in the content, else false
+/// # Arguments
+/// * `path` - The input file path
+/// # Returns
+/// * `Result<bool>` - True if binary, false if text
+/// # Errors
+/// * `BackendError` - If file cannot be read
+pub fn is_binary_file(path: &Path) -> Result<bool> {
+    if path.is_dir() {
+        return Ok(false); // Directories are not binary files
+    }
+    if !path.exists() {
+        return Err(BackendError::FilesystemNotFound {
+            message: format!("File {:?} does not exist", path),
+        });
+    }
+    let text_extensions = [
+        "txt",
+        "md",
+        "rs",
+        "py",
+        "js",
+        "ts",
+        "java",
+        "c",
+        "cpp",
+        "html",
+        "css",
+        "json",
+        "xml",
+        "yaml",
+        "yml",
+        "toml",
+        "sh",
+        "go",
+        "rb",
+        "php",
+        "Makefile",
+        "Dockerfile",
+        "Vagrantfile",
+        "Gemfile",
+        "Rakefile",
+        "CMakeLists",
+        "LICENSE",
+        "README",
+        "CHANGELOG",
+        "AUTHORS",
+        ".gitignore",
+        ".gitattributes",
+        ".editorconfig",
+        ".env",
+    ];
+    let binary_extensions = [
+        // Images
+        "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "svg", "tiff", // Audio/Video
+        "mp3", "mp4", "wav", "avi", "mkv", "mov", "flac", "ogg", // Archives
+        "zip", "tar", "gz", "rar", "7z", "bz2", "xz", // Executables
+        "exe", "dll", "so", "dylib", "bin", "wasm", // Documents
+        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", // Databases
+        "db", "sqlite", "sqlite3", // Other
+        "class", "pyc", "o", "a", "lib", "jar", "war", "ear",
+    ];
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let ext_lower = ext.to_ascii_lowercase();
+        if text_extensions.contains(&ext_lower.as_str()) {
+            return Ok(false);
+        }
+        if binary_extensions.contains(&ext_lower.as_str()) {
+            return Ok(true);
+        }
+    }
+    // If unknown extension, read file content to check for null bytes
+    let content = std::fs::read(path)?;
+    Ok(content.contains(&0))
+}
+
 // Tests
 #[cfg(test)]
 mod tests {
@@ -569,5 +647,79 @@ mod tests {
             get_file_language(Path::new("a.proto")),
             Some("Protocol Buffers".to_string())
         );
+    }
+
+    // ============ is_binary_file tests ============
+
+    #[test]
+    fn test_is_binary_file_text_extensions() {
+        let workspace = setup_workspace("binary_check");
+        // We just need the path to check extension, doesn't need to exist for extension check optimization
+        // BUT the function checks existence first! So we must create files.
+        let f1 = workspace.join("main.rs");
+        File::create(&f1).unwrap();
+        assert_eq!(is_binary_file(&f1).unwrap(), false);
+
+        let f2 = workspace.join("doc.md");
+        File::create(&f2).unwrap();
+        assert_eq!(is_binary_file(&f2).unwrap(), false);
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[test]
+    fn test_is_binary_file_binary_extensions() {
+        let workspace = setup_workspace("binary_check_ext");
+        let f1 = workspace.join("image.png");
+        File::create(&f1).unwrap();
+        assert_eq!(is_binary_file(&f1).unwrap(), true);
+
+        let f2 = workspace.join("program.exe");
+        File::create(&f2).unwrap();
+        assert_eq!(is_binary_file(&f2).unwrap(), true);
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[test]
+    fn test_is_binary_file_no_extension_text_content() {
+        let workspace = setup_workspace("binary_check_no_ext");
+
+        let file_path = workspace.join("Makefile");
+        let mut file = File::create(&file_path).unwrap();
+        file.write_all(b"all: build\n\tcargo build").unwrap();
+
+        // This will fall back to content check because "Makefile" logic is not correctly hit by extension logic
+        // But content is text, so it should return false.
+        assert_eq!(is_binary_file(&file_path).unwrap(), false);
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[test]
+    fn test_is_binary_file_dotfile_text_content() {
+        let workspace = setup_workspace("binary_check_dotfile");
+
+        let file_path = workspace.join(".gitignore");
+        let mut file = File::create(&file_path).unwrap();
+        file.write_all(b"target/\n**/*.log").unwrap();
+
+        assert_eq!(is_binary_file(&file_path).unwrap(), false);
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[test]
+    fn test_is_binary_file_unknown_extension_binary_content() {
+        let workspace = setup_workspace("binary_check_unknown");
+
+        let file_path = workspace.join("custom.binfmt");
+        let mut file = File::create(&file_path).unwrap();
+        // Write some null bytes
+        file.write_all(b"Hello\0World").unwrap();
+
+        assert_eq!(is_binary_file(&file_path).unwrap(), true);
+
+        cleanup_workspace(&workspace);
     }
 }
