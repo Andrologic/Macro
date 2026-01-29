@@ -50,7 +50,7 @@ src-tauri/src/
 - [x] **ADD**: Handle symlinks that point outside workspace (currently relies on canonicalize)
 
 ### 1.3 `validate_path_for_write` Function (NEW)
-- [ ] Implement `validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf>`
+- [x] Implement `validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf>`
   - Similar to `validate_path` but handles non-existent files
   - Check parent directory exists and is within workspace
   - Return the target path (not canonicalized, since file doesn't exist)
@@ -71,7 +71,7 @@ src-tauri/src/
 - [x] Map common extensions to language names
 - [x] Return `"Unknown"` for unrecognized extensions
 - [x] Return error for files without extension
-- [ ] **FIX**: Return `BackendError` instead of `std::io::Error`
+- [x] **FIX**: Return `BackendError` instead of `std::io::Error`
 - [ ] **ADD**: Consider returning `Option<String>` instead of error for no extension
 - [ ] **ADD**: Handle case-insensitive extensions (`.RS` vs `.rs`)
 - [ ] **ADD**: Add more extensions:
