@@ -74,7 +74,7 @@ src-tauri/src/
 - [x] **FIX**: Return `BackendError` instead of `std::io::Error`
 - [x] **ADD**: Consider returning `Option<String>` instead of error for no extension
 - [x] **ADD**: Handle case-insensitive extensions (`.RS` vs `.rs`)
-- [ ] **ADD**: Add more extensions:
+- [x] **ADD**: Add more extensions:
   - `.astro` → "Astro"
   - `.graphql`, `.gql` → "GraphQL"
   - `.proto` → "Protocol Buffers"
@@ -86,17 +86,23 @@ src-tauri/src/
 
 ### 1.6 `is_binary_file` Function (NEW)
 - [ ] Implement `is_binary_file(path: &Path) -> Result<bool>`
+- [ ] **Step 1: Check by extension** (fast, no file read)
+  - Create constant `BINARY_EXTENSIONS: &[&str]` with common binary extensions:
+    - Images: `png`, `jpg`, `jpeg`, `gif`, `bmp`, `ico`, `webp`, `svg`, `tiff`
+    - Audio/Video: `mp3`, `mp4`, `wav`, `avi`, `mkv`, `mov`, `flac`, `ogg`
+    - Archives: `zip`, `tar`, `gz`, `rar`, `7z`, `bz2`, `xz`
+    - Executables: `exe`, `dll`, `so`, `dylib`, `bin`, `wasm`
+    - Documents: `pdf`, `doc`, `docx`, `xls`, `xlsx`, `ppt`, `pptx`
+    - Databases: `db`, `sqlite`, `sqlite3`
+    - Other: `class`, `pyc`, `o`, `a`, `lib`
+  - If extension matches → return `true` immediately
+- [ ] **Step 2: Content check** (fallback if extension unknown)
   - Read first 8KB of file
   - Check for NULL bytes (0x00) in content
+  - **Note**: This heuristic works because UTF-8/ASCII text never contains 0x00,
+    while binary formats (padding, integers, compressed data) almost always do
+  - **Limitation**: UTF-16/UTF-32 text files contain 0x00 but are rare in codebases
   - Return `true` if NULL bytes found, `false` otherwise
-- [ ] Alternative: Check by extension (`.png`, `.jpg`, `.exe`, `.dll`, `.so`, `.wasm`, etc.)
-- [ ] Create constant `BINARY_EXTENSIONS: &[&str]` for quick lookup
-
-### 1.7 `get_mime_type` Function (NEW - Optional)
-- [ ] Implement `get_mime_type(path: &Path) -> Option<String>`
-  - Map extensions to MIME types
-  - Useful for HTTP responses or content-type detection
-  - e.g., `.json` → `"application/json"`, `.rs` → `"text/x-rust"`
 
 ---
 
