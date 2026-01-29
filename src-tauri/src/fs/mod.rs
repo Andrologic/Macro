@@ -14,6 +14,39 @@ pub mod dto;
 
 // Core Path Validation and Normalization Functions
 
+// Basic helper to resolve absolute path
+fn resolve_absolute(path: &Path, workspace: &Path) -> Result<(PathBuf, PathBuf)> {
+    let canonical_workspace = workspace.canonicalize().map_err(|e| {
+        BackendError::Config {
+            message: format!("Workspace path invalid: {}", e)
+        }
+    })?;
+    let abs_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        canonical_workspace.join(path)
+    };
+    Ok((abs_path, canonical_workspace))
+}
+
+// Basic helper 2: Validate parent directory (core of write/create security)
+fn validate_parent(abs_path: &Path, canonical_workspace: &Path) -> Result<PathBuf> {
+    let parent = abs_path.parent().ok_or_else(|| BackendError::Filesystem {
+        message: format!("Path {:?} has no parent directory", abs_path),
+    })?;
+    let canonical_parent = parent.canonicalize().map_err(|_| {
+        BackendError::FilesystemNotFound {
+            message: format!("Parent directory {:?} does not exist", parent),
+        }
+    })?;
+    if !canonical_parent.starts_with(canonical_workspace) {
+        return Err(BackendError::FilesystemPathOutsideWorkspace {
+            message: format!("Parent of path {:?} is outside workspace {:?}", abs_path, canonical_workspace),
+        });
+    }
+    Ok(canonical_parent)
+}
+
 /// Resolve path to absolute path, checks if path is within workspace using `canonicalize`
 /// Prevents path traversal attacks (`../`,symlinks outside workspace)
 /// Return normalized absolute path if valid, else error
@@ -22,24 +55,9 @@ pub mod dto;
 /// * `workspace` - The workspace directory to resolve relative paths against
 /// # Returns
 /// * `Result<PathBuf>` - The resolved absolute path or an error
-pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf>{
-    // The workspace must exist -> cononicalize it first
-    let canonical_workspace = workspace.canonicalize().map_err(|e| {
-        BackendError::Config {
-            message: format!("Workspace path invalid: {}",e) 
-        }
-    })?;
-
-    // Resolve absolute path
-    let abs_path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {   
-        canonical_workspace.join(path)
-    };
-
-    // Try to canonicalize the absolute path
+pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
+    let (abs_path, canonical_workspace) = resolve_absolute(path, workspace)?;
     match abs_path.canonicalize() {
-        // File exists, check if within workspace
         Ok(canonical_path) => {
             if canonical_path.starts_with(&canonical_workspace) {
                 Ok(canonical_path)
@@ -49,39 +67,39 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf>{
                 })
             }
         },
-        // File doesn't exist, verify parent directory
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let parent = abs_path.parent().ok_or_else(|| BackendError::Filesystem {
-                message: format!("Path {:?} has no parent directory", abs_path),
-            })?;
-            // Parent must exist 
-            let canonical_parent = parent.canonicalize().map_err(|_| {
-                BackendError::FilesystemNotFound {
-                    message: format!("Parent directory {:?} does not exist", parent),
-                }
-            })?;
-            // Check if parent is within workspace
-            if !canonical_parent.starts_with(&canonical_workspace) {
-                return Err(BackendError::FilesystemPathOutsideWorkspace {
-                    message: format!("Parent of path {:?} is outside workspace {:?}", abs_path, canonical_workspace),
-                });
-            }
-
-            // Build final normalized path (canonical parent + file name)
+            // Fichier n'existe pas : on valide le parent et on reconstruit le chemin
+            let canonical_parent = validate_parent(&abs_path, &canonical_workspace)?;
             let file_name = abs_path.file_name().ok_or_else(|| {
-                BackendError::Filesystem {
-                    message: "Invalid file path".to_string(),
-                }
+                BackendError::Filesystem { message: "Invalid file path".to_string() }
             })?;
-
             Ok(canonical_parent.join(file_name))
         },
-        // Other IO errors
         Err(e) => Err(BackendError::Io {
             message: format!("Failed to canonicalize path {:?}: {}", abs_path, e),
             source: e,
         }),
     }
+}
+
+/// Validate path for write operations
+/// Similar to `validate_path` but handles non-existent files
+/// Checks if parent directory exists and is within workspace
+/// Returns the target path (not canonicalized, since file doesn't exist)
+/// Prevents creating files in restricted locations
+/// # Arguments
+/// * `path` - The input path to validate
+/// * `workspace` - The workspace directory to resolve relative paths against
+/// # Returns
+/// * `Result<PathBuf>` - The validated path or an error
+pub fn validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf> {
+    let (abs_path, canonical_workspace) = resolve_absolute(path, workspace)?;
+    
+    // Pour l'écriture, on vérifie juste que le parent est clean
+    // On retourne abs_path tel quel (puisque le fichier n'existe peut-être pas encore)
+    validate_parent(&abs_path, &canonical_workspace)?;
+    
+    Ok(abs_path)
 }
 
 /// Convert path to OS-specific format
