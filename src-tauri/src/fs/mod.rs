@@ -161,10 +161,9 @@ pub fn get_file_language(path: &Path) -> Result<String> {
             "zig" => "Zig",
             _ => "Unknown",
         }.to_string())
-        .ok_or_else(|| std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "File has no extension",
-        ))
+        .ok_or_else(|| BackendError::Filesystem {
+            message: format!("File {:?} has no extension", path),
+        })
 }
 
 // Test for validate_path function
