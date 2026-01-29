@@ -3,11 +3,14 @@
 // See docs/fs-todo.md for detailed tasks
 
 use std::path::{Path, PathBuf};
-use std::io::Result;
 
-use tauri::ipc::private::ResultFutureTag;
+use tokio::fs::canonicalize;
+
+use crate::core::error::{BackendError, Result};
 
 pub mod watcher;
+pub mod dto;
+
 
 // Core Path Validation and Normalization Functions
 
@@ -19,23 +22,65 @@ pub mod watcher;
 /// * `workspace` - The workspace directory to resolve relative paths against
 /// # Returns
 /// * `Result<PathBuf>` - The resolved absolute path or an error
-fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf>{
+pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf>{
+    // The workspace must exist -> cononicalize it first
+    let canonical_workspace = workspace.canonicalize().map_err(|e| {
+        BackendError::Config {
+            message: format!("Workspace path invalid: {}",e) 
+        }
+    })?;
+
+    // Resolve absolute path
     let abs_path = if path.is_absolute() {
         path.to_path_buf()
-    } else {
-        workspace.join(path)
+    } else {   
+        canonical_workspace.join(path)
     };
 
-    let canonical_workspace = workspace.canonicalize()?;
-    let canonical_path = abs_path.canonicalize()?;
+    // Try to canonicalize the absolute path
+    match abs_path.canonicalize() {
+        // File exists, check if within workspace
+        Ok(canonical_path) => {
+            if canonical_path.starts_with(&canonical_workspace) {
+                Ok(canonical_path)
+            } else {
+                Err(BackendError::FilesystemPathOutsideWorkspace {
+                    message: format!("Path {:?} is outside workspace {:?}", canonical_path, canonical_workspace),
+                })
+            }
+        },
+        // File doesn't exist, verify parent directory
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let parent = abs_path.parent().ok_or_else(|| BackendError::Filesystem {
+                message: format!("Path {:?} has no parent directory", abs_path),
+            })?;
+            // Parent must exist 
+            let canonical_parent = parent.canonicalize().map_err(|_| {
+                BackendError::FilesystemNotFound {
+                    message: format!("Parent directory {:?} does not exist", parent),
+                }
+            })?;
+            // Check if parent is within workspace
+            if !canonical_parent.starts_with(&canonical_workspace) {
+                return Err(BackendError::FilesystemPathOutsideWorkspace {
+                    message: format!("Parent of path {:?} is outside workspace {:?}", abs_path, canonical_workspace),
+                });
+            }
 
-    if canonical_path.starts_with(&canonical_workspace) {
-        Ok(canonical_path)
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "Path traversal outside workspace is not allowed",
-        ))
+            // Build final normalized path (canonical parent + file name)
+            let file_name = abs_path.file_name().ok_or_else(|| {
+                BackendError::Filesystem {
+                    message: "Invalid file path".to_string(),
+                }
+            })?;
+
+            Ok(canonical_parent.join(file_name))
+        },
+        // Other IO errors
+        Err(e) => Err(BackendError::Io {
+            message: format!("Failed to canonicalize path {:?}: {}", abs_path, e),
+            source: e,
+        }),
     }
 }
 
@@ -46,7 +91,7 @@ fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf>{
 /// * `path` - The input path to convert
 /// # Returns
 /// * `PathBuf` - The OS-specific path
-fn normalize_path(path: &Path) -> PathBuf {
+pub fn normalize_path(path: &Path) -> PathBuf {
     let mut result = PathBuf::new();
     for component in path.components() {
         match component {
@@ -65,7 +110,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 /// * `path` - The input file path
 /// # Returns
 /// * `Option<String>` - The detected language or None
-fn get_file_language(path: &Path) -> Result<String> {
+pub fn get_file_language(path: &Path) -> Result<String> {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext_str| match ext_str {

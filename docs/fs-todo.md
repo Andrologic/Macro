@@ -33,18 +33,18 @@ src-tauri/src/
 
 ### 1.1 Imports & Module Structure
 - [x] Add module declaration `pub mod watcher;`
-- [ ] Add module declaration `pub mod dto;`
-- [ ] Replace `use std::io::Result;` with `use crate::core::error::{BackendError, Result};`
-- [ ] Remove unused import `use tauri::ipc::private::ResultFutureTag;`
-- [ ] Export public functions: `pub use self::validate_path;`, etc.
+- [x] Add module declaration `pub mod dto;`
+- [x] Replace `use std::io::Result;` with `use crate::core::error::{BackendError, Result};`
+- [x] Remove unused import `use tauri::ipc::private::ResultFutureTag;`
+- [x] Export public functions: `pub use self::validate_path;`, etc.
 
 ### 1.2 `validate_path` Function
 - [x] Implement `validate_path(path: &Path, workspace: &Path) -> Result<PathBuf>`
 - [x] Resolve path to absolute path (join with workspace if relative)
 - [x] Use `canonicalize()` to resolve symlinks and `.`/`..`
 - [x] Check if canonical path starts with canonical workspace
-- [ ] **FIX**: Return `BackendError::FilesystemPathOutsideWorkspace` instead of `std::io::Error`
-- [ ] **FIX**: Handle case where file doesn't exist yet (for write operations)
+- [x] **FIX**: Return `BackendError::FilesystemPathOutsideWorkspace` instead of `std::io::Error`
+- [x] **FIX**: Handle case where file doesn't exist yet (for write operations)
   - Use `normalize_path` + manual prefix check when `canonicalize` fails with NotFound
   - Only allow if the *parent* directory exists and is within workspace
 - [ ] **ADD**: Handle symlinks that point outside workspace (currently relies on canonicalize)
