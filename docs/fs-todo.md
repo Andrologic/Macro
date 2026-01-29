@@ -85,8 +85,8 @@ src-tauri/src/
   - `.lock` → "Lock File"
 
 ### 1.6 `is_binary_file` Function (NEW)
-- [ ] Implement `is_binary_file(path: &Path) -> Result<bool>`
-- [ ] **Step 1: Check by extension** (fast, no file read)
+- [x] Implement `is_binary_file(path: &Path) -> Result<bool>`
+- [x] **Step 1: Check by extension** (fast, no file read)
   - Create constant `BINARY_EXTENSIONS: &[&str]` with common binary extensions:
     - Images: `png`, `jpg`, `jpeg`, `gif`, `bmp`, `ico`, `webp`, `svg`, `tiff`
     - Audio/Video: `mp3`, `mp4`, `wav`, `avi`, `mkv`, `mov`, `flac`, `ogg`
@@ -96,7 +96,7 @@ src-tauri/src/
     - Databases: `db`, `sqlite`, `sqlite3`
     - Other: `class`, `pyc`, `o`, `a`, `lib`
   - If extension matches → return `true` immediately
-- [ ] **Step 2: Content check** (fallback if extension unknown)
+- [x] **Step 2: Content check** (fallback if extension unknown)
   - Read first 8KB of file
   - Check for NULL bytes (0x00) in content
   - **Note**: This heuristic works because UTF-8/ASCII text never contains 0x00,
