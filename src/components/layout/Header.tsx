@@ -43,7 +43,7 @@ export function Header({
     >
       {/* Left: Logo and App Name */}
       <div className="flex items-center gap-2 w-48">
-        <Logo size={20} />
+        <Logo size={20} strokeWidth={3} />
         <span className="text-sm font-semibold text-foreground">Macro</span>
       </div>
 

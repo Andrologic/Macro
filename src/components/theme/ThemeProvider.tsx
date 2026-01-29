@@ -1,11 +1,16 @@
 import { useEffect, useState } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import { applyTheme } from '../../utils/themeUtils';
+import { useDynamicAppIcon } from '../../hooks/useDynamicAppIcon';
 import { Theme, ThemeManifest } from '../../types/theme';
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const activeThemeId = useAppStore((state) => state.activeThemeId);
   const [manifest, setManifest] = useState<ThemeManifest | null>(null);
+  const [currentTheme, setCurrentTheme] = useState<Theme | null>(null);
+  
+  useDynamicAppIcon(currentTheme?.colors.primary);
+
+  const activeThemeId = useAppStore((state) => state.activeThemeId);
 
   // 1. Load Manifest
   useEffect(() => {
@@ -26,6 +31,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
         .then((res) => res.json())
         .then((theme: Theme) => {
           applyTheme(theme);
+          setCurrentTheme(theme);
         })
         .catch((err) => console.error(`Failed to load theme ${activeThemeId}:`, err));
     }
