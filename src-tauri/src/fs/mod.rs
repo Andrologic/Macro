@@ -60,7 +60,7 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
     match abs_path.canonicalize() {
         Ok(canonical_path) => {
             if canonical_path.starts_with(&canonical_workspace) {
-                Ok(canonical_path)
+                Ok(normalize_path(&canonical_path))
             } else {
                 Err(BackendError::FilesystemPathOutsideWorkspace {
                     message: format!("Path {:?} is outside workspace {:?}", canonical_path, canonical_workspace),
@@ -73,7 +73,7 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
             let file_name = abs_path.file_name().ok_or_else(|| {
                 BackendError::Filesystem { message: "Invalid file path".to_string() }
             })?;
-            Ok(canonical_parent.join(file_name))
+            Ok(normalize_path(&canonical_parent.join(file_name)))
         },
         Err(e) => Err(BackendError::Io {
             message: format!("Failed to canonicalize path {:?}: {}", abs_path, e),
@@ -99,7 +99,7 @@ pub fn validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf>
     // We return abs_path as is (since the file may not exist yet)
     validate_parent(&abs_path, &canonical_workspace)?;
     
-    Ok(abs_path)
+    Ok(normalize_path(&abs_path))
 }
 
 /// Convert path to OS-specific format
@@ -111,10 +111,16 @@ pub fn validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf>
 /// * `PathBuf` - The OS-specific path
 pub fn normalize_path(path: &Path) -> PathBuf {
     let mut result = PathBuf::new();
+
+    // Handle empty path
+    if path.components().next().is_none() {
+        return result;
+    }
+
     for component in path.components() {
         match component {
-            std::path::Component::CurDir => {} // Ignore "."
-            std::path::Component::ParentDir => { result.pop(); } // Résout ".."
+            std::path::Component::CurDir => {} // Ignore `.` components
+            std::path::Component::ParentDir => {result.pop();} // Remove the last component for `..`
             _ => result.push(component),
         }
     }

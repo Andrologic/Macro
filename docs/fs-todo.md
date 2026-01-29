@@ -61,9 +61,9 @@ src-tauri/src/
 - [x] Handle `Component::CurDir` (ignore `.`)
 - [x] Handle `Component::ParentDir` (pop `..`)
 - [x] Push other components
-- [ ] **ADD**: Handle empty path edge case (return empty PathBuf or error?)
-- [ ] **ADD**: Handle Windows UNC paths (`\\?\` prefix)
-- [ ] **ADD**: Handle trailing slashes consistently
+- [x] **ADD**: Handle empty path edge case (return empty PathBuf or error?)
+- [x] **ADD**: Handle Windows UNC paths (`\\?\` prefix)
+- [x] **ADD**: Handle trailing slashes consistently
 
 ### 1.5 `get_file_language` Function
 - [x] Implement `get_file_language(path: &Path) -> Result<String>`
