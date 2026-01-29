@@ -1,45 +1,30 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
-import { useTaskStore } from '../../stores/useTaskStore';
-import { useAIStore } from '../../stores/useAIStore';
-import { useToolsStore } from '../../stores/useToolsStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
-import { UnifiedTaskList } from '../tasks/UnifiedTaskList';
 import { Skeleton } from '../shared/Skeleton';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
 
 export const ChatZone: React.FC = () => {
-  const { currentPlan, mode, selectedTaskId, setSelectedTask, openToolsSettings } = useAppStore();
+  const { mode, currentPlan } = useAppStore();
   const {
     conversations,
     selectedConversationId,
     selectConversation,
     createConversation,
-    addMessage,
     getConversationMessages,
     isLoading,
+    sendMessage,
+    editMessage,
   } = useChatStore();
-  const { tasks } = useTaskStore();
-  const {
-    providers,
-    models,
-    selectedProviderId,
-    selectedModelId,
-  } = useAIStore();
-  const { internalTools, mcpServers } = useToolsStore();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [tasksOpen, setTasksOpen] = useState(true);
   const [inputValue, setInputValue] = useState('');
-
-  // Count active tools and servers
-  const activeInternalCount = Object.values(internalTools).filter(t => (t.config as any)?.enabled !== false).length;
-  const activeMCPCount = mcpServers.filter(s => (s.config as any)?.enabled !== false).length;
-  const totalActiveTools = activeInternalCount + activeMCPCount;
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState('');
 
   // Filter messages by selected conversation
   const currentMessages = selectedConversationId
@@ -51,60 +36,42 @@ export const ChatZone: React.FC = () => {
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
 
-  const selectedTask = selectedTaskId
-    ? tasks.find((task) => task.id === selectedTaskId)
-    : null;
-
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentMessages]);
 
   const ensureConversation = () => {
     if (selectedConversationId) return selectedConversationId;
-    const conversation = createConversation('New Conversation', selectedTaskId, null);
+    const conversation = createConversation('New Conversation', null, null);
     return conversation.id;
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!inputValue.trim()) return;
     const conversationId = ensureConversation();
-    addMessage({
-      id: `msg-${Date.now()}`,
-      task_id: selectedTaskId ?? '',
-      conversation_id: conversationId,
-      role: 'user',
-      content: inputValue,
-      timestamp: new Date().toISOString(),
-    });
+    const content = inputValue.trim();
     setInputValue('');
-
-    setTimeout(() => {
-      addMessage({
-        id: `msg-${Date.now()}-ai`,
-        task_id: selectedTaskId ?? '',
-        conversation_id: conversationId,
-        role: 'assistant',
-        content:
-          mode === 'Architect'
-            ? 'Plan draft generated. Review the tasks above and confirm.'
-            : 'Task analysis complete. Ready to generate the diff.',
-        timestamp: new Date().toISOString(),
-      });
-    }, 400);
+    await sendMessage({ conversationId, content });
   };
 
-  if (!currentPlan) {
-    return (
-      <main className="flex-1 flex items-center justify-center bg-background">
-        <div className="text-center space-y-3">
-          <div className="w-16 h-16 mx-auto rounded-xl bg-card border border-border flex items-center justify-center">
-            <Icon name="layers" size={24} className="text-muted-foreground" />
-          </div>
-          <p className="text-muted-foreground text-sm">No plan selected</p>
-        </div>
-      </main>
-    );
-  }
+  const handleEditStart = (messageId: string, content: string) => {
+    setEditingMessageId(messageId);
+    setEditingValue(content);
+  };
+
+  const handleEditCancel = () => {
+    setEditingMessageId(null);
+    setEditingValue('');
+  };
+
+  const handleEditSave = async () => {
+    if (!editingMessageId) return;
+    const content = editingValue.trim();
+    if (!content) return;
+    await editMessage(editingMessageId, content);
+    setEditingMessageId(null);
+    setEditingValue('');
+  };
 
   return (
     <main className="flex-1 flex bg-background">
@@ -269,39 +236,12 @@ export const ChatZone: React.FC = () => {
           )}
         </header>
 
-        {/* Unified Tasks */}
-        <section className="border-b border-border/50 bg-background">
-          <div className="h-11 flex items-center justify-between px-4">
-            <div className="flex items-center gap-2">
-              <Icon name="list" size={14} className="text-primary" />
-              <span className="text-xs font-medium text-foreground">
-                Unified Tasks
-              </span>
-            </div>
-            <button
-              onClick={() => setTasksOpen((prev) => !prev)}
-              className="p-1.5 rounded-lg hover:bg-accent transition-colors"
-            >
-              <Icon
-                name={tasksOpen ? 'chevron-down' : 'chevron-right'}
-                size={14}
-                className="text-muted-foreground"
-              />
-            </button>
-          </div>
-
-          {tasksOpen && (
-            <div className="max-h-64 overflow-y-auto px-4 pb-4">
-              <UnifiedTaskList />
-            </div>
-          )}
-        </section>
-
         {/* Conversation Content */}
         <div className="flex-1 overflow-y-auto px-12 py-8">
           {selectedConversationId && currentMessages.length > 0 ? (
             <div className="max-w-4xl mx-auto space-y-6">
               {currentMessages.map((message) => {
+                const isEditing = editingMessageId === message.id;
 
                 return (
                   <div key={message.id} className="relative">
@@ -320,20 +260,55 @@ export const ChatZone: React.FC = () => {
                         )}
                       >
                         {/* Content */}
-                        <div
-                          className={cn(
-                            'text-sm leading-relaxed',
-                            message.role === 'user'
-                              ? 'text-foreground'
-                              : 'text-muted-foreground'
-                          )}
-                        >
-                          {message.content.split('\n').map((line, i) => (
-                            <p key={i} className="mb-2 last:mb-0">
-                              {line}
-                            </p>
-                          ))}
-                        </div>
+                        {isEditing ? (
+                          <div className="space-y-2">
+                            <textarea
+                              value={editingValue}
+                              onChange={(event) => setEditingValue(event.target.value)}
+                              className="w-full min-h-[80px] resize-none bg-card border border-border rounded-lg p-2 text-sm text-foreground"
+                            />
+                            <div className="flex items-center gap-2 justify-end">
+                              <button
+                                onClick={handleEditCancel}
+                                className="px-3 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-accent"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={handleEditSave}
+                                className="px-3 py-1.5 rounded-md text-xs bg-primary text-primary-foreground hover:bg-primary/90"
+                              >
+                                Save & Regenerate
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            className={cn(
+                              'text-sm leading-relaxed',
+                              message.role === 'user'
+                                ? 'text-foreground'
+                                : 'text-muted-foreground'
+                            )}
+                          >
+                            {message.content.split('\n').map((line, i) => (
+                              <p key={i} className="mb-2 last:mb-0">
+                                {line}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+
+                        {message.role === 'user' && !isEditing && (
+                          <div className="mt-3 flex justify-end">
+                            <button
+                              onClick={() => handleEditStart(message.id, message.content)}
+                              className="text-xs text-muted-foreground hover:text-foreground"
+                            >
+                              Edit
+                            </button>
+                          </div>
+                        )}
 
                         {/* Choices */}
                         {message.choices && (
@@ -396,21 +371,6 @@ export const ChatZone: React.FC = () => {
                 {/* Model Selector */}
                 <ModelDropdown />
               </div>
-
-              {/* Tools Selector */}
-              <button 
-                onClick={openToolsSettings}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/80 border border-border hover:border-primary/50 transition-colors"
-                title="Manage AI Tools & MCP Servers"
-              >
-                <Icon name="tool" size={12} className="text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">Tools</span>
-                {totalActiveTools > 0 && (
-                  <span className="text-xs text-primary font-medium">
-                    ({totalActiveTools})
-                  </span>
-                )}
-              </button>
             </div>
 
             {/* Input Field */}
@@ -419,18 +379,28 @@ export const ChatZone: React.FC = () => {
                 type="text"
                 placeholder={
                   mode === 'Architect'
-                    ? 'Describe the plan you want to build...'
-                    : 'Ask the AI to execute a task...'
+                    ? 'Describe your idea...'
+                    : 'Ask the AI something...'
                 }
                 className="flex-1 bg-transparent border-0 outline-none text-sm text-foreground placeholder:text-muted-foreground h-9 px-2"
                 value={inputValue}
                 onChange={(event) => setInputValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    handleSend();
+                  }
+                }}
               />
               <button
                 onClick={handleSend}
                 className="rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground px-3 h-9 flex items-center"
               >
-                <Icon name="arrow-up" size={14} />
+                {isLoading ? (
+                  <Icon name="loader" size={14} className="animate-spin" />
+                ) : (
+                  <Icon name="arrow-up" size={14} />
+                )}
               </button>
             </div>
           </div>

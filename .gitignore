@@ -35,3 +35,6 @@ direnv/.direnvrc
 
 # Tauri
 src-tauri/target/
+
+# Local AI keys
+public/ai-keys.local.json
