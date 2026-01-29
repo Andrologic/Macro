@@ -95,8 +95,8 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
 pub fn validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf> {
     let (abs_path, canonical_workspace) = resolve_absolute(path, workspace)?;
     
-    // Pour l'écriture, on vérifie juste que le parent est clean
-    // On retourne abs_path tel quel (puisque le fichier n'existe peut-être pas encore)
+    // To write, we just check that the parent is clean
+    // We return abs_path as is (since the file may not exist yet)
     validate_parent(&abs_path, &canonical_workspace)?;
     
     Ok(abs_path)
