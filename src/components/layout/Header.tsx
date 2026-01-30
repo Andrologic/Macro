@@ -37,18 +37,18 @@ export function Header({
 
   return (
     <header 
-      className="h-12 bg-card border-b border-border flex items-center px-4 shrink-0 select-none"
+      className="h-12 bg-card border-b border-border flex items-center px-4 shrink-0 select-none relative z-50"
       data-tauri-drag-region
       onDoubleClick={handleHeaderDoubleClick}
     >
       {/* Left: Logo and App Name */}
-      <div className="flex items-center gap-2 w-48">
+      <div className="flex items-center gap-2 w-48" data-tauri-drag-region>
         <Logo size={20} strokeWidth={3} />
         <span className="text-sm font-semibold text-foreground">Macro</span>
       </div>
 
       {/* Center: Mode Switch (Segment Control) */}
-      <div className="flex-1 flex justify-center">
+      <div className="flex-1 flex justify-center" data-tauri-drag-region>
         <div className="inline-flex bg-secondary rounded-lg p-1">
           {modes.map((m) => (
             <button
@@ -71,7 +71,7 @@ export function Header({
       </div>
 
       {/* Right: Panel toggles, settings, and account */}
-      <div className="w-48 flex items-center justify-end gap-2">
+      <div className="w-48 flex items-center justify-end gap-2" data-tauri-drag-region>
         {/* Panel toggles */}
         <button
           onClick={onToggleLeft}
