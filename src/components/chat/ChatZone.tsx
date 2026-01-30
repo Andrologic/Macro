@@ -137,6 +137,7 @@ export const ChatZone: React.FC = () => {
             <button
               onClick={() => createConversation('New Conversation', null, null)}
               className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-medium transition-colors"
+              title="New chat (Ctrl+N)"
             >
               <Icon name="plus" size={12} />
               New Chat
@@ -300,12 +301,22 @@ export const ChatZone: React.FC = () => {
         <header className="h-14 border-b border-border/50 flex items-center justify-between px-4 bg-card/30">
           <div className="flex items-center gap-3 min-w-0">
             {!sidebarOpen && (
-              <button
-                onClick={() => setSidebarOpen(true)}
-                className="p-1.5 rounded-lg hover:bg-accent transition-colors"
-              >
-                <Icon name="chevron-right" size={16} className="text-muted-foreground" />
-              </button>
+              <div className="flex items-center gap-1 mr-1">
+                <button
+                  onClick={() => setSidebarOpen(true)}
+                  className="p-1.5 rounded-lg hover:bg-accent transition-colors"
+                  title="Show history"
+                >
+                  <Icon name="chevron-right" size={16} className="text-muted-foreground" />
+                </button>
+                <button
+                  onClick={() => createConversation('New Conversation', null, null)}
+                  className="p-1.5 rounded-lg hover:bg-accent transition-colors group"
+                  title="New chat (Ctrl+N)"
+                >
+                  <Icon name="plus" size={16} className="text-muted-foreground group-hover:text-primary transition-colors" />
+                </button>
+              </div>
             )}
             {currentConversation && (
               <>

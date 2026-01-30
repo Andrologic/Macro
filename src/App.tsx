@@ -45,6 +45,20 @@ const App: React.FC = () => {
     void checkSession();
   }, [initializeApp, initializeChat, initializeTasks, initializeAI, initializeTools, initializeProviders, checkSession]);
 
+  // Global Keyboard Shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // New Chat: Ctrl+N or Cmd+N
+      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+        e.preventDefault();
+        void useChatStore.getState().createConversation('New Conversation', null, null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   return (
     <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr_32px] overflow-hidden">
       {/* Header */}
