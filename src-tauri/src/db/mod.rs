@@ -129,7 +129,7 @@ async fn insert_default_providers(pool: &SqlitePool) -> DbResult<()> {
         ("anthropic", "Anthropic", "anthropic", "https://api.anthropic.com/v1", false),
         ("openrouter", "OpenRouter", "openrouter", "https://openrouter.ai/api/v1", false),
         ("ollama", "Ollama", "ollama", "http://localhost:11434/v1", true),
-        ("lmstudio", "LM Studio", "lmstudio", "http://localhost:1234/api/v1", true),
+        ("lmstudio", "LM Studio", "lmstudio", "http://localhost:1234/v1", true),
     ];
 
     for (id, name, provider_type, base_url, is_local) in default_providers {

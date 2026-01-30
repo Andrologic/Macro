@@ -4,6 +4,8 @@
  * Supports: OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, and any OpenAI-compatible API
  */
 
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
+
 export interface ProviderModel {
   id: string;
   name: string;
@@ -35,7 +37,11 @@ export interface FetchModelsResult {
 export async function fetchModelsFromProvider(
   options: FetchModelsOptions
 ): Promise<FetchModelsResult> {
-  const { baseUrl, apiKey, providerId, timeout = 5000 } = options;
+  const { baseUrl, apiKey, providerId, timeout = 10000 } = options;
+
+  // Use longer timeout for local providers (model loading can take time)
+  const isLocalProvider = providerId === 'lmstudio' || providerId === 'ollama';
+  const effectiveTimeout = isLocalProvider ? Math.max(timeout, 15000) : timeout;
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -54,14 +60,18 @@ export async function fetchModelsFromProvider(
     headers['X-Title'] = 'Macro';
   }
 
+  // Log connection attempt for debugging
+  if (isLocalProvider) {
+    console.log(`[${providerId}] Fetching models from ${baseUrl}/models`);
+  }
+
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
 
-    const response = await fetch(`${baseUrl}/models`, {
+    const response = await tauriFetch(`${baseUrl}/models`, {
       method: 'GET',
       headers,
-      signal: controller.signal,
     });
 
     clearTimeout(timeoutId);
@@ -101,7 +111,16 @@ export async function fetchModelsFromProvider(
       };
     }
     
-    if (message.includes('Failed to fetch') || message.includes('NetworkError')) {
+    if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('connection')) {
+      const isLocalProvider = providerId === 'lmstudio' || providerId === 'ollama';
+      if (isLocalProvider) {
+        const providerName = providerId === 'lmstudio' ? 'LM Studio' : 'Ollama';
+        return {
+          success: false,
+          models: [],
+          error: `Cannot connect to ${providerName}. Make sure the server is started (in ${providerName}, go to Developer tab > Start Server).`,
+        };
+      }
       return {
         success: false,
         models: [],
