@@ -128,7 +128,8 @@ export function useWindowRestoration() {
       isInitialized.current = true;
 
       try {
-        const prefs = await loadPreferences<WindowState>([
+        // Load preferences with correct key access
+        const prefs = await loadPreferences<Record<string, unknown>>([
           PREF_KEYS.WINDOW_WIDTH,
           PREF_KEYS.WINDOW_HEIGHT,
           PREF_KEYS.WINDOW_X,
@@ -136,17 +137,20 @@ export function useWindowRestoration() {
           PREF_KEYS.IS_MAXIMIZED,
         ]);
 
-        const width = prefs[PREF_KEYS.WINDOW_WIDTH as keyof WindowState] as number;
-        const height = prefs[PREF_KEYS.WINDOW_HEIGHT as keyof WindowState] as number;
-        const x = prefs[PREF_KEYS.WINDOW_X as keyof WindowState] as number | null;
-        const y = prefs[PREF_KEYS.WINDOW_Y as keyof WindowState] as number | null;
-        const isMaximized = prefs[PREF_KEYS.IS_MAXIMIZED as keyof WindowState] as boolean;
+        const width = prefs[PREF_KEYS.WINDOW_WIDTH] as number | undefined;
+        const height = prefs[PREF_KEYS.WINDOW_HEIGHT] as number | undefined;
+        const x = prefs[PREF_KEYS.WINDOW_X] as number | null;
+        const y = prefs[PREF_KEYS.WINDOW_Y] as number | null;
+        const isMaximized = prefs[PREF_KEYS.IS_MAXIMIZED] as boolean;
+
+        // Small delay to ensure window is ready before resizing
+        await new Promise((resolve) => setTimeout(resolve, 50));
 
         if (isMaximized) {
           await api.maximize();
-        } else if (width && height) {
+        } else if (width && height && width > 100 && height > 100) {
           await api.setSize(width, height);
-          if (x !== null && y !== null) {
+          if (x !== null && y !== null && x >= 0 && y >= 0) {
             await api.setPosition(x, y);
           }
         }
