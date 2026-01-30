@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { Header } from './components/layout/Header';
 import { Footer } from './components/layout/Footer';
+import { Toaster } from './components/ui/Toaster';
+import { useWindowRestoration } from './hooks/useWindowRestoration';
 import { LeftPanel } from './components/layout/LeftPanel';
 import { ChatZone } from './components/chat/ChatZone';
 import { RightPanel } from './components/layout/RightPanel';
@@ -21,8 +23,9 @@ import { useToolsStore } from './stores/useToolsStore';
 import { useProviderStore } from './stores/useProviderStore';
 
 const App: React.FC = () => {
-  const [isLeftOpen, setIsLeftOpen] = useState(true);
-  const [isRightOpen, setIsRightOpen] = useState(true);
+  // Restore window size/position from preferences
+  useWindowRestoration();
+
   const initializeApp = useAppStore((state) => state.initialize);
   const initializeChat = useChatStore((state) => state.initialize);
   const initializeTasks = useTaskStore((state) => state.initialize);
@@ -30,6 +33,12 @@ const App: React.FC = () => {
   const initializeTools = useToolsStore((state) => state.loadSettings);
   const initializeProviders = useProviderStore((state) => state.initialize);
   const checkSession = useAuthStore((state) => state.checkSession);
+  
+  // Panel state from store (persisted)
+  const isLeftOpen = useAppStore((state) => state.isLeftPanelOpen);
+  const isRightOpen = useAppStore((state) => state.isRightPanelOpen);
+  const setLeftOpen = useAppStore((state) => state.setLeftPanelOpen);
+  const setRightOpen = useAppStore((state) => state.setRightPanelOpen);
   const leftPanelWidth = useAppStore((state) => state.leftPanelWidth);
   const rightPanelWidth = useAppStore((state) => state.rightPanelWidth);
   const setLeftPanelWidth = useAppStore((state) => state.setLeftPanelWidth);
@@ -65,8 +74,8 @@ const App: React.FC = () => {
       <Header
         isLeftOpen={isLeftOpen}
         isRightOpen={isRightOpen}
-        onToggleLeft={() => setIsLeftOpen((prev) => !prev)}
-        onToggleRight={() => setIsRightOpen((prev) => !prev)}
+        onToggleLeft={() => setLeftOpen(!isLeftOpen)}
+        onToggleRight={() => setRightOpen(!isRightOpen)}
       />
 
       {/* Main Content Area */}
@@ -110,6 +119,9 @@ const App: React.FC = () => {
       <ToolsSettingsModal />
       <ProvidersSettingsModal />
       <CodeFileViewerModal />
+
+      {/* Toast Notifications */}
+      <Toaster />
     </div>
   );
 };

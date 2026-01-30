@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useProviderStore } from '../../stores/useProviderStore';
@@ -10,7 +11,8 @@ import { ModelDropdown } from '../ai/ModelDropdown';
 import { MarkdownRenderer, estimateTokens, formatTokenCount } from './MarkdownRenderer';
 
 export const ChatZone: React.FC = () => {
-  const { mode, currentPlan } = useAppStore();
+  const { t } = useTranslation();
+  const { currentPlan } = useAppStore();
   const {
     conversations,
     selectedConversationId,
@@ -135,16 +137,17 @@ export const ChatZone: React.FC = () => {
           {/* Sidebar Header */}
           <div className="h-14 border-b border-border flex items-center justify-between px-3">
             <button
-              onClick={() => createConversation('New Conversation', null, null)}
+              onClick={() => createConversation(t('chat.newConversation'), null, null)}
               className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-medium transition-colors"
-              title="New chat (Ctrl+N)"
+              title={`${t('chat.newChat')} (Ctrl+N)`}
             >
               <Icon name="plus" size={12} />
-              New Chat
+              {t('chat.newChat')}
             </button>
             <button
               onClick={() => setSidebarOpen(false)}
               className="p-1.5 rounded-lg hover:bg-accent transition-colors"
+              aria-label={t('chat.hideHistory')}
             >
               <Icon name="chevron-left" size={16} className="text-muted-foreground" />
             </button>
@@ -161,7 +164,7 @@ export const ChatZone: React.FC = () => {
             ) : conversations.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full px-6 text-center">
                 <Icon name="message-square" size={32} className="text-muted-foreground mb-3" />
-                <p className="text-sm text-muted-foreground">No conversations yet</p>
+                <p className="text-sm text-muted-foreground">{t('chat.noConversations')}</p>
               </div>
             ) : (
               <div className="p-2 space-y-1">
@@ -275,14 +278,14 @@ export const ChatZone: React.FC = () => {
                             className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
                           >
                             <Icon name="edit" size={12} />
-                            Rename
+                            {t('common.rename')}
                           </button>
                           <button
                             onClick={() => handleDelete(conv.id)}
                             className="w-full px-3 py-1.5 text-left text-sm text-red-400 hover:bg-red-500/10 flex items-center gap-2"
                           >
                             <Icon name="trash" size={12} />
-                            Delete
+                            {t('common.delete')}
                           </button>
                         </div>
                       )}
@@ -305,14 +308,16 @@ export const ChatZone: React.FC = () => {
                 <button
                   onClick={() => setSidebarOpen(true)}
                   className="p-1.5 rounded-lg hover:bg-accent transition-colors"
-                  title="Show history"
+                  title={t('chat.showHistory')}
+                  aria-label={t('chat.showHistory')}
                 >
                   <Icon name="chevron-right" size={16} className="text-muted-foreground" />
                 </button>
                 <button
-                  onClick={() => createConversation('New Conversation', null, null)}
+                  onClick={() => createConversation(t('chat.newConversation'), null, null)}
                   className="p-1.5 rounded-lg hover:bg-accent transition-colors group"
-                  title="New chat (Ctrl+N)"
+                  title={`${t('chat.newChat')} (Ctrl+N)`}
+                  aria-label={t('chat.newChat')}
                 >
                   <Icon name="plus" size={16} className="text-muted-foreground group-hover:text-primary transition-colors" />
                 </button>
@@ -388,13 +393,13 @@ export const ChatZone: React.FC = () => {
                                 onClick={handleEditCancel}
                                 className="px-3 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-accent"
                               >
-                                Cancel
+                                {t('common.cancel')}
                               </button>
                               <button
                                 onClick={handleEditSave}
                                 className="px-3 py-1.5 rounded-md text-xs bg-primary text-primary-foreground hover:bg-primary/90"
                               >
-                                Save & Regenerate
+                                {t('chat.saveRegenerate')}
                               </button>
                             </div>
                           </div>
@@ -429,7 +434,7 @@ export const ChatZone: React.FC = () => {
                               onClick={() => handleEditStart(message.id, message.content)}
                               className="text-xs text-muted-foreground hover:text-foreground"
                             >
-                              Edit
+                              {t('common.edit')}
                             </button>
                           </div>
                         )}
@@ -464,16 +469,16 @@ export const ChatZone: React.FC = () => {
                 </div>
                 <div>
                   {selectedConversationId ? (
-                    <p className="text-muted-foreground text-sm">Start a conversation</p>
+                    <p className="text-muted-foreground text-sm">{t('chat.typeMessage')}</p>
                   ) : (
                     <div>
-                      <p className="text-muted-foreground text-sm mb-1">Select or create a conversation</p>
+                      <p className="text-muted-foreground text-sm mb-1">{t('chat.selectProvider')}</p>
                       <button
-                        onClick={() => createConversation('New Conversation', null, null)}
+                        onClick={() => createConversation(t('chat.newConversation'), null, null)}
                         className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition-colors"
                       >
                         <Icon name="plus" size={12} />
-                        New Conversation
+                        {t('chat.newConversation')}
                       </button>
                     </div>
                   )}
@@ -506,7 +511,7 @@ export const ChatZone: React.FC = () => {
                       <span title="Input tokens">{formatTokenCount(inputTokens)}</span>
                     </>
                   )}
-                  <span>tokens</span>
+                  <span>{t('chat.tokens')}</span>
                 </div>
               )}
             </div>
@@ -517,10 +522,8 @@ export const ChatZone: React.FC = () => {
                 type="text"
                 placeholder={
                   !selectedProviderId || !selectedModelId
-                    ? 'Select a provider and model first...'
-                    : mode === 'Architect'
-                    ? 'Describe your idea...'
-                    : 'Ask the AI something...'
+                    ? t('chat.selectProvider')
+                    : t('chat.typeMessage')
                 }
                 className="flex-1 bg-transparent border-0 outline-none text-sm text-foreground placeholder:text-muted-foreground h-9 px-2"
                 value={inputValue}
@@ -537,10 +540,11 @@ export const ChatZone: React.FC = () => {
                 <button
                   onClick={stopStreaming}
                   className="rounded-lg bg-red-500 hover:bg-red-600 text-white px-3 h-9 flex items-center gap-2"
-                  title="Stop generating"
+                  title={t('chat.stop')}
+                  aria-label={t('chat.stop')}
                 >
                   <Icon name="square" size={14} />
-                  <span className="text-xs">Stop</span>
+                  <span className="text-xs">{t('chat.stop')}</span>
                 </button>
               ) : (
                 <button

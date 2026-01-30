@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
 import { Select } from '../ui/Select';
-import type { Language } from '../../types';
+import { SUPPORTED_LANGUAGES, changeLanguage, type SupportedLanguage } from '../../i18n';
 import { ThemeManifest } from '../../types/theme';
 
 export const SettingsModal: React.FC = () => {
+  const { t, i18n } = useTranslation();
   const { settingsOpen, closeSettings, activeThemeId, setTheme, openProvidersSettings, openToolsSettings } = useAppStore();
   const { user, updatePreferences, isLoading } = useAuthStore();
   const [manifest, setManifest] = useState<ThemeManifest | null>(null);
@@ -20,7 +22,7 @@ export const SettingsModal: React.FC = () => {
       .catch(console.error);
   }, []);
 
-  const [language, setLanguage] = useState<Language>(user?.preferences.language || 'en');
+  const [language, setLanguage] = useState<SupportedLanguage>((i18n.language as SupportedLanguage) || 'en');
   const [notifications, setNotifications] = useState(user?.preferences.notifications ?? true);
   const [emailUpdates, setEmailUpdates] = useState(user?.preferences.emailUpdates ?? false);
 
@@ -28,6 +30,9 @@ export const SettingsModal: React.FC = () => {
 
   const handleSave = async () => {
     try {
+      // Update i18n language
+      await changeLanguage(language);
+
       if (user) {
         // Theme is stored locally; keep preferences update for language + notifications.
         await updatePreferences({
@@ -48,11 +53,12 @@ export const SettingsModal: React.FC = () => {
         <header className="h-12 px-4 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Icon name="settings" size={16} className="text-primary" />
-            <span className="text-sm text-foreground">Settings</span>
+            <span className="text-sm text-foreground">{t('settings.title')}</span>
           </div>
           <button
             onClick={closeSettings}
             className="p-1.5 rounded-lg hover:bg-accent transition-colors"
+            aria-label={t('common.close')}
           >
             <Icon name="x" size={14} className="text-muted-foreground" />
           </button>
@@ -62,7 +68,7 @@ export const SettingsModal: React.FC = () => {
           {/* Appearance Section */}
           <section>
             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              Appearance
+              {t('settings.appearance')}
             </h3>
             
             {/* Theme */}
@@ -70,10 +76,11 @@ export const SettingsModal: React.FC = () => {
               <Select
                 value={activeThemeId}
                 onChange={(e) => setTheme(e.target.value)}
+                label={t('settings.theme')}
               >
-                 {manifest?.themes.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
+                 {manifest?.themes.map((thm) => (
+                    <option key={thm.id} value={thm.id}>
+                      {thm.name}
                     </option>
                  ))}
                  {!manifest && <option value="macro-dark">Macro Dark</option>}
@@ -83,12 +90,15 @@ export const SettingsModal: React.FC = () => {
             {/* Language */}
             <div>
               <Select
-                label="Language"
+                label={t('settings.language')}
                 value={language}
-                onChange={(e) => setLanguage(e.target.value as Language)}
+                onChange={(e) => setLanguage(e.target.value as SupportedLanguage)}
               >
-                <option value="en">English</option>
-                <option value="fr">Français</option>
+                {Object.entries(SUPPORTED_LANGUAGES).map(([code, { nativeName, flag }]) => (
+                  <option key={code} value={code}>
+                    {flag} {nativeName}
+                  </option>
+                ))}
               </Select>
             </div>
           </section>
@@ -96,14 +106,14 @@ export const SettingsModal: React.FC = () => {
           {/* Notifications Section */}
           <section>
             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              Notifications
+              {t('settings.notifications')}
             </h3>
             
             {/* In-app Notifications */}
             <div className="flex items-center justify-between py-2">
               <div>
-                <label className="block text-sm text-foreground">In-app notifications</label>
-                <p className="text-xs text-muted-foreground mt-0.5">Receive notifications in the app</p>
+                <label className="block text-sm text-foreground">{t('settings.inAppNotifications')}</label>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('settings.inAppNotificationsDesc')}</p>
               </div>
               <button
                 onClick={() => setNotifications(!notifications)}
@@ -111,6 +121,8 @@ export const SettingsModal: React.FC = () => {
                   relative w-11 h-6 rounded-full transition-colors duration-200
                   ${notifications ? 'bg-primary' : 'bg-muted'}
                 `}
+                aria-pressed={notifications}
+                role="switch"
               >
                 <span
                   className={`
@@ -124,8 +136,8 @@ export const SettingsModal: React.FC = () => {
             {/* Email Updates */}
             <div className="flex items-center justify-between py-2">
               <div>
-                <label className="block text-sm text-foreground">Email updates</label>
-                <p className="text-xs text-muted-foreground mt-0.5">Receive email notifications</p>
+                <label className="block text-sm text-foreground">{t('settings.emailUpdates')}</label>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('settings.emailUpdatesDesc')}</p>
               </div>
               <button
                 onClick={() => setEmailUpdates(!emailUpdates)}
@@ -133,6 +145,8 @@ export const SettingsModal: React.FC = () => {
                   relative w-11 h-6 rounded-full transition-colors duration-200
                   ${emailUpdates ? 'bg-primary' : 'bg-muted'}
                 `}
+                aria-pressed={emailUpdates}
+                role="switch"
               >
                 <span
                   className={`
@@ -147,7 +161,7 @@ export const SettingsModal: React.FC = () => {
           {/* AI & Models Section */}
           <section>
             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              AI & Models
+              {t('settings.aiModels')}
             </h3>
             
             <button
@@ -162,8 +176,8 @@ export const SettingsModal: React.FC = () => {
                   <Icon name="cpu" size={16} />
                 </div>
                 <div className="text-left">
-                  <span className="block text-sm text-foreground">AI Providers</span>
-                  <span className="block text-xs text-muted-foreground">Configure API keys and endpoints</span>
+                  <span className="block text-sm text-foreground">{t('settings.aiProviders')}</span>
+                  <span className="block text-xs text-muted-foreground">{t('settings.aiProvidersDesc')}</span>
                 </div>
               </div>
               <Icon name="chevron-right" size={16} className="text-muted-foreground group-hover:text-foreground transition-colors" />
@@ -181,8 +195,8 @@ export const SettingsModal: React.FC = () => {
                   <Icon name="tool" size={16} />
                 </div>
                 <div className="text-left">
-                  <span className="block text-sm text-foreground">Tools & MCP</span>
-                  <span className="block text-xs text-muted-foreground">Manage capabilities and servers</span>
+                  <span className="block text-sm text-foreground">{t('settings.toolsMcp')}</span>
+                  <span className="block text-xs text-muted-foreground">{t('settings.toolsMcpDesc')}</span>
                 </div>
               </div>
               <Icon name="chevron-right" size={16} className="text-muted-foreground group-hover:text-foreground transition-colors" />
@@ -192,15 +206,15 @@ export const SettingsModal: React.FC = () => {
           {/* About Section */}
           <section>
             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              About
+              {t('settings.about')}
             </h3>
             <div className="bg-card/50 rounded-lg p-3 space-y-1">
               <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">Version</span>
+                <span className="text-muted-foreground">{t('common.version')}</span>
                 <span className="text-foreground">1.0.0</span>
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">Build</span>
+                <span className="text-muted-foreground">{t('common.build')}</span>
                 <span className="text-foreground">2026.01.20</span>
               </div>
             </div>
@@ -209,10 +223,10 @@ export const SettingsModal: React.FC = () => {
 
         <footer className="h-12 border-t border-border px-4 flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={closeSettings}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" size="sm" onClick={handleSave} isLoading={isLoading}>
-            Save Changes
+            {t('settings.saveChanges')}
           </Button>
         </footer>
       </div>

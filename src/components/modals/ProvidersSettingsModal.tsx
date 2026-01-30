@@ -1,8 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
+import { toast } from '../ui/Toaster';
 import { cn } from '../../utils/cn';
 import type { ProviderConfig } from '../../types';
 
@@ -17,6 +19,7 @@ interface EditingProvider {
 }
 
 export const ProvidersSettingsModal: React.FC = () => {
+  const { t } = useTranslation();
   const { providersSettingsOpen, closeProvidersSettings } = useAppStore();
   const {
     providerConfigs,
@@ -128,8 +131,9 @@ export const ProvidersSettingsModal: React.FC = () => {
   };
 
   const handleDelete = async (id: string) => {
-    if (confirm('Are you sure you want to delete this provider?')) {
+    if (confirm(t('providers.deleteConfirm'))) {
       await deleteProviderConfig(id);
+      toast.success(t('toast.providerDeleted'));
     }
   };
 
@@ -166,13 +170,14 @@ export const ProvidersSettingsModal: React.FC = () => {
                 <Icon name="cpu" size={20} />
               </div>
               <div>
-                <h2 className="text-lg font-semibold text-foreground">AI Providers</h2>
-                <p className="text-xs text-muted-foreground">Configure API keys and endpoints</p>
+                <h2 className="text-lg font-semibold text-foreground">{t('providers.title')}</h2>
+                <p className="text-xs text-muted-foreground">{t('providers.subtitle')}</p>
               </div>
             </div>
             <button
               onClick={closeProvidersSettings}
               className="p-2 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+              aria-label={t('common.close')}
             >
               <Icon name="x" size={18} />
             </button>
@@ -184,7 +189,7 @@ export const ProvidersSettingsModal: React.FC = () => {
               <Icon name="search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground group-focus-within:text-foreground transition-colors" />
               <input
                 type="text"
-                placeholder="Search providers..."
+                placeholder={t('providers.searchPlaceholder')}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-muted border border-border rounded-lg pl-9 pr-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all"
@@ -192,7 +197,7 @@ export const ProvidersSettingsModal: React.FC = () => {
             </div>
             <Button variant="primary" size="sm" onClick={handleCreate}>
               <Icon name="plus" size={14} />
-              Add Provider
+              {t('providers.addProvider')}
             </Button>
           </div>
         </header>
@@ -206,8 +211,8 @@ export const ProvidersSettingsModal: React.FC = () => {
           ) : filteredProviders.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
               <Icon name="cpu" size={32} className="mx-auto mb-3 opacity-50" />
-              <p className="text-sm">No providers configured</p>
-              <p className="text-xs mt-1">Add a provider to get started</p>
+              <p className="text-sm">{t('providers.noProviders')}</p>
+              <p className="text-xs mt-1">{t('providers.noProvidersHint')}</p>
             </div>
           ) : (
             filteredProviders.map((config) => (
@@ -267,7 +272,7 @@ export const ProvidersSettingsModal: React.FC = () => {
                     onClick={() => handleTest(config.id)}
                     disabled={testingId === config.id}
                     className="p-2 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-                    title="Test connection"
+                    title={t('providers.testConnection')}
                   >
                     {testingId === config.id ? (
                       <Icon name="loader" size={14} className="animate-spin" />
@@ -278,21 +283,21 @@ export const ProvidersSettingsModal: React.FC = () => {
                   <button
                     onClick={() => handleEdit(config)}
                     className="p-2 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-                    title="Edit"
+                    title={t('common.edit')}
                   >
                     <Icon name="edit" size={14} />
                   </button>
                   <button
                     onClick={() => handleToggleEnabled(config)}
                     className="p-2 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-                    title={config.isEnabled ? 'Disable' : 'Enable'}
+                    title={config.isEnabled ? t('common.disable') : t('common.enable')}
                   >
                     <Icon name={config.isEnabled ? 'eye' : 'eye-off'} size={14} />
                   </button>
                   <button
                     onClick={() => handleDelete(config.id)}
                     className="p-2 rounded-lg hover:bg-red-500/10 text-muted-foreground hover:text-red-400 transition-colors"
-                    title="Delete"
+                    title={t('common.delete')}
                   >
                     <Icon name="trash" size={14} />
                   </button>
@@ -308,14 +313,14 @@ export const ProvidersSettingsModal: React.FC = () => {
             <div className="flex items-center gap-2 mb-4">
               <Icon name={isCreating ? 'plus' : 'edit'} size={16} className="text-primary" />
               <h3 className="font-medium text-foreground">
-                {isCreating ? 'Add New Provider' : `Edit ${editingProvider.name}`}
+                {isCreating ? t('providers.addProvider') : t('providers.editProvider')}
               </h3>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
-                  Name
+                  {t('providers.name')}
                 </label>
                 <input
                   type="text"
@@ -328,7 +333,7 @@ export const ProvidersSettingsModal: React.FC = () => {
 
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
-                  Type
+                  {t('providers.providerType')}
                 </label>
                 <select
                   value={editingProvider.providerType}
@@ -346,7 +351,7 @@ export const ProvidersSettingsModal: React.FC = () => {
 
               <div className="col-span-2">
                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
-                  Base URL
+                  {t('providers.baseUrl')}
                 </label>
                 <input
                   type="text"
@@ -359,7 +364,7 @@ export const ProvidersSettingsModal: React.FC = () => {
 
               <div className="col-span-2">
                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
-                  API Key {editingProvider.isLocal && <span className="text-muted-foreground/50">(optional for local)</span>}
+                  {t('providers.apiKey')} {editingProvider.isLocal && <span className="text-muted-foreground/50">({t('common.local')})</span>}
                 </label>
                 <input
                   type="password"
@@ -379,7 +384,7 @@ export const ProvidersSettingsModal: React.FC = () => {
                       onChange={(e) => setEditingProvider({ ...editingProvider, isLocal: e.target.checked })}
                       className="rounded border-border"
                     />
-                    <span className="text-sm text-foreground">Local provider (Ollama, LM Studio, etc.)</span>
+                    <span className="text-sm text-foreground">{t('providers.isLocal')}</span>
                   </label>
                 </div>
               )}
@@ -394,7 +399,7 @@ export const ProvidersSettingsModal: React.FC = () => {
                   setIsCreating(false);
                 }}
               >
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button
                 variant="primary"
@@ -407,7 +412,7 @@ export const ProvidersSettingsModal: React.FC = () => {
                 ) : (
                   <Icon name="check" size={14} />
                 )}
-                {isCreating ? 'Add Provider' : 'Save Changes'}
+                {isCreating ? t('providers.addProvider') : t('common.save')}
               </Button>
             </div>
           </div>
@@ -416,10 +421,10 @@ export const ProvidersSettingsModal: React.FC = () => {
         {/* Footer */}
         <footer className="shrink-0 border-t border-border bg-card/50 px-6 py-3 flex items-center justify-between">
           <p className="text-xs text-muted-foreground">
-            {providerConfigs.filter((p) => p.isEnabled).length} of {providerConfigs.length} providers enabled
+            {providerConfigs.filter((p) => p.isEnabled).length} / {providerConfigs.length} {t('providers.enabled').toLowerCase()}
           </p>
           <Button variant="secondary" size="sm" onClick={closeProvidersSettings}>
-            Done
+            {t('common.done')}
           </Button>
         </footer>
       </div>
