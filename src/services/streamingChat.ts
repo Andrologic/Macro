@@ -1,7 +1,10 @@
 /**
  * Streaming Chat Service
  * Handles SSE streaming from OpenAI-compatible endpoints
+ * Uses Tauri HTTP plugin for proper CORS handling
  */
+
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 
 export interface StreamMessage {
   role: 'user' | 'assistant';
@@ -26,6 +29,7 @@ export interface StreamingChatOptions {
  */
 export async function streamChat(options: StreamingChatOptions): Promise<void> {
   const {
+    providerId,
     providerType,
     baseUrl,
     apiKey,
@@ -34,7 +38,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     onToken,
     onComplete,
     onError,
-    signal,
+    // Note: signal is not used with Tauri HTTP plugin - AbortController support is limited
   } = options;
 
   const headers: Record<string, string> = {
@@ -53,8 +57,14 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     headers['X-Title'] = 'Macro';
   }
 
+  // LM Studio: Log connection attempt for debugging
+  const isLocalProvider = providerType === 'lmstudio' || providerType === 'ollama';
+  if (isLocalProvider) {
+    console.log(`[${providerId}] Connecting to ${baseUrl}/chat/completions`);
+  }
+
   try {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await tauriFetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -65,7 +75,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         })),
         stream: true,
       }),
-      signal,
     });
 
     if (!response.ok) {
@@ -143,7 +152,18 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
       return;
     }
-    onError(error instanceof Error ? error : new Error(String(error)));
+    
+    // Better error messages for local providers
+    const err = error instanceof Error ? error : new Error(String(error));
+    const isLocalProvider = options.providerType === 'lmstudio' || options.providerType === 'ollama';
+    
+    if (isLocalProvider && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || err.message.includes('connection'))) {
+      const providerName = options.providerType === 'lmstudio' ? 'LM Studio' : 'Ollama';
+      onError(new Error(`Cannot connect to ${providerName}. Make sure the server is running and accessible at ${options.baseUrl}`));
+      return;
+    }
+    
+    onError(err);
   }
 }
 
@@ -159,7 +179,6 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     messages,
     onComplete,
     onError,
-    signal,
   } = options;
 
   const headers: Record<string, string> = {
@@ -178,7 +197,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
   }
 
   try {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await tauriFetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -189,7 +208,6 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
         })),
         stream: false,
       }),
-      signal,
     });
 
     if (!response.ok) {
