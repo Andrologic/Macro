@@ -94,9 +94,9 @@ export const SettingsModal: React.FC = () => {
                 value={language}
                 onChange={(e) => setLanguage(e.target.value as SupportedLanguage)}
               >
-                {Object.entries(SUPPORTED_LANGUAGES).map(([code, { nativeName, flag }]) => (
+                {Object.entries(SUPPORTED_LANGUAGES).map(([code, { nativeName }]) => (
                   <option key={code} value={code}>
-                    {flag} {nativeName}
+                    {nativeName}
                   </option>
                 ))}
               </Select>
