@@ -10,6 +10,7 @@ import { SettingsModal } from './components/modals/SettingsModal';
 import { AccountModal } from './components/modals/AccountModal';
 import { ProjectModal } from './components/modals/ProjectModal';
 import { ToolsSettingsModal } from './components/modals/ToolsSettingsModal';
+import { ProvidersSettingsModal } from './components/modals/ProvidersSettingsModal';
 import { CodeFileViewerModal } from './components/modals/CodeFileViewerModal';
 import { useAppStore } from './stores/useAppStore';
 import { useChatStore } from './stores/useChatStore';
@@ -17,6 +18,7 @@ import { useTaskStore } from './stores/useTaskStore';
 import { useAIStore } from './stores/useAIStore';
 import { useAuthStore } from './stores/useAuthStore';
 import { useToolsStore } from './stores/useToolsStore';
+import { useProviderStore } from './stores/useProviderStore';
 
 const App: React.FC = () => {
   const [isLeftOpen, setIsLeftOpen] = useState(true);
@@ -26,6 +28,7 @@ const App: React.FC = () => {
   const initializeTasks = useTaskStore((state) => state.initialize);
   const initializeAI = useAIStore((state) => state.initialize);
   const initializeTools = useToolsStore((state) => state.loadSettings);
+  const initializeProviders = useProviderStore((state) => state.initialize);
   const checkSession = useAuthStore((state) => state.checkSession);
   const leftPanelWidth = useAppStore((state) => state.leftPanelWidth);
   const rightPanelWidth = useAppStore((state) => state.rightPanelWidth);
@@ -38,8 +41,9 @@ const App: React.FC = () => {
     void initializeTasks();
     void initializeAI();
     void initializeTools();
+    void initializeProviders();
     void checkSession();
-  }, [initializeApp, initializeChat, initializeTasks, initializeAI, initializeTools, checkSession]);
+  }, [initializeApp, initializeChat, initializeTasks, initializeAI, initializeTools, initializeProviders, checkSession]);
 
   return (
     <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr_32px] overflow-hidden">
@@ -90,6 +94,7 @@ const App: React.FC = () => {
       <AccountModal />
       <ProjectModal />
       <ToolsSettingsModal />
+      <ProvidersSettingsModal />
       <CodeFileViewerModal />
     </div>
   );

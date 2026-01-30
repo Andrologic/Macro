@@ -1,5 +1,3 @@
-import type { MouseEvent } from 'react';
-import { useRef } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import { Icon } from '../ui/Icon';
 import { Logo } from '../ui/Logo';
@@ -24,34 +22,11 @@ export function Header({
   const setMode = useAppStore((state) => state.setMode);
   const openSettings = useAppStore((state) => state.openSettings);
   const openAccount = useAppStore((state) => state.openAccount);
-  const { isAvailable: isTauriAvailable, toggleMaximize, startDragging } = useTauriWindow();
-  
-  const lastClickTimeRef = useRef<number>(0);
-  const DOUBLE_CLICK_DELAY = 300;
+  const { isAvailable: isTauriAvailable, toggleMaximize } = useTauriWindow();
 
-  const handleHeaderMouseDown = (event: MouseEvent<HTMLElement>) => {
-    if (!isTauriAvailable || event.button !== 0) {
-      return;
-    }
-
-    const target = event.target as HTMLElement | null;
-    const isInteractiveTarget = !!target?.closest('[data-tauri-drag-region="false"]');
-
-    if (isInteractiveTarget) {
-      return;
-    }
-
-    const now = Date.now();
-    const timeSinceLastClick = now - lastClickTimeRef.current;
-
-    if (timeSinceLastClick < DOUBLE_CLICK_DELAY) {
-      // Double-click detected
-      lastClickTimeRef.current = 0;
+  const handleHeaderDoubleClick = () => {
+    if (isTauriAvailable) {
       toggleMaximize();
-    } else {
-      // Single click - start dragging
-      lastClickTimeRef.current = now;
-      startDragging();
     }
   };
 
@@ -64,7 +39,7 @@ export function Header({
     <header 
       className="h-12 bg-card border-b border-border flex items-center px-4 shrink-0 select-none"
       data-tauri-drag-region
-      onMouseDown={handleHeaderMouseDown}
+      onDoubleClick={handleHeaderDoubleClick}
     >
       {/* Left: Logo and App Name */}
       <div className="flex items-center gap-2 w-48">

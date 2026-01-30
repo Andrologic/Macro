@@ -1,15 +1,22 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useAIStore } from '../../stores/useAIStore';
+import { useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 
 export const ModelDropdown: React.FC = () => {
-  const { models, selectedModelId, selectModel, selectedProviderId } = useAIStore();
+  const {
+    selectedProviderId,
+    selectedModelId,
+    modelsByProvider,
+    selectModel,
+    isLoadingModels,
+  } = useProviderStore();
+
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const validModels = models.filter((model) => model.id && model.id.trim() !== '');
-  const selectedModel = validModels.find((m) => m.id === selectedModelId);
+  const models = selectedProviderId ? (modelsByProvider[selectedProviderId] || []) : [];
+  const selectedModel = models.find((m) => m.id === selectedModelId);
 
   const handleSelect = (modelId: string) => {
     selectModel(modelId);
@@ -37,11 +44,21 @@ export const ModelDropdown: React.FC = () => {
       {/* Trigger Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-muted/80 border border-border hover:border-primary/50 transition-colors"
+        disabled={!selectedProviderId}
+        className={cn(
+          'flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-muted/80 border border-border transition-colors',
+          selectedProviderId
+            ? 'hover:border-primary/50'
+            : 'opacity-50 cursor-not-allowed'
+        )}
       >
-        <span className="text-xs text-muted-foreground truncate max-w-[120px]">
-          {selectedModel?.name ?? 'Model'}
-        </span>
+        {isLoadingModels ? (
+          <Icon name="loader" size={12} className="animate-spin text-muted-foreground" />
+        ) : (
+          <span className="text-xs text-muted-foreground truncate max-w-[140px]">
+            {selectedModel?.name ?? 'Select Model'}
+          </span>
+        )}
         <Icon name="chevron-down" size={10} className="text-muted-foreground" />
       </button>
 
@@ -54,7 +71,7 @@ export const ModelDropdown: React.FC = () => {
             'flex flex-col'
           )}
         >
-          {validModels.map((model) => (
+          {models.map((model) => (
             <button
               key={model.id}
               onClick={() => handleSelect(model.id)}
@@ -66,18 +83,15 @@ export const ModelDropdown: React.FC = () => {
                   : 'text-muted-foreground hover:bg-accent'
               )}
             >
-              <span className="font-medium">{model.name}</span>
-              {(model as any).description && (
-                <span className="text-xs opacity-70 ml-6">
-                  {(model as any).description}
-                </span>
-              )}
+              <span className="font-medium">{model.name || model.id}</span>
             </button>
           ))}
 
-          {validModels.length === 0 && (
+          {models.length === 0 && (
             <div className="px-3 py-2 text-sm text-muted-foreground">
-              {selectedProviderId ? 'No models available for this provider' : 'Select a provider first'}
+              {selectedProviderId
+                ? 'No models available. Test the provider connection.'
+                : 'Select a provider first'}
             </div>
           )}
         </div>

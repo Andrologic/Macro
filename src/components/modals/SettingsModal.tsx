@@ -8,7 +8,7 @@ import type { Language } from '../../types';
 import { ThemeManifest } from '../../types/theme';
 
 export const SettingsModal: React.FC = () => {
-  const { settingsOpen, closeSettings, activeThemeId, setTheme } = useAppStore();
+  const { settingsOpen, closeSettings, activeThemeId, setTheme, openProvidersSettings, openToolsSettings } = useAppStore();
   const { user, updatePreferences, isLoading } = useAuthStore();
   const [manifest, setManifest] = useState<ThemeManifest | null>(null);
 
@@ -142,6 +142,51 @@ export const SettingsModal: React.FC = () => {
                 />
               </button>
             </div>
+          </section>
+
+          {/* AI & Models Section */}
+          <section>
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+              AI & Models
+            </h3>
+            
+            <button
+              onClick={() => {
+                closeSettings();
+                openProvidersSettings();
+              }}
+              className="w-full flex items-center justify-between p-3 bg-muted/50 hover:bg-muted rounded-lg transition-colors group"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+                  <Icon name="cpu" size={16} />
+                </div>
+                <div className="text-left">
+                  <span className="block text-sm text-foreground">AI Providers</span>
+                  <span className="block text-xs text-muted-foreground">Configure API keys and endpoints</span>
+                </div>
+              </div>
+              <Icon name="chevron-right" size={16} className="text-muted-foreground group-hover:text-foreground transition-colors" />
+            </button>
+
+            <button
+              onClick={() => {
+                closeSettings();
+                openToolsSettings();
+              }}
+              className="w-full flex items-center justify-between p-3 bg-muted/50 hover:bg-muted rounded-lg transition-colors group mt-2"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+                  <Icon name="tool" size={16} />
+                </div>
+                <div className="text-left">
+                  <span className="block text-sm text-foreground">Tools & MCP</span>
+                  <span className="block text-xs text-muted-foreground">Manage capabilities and servers</span>
+                </div>
+              </div>
+              <Icon name="chevron-right" size={16} className="text-muted-foreground group-hover:text-foreground transition-colors" />
+            </button>
           </section>
 
           {/* About Section */}

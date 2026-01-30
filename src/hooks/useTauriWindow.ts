@@ -5,7 +5,6 @@ interface TauriWindowAPI {
   maximize: () => Promise<void>;
   unmaximize: () => Promise<void>;
   toggleMaximize: () => Promise<void>;
-  startDragging: () => Promise<void>;
   close: () => Promise<void>;
   isMaximized: () => Promise<boolean>;
 }
@@ -28,7 +27,6 @@ async function initTauriWindowAPI(): Promise<void> {
         maximize: () => window.maximize(),
         unmaximize: () => window.unmaximize(),
         toggleMaximize: () => window.toggleMaximize(),
-        startDragging: () => window.startDragging(),
         close: () => window.close(),
         isMaximized: () => window.isMaximized(),
       };
@@ -114,21 +112,19 @@ export function useTauriWindow() {
 
   const toggleMaximize = useCallback(async () => {
     if (tauriWindowAPI) {
-      await tauriWindowAPI.toggleMaximize();
-      const max = await tauriWindowAPI.isMaximized();
-      setIsMaximized(max);
+      if (isMaximized) {
+        await tauriWindowAPI.unmaximize();
+        setIsMaximized(false);
+      } else {
+        await tauriWindowAPI.maximize();
+        setIsMaximized(true);
+      }
     }
-  }, []);
+  }, [isMaximized]);
 
   const close = useCallback(async () => {
     if (tauriWindowAPI) {
       await tauriWindowAPI.close();
-    }
-  }, []);
-
-  const startDragging = useCallback(async () => {
-    if (tauriWindowAPI) {
-      await tauriWindowAPI.startDragging();
     }
   }, []);
 
@@ -139,7 +135,6 @@ export function useTauriWindow() {
     maximize,
     unmaximize,
     toggleMaximize,
-    startDragging,
     close,
   };
 }

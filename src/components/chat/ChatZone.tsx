@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
+import { useProviderStore } from '../../stores/useProviderStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { Skeleton } from '../shared/Skeleton';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
+import { MarkdownRenderer, estimateTokens, formatTokenCount } from './MarkdownRenderer';
 
 export const ChatZone: React.FC = () => {
   const { mode, currentPlan } = useAppStore();
@@ -14,17 +16,26 @@ export const ChatZone: React.FC = () => {
     selectedConversationId,
     selectConversation,
     createConversation,
+    renameConversation,
+    deleteConversation,
     getConversationMessages,
     isLoading,
+    isStreaming,
+    stopStreaming,
     sendMessage,
     editMessage,
   } = useChatStore();
+
+  const { selectedProviderId, selectedModelId } = useProviderStore();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [inputValue, setInputValue] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState('');
+  const [contextMenuId, setContextMenuId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
 
   // Filter messages by selected conversation
   const currentMessages = selectedConversationId
@@ -36,19 +47,35 @@ export const ChatZone: React.FC = () => {
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
 
+  // Estimate tokens for input
+  const inputTokens = estimateTokens(inputValue);
+  const contextTokens = currentMessages.reduce(
+    (sum, msg) => sum + estimateTokens(msg.content),
+    0
+  );
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentMessages]);
 
-  const ensureConversation = () => {
+  // Close context menu on click outside
+  useEffect(() => {
+    const handleClick = () => setContextMenuId(null);
+    if (contextMenuId) {
+      document.addEventListener('click', handleClick);
+      return () => document.removeEventListener('click', handleClick);
+    }
+  }, [contextMenuId]);
+
+  const ensureConversation = async () => {
     if (selectedConversationId) return selectedConversationId;
-    const conversation = createConversation('New Conversation', null, null);
+    const conversation = await createConversation('New Conversation', null, null);
     return conversation.id;
   };
 
   const handleSend = async () => {
-    if (!inputValue.trim()) return;
-    const conversationId = ensureConversation();
+    if (!inputValue.trim() || isLoading) return;
+    const conversationId = await ensureConversation();
     const content = inputValue.trim();
     setInputValue('');
     await sendMessage({ conversationId, content });
@@ -71,6 +98,33 @@ export const ChatZone: React.FC = () => {
     await editMessage(editingMessageId, content);
     setEditingMessageId(null);
     setEditingValue('');
+  };
+
+  const handleContextMenu = (e: React.MouseEvent, conversationId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenuId(conversationId);
+  };
+
+  const handleRenameStart = (conv: { id: string; title: string }) => {
+    setRenamingId(conv.id);
+    setRenameValue(conv.title);
+    setContextMenuId(null);
+  };
+
+  const handleRenameConfirm = async () => {
+    if (renamingId && renameValue.trim()) {
+      await renameConversation(renamingId, renameValue.trim());
+    }
+    setRenamingId(null);
+    setRenameValue('');
+  };
+
+  const handleDelete = async (id: string) => {
+    if (confirm('Delete this conversation?')) {
+      await deleteConversation(id);
+    }
+    setContextMenuId(null);
   };
 
   return (
@@ -112,75 +166,126 @@ export const ChatZone: React.FC = () => {
               <div className="p-2 space-y-1">
                 {conversations.map((conv) => {
                   const isSelected = conv.id === selectedConversationId;
+                  const isRenaming = renamingId === conv.id;
+                  
                   return (
-                    <button
-                      key={conv.id}
-                      onClick={() => selectConversation(conv.id)}
-                      className={cn(
-                        'w-full text-left px-3 py-2.5 rounded-lg border transition-all duration-200 group',
-                        isSelected
-                          ? 'bg-primary/10 border-primary/30'
-                          : 'border-transparent hover:bg-accent'
+                    <div key={conv.id} className="relative">
+                      <button
+                        onClick={() => selectConversation(conv.id)}
+                        onContextMenu={(e) => handleContextMenu(e, conv.id)}
+                        className={cn(
+                          'w-full text-left px-3 py-2.5 rounded-lg border transition-all duration-200 group',
+                          isSelected
+                            ? 'bg-primary/10 border-primary/30'
+                            : 'border-transparent hover:bg-accent'
+                        )}
+                      >
+                        <div className="flex items-start gap-3">
+                          {/* Icon */}
+                          <div className="mt-0.5 shrink-0">
+                            {conv.task_id ? (
+                              <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center">
+                                <Icon name="check-square" size={10} className="text-primary" />
+                              </div>
+                            ) : (
+                              <div className="w-6 h-6 rounded-lg bg-muted border border-border flex items-center justify-center">
+                                <Icon name="message-square" size={10} className="text-muted-foreground" />
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Content */}
+                          <div className="flex-1 min-w-0">
+                            {/* Title */}
+                            <div className="flex items-center gap-2 mb-1">
+                              {isRenaming ? (
+                                <input
+                                  type="text"
+                                  value={renameValue}
+                                  onChange={(e) => setRenameValue(e.target.value)}
+                                  onBlur={handleRenameConfirm}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleRenameConfirm();
+                                    if (e.key === 'Escape') {
+                                      setRenamingId(null);
+                                      setRenameValue('');
+                                    }
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  autoFocus
+                                  className="text-sm font-medium text-foreground bg-muted border border-border rounded px-1 py-0.5 w-full"
+                                />
+                              ) : (
+                                <h3 className="text-sm font-medium text-foreground truncate">
+                                  {conv.title}
+                                </h3>
+                              )}
+                              {conv.is_unread && !isRenaming && (
+                                <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                              )}
+                            </div>
+
+                            {/* Last message */}
+                            {conv.last_message && !isRenaming && (
+                              <p className="text-xs text-muted-foreground truncate">
+                                {conv.last_message}
+                              </p>
+                            )}
+
+                            {/* Metadata */}
+                            {!isRenaming && (
+                              <div className="flex items-center gap-2 mt-1.5">
+                                <span className="text-xs text-muted-foreground/70">
+                                  {new Date(conv.updated_at).toLocaleDateString()}
+                                </span>
+                                {conv.message_count > 0 && (
+                                  <span className="text-xs text-muted-foreground/70 flex items-center gap-1">
+                                    <Icon name="message-square" size={8} />
+                                    {conv.message_count}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Menu button */}
+                          {!isRenaming && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setContextMenuId(contextMenuId === conv.id ? null : conv.id);
+                              }}
+                              className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <Icon name="more-horizontal" size={12} className="text-muted-foreground" />
+                            </button>
+                          )}
+                        </div>
+                      </button>
+
+                      {/* Context Menu */}
+                      {contextMenuId === conv.id && (
+                        <div
+                          className="absolute right-2 top-full z-50 mt-1 w-36 bg-card border border-border rounded-lg shadow-lg py-1"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            onClick={() => handleRenameStart(conv)}
+                            className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+                          >
+                            <Icon name="edit" size={12} />
+                            Rename
+                          </button>
+                          <button
+                            onClick={() => handleDelete(conv.id)}
+                            className="w-full px-3 py-1.5 text-left text-sm text-red-400 hover:bg-red-500/10 flex items-center gap-2"
+                          >
+                            <Icon name="trash" size={12} />
+                            Delete
+                          </button>
+                        </div>
                       )}
-                    >
-                      <div className="flex items-start gap-3">
-                        {/* Icon */}
-                        <div className="mt-0.5 shrink-0">
-                          {conv.task_id ? (
-                            <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center">
-                              <Icon name="check-square" size={10} className="text-primary" />
-                            </div>
-                          ) : (
-                            <div className="w-6 h-6 rounded-lg bg-muted border border-border flex items-center justify-center">
-                              <Icon name="message-square" size={10} className="text-muted-foreground" />
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Content */}
-                        <div className="flex-1 min-w-0">
-                          {/* Title */}
-                          <div className="flex items-center gap-2 mb-1">
-                            <h3 className="text-sm font-medium text-foreground truncate">
-                              {conv.title}
-                            </h3>
-                            {conv.is_unread && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
-                            )}
-                          </div>
-
-                          {/* Last message */}
-                          {conv.last_message && (
-                            <p className="text-xs text-muted-foreground truncate">
-                              {conv.last_message}
-                            </p>
-                          )}
-
-                          {/* Metadata */}
-                          <div className="flex items-center gap-2 mt-1.5">
-                            <span className="text-xs text-muted-foreground/70">
-                              {new Date(conv.updated_at).toLocaleDateString()}
-                            </span>
-                            {conv.message_count > 0 && (
-                              <span className="text-xs text-muted-foreground/70 flex items-center gap-1">
-                                <Icon name="message-square" size={8} />
-                                {conv.message_count}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Chevron */}
-                        <Icon
-                          name="chevron-right"
-                          size={12}
-                          className={cn(
-                            'text-muted-foreground/70 transition-transform duration-200 mt-2',
-                            isSelected ? 'rotate-90' : 'opacity-0 group-hover:opacity-100'
-                          )}
-                        />
-                      </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -288,14 +393,22 @@ export const ChatZone: React.FC = () => {
                               'text-sm leading-relaxed',
                               message.role === 'user'
                                 ? 'text-foreground'
-                                : 'text-muted-foreground'
+                                : 'text-foreground'
                             )}
                           >
-                            {message.content.split('\n').map((line, i) => (
-                              <p key={i} className="mb-2 last:mb-0">
-                                {line}
-                              </p>
-                            ))}
+                            {message.role === 'assistant' ? (
+                              <MarkdownRenderer content={message.content} />
+                            ) : (
+                              message.content.split('\n').map((line, i) => (
+                                <p key={i} className="mb-2 last:mb-0">
+                                  {line}
+                                </p>
+                              ))
+                            )}
+                            {/* Streaming indicator */}
+                            {isStreaming && message.role === 'assistant' && message === currentMessages[currentMessages.length - 1] && (
+                              <span className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1" />
+                            )}
                           </div>
                         )}
 
@@ -371,6 +484,20 @@ export const ChatZone: React.FC = () => {
                 {/* Model Selector */}
                 <ModelDropdown />
               </div>
+
+              {/* Token Counter - subtle display */}
+              {(contextTokens > 0 || inputTokens > 0) && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors">
+                  <span title="Context tokens">{formatTokenCount(contextTokens)}</span>
+                  {inputTokens > 0 && (
+                    <>
+                      <span>+</span>
+                      <span title="Input tokens">{formatTokenCount(inputTokens)}</span>
+                    </>
+                  )}
+                  <span>tokens</span>
+                </div>
+              )}
             </div>
 
             {/* Input Field */}
@@ -378,7 +505,9 @@ export const ChatZone: React.FC = () => {
               <input
                 type="text"
                 placeholder={
-                  mode === 'Architect'
+                  !selectedProviderId || !selectedModelId
+                    ? 'Select a provider and model first...'
+                    : mode === 'Architect'
                     ? 'Describe your idea...'
                     : 'Ask the AI something...'
                 }
@@ -391,17 +520,35 @@ export const ChatZone: React.FC = () => {
                     handleSend();
                   }
                 }}
+                disabled={isLoading || !selectedProviderId || !selectedModelId}
               />
-              <button
-                onClick={handleSend}
-                className="rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground px-3 h-9 flex items-center"
-              >
-                {isLoading ? (
-                  <Icon name="loader" size={14} className="animate-spin" />
-                ) : (
-                  <Icon name="arrow-up" size={14} />
-                )}
-              </button>
+              {isStreaming ? (
+                <button
+                  onClick={stopStreaming}
+                  className="rounded-lg bg-red-500 hover:bg-red-600 text-white px-3 h-9 flex items-center gap-2"
+                  title="Stop generating"
+                >
+                  <Icon name="square" size={14} />
+                  <span className="text-xs">Stop</span>
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={isLoading || !inputValue.trim() || !selectedProviderId || !selectedModelId}
+                  className={cn(
+                    'rounded-lg px-3 h-9 flex items-center transition-colors',
+                    isLoading || !inputValue.trim() || !selectedProviderId || !selectedModelId
+                      ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                      : 'bg-primary hover:bg-primary/90 text-primary-foreground'
+                  )}
+                >
+                  {isLoading ? (
+                    <Icon name="loader" size={14} className="animate-spin" />
+                  ) : (
+                    <Icon name="arrow-up" size={14} />
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </footer>
