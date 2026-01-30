@@ -27,6 +27,7 @@ import {
   AlertCircle,
   Clock,
   MoreHorizontal,
+  MoreVertical,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -43,6 +44,13 @@ import {
   User,
   Download,
   RotateCcw,
+  Edit2,
+  Trash2,
+  Eye,
+  EyeOff,
+  HardDrive,
+  Cloud,
+  Copy,
 } from 'lucide-react';
 
 export type IconName =
@@ -51,6 +59,7 @@ export type IconName =
   | 'chevron-left'
   | 'minus'
   | 'maximize'
+  | 'square'
   | 'check-square'
   | 'list-todo'
   | 'list'
@@ -73,6 +82,7 @@ export type IconName =
   | 'alert-circle'
   | 'clock'
   | 'more-horizontal'
+  | 'more-vertical'
   | 'panel-left-close'
   | 'panel-left-open'
   | 'panel-right-close'
@@ -88,7 +98,14 @@ export type IconName =
   | 'cpu'
   | 'user'
   | 'download'
-  | 'rotate-ccw';
+  | 'rotate-ccw'
+  | 'edit'
+  | 'trash'
+  | 'eye'
+  | 'eye-off'
+  | 'hard-drive'
+  | 'cloud'
+  | 'copy';
 
 interface IconProps {
   name: IconName;
@@ -102,6 +119,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'chevron-left': ChevronLeft,
   'minus': Minus,
   'maximize': Square,
+  'square': Square,
   'check-square': CheckSquare,
   'list-todo': ListTodo,
   'list': List,
@@ -124,6 +142,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'alert-circle': AlertCircle,
   'clock': Clock,
   'more-horizontal': MoreHorizontal,
+  'more-vertical': MoreVertical,
   'panel-left-close': PanelLeftClose,
   'panel-left-open': PanelLeftOpen,
   'panel-right-close': PanelRightClose,
@@ -140,6 +159,13 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'user': User,
   'download': Download,
   'rotate-ccw': RotateCcw,
+  'edit': Edit2,
+  'trash': Trash2,
+  'eye': Eye,
+  'eye-off': EyeOff,
+  'hard-drive': HardDrive,
+  'cloud': Cloud,
+  'copy': Copy,
 };
 
 export const Icon: React.FC<IconProps> = ({ name, size = 16, className }) => {

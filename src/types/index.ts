@@ -183,6 +183,9 @@ export interface AIProvider {
   id: string;
   name: string;
   status: AIProviderStatus;
+  baseUrl?: string;
+  isLocal?: boolean;
+  isEnabled?: boolean;
 }
 
 export interface AIModel {
@@ -191,6 +194,17 @@ export interface AIModel {
   provider_id: string;
   description?: string;
   capabilities?: string[];
+  owned_by?: string;
+}
+
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  providerType: string;
+  baseUrl: string;
+  apiKey?: string;
+  isEnabled: boolean;
+  isLocal: boolean;
 }
 
 export interface GitCommit {

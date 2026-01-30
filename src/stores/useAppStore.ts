@@ -18,6 +18,7 @@ interface AppStore {
   accountOpen: boolean;
   projectModalOpen: boolean;
   toolsSettingsOpen: boolean;
+  providersSettingsOpen: boolean;
   activeThemeId: string;
   leftPanelWidth: number;
   rightPanelWidth: number;
@@ -38,6 +39,8 @@ interface AppStore {
   closeProjectModal: () => void;
   openToolsSettings: () => void;
   closeToolsSettings: () => void;
+  openProvidersSettings: () => void;
+  closeProvidersSettings: () => void;
   createProject: (data: CreateProjectData) => Promise<void>;
   importProject: (data: ImportProjectData) => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
@@ -73,6 +76,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   accountOpen: false,
   projectModalOpen: false,
   toolsSettingsOpen: false,
+  providersSettingsOpen: false,
   activeThemeId: localStorage.getItem('theme-id') || 'macro-dark',
   leftPanelWidth: 280,
   rightPanelWidth: 320,
@@ -109,6 +113,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   openToolsSettings: () => set({ toolsSettingsOpen: true }),
 
   closeToolsSettings: () => set({ toolsSettingsOpen: false }),
+
+  openProvidersSettings: () => set({ providersSettingsOpen: true }),
+
+  closeProvidersSettings: () => set({ providersSettingsOpen: false }),
 
   openAccount: () => set({ accountOpen: true }),
 
