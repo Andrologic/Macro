@@ -85,7 +85,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         // Fallback mock providers for development without Tauri
         const mockConfigs: ProviderConfig[] = [
           { id: 'openai', name: 'OpenAI', providerType: 'openai', baseUrl: 'https://api.openai.com/v1', isEnabled: true, isLocal: false },
-          { id: 'zai', name: 'z.ai', providerType: 'openai', baseUrl: 'https://api.z.ai/v1', isEnabled: true, isLocal: false },
+          { id: 'zai', name: 'z.ai', providerType: 'openai', baseUrl: 'https://api.z.ai/api/coding/paas/v4', isEnabled: true, isLocal: false },
           { id: 'anthropic', name: 'Anthropic', providerType: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', isEnabled: true, isLocal: false },
           { id: 'openrouter', name: 'OpenRouter', providerType: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', isEnabled: true, isLocal: false },
           { id: 'ollama', name: 'Ollama', providerType: 'ollama', baseUrl: 'http://localhost:11434/v1', isEnabled: true, isLocal: true },
