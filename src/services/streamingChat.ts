@@ -101,6 +101,23 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     const decoder = new TextDecoder();
     let fullContent = '';
     let buffer = '';
+    let isThinking = false;
+
+    const startThinking = () => {
+      if (!isThinking) {
+        fullContent += '<think>';
+        onToken('<think>');
+        isThinking = true;
+      }
+    };
+
+    const endThinking = () => {
+      if (isThinking) {
+        fullContent += '</think>';
+        onToken('</think>');
+        isThinking = false;
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -132,8 +149,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           try {
             const parsed = JSON.parse(data);
             const delta = parsed.choices?.[0]?.delta;
-            
+            const reasoning = delta?.reasoning ?? delta?.reasoning_content;
+
+            if (typeof reasoning === 'string' && reasoning.length > 0) {
+              startThinking();
+              fullContent += reasoning;
+              onToken(reasoning);
+            }
+
             if (delta?.content) {
+              endThinking();
               const token = delta.content;
               fullContent += token;
               onToken(token);
@@ -146,6 +171,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       }
     }
 
+    endThinking();
     onComplete(fullContent);
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
@@ -227,7 +253,12 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     }
 
     const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || '';
+    const message = data.choices?.[0]?.message || {};
+    const messageContent = message.content || '';
+    const reasoning = message.reasoning || message.reasoning_content || '';
+    const content = reasoning
+      ? `<think>${reasoning}</think>${messageContent ? `\n${messageContent}` : ''}`
+      : messageContent;
     onComplete(content);
     return content;
   } catch (error) {
