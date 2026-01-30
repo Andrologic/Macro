@@ -1,10 +1,13 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
+import { toast } from '../ui/Toaster';
 
 export const AccountModal: React.FC = () => {
+  const { t, i18n } = useTranslation();
   const { accountOpen, closeAccount } = useAppStore();
   const { user, logout, isLoading } = useAuthStore();
 
@@ -13,14 +16,16 @@ export const AccountModal: React.FC = () => {
   const handleLogout = async () => {
     try {
       await logout();
+      toast.success(t('toast.loggedOut'));
       closeAccount();
     } catch (error) {
       console.error('Failed to logout:', error);
+      toast.error(t('errors.logoutFailed'));
     }
   };
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
+    return new Date(dateString).toLocaleDateString(i18n.language, {
       year: 'numeric',
       month: 'long',
       day: 'numeric',
@@ -33,11 +38,12 @@ export const AccountModal: React.FC = () => {
         <header className="h-12 px-4 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Icon name="user" size={16} className="text-primary" />
-            <span className="text-sm text-foreground">Account</span>
+            <span className="text-sm text-foreground">{t('account.title')}</span>
           </div>
           <button
             onClick={closeAccount}
             className="p-1.5 rounded-lg hover:bg-accent transition-colors"
+            aria-label={t('common.close')}
           >
             <Icon name="x" size={14} className="text-muted-foreground" />
           </button>
@@ -47,7 +53,7 @@ export const AccountModal: React.FC = () => {
           {/* Profile Section */}
           <section>
             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              Profile
+              {t('account.profile')}
             </h3>
             
             <div className="bg-card/50 rounded-lg p-4">
@@ -67,15 +73,15 @@ export const AccountModal: React.FC = () => {
               {/* User Details */}
               <div className="space-y-2">
                 <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">User ID</span>
+                  <span className="text-muted-foreground">{t('account.userId')}</span>
                   <span className="text-foreground font-mono">{user.id}</span>
                 </div>
                 <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">Member since</span>
+                  <span className="text-muted-foreground">{t('account.memberSince')}</span>
                   <span className="text-foreground">{formatDate(user.created_at)}</span>
                 </div>
                 <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">Last updated</span>
+                  <span className="text-muted-foreground">{t('account.lastUpdated')}</span>
                   <span className="text-foreground">{formatDate(user.updated_at)}</span>
                 </div>
               </div>
@@ -85,28 +91,28 @@ export const AccountModal: React.FC = () => {
           {/* Preferences Section */}
           <section>
             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              Current Preferences
+              {t('account.currentPreferences')}
             </h3>
             
             <div className="bg-card/50 rounded-lg p-4 space-y-3">
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Theme</span>
+                <span className="text-muted-foreground">{t('settings.theme')}</span>
                 <span className="text-foreground capitalize">{user.preferences.theme}</span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Language</span>
+                <span className="text-muted-foreground">{t('settings.language')}</span>
                 <span className="text-foreground uppercase">{user.preferences.language}</span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">In-app notifications</span>
+                <span className="text-muted-foreground">{t('account.inAppNotifications')}</span>
                 <span className={user.preferences.notifications ? 'text-green-400' : 'text-red-400'}>
-                  {user.preferences.notifications ? 'Enabled' : 'Disabled'}
+                  {user.preferences.notifications ? t('common.enabled') : t('common.disabled')}
                 </span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Email updates</span>
+                <span className="text-muted-foreground">{t('account.emailUpdates')}</span>
                 <span className={user.preferences.emailUpdates ? 'text-green-400' : 'text-red-400'}>
-                  {user.preferences.emailUpdates ? 'Enabled' : 'Disabled'}
+                  {user.preferences.emailUpdates ? t('common.enabled') : t('common.disabled')}
                 </span>
               </div>
             </div>
@@ -115,7 +121,7 @@ export const AccountModal: React.FC = () => {
           {/* Quick Actions Section */}
           <section>
             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              Quick Actions
+              {t('account.quickActions')}
             </h3>
             
             <div className="space-y-2">
@@ -125,7 +131,7 @@ export const AccountModal: React.FC = () => {
                 className="w-full justify-start"
                 leftIcon={<Icon name="shield" size={16} />}
               >
-                Change password
+                {t('account.changePassword')}
               </Button>
               <Button
                 variant="secondary"
@@ -133,7 +139,7 @@ export const AccountModal: React.FC = () => {
                 className="w-full justify-start"
                 leftIcon={<Icon name="tool" size={16} />}
               >
-                Manage API keys
+                {t('account.manageApiKeys')}
               </Button>
               <Button
                 variant="secondary"
@@ -141,7 +147,7 @@ export const AccountModal: React.FC = () => {
                 className="w-full justify-start"
                 leftIcon={<Icon name="download" size={16} />}
               >
-                Export data
+                {t('account.exportData')}
               </Button>
             </div>
           </section>
@@ -149,7 +155,7 @@ export const AccountModal: React.FC = () => {
           {/* Danger Zone */}
           <section>
             <h3 className="text-xs font-semibold text-red-400 uppercase tracking-wider mb-3">
-              Danger Zone
+              {t('account.dangerZone')}
             </h3>
             
             <Button
@@ -160,14 +166,14 @@ export const AccountModal: React.FC = () => {
               onClick={handleLogout}
               isLoading={isLoading}
             >
-              Sign out
+              {t('account.signOut')}
             </Button>
           </section>
         </div>
 
         <footer className="h-12 border-t border-border px-4 flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={closeAccount}>
-            Close
+            {t('common.close')}
           </Button>
         </footer>
       </div>

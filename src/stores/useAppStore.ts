@@ -2,6 +2,11 @@ import { create } from 'zustand';
 import { AppMode, Plan, ProjectGroup, Project } from '../types';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
+import {
+  loadPreference,
+  savePreference,
+  PREF_KEYS,
+} from '../services/preferences';
 
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
 
@@ -22,6 +27,8 @@ interface AppStore {
   activeThemeId: string;
   leftPanelWidth: number;
   rightPanelWidth: number;
+  isLeftPanelOpen: boolean;
+  isRightPanelOpen: boolean;
   setMode: (mode: AppMode) => void;
   setTheme: (themeId: string) => void;
   setCurrentPlan: (plan: Plan | null) => void;
@@ -45,6 +52,8 @@ interface AppStore {
   importProject: (data: ImportProjectData) => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
   setRightPanelWidth: (width: number) => void;
+  setLeftPanelOpen: (open: boolean) => void;
+  setRightPanelOpen: (open: boolean) => void;
   initialize: () => Promise<void>;
 }
 
@@ -80,6 +89,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   activeThemeId: localStorage.getItem('theme-id') || 'macro-dark',
   leftPanelWidth: 280,
   rightPanelWidth: 320,
+  isLeftPanelOpen: true,
+  isRightPanelOpen: true,
 
   setMode: (mode) => set({ mode }),
   setTheme: (themeId) => {
@@ -230,9 +241,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  setLeftPanelWidth: (width) => set({ leftPanelWidth: Math.max(200, Math.min(600, width)) }),
+  setLeftPanelWidth: (width) => {
+    const clampedWidth = Math.max(200, Math.min(600, width));
+    set({ leftPanelWidth: clampedWidth });
+    // Persist asynchronously (fire and forget)
+    void savePreference(PREF_KEYS.LEFT_PANEL_WIDTH, clampedWidth);
+  },
 
-  setRightPanelWidth: (width) => set({ rightPanelWidth: Math.max(200, Math.min(600, width)) }),
+  setRightPanelWidth: (width) => {
+    const clampedWidth = Math.max(200, Math.min(600, width));
+    set({ rightPanelWidth: clampedWidth });
+    // Persist asynchronously (fire and forget)
+    void savePreference(PREF_KEYS.RIGHT_PANEL_WIDTH, clampedWidth);
+  },
+
+  setLeftPanelOpen: (open) => {
+    set({ isLeftPanelOpen: open });
+    void savePreference(PREF_KEYS.IS_LEFT_PANEL_OPEN, open);
+  },
+
+  setRightPanelOpen: (open) => {
+    set({ isRightPanelOpen: open });
+    void savePreference(PREF_KEYS.IS_RIGHT_PANEL_OPEN, open);
+  },
 
   getProjectById: (id) => {
     const state = get();
@@ -246,11 +277,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
   initialize: async () => {
     set({ isLoading: true, lastError: null });
     try {
+      // Load persisted panel preferences
+      const [leftWidth, rightWidth, leftOpen, rightOpen] = await Promise.all([
+        loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
+        loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
+        loadPreference<boolean>(PREF_KEYS.IS_LEFT_PANEL_OPEN),
+        loadPreference<boolean>(PREF_KEYS.IS_RIGHT_PANEL_OPEN),
+      ]);
+
       const { plan, projectGroups } = await services.getAppBootstrap();
       set({
         currentPlan: plan,
         projectGroups,
         selectedGroupId: projectGroups[0]?.id ?? null,
+        leftPanelWidth: leftWidth,
+        rightPanelWidth: rightWidth,
+        isLeftPanelOpen: leftOpen,
+        isRightPanelOpen: rightOpen,
         isLoading: false,
       });
     } catch (error) {

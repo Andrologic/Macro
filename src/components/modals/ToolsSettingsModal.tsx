@@ -1,13 +1,16 @@
 import React, { useState, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useToolsStore } from '../../stores/useToolsStore';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
 import { Tabs, TabsList, TabsTrigger } from '../ui/Tabs';
+import { toast } from '../ui/Toaster';
 import { cn } from '../../utils/cn';
 import type { ToolStatus, MCPServerStatus } from '../../types';
 
 export const ToolsSettingsModal: React.FC = () => {
+  const { t } = useTranslation();
   const { toolsSettingsOpen, closeToolsSettings } = useAppStore();
   const {
     internalTools,
@@ -52,12 +55,14 @@ export const ToolsSettingsModal: React.FC = () => {
 
   const handleSave = async () => {
     await saveAll();
+    toast.success(t('toast.settingsSaved'));
     closeToolsSettings();
   };
 
   const handleReset = async () => {
-    if (confirm('Are you sure you want to reset all tools and MCP servers to defaults?')) {
+    if (confirm(t('tools.resetConfirm'))) {
       await resetToDefaults();
+      toast.success(t('toast.settingsReset'));
     }
   };
 
@@ -92,13 +97,14 @@ export const ToolsSettingsModal: React.FC = () => {
                 <Icon name="tool" size={20} />
               </div>
               <div>
-                <h2 className="text-lg font-semibold text-foreground">Tools Configuration</h2>
-                <p className="text-xs text-muted-foreground">Manage available capabilities and MCP servers</p>
+                <h2 className="text-lg font-semibold text-foreground">{t('tools.title')}</h2>
+                <p className="text-xs text-muted-foreground">{t('tools.subtitle')}</p>
               </div>
             </div>
             <button
               onClick={closeToolsSettings}
               className="p-2 rounded-lg hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+              aria-label={t('common.close')}
             >
               <Icon name="x" size={18} />
             </button>
@@ -113,8 +119,8 @@ export const ToolsSettingsModal: React.FC = () => {
               className="w-auto"
             >
               <TabsList className="bg-card border-border p-1">
-                <TabsTrigger value="tools" className="px-4 py-1.5 text-xs">Internal Tools</TabsTrigger>
-                <TabsTrigger value="mcp" className="px-4 py-1.5 text-xs">MCP Servers</TabsTrigger>
+                <TabsTrigger value="tools" className="px-4 py-1.5 text-xs">{t('tools.internalTools')}</TabsTrigger>
+                <TabsTrigger value="mcp" className="px-4 py-1.5 text-xs">{t('tools.mcpServers')}</TabsTrigger>
               </TabsList>
             </Tabs>
 
@@ -122,7 +128,7 @@ export const ToolsSettingsModal: React.FC = () => {
               <Icon name="search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground group-focus-within:text-foreground transition-colors" />
               <input 
                 type="text" 
-                placeholder="Search tools..." 
+                placeholder={t('tools.searchPlaceholder')}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-muted border border-border rounded-lg pl-9 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all"
@@ -199,7 +205,7 @@ export const ToolsSettingsModal: React.FC = () => {
                     );
                   })
                 ) : (
-                  <EmptyState query={searchQuery} />
+                  <EmptyState query={searchQuery} t={t} />
                 )
               ) : (
                 // MCP SERVERS LIST
@@ -255,7 +261,7 @@ export const ToolsSettingsModal: React.FC = () => {
                                 "text-[10px] font-medium",
                                 isEnabled ? "text-emerald-500" : "text-muted-foreground/70"
                               )}>
-                                {server.status === 'online' ? 'Online' : 'Offline'}
+                                {server.status === 'online' ? t('common.online') : t('common.offline')}
                               </span>
                            </div>
                            
@@ -274,7 +280,7 @@ export const ToolsSettingsModal: React.FC = () => {
                     );
                   })
                 ) : (
-                  <EmptyState query={searchQuery} />
+                  <EmptyState query={searchQuery} t={t} />
                 )
               )}
             </div>
@@ -290,10 +296,10 @@ export const ToolsSettingsModal: React.FC = () => {
               className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2"
             >
               <Icon name="rotate-ccw" size={12} />
-              Reset defaults
+              {t('tools.resetDefaults')}
             </button>
             <span className="text-xs text-muted-foreground/70 border-l border-border pl-4 h-4 flex items-center">
-              Changes auto-save
+              {t('tools.changesAutoSave')}
             </span>
           </div>
           
@@ -304,7 +310,7 @@ export const ToolsSettingsModal: React.FC = () => {
               onClick={closeToolsSettings}
               className="text-muted-foreground hover:text-foreground"
             >
-              Close
+              {t('common.close')}
             </Button>
             <Button
               variant="primary"
@@ -313,7 +319,7 @@ export const ToolsSettingsModal: React.FC = () => {
               isLoading={saving}
               className="min-w-[100px]"
             >
-               {saving ? 'Saving...' : 'Done'}
+               {saving ? t('common.saving') : t('common.done')}
             </Button>
           </div>
         </footer>
@@ -323,14 +329,14 @@ export const ToolsSettingsModal: React.FC = () => {
 };
 
 // Helper for empty list
-const EmptyState = ({ query }: { query: string }) => (
+const EmptyState = ({ query, t }: { query: string; t: (key: string) => string }) => (
   <div className="flex flex-col items-center justify-center py-20 text-center">
     <div className="w-16 h-16 rounded-2xl bg-card border border-border flex items-center justify-center mb-4">
       <Icon name="search" size={24} className="text-muted-foreground" />
     </div>
-    <h3 className="text-foreground font-medium mb-1">No tools found</h3>
+    <h3 className="text-foreground font-medium mb-1">{t('tools.noToolsFound')}</h3>
     <p className="text-muted-foreground text-xs max-w-[200px]">
-      We couldn't find any tools matching "{query}". Try a different search term.
+      {t('tools.noToolsFoundHint').replace('{query}', query)}
     </p>
   </div>
 );

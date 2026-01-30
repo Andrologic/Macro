@@ -3,6 +3,7 @@ import { Icon } from '../ui/Icon';
 import { Logo } from '../ui/Logo';
 import { WindowControls } from './WindowControls';
 import { useTauriWindow } from '../../hooks/useTauriWindow';
+import { useTranslation } from 'react-i18next';
 import type { AppMode } from '../../types';
 
 interface HeaderProps {
@@ -23,6 +24,7 @@ export function Header({
   const openSettings = useAppStore((state) => state.openSettings);
   const openAccount = useAppStore((state) => state.openAccount);
   const { isAvailable: isTauriAvailable, toggleMaximize } = useTauriWindow();
+  const { t } = useTranslation();
 
   const handleHeaderDoubleClick = () => {
     if (isTauriAvailable) {
@@ -31,8 +33,8 @@ export function Header({
   };
 
   const modes: { value: AppMode; label: string }[] = [
-    { value: 'Architect', label: 'Architect' },
-    { value: 'Implement', label: 'Implement' },
+    { value: 'Architect', label: t('header.architect') },
+    { value: 'Implement', label: t('header.implement') },
   ];
 
   return (
@@ -103,7 +105,8 @@ export function Header({
         <button
           onClick={openSettings}
           className="p-1.5 rounded-lg hover:bg-accent transition-colors"
-          title="Settings"
+          title={t('header.settings')}
+          aria-label={t('header.settings')}
           data-tauri-drag-region="false"
         >
           <Icon name="settings" size={16} className="text-muted-foreground" />
@@ -113,7 +116,8 @@ export function Header({
         <button
           onClick={openAccount}
           className="p-1.5 rounded-lg hover:bg-accent transition-colors"
-          title="Account"
+          title={t('header.account')}
+          aria-label={t('header.account')}
           data-tauri-drag-region="false"
         >
           <Icon name="user" size={16} className="text-muted-foreground" />
