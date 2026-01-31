@@ -130,7 +130,7 @@ export const ChatZone: React.FC = () => {
   };
 
   return (
-    <main className="flex-1 flex bg-background">
+    <main className="h-full flex bg-background">
       {/* Conversation Sidebar */}
       {sidebarOpen && (
         <aside className="w-72 bg-card border-r border-border flex flex-col shrink-0">
