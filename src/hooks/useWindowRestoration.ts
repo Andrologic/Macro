@@ -12,14 +12,6 @@ import {
   PREF_KEYS,
 } from "../services/preferences";
 
-interface WindowState {
-  width: number;
-  height: number;
-  x: number | null;
-  y: number | null;
-  isMaximized: boolean;
-}
-
 // Debounce timer ref
 let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 

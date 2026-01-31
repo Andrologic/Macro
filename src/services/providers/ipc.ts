@@ -32,7 +32,7 @@ export const listTasks = async (): Promise<TasksDto> => notReady();
 
 export const getGitTreeForProject = async (): Promise<GitTreeDto> => notReady();
 
-export const getFileContent = async (path: string): Promise<FileContentDto> => notReady();
+export const getFileContent = async (_path: string): Promise<FileContentDto> => notReady();
 
 export const listCommits = async (): Promise<CommitsDto> => notReady();
 
@@ -44,14 +44,14 @@ export const sendChat = async (
   _request: ChatCompletionRequestDto
 ): Promise<ChatCompletionResponseDto> => notReady();
 
-export const createProject = async (data: {
+export const createProject = async (_data: {
   name: string;
   description: string;
   groupId: string | null;
   path?: string;
 }): Promise<ProjectDto> => notReady();
 
-export const importGitRepo = async (data: {
+export const importGitRepo = async (_data: {
   gitUrl: string;
   projectName: string;
   branch: string;
@@ -62,8 +62,8 @@ export const importGitRepo = async (data: {
 // Tools & MCP Settings
 export const getToolSettings = async (): Promise<ToolSettingsDto> => notReady();
 
-export const updateToolSettings = async (settings: ToolSettingsDto): Promise<void> => notReady();
+export const updateToolSettings = async (_settings: ToolSettingsDto): Promise<void> => notReady();
 
 export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => notReady();
 
-export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): Promise<void> => notReady();
+export const updateMCPServerSettings = async (_settings: MCPServerSettingsDto): Promise<void> => notReady();

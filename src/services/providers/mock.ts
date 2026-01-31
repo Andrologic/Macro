@@ -276,14 +276,19 @@ export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
     console.error("Failed to parse MCP server settings", e);
   }
   
-  const servers = mockMCPServers.map((server) => ({
-    ...server,
-    status: enabledServers[server.id] ? 'online' : 'offline',
-    config: {
-      ...server.config,
-      enabled: enabledServers[server.id] ?? false,
-    },
-  }));
+  const servers = Object.fromEntries(
+    mockMCPServers.map((server) => [
+      server.id,
+      {
+        ...server,
+        status: (enabledServers[server.id] ? 'online' : 'offline') as typeof server.status,
+        config: {
+          ...server.config,
+          enabled: enabledServers[server.id] ?? false,
+        },
+      },
+    ])
+  );
   
   return simulate({ servers });
 };

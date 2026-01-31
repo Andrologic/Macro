@@ -1,4 +1,4 @@
-import { Theme, ThemeColors } from '../types/theme';
+import { Theme } from '../types/theme';
 
 export function hexToRgb(hex: string): string {
   // Remove # if present
