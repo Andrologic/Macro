@@ -5,7 +5,6 @@ import { useChatStore } from '../../stores/useChatStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
-import { Skeleton } from '../shared/Skeleton';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
 import { MarkdownRenderer, estimateTokens, formatTokenCount } from './MarkdownRenderer';
@@ -18,8 +17,6 @@ export const ChatZone: React.FC = () => {
     selectedConversationId,
     selectConversation,
     createConversation,
-    renameConversation,
-    deleteConversation,
     getConversationMessages,
     isLoading,
     isStreaming,
@@ -29,15 +26,36 @@ export const ChatZone: React.FC = () => {
   } = useChatStore();
 
   const { selectedProviderId, selectedModelId } = useProviderStore();
+  const { mode } = useAppStore();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [inputValue, setInputValue] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+
+  // Architect Mode: Ensure single conversation
+  useEffect(() => {
+    if (mode === 'Architect') {
+      const architectTitle = 'Architect Session';
+      const architectConvo = conversations.find(c => c.title === architectTitle);
+      
+      if (architectConvo) {
+        if (selectedConversationId !== architectConvo.id) {
+          selectConversation(architectConvo.id);
+        }
+      } else {
+        // Create if missing. Note: This might trigger multiple creates if not careful.
+        // We rely on conversations being loaded.
+        if (!isLoading && conversations.length > 0) {
+           createConversation(architectTitle, null, null);
+        } else if (!isLoading && conversations.length === 0) {
+           // Initial load case
+           createConversation(architectTitle, null, null);
+        }
+      }
+    }
+  }, [mode, conversations, selectedConversationId, isLoading, createConversation, selectConversation]);
+
   const [editingValue, setEditingValue] = useState('');
-  const [contextMenuId, setContextMenuId] = useState<string | null>(null);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState('');
 
   // Filter messages by selected conversation
   const currentMessages = selectedConversationId
@@ -60,14 +78,6 @@ export const ChatZone: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentMessages]);
 
-  // Close context menu on click outside
-  useEffect(() => {
-    const handleClick = () => setContextMenuId(null);
-    if (contextMenuId) {
-      document.addEventListener('click', handleClick);
-      return () => document.removeEventListener('click', handleClick);
-    }
-  }, [contextMenuId]);
 
   const ensureConversation = async () => {
     if (selectedConversationId) return selectedConversationId;
@@ -102,227 +112,13 @@ export const ChatZone: React.FC = () => {
     setEditingValue('');
   };
 
-  const handleContextMenu = (e: React.MouseEvent, conversationId: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenuId(conversationId);
-  };
-
-  const handleRenameStart = (conv: { id: string; title: string }) => {
-    setRenamingId(conv.id);
-    setRenameValue(conv.title);
-    setContextMenuId(null);
-  };
-
-  const handleRenameConfirm = async () => {
-    if (renamingId && renameValue.trim()) {
-      await renameConversation(renamingId, renameValue.trim());
-    }
-    setRenamingId(null);
-    setRenameValue('');
-  };
-
-  const handleDelete = async (id: string) => {
-    if (confirm('Delete this conversation?')) {
-      await deleteConversation(id);
-    }
-    setContextMenuId(null);
-  };
-
   return (
     <main className="h-full flex bg-background">
-      {/* Conversation Sidebar */}
-      {sidebarOpen && (
-        <aside className="w-72 bg-card border-r border-border flex flex-col shrink-0">
-          {/* Sidebar Header */}
-          <div className="h-14 border-b border-border flex items-center justify-between px-3">
-            <button
-              onClick={() => createConversation(t('chat.newConversation'), null, null)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-medium transition-colors"
-              title={`${t('chat.newChat')} (Ctrl+N)`}
-            >
-              <Icon name="plus" size={12} />
-              {t('chat.newChat')}
-            </button>
-            <button
-              onClick={() => setSidebarOpen(false)}
-              className="p-1.5 rounded-lg hover:bg-accent transition-colors"
-              aria-label={t('chat.hideHistory')}
-            >
-              <Icon name="chevron-left" size={16} className="text-muted-foreground" />
-            </button>
-          </div>
-
-          {/* Conversation List */}
-          <div className="flex-1 overflow-y-auto">
-            {isLoading ? (
-              <div className="p-3 space-y-2">
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
-              </div>
-            ) : conversations.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full px-6 text-center">
-                <Icon name="message-square" size={32} className="text-muted-foreground mb-3" />
-                <p className="text-sm text-muted-foreground">{t('chat.noConversations')}</p>
-              </div>
-            ) : (
-              <div className="p-2 space-y-1">
-                {conversations.map((conv) => {
-                  const isSelected = conv.id === selectedConversationId;
-                  const isRenaming = renamingId === conv.id;
-                  
-                  return (
-                    <div key={conv.id} className="relative">
-                      <button
-                        onClick={() => selectConversation(conv.id)}
-                        onContextMenu={(e) => handleContextMenu(e, conv.id)}
-                        className={cn(
-                          'w-full text-left px-3 py-2.5 rounded-lg border transition-all duration-200 group',
-                          isSelected
-                            ? 'bg-primary/10 border-primary/30'
-                            : 'border-transparent hover:bg-accent'
-                        )}
-                      >
-                        <div className="flex items-start gap-3">
-                          {/* Icon */}
-                          <div className="mt-0.5 shrink-0">
-                            {conv.task_id ? (
-                              <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center">
-                                <Icon name="check-square" size={10} className="text-primary" />
-                              </div>
-                            ) : (
-                              <div className="w-6 h-6 rounded-lg bg-muted border border-border flex items-center justify-center">
-                                <Icon name="message-square" size={10} className="text-muted-foreground" />
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Content */}
-                          <div className="flex-1 min-w-0">
-                            {/* Title */}
-                            <div className="flex items-center gap-2 mb-1">
-                              {isRenaming ? (
-                                <input
-                                  type="text"
-                                  value={renameValue}
-                                  onChange={(e) => setRenameValue(e.target.value)}
-                                  onBlur={handleRenameConfirm}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') handleRenameConfirm();
-                                    if (e.key === 'Escape') {
-                                      setRenamingId(null);
-                                      setRenameValue('');
-                                    }
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                  autoFocus
-                                  className="text-sm font-medium text-foreground bg-muted border border-border rounded px-1 py-0.5 w-full"
-                                />
-                              ) : (
-                                <h3 className="text-sm font-medium text-foreground truncate">
-                                  {conv.title}
-                                </h3>
-                              )}
-                              {conv.is_unread && !isRenaming && (
-                                <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
-                              )}
-                            </div>
-
-                            {/* Last message */}
-                            {conv.last_message && !isRenaming && (
-                              <p className="text-xs text-muted-foreground truncate">
-                                {conv.last_message}
-                              </p>
-                            )}
-
-                            {/* Metadata */}
-                            {!isRenaming && (
-                              <div className="flex items-center gap-2 mt-1.5">
-                                <span className="text-xs text-muted-foreground/70">
-                                  {new Date(conv.updated_at).toLocaleDateString()}
-                                </span>
-                                {conv.message_count > 0 && (
-                                  <span className="text-xs text-muted-foreground/70 flex items-center gap-1">
-                                    <Icon name="message-square" size={8} />
-                                    {conv.message_count}
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Menu button */}
-                          {!isRenaming && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setContextMenuId(contextMenuId === conv.id ? null : conv.id);
-                              }}
-                              className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
-                            >
-                              <Icon name="more-horizontal" size={12} className="text-muted-foreground" />
-                            </button>
-                          )}
-                        </div>
-                      </button>
-
-                      {/* Context Menu */}
-                      {contextMenuId === conv.id && (
-                        <div
-                          className="absolute right-2 top-full z-50 mt-1 w-36 bg-card border border-border rounded-lg shadow-lg py-1"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <button
-                            onClick={() => handleRenameStart(conv)}
-                            className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
-                          >
-                            <Icon name="edit" size={12} />
-                            {t('common.rename')}
-                          </button>
-                          <button
-                            onClick={() => handleDelete(conv.id)}
-                            className="w-full px-3 py-1.5 text-left text-sm text-red-400 hover:bg-red-500/10 flex items-center gap-2"
-                          >
-                            <Icon name="trash" size={12} />
-                            {t('common.delete')}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </aside>
-      )}
-
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <header className="h-14 border-b border-border/50 flex items-center justify-between px-4 bg-card/30">
           <div className="flex items-center gap-3 min-w-0">
-            {!sidebarOpen && (
-              <div className="flex items-center gap-1 mr-1">
-                <button
-                  onClick={() => setSidebarOpen(true)}
-                  className="p-1.5 rounded-lg hover:bg-accent transition-colors"
-                  title={t('chat.showHistory')}
-                  aria-label={t('chat.showHistory')}
-                >
-                  <Icon name="chevron-right" size={16} className="text-muted-foreground" />
-                </button>
-                <button
-                  onClick={() => createConversation(t('chat.newConversation'), null, null)}
-                  className="p-1.5 rounded-lg hover:bg-accent transition-colors group"
-                  title={`${t('chat.newChat')} (Ctrl+N)`}
-                  aria-label={t('chat.newChat')}
-                >
-                  <Icon name="plus" size={16} className="text-muted-foreground group-hover:text-primary transition-colors" />
-                </button>
-              </div>
-            )}
             {currentConversation && (
               <>
                 <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">

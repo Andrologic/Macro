@@ -64,6 +64,23 @@ export interface PlanBlockItem {
   checked: boolean;
 }
 
+// User Needs (Architect Mode)
+export type NeedStatus = 'identified' | 'refined' | 'validated';
+export type NeedCategory = 'functional' | 'technical' | 'ux' | 'security' | 'other';
+
+export interface Need {
+  id: string;
+  title: string;
+  description: string;
+  category: NeedCategory;
+  status: NeedStatus;
+  priority: 'low' | 'medium' | 'high';
+  tags: string[];
+  sourceMessageId?: string; // Link to the chat message where this was identified
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Activity indicator for projects
 export type ProjectActivity = 'idle' | 'ai-active' | 'completed' | 'error';
 export type AuthStatus = 'authenticated' | 'unauthenticated' | 'loading';

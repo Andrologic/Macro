@@ -3,8 +3,9 @@ import { useAppStore } from '../../stores/useAppStore';
 import type { AppMode } from '../../types';
 
 // Architect Mode components
-import { PlanBlueprint } from '../plan/PlanBlueprint.tsx';
+import { NeedsPanel } from '../architect/NeedsPanel';
 import { StrategyGraph } from '../plan/StrategyGraph.tsx';
+
 
 // Implement Mode components
 import { TaskQueue } from '../tasks/TaskQueue.tsx';
@@ -29,7 +30,7 @@ interface PanelConfig {
 
 const modeConfigs: Record<AppMode, PanelConfig> = {
   Architect: {
-    left: PlanBlueprint,
+    left: NeedsPanel,
     center: ChatZone,
     right: StrategyGraph,
   },
