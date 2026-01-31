@@ -9,6 +9,7 @@ import {
 } from '../services/preferences';
 
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
+export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools';
 
 interface AppStore {
   mode: AppMode;
@@ -21,10 +22,9 @@ interface AppStore {
   isLoading: boolean;
   lastError: string | null;
   settingsOpen: boolean;
+  activeSettingsTab: SettingsTab; // Added
   accountOpen: boolean;
   projectModalOpen: boolean;
-  toolsSettingsOpen: boolean;
-  providersSettingsOpen: boolean;
   activeThemeId: string;
   leftPanelWidth: number;
   rightPanelWidth: number;
@@ -47,16 +47,13 @@ interface AppStore {
   setEnabledModes: (modes: AppMode[]) => void;
   setPlanNodes: (nodes: PlanNode[]) => void;
   setPredictedBranches: (branches: PredictedBranch[]) => void;
-  openSettings: () => void;
+  openSettings: (tab?: SettingsTab) => void;
   closeSettings: () => void;
+  setSettingsTab: (tab: SettingsTab) => void;
   openAccount: () => void;
   closeAccount: () => void;
   openProjectModal: () => void;
   closeProjectModal: () => void;
-  openToolsSettings: () => void;
-  closeToolsSettings: () => void;
-  openProvidersSettings: () => void;
-  closeProvidersSettings: () => void;
   createProject: (data: CreateProjectData) => Promise<void>;
   importProject: (data: ImportProjectData) => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
@@ -92,10 +89,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isLoading: false,
   lastError: null,
   settingsOpen: false,
+  activeSettingsTab: 'general',
   accountOpen: false,
   projectModalOpen: false,
-  toolsSettingsOpen: false,
-  providersSettingsOpen: false,
   activeThemeId: localStorage.getItem('theme-id') || 'macro-dark',
   leftPanelWidth: 280,
   rightPanelWidth: 320,
@@ -139,16 +135,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     })),
 
   // Settings modal
-  openSettings: () => set({ settingsOpen: true }),
+  openSettings: (tab = 'general') => set({ settingsOpen: true, activeSettingsTab: tab }),
   closeSettings: () => set({ settingsOpen: false }),
-
-  openToolsSettings: () => set({ toolsSettingsOpen: true }),
-
-  closeToolsSettings: () => set({ toolsSettingsOpen: false }),
-
-  openProvidersSettings: () => set({ providersSettingsOpen: true }),
-
-  closeProvidersSettings: () => set({ providersSettingsOpen: false }),
+  setSettingsTab: (tab) => set({ activeSettingsTab: tab }),
 
   openAccount: () => set({ accountOpen: true }),
 

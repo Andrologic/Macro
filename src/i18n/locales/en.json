@@ -183,5 +183,36 @@
     "connectionFailed": "Connection failed",
     "copied": "Copied to clipboard",
     "loggedOut": "You have been logged out"
+  },
+  "settings": {
+    "title": "Settings",
+    "general": "General",
+    "appearance": "Appearance",
+    "ai": "AI & Models",
+    "tools": "Tools & MCP",
+    "desc": {
+      "general": "Configure language and application preferences",
+      "appearance": "Customize the look and feel of the application",
+      "ai": "Manage AI models, providers and API keys",
+      "tools": "Configure external tools and MCP servers"
+    },
+    "language_region": "Language & Region",
+    "language": "Language",
+    "language_desc": "Select your preferred language interface",
+    "application": "Application",
+    "sound_effects": "Sound Effects",
+    "sound_effects_desc": "Play sounds on task completion or errors",
+    "desktop_notifications": "Desktop Notifications",
+    "desktop_notifications_desc": "Show native desktop notifications for important events",
+    "analytics": "Analytics",
+    "analytics_desc": "Share anonymous usage data to help improve Macro",
+    "theme": "Theme"
+  },
+  "providers": {
+    "add": "Add Provider",
+    "edit": "Edit Provider",
+    "created": "Provider created",
+    "updated": "Provider updated",
+    "delete": "Delete Provider"
   }
 }

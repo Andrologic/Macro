@@ -1,16 +1,13 @@
 import React, { useEffect } from 'react';
 import { Header } from './components/layout/Header';
-import { Footer } from './components/layout/Footer';
 import { Toaster } from './components/ui/Toaster';
 import { useWindowRestoration } from './hooks/useWindowRestoration';
 import { PanelResizer } from './components/layout/PanelResizer';
 import { ModeRouter } from './components/layout/ModeRouter';
 import { DiffModal } from './components/modals/DiffModal';
-import { SettingsModal } from './components/modals/SettingsModal';
+import { SettingsModal } from './components/settings/SettingsModal';
 import { AccountModal } from './components/modals/AccountModal';
 import { ProjectModal } from './components/modals/ProjectModal';
-import { ToolsSettingsModal } from './components/modals/ToolsSettingsModal';
-import { ProvidersSettingsModal } from './components/modals/ProvidersSettingsModal';
 import { CodeFileViewerModal } from './components/modals/CodeFileViewerModal';
 import { useAppStore } from './stores/useAppStore';
 import { useChatStore } from './stores/useChatStore';
@@ -67,7 +64,7 @@ const App: React.FC = () => {
   }, []);
 
   return (
-    <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr_32px] overflow-hidden">
+    <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr] overflow-hidden">
       {/* Header */}
       <Header
         isLeftOpen={isLeftOpen}
@@ -118,16 +115,11 @@ const App: React.FC = () => {
         )}
       </div>
 
-      {/* Footer */}
-      <Footer />
-
       {/* Modals */}
       <DiffModal />
       <SettingsModal />
       <AccountModal />
       <ProjectModal />
-      <ToolsSettingsModal />
-      <ProvidersSettingsModal />
       <CodeFileViewerModal />
 
       {/* Toast Notifications */}
