@@ -252,7 +252,7 @@ pub enum FsEventDto {
 - [x] `BackendError::FilesystemDiskFull { message: String }` - no space left on device
 
 ### 3.3 Error Conversion Helper
-- [ ] Create helper function `io_error_to_backend_error(err: std::io::Error, path: &Path) -> BackendError`
+- [x] Create helper function `io_error_to_backend_error(err: std::io::Error, path: &Path) -> BackendError`
   - Map `ErrorKind::NotFound` → `FilesystemNotFound`
   - Map `ErrorKind::PermissionDenied` → `FilesystemPermissionDenied`
   - Map `ErrorKind::AlreadyExists` → `FilesystemAlreadyExists`
@@ -272,7 +272,7 @@ pub async fn fs_read_file(
     path: String,
 ) -> Result<FileContentDto, BackendError>
 ```
-- [ ] Define command in `commands/fs.rs`
+- [x] Define command in `commands/fs.rs`
 - [ ] Remove `pool` parameter (not needed for FS operations)
 - [ ] Use `workspace` state for sandbox validation
 
