@@ -7,9 +7,25 @@ import {
   PredictedGitTree,
   GitCommit,
   Conversation,
+  GitNode,
 } from '../types';
 
 // Detailed mock data for "Add User Authentication" scenario
+
+type GitNodeInput = Omit<GitNode, 'path' | 'children'> & {
+  children?: GitNodeInput[];
+};
+
+const addPaths = (nodes: GitNodeInput[], parentPath = ''): GitNode[] => {
+  return nodes.map((node) => {
+    const path = parentPath ? `${parentPath}/${node.name}` : node.name;
+    return {
+      ...node,
+      path,
+      children: node.children ? addPaths(node.children, path) : undefined,
+    };
+  });
+};
 
 export const mockProjects: ProjectGroup[] = [
   {
@@ -428,7 +444,7 @@ pub async fn logout() -> Result<(), String> {
   predicted_git_trees: {
     'proj-1': {
       branch: 'feature/user-auth',
-      structure: [
+      structure: addPaths([
         {
           name: 'src',
           type: 'directory',
@@ -489,12 +505,12 @@ pub async fn logout() -> Result<(), String> {
             },
           ],
         },
-      ],
+      ]),
       modified_files_count: 7,
     },
     'proj-2': {
       branch: 'feature/user-auth',
-      structure: [
+      structure: addPaths([
         {
           name: 'src-tauri',
           type: 'directory',
@@ -531,21 +547,10 @@ pub async fn logout() -> Result<(), String> {
             },
           ],
         },
-      ],
+      ]),
       modified_files_count: 4,
     },
   },
-};
-
-const addPaths = (nodes: GitNode[], parentPath = ''): GitNode[] => {
-  return nodes.map((node) => {
-    const path = parentPath ? `${parentPath}/${node.name}` : node.name;
-    return {
-      ...node,
-      path,
-      children: node.children ? addPaths(node.children, path) : undefined,
-    };
-  });
 };
 
 export const getGitTree = (

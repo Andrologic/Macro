@@ -85,7 +85,6 @@ const App: React.FC = () => {
               <ModeRouter panel="left" />
             </div>
             <PanelResizer
-              direction="horizontal"
               onResize={(delta) => setLeftPanelWidth(leftPanelWidth + delta)}
               className="hidden md:flex"
             />
@@ -101,7 +100,6 @@ const App: React.FC = () => {
         {isRightOpen && (
           <>
             <PanelResizer
-              direction="horizontal"
               onResize={(delta) => setRightPanelWidth(rightPanelWidth - delta)}
               className="hidden lg:flex"
             />

@@ -1,4 +1,4 @@
-import type { Tool, MCPServer, ToolCategory, MCPServerCategory, ToolStatus, MCPServerStatus } from '../types';
+import type { Tool, MCPServer } from '../types';
 
 // Internal Tools Mock Data (inspired by VS Code Copilot capabilities)
 export const mockInternalTools: Tool[] = [

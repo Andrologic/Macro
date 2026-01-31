@@ -3,13 +3,12 @@ import { GripVertical } from 'lucide-react';
 import { cn } from '../../utils/cn';
 
 interface PanelResizerProps {
-  direction: 'horizontal' | 'vertical';
   onResize: (delta: number) => void;
   className?: string;
   disabled?: boolean;
 }
 
-export function PanelResizer({ direction, onResize, className, disabled = false }: PanelResizerProps) {
+export function PanelResizer({ onResize, className, disabled = false }: PanelResizerProps) {
   const resizerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const isDraggingRef = useRef(false);

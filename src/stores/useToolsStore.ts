@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { services } from '../services';
-import type { Tool, MCPServer, ToolSettings, MCPServerSettings } from '../types';
+import type { Tool, MCPServer } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 
 interface ToolsStore {
