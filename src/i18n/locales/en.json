@@ -96,7 +96,8 @@
     "pending": "Pending",
     "inProgress": "In Progress",
     "completed": "Completed",
-    "blocked": "Blocked"
+    "blocked": "Blocked",
+    "actionRequired": "Action required"
   },
   "git": {
     "gitTree": "Git Tree",
