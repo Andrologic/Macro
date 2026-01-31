@@ -9,7 +9,7 @@ import { StrategyGraph } from '../plan/StrategyGraph.tsx';
 
 // Implement Mode components
 import { TaskQueue } from '../tasks/TaskQueue.tsx';
-import { LiveCodePreview } from '../editor/LiveCodePreview.tsx';
+import { FileChangesPanel } from '../implement/FileChangesPanel';
 
 // Chat Mode components
 import { ConversationArchive } from '../chat/ConversationArchive.tsx';
@@ -37,7 +37,7 @@ const modeConfigs: Record<AppMode, PanelConfig> = {
   Implement: {
     left: TaskQueue,
     center: ChatZone,
-    right: LiveCodePreview,
+    right: FileChangesPanel,
   },
   Chat: {
     left: ConversationArchive,
