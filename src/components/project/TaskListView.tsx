@@ -18,6 +18,7 @@ const statusColors: Record<TaskStatus, string> = {
   AwaitingResponse: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
   Completed: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
   Failed: 'bg-red-500/10 text-red-500 border-red-500/20',
+  Blocked: 'bg-orange-500/10 text-orange-500 border-orange-500/20',
 };
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -26,6 +27,7 @@ const statusLabels: Record<TaskStatus, string> = {
   AwaitingResponse: 'Waiting',
   Completed: 'Done',
   Failed: 'Failed',
+  Blocked: 'Blocked',
 };
 
 export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { AppMode, Plan, ProjectGroup, Project } from '../types';
+import { AppMode, Plan, ProjectGroup, Project, PlanNode, PredictedBranch } from '../types';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
 import {
@@ -15,6 +15,7 @@ interface AppStore {
   currentPlan: Plan | null;
   projectGroups: ProjectGroup[];
   selectedGroupId: string | null;
+  selectedProjectId: string | null; // null = entire group view
   selectedTaskId: string | null;
   taskSortOption: TaskSortOption;
   isLoading: boolean;
@@ -29,15 +30,23 @@ interface AppStore {
   rightPanelWidth: number;
   isLeftPanelOpen: boolean;
   isRightPanelOpen: boolean;
+  enabledModes: AppMode[];
+  // Architect mode state
+  planNodes: PlanNode[];
+  predictedBranches: PredictedBranch[];
   setMode: (mode: AppMode) => void;
   setTheme: (themeId: string) => void;
   setCurrentPlan: (plan: Plan | null) => void;
   setProjectGroups: (groups: ProjectGroup[]) => void;
   setSelectedGroup: (groupId: string | null) => void;
+  setSelectedProject: (projectId: string | null) => void;
   setSelectedTask: (taskId: string | null) => void;
   setTaskSortOption: (option: TaskSortOption) => void;
   toggleProjectGroup: (groupId: string) => void;
   getProjectById: (id: string) => Project | undefined;
+  setEnabledModes: (modes: AppMode[]) => void;
+  setPlanNodes: (nodes: PlanNode[]) => void;
+  setPredictedBranches: (branches: PredictedBranch[]) => void;
   openSettings: () => void;
   closeSettings: () => void;
   openAccount: () => void;
@@ -77,6 +86,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   currentPlan: null,
   projectGroups: [],
   selectedGroupId: null,
+  selectedProjectId: null,
   selectedTaskId: null,
   taskSortOption: 'date',
   isLoading: false,
@@ -91,6 +101,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   rightPanelWidth: 320,
   isLeftPanelOpen: true,
   isRightPanelOpen: true,
+  enabledModes: ['Architect', 'Implement', 'Chat'],
+  planNodes: [],
+  predictedBranches: [],
 
   setMode: (mode) => set({ mode }),
   setTheme: (themeId) => {
@@ -102,9 +115,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   setProjectGroups: (groups) => set({ projectGroups: groups }),
 
-  setSelectedGroup: (groupId) => set({ selectedGroupId: groupId }),
+  setSelectedGroup: (groupId) => set({ selectedGroupId: groupId, selectedProjectId: null }),
+
+  setSelectedProject: (projectId) => set({ selectedProjectId: projectId }),
 
   setSelectedTask: (taskId) => set({ selectedTaskId: taskId }),
+
+  setEnabledModes: (modes) => set({ enabledModes: modes }),
+
+  setPlanNodes: (nodes) => set({ planNodes: nodes }),
+
+  setPredictedBranches: (branches) => set({ predictedBranches: branches }),
 
   setTaskSortOption: (option) => set({ taskSortOption: option }),
 

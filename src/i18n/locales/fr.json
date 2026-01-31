@@ -30,6 +30,8 @@
   "header": {
     "architect": "Architecte",
     "implement": "Implémenter",
+    "chat": "Chat",
+    "selectProject": "Sélectionner un projet",
     "toggleLeftPanel": "Afficher/masquer le panneau gauche",
     "toggleRightPanel": "Afficher/masquer le panneau droit",
     "settings": "Paramètres",

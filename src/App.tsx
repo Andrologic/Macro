@@ -3,10 +3,8 @@ import { Header } from './components/layout/Header';
 import { Footer } from './components/layout/Footer';
 import { Toaster } from './components/ui/Toaster';
 import { useWindowRestoration } from './hooks/useWindowRestoration';
-import { LeftPanel } from './components/layout/LeftPanel';
-import { ChatZone } from './components/chat/ChatZone';
-import { RightPanel } from './components/layout/RightPanel';
 import { PanelResizer } from './components/layout/PanelResizer';
+import { ModeRouter } from './components/layout/ModeRouter';
 import { DiffModal } from './components/modals/DiffModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { AccountModal } from './components/modals/AccountModal';
@@ -79,11 +77,16 @@ const App: React.FC = () => {
       />
 
       {/* Main Content Area */}
-      <div className="flex overflow-hidden">
-        {/* Left Panel - Projects */}
+      <div className="flex overflow-hidden h-full">
+        {/* Left Panel - Mode-specific content */}
         {isLeftOpen && (
           <>
-            <LeftPanel className="hidden md:flex" width={leftPanelWidth} />
+            <div 
+              className="hidden md:flex flex-col shrink-0 h-full" 
+              style={{ width: leftPanelWidth }}
+            >
+              <ModeRouter panel="left" />
+            </div>
             <PanelResizer
               direction="horizontal"
               onResize={(delta) => setLeftPanelWidth(leftPanelWidth + delta)}
@@ -92,10 +95,12 @@ const App: React.FC = () => {
           </>
         )}
 
-        {/* Center - Chat Zone */}
-        <ChatZone />
+        {/* Center - Chat Zone (all modes use chat in center) */}
+        <div className="flex-1 min-w-0 overflow-hidden h-full">
+          <ModeRouter panel="center" />
+        </div>
 
-        {/* Right Panel - Git Trees */}
+        {/* Right Panel - Mode-specific content */}
         {isRightOpen && (
           <>
             <PanelResizer
@@ -103,7 +108,12 @@ const App: React.FC = () => {
               onResize={(delta) => setRightPanelWidth(rightPanelWidth - delta)}
               className="hidden lg:flex"
             />
-            <RightPanel className="hidden lg:flex" width={rightPanelWidth} />
+            <div 
+              className="hidden lg:flex flex-col shrink-0 h-full" 
+              style={{ width: rightPanelWidth }}
+            >
+              <ModeRouter panel="right" />
+            </div>
           </>
         )}
       </div>

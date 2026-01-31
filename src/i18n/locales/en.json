@@ -30,6 +30,8 @@
   "header": {
     "architect": "Architect",
     "implement": "Implement",
+    "chat": "Chat",
+    "selectProject": "Select Project",
     "toggleLeftPanel": "Toggle left panel",
     "toggleRightPanel": "Toggle right panel",
     "settings": "Settings",
