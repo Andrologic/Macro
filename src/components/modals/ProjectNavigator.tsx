@@ -11,17 +11,11 @@ import {
   useSensors,
 } from '@dnd-kit/core';
 import { useAppStore } from '../../stores/useAppStore';
+import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { cn } from '../../utils/cn';
-import type { Project, ProjectGroup, ProjectActivity } from '../../types';
-
-// Mock activity data - in real app would come from a store
-const mockProjectActivity: Record<string, ProjectActivity> = {
-  'proj-1': 'ai-active',
-  'proj-2': 'completed',
-  'proj-3': 'idle',
-};
+import type { Project, ProjectGroup, TaskStatus } from '../../types';
 
 interface ProjectNavigatorProps {
   isOpen: boolean;
@@ -30,27 +24,20 @@ interface ProjectNavigatorProps {
 
 interface ProjectItemProps {
   project: Project;
-  activity: ProjectActivity;
-  isSelected: boolean;
-  onSelect: () => void;
+  badges: { label: string; variant: 'default' | 'success' | 'warning' | 'attention' }[];
   onMenuOpen: (e: React.MouseEvent) => void;
 }
 
 const ProjectItem: React.FC<ProjectItemProps> = ({
   project,
-  activity,
-  isSelected,
-  onSelect,
+  badges,
   onMenuOpen,
 }) => {
   return (
     <div
-      onClick={onSelect}
       className={cn(
-        'flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-all duration-200 group',
-        isSelected
-          ? 'bg-primary/10 border border-primary/30'
-          : 'hover:bg-accent border border-transparent'
+        'flex items-center justify-between px-3 py-2 rounded-lg transition-all duration-200 group',
+        'border border-transparent'
       )}
     >
       <div className="flex items-center gap-3 min-w-0">
@@ -72,19 +59,21 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
       </div>
 
       <div className="flex items-center gap-2">
-        {/* Activity indicator */}
-        {activity === 'ai-active' && (
-          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-xs text-emerald-500">IA</span>
-          </div>
-        )}
-        {activity === 'completed' && (
-          <Icon name="check" size={14} className="text-primary" />
-        )}
-        {activity === 'error' && (
-          <Icon name="alert-circle" size={14} className="text-destructive" />
-        )}
+        {/* Task status badges */}
+        {badges.map((badge) => (
+          <span
+            key={`${project.id}-${badge.label}`}
+            className={cn(
+              'px-2 py-0.5 rounded-full text-[11px] font-medium border',
+              badge.variant === 'success' && 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
+              badge.variant === 'warning' && 'bg-amber-500/10 text-amber-500 border-amber-500/20',
+              badge.variant === 'attention' && 'bg-destructive/10 text-destructive border-destructive/20',
+              badge.variant === 'default' && 'bg-muted/60 text-muted-foreground border-border/50'
+            )}
+          >
+            {badge.label}
+          </span>
+        ))}
 
         {/* Menu button */}
         <button
@@ -112,6 +101,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     toggleProjectGroup,
     openProjectModal,
   } = useAppStore();
+  const tasks = useTaskStore((state) => state.tasks);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
@@ -171,21 +161,77 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     onClose();
   };
 
-  const handleSelectProject = (groupId: string, projectId: string) => {
-    setSelectedGroup(groupId);
-    setSelectedProject(projectId);
-    onClose();
-  };
-
   const handleNewProject = () => {
     onClose();
     openProjectModal();
   };
 
-  const getGroupActivityCount = (group: ProjectGroup): number => {
-    return group.projects.filter(
-      p => mockProjectActivity[p.id] === 'ai-active'
-    ).length;
+  const getProjectTaskCounts = (projectId: string) => {
+    const projectTasks = tasks.filter((task) => task.project_id === projectId);
+    const counts: Record<TaskStatus, number> = {
+      Pending: 0,
+      InProgress: 0,
+      AwaitingResponse: 0,
+      Completed: 0,
+      Failed: 0,
+      Blocked: 0,
+    };
+
+    projectTasks.forEach((task) => {
+      counts[task.status] += 1;
+    });
+
+    const needsAttention = counts.AwaitingResponse + counts.Blocked + counts.Failed;
+
+    return {
+      counts,
+      needsAttention,
+      total: projectTasks.length,
+    };
+  };
+
+  const getProjectBadges = (projectId: string) => {
+    const { counts, needsAttention, total } = getProjectTaskCounts(projectId);
+    if (total === 0) return [] as { label: string; variant: 'default' | 'success' | 'warning' | 'attention' }[];
+
+    const badges = [] as { label: string; variant: 'default' | 'success' | 'warning' | 'attention' }[];
+
+    if (counts.InProgress > 0) {
+      badges.push({
+        label: `${counts.InProgress} ${t('tasks.inProgress', 'In Progress')}`,
+        variant: 'warning',
+      });
+    }
+
+    if (counts.Pending > 0) {
+      badges.push({
+        label: `${counts.Pending} ${t('tasks.pending', 'Pending')}`,
+        variant: 'default',
+      });
+    }
+
+    if (counts.Completed > 0) {
+      badges.push({
+        label: `${counts.Completed} ${t('tasks.completed', 'Completed')}`,
+        variant: 'success',
+      });
+    }
+
+    if (needsAttention > 0) {
+      badges.unshift({
+        label: `${needsAttention} ${t('tasks.actionRequired', 'Action required')}`,
+        variant: 'attention',
+      });
+    }
+
+    return badges;
+  };
+
+  const getGroupAttentionCount = (group: ProjectGroup): number => {
+    return group.projects.reduce((count, project) => {
+      const { needsAttention } = getProjectTaskCounts(project.id);
+      return count + needsAttention;
+    }, 0);
   };
 
   // Close menu on click outside
@@ -249,7 +295,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
               </div>
             ) : (
               filteredGroups.map((group) => {
-                const activeCount = getGroupActivityCount(group);
+                const attentionCount = getGroupAttentionCount(group);
                 const isGroupSelected = selectedGroupId === group.id && !selectedProjectId;
 
                 return (
@@ -278,9 +324,9 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                         <span className="text-sm font-medium text-foreground truncate">
                           {group.name}
                         </span>
-                        {activeCount > 0 && (
-                          <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 text-xs">
-                            {activeCount} actif{activeCount > 1 ? 's' : ''}
+                        {attentionCount > 0 && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-destructive/10 text-destructive text-xs">
+                            {attentionCount} {t('tasks.actionRequired', 'Action required')}
                           </span>
                         )}
                       </div>
@@ -342,29 +388,13 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                           <ProjectItem
                             key={project.id}
                             project={project}
-                            activity={mockProjectActivity[project.id] || 'idle'}
-                            isSelected={selectedProjectId === project.id}
-                            onSelect={() => handleSelectProject(group.id, project.id)}
+                            badges={getProjectBadges(project.id)}
                             onMenuOpen={(e) => {
                               e.stopPropagation();
                               setMenuOpenFor(menuOpenFor === project.id ? null : project.id);
                             }}
                           />
                         ))}
-
-                        {/* View all group button */}
-                        <button
-                          onClick={() => handleSelectGroup(group.id)}
-                          className={cn(
-                            'w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors',
-                            isGroupSelected
-                              ? 'bg-primary/20 text-primary'
-                              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-                          )}
-                        >
-                          <Icon name="layers" size={12} />
-                          {t('projects.viewAll', 'View entire group')}
-                        </button>
                       </div>
                     )}
                   </div>
