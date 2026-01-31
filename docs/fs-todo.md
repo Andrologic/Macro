@@ -109,8 +109,8 @@ src-tauri/src/
 ## Task 2: Setup `fs/dto.rs` - Data Transfer Objects
 
 ### 2.1 File Structure
-- [ ] Create new file `src-tauri/src/fs/dto.rs`
-- [ ] Add `use serde::{Serialize, Deserialize};`
+- [x] Create new file `src-tauri/src/fs/dto.rs`
+- [x] Add `use serde::{Serialize, Deserialize};`
 
 ### 2.2 FileContentDto
 ```rust
@@ -128,10 +128,10 @@ pub struct FileContentDto {
     pub encoding: String,
 }
 ```
-- [ ] Implement `FileContentDto` struct
-- [ ] Add `is_binary` field to indicate binary content
-- [ ] Add `size` field for file size
-- [ ] Add `encoding` field ("utf-8" or "base64")
+- [x] Implement `FileContentDto` struct
+- [x] Add `is_binary` field to indicate binary content
+- [x] Add `size` field for file size
+- [x] Add `encoding` field ("utf-8" or "base64")
 
 ### 2.3 DirEntryDto
 ```rust
@@ -159,12 +159,11 @@ pub struct DirEntryDto {
     pub is_readonly: bool,
 }
 ```
-- [ ] Implement `DirEntryDto` struct
-- [ ] Add `relative_path` field (path relative to workspace)
-- [ ] Add `is_hidden` field
-- [ ] Add `is_readonly` field
-- [ ] Add `created` field (optional, platform-dependent)
-
+- [x] Implement `DirEntryDto` struct
+- [x] Add `relative_path` field (path relative to workspace)
+- [x] Add `is_hidden` field
+- [x] Add `is_readonly` field
+- [x] Add `created` field (optional, platform-dependent)
 ### 2.4 FileStatsDto
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,10 +196,10 @@ pub struct FileStatsDto {
     pub symlink_target: Option<String>,
 }
 ```
-- [ ] Implement `FileStatsDto` struct
-- [ ] Add `accessed` field for last access time
-- [ ] Add `is_readonly`, `is_hidden`, `is_symlink` fields
-- [ ] Add `symlink_target` field for symlink resolution
+- [x] Implement `FileStatsDto` struct
+- [x] Add `accessed` field for last access time
+- [x] Add `is_readonly`, `is_hidden`, `is_symlink` fields
+- [x] Add `symlink_target` field for symlink resolution
 
 ### 2.5 WriteResultDto (NEW)
 ```rust
@@ -214,8 +213,9 @@ pub struct WriteResultDto {
     pub created: bool,
 }
 ```
-- [ ] Implement `WriteResultDto` struct
-- [ ] Return this instead of `()` for better feedback
+
+- [x] Implement `WriteResultDto` struct
+- [x] Return this instead of `()` for better feedback
 
 ### 2.6 FsEventDto (NEW - for watcher)
 ```rust
@@ -228,8 +228,8 @@ pub enum FsEventDto {
     Renamed { old_path: String, new_path: String },
 }
 ```
-- [ ] Implement `FsEventDto` enum
-- [ ] Use `#[serde(tag = "type")]` for TypeScript-friendly serialization
+- [x] Implement `FsEventDto` enum
+- [x] Use `#[serde(tag = "type")]` for TypeScript-friendly serialization
 
 ---
 
@@ -243,13 +243,13 @@ pub enum FsEventDto {
 - [x] `BackendError::Filesystem { message: String }` (generic)
 
 ### 3.2 Add Missing Variants
-- [ ] `BackendError::FilesystemIsDirectory { message: String }` - when file operation attempted on directory
-- [ ] `BackendError::FilesystemIsFile { message: String }` - when directory operation attempted on file
-- [ ] `BackendError::FilesystemAlreadyExists { message: String }` - file/dir already exists
-- [ ] `BackendError::FilesystemBinaryFile { message: String }` - binary file cannot be read as text
-- [ ] `BackendError::FilesystemFileTooLarge { message: String, max_size: u64, actual_size: u64 }` - file exceeds size limit
-- [ ] `BackendError::FilesystemInvalidPath { message: String }` - malformed path
-- [ ] `BackendError::FilesystemDiskFull { message: String }` - no space left on device
+- [x] `BackendError::FilesystemIsDirectory { message: String }` - when file operation attempted on directory
+- [x] `BackendError::FilesystemIsFile { message: String }` - when directory operation attempted on file
+- [x] `BackendError::FilesystemAlreadyExists { message: String }` - file/dir already exists
+- [x] `BackendError::FilesystemBinaryFile { message: String }` - binary file cannot be read as text
+- [x] `BackendError::FilesystemFileTooLarge { message: String, max_size: u64, actual_size: u64 }` - file exceeds size limit
+- [x] `BackendError::FilesystemInvalidPath { message: String }` - malformed path
+- [x] `BackendError::FilesystemDiskFull { message: String }` - no space left on device
 
 ### 3.3 Error Conversion Helper
 - [ ] Create helper function `io_error_to_backend_error(err: std::io::Error, path: &Path) -> BackendError`
