@@ -58,7 +58,7 @@ export const mockPlanNodes: PlanNode[] = [
     title: 'Frontend: Register Page',
     description: 'Create registration form with email verification flow',
     type: 'feature',
-    status: 'pending',
+    status: 'blocked',
     dependencies: ['node-1', 'node-4'], // Depends on login components setup
     assignedBranch: 'feature/frontend-auth',
     projectId: 'proj-1',
@@ -69,7 +69,7 @@ export const mockPlanNodes: PlanNode[] = [
     title: 'Backend: Product CRUD',
     description: 'Implement product listing, search, and admin management',
     type: 'feature',
-    status: 'pending',
+    status: 'blocked',
     dependencies: ['node-3'], // Needs auth (admin roles)
     assignedBranch: 'feature/backend-products',
     projectId: 'proj-2',
@@ -91,7 +91,7 @@ export const mockPlanNodes: PlanNode[] = [
     title: 'Backend: Order Service',
     description: 'Order processing, inventory check, and cart management',
     type: 'feature',
-    status: 'pending',
+    status: 'blocked',
     dependencies: ['node-6'], // Depends on products
     assignedBranch: 'feature/backend-orders',
     projectId: 'proj-2',
@@ -102,7 +102,7 @@ export const mockPlanNodes: PlanNode[] = [
     title: 'Frontend: Shopping Cart',
     description: 'Cart state management, local storage persistence',
     type: 'feature',
-    status: 'pending',
+    status: 'blocked',
     dependencies: ['node-7'], // Depends on product catalog UI
     assignedBranch: 'feature/frontend-orders',
     projectId: 'proj-1',
@@ -113,7 +113,7 @@ export const mockPlanNodes: PlanNode[] = [
     title: 'Integration Testing',
     description: 'End-to-end tests for auth and product flows',
     type: 'milestone',
-    status: 'pending',
+    status: 'blocked',
     dependencies: ['node-5', 'node-9', 'node-10'], // Depends on all main features
     estimatedTime: '3h',
   },
