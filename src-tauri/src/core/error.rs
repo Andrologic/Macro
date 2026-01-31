@@ -35,6 +35,21 @@ pub enum BackendError {
     #[error("File system Directory not found: {message}")]
     FilesystemDirectoryNotFound { message: String },
 
+    #[error("File system Is a directory: {message}")]
+    FilesystemIsDirectory { message: String },
+
+    #[error("File system Already exists: {message}")]
+    FilesystemAlreadyExists { message: String },
+
+    #[error("File system Binary file error: {message}")]
+    FilesystemBinaryFile { message: String },
+
+    #[error("File system File too large: {message}")]
+    FilesystemFileTooLarge { message: String },
+
+    #[error("File system Invalid path: {message}")]
+    FilesystemInvalidPath { message: String },
+
     #[error("Index error: {message}")]
     Index { message: String },
 
