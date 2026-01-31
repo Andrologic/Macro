@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { services } from '../services';
-import type { Tool, MCPServer, ToolSettingsDto, MCPServerSettingsDto } from '../types';
+import type { Tool, MCPServer, ToolSettings, MCPServerSettings } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 
 interface ToolsStore {
@@ -40,7 +40,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
 
       set({
         internalTools: toolsDto.tools,
-        mcpServers: mcpServersDto.servers,
+        mcpServers: Object.values(mcpServersDto.servers),
         isLoading: false,
       });
     } catch (error) {

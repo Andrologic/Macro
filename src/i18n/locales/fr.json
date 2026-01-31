@@ -183,5 +183,36 @@
     "connectionFailed": "Échec de la connexion",
     "copied": "Copié dans le presse-papiers",
     "loggedOut": "Vous avez été déconnecté"
+  },
+  "settings": {
+    "title": "Paramètres",
+    "general": "Général",
+    "appearance": "Apparence",
+    "ai": "IA & Modèles",
+    "tools": "Outils & MCP",
+    "desc": {
+      "general": "Configurer la langue et les préférences de l'application",
+      "appearance": "Personnaliser l'apparence de l'application",
+      "ai": "Gérer les modèles d'IA, les fournisseurs et les clés API",
+      "tools": "Configurer les outils externes et les serveurs MCP"
+    },
+    "language_region": "Langue & Région",
+    "language": "Langue",
+    "language_desc": "Sélectionnez votre langue d'interface préférée",
+    "application": "Application",
+    "sound_effects": "Effets sonores",
+    "sound_effects_desc": "Jouer des sons lors de la fin d'une tâche ou d'une erreur",
+    "desktop_notifications": "Notifications de bureau",
+    "desktop_notifications_desc": "Afficher des notifications natives pour les événements importants",
+    "analytics": "Analytiques",
+    "analytics_desc": "Partager des données d'utilisation anonymes pour améliorer Macro",
+    "theme": "Thème"
+  },
+  "providers": {
+    "add": "Ajouter un fournisseur",
+    "edit": "Modifier le fournisseur",
+    "created": "Fournisseur créé",
+    "updated": "Fournisseur mis à jour",
+    "delete": "Supprimer le fournisseur"
   }
 }

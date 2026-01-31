@@ -151,7 +151,7 @@ export function Header({
 
           {/* Settings button */}
           <button
-            onClick={openSettings}
+            onClick={() => openSettings()}
             className="p-1.5 rounded-lg hover:bg-accent transition-colors"
             title={t('header.settings')}
             aria-label={t('header.settings')}

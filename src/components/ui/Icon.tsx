@@ -43,6 +43,7 @@ import {
   Zap,
   Shield,
   Wrench,
+  Palette,
   Cpu,
   User,
   Download,
@@ -81,6 +82,11 @@ import {
   Flag,
   Target,
   Milestone,
+  Moon,
+  Sun,
+  Server,
+  Database,
+  ArrowLeft,
 } from 'lucide-react';
 
 export type IconName =
@@ -122,7 +128,13 @@ export type IconName =
   | 'panel-right-open'
   | 'file-code'
   | 'file-text'
+  | 'palette'
   | 'arrow-up'
+  | 'moon'
+  | 'sun'
+  | 'server'
+  | 'database'
+  | 'arrow-left'
   | 'arrow-up-right'
   | 'arrow-down-right'
   | 'zap'
@@ -213,7 +225,13 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'panel-right-open': PanelRightOpen,
   'file-code': FileCode,
   'file-text': FileText,
+  'palette': Palette,
   'arrow-up': ArrowUp,
+  'moon': Moon,
+  'sun': Sun,
+  'server': Server,
+  'database': Database,
+  'arrow-left': ArrowLeft,
   'arrow-up-right': ArrowUpRight,
   'arrow-down-right': ArrowDownRight,
   'zap': Zap,
