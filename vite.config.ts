@@ -5,19 +5,35 @@ import react from "@vitejs/plugin-react";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vitejs.dev/config/
+// Optimized for Bun runtime - Maximum Performance Configuration
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react({
+      // Use automatic JSX runtime for smaller bundle
+      jsxRuntime: 'automatic',
+    }),
+  ],
 
   // =============================================================================
   // BUILD OPTIMIZATIONS - Code Splitting & Chunking
   // =============================================================================
   build: {
-    // Target modern browsers for smaller bundles
-    target: "es2020",
-    
-    // Enable minification
+    // Target modern browsers for smaller bundles (Tauri uses WebView2/WebKit)
+    target: "esnext",
+
+    // Use esbuild for faster minification (2-3x faster than terser)
     minify: "esbuild",
-    
+
+    // Aggressive esbuild options
+    esbuildOptions: {
+      // Remove console.log in production
+      drop: process.env.NODE_ENV === 'production' ? ['console', 'debugger'] : [],
+      // Legal comments handling
+      legalComments: 'none',
+      // Target modern engines
+      target: 'esnext',
+    },
+
     // Code splitting configuration
     rollupOptions: {
       output: {
@@ -25,10 +41,10 @@ export default defineConfig({
         manualChunks: {
           // React core - loaded first
           "react-vendor": ["react", "react-dom"],
-          
+
           // State management
           "state-vendor": ["zustand", "jotai"],
-          
+
           // UI Components - heavy dependencies
           "ui-vendor": [
             "@xyflow/react",
@@ -36,7 +52,7 @@ export default defineConfig({
             "@dnd-kit/sortable",
             "@dnd-kit/utilities",
           ],
-          
+
           // Code editor - largest chunk, loaded on demand
           "editor-vendor": [
             "@codemirror/view",
@@ -49,7 +65,7 @@ export default defineConfig({
             "@codemirror/commands",
             "@codemirror/lint",
           ],
-          
+
           // Utilities
           "utils-vendor": [
             "i18next",
@@ -60,7 +76,7 @@ export default defineConfig({
             "clsx",
             "tailwind-merge",
           ],
-          
+
           // Data fetching & streaming
           "data-vendor": [
             "@tauri-apps/api",
@@ -68,18 +84,18 @@ export default defineConfig({
             "@tauri-apps/plugin-store",
           ],
         },
-        
+
         // Chunk naming strategy
         chunkFileNames: (chunkInfo) => {
-          const facadeModuleId = chunkInfo.facadeModuleId 
-            ? chunkInfo.facadeModuleId.split('/').pop()?.replace(/\.[^/.]+$/, '') 
+          const facadeModuleId = chunkInfo.facadeModuleId
+            ? chunkInfo.facadeModuleId.split('/').pop()?.replace(/\.[^/.]+$/, '')
             : 'chunk';
           return `assets/${facadeModuleId}-[hash].js`;
         },
-        
+
         // Entry file naming
         entryFileNames: "assets/[name]-[hash].js",
-        
+
         // Asset file naming
         assetFileNames: (assetInfo) => {
           const info = assetInfo.name ? assetInfo.name.split('.') : [];
@@ -97,12 +113,21 @@ export default defineConfig({
 
     // Split CSS into separate files
     cssCodeSplit: true,
-    
+
+    // Modern CSS minification
+    cssMinify: 'esbuild',
+
     // Reduce chunk size warnings
     chunkSizeWarningLimit: 1000,
-    
-    // Source maps for debugging (disable in production for smaller builds)
+
+    // Disable source maps in production for smaller builds
     sourcemap: false,
+
+    // Report compressed size for better analysis
+    reportCompressedSize: true,
+
+    // Inline assets under 4kb as base64
+    assetsInlineLimit: 4096,
   },
 
   // =============================================================================
@@ -123,7 +148,7 @@ export default defineConfig({
       "clsx",
       "tailwind-merge",
     ],
-    
+
     // Exclude heavy dependencies that should be lazy loaded
     exclude: [
       "@codemirror/view",
@@ -131,7 +156,7 @@ export default defineConfig({
       "codemirror",
       "@xyflow/react",
     ],
-    
+
     // Force re-optimization when these change
     force: false,
   },
@@ -145,10 +170,10 @@ export default defineConfig({
     host: host || false,
     hmr: host
       ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
+        protocol: "ws",
+        host,
+        port: 1421,
+      }
       : undefined,
     watch: {
       // Ignore src-tauri to prevent rebuild loops
@@ -159,10 +184,10 @@ export default defineConfig({
   // =============================================================================
   // PERFORMANCE OPTIMIZATIONS
   // =============================================================================
-  
+
   // Prevent Vite from clearing screen (keeps Rust errors visible)
   clearScreen: false,
-  
+
   // Resolve aliases for cleaner imports
   resolve: {
     alias: {

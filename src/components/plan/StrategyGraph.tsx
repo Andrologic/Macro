@@ -58,7 +58,8 @@ function useElementSize<T extends HTMLElement>() {
   return { ref, width: size.width, height: size.height };
 }
 
-export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
+// Base component - wrapped with React.memo below for performance
+const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const { t } = useTranslation();
   const { selectedGroupId, selectedProjectId, projectGroups } = useAppStore();
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
@@ -72,30 +73,30 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
     if (selectedProjectId) {
       nodes = mockPlanNodes.filter((n: PlanNode) => n.projectId === selectedProjectId);
     } else if (selectedGroupId) {
-       // Find all project IDs in this group
-       const group = projectGroups.find(g => g.id === selectedGroupId);
-       if (group && group.projects) {
-          const projectIds = group.projects.map(p => p.id);
-          nodes = mockPlanNodes.filter((n: PlanNode) => n.projectId && projectIds.includes(n.projectId));
-       }
+      // Find all project IDs in this group
+      const group = projectGroups.find(g => g.id === selectedGroupId);
+      if (group && group.projects) {
+        const projectIds = group.projects.map(p => p.id);
+        nodes = mockPlanNodes.filter((n: PlanNode) => n.projectId && projectIds.includes(n.projectId));
+      }
     } else {
-        nodes = mockPlanNodes;
+      nodes = mockPlanNodes;
     }
 
     if (nodes.length === 0) return { nodes: [], edges: [], width: 0, height: 0, branches: [], laneHeaders: [], colWidth: 140, effectiveLeftPadding: 0 };
-    
+
     // Calculate Ranks (Y-axis) based on dependency depth
     const ranks = new Map<string, number>();
     const getRank = (id: string, visited = new Set<string>()): number => {
       if (visited.has(id)) return 0; // Cycle detection
       if (ranks.has(id)) return ranks.get(id)!;
-      
+
       const node = nodes.find(n => n.id === id);
-      if (!node || !node.dependencies || node.dependencies.length === 0) { 
+      if (!node || !node.dependencies || node.dependencies.length === 0) {
         ranks.set(id, 0);
         return 0;
       }
-      
+
       visited.add(id);
       const validDeps = node.dependencies.filter(dId => nodes.some(n => n.id === dId));
       if (validDeps.length === 0) {
@@ -108,7 +109,7 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
       ranks.set(id, rank);
       return rank;
     };
-    
+
     nodes.forEach(n => getRank(n.id));
 
     // --- Lane Packing Algorithm ---
@@ -131,9 +132,9 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
       // Try to find an existing lane that is free
       for (let i = 0; i < lanes.length; i++) {
         if (lanes[i] < branch.minRank) {
-           assignedLane = i;
-           lanes[i] = branch.maxRank + 1;
-           break;
+          assignedLane = i;
+          lanes[i] = branch.maxRank + 1;
+          break;
         }
       }
 
@@ -146,13 +147,13 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
     });
 
     const activeLanesCount = Math.max(1, lanes.length);
-    
+
     // Dynamic Column Width
     const availableWidth = Math.max(200, containerWidth - (LEFT_MARGIN * 2));
     const dynamicColWidth = availableWidth / activeLanesCount;
     // Cap strictly to avoid overflow, but maintain minimum legibility if possible
     const COL_WIDTH = dynamicColWidth; // Use full dynamic width
-    
+
     // const totalGraphWidth = COL_WIDTH * activeLanesCount; // Reserved for future sizing debug
     const effectiveLeftPadding = LEFT_MARGIN;
 
@@ -168,12 +169,12 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
     });
 
     const laneHeaders: { index: number; branches: string[] }[] = [];
-    for(let i=0; i<lanes.length; i++) {
-        const branchesInLane = branches
-            .filter(b => branchToLaneMap.get(b.name) === i)
-            .sort((a,b) => a.minRank - b.minRank)
-            .map(b => b.name);
-        laneHeaders.push({ index: i, branches: branchesInLane });
+    for (let i = 0; i < lanes.length; i++) {
+      const branchesInLane = branches
+        .filter(b => branchToLaneMap.get(b.name) === i)
+        .sort((a, b) => a.minRank - b.minRank)
+        .map(b => b.name);
+      laneHeaders.push({ index: i, branches: branchesInLane });
     }
 
     // Calculate Edges
@@ -196,18 +197,18 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
 
     const height = Math.max(600, PADDING_TOP * 2 + (Math.max(...ranks.values()) + 1) * ROW_HEIGHT);
 
-    return { 
-        nodes: positionedNodes, 
-        edges, 
-        width: containerWidth, // Use full width
-        height, 
-        laneHeaders, 
-        colWidth: COL_WIDTH,
-        effectiveLeftPadding
+    return {
+      nodes: positionedNodes,
+      edges,
+      width: containerWidth, // Use full width
+      height,
+      laneHeaders,
+      colWidth: COL_WIDTH,
+      effectiveLeftPadding
     };
   }, [selectedGroupId, selectedProjectId, projectGroups, containerWidth]);
 
-  const handledMouseMove = () => {};
+  const handledMouseMove = () => { };
 
   const getStatusIconName = (status: PlanNodeStatus) => {
     switch (status) {
@@ -224,29 +225,29 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
   // But we have a check inside layoutData.nodes.length === 0 returning empty objects
   // We need to handle that here
   if (layoutData.nodes.length === 0) {
-     if (!selectedProjectId && !selectedGroupId) {
-        return (
-            <aside
-              className={cn("h-full w-full bg-card border-l border-border flex items-center justify-center", className)}
-            >
-              <div className="text-center px-6">
-                <Icon name="git-branch" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
-                <p className="text-muted-foreground text-sm">
-                  {t('architect.selectProject', 'Select a project to view the strategy')}
-                </p>
-              </div>
-            </aside>
-          );
-     }
-     
-     return (
-        <aside className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}>
-             <div className="flex-1 flex items-center justify-center text-muted-foreground">
-                <Icon name="search" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
-                <p>No plan items found for this selection.</p>
-             </div>
+    if (!selectedProjectId && !selectedGroupId) {
+      return (
+        <aside
+          className={cn("h-full w-full bg-card border-l border-border flex items-center justify-center", className)}
+        >
+          <div className="text-center px-6">
+            <Icon name="git-branch" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
+            <p className="text-muted-foreground text-sm">
+              {t('architect.selectProject', 'Select a project to view the strategy')}
+            </p>
+          </div>
         </aside>
-     )
+      );
+    }
+
+    return (
+      <aside className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}>
+        <div className="flex-1 flex items-center justify-center text-muted-foreground">
+          <Icon name="search" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
+          <p>No plan items found for this selection.</p>
+        </div>
+      </aside>
+    )
   }
 
   return (
@@ -289,17 +290,17 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
           Branches
         </button>
       </div>
-      
-      <div 
+
+      <div
         ref={containerRef}
         className="relative flex-1 overflow-hidden bg-background/30"
       >
-        
+
         {viewMode === 'graph' ? (
           <>
             <div className="h-full overflow-auto custom-scrollbar relative">
-              <svg 
-                width={layoutData.width} 
+              <svg
+                width={layoutData.width}
                 height={layoutData.height}
                 className="block"
               >
@@ -308,13 +309,13 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
                   const dy = edge.y2 - edge.y1;
                   const controlY1 = edge.y1 + dy * 0.5;
                   const controlY2 = edge.y2 - dy * 0.5;
-                  
+
                   // const isHovered = hoveredNodeId === edge.source || hoveredNodeId === edge.target;
                   // Highlight incoming/outgoing edges of hovered node
                   const isRelated = hoveredNodeData && (
                     (edge.source === hoveredNodeId) || (edge.target === hoveredNodeId)
                   );
-                  
+
                   const strokeColor = isRelated ? "stroke-primary" : "stroke-border";
                   const opacity = isRelated || !hoveredNodeId ? 0.6 : 0.2;
                   const width = isRelated ? 2 : 1.5;
@@ -335,15 +336,15 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
                 {layoutData.nodes.map((node) => {
                   const isHovered = hoveredNodeId === node.id;
                   const isRelated = hoveredNodeData && (
-                    hoveredNodeData.dependencies?.includes(node.id) || 
+                    hoveredNodeData.dependencies?.includes(node.id) ||
                     node.dependencies?.includes(hoveredNodeId!)
                   );
-                  
+
                   const isDimmed = hoveredNodeId && !isHovered && !isRelated;
 
                   return (
-                    <g 
-                      key={node.id} 
+                    <g
+                      key={node.id}
                       className={cn("transition-opacity duration-300", isDimmed ? "opacity-30" : "opacity-100")}
                       onMouseEnter={() => setHoveredNodeId(node.id)}
                       onMouseLeave={() => setHoveredNodeId(null)}
@@ -364,12 +365,12 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
                         fill={isHovered ? "rgb(var(--background))" : "rgb(var(--card))"}
                         stroke={isHovered ? undefined : "rgb(var(--border))"}
                       />
-                      
+
                       {/* Inner Icon Container */}
-                      <foreignObject 
-                        x={node.x - 10} 
-                        y={node.y - 10} 
-                        width="20" 
+                      <foreignObject
+                        x={node.x - 10}
+                        y={node.y - 10}
+                        width="20"
                         height="20"
                         className="pointer-events-none"
                       >
@@ -377,9 +378,9 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
                           "w-full h-full rounded-full flex items-center justify-center",
                           statusColors[node.status]
                         )}>
-                          <Icon 
-                            name={getStatusIconName(node.status)} 
-                            size={14} 
+                          <Icon
+                            name={getStatusIconName(node.status)}
+                            size={14}
                             className={node.status === 'in-progress' ? 'animate-spin' : ''}
                           />
                         </div>
@@ -387,9 +388,9 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
 
                       {/* Label */}
                       {isHovered && (
-                        <text 
-                          x={node.x + NODE_RADIUS + 10} 
-                          y={node.y + 4} 
+                        <text
+                          x={node.x + NODE_RADIUS + 10}
+                          y={node.y + 4}
                           className="text-[11px] font-sans font-medium fill-foreground"
                           style={{ textShadow: '0 1px 2px rgb(0 0 0 / 0.5)' }}
                         >
@@ -404,54 +405,54 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
 
             {/* Tooltip Overlay */}
             {hoveredNodeData && (
-                <div
+              <div
                 className="absolute z-50 p-4 rounded-xl border border-border bg-popover/95 shadow-xl backdrop-blur-sm w-72 pointer-events-none animate-in fade-in zoom-in-95 duration-150"
                 style={{
-                    top: 50, 
-                    right: 20,
+                  top: 50,
+                  right: 20,
                 }}
-                >
+              >
                 <div className="flex items-start justify-between gap-4 mb-2">
-                    <h3 className="font-semibold text-sm leading-tight text-popover-foreground">
+                  <h3 className="font-semibold text-sm leading-tight text-popover-foreground">
                     {hoveredNodeData.title}
-                    </h3>
-                    <div className={cn("shrink-0 w-2 h-2 rounded-full mt-1.5", statusBgColors[hoveredNodeData.status])} />
+                  </h3>
+                  <div className={cn("shrink-0 w-2 h-2 rounded-full mt-1.5", statusBgColors[hoveredNodeData.status])} />
                 </div>
-                
+
                 <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
-                    {hoveredNodeData.description}
+                  {hoveredNodeData.description}
                 </p>
 
                 <div className="space-y-2 pt-2 border-t border-border/50">
-                    <div className="flex items-center text-[10px] text-muted-foreground">
-                        <Icon name="git-branch" size={10} className="mr-2 opacity-70" />
-                        <span className="font-mono">{hoveredNodeData.assignedBranch}</span>
-                    </div>
-                    
-                    {hoveredNodeData.estimatedTime && (
-                        <div className="flex items-center text-[10px] text-muted-foreground">
-                        <Icon name="clock" size={10} className="mr-2 opacity-70" />
-                        <span>{hoveredNodeData.estimatedTime}</span>
-                        </div>
-                    )}
+                  <div className="flex items-center text-[10px] text-muted-foreground">
+                    <Icon name="git-branch" size={10} className="mr-2 opacity-70" />
+                    <span className="font-mono">{hoveredNodeData.assignedBranch}</span>
+                  </div>
 
-                    <div className="flex items-center text-[10px] text-muted-foreground uppercase tracking-wider font-semibold opacity-70 mt-1">
-                        {t(`status.${hoveredNodeData.status}`, hoveredNodeData.status)}
+                  {hoveredNodeData.estimatedTime && (
+                    <div className="flex items-center text-[10px] text-muted-foreground">
+                      <Icon name="clock" size={10} className="mr-2 opacity-70" />
+                      <span>{hoveredNodeData.estimatedTime}</span>
                     </div>
+                  )}
+
+                  <div className="flex items-center text-[10px] text-muted-foreground uppercase tracking-wider font-semibold opacity-70 mt-1">
+                    {t(`status.${hoveredNodeData.status}`, hoveredNodeData.status)}
+                  </div>
                 </div>
-                </div>
+              </div>
             )}
 
             {/* Legend */}
             <div className="absolute bottom-4 left-4 p-2 rounded-lg bg-background/50 backdrop-blur-sm border border-border/50 text-[10px] text-muted-foreground pointer-events-none">
-                <div className="flex items-center gap-2 mb-1">
+              <div className="flex items-center gap-2 mb-1">
                 <Icon name="arrow-down-right" size={10} />
                 <span>Dependency Flow</span>
-                </div>
-                <div className="flex items-center gap-2">
-                <Icon name="network" size={10} /> 
+              </div>
+              <div className="flex items-center gap-2">
+                <Icon name="network" size={10} />
                 <span>{layoutData.nodes.length} Items</span>
-                </div>
+              </div>
             </div>
           </>
         ) : (
@@ -479,46 +480,46 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
                       branch.status === 'merged'
                         ? 'bg-emerald-500/10 text-emerald-500'
                         : branch.status === 'active'
-                        ? 'bg-amber-500/10 text-amber-500'
-                        : 'bg-muted text-muted-foreground'
+                          ? 'bg-amber-500/10 text-amber-500'
+                          : 'bg-muted text-muted-foreground'
                     )}
                   >
                     {branch.status}
                   </span>
                 </div>
-                
+
                 {/* Branch Tasks List */}
                 <div className="bg-muted/10 border-t border-border/50 divide-y divide-border/50">
                   {branch.taskIds.map(taskId => {
                     const task = mockPlanNodes.find((n: PlanNode) => n.id === taskId);
                     if (!task) return null;
                     return (
-                        <div key={taskId} className="px-3 py-2 flex items-center justify-between group hover:bg-muted/20 transition-colors">
-                           <div className="flex items-center gap-2 min-w-0">
-                              <div className={cn(
-                                "w-1.5 h-1.5 rounded-full shrink-0", 
-                                statusColors[task.status].replace('text-', 'bg-')
-                              )} />
-                              <span className="text-xs text-muted-foreground group-hover:text-foreground truncate transition-colors">
-                                {task.title}
-                              </span>
-                           </div>
-                           <div className="flex items-center gap-2 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                              {task.estimatedTime && (
-                                <span className="text-[10px] text-muted-foreground bg-background border border-border px-1 rounded">
-                                  {task.estimatedTime}
-                                </span>
-                              )}
-                              <Icon name={getStatusIconName(task.status)} size={12} className="text-muted-foreground" />
-                           </div>
+                      <div key={taskId} className="px-3 py-2 flex items-center justify-between group hover:bg-muted/20 transition-colors">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className={cn(
+                            "w-1.5 h-1.5 rounded-full shrink-0",
+                            statusColors[task.status].replace('text-', 'bg-')
+                          )} />
+                          <span className="text-xs text-muted-foreground group-hover:text-foreground truncate transition-colors">
+                            {task.title}
+                          </span>
                         </div>
+                        <div className="flex items-center gap-2 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {task.estimatedTime && (
+                            <span className="text-[10px] text-muted-foreground bg-background border border-border px-1 rounded">
+                              {task.estimatedTime}
+                            </span>
+                          )}
+                          <Icon name={getStatusIconName(task.status)} size={12} className="text-muted-foreground" />
+                        </div>
+                      </div>
                     );
                   })}
-                  
+
                   {branch.taskIds.length === 0 && (
-                      <div className="px-3 py-2 text-xs text-muted-foreground italic">
-                         No tasks assigned
-                      </div>
+                    <div className="px-3 py-2 text-xs text-muted-foreground italic">
+                      No tasks assigned
+                    </div>
                   )}
                 </div>
               </div>
@@ -530,5 +531,9 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
   );
 };
 
-// Export both named and default for lazy loading compatibility
+// Performance: Wrap with React.memo to prevent unnecessary re-renders
+// This component is heavy due to SVG rendering and graph calculations
+export const StrategyGraph = React.memo(StrategyGraphBase);
+
+// Export default for lazy loading compatibility
 export default StrategyGraph;
