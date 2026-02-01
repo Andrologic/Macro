@@ -7,6 +7,12 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
+// Command to show the main window explicitly from frontend
+#[tauri::command]
+async fn show_main_window(window: tauri::WebviewWindow) {
+    let _ = window.show();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -35,6 +41,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            show_main_window,
             commands::db_list_conversations,
             commands::db_get_conversation,
             commands::db_create_conversation,

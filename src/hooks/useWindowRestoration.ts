@@ -150,6 +150,16 @@ export function useWindowRestoration() {
         console.log("Window state restored:", { width, height, x, y, isMaximized });
       } catch (error) {
         console.error("Failed to restore window state:", error);
+      } finally {
+        // Explicitly show the main window using the Rust command
+        // This ensures the window is visible only AFTER it has been resized
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("show_main_window");
+          console.log("Window shown via command");
+        } catch (err) {
+          console.error("Failed to invoke show_main_window:", err);
+        }
       }
     };
 
