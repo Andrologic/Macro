@@ -53,3 +53,5 @@ config = "0.13"
 # Utils
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+[dev-dependencies]
+tempfile = "3"

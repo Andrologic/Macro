@@ -273,23 +273,23 @@ pub async fn fs_read_file(
 ) -> Result<FileContentDto, BackendError>
 ```
 - [x] Define command in `commands/fs.rs`
-- [ ] Remove `pool` parameter (not needed for FS operations)
-- [ ] Use `workspace` state for sandbox validation
+- [x] Remove `pool` parameter (not needed for FS operations)
+- [x] Use `workspace` state for sandbox validation
 
 ### 4.2 Implementation Steps
-- [ ] Parse path string to `PathBuf`
-- [ ] Call `validate_path(&path, &workspace)` to ensure sandboxed
-- [ ] Get file metadata with `tokio::fs::metadata(&validated_path)`
-  - [ ] Check if it's a file (not directory)
-  - [ ] Check file size against max limit (e.g., 10MB default)
-  - [ ] Return `FilesystemFileTooLarge` if exceeded
-- [ ] Check if binary with `is_binary_file(&validated_path)`
-  - [ ] If binary: return with `is_binary: true`, `content: ""`, `encoding: "none"`
-  - [ ] OR: base64 encode binary content if requested
-- [ ] Read file content with `tokio::fs::read_to_string(&validated_path)`
-  - [ ] Handle UTF-8 decode errors gracefully
-- [ ] Detect language with `get_file_language(&validated_path)`
-- [ ] Build and return `FileContentDto`
+- [x] Parse path string to `PathBuf`
+- [x] Call `validate_path(&path, &workspace)` to ensure sandboxed
+- [x] Get file metadata with `tokio::fs::metadata(&validated_path)`
+  - [x] Check if it's a file (not directory)
+  - [x] Check file size against max limit (e.g., 10MB default)
+  - [x] Return `FilesystemFileTooLarge` if exceeded
+- [x] Check if binary with `is_binary_file(&validated_path)`
+  - [x] If binary: return with `is_binary: true`, `content: ""`, `encoding: "none"`
+  - [x] OR: base64 encode binary content if requested
+- [x] Read file content with `tokio::fs::read_to_string(&validated_path)`
+  - [x] Handle UTF-8 decode errors gracefully
+- [x] Detect language with `get_file_language(&validated_path)`
+- [x] Build and return `FileContentDto`
 
 ### 4.3 Error Handling
 - [ ] `validate_path` fails → propagate error (already BackendError)
@@ -299,7 +299,7 @@ pub async fn fs_read_file(
 - [ ] Read error → `Io` or specific variant
 
 ### 4.4 Configuration Constants
-- [ ] Define `const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;` (10MB)
+- [x] Define `const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;` (10MB)
 - [ ] Consider making this configurable via `core/config.rs`
 
 ---
