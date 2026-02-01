@@ -180,3 +180,6 @@ export const AccountModal: React.FC = () => {
     </div>
   );
 };
+
+// Export both named and default for lazy loading compatibility
+export default AccountModal;

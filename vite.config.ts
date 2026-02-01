@@ -5,14 +5,140 @@ import react from "@vitejs/plugin-react";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vitejs.dev/config/
-export default defineConfig(async () => ({
+export default defineConfig({
   plugins: [react()],
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent vite from obscuring rust errors
-  clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
+  // =============================================================================
+  // BUILD OPTIMIZATIONS - Code Splitting & Chunking
+  // =============================================================================
+  build: {
+    // Target modern browsers for smaller bundles
+    target: "es2020",
+    
+    // Enable minification
+    minify: "esbuild",
+    
+    // Code splitting configuration
+    rollupOptions: {
+      output: {
+        // Manual chunks for optimal code splitting
+        manualChunks: {
+          // React core - loaded first
+          "react-vendor": ["react", "react-dom"],
+          
+          // State management
+          "state-vendor": ["zustand", "jotai"],
+          
+          // UI Components - heavy dependencies
+          "ui-vendor": [
+            "@xyflow/react",
+            "@dnd-kit/core",
+            "@dnd-kit/sortable",
+            "@dnd-kit/utilities",
+          ],
+          
+          // Code editor - largest chunk, loaded on demand
+          "editor-vendor": [
+            "@codemirror/view",
+            "@codemirror/state",
+            "codemirror",
+            "@codemirror/lang-javascript",
+            "@codemirror/lang-rust",
+            "@codemirror/theme-one-dark",
+            "@codemirror/autocomplete",
+            "@codemirror/commands",
+            "@codemirror/lint",
+          ],
+          
+          // Utilities
+          "utils-vendor": [
+            "i18next",
+            "react-i18next",
+            "i18next-browser-languagedetector",
+            "lucide-react",
+            "class-variance-authority",
+            "clsx",
+            "tailwind-merge",
+          ],
+          
+          // Data fetching & streaming
+          "data-vendor": [
+            "@tauri-apps/api",
+            "@tauri-apps/plugin-http",
+            "@tauri-apps/plugin-store",
+          ],
+        },
+        
+        // Chunk naming strategy
+        chunkFileNames: (chunkInfo) => {
+          const facadeModuleId = chunkInfo.facadeModuleId 
+            ? chunkInfo.facadeModuleId.split('/').pop()?.replace(/\.[^/.]+$/, '') 
+            : 'chunk';
+          return `assets/${facadeModuleId}-[hash].js`;
+        },
+        
+        // Entry file naming
+        entryFileNames: "assets/[name]-[hash].js",
+        
+        // Asset file naming
+        assetFileNames: (assetInfo) => {
+          const info = assetInfo.name ? assetInfo.name.split('.') : [];
+          const ext = info[info.length - 1];
+          if (/\.(png|jpe?g|gif|svg|webp|ico)$/.test(assetInfo.name || '')) {
+            return `assets/images/[name]-[hash][extname]`;
+          }
+          if (/\.(woff2?|ttf|otf|eot)$/.test(assetInfo.name || '')) {
+            return `assets/fonts/[name]-[hash][extname]`;
+          }
+          return `assets/[name]-[hash][extname]`;
+        },
+      },
+    },
+
+    // Split CSS into separate files
+    cssCodeSplit: true,
+    
+    // Reduce chunk size warnings
+    chunkSizeWarningLimit: 1000,
+    
+    // Source maps for debugging (disable in production for smaller builds)
+    sourcemap: false,
+  },
+
+  // =============================================================================
+  // DEPENDENCY OPTIMIZATION - Pre-bundling
+  // =============================================================================
+  optimizeDeps: {
+    // Dependencies to pre-bundle
+    include: [
+      "react",
+      "react-dom",
+      "react/jsx-runtime",
+      "react/jsx-dev-runtime",
+      "zustand",
+      "i18next",
+      "react-i18next",
+      "lucide-react",
+      "class-variance-authority",
+      "clsx",
+      "tailwind-merge",
+    ],
+    
+    // Exclude heavy dependencies that should be lazy loaded
+    exclude: [
+      "@codemirror/view",
+      "@codemirror/state",
+      "codemirror",
+      "@xyflow/react",
+    ],
+    
+    // Force re-optimization when these change
+    force: false,
+  },
+
+  // =============================================================================
+  // SERVER CONFIGURATION - Tauri Development
+  // =============================================================================
   server: {
     port: 1420,
     strictPort: true,
@@ -25,8 +151,42 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell vite to ignore watching `src-tauri`
+      // Ignore src-tauri to prevent rebuild loops
       ignored: ["**/src-tauri/**"],
     },
   },
-}));
+
+  // =============================================================================
+  // PERFORMANCE OPTIMIZATIONS
+  // =============================================================================
+  
+  // Prevent Vite from clearing screen (keeps Rust errors visible)
+  clearScreen: false,
+  
+  // Resolve aliases for cleaner imports
+  resolve: {
+    alias: {
+      "@": "/src",
+      "@components": "/src/components",
+      "@stores": "/src/stores",
+      "@services": "/src/services",
+      "@utils": "/src/utils",
+      "@types": "/src/types",
+      "@hooks": "/src/hooks",
+    },
+  },
+
+  // CSS configuration
+  css: {
+    devSourcemap: true,
+    modules: {
+      localsConvention: "camelCase",
+    },
+  },
+
+  // Preview server configuration
+  preview: {
+    port: 1420,
+    strictPort: true,
+  },
+});

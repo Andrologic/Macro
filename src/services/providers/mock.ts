@@ -29,7 +29,13 @@ import type {
 import type { Project } from '../../types';
 import { delay, maybeFail } from '../utils';
 
-const DEFAULT_LATENCY_MS = 180;
+// =============================================================================
+// MOCK PROVIDER CONFIGURATION
+// =============================================================================
+// Latency reduced for faster development experience
+// Set to 0 for instant responses, or increase to simulate network delay
+
+const DEFAULT_LATENCY_MS = 0; // Reduced from 180ms for faster startup
 const ERROR_RATE = 0;
 
 const simulate = async <T>(value: T): Promise<T> => {
