@@ -4,11 +4,24 @@
   "version": "0.1.0",
   "license": "AGPL-3.0-or-later",
   "type": "module",
+  "packageManager": "bun@1.1.42",
+  "engines": {
+    "bun": ">=1.1.0"
+  },
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
+    "dev": "bunx vite",
+    "build": "bunx tsc && bunx vite build",
+    "preview": "bunx vite preview",
+    "tauri": "bunx tauri",
+    "tauri:dev": "bunx tauri dev",
+    "tauri:build": "bunx tauri build",
+    "install:tauri": "bun install && cd src-tauri && cargo build",
+    "clean": "rm -rf dist node_modules src-tauri/target bun.lockb bun.lock",
+    "typecheck": "bunx tsc --noEmit",
+    "lint": "bunx eslint . --ext .ts,.tsx",
+    "update": "bun update",
+    "test": "bun test",
+    "ci": "bun install --frozen-lockfile && bun run typecheck && bun run build"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",
@@ -48,9 +61,14 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.2",
     "autoprefixer": "^10.4.23",
+    "bun-types": "latest",
     "postcss": "^8.5.6",
     "tailwindcss": "3.4.0",
     "typescript": "~5.9.3",
     "vite": "^7.3.1"
-  }
+  },
+  "trustedDependencies": [
+    "@tauri-apps/cli",
+    "esbuild"
+  ]
 }

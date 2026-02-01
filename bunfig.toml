@@ -1,0 +1,93 @@
+# =============================================================================
+# BUN CONFIGURATION - Macro Project
+# =============================================================================
+
+[install]
+# Use exact versions from package.json
+exact = true
+
+# Cache configuration
+# Note: 'cache' boolean is not valid here, use [install.cache] section instead
+
+# Registry to use
+registry = "https://registry.npmjs.org/"
+
+# Peer dependencies handling
+peer = true
+
+# Development dependencies
+dev = true
+
+# Production dependencies
+production = false
+
+# Optional dependencies
+optional = true
+
+# Linker strategy: "isolated" for strict dependency isolation (pnpm-like)
+# "hoisted" for traditional flat node_modules
+linker = "isolated"
+
+# Auto-install dependencies when node_modules is missing
+auto = "auto"
+
+# For CI/CD: set to true to fail if lockfile is out of sync
+frozenLockfile = false
+
+# Cache configuration
+[install.cache]
+# The directory to use for the cache
+dir = "~/.bun/install/cache"
+# When true, don't load from the global cache
+disable = false
+# When true, always resolve the latest versions from the registry
+disableManifest = false
+
+[install.scopes]
+# Private registry scopes if needed
+# "@company" = { token = "$NPM_TOKEN", url = "https://npm.company.com" }
+
+[run]
+# Shell to use for running scripts
+# 'bun' = use Bun's shell, 'system' = use system shell
+shell = "system"
+
+# Environment variables
+env = { NODE_ENV = "development" }
+
+[test]
+# Test runner configuration
+coverage = true
+preload = ["./test-setup.ts"]
+
+[build]
+# Build configuration
+minify = true
+sourcemap = true
+
+# =============================================================================
+# TAURI INTEGRATION
+# =============================================================================
+
+[tauri]
+# Tauri CLI path (installed via devDependencies)
+cli = "./node_modules/.bin/tauri"
+
+# =============================================================================
+# PERFORMANCE SETTINGS
+# =============================================================================
+
+[install.lockfile]
+# Use text-based lockfile for better diffing (disabled to avoid yarn.lock generation)
+# print = "yarn"
+
+# Always save the lockfile
+save = true
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+[log]
+# Log level
+level = "info"
