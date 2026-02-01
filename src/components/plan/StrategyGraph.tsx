@@ -10,6 +10,13 @@ interface StrategyGraphProps {
   className?: string;
 }
 
+/**
+ * StrategyGraph - Visualizes project strategy as a graph or branch view
+ * 
+ * PERFORMANCE: Lazy loaded via ModeRouter, only rendered when Architect mode is active
+ * Contains complex SVG rendering that benefits from code splitting
+ */
+
 const statusColors: Record<PlanNodeStatus, string> = {
   'pending': 'text-muted-foreground',
   'in-progress': 'text-amber-500',
@@ -522,3 +529,6 @@ export const StrategyGraph: React.FC<StrategyGraphProps> = ({ className }) => {
     </aside>
   );
 };
+
+// Export both named and default for lazy loading compatibility
+export default StrategyGraph;

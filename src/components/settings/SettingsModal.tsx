@@ -84,16 +84,19 @@ export const SettingsModal: React.FC = () => {
              </button>
           </header>
           
-          <div className="flex-1 overflow-y-auto p-8">
-            <div className="max-w-3xl mx-auto animate-fade-in">
-                {activeSettingsTab === 'general' && <GeneralView />}
-                {activeSettingsTab === 'appearance' && <AppearanceView />}
-                {activeSettingsTab === 'ai' && <AIView />}
-                {activeSettingsTab === 'tools' && <ToolsView />}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
+           <div className="flex-1 overflow-y-auto p-8">
+             <div className="max-w-3xl mx-auto animate-fade-in">
+                 {activeSettingsTab === 'general' && <GeneralView />}
+                 {activeSettingsTab === 'appearance' && <AppearanceView />}
+                 {activeSettingsTab === 'ai' && <AIView />}
+                 {activeSettingsTab === 'tools' && <ToolsView />}
+             </div>
+           </div>
+         </div>
+       </div>
+     </div>
+   );
+ };
+
+// Export both named and default for lazy loading compatibility
+export default SettingsModal;

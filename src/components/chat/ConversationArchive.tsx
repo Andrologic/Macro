@@ -11,6 +11,12 @@ interface ConversationArchiveProps {
   className?: string;
 }
 
+/**
+ * ConversationArchive - Displays conversation history in Chat mode
+ *
+ * PERFORMANCE: Lazy loaded via ModeRouter, only rendered when Chat mode is active
+ */
+
 interface ConversationItemProps {
   conversation: Conversation;
   isSelected: boolean;
@@ -293,3 +299,6 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     </aside>
   );
 };
+
+// Export both named and default for lazy loading compatibility
+export default ConversationArchive;

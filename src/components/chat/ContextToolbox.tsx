@@ -9,6 +9,12 @@ interface ContextToolboxProps {
   className?: string;
 }
 
+/**
+ * ContextToolbox - Provides context tools and file attachments in Chat mode
+ *
+ * PERFORMANCE: Lazy loaded via ModeRouter, only rendered when Chat mode is active
+ */
+
 interface AttachedFile {
   id: string;
   name: string;
@@ -309,3 +315,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     </aside>
   );
 };
+
+// Export both named and default for lazy loading compatibility
+export default ContextToolbox;

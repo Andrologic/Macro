@@ -9,7 +9,13 @@ import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
 import { MarkdownRenderer, estimateTokens, formatTokenCount } from './MarkdownRenderer';
 
-export const ChatZone: React.FC = () => {
+/**
+ * ChatZone - Main chat interface used across all modes
+ *
+ * PERFORMANCE: Lazy loaded via ModeRouter, though shared across all modes
+ * Critical component that should load quickly once needed
+ */
+const ChatZone: React.FC = () => {
   const { t } = useTranslation();
   const { currentPlan } = useAppStore();
   const {
@@ -367,3 +373,6 @@ export const ChatZone: React.FC = () => {
     </main>
   );
 };
+
+// Export both named and default for lazy loading compatibility
+export default ChatZone;

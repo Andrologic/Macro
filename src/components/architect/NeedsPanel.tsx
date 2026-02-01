@@ -26,7 +26,12 @@ const CATEGORY_COLORS: Record<NeedCategory, string> = {
   other: 'text-muted-foreground',
 };
 
-export const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
+/**
+ * NeedsPanel - Displays project requirements/needs in Architect mode
+ * 
+ * PERFORMANCE: Lazy loaded via ModeRouter, only rendered when Architect mode is active
+ */
+const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
   const { t } = useTranslation();
   const { needs, selectNeed, selectedNeedId } = useNeedsStore();
   const [filter, setFilter] = useState<'all' | NeedCategory>('all');
@@ -162,3 +167,6 @@ export const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
     </aside>
   );
 };
+
+// Export both named and default for lazy loading compatibility
+export default NeedsPanel;

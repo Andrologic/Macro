@@ -11,6 +11,12 @@ interface FileChangesPanelProps {
   className?: string;
 }
 
+/**
+ * FileChangesPanel - Displays file changes in Implement mode
+ *
+ * PERFORMANCE: Lazy loaded via ModeRouter, only rendered when Implement mode is active
+ */
+
 const STATUS_COLORS = {
   added: 'text-emerald-500',
   modified: 'text-amber-500',
@@ -262,3 +268,6 @@ export const FileChangesPanel: React.FC<FileChangesPanelProps> = ({ className })
     </aside>
   );
 };
+
+// Export both named and default for lazy loading compatibility
+export default FileChangesPanel;

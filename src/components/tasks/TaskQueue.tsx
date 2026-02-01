@@ -10,6 +10,12 @@ interface TaskQueueProps {
   className?: string;
 }
 
+/**
+ * TaskQueue - Displays and manages project tasks in Implement mode
+ *
+ * PERFORMANCE: Lazy loaded via ModeRouter, only rendered when Implement mode is active
+ */
+
 const statusConfig: Record<TaskStatus, { icon: IconName; color: string; bgColor: string; label: string }> = {
   'Pending': { icon: 'circle', color: 'text-muted-foreground', bgColor: 'bg-muted', label: 'En attente' },
   'InProgress': { icon: 'loader', color: 'text-amber-500', bgColor: 'bg-amber-500/10', label: 'En cours' },
@@ -280,3 +286,6 @@ export const TaskQueue: React.FC<TaskQueueProps> = ({ className }) => {
     </aside>
   );
 };
+
+// Export both named and default for lazy loading compatibility
+export default TaskQueue;
