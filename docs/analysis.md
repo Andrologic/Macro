@@ -363,7 +363,7 @@ Out of scope for now.
 
 ## 6. Project Accountable Details
 *   **Target Repo**: `Macro`
-*   **Package Manager**: `pnpm`
+*   **Package Manager**: `bun`
 *   **Frontend**: React (TSX)
 *   **Backend**: Rust (Tauri)
 *   **Editor Lib**: CodeMirror 6
