@@ -21,9 +21,9 @@ production = false
 # Optional dependencies
 optional = true
 
-# Linker strategy: "hardlink" for fastest installs and disk efficiency
-# Uses hard links instead of copying files, significantly faster
-linker = "hardlink"
+# Linker strategy: "hoisted" for compatibility and stability
+# Valid options: "hoisted" (traditional) or "isolated" (pnpm-style)
+linker = "hoisted"
 
 # Auto-install dependencies when node_modules is missing
 auto = "auto"
