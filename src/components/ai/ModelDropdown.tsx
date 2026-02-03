@@ -16,7 +16,8 @@ export const ModelDropdown: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const models = selectedProviderId ? (modelsByProvider[selectedProviderId] || []) : [];
-  const selectedModel = models.find((m) => m.id === selectedModelId);
+  const enabledModels = models.filter((model) => model.isEnabled !== false);
+  const selectedModel = enabledModels.find((m) => m.id === selectedModelId);
 
   const handleSelect = (modelId: string) => {
     selectModel(modelId);
@@ -71,7 +72,7 @@ export const ModelDropdown: React.FC = () => {
             'flex flex-col'
           )}
         >
-          {models.map((model) => (
+          {enabledModels.map((model) => (
             <button
               key={model.id}
               onClick={() => handleSelect(model.id)}
@@ -87,10 +88,10 @@ export const ModelDropdown: React.FC = () => {
             </button>
           ))}
 
-          {models.length === 0 && (
+          {enabledModels.length === 0 && (
             <div className="px-3 py-2 text-sm text-muted-foreground">
               {selectedProviderId
-                ? 'No models available. Test the provider connection.'
+                ? 'No enabled models. Enable models in Settings.'
                 : 'Select a provider first'}
             </div>
           )}

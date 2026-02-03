@@ -8,9 +8,20 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 
 export interface ProviderModel {
   id: string;
-  name: string;
+  name?: string;
   created?: number;
   owned_by?: string;
+  description?: string;
+  pricing?: {
+    prompt?: string;
+    completion?: string;
+    request?: string;
+    image?: string;
+    web_search?: string;
+    internal_reasoning?: string;
+    input_cache_read?: string;
+    input_cache_write?: string;
+  };
 }
 
 export interface ModelsListResponse {
@@ -90,9 +101,11 @@ export async function fetchModelsFromProvider(
     // Normalize model data
     const models = (data.data || []).map((model) => ({
       id: model.id,
-      name: model.id, // Use ID as name if no specific name
+      name: model.name || model.id,
       created: model.created,
       owned_by: model.owned_by,
+      description: model.description,
+      pricing: model.pricing,
     }));
 
     return {

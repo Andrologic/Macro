@@ -57,6 +57,12 @@ pub fn run() {
             commands::db_update_provider_config,
             commands::db_create_provider_config,
             commands::db_delete_provider_config,
+            commands::db_list_provider_models,
+            commands::db_upsert_provider_models,
+            commands::db_set_provider_model_enabled,
+            commands::db_set_all_provider_models_enabled,
+            commands::db_get_provider_settings,
+            commands::db_update_provider_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
