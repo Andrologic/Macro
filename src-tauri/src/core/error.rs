@@ -1,6 +1,4 @@
-use git2::PackBuilder;
 use serde::Serialize;
-use serde_json::error;
 use thiserror::Error;
 
 /// Backend error type that can be serialized and sent to the frontend

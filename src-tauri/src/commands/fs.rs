@@ -12,7 +12,7 @@ const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 const MAX_WRITE_SIZE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 
 // Default ignored directories/patterns
-static DEFAULT_IGNORED: &[&str] = &[
+static DEFAULT_IGNORED: [&str; 12] = [
     ".git",
     "node_modules",
     "target",
@@ -34,7 +34,9 @@ pub async fn read_file_internal(
 ) -> Result<FileContentDto, BackendError> {
     let path_buf = PathBuf::from(&path); // Parse path string to PathBuf
     let validated_path = validate_path(&path_buf, workspace)?; // Validate path against workspace, also checks if path exists
-    let file_metadata = tokio::fs::metadata(&validated_path).await?; // Get file metadata
+    let file_metadata = tokio::fs::metadata(&validated_path)
+        .await
+        .map_err(|e| io_error_to_backend_error(e, &validated_path))?; // Get file metadata
 
     // Check if it's a file
     if !file_metadata.is_file() {
@@ -191,7 +193,9 @@ pub async fn list_dir_internal(
     let validated_path = validate_path(&path_buf, workspace)?;
 
     // Verify path is a directory
-    let metadata = tokio::fs::metadata(&validated_path).await?;
+    let metadata = tokio::fs::metadata(&validated_path)
+        .await
+        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
     if !metadata.is_dir() {
         return Err(BackendError::FilesystemIsFile {
             message: format!("Path '{}' is a file, not a directory", path),
@@ -235,7 +239,9 @@ pub async fn list_dir_internal(
         }
     } else {
         // Non-recursive listing using read_dir
-        let mut dir = tokio::fs::read_dir(&validated_path).await?;
+        let mut dir = tokio::fs::read_dir(&validated_path)
+            .await
+            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
 
         while let Some(entry) = dir.next_entry().await? {
             let entry_path = entry.path();
@@ -285,8 +291,12 @@ async fn create_dir_entry_dto(
     workspace: &Path,
     base_path: &Path,
 ) -> Result<DirEntryDto, BackendError> {
-    let metadata = tokio::fs::metadata(entry_path).await?;
-    let symlink_metadata = tokio::fs::symlink_metadata(entry_path).await?;
+    let metadata = tokio::fs::metadata(entry_path)
+        .await
+        .map_err(|e| io_error_to_backend_error(e, entry_path))?;
+    let symlink_metadata = tokio::fs::symlink_metadata(entry_path)
+        .await
+        .map_err(|e| io_error_to_backend_error(e, entry_path))?;
 
     let name = entry_path
         .file_name()
@@ -364,10 +374,20 @@ pub async fn stat_internal(
     path: String,
 ) -> Result<FileStatsDto, BackendError> {
     let path_buf = PathBuf::from(&path);
-    let validated_path = validate_path(&path_buf, workspace)?;
+    let validated_path = validate_path_for_write(&path_buf, workspace)?;
 
-    let metadata = tokio::fs::metadata(&validated_path).await?;
-    let symlink_metadata = tokio::fs::symlink_metadata(&validated_path).await?;
+    if !validated_path.exists() {
+        return Err(BackendError::FilesystemNotFound {
+            message: format!("Path not found: {}", validated_path.display()),
+        });
+    }
+
+    let metadata = tokio::fs::metadata(&validated_path)
+        .await
+        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+    let symlink_metadata = tokio::fs::symlink_metadata(&validated_path)
+        .await
+        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
 
     let name = validated_path
         .file_name()
@@ -500,7 +520,9 @@ pub async fn fs_delete(
     let path_buf = PathBuf::from(&path);
     let validated_path = validate_path(&path_buf, &workspace)?;
 
-    let metadata = tokio::fs::metadata(&validated_path).await?;
+    let metadata = tokio::fs::metadata(&validated_path)
+        .await
+        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
 
     if metadata.is_file() {
         tokio::fs::remove_file(&validated_path)
@@ -637,7 +659,9 @@ pub async fn fs_move(
                 .map_err(|e| io_error_to_backend_error(e, &validated_src))?;
 
             // Delete source
-            let src_metadata = tokio::fs::metadata(&validated_src).await?;
+            let src_metadata = tokio::fs::metadata(&validated_src)
+                .await
+                .map_err(|e| io_error_to_backend_error(e, &validated_src))?;
             if src_metadata.is_dir() {
                 tokio::fs::remove_dir_all(&validated_src)
                     .await
@@ -664,6 +688,7 @@ pub async fn fs_move(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
@@ -708,6 +733,10 @@ mod tests {
         fs::File::create(workspace_path.join("empty.txt")).expect("Failed to create empty file");
 
         temp_dir
+    }
+
+    fn setup_empty_workspace() -> TempDir {
+        TempDir::new().expect("Failed to create temp directory")
     }
 
     #[tokio::test]
@@ -765,5 +794,364 @@ mod tests {
         let dto = result.unwrap();
         assert!(!dto.is_binary);
         assert_eq!(dto.content, "Nested content\n");
+    }
+
+    #[tokio::test]
+    async fn test_read_nonexistent_file() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let result = read_file_internal(&workspace_path, "missing.txt".to_string()).await;
+
+        assert!(matches!(result, Err(BackendError::FilesystemNotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_outside_workspace() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let outside_file = workspace
+            .path()
+            .parent()
+            .unwrap()
+            .join("outside.txt");
+        fs::write(&outside_file, "outside").unwrap();
+
+        let result = read_file_internal(
+            &workspace_path,
+            outside_file.to_string_lossy().to_string(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemPathOutsideWorkspace { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_read_directory_returns_error() {
+        let workspace = setup_test_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let result = read_file_internal(&workspace_path, "subdir".to_string()).await;
+
+        assert!(matches!(result, Err(BackendError::FilesystemIsDirectory { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_read_binary_file_returns_binary() {
+        let workspace = setup_test_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let result = read_file_internal(&workspace_path, "binary.bin".to_string()).await;
+
+        assert!(result.is_ok());
+        let dto = result.unwrap();
+        assert!(dto.is_binary);
+        assert_eq!(dto.content, "");
+        assert_eq!(dto.encoding, "none");
+    }
+
+    #[tokio::test]
+    async fn test_read_file_too_large() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let large_file = workspace.path().join("large.txt");
+        let file = fs::File::create(&large_file).unwrap();
+        file.set_len(MAX_FILE_SIZE_BYTES + 1).unwrap();
+
+        let result = read_file_internal(&workspace_path, "large.txt".to_string()).await;
+
+        assert!(matches!(result, Err(BackendError::FilesystemFileTooLarge { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_write_new_file() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let result = write_file_internal(
+            &workspace_path,
+            "new.txt".to_string(),
+            "hello".to_string(),
+            Some(true),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let dto = result.unwrap();
+        assert!(dto.created);
+        let written = fs::read_to_string(workspace.path().join("new.txt")).unwrap();
+        assert_eq!(written, "hello");
+    }
+
+    #[tokio::test]
+    async fn test_write_overwrite_file() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        write_file_internal(
+            &workspace_path,
+            "file.txt".to_string(),
+            "first".to_string(),
+            Some(true),
+        )
+        .await
+        .unwrap();
+
+        let result = write_file_internal(
+            &workspace_path,
+            "file.txt".to_string(),
+            "second".to_string(),
+            Some(true),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let dto = result.unwrap();
+        assert!(!dto.created);
+        let written = fs::read_to_string(workspace.path().join("file.txt")).unwrap();
+        assert_eq!(written, "second");
+    }
+
+    #[tokio::test]
+    async fn test_write_nested_directories() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let result = write_file_internal(
+            &workspace_path,
+            "a/b/c.txt".to_string(),
+            "content".to_string(),
+            Some(true),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let written = fs::read_to_string(workspace.path().join("a/b/c.txt")).unwrap();
+        assert_eq!(written, "content");
+    }
+
+    #[tokio::test]
+    async fn test_write_outside_workspace() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let outside_path = workspace
+            .path()
+            .parent()
+            .unwrap()
+            .join("outside.txt");
+
+        let result = write_file_internal(
+            &workspace_path,
+            outside_path.to_string_lossy().to_string(),
+            "content".to_string(),
+            Some(true),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemPathOutsideWorkspace { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_write_readonly_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let readonly_dir = workspace.path().join("readonly");
+        fs::create_dir_all(&readonly_dir).unwrap();
+        fs::set_permissions(&readonly_dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = write_file_internal(
+            &workspace_path,
+            "readonly/file.txt".to_string(),
+            "content".to_string(),
+            Some(true),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemPermissionDenied { .. })
+                | Err(BackendError::Io { .. })
+        ));
+
+        fs::set_permissions(&readonly_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_empty() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let result = list_dir_internal(&workspace_path, ".".to_string(), None, None, None).await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_with_files() {
+        let workspace = setup_test_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let result = list_dir_internal(&workspace_path, ".".to_string(), None, None, None).await;
+
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        let names: HashSet<String> = entries.into_iter().map(|e| e.name).collect();
+
+        for expected in [
+            "sample.txt",
+            "main.rs",
+            "script.js",
+            "subdir",
+            "binary.bin",
+            "empty.txt",
+        ] {
+            assert!(names.contains(expected));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_outside_workspace() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let outside_dir = workspace.path().parent().unwrap().join("outside_dir");
+        fs::create_dir_all(&outside_dir).unwrap();
+
+        let result = list_dir_internal(
+            &workspace_path,
+            outside_dir.to_string_lossy().to_string(),
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemPathOutsideWorkspace { .. })
+        ));
+
+        let _ = fs::remove_dir_all(&outside_dir);
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_recursive_and_hidden() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        fs::create_dir_all(workspace.path().join("a/b")).unwrap();
+        fs::write(workspace.path().join("a/b/file.txt"), "content").unwrap();
+        fs::write(workspace.path().join(".hidden"), "hidden").unwrap();
+
+        let result = list_dir_internal(
+            &workspace_path,
+            ".".to_string(),
+            Some(true),
+            Some(false),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.iter().any(|e| e.name == "file.txt"));
+        assert!(!result.iter().any(|e| e.name == ".hidden"));
+
+        let result_include_hidden = list_dir_internal(
+            &workspace_path,
+            ".".to_string(),
+            Some(true),
+            Some(true),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(result_include_hidden.iter().any(|e| e.name == ".hidden"));
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_ignores_default_dirs() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        fs::create_dir_all(workspace.path().join("node_modules")).unwrap();
+        fs::write(workspace.path().join("node_modules/ignored.txt"), "x").unwrap();
+
+        let result = list_dir_internal(&workspace_path, ".".to_string(), Some(true), None, None)
+            .await
+            .unwrap();
+
+        assert!(!result.iter().any(|e| e.relative_path.contains("node_modules")));
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_on_file_returns_error() {
+        let workspace = setup_test_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let result = list_dir_internal(
+            &workspace_path,
+            "sample.txt".to_string(),
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert!(matches!(result, Err(BackendError::FilesystemIsFile { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_stat_file_and_directory() {
+        let workspace = setup_test_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let file_stat = stat_internal(&workspace_path, "sample.txt".to_string()).await.unwrap();
+        assert_eq!(file_stat.kind, "file");
+
+        let dir_stat = stat_internal(&workspace_path, "subdir".to_string()).await.unwrap();
+        assert_eq!(dir_stat.kind, "directory");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_stat_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let target = workspace.path().join("target.txt");
+        fs::write(&target, "content").unwrap();
+        let link = workspace.path().join("link.txt");
+        symlink(&target, &link).unwrap();
+
+        let stat = stat_internal(&workspace_path, "link.txt".to_string()).await.unwrap();
+        assert!(stat.is_symlink);
+        assert_eq!(stat.kind, "symlink");
+    }
+
+    #[tokio::test]
+    async fn test_stat_nonexistent() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let result = stat_internal(&workspace_path, "missing.txt".to_string()).await;
+
+        assert!(matches!(result, Err(BackendError::FilesystemNotFound { .. })));
     }
 }

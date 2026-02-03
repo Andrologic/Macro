@@ -2,7 +2,7 @@
 // Provides real-time file system event monitoring for the workspace
 
 use crate::fs::dto::FsEventDto;
-use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{event::{EventKind, ModifyKind, RenameMode}, Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -82,8 +82,7 @@ async fn debounce_task(
     workspace: PathBuf,
 ) {
     let debounce_duration = Duration::from_millis(300);
-    let mut pending_events: HashSet<PathBuf> = HashSet::new();
-    let mut last_event_time = tokio::time::Instant::now();
+    let mut pending_events: Vec<Event> = Vec::new();
 
     loop {
         let mut rx_guard = rx.lock().await;
@@ -91,13 +90,16 @@ async fn debounce_task(
         match tokio::time::timeout(debounce_duration, rx_guard.recv()).await {
             Ok(Some(event)) => {
                 // Process the event
+                let mut keep_event = false;
                 for path in &event.paths {
                     if should_ignore_path(path, &workspace) {
                         continue;
                     }
-                    pending_events.insert(path.clone());
+                    keep_event = true;
                 }
-                last_event_time = tokio::time::Instant::now();
+                if keep_event {
+                    pending_events.push(event);
+                }
             }
             Ok(None) => {
                 // Channel closed
@@ -108,10 +110,23 @@ async fn debounce_task(
                 drop(rx_guard);
 
                 if !pending_events.is_empty() {
-                    let events_to_emit: Vec<FsEventDto> = pending_events
-                        .iter()
-                        .filter_map(|path| convert_to_dto(path, &workspace))
-                        .collect();
+                    let mut events_to_emit: Vec<FsEventDto> = Vec::new();
+                    let mut seen: HashSet<String> = HashSet::new();
+                    for event in &pending_events {
+                        for dto in convert_event_to_dtos(event, &workspace) {
+                            let key = match &dto {
+                                FsEventDto::Created { path } => format!("created:{}", path),
+                                FsEventDto::Modified { path } => format!("modified:{}", path),
+                                FsEventDto::Deleted { path } => format!("deleted:{}", path),
+                                FsEventDto::Renamed { old_path, new_path } => {
+                                    format!("renamed:{}->{}", old_path, new_path)
+                                }
+                            };
+                            if seen.insert(key) {
+                                events_to_emit.push(dto);
+                            }
+                        }
+                    }
 
                     if !events_to_emit.is_empty() {
                         debug!("Emitting {} file system events", events_to_emit.len());
@@ -166,13 +181,69 @@ fn should_ignore_path(path: &Path, workspace: &Path) -> bool {
     false
 }
 
-/// Convert a file system path to an FsEventDto
-fn convert_to_dto(path: &Path, _workspace: &Path) -> Option<FsEventDto> {
-    let path_str = path.to_string_lossy().to_string();
+/// Convert a notify event to one or more FsEventDto entries
+fn convert_event_to_dtos(event: &Event, workspace: &Path) -> Vec<FsEventDto> {
+    let mut result = Vec::new();
 
-    // For now, we emit a generic modified event
-    // In a full implementation, we'd track the actual event type
-    Some(FsEventDto::Modified { path: path_str })
+    let paths: Vec<PathBuf> = event
+        .paths
+        .iter()
+        .filter(|path| !should_ignore_path(path, workspace))
+        .cloned()
+        .collect();
+
+    if paths.is_empty() {
+        return result;
+    }
+
+    match &event.kind {
+        EventKind::Create(_) => {
+            for path in paths {
+                result.push(FsEventDto::Created {
+                    path: path.to_string_lossy().to_string(),
+                });
+            }
+        }
+        EventKind::Remove(_) => {
+            for path in paths {
+                result.push(FsEventDto::Deleted {
+                    path: path.to_string_lossy().to_string(),
+                });
+            }
+        }
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+        | EventKind::Modify(ModifyKind::Name(RenameMode::From))
+        | EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
+            if paths.len() >= 2 {
+                result.push(FsEventDto::Renamed {
+                    old_path: paths[0].to_string_lossy().to_string(),
+                    new_path: paths[1].to_string_lossy().to_string(),
+                });
+            } else {
+                for path in paths {
+                    result.push(FsEventDto::Modified {
+                        path: path.to_string_lossy().to_string(),
+                    });
+                }
+            }
+        }
+        EventKind::Modify(_) => {
+            for path in paths {
+                result.push(FsEventDto::Modified {
+                    path: path.to_string_lossy().to_string(),
+                });
+            }
+        }
+        _ => {
+            for path in paths {
+                result.push(FsEventDto::Modified {
+                    path: path.to_string_lossy().to_string(),
+                });
+            }
+        }
+    }
+
+    result
 }
 
 /// Initialize the file system watcher and store it in app state

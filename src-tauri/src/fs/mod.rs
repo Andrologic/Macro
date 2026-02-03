@@ -98,11 +98,25 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
 pub fn validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf> {
     let (abs_path, canonical_workspace) = resolve_absolute(path, workspace)?;
 
-    // To write, we just check that the parent is clean
-    // We return abs_path as is (since the file may not exist yet)
-    validate_parent(&abs_path, &canonical_workspace)?;
-
-    Ok(normalize_path(&abs_path))
+    // To write, we just check that the parent is clean if it exists
+    // If the parent doesn't exist yet, allow it as long as it stays within the workspace
+    match validate_parent(&abs_path, &canonical_workspace) {
+        Ok(_) => Ok(normalize_path(&abs_path)),
+        Err(BackendError::FilesystemNotFound { .. }) => {
+            let normalized = normalize_path(&abs_path);
+            if normalized.starts_with(&canonical_workspace) {
+                Ok(normalized)
+            } else {
+                Err(BackendError::FilesystemPathOutsideWorkspace {
+                    message: format!(
+                        "Path {:?} is outside workspace {:?}",
+                        normalized, canonical_workspace
+                    ),
+                })
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Convert path to OS-specific format
@@ -274,6 +288,22 @@ pub fn is_binary_file(path: &Path) -> Result<bool> {
             message: format!("File {:?} does not exist", path),
         });
     }
+    let text_filenames = [
+        "makefile",
+        "dockerfile",
+        "vagrantfile",
+        "gemfile",
+        "rakefile",
+        "cmakelists.txt",
+        "license",
+        "readme",
+        "changelog",
+        "authors",
+        ".gitignore",
+        ".gitattributes",
+        ".editorconfig",
+        ".env",
+    ];
     let text_extensions = [
         "txt",
         "md",
@@ -295,20 +325,6 @@ pub fn is_binary_file(path: &Path) -> Result<bool> {
         "go",
         "rb",
         "php",
-        "Makefile",
-        "Dockerfile",
-        "Vagrantfile",
-        "Gemfile",
-        "Rakefile",
-        "CMakeLists",
-        "LICENSE",
-        "README",
-        "CHANGELOG",
-        "AUTHORS",
-        ".gitignore",
-        ".gitattributes",
-        ".editorconfig",
-        ".env",
     ];
     let binary_extensions = [
         // Images
@@ -320,6 +336,12 @@ pub fn is_binary_file(path: &Path) -> Result<bool> {
         "db", "sqlite", "sqlite3", // Other
         "class", "pyc", "o", "a", "lib", "jar", "war", "ear",
     ];
+    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+        let name_lower = file_name.to_ascii_lowercase();
+        if text_filenames.contains(&name_lower.as_str()) {
+            return Ok(false);
+        }
+    }
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_ascii_lowercase();
         if text_extensions.contains(&ext_lower.as_str()) {
@@ -330,8 +352,10 @@ pub fn is_binary_file(path: &Path) -> Result<bool> {
         }
     }
     // If unknown extension, read file content to check for null bytes
-    let content = std::fs::read(path)?;
-    Ok(content.contains(&0))
+    let mut file = std::fs::File::open(path)?;
+    let mut buffer = [0u8; 8192];
+    let bytes_read = std::io::Read::read(&mut file, &mut buffer)?;
+    Ok(buffer[..bytes_read].contains(&0))
 }
 
 // Tests
@@ -428,6 +452,53 @@ mod tests {
         cleanup_workspace(&workspace);
     }
 
+    #[test]
+    fn test_validate_path_empty_path_returns_workspace() {
+        let workspace = setup_workspace("validate_empty");
+
+        let result = validate_path(Path::new(""), &workspace).unwrap();
+        assert_eq!(result, workspace.canonicalize().unwrap());
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[test]
+    fn test_validate_path_redundant_slashes() {
+        let workspace = setup_workspace("validate_slashes");
+        let nested = workspace.join("a/b");
+        fs::create_dir_all(&nested).unwrap();
+        let file_path = nested.join("file.txt");
+        File::create(&file_path).unwrap();
+
+        let result = validate_path(Path::new("a//b//file.txt"), &workspace).unwrap();
+        assert_eq!(result, file_path.canonicalize().unwrap());
+
+        cleanup_workspace(&workspace);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_validate_path_symlink_outside_workspace() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = setup_workspace("validate_symlink");
+        let outside_dir = setup_workspace("validate_symlink_outside");
+        let outside_file = outside_dir.join("outside.txt");
+        File::create(&outside_file).unwrap();
+
+        let link_path = workspace.join("outside_link.txt");
+        symlink(&outside_file, &link_path).unwrap();
+
+        let result = validate_path(&link_path, &workspace);
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemPathOutsideWorkspace { .. })
+        ));
+
+        cleanup_workspace(&workspace);
+        cleanup_workspace(&outside_dir);
+    }
+
     // ============ validate_path_for_write tests ============
 
     #[test]
@@ -457,7 +528,7 @@ mod tests {
         let workspace = setup_workspace("write_no_parent");
 
         let result = validate_path_for_write(Path::new("nonexistent_dir/file.txt"), &workspace);
-        assert!(result.is_err());
+        assert!(result.is_ok());
 
         cleanup_workspace(&workspace);
     }
@@ -510,6 +581,12 @@ mod tests {
         let path = normalize_path(Path::new("/a/b/../c"));
         assert!(path.is_absolute());
         assert!(path.ends_with("a/c"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_normalize_path_windows_separators() {
+        assert_eq!(normalize_path(Path::new("a\\b\\c")), PathBuf::from("a\\b\\c"));
     }
 
     // ============ get_file_language tests ============
