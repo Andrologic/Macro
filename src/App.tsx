@@ -87,8 +87,34 @@ const App: React.FC = () => {
   const setRightOpen = useAppStore((state) => state.setRightPanelOpen);
   const leftPanelWidth = useAppStore((state) => state.leftPanelWidth);
   const rightPanelWidth = useAppStore((state) => state.rightPanelWidth);
-  const setLeftPanelWidth = useAppStore((state) => state.setLeftPanelWidth);
-  const setRightPanelWidth = useAppStore((state) => state.setRightPanelWidth);
+  // ==========================================================================
+  // RESPONSIVE PANEL MANAGEMENT
+  // ==========================================================================
+
+  useEffect(() => {
+    const handleResize = () => {
+      const width = window.innerWidth;
+      
+      // Below 640px (sm), we don't allow any panels to be open
+      if (width < 640) {
+        if (isLeftOpen) setLeftOpen(false);
+        if (isRightOpen) setRightOpen(false);
+      } 
+      // Between 640px and 1024px, we only allow one panel at a time
+      // Default to closing left if both are open
+      else if (width < 1024) {
+        if (isLeftOpen && isRightOpen) {
+          setLeftOpen(false);
+        }
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+    // Initial check
+    handleResize();
+    
+    return () => window.removeEventListener('resize', handleResize);
+  }, [isLeftOpen, isRightOpen, setLeftOpen, setRightOpen]);
 
   // ==========================================================================
   // OPTIMIZED INITIALIZATION - Parallel with Priority
@@ -229,8 +255,22 @@ const App: React.FC = () => {
       <Header
         isLeftOpen={isLeftOpen}
         isRightOpen={isRightOpen}
-        onToggleLeft={() => setLeftOpen(!isLeftOpen)}
-        onToggleRight={() => setRightOpen(!isRightOpen)}
+        onToggleLeft={() => {
+          const nextState = !isLeftOpen;
+          setLeftOpen(nextState);
+          // If auto-closing right panel on medium screens (<1024px)
+          if (nextState && window.innerWidth < 1024) {
+            setRightOpen(false);
+          }
+        }}
+        onToggleRight={() => {
+          const nextState = !isRightOpen;
+          setRightOpen(nextState);
+          // If auto-closing left panel on medium screens (<1024px)
+          if (nextState && window.innerWidth < 1024) {
+            setLeftOpen(false);
+          }
+        }}
       />
 
       {/* Main Content Area */}
@@ -239,14 +279,14 @@ const App: React.FC = () => {
         {isLeftOpen && (
           <>
             <div 
-              className="hidden md:flex flex-col shrink-0 h-full" 
+              className="hidden sm:flex flex-col shrink-0 h-full" 
               style={{ width: leftPanelWidth }}
             >
               <ModeRouter panel="left" />
             </div>
             <PanelResizer
               onResize={(delta) => setLeftPanelWidth(leftPanelWidth + delta)}
-              className="hidden md:flex"
+              className="hidden sm:flex"
             />
           </>
         )}
@@ -261,10 +301,10 @@ const App: React.FC = () => {
           <>
             <PanelResizer
               onResize={(delta) => setRightPanelWidth(rightPanelWidth - delta)}
-              className="hidden lg:flex"
+              className="hidden sm:flex"
             />
             <div 
-              className="hidden lg:flex flex-col shrink-0 h-full" 
+              className="hidden sm:flex flex-col shrink-0 h-full" 
               style={{ width: rightPanelWidth }}
             >
               <ModeRouter panel="right" />

@@ -263,8 +263,8 @@ export function Header({
         </div>
 
         {/* Right Section: Controls */}
-        <div className="flex items-center justify-end gap-2 min-w-[120px] sm:min-w-[160px] md:min-w-[200px]" data-tauri-drag-region>
-          {/* Panel Toggle Buttons - Hidden on small screens */}
+        <div className="flex items-center justify-end gap-2 min-w-[100px] sm:min-w-[160px] md:min-w-[200px]" data-tauri-drag-region>
+          {/* Panel Toggle Buttons - Synced with App.tsx small screen breakpoints */}
           <button
             onClick={onToggleLeft}
             className="hidden sm:block p-1.5 rounded-lg hover:bg-accent transition-colors"
