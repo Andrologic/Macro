@@ -2,6 +2,7 @@ pub mod models;
 pub mod repository;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::Row;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tauri::{AppHandle, Manager};
@@ -141,6 +142,18 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     )
     .execute(pool)
     .await?;
+
+    let ai_models_columns = sqlx::query("PRAGMA table_info(ai_models)")
+        .fetch_all(pool)
+        .await?;
+    let has_is_manual = ai_models_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "is_manual");
+    if !has_is_manual {
+        sqlx::query("ALTER TABLE ai_models ADD COLUMN is_manual INTEGER DEFAULT 0")
+            .execute(pool)
+            .await?;
+    }
 
     sqlx::query(
         r#"

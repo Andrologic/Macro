@@ -32,6 +32,7 @@ export const AIView: React.FC = () => {
     providerSettingsById,
     setProviderModelEnabled,
     setAllProviderModelsEnabled,
+    addManualModel,
     updateProviderSettings,
     updateProviderConfig,
     createProviderConfig,
@@ -45,6 +46,9 @@ export const AIView: React.FC = () => {
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ id: string; success: boolean; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [addingModelForProvider, setAddingModelForProvider] = useState<string | null>(null);
+  const [manualModelId, setManualModelId] = useState('');
+  const [manualModelName, setManualModelName] = useState('');
 
   useEffect(() => {
     loadProviderConfigs();
@@ -361,6 +365,18 @@ export const AIView: React.FC = () => {
                          </p>
                        </div>
                        <div className="flex items-center gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => {
+                            setAddingModelForProvider(provider.id);
+                            setManualModelId('');
+                            setManualModelName('');
+                          }}
+                        >
+                          <Icon name="plus" size={14} className="mr-1" />
+                          Add model
+                        </Button>
                          {provider.providerType === 'openrouter' && (
                            <div className="flex items-center gap-2 pr-2 border-r border-border">
                              <span className="text-xs text-muted-foreground">Free only</span>
@@ -462,6 +478,58 @@ export const AIView: React.FC = () => {
                </div>
            )}
        </div>
+      {addingModelForProvider && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-xl">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium">Add model</h4>
+              <button
+                className="p-1 rounded-full hover:bg-muted"
+                onClick={() => setAddingModelForProvider(null)}
+              >
+                <Icon name="x" size={16} />
+              </button>
+            </div>
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Model ID</label>
+                <Input
+                  value={manualModelId}
+                  onChange={(e) => setManualModelId(e.target.value)}
+                  placeholder="e.g. zai-large-32k"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Display name</label>
+                <Input
+                  value={manualModelName}
+                  onChange={(e) => setManualModelName(e.target.value)}
+                  placeholder="Optional (defaults to model id)"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-4">
+              <Button variant="ghost" onClick={() => setAddingModelForProvider(null)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={async () => {
+                  const modelId = manualModelId.trim();
+                  if (!modelId) return;
+                  const name = manualModelName.trim() || modelId;
+                  await addManualModel(addingModelForProvider, modelId, name);
+                  setAddingModelForProvider(null);
+                  setManualModelId('');
+                  setManualModelName('');
+                }}
+                disabled={!manualModelId.trim()}
+              >
+                Add
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

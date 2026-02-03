@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { ChatMessage, Conversation } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 import { useProviderStore } from './useProviderStore';
-import { streamChat } from '../services/streamingChat';
+import { streamChat, cancelStream } from '../services/streamingChat';
 import * as tauriIpc from '../services/tauriIpc';
 
 interface ChatStore {
@@ -351,8 +351,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const { abortController } = get();
       if (abortController) {
         abortController.abort();
-        set({ isStreaming: false, isLoading: false, abortController: null });
       }
+      // Cancel the active reader and stream
+      cancelStream();
+      set({ isStreaming: false, isLoading: false, abortController: null });
     },
 
     editMessage: async (messageId, newContent) => {

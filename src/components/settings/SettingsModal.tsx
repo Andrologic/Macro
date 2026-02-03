@@ -23,13 +23,13 @@ export const SettingsModal: React.FC = () => {
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-fade-in p-3 md:p-6">
       {/* Modal Container */}
-      <div className="w-[1200px] h-[85vh] bg-card border border-border rounded-xl shadow-2xl flex overflow-hidden ring-1 ring-white/5">
+      <div className="w-full max-w-[1200px] h-[90vh] md:h-[85vh] bg-card border border-border rounded-xl shadow-2xl flex flex-col md:flex-row overflow-hidden ring-1 ring-white/5">
         
         {/* Sidebar */}
-        <div className="w-64 bg-card/50 border-r border-border flex flex-col">
-          <div className="p-6">
+        <div className="w-full md:w-64 bg-card/50 border-b md:border-b-0 md:border-r border-border flex flex-col">
+          <div className="p-4 md:p-6">
             <h2 className="text-lg font-bold text-foreground flex items-center gap-2">
               <div className="p-1.5 rounded-md bg-primary/20 text-primary">
                 <Icon name="settings" size={18} />
@@ -38,7 +38,7 @@ export const SettingsModal: React.FC = () => {
             </h2>
           </div>
           
-          <nav className="flex-1 px-3 space-y-1">
+          <nav className="flex-1 px-3 pb-3 md:pb-0 space-y-1">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
@@ -56,7 +56,7 @@ export const SettingsModal: React.FC = () => {
             ))}
           </nav>
 
-          <div className="p-4 border-t border-border bg-card/30">
+          <div className="p-4 border-t border-border bg-card/30 hidden md:block">
              <div className="text-xs text-muted-foreground text-center">
                Macro v0.1.0-alpha
                <br />
@@ -66,8 +66,8 @@ export const SettingsModal: React.FC = () => {
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 flex flex-col bg-background/50">
-          <header className="h-16 border-b border-border flex items-center justify-between px-8 bg-card/30 backdrop-blur-sm">
+        <div className="flex-1 flex flex-col bg-background/50 min-h-0">
+          <header className="min-h-16 border-b border-border flex items-center justify-between px-4 md:px-8 py-3 md:py-0 bg-card/30 backdrop-blur-sm">
              <div>
                 <h3 className="text-lg font-semibold text-foreground">
                   {tabs.find(t => t.id === activeSettingsTab)?.label}
@@ -84,7 +84,7 @@ export const SettingsModal: React.FC = () => {
              </button>
           </header>
           
-           <div className="flex-1 overflow-y-auto p-8">
+           <div className="flex-1 overflow-y-auto p-4 md:p-8">
              <div className="max-w-3xl mx-auto animate-fade-in">
                  {activeSettingsTab === 'general' && <GeneralView />}
                  {activeSettingsTab === 'appearance' && <AppearanceView />}

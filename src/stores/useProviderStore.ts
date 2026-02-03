@@ -35,6 +35,7 @@ const normalizeDbModel = (model: tauriIpc.DbAiModel): AIModel => {
       request: model.pricing_request ?? undefined,
     },
     isEnabled: model.is_enabled,
+    isManual: model.is_manual,
     first_seen_at: model.first_seen_at,
     last_seen_at: model.last_seen_at,
     db_id: model.id,
@@ -68,6 +69,7 @@ interface ProviderStore {
   scanModelsForProvider: (providerId: string) => Promise<AIModel[]>;
   setProviderModelEnabled: (providerId: string, modelId: string, enabled: boolean) => Promise<void>;
   setAllProviderModelsEnabled: (providerId: string, enabled: boolean) => Promise<void>;
+  addManualModel: (providerId: string, modelId: string, name: string) => Promise<void>;
   loadProviderSettings: (providerId: string) => Promise<ProviderSettings | null>;
   updateProviderSettings: (providerId: string, updates: Partial<ProviderSettings>) => Promise<void>;
   selectProvider: (providerId: string) => void;
@@ -370,6 +372,34 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const updatedModels = modelsByProvider[providerId] || [];
       set({ selectedModelId: enabled ? getFirstEnabledModelId(updatedModels) : null });
     }
+  },
+
+  addManualModel: async (providerId: string, modelId: string, name: string) => {
+    if (tauriIpc.isTauriAvailable()) {
+      const updated = await tauriIpc.registerManualModel({ providerId, modelId, name });
+      const normalized = updated.map(normalizeDbModel);
+      set((state) => ({
+        modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+      }));
+      return;
+    }
+
+    set((state) => ({
+      modelsByProvider: {
+        ...state.modelsByProvider,
+        [providerId]: [
+          ...(state.modelsByProvider[providerId] || []),
+          {
+            id: modelId,
+            name,
+            provider_id: providerId,
+            isEnabled: true,
+            isManual: true,
+            isFree: modelId.endsWith(':free'),
+          },
+        ],
+      },
+    }));
   },
 
   loadProviderSettings: async (providerId: string) => {

@@ -6,6 +6,28 @@
 
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 
+// Global references to active streaming resources for cancellation
+let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+let currentStream: ReadableStream<Uint8Array> | null = null;
+
+/**
+ * Cancel the currently active stream
+ */
+export function cancelStream(): void {
+  if (currentReader) {
+    currentReader.cancel().catch(() => {
+      // Ignore errors during cancel
+    });
+    currentReader = null;
+  }
+  if (currentStream) {
+    currentStream.cancel().catch(() => {
+      // Ignore errors during cancel
+    });
+    currentStream = null;
+  }
+}
+
 export interface StreamMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -97,7 +119,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       throw new Error('No response body');
     }
 
-    const reader = response.body.getReader();
+    // Store references for cancellation
+    currentStream = response.body;
+    const reader = currentStream.getReader();
+    currentReader = reader;
     const decoder = new TextDecoder();
     let fullContent = '';
     let buffer = '';
@@ -120,6 +145,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     };
 
     while (true) {
+      // Check if the stream was cancelled
+      if (options.signal?.aborted) {
+        try {
+          await reader.cancel();
+        } catch (e) {
+          // Ignore cancel errors
+        }
+        onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
+        return;
+      }
+
       const { done, value } = await reader.read();
       
       if (done) {
@@ -174,6 +210,13 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     endThinking();
     onComplete(fullContent);
   } catch (error) {
+    // Cleanup on error
+    if (currentReader) {
+      currentReader = null;
+    }
+    if (currentStream) {
+      currentStream = null;
+    }
     if (error instanceof Error && error.name === 'AbortError') {
       onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
       return;
@@ -190,6 +233,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     }
     
     onError(err);
+  } finally {
+    // Always cleanup references to prevent memory leaks
+    currentReader = null;
+    currentStream = null;
   }
 }
 

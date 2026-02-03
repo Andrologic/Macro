@@ -49,6 +49,7 @@ export interface DbAiModel {
   pricing_completion: string | null;
   pricing_request: string | null;
   is_enabled: boolean;
+  is_manual: boolean;
   first_seen_at: string;
   last_seen_at: string;
 }
@@ -192,6 +193,18 @@ export async function upsertProviderModels(params: {
   return invoke<DbAiModel[]>('db_upsert_provider_models', {
     providerId: params.providerId,
     models: params.models,
+  });
+}
+
+export async function registerManualModel(params: {
+  providerId: string;
+  modelId: string;
+  name: string;
+}): Promise<DbAiModel[]> {
+  return invoke<DbAiModel[]>('db_register_manual_model', {
+    providerId: params.providerId,
+    modelId: params.modelId,
+    name: params.name,
   });
 }
 
