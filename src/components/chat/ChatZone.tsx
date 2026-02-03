@@ -8,6 +8,9 @@ import { cn } from '../../utils/cn';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
 import { MarkdownRenderer, estimateTokens, formatTokenCount } from './MarkdownRenderer';
+import { ToolCallBlock } from './ToolCallBlock';
+import { useMcpStore } from '../../stores/useMcpStore';
+import { parseToolName } from '../../services/streamingChat';
 
 /**
  * ChatZone - Main chat interface used across all modes
@@ -30,6 +33,8 @@ const ChatZone: React.FC = () => {
     sendMessage,
     editMessage,
   } = useChatStore();
+
+  const { servers } = useMcpStore();
 
   const { selectedProviderId, selectedModelId } = useProviderStore();
   const { mode } = useAppStore();
@@ -165,6 +170,9 @@ const ChatZone: React.FC = () => {
             <div className="max-w-4xl mx-auto space-y-6">
               {currentMessages.map((message) => {
                 const isEditing = editingMessageId === message.id;
+                const toolResultsById = new Map(
+                  (message.tool_results ?? []).map((result) => [result.toolCallId, result])
+                );
 
                 return (
                   <div key={message.id} className="relative">
@@ -185,6 +193,32 @@ const ChatZone: React.FC = () => {
                         {/* Content */}
                         {isEditing ? (
                           <div className="space-y-2">
+                            {message.tool_calls && message.tool_calls.length > 0 && (
+                              <div className="mt-4 space-y-2">
+                                {message.tool_calls.map((call) => {
+                                  const { serverId } = parseToolName(call.function.name);
+                                  const serverName = serverId ? servers[serverId]?.config.name : undefined;
+                                  const result = toolResultsById.get(call.id);
+                                  const status = result
+                                    ? result.success
+                                      ? 'success'
+                                      : 'error'
+                                    : isStreaming && message === currentMessages[currentMessages.length - 1]
+                                      ? 'running'
+                                      : 'pending';
+
+                                  return (
+                                    <ToolCallBlock
+                                      key={call.id}
+                                      toolCall={call}
+                                      result={result}
+                                      status={status}
+                                      serverName={serverName}
+                                    />
+                                  );
+                                })}
+                              </div>
+                            )}
                             <textarea
                               value={editingValue}
                               onChange={(event) => setEditingValue(event.target.value)}
