@@ -1,4 +1,4 @@
-import React, { useEffect, useState, Suspense, lazy } from 'react';
+import React, { useEffect, useState, useRef, Suspense, lazy } from 'react';
 import { Header } from './components/layout/Header';
 import { Toaster } from './components/ui/Toaster';
 import { useWindowRestoration } from './hooks/useWindowRestoration';
@@ -87,6 +87,13 @@ const App: React.FC = () => {
   const setRightOpen = useAppStore((state) => state.setRightPanelOpen);
   const leftPanelWidth = useAppStore((state) => state.leftPanelWidth);
   const rightPanelWidth = useAppStore((state) => state.rightPanelWidth);
+  const setLeftPanelWidth = useAppStore((state) => state.setLeftPanelWidth);
+  const setRightPanelWidth = useAppStore((state) => state.setRightPanelWidth);
+  
+  // Ref to track panels that were auto-collapsed during resize
+  const autoCollapseRef = useRef<{ left: boolean; right: boolean }>({ left: false, right: false });
+  const lastWidthRef = useRef(window.innerWidth);
+
   // ==========================================================================
   // RESPONSIVE PANEL MANAGEMENT
   // ==========================================================================
@@ -94,27 +101,80 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleResize = () => {
       const width = window.innerWidth;
-      
-      // Below 640px (sm), we don't allow any panels to be open
-      if (width < 640) {
-        if (isLeftOpen) setLeftOpen(false);
-        if (isRightOpen) setRightOpen(false);
-      } 
-      // Between 640px and 1024px, we only allow one panel at a time
-      // Default to closing left if both are open
-      else if (width < 1024) {
-        if (isLeftOpen && isRightOpen) {
+      const lastWidth = lastWidthRef.current;
+      lastWidthRef.current = width;
+
+      // 1. COLLAPSE LOGIC (Window shrinking)
+      if (width < 640 && lastWidth >= 640) {
+        // Entering mobile (< 640px): collapse whatever is open and remember it
+        if (isLeftOpen) {
+          autoCollapseRef.current.left = true;
           setLeftOpen(false);
+        }
+        if (isRightOpen) {
+          autoCollapseRef.current.right = true;
+          setRightOpen(false);
+        }
+      } else if (width < 1024 && lastWidth >= 1024) {
+        // Entering tablet (640px - 1024px): if both open, collapse left and remember it
+        if (isLeftOpen && isRightOpen) {
+          autoCollapseRef.current.left = true;
+          setLeftOpen(false);
+        }
+      }
+
+      // 2. RESTORE LOGIC (Window growing)
+      if (width >= 1024 && lastWidth < 1024) {
+        // Returning to desktop (>= 1024px): restore left if it was auto-collapsed
+        if (autoCollapseRef.current.left && !isLeftOpen) {
+          setLeftOpen(true);
+        }
+        if (autoCollapseRef.current.right && !isRightOpen) {
+          setRightOpen(true);
+        }
+        // Reset memory once we are in a state that supports both
+        autoCollapseRef.current = { left: false, right: false };
+      } else if (width >= 640 && lastWidth < 640) {
+        // Returning to tablet (640px - 1024px): restore ONE panel
+        // Prioritize right panel restoration in tablet mode
+        if (autoCollapseRef.current.right && !isRightOpen) {
+          setRightOpen(true);
+          autoCollapseRef.current.right = false;
+        } else if (autoCollapseRef.current.left && !isLeftOpen) {
+          setLeftOpen(true);
+          autoCollapseRef.current.left = false;
         }
       }
     };
 
     window.addEventListener('resize', handleResize);
-    // Initial check
-    handleResize();
-    
     return () => window.removeEventListener('resize', handleResize);
   }, [isLeftOpen, isRightOpen, setLeftOpen, setRightOpen]);
+
+  // Handle manual toggles: clear/update auto-collapse memory
+  const handleToggleLeft = () => {
+    const nextState = !isLeftOpen;
+    setLeftOpen(nextState);
+    autoCollapseRef.current.left = false; // Manually toggled, clear memory
+
+    // If opening left in tablet mode, toggle right to auto-collapse
+    if (nextState && window.innerWidth < 1024 && isRightOpen) {
+      autoCollapseRef.current.right = true;
+      setRightOpen(false);
+    }
+  };
+
+  const handleToggleRight = () => {
+    const nextState = !isRightOpen;
+    setRightOpen(nextState);
+    autoCollapseRef.current.right = false; // Manually toggled, clear memory
+
+    // If opening right in tablet mode, toggle left to auto-collapse
+    if (nextState && window.innerWidth < 1024 && isLeftOpen) {
+      autoCollapseRef.current.left = true;
+      setLeftOpen(false);
+    }
+  };
 
   // ==========================================================================
   // OPTIMIZED INITIALIZATION - Parallel with Priority
@@ -255,22 +315,8 @@ const App: React.FC = () => {
       <Header
         isLeftOpen={isLeftOpen}
         isRightOpen={isRightOpen}
-        onToggleLeft={() => {
-          const nextState = !isLeftOpen;
-          setLeftOpen(nextState);
-          // If auto-closing right panel on medium screens (<1024px)
-          if (nextState && window.innerWidth < 1024) {
-            setRightOpen(false);
-          }
-        }}
-        onToggleRight={() => {
-          const nextState = !isRightOpen;
-          setRightOpen(nextState);
-          // If auto-closing left panel on medium screens (<1024px)
-          if (nextState && window.innerWidth < 1024) {
-            setLeftOpen(false);
-          }
-        }}
+        onToggleLeft={handleToggleLeft}
+        onToggleRight={handleToggleRight}
       />
 
       {/* Main Content Area */}
