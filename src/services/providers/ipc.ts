@@ -9,6 +9,10 @@ import type {
   ModelsDto,
   ProjectDto,
   FileContentDto,
+  ToolSettingsDto,
+  MCPServerSettingsDto,
+  ChatCompletionRequestDto,
+  ChatCompletionResponseDto,
 } from '../contracts/dtos';
 
 const notReady = () => {
@@ -35,6 +39,10 @@ export const listCommits = async (): Promise<CommitsDto> => notReady();
 export const listProviders = async (): Promise<ProvidersDto> => notReady();
 
 export const listModels = async (): Promise<ModelsDto> => notReady();
+
+export const sendChat = async (
+  _request: ChatCompletionRequestDto
+): Promise<ChatCompletionResponseDto> => notReady();
 
 export const createProject = async (data: {
   name: string;

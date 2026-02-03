@@ -1,22 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useAIStore } from '../../stores/useAIStore';
-import { AIProviderStatus } from '../../types';
+import { useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
-import { Badge } from '../ui/Badge';
-
-const statusColors: Record<AIProviderStatus, 'success' | 'warning' | 'error'> = {
-  online: 'success',
-  degraded: 'warning',
-  offline: 'error',
-};
 
 export const ProviderDropdown: React.FC = () => {
-  const { providers, selectedProviderId, selectProvider } = useAIStore();
+  const { providerConfigs, selectedProviderId, selectProvider } = useProviderStore();
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const selectedProvider = providers.find((p) => p.id === selectedProviderId);
+  const enabledProviders = providerConfigs.filter((p) => p.isEnabled);
+  const selectedProvider = providerConfigs.find((p) => p.id === selectedProviderId);
 
   const handleSelect = (providerId: string) => {
     selectProvider(providerId);
@@ -44,42 +37,46 @@ export const ProviderDropdown: React.FC = () => {
       {/* Trigger Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors w-[120px]"
+        className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-muted/80 border border-border hover:border-primary/50 transition-colors w-[140px]"
       >
-        <span className="text-xs text-zinc-300 truncate">
-          {selectedProvider?.name ?? 'Provider'}
-        </span>
-        <Icon name="chevron-down" size={10} className="text-zinc-500" />
+        <div className="flex items-center gap-2 min-w-0">
+          <Icon name={selectedProvider?.isLocal ? 'hard-drive' : 'cloud'} size={12} className="text-muted-foreground shrink-0" />
+          <span className="text-xs text-muted-foreground truncate">
+            {selectedProvider?.name ?? 'Select Provider'}
+          </span>
+        </div>
+        <Icon name="chevron-down" size={10} className="text-muted-foreground shrink-0" />
       </button>
 
       {/* Dropdown */}
       {isOpen && (
         <div
           className={cn(
-            'absolute z-50 w-full bottom-full mb-1 bg-zinc-800 border border-zinc-700',
+            'absolute z-50 w-48 bottom-full mb-1 bg-card border border-border',
             'rounded-lg shadow-xl max-h-60 overflow-y-auto',
             'flex flex-col'
           )}
         >
-          {providers.map((provider) => (
+          {enabledProviders.map((provider) => (
             <button
               key={provider.id}
               onClick={() => handleSelect(provider.id)}
               className={cn(
-                'w-full px-3 py-2 text-left text-sm',
+                'w-full px-3 py-2 text-left text-sm flex items-center gap-2',
                 'transition-colors',
                 selectedProviderId === provider.id
-                  ? 'bg-indigo-500 text-white'
-                  : 'text-zinc-300 hover:bg-zinc-700'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent'
               )}
             >
+              <Icon name={provider.isLocal ? 'hard-drive' : 'cloud'} size={14} />
               <span>{provider.name}</span>
             </button>
           ))}
 
-          {providers.length === 0 && (
-            <div className="px-3 py-2 text-sm text-zinc-500">
-              No providers available
+          {enabledProviders.length === 0 && (
+            <div className="px-3 py-2 text-sm text-muted-foreground">
+              No providers configured
             </div>
           )}
         </div>

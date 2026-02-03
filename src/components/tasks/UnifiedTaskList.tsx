@@ -12,17 +12,19 @@ interface UnifiedTaskListProps {
 }
 
 const statusColors: Record<TaskStatus, string> = {
-  Pending: 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20',
-  InProgress: 'bg-indigo-500/10 text-indigo-500 border-indigo-500/20',
+  Pending: 'bg-muted/50 text-muted-foreground border-border',
+  InProgress: 'bg-primary/10 text-primary border-primary/20',
   AwaitingResponse: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
   Completed: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
   Failed: 'bg-red-500/10 text-red-500 border-red-500/20',
+  Blocked: 'bg-orange-500/10 text-orange-500 border-orange-500/20',
 };
 
 const statusOrder: TaskStatus[] = [
   'InProgress',
   'AwaitingResponse',
   'Pending',
+  'Blocked',
   'Completed',
   'Failed',
 ];
@@ -72,7 +74,7 @@ export const UnifiedTaskList: React.FC<UnifiedTaskListProps> = ({
   if (tasks.length === 0) {
     return (
       <div className={cn('flex items-center justify-center h-32', className)}>
-        <div className="text-xs text-zinc-500">No tasks yet</div>
+        <div className="text-xs text-muted-foreground">No tasks yet</div>
       </div>
     );
   }
@@ -83,12 +85,12 @@ export const UnifiedTaskList: React.FC<UnifiedTaskListProps> = ({
         const project = getProjectById(projectId);
         return (
           <div key={projectId} className="space-y-2">
-            <div className="flex items-center gap-2 text-xs text-zinc-500">
-              <Icon name="folder" size={12} className="text-zinc-500" />
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Icon name="folder" size={12} className="text-muted-foreground" />
               <span className="truncate">
                 {project?.name ?? 'Unknown project'}
               </span>
-              <span className="text-zinc-600">•</span>
+              <span className="text-muted-foreground/70">•</span>
               <span>{projectTasks.length} tasks</span>
             </div>
 
@@ -108,8 +110,8 @@ export const UnifiedTaskList: React.FC<UnifiedTaskListProps> = ({
                     className={cn(
                       'w-full text-left px-3 py-2 rounded-lg border transition-all duration-200',
                       isSelected
-                        ? 'bg-indigo-500/10 border-indigo-500/30'
-                        : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
+                        ? 'bg-primary/10 border-primary/30'
+                        : 'bg-card/50 border-border hover:border-primary/30'
                     )}
                   >
                     <div className="flex items-start gap-3">
@@ -121,11 +123,11 @@ export const UnifiedTaskList: React.FC<UnifiedTaskListProps> = ({
                       />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <h3 className="text-xs font-medium text-zinc-100 truncate">
+                          <h3 className="text-xs font-medium text-foreground truncate">
                             {task.title}
                           </h3>
                           {conversation?.is_unread && (
-                            <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
                           )}
                         </div>
                         <div className="flex items-center gap-2 mt-1">
@@ -138,7 +140,7 @@ export const UnifiedTaskList: React.FC<UnifiedTaskListProps> = ({
                             {task.status}
                           </span>
                           {conversation && conversation.message_count > 0 && (
-                            <span className="text-[10px] text-zinc-500 flex items-center gap-1">
+                            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
                               <Icon name="message-square" size={10} />
                               {conversation.message_count}
                             </span>

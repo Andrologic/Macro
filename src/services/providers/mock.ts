@@ -9,6 +9,7 @@ import {
 import { MOCK_CODE_FILES } from '../../mock-data/code-files';
 import { mockProviders, mockModels } from '../../mock-data/ai';
 import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
+import { getProviderConfig } from '../aiConfig';
 import type {
   AppBootstrapDto,
   ConversationsDto,
@@ -18,6 +19,8 @@ import type {
   CommitsDto,
   ProvidersDto,
   ModelsDto,
+  ChatCompletionRequestDto,
+  ChatCompletionResponseDto,
   ProjectDto,
   ToolSettingsDto,
   MCPServerSettingsDto,
@@ -88,6 +91,79 @@ export const listModels = async (providerId?: string): Promise<ModelsDto> => {
     description: model.description,
     capabilities: model.capabilities,
   })) });
+};
+
+export const sendChat = async (
+  request: ChatCompletionRequestDto
+): Promise<ChatCompletionResponseDto> => {
+  const { providerId, modelId, messages } = request;
+  const { apiKey, baseUrl } = await getProviderConfig(providerId);
+
+  if (!apiKey) {
+    throw {
+      code: 'MISSING_API_KEY',
+      message: `Missing API key for provider: ${providerId}`,
+    };
+  }
+
+  if (!baseUrl) {
+    throw {
+      code: 'MISSING_BASE_URL',
+      message: `Missing base URL for provider: ${providerId}`,
+    };
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${apiKey}`,
+  };
+
+  if (providerId === 'openrouter') {
+    if (typeof window !== 'undefined') {
+      headers['HTTP-Referer'] = window.location.origin;
+    }
+    headers['X-Title'] = 'Macro';
+  }
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: modelId,
+      messages: messages.map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+      stream: false,
+    }),
+  });
+
+  let payload: any = null;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const errorMessage =
+      payload?.error?.message ||
+      payload?.message ||
+      `Chat request failed (${response.status})`;
+    throw {
+      code: 'CHAT_REQUEST_FAILED',
+      message: errorMessage,
+      details: payload,
+    };
+  }
+
+  const content = payload?.choices?.[0]?.message?.content ?? '';
+  return {
+    message: {
+      role: 'assistant',
+      content,
+    },
+  };
 };
 
 export const createProject = async (data: {

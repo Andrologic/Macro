@@ -27,12 +27,12 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
   if (!currentPlan) {
     return (
       <aside
-        className="h-full bg-zinc-900 border-l border-zinc-800 flex items-center justify-center"
+        className="h-full bg-card border-l border-border flex items-center justify-center"
         style={{ width: width ? `${width}px` : '320px' }}
       >
         <div className="text-center">
-          <Icon name="git-branch" size={48} className="text-zinc-500 mx-auto mb-4" />
-          <p className="text-zinc-500 text-sm">No plan selected</p>
+          <Icon name="git-branch" size={48} className="text-muted-foreground mx-auto mb-4" />
+          <p className="text-muted-foreground text-sm">No plan selected</p>
         </div>
       </aside>
     );
@@ -45,28 +45,28 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
 
   return (
     <aside
-      className={cn('h-full bg-zinc-900 border-l border-zinc-800 flex flex-col', className)}
+      className={cn('h-full bg-card border-l border-border flex flex-col', className)}
       style={{ width: width ? `${width}px` : '320px' }}
     >
       {/* Header */}
-      <div className="h-12 border-b border-zinc-800 flex items-center justify-between px-4">
-        <h1 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+      <div className="h-12 border-b border-border flex items-center justify-between px-4">
+        <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
           <Icon
             name={panelView === 'tree' ? 'git-branch' : 'git-commit'}
             size={16}
-            className="text-indigo-500"
+            className="text-primary"
           />
           Repository
         </h1>
       </div>
 
       {/* View Toggle */}
-      <div className="h-10 border-b border-zinc-800 flex items-center px-4 gap-2">
+      <div className="h-10 border-b border-border flex items-center px-4 gap-2">
         <button
           onClick={() => setPanelView('tree')}
           className={cn(
             'flex-1 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200',
-            panelView === 'tree' ? 'bg-indigo-500/10 text-indigo-500' : 'text-zinc-400 hover:text-zinc-100'
+            panelView === 'tree' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'
           )}
         >
           <Icon name="git-branch" size={14} className="mr-2" />
@@ -76,7 +76,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
           onClick={() => setPanelView('graph')}
           className={cn(
             'flex-1 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200',
-            panelView === 'graph' ? 'bg-indigo-500/10 text-indigo-500' : 'text-zinc-400 hover:text-zinc-100'
+            panelView === 'graph' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'
           )}
         >
           <Icon name="git-commit" size={14} className="mr-2" />
@@ -141,10 +141,10 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
       </div>
 
       {/* Footer */}
-      <div className="h-12 border-t border-zinc-800 flex items-center justify-between px-4 bg-zinc-900">
+      <div className="h-12 border-t border-border flex items-center justify-between px-4 bg-card">
         <div className="flex items-center gap-2">
-          <Icon name="git-branch" size={14} className="text-zinc-500" />
-          <span className="text-xs text-zinc-500">
+          <Icon name="git-branch" size={14} className="text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">
             {Object.values(currentPlan.predicted_git_trees).reduce(
               (acc, tree) => acc + tree.modified_files_count,
               0

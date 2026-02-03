@@ -1,15 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { Header } from './components/layout/Header';
 import { Footer } from './components/layout/Footer';
-import { LeftPanel } from './components/layout/LeftPanel';
-import { ChatZone } from './components/chat/ChatZone';
-import { RightPanel } from './components/layout/RightPanel';
+import { Toaster } from './components/ui/Toaster';
+import { useWindowRestoration } from './hooks/useWindowRestoration';
 import { PanelResizer } from './components/layout/PanelResizer';
+import { ModeRouter } from './components/layout/ModeRouter';
 import { DiffModal } from './components/modals/DiffModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { AccountModal } from './components/modals/AccountModal';
 import { ProjectModal } from './components/modals/ProjectModal';
 import { ToolsSettingsModal } from './components/modals/ToolsSettingsModal';
+import { ProvidersSettingsModal } from './components/modals/ProvidersSettingsModal';
 import { CodeFileViewerModal } from './components/modals/CodeFileViewerModal';
 import { useAppStore } from './stores/useAppStore';
 import { useChatStore } from './stores/useChatStore';
@@ -17,16 +18,25 @@ import { useTaskStore } from './stores/useTaskStore';
 import { useAIStore } from './stores/useAIStore';
 import { useAuthStore } from './stores/useAuthStore';
 import { useToolsStore } from './stores/useToolsStore';
+import { useProviderStore } from './stores/useProviderStore';
 
 const App: React.FC = () => {
-  const [isLeftOpen, setIsLeftOpen] = useState(true);
-  const [isRightOpen, setIsRightOpen] = useState(true);
+  // Restore window size/position from preferences
+  useWindowRestoration();
+
   const initializeApp = useAppStore((state) => state.initialize);
   const initializeChat = useChatStore((state) => state.initialize);
   const initializeTasks = useTaskStore((state) => state.initialize);
   const initializeAI = useAIStore((state) => state.initialize);
   const initializeTools = useToolsStore((state) => state.loadSettings);
+  const initializeProviders = useProviderStore((state) => state.initialize);
   const checkSession = useAuthStore((state) => state.checkSession);
+  
+  // Panel state from store (persisted)
+  const isLeftOpen = useAppStore((state) => state.isLeftPanelOpen);
+  const isRightOpen = useAppStore((state) => state.isRightPanelOpen);
+  const setLeftOpen = useAppStore((state) => state.setLeftPanelOpen);
+  const setRightOpen = useAppStore((state) => state.setRightPanelOpen);
   const leftPanelWidth = useAppStore((state) => state.leftPanelWidth);
   const rightPanelWidth = useAppStore((state) => state.rightPanelWidth);
   const setLeftPanelWidth = useAppStore((state) => state.setLeftPanelWidth);
@@ -38,8 +48,23 @@ const App: React.FC = () => {
     void initializeTasks();
     void initializeAI();
     void initializeTools();
+    void initializeProviders();
     void checkSession();
-  }, [initializeApp, initializeChat, initializeTasks, initializeAI, initializeTools, checkSession]);
+  }, [initializeApp, initializeChat, initializeTasks, initializeAI, initializeTools, initializeProviders, checkSession]);
+
+  // Global Keyboard Shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // New Chat: Ctrl+N or Cmd+N
+      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+        e.preventDefault();
+        void useChatStore.getState().createConversation('New Conversation', null, null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   return (
     <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr_32px] overflow-hidden">
@@ -47,16 +72,21 @@ const App: React.FC = () => {
       <Header
         isLeftOpen={isLeftOpen}
         isRightOpen={isRightOpen}
-        onToggleLeft={() => setIsLeftOpen((prev) => !prev)}
-        onToggleRight={() => setIsRightOpen((prev) => !prev)}
+        onToggleLeft={() => setLeftOpen(!isLeftOpen)}
+        onToggleRight={() => setRightOpen(!isRightOpen)}
       />
 
       {/* Main Content Area */}
-      <div className="flex overflow-hidden">
-        {/* Left Panel - Projects */}
+      <div className="flex overflow-hidden h-full">
+        {/* Left Panel - Mode-specific content */}
         {isLeftOpen && (
           <>
-            <LeftPanel className="hidden md:flex" width={leftPanelWidth} />
+            <div 
+              className="hidden md:flex flex-col shrink-0 h-full" 
+              style={{ width: leftPanelWidth }}
+            >
+              <ModeRouter panel="left" />
+            </div>
             <PanelResizer
               direction="horizontal"
               onResize={(delta) => setLeftPanelWidth(leftPanelWidth + delta)}
@@ -65,10 +95,12 @@ const App: React.FC = () => {
           </>
         )}
 
-        {/* Center - Chat Zone */}
-        <ChatZone />
+        {/* Center - Chat Zone (all modes use chat in center) */}
+        <div className="flex-1 min-w-0 overflow-hidden h-full">
+          <ModeRouter panel="center" />
+        </div>
 
-        {/* Right Panel - Git Trees */}
+        {/* Right Panel - Mode-specific content */}
         {isRightOpen && (
           <>
             <PanelResizer
@@ -76,7 +108,12 @@ const App: React.FC = () => {
               onResize={(delta) => setRightPanelWidth(rightPanelWidth - delta)}
               className="hidden lg:flex"
             />
-            <RightPanel className="hidden lg:flex" width={rightPanelWidth} />
+            <div 
+              className="hidden lg:flex flex-col shrink-0 h-full" 
+              style={{ width: rightPanelWidth }}
+            >
+              <ModeRouter panel="right" />
+            </div>
           </>
         )}
       </div>
@@ -90,7 +127,11 @@ const App: React.FC = () => {
       <AccountModal />
       <ProjectModal />
       <ToolsSettingsModal />
+      <ProvidersSettingsModal />
       <CodeFileViewerModal />
+
+      {/* Toast Notifications */}
+      <Toaster />
     </div>
   );
 };

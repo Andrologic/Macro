@@ -1,4 +1,5 @@
 mod commands;
+<<<<<<< HEAD
 mod core;
 mod db;
 
@@ -15,6 +16,15 @@ use db::init_db;
 use fs::watcher::init_watcher;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+=======
+mod db;
+mod secrets;
+
+use commands::DbPool;
+use std::sync::Arc;
+use tauri::Manager;
+use tokio::sync::Mutex;
+>>>>>>> feature/frontend
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -30,6 +40,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+<<<<<<< HEAD
         .setup(move |app| {
             use tauri::Manager;
 
@@ -50,10 +61,33 @@ pub fn run() {
             }
 
             tracing::info!("Database initialized successfully");
+=======
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
+        .manage(Arc::new(Mutex::new(None)) as DbPool)
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            let pool_state = app.state::<DbPool>().inner().clone();
+
+            // Initialize database asynchronously
+            tauri::async_runtime::spawn(async move {
+                match db::init_db(&app_handle).await {
+                    Ok(pool) => {
+                        let mut pool_guard = pool_state.lock().await;
+                        *pool_guard = Some(pool);
+                        println!("Database initialized successfully");
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to initialize database: {}", e);
+                    }
+                }
+            });
+>>>>>>> feature/frontend
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+<<<<<<< HEAD
             // Database commands
             commands::db::db_list_conversations,
             commands::db::db_list_messages,
@@ -72,6 +106,23 @@ pub fn run() {
             commands::fs::fs_create_dir,
             commands::fs::fs_copy,
             commands::fs::fs_move,
+=======
+            commands::db_list_conversations,
+            commands::db_get_conversation,
+            commands::db_create_conversation,
+            commands::db_rename_conversation,
+            commands::db_delete_conversation_by_id,
+            commands::db_toggle_pin_conversation,
+            commands::db_list_messages,
+            commands::db_create_message,
+            commands::db_update_message,
+            commands::db_delete_messages_after,
+            commands::db_list_provider_configs,
+            commands::db_get_provider_config,
+            commands::db_update_provider_config,
+            commands::db_create_provider_config,
+            commands::db_delete_provider_config,
+>>>>>>> feature/frontend
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

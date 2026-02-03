@@ -1,15 +1,22 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useAIStore } from '../../stores/useAIStore';
+import { useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 
 export const ModelDropdown: React.FC = () => {
-  const { models, selectedModelId, selectModel, selectedProviderId } = useAIStore();
+  const {
+    selectedProviderId,
+    selectedModelId,
+    modelsByProvider,
+    selectModel,
+    isLoadingModels,
+  } = useProviderStore();
+
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const validModels = models.filter((model) => model.id && model.id.trim() !== '');
-  const selectedModel = validModels.find((m) => m.id === selectedModelId);
+  const models = selectedProviderId ? (modelsByProvider[selectedProviderId] || []) : [];
+  const selectedModel = models.find((m) => m.id === selectedModelId);
 
   const handleSelect = (modelId: string) => {
     selectModel(modelId);
@@ -37,24 +44,34 @@ export const ModelDropdown: React.FC = () => {
       {/* Trigger Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 hover:border-zinc-600 transition-colors"
+        disabled={!selectedProviderId}
+        className={cn(
+          'flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-muted/80 border border-border transition-colors',
+          selectedProviderId
+            ? 'hover:border-primary/50'
+            : 'opacity-50 cursor-not-allowed'
+        )}
       >
-        <span className="text-xs text-zinc-300 truncate max-w-[120px]">
-          {selectedModel?.name ?? 'Model'}
-        </span>
-        <Icon name="chevron-down" size={10} className="text-zinc-500" />
+        {isLoadingModels ? (
+          <Icon name="loader" size={12} className="animate-spin text-muted-foreground" />
+        ) : (
+          <span className="text-xs text-muted-foreground truncate max-w-[140px]">
+            {selectedModel?.name ?? 'Select Model'}
+          </span>
+        )}
+        <Icon name="chevron-down" size={10} className="text-muted-foreground" />
       </button>
 
       {/* Dropdown */}
       {isOpen && (
         <div
           className={cn(
-            'absolute z-50 w-[320px] bottom-full mb-1 bg-zinc-800 border border-zinc-700',
+            'absolute z-50 w-[320px] bottom-full mb-1 bg-card border border-border',
             'rounded-lg shadow-xl max-h-96 overflow-y-auto',
             'flex flex-col'
           )}
         >
-          {validModels.map((model) => (
+          {models.map((model) => (
             <button
               key={model.id}
               onClick={() => handleSelect(model.id)}
@@ -62,22 +79,19 @@ export const ModelDropdown: React.FC = () => {
                 'w-full px-3 py-2 text-left text-sm',
                 'flex flex-col gap-1 transition-colors',
                 selectedModelId === model.id
-                  ? 'bg-indigo-500 text-white'
-                  : 'text-zinc-300 hover:bg-zinc-700'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent'
               )}
             >
-              <span className="font-medium">{model.name}</span>
-              {(model as any).description && (
-                <span className="text-xs opacity-70 ml-6">
-                  {(model as any).description}
-                </span>
-              )}
+              <span className="font-medium">{model.name || model.id}</span>
             </button>
           ))}
 
-          {validModels.length === 0 && (
-            <div className="px-3 py-2 text-sm text-zinc-500">
-              {selectedProviderId ? 'No models available for this provider' : 'Select a provider first'}
+          {models.length === 0 && (
+            <div className="px-3 py-2 text-sm text-muted-foreground">
+              {selectedProviderId
+                ? 'No models available. Test the provider connection.'
+                : 'Select a provider first'}
             </div>
           )}
         </div>

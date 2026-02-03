@@ -4,6 +4,7 @@ import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/Tabs';
 import { GroupCombobox } from '../ui/GroupCombobox';
+import { Select } from '../ui/Select';
 
 export const ProjectModal: React.FC = () => {
   const { projectModalOpen, closeProjectModal, projectGroups, createProject, importProject } = useAppStore();
@@ -141,18 +142,18 @@ export const ProjectModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-[560px] max-h-[85vh] bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+      <div className="w-[560px] max-h-[85vh] bg-card border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col">
         {/* Header */}
-        <header className="h-12 px-4 border-b border-zinc-800 flex items-center justify-between">
+        <header className="h-12 px-4 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Icon name="plus" size={16} className="text-indigo-400" />
-            <span className="text-sm text-zinc-200">Add Project</span>
+            <Icon name="plus" size={16} className="text-primary" />
+            <span className="text-sm text-foreground">Add Project</span>
           </div>
           <button
             onClick={closeProjectModal}
-            className="p-1.5 rounded-lg hover:bg-zinc-900 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-accent transition-colors"
           >
-            <Icon name="x" size={14} className="text-zinc-500" />
+            <Icon name="x" size={14} className="text-muted-foreground" />
           </button>
         </header>
 
@@ -174,7 +175,7 @@ export const ProjectModal: React.FC = () => {
             <TabsContent value="new" className="space-y-4">
               {/* Project Name */}
               <div>
-                <label className="block text-sm text-zinc-300 mb-2">
+                <label className="block text-sm text-muted-foreground mb-2">
                   Project Name <span className="text-red-400">*</span>
                 </label>
                 <input
@@ -185,25 +186,25 @@ export const ProjectModal: React.FC = () => {
                     setNewProjectError('');
                   }}
                   placeholder="e.g., My Awesome Project"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-indigo-500"
+                  className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
                 />
               </div>
 
               {/* Description */}
               <div>
-                <label className="block text-sm text-zinc-300 mb-2">Description</label>
+                <label className="block text-sm text-muted-foreground mb-2">Description</label>
                 <textarea
                   value={newProjectDescription}
                   onChange={(e) => setNewProjectDescription(e.target.value)}
                   placeholder="Brief description of your project..."
                   rows={3}
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 resize-none"
+                  className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary resize-none"
                 />
               </div>
 
               {/* Group */}
               <div>
-                <label className="block text-sm text-zinc-300 mb-2">Group</label>
+                <label className="block text-sm text-muted-foreground mb-2">Group</label>
                 <GroupCombobox
                   projectGroups={projectGroups}
                   selectedGroupId={newProjectGroup}
@@ -213,24 +214,24 @@ export const ProjectModal: React.FC = () => {
 
               {/* Local Path (Optional) */}
               <div>
-                <label className="block text-sm text-zinc-300 mb-2">Local Path (Optional)</label>
+                <label className="block text-sm text-muted-foreground mb-2">Local Path (Optional)</label>
                 <div className="relative">
                   <input
                     type="text"
                     value={newProjectPath}
                     onChange={(e) => setNewProjectPath(e.target.value)}
                     placeholder="e.g., /home/user/projects/my-project"
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-indigo-500"
+                    className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
                   />
                   <button
                     type="button"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 bg-zinc-700 rounded text-xs text-zinc-400 hover:bg-zinc-600 transition-colors"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 bg-accent rounded text-xs text-muted-foreground hover:bg-accent/80 transition-colors"
                     disabled
                   >
                     Browse
                   </button>
                 </div>
-                <p className="mt-1 text-xs text-zinc-500">
+                <p className="mt-1 text-xs text-muted-foreground">
                   Leave empty to use default location
                 </p>
               </div>
@@ -248,7 +249,7 @@ export const ProjectModal: React.FC = () => {
             <TabsContent value="import" className="space-y-4">
               {/* Git URL */}
               <div>
-                <label className="block text-sm text-zinc-300 mb-2">
+                <label className="block text-sm text-muted-foreground mb-2">
                   Git Repository URL <span className="text-red-400">*</span>
                 </label>
                 <input
@@ -256,16 +257,16 @@ export const ProjectModal: React.FC = () => {
                   value={gitUrl}
                   onChange={(e) => handleGitUrlChange(e.target.value)}
                   placeholder="https://github.com/owner/repo.git"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 font-mono"
+                  className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary font-mono"
                 />
-                <p className="mt-1 text-xs text-zinc-500">
+                <p className="mt-1 text-xs text-muted-foreground">
                   Supports GitHub, GitLab, and other Git providers
                 </p>
               </div>
 
               {/* Project Name */}
               <div>
-                <label className="block text-sm text-zinc-300 mb-2">
+                <label className="block text-sm text-muted-foreground mb-2">
                   Project Name <span className="text-red-400">*</span>
                 </label>
                 <input
@@ -276,28 +277,27 @@ export const ProjectModal: React.FC = () => {
                     setGitError('');
                   }}
                   placeholder="Auto-extracted from URL"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-indigo-500"
+                  className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
                 />
               </div>
 
               {/* Branch */}
               <div>
-                <label className="block text-sm text-zinc-300 mb-2">Branch</label>
-                <select
+                <Select
+                  label="Branch"
                   value={gitBranch}
                   onChange={(e) => setGitBranch(e.target.value)}
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-indigo-500"
                 >
                   <option value="main">main</option>
                   <option value="master">master</option>
                   <option value="develop">develop</option>
                   <option value="custom">Custom...</option>
-                </select>
+                </Select>
               </div>
 
               {/* Group */}
               <div>
-                <label className="block text-sm text-zinc-300 mb-2">Group</label>
+                <label className="block text-sm text-muted-foreground mb-2">Group</label>
                 <GroupCombobox
                   projectGroups={projectGroups}
                   selectedGroupId={gitGroup}
@@ -307,24 +307,24 @@ export const ProjectModal: React.FC = () => {
 
               {/* Local Path (Optional) */}
               <div>
-                <label className="block text-sm text-zinc-300 mb-2">Clone To (Optional)</label>
+                <label className="block text-sm text-muted-foreground mb-2">Clone To (Optional)</label>
                 <div className="relative">
                   <input
                     type="text"
                     value={gitPath}
                     onChange={(e) => setGitPath(e.target.value)}
                     placeholder="e.g., /home/user/projects/my-repo"
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-indigo-500"
+                    className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
                   />
                   <button
                     type="button"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 bg-zinc-700 rounded text-xs text-zinc-400 hover:bg-zinc-600 transition-colors"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 bg-accent rounded text-xs text-muted-foreground hover:bg-accent/80 transition-colors"
                     disabled
                   >
                     Browse
                   </button>
                 </div>
-                <p className="mt-1 text-xs text-zinc-500">
+                <p className="mt-1 text-xs text-muted-foreground">
                   Leave empty to clone to default location
                 </p>
               </div>
@@ -341,7 +341,7 @@ export const ProjectModal: React.FC = () => {
         </div>
 
         {/* Footer */}
-        <footer className="h-14 px-4 border-t border-zinc-800 flex items-center justify-end gap-3 bg-zinc-900/50">
+        <footer className="h-14 px-4 border-t border-border flex items-center justify-end gap-3 bg-card/50">
           <Button
             variant="secondary"
             size="sm"

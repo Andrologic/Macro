@@ -17,8 +17,11 @@ import {
   Settings,
   GitBranch,
   GitCommit,
+  GitMerge,
+  GitCompare,
   Terminal,
   MessageSquare,
+  MessageCircle,
   Check,
   X,
   Loader2,
@@ -27,6 +30,7 @@ import {
   AlertCircle,
   Clock,
   MoreHorizontal,
+  MoreVertical,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -43,6 +47,40 @@ import {
   User,
   Download,
   RotateCcw,
+  Edit2,
+  Trash2,
+  Eye,
+  EyeOff,
+  HardDrive,
+  Cloud,
+  Copy,
+  Play,
+  Pause,
+  Circle,
+  CircleDot,
+  CheckCircle,
+  Lock,
+  Unlock,
+  Pin,
+  PinOff,
+  Archive,
+  Compass,
+  Map,
+  Network,
+  FolderGit2,
+  Upload,
+  Link,
+  Clipboard,
+  Camera,
+  LayoutGrid,
+  RefreshCw,
+  Share,
+  Paperclip,
+  PlusSquare,
+  Image,
+  Flag,
+  Target,
+  Milestone,
 } from 'lucide-react';
 
 export type IconName =
@@ -51,6 +89,7 @@ export type IconName =
   | 'chevron-left'
   | 'minus'
   | 'maximize'
+  | 'square'
   | 'check-square'
   | 'list-todo'
   | 'list'
@@ -63,8 +102,11 @@ export type IconName =
   | 'settings'
   | 'git-branch'
   | 'git-commit'
+  | 'git-merge'
+  | 'git-compare'
   | 'terminal'
   | 'message-square'
+  | 'message-circle'
   | 'check'
   | 'x'
   | 'loader'
@@ -73,6 +115,7 @@ export type IconName =
   | 'alert-circle'
   | 'clock'
   | 'more-horizontal'
+  | 'more-vertical'
   | 'panel-left-close'
   | 'panel-left-open'
   | 'panel-right-close'
@@ -88,20 +131,56 @@ export type IconName =
   | 'cpu'
   | 'user'
   | 'download'
-  | 'rotate-ccw';
+  | 'rotate-ccw'
+  | 'edit'
+  | 'trash'
+  | 'eye'
+  | 'eye-off'
+  | 'hard-drive'
+  | 'cloud'
+  | 'copy'
+  | 'play'
+  | 'pause'
+  | 'circle'
+  | 'circle-dot'
+  | 'check-circle'
+  | 'lock'
+  | 'unlock'
+  | 'pin'
+  | 'pin-off'
+  | 'archive'
+  | 'compass'
+  | 'map'
+  | 'network'
+  | 'folder-git-2'
+  | 'upload'
+  | 'link'
+  | 'clipboard'
+  | 'camera'
+  | 'layout-grid'
+  | 'refresh-cw'
+  | 'share'
+  | 'paperclip'
+  | 'plus-square'
+  | 'image'
+  | 'flag'
+  | 'target'
+  | 'milestone';
 
 interface IconProps {
   name: IconName;
   size?: number | string;
   className?: string;
+  style?: React.CSSProperties;
 }
 
-const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; className?: string }>> = {
+const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; className?: string; style?: React.CSSProperties }>> = {
   'chevron-right': ChevronRight,
   'chevron-down': ChevronDown,
   'chevron-left': ChevronLeft,
   'minus': Minus,
   'maximize': Square,
+  'square': Square,
   'check-square': CheckSquare,
   'list-todo': ListTodo,
   'list': List,
@@ -114,8 +193,11 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'settings': Settings,
   'git-branch': GitBranch,
   'git-commit': GitCommit,
+  'git-merge': GitMerge,
+  'git-compare': GitCompare,
   'terminal': Terminal,
   'message-square': MessageSquare,
+  'message-circle': MessageCircle,
   'check': Check,
   'x': X,
   'loader': Loader2,
@@ -124,6 +206,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'alert-circle': AlertCircle,
   'clock': Clock,
   'more-horizontal': MoreHorizontal,
+  'more-vertical': MoreVertical,
   'panel-left-close': PanelLeftClose,
   'panel-left-open': PanelLeftOpen,
   'panel-right-close': PanelRightClose,
@@ -140,11 +223,45 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'user': User,
   'download': Download,
   'rotate-ccw': RotateCcw,
+  'edit': Edit2,
+  'trash': Trash2,
+  'eye': Eye,
+  'eye-off': EyeOff,
+  'hard-drive': HardDrive,
+  'cloud': Cloud,
+  'copy': Copy,
+  'play': Play,
+  'pause': Pause,
+  'circle': Circle,
+  'circle-dot': CircleDot,
+  'check-circle': CheckCircle,
+  'lock': Lock,
+  'unlock': Unlock,
+  'pin': Pin,
+  'pin-off': PinOff,
+  'archive': Archive,
+  'compass': Compass,
+  'map': Map,
+  'network': Network,
+  'folder-git-2': FolderGit2,
+  'upload': Upload,
+  'link': Link,
+  'clipboard': Clipboard,
+  'camera': Camera,
+  'layout-grid': LayoutGrid,
+  'refresh-cw': RefreshCw,
+  'share': Share,
+  'paperclip': Paperclip,
+  'plus-square': PlusSquare,
+  'image': Image,
+  'flag': Flag,
+  'target': Target,
+  'milestone': Milestone,
 };
 
-export const Icon: React.FC<IconProps> = ({ name, size = 16, className }) => {
+export const Icon: React.FC<IconProps> = ({ name, size = 16, className, style }) => {
   const IconComponent = iconMap[name];
   if (!IconComponent) return null;
 
-  return <IconComponent size={size} className={className} />;
+  return <IconComponent size={size} className={className} style={style} />;
 };

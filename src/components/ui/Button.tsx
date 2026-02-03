@@ -28,11 +28,11 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     const baseStyles = 'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]';
 
     const variants = {
-      primary: 'bg-accent-primary text-white hover:bg-accent-primary/90',
-      secondary: 'bg-elevated text-text-primary hover:bg-border',
-      ghost: 'text-text-secondary hover:text-text-primary hover:bg-elevated',
-      success: 'bg-accent-success text-white hover:bg-accent-success/90',
-      error: 'bg-accent-error text-white hover:bg-accent-error/90',
+      primary: 'bg-primary text-primary-foreground hover:bg-primary/90',
+      secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/90',
+      ghost: 'text-muted-foreground hover:text-foreground hover:bg-accent',
+      success: 'bg-emerald-500 text-white hover:bg-emerald-500/90',
+      error: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
     };
 
     const sizes = {
