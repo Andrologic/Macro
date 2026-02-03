@@ -15,6 +15,7 @@ mod workspace;
 use commands::DbPool;
 use core::{init_logging, load_config};
 use fs::watcher::init_watcher;
+use git::GitState;
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -36,6 +37,7 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(Arc::new(Mutex::new(None)) as DbPool)
+        .manage(GitState::new())
         .setup(move |app| {
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
@@ -92,6 +94,14 @@ pub fn run() {
             commands::fs::fs_create_dir,
             commands::fs::fs_copy,
             commands::fs::fs_move,
+            // Git commands
+            commands::git::git_status,
+            commands::git::git_log,
+            commands::git::git_branch_list,
+            commands::git::git_checkout,
+            commands::git::git_commit,
+            commands::git::git_diff,
+            commands::git::git_get_tree,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

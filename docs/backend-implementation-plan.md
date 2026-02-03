@@ -7,13 +7,17 @@ Ce document décrit **tout** ce que l’implémenteur doit faire pour construire
 - Gérer **FS + Git + DB locale + Indexation + IA**.
 - Être **local-first**, robuste, asynchrone, testable et sécurisé.
 
-## 2) État actuel du backend
+## 2) État actuel du backend (févr 2026)
 - `src-tauri/src/main.rs` : appelle `macro_lib::run()`.
-- `src-tauri/src/lib.rs` : un seul command `greet()` + `tauri_plugin_opener`.
-- `src-tauri/Cargo.toml` : seulement `tauri`, `serde`, `serde_json`.
-- `src-tauri/capabilities/default.json` : permissions `core:default` + `opener:default`.
+- `src-tauri/src/lib.rs` : logging + config, init DB async, watcher FS, commandes DB/FS enregistrées, plugins `opener/http/store`.
+- Modules présents : `core/`, `db/`, `fs/`, `ai/`, `index/`, `workspace/`.
+- Le module Git existe mais reste un **placeholder** (pas de commandes Git exposées côté IPC).
 
-➡️ **Tout le backend est à construire.**
+➡️ **Le backend est partiellement en place (DB/FS), Git/Index/IA restent à implémenter.**
+
+### État côté frontend (IPC)
+- Le provider IPC du frontend est un stub et l’app utilise encore le provider `mock` par défaut (via `VITE_DATA_PROVIDER`).
+- Aucune commande Git n’est encore consommée côté IPC.
 
 ## 3) Principes d’architecture
 - **Modulaire** : un module Rust par domaine (FS, Git, DB, IA…).
@@ -153,7 +157,7 @@ Accès sécurisé à l’arborescence du workspace + watchers.
 - Ajout permissions Tauri nécessaires dans `capabilities`.
 
 ## 10) Git (libgit2)
-> **⚠️ TÂCHE CRITIQUE** : À implémenter manuellement sans assistance IA. Nécessite une expertise approfondie en libgit2 et gestion d'erreurs complexes.
+> Nécessite une expertise approfondie en libgit2 et gestion d'erreurs complexes.
 
 ### Objectif
 Opérations Git robustes et rapides (multi-repo).
@@ -162,6 +166,9 @@ Opérations Git robustes et rapides (multi-repo).
 - `git_status`, `git_log`, `git_branch_list`, `git_checkout`, `git_commit`, `git_diff`.
 - Support multi-repo : chaque projet = repo.
 - Abstraction par repository path.
+- **Worktrees** : utiliser `git worktree` pour isoler une tâche par branche en **création automatique** (worktree par task) tout en conservant un repo principal.
+- Racine worktrees : `.macro/worktrees/` ; nommage `task<id>`.
+- Résolution repo/worktree : accepter un path de worktree et retrouver le repo parent + HEAD associé.
 
 ### Dépendances
 - `git2`
@@ -207,6 +214,7 @@ Support multi-repo, metadata, relations entre projets.
 - `workspace_open`, `workspace_list_projects`, `workspace_get_metadata`.
 - Charger `.project-meta.yaml` (si présent) + fallback.
 - Stockage local des relations dans SQLite.
+- Associer `task_id` ↔ `worktree_path` pour exécuter des tâches en parallèle.
 
 ## 14) Sécurité Tauri
 ### Tâches
@@ -216,22 +224,25 @@ Support multi-repo, metadata, relations entre projets.
 
 ## 15) Plan d’implémentation (phases)
 
-> **⚠️ NOTE IMPORTANTE** : Les phases 2 (FS) et 3 (Git) sont des **tâches critiques** à implémenter manuellement sans assistance IA. Elles nécessitent une expertise spécialisée en sécurité système et gestion d'erreurs complexes.
+> **⚠️ NOTE IMPORTANTE** : Les phases 2 (FS) et 3 (Git) sont des **tâches critiques** qui nécessitent une expertise spécialisée en sécurité système et gestion d'erreurs complexes.
 
 ### Phase 0 — Bootstrap technique
 - Ajouter dépendances Rust de base.
 - Créer modules + wiring `lib.rs`.
 - Supprimer `greet()` après création des commandes réelles.
+- **Statut** : modules, wiring, plugins et init DB/FS déjà en place.
 
 ### Phase 1 — Core + DB + Logging
 - Implémenter `BackendError`.
 - Init logging.
 - Setup SQLite + migrations.
 - Commandes DB basiques.
+- **Statut** : DB/commands de base présentes; `BackendError` reste à normaliser.
 
 ### Phase 2 — FS + Watchers
 - Commandes FS.
 - Watcher file system.
+- **Statut** : commandes FS + watcher présents; sécurisation/permissions à valider.
 
 ### Phase 3 — Git
 - Wrapper libgit2.

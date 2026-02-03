@@ -463,7 +463,7 @@ Le graphe git de chaque projet montre :
 
 ### Interaction avec la Branche `.macro`
 
-La branche `.macro` est **indépendante** du workflow Git Flow des branches de code. Elle sert uniquement à stocker :
+La branche `.macro` est **indépendante** du workflow Git Flow des branches de code et **ne doit pas être gérée** par les mêmes règles (merge/rebase/release). Elle sert uniquement à stocker :
 
 - **Les plans** de développement pour chaque branche de code (`main`, `develop`, `feature/*`, `release/*`, `hotfix/*`)
 - **Les tâches** planifiées et leur état (Planned, In Progress, Success, Failed)
