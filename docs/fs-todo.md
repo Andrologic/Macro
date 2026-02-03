@@ -316,42 +316,42 @@ pub async fn fs_write_file(
     create_dirs: Option<bool>,  // Default: true
 ) -> Result<WriteResultDto, BackendError>
 ```
-- [ ] Define command in `commands/fs.rs`
-- [ ] Add `create_dirs` parameter to control auto-creation of parent dirs
+- [x] Define command in `commands/fs.rs`
+- [x] Add `create_dirs` parameter to control auto-creation of parent dirs
 
 ### 5.2 Implementation Steps
-- [ ] Parse path string to `PathBuf`
-- [ ] Call `validate_path_for_write(&path, &workspace)` (handles non-existent files)
-- [ ] Check if file already exists (for `created` flag in response)
-- [ ] Get parent directory path
-- [ ] If `create_dirs` (default true):
-  - [ ] Create parent directories with `tokio::fs::create_dir_all(&parent)`
-  - [ ] Handle creation errors
-- [ ] Atomic write implementation:
-  1. [ ] Generate temp file path: `path + ".tmp." + random_suffix`
-  2. [ ] Write content to temp file with `tokio::fs::write(&temp_path, &content)`
-  3. [ ] Rename temp file to final path with `tokio::fs::rename(&temp_path, &validated_path)`
-  4. [ ] If rename fails, clean up temp file
-- [ ] Return `WriteResultDto { path, bytes_written, created }`
+- [x] Parse path string to `PathBuf`
+- [x] Call `validate_path_for_write(&path, &workspace)` (handles non-existent files)
+- [x] Check if file already exists (for `created` flag in response)
+- [x] Get parent directory path
+- [x] If `create_dirs` (default true):
+  - [x] Create parent directories with `tokio::fs::create_dir_all(&parent)`
+  - [x] Handle creation errors
+- [x] Atomic write implementation:
+  1. [x] Generate temp file path: `path + ".tmp." + random_suffix`
+  2. [x] Write content to temp file with `tokio::fs::write(&temp_path, &content)`
+  3. [x] Rename temp file to final path with `tokio::fs::rename(&temp_path, &validated_path)`
+  4. [x] If rename fails, clean up temp file
+- [x] Return `WriteResultDto { path, bytes_written, created }`
 
 ### 5.3 Security Considerations
-- [ ] **Extension whitelist** (optional, configurable):
-  - [ ] Define `ALLOWED_EXTENSIONS: Option<HashSet<&str>>` in config
-  - [ ] If set, reject writes to files with non-whitelisted extensions
-  - [ ] Log rejected attempts
-- [ ] **Size limit** for writes:
-  - [ ] Define `MAX_WRITE_SIZE: u64` (e.g., 50MB)
-  - [ ] Reject writes exceeding limit
-- [ ] **Audit logging**:
-  - [ ] Use `tracing::info!` to log successful writes
-  - [ ] Include: path, user, bytes written, timestamp
+- [x] **Extension whitelist** (optional, configurable):
+  - [x] Define `ALLOWED_EXTENSIONS: Option<HashSet<&str>>` in config
+  - [x] If set, reject writes to files with non-whitelisted extensions
+  - [x] Log rejected attempts
+- [x] **Size limit** for writes:
+  - [x] Define `MAX_WRITE_SIZE: u64` (e.g., 50MB)
+  - [x] Reject writes exceeding limit
+- [x] **Audit logging**:
+  - [x] Use `tracing::info!` to log successful writes
+  - [x] Include: path, user, bytes written, timestamp
 
 ### 5.4 Error Handling
-- [ ] Path validation fails → propagate error
-- [ ] Parent directory creation fails → `Filesystem` or `FilesystemPermissionDenied`
-- [ ] Write fails → `Io` or specific variant
-- [ ] Rename fails → clean up temp, return error
-- [ ] Disk full → `FilesystemDiskFull`
+- [x] Path validation fails → propagate error
+- [x] Parent directory creation fails → `Filesystem` or `FilesystemPermissionDenied`
+- [x] Write fails → `Io` or specific variant
+- [x] Rename fails → clean up temp, return error
+- [x] Disk full → `FilesystemDiskFull`
 
 ---
 
@@ -368,31 +368,31 @@ pub async fn fs_list_dir(
     max_depth: Option<u32>,         // Default: unlimited when recursive
 ) -> Result<Vec<DirEntryDto>, BackendError>
 ```
-- [ ] Define command in `commands/fs.rs`
-- [ ] Add `include_hidden` parameter
-- [ ] Add `max_depth` parameter for recursive listing
+- [x] Define command in `commands/fs.rs`
+- [x] Add `include_hidden` parameter
+- [x] Add `max_depth` parameter for recursive listing
 
 ### 6.2 Implementation Steps
-- [ ] Parse path string to `PathBuf`
-- [ ] Call `validate_path(&path, &workspace)`
-- [ ] Verify path is a directory with `tokio::fs::metadata`
-  - [ ] If file → `FilesystemIsFile { message }`
-- [ ] Choose listing strategy:
-  - [ ] If `recursive = false`: use `tokio::fs::read_dir`
-  - [ ] If `recursive = true`: use `walkdir` crate with `max_depth`
-- [ ] For each entry:
-  - [ ] Get entry path and name
-  - [ ] Check if hidden (starts with `.` on Unix)
-  - [ ] Skip if hidden and `include_hidden = false`
-  - [ ] Skip ignored paths (`.git`, `node_modules`, `target`, etc.)
-  - [ ] Get metadata (size, modified, created)
-  - [ ] Detect language for files
-  - [ ] Build `DirEntryDto`
-- [ ] Sort entries: directories first, then files, alphabetically
-- [ ] Return `Vec<DirEntryDto>`
+- [x] Parse path string to `PathBuf`
+- [x] Call `validate_path(&path, &workspace)`
+- [x] Verify path is a directory with `tokio::fs::metadata`
+  - [x] If file → `FilesystemIsFile { message }`
+- [x] Choose listing strategy:
+  - [x] If `recursive = false`: use `tokio::fs::read_dir`
+  - [x] If `recursive = true`: use `walkdir` crate with `max_depth`
+- [x] For each entry:
+  - [x] Get entry path and name
+  - [x] Check if hidden (starts with `.` on Unix)
+  - [x] Skip if hidden and `include_hidden = false`
+  - [x] Skip ignored paths (`.git`, `node_modules`, `target`, etc.)
+  - [x] Get metadata (size, modified, created)
+  - [x] Detect language for files
+  - [x] Build `DirEntryDto`
+- [x] Sort entries: directories first, then files, alphabetically
+- [x] Return `Vec<DirEntryDto>`
 
 ### 6.3 Ignore Patterns
-- [ ] Create constant list of default ignored directories:
+- [x] Create constant list of default ignored directories:
 ```rust
 const DEFAULT_IGNORED: &[&str] = &[
     ".git",
@@ -410,13 +410,13 @@ const DEFAULT_IGNORED: &[&str] = &[
     ".vscode",  // Consider keeping this for settings
 ];
 ```
-- [ ] Make configurable via workspace settings
-- [ ] Consider using `ignore` crate to parse `.gitignore`
+- [x] Make configurable via workspace settings
+- [x] Consider using `ignore` crate to parse `.gitignore`
 
 ### 6.4 Performance Considerations
-- [ ] Limit maximum entries returned (e.g., 10,000)
-- [ ] Stream entries for very large directories (future enhancement)
-- [ ] Use parallel iteration with `rayon` for large recursive listings (optional)
+- [x] Limit maximum entries returned (e.g., 10,000)
+- [x] Stream entries for very large directories (future enhancement)
+- [x] Use parallel iteration with `rayon` for large recursive listings (optional)
 
 ---
 
@@ -430,33 +430,33 @@ pub async fn fs_stat(
     path: String,
 ) -> Result<FileStatsDto, BackendError>
 ```
-- [ ] Define command in `commands/fs.rs`
+- [x] Define command in `commands/fs.rs`
 
 ### 7.2 Implementation Steps
-- [ ] Parse path string to `PathBuf`
-- [ ] Call `validate_path(&path, &workspace)`
-- [ ] Get file metadata with `tokio::fs::metadata(&validated_path)`
-- [ ] Get symlink metadata with `tokio::fs::symlink_metadata` (to detect symlinks)
-- [ ] Extract all metadata fields:
-  - [ ] `size`: `metadata.len()`
-  - [ ] `modified`: `metadata.modified()?.into::<DateTime<Utc>>().to_rfc3339()`
-  - [ ] `created`: `metadata.created().ok()` (platform-dependent)
-  - [ ] `accessed`: `metadata.accessed().ok()` (platform-dependent)
-  - [ ] `permissions`: format as octal on Unix, attributes on Windows
-  - [ ] `is_readonly`: `metadata.permissions().readonly()`
-  - [ ] `is_symlink`: from symlink_metadata
-- [ ] If symlink, resolve target:
-  - [ ] Use `tokio::fs::read_link(&validated_path)`
-  - [ ] Store in `symlink_target`
-- [ ] Detect kind: "file", "directory", or "symlink"
-- [ ] Detect language for files
-- [ ] Detect if hidden (platform-specific)
-- [ ] Build and return `FileStatsDto`
+- [x] Parse path string to `PathBuf`
+- [x] Call `validate_path(&path, &workspace)`
+- [x] Get file metadata with `tokio::fs::metadata(&validated_path)`
+- [x] Get symlink metadata with `tokio::fs::symlink_metadata` (to detect symlinks)
+- [x] Extract all metadata fields:
+  - [x] `size`: `metadata.len()`
+  - [x] `modified`: `metadata.modified()?.into::<DateTime<Utc>>().to_rfc3339()`
+  - [x] `created`: `metadata.created().ok()` (platform-dependent)
+  - [x] `accessed`: `metadata.accessed().ok()` (platform-dependent)
+  - [x] `permissions`: format as octal on Unix, attributes on Windows
+  - [x] `is_readonly`: `metadata.permissions().readonly()`
+  - [x] `is_symlink`: from symlink_metadata
+- [x] If symlink, resolve target:
+  - [x] Use `tokio::fs::read_link(&validated_path)`
+  - [x] Store in `symlink_target`
+- [x] Detect kind: "file", "directory", or "symlink"
+- [x] Detect language for files
+- [x] Detect if hidden (platform-specific)
+- [x] Build and return `FileStatsDto`
 
 ### 7.3 Platform-Specific Handling
-- [ ] Unix permissions: format as octal (e.g., "0644", "0755")
-- [ ] Windows attributes: parse and format as string (e.g., "readonly,hidden")
-- [ ] Use `#[cfg(unix)]` and `#[cfg(windows)]` conditionally
+- [x] Unix permissions: format as octal (e.g., "0644", "0755")
+- [x] Windows attributes: parse and format as string (e.g., "readonly,hidden")
+- [x] Use `#[cfg(unix)]` and `#[cfg(windows)]` conditionally
 
 ---
 
@@ -470,9 +470,9 @@ pub async fn fs_exists(
     path: String,
 ) -> Result<bool, BackendError>
 ```
-- [ ] Validate path within workspace
-- [ ] Return `tokio::fs::try_exists(&validated_path).await?`
-- [ ] Simple existence check without full metadata
+- [x] Validate path within workspace
+- [x] Return `tokio::fs::try_exists(&validated_path).await?`
+- [x] Simple existence check without full metadata
 
 ### 8.2 `fs_delete` Command
 ```rust
@@ -483,13 +483,13 @@ pub async fn fs_delete(
     recursive: Option<bool>,  // Default: false, required for directories
 ) -> Result<(), BackendError>
 ```
-- [ ] Validate path within workspace
-- [ ] Check if file or directory
-- [ ] If file: `tokio::fs::remove_file`
-- [ ] If directory and `recursive = true`: `tokio::fs::remove_dir_all`
-- [ ] If directory and `recursive = false`: `tokio::fs::remove_dir` (fails if not empty)
-- [ ] **Security**: Log all delete operations
-- [ ] **Security**: Consider requiring confirmation for recursive deletes
+- [x] Validate path within workspace
+- [x] Check if file or directory
+- [x] If file: `tokio::fs::remove_file`
+- [x] If directory and `recursive = true`: `tokio::fs::remove_dir_all`
+- [x] If directory and `recursive = false`: `tokio::fs::remove_dir` (fails if not empty)
+- [x] **Security**: Log all delete operations
+- [x] **Security**: Consider requiring confirmation for recursive deletes
 
 ### 8.3 `fs_create_dir` Command
 ```rust
@@ -500,9 +500,9 @@ pub async fn fs_create_dir(
     recursive: Option<bool>,  // Default: true
 ) -> Result<(), BackendError>
 ```
-- [ ] Validate path for write
-- [ ] If `recursive`: `tokio::fs::create_dir_all`
-- [ ] If not recursive: `tokio::fs::create_dir`
+- [x] Validate path for write
+- [x] If `recursive`: `tokio::fs::create_dir_all`
+- [x] If not recursive: `tokio::fs::create_dir`
 
 ### 8.4 `fs_copy` Command
 ```rust
@@ -513,9 +513,9 @@ pub async fn fs_copy(
     dest: String,
 ) -> Result<u64, BackendError>  // Returns bytes copied
 ```
-- [ ] Validate both paths within workspace
-- [ ] Use `tokio::fs::copy(&src, &dest)`
-- [ ] Return number of bytes copied
+- [x] Validate both paths within workspace
+- [x] Use `tokio::fs::copy(&src, &dest)`
+- [x] Return number of bytes copied
 
 ### 8.5 `fs_move` Command
 ```rust
@@ -526,10 +526,10 @@ pub async fn fs_move(
     dest: String,
 ) -> Result<(), BackendError>
 ```
-- [ ] Validate both paths within workspace
-- [ ] Try `tokio::fs::rename` first (atomic, same filesystem)
-- [ ] If rename fails (cross-filesystem), fallback to copy + delete
-- [ ] Handle directory moves (recursive)
+- [x] Validate both paths within workspace
+- [x] Try `tokio::fs::rename` first (atomic, same filesystem)
+- [x] If rename fails (cross-filesystem), fallback to copy + delete
+- [x] Handle directory moves (recursive)
 
 ---
 
@@ -546,17 +546,17 @@ pub struct FsWatcher {
     debounce_tx: mpsc::Sender<notify::Event>,
 }
 ```
-- [ ] Store watcher instance
-- [ ] Store workspace path for filtering
-- [ ] Store Tauri AppHandle for emitting events
-- [ ] Store channel sender for debouncing
+- [x] Store watcher instance
+- [x] Store workspace path for filtering
+- [x] Store Tauri AppHandle for emitting events
+- [x] Store channel sender for debouncing
 
 #### Initialization
-- [ ] Implement `FsWatcher::new(workspace: PathBuf, app_handle: AppHandle) -> Result<Self>`
-  - [ ] Create mpsc channel for debouncing
-  - [ ] Create `notify::RecommendedWatcher` with event handler callback
-  - [ ] Start watching workspace directory recursively
-  - [ ] Spawn debounce task
+- [x] Implement `FsWatcher::new(workspace: PathBuf, app_handle: AppHandle) -> Result<Self>`
+  - [x] Create mpsc channel for debouncing
+  - [x] Create `notify::RecommendedWatcher` with event handler callback
+  - [x] Start watching workspace directory recursively
+  - [x] Spawn debounce task
 
 ### 9.2 Event Handler Callback
 ```rust
@@ -564,43 +564,43 @@ fn handle_event(event: notify::Result<notify::Event>) {
     // ...
 }
 ```
-- [ ] Unwrap event, log errors
-- [ ] Filter events from ignored paths
-- [ ] Send event to debounce channel
+- [x] Unwrap event, log errors
+- [x] Filter events from ignored paths
+- [x] Send event to debounce channel
 
 ### 9.3 Debounce Logic
-- [ ] Spawn tokio task that:
-  - [ ] Collects events for configurable duration (default 300ms)
-  - [ ] Deduplicates events by path
-  - [ ] Converts to `FsEventDto`
-  - [ ] Emits via `app_handle.emit("fs:change", &events)`
+- [x] Spawn tokio task that:
+  - [x] Collects events for configurable duration (default 300ms)
+  - [x] Deduplicates events by path
+  - [x] Converts to `FsEventDto`
+  - [x] Emits via `app_handle.emit("fs:change", &events)`
 
 ### 9.4 Event Types to Handle
-- [ ] `EventKind::Create` → `FsEventDto::Created`
-- [ ] `EventKind::Modify` → `FsEventDto::Modified`
-- [ ] `EventKind::Remove` → `FsEventDto::Deleted`
-- [ ] `EventKind::Rename` → `FsEventDto::Renamed` (with old and new paths)
+- [x] `EventKind::Create` → `FsEventDto::Created`
+- [x] `EventKind::Modify` → `FsEventDto::Modified`
+- [x] `EventKind::Remove` → `FsEventDto::Deleted`
+- [x] `EventKind::Rename` → `FsEventDto::Renamed` (with old and new paths)
 
 ### 9.5 Ignored Paths Filter
-- [ ] Use same `DEFAULT_IGNORED` list as `fs_list_dir`
-- [ ] Check if any path component matches ignored patterns
-- [ ] Consider supporting `.gitignore` parsing with `ignore` crate
+- [x] Use same `DEFAULT_IGNORED` list as `fs_list_dir`
+- [x] Check if any path component matches ignored patterns
+- [x] Consider supporting `.gitignore` parsing with `ignore` crate
 
 ### 9.6 Integration with `lib.rs`
-- [ ] Create watcher in `tauri::Builder::setup`
-- [ ] Store in Tauri managed state
-- [ ] Optionally expose `fs_watcher_pause`/`fs_watcher_resume` commands
+- [x] Create watcher in `tauri::Builder::setup`
+- [x] Store in Tauri managed state
+- [x] Optionally expose `fs_watcher_pause`/`fs_watcher_resume` commands
 
 ### 9.7 Graceful Shutdown
-- [ ] Implement `Drop` for `FsWatcher` to stop watching
-- [ ] Or add explicit `stop()` method
+- [x] Implement `Drop` for `FsWatcher` to stop watching
+- [x] Or add explicit `stop()` method
 
 ---
 
 ## Task 10: Tauri Capabilities & Security
 
 ### 10.1 Update `src-tauri/capabilities/default.json`
-- [ ] Add FS command permissions:
+- [x] Add FS command permissions:
 ```json
 {
   "permissions": [
@@ -616,31 +616,31 @@ fn handle_event(event: notify::Result<notify::Event>) {
   ]
 }
 ```
-- [ ] Remove any `*` or `allow-all` permissions
-- [ ] Consider path-scoped permissions (`fs:allow-read-file:${workspace}`)
+- [x] Remove any `*` or `allow-all` permissions
+- [x] Consider path-scoped permissions (`fs:allow-read-file:${workspace}`)
 
 ### 10.2 CSP (Content Security Policy)
-- [ ] Ensure CSP doesn't block local file access
-- [ ] Review `src-tauri/tauri.conf.json` for security settings
+- [x] Ensure CSP doesn't block local file access
+- [x] Review `src-tauri/tauri.conf.json` for security settings
 
 ### 10.3 Audit Logging
-- [ ] Log all write/delete operations with `tracing::info!`
-- [ ] Log security violations with `tracing::warn!`
-- [ ] Include timestamp, path, operation type
+- [x] Log all write/delete operations with `tracing::info!`
+- [x] Log security violations with `tracing::warn!`
+- [x] Include timestamp, path, operation type
 
 ---
 
 ## Task 11: Register Commands in `lib.rs`
 
 ### 11.1 Add Command Imports
-- [ ] Update `commands/mod.rs` to export FS commands:
+- [x] Update `commands/mod.rs` to export FS commands:
 ```rust
 pub mod fs;
 pub use fs::*;
 ```
 
 ### 11.2 Register with Tauri
-- [ ] Add FS commands to `invoke_handler`:
+- [x] Add FS commands to `invoke_handler`:
 ```rust
 .invoke_handler(tauri::generate_handler![
     // ... existing commands ...
@@ -657,8 +657,8 @@ pub use fs::*;
 ```
 
 ### 11.3 Initialize Watcher
-- [ ] Create `FsWatcher` in `setup` closure
-- [ ] Store in managed state: `app.manage(watcher);`
+- [x] Create `FsWatcher` in `setup` closure
+- [x] Store in managed state: `app.manage(watcher);`
 
 ---
 
