@@ -104,7 +104,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     for (const provider of providerConfigs) {
       await loadProviderModels(provider.id);
       const models = get().modelsByProvider[provider.id] || [];
-      if (provider.apiKey && models.length === 0) {
+      const shouldScan = (provider.apiKey && provider.apiKey.trim() !== '') || provider.isLocal;
+      if (shouldScan && models.length === 0) {
         await scanModelsForProvider(provider.id);
       }
     }
@@ -217,7 +218,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     const { providerConfigs, modelsByProvider } = get();
     const config = providerConfigs.find((c) => c.id === providerId);
 
-    if (!config || !config.apiKey) {
+    if (!config) {
+      return modelsByProvider[providerId] || [];
+    }
+
+    const requiresApiKey = !config.isLocal;
+    if (requiresApiKey && (!config.apiKey || config.apiKey.trim() === '')) {
       return modelsByProvider[providerId] || [];
     }
 
@@ -520,7 +526,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         ),
       }));
 
-      if (updates.apiKey && updates.apiKey.trim() !== '') {
+      const config = get().providerConfigs.find((c) => c.id === id);
+      const shouldScan =
+        (updates.apiKey && updates.apiKey.trim() !== '') || config?.isLocal === true;
+      if (shouldScan) {
         await get().loadProviderModels(id);
         const models = get().modelsByProvider[id] || [];
         if (models.length === 0) {
@@ -571,7 +580,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
         await get().loadProviderSettings(created.id);
 
-        if (newConfig.apiKey) {
+        if (newConfig.isLocal || newConfig.apiKey) {
           await get().scanModelsForProvider(created.id);
         }
       } else {
@@ -592,7 +601,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           providers: [...state.providers, newProvider],
         }));
 
-        if (newConfig.apiKey) {
+        if (newConfig.isLocal || newConfig.apiKey) {
           await get().scanModelsForProvider(id);
         }
       }
