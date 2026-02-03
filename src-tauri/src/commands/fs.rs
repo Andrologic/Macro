@@ -2,7 +2,7 @@
 // ⚠️ CRITICAL: This module requires manual implementation
 // See docs/fs-todo.md for detailed tasks
 
-use crate::core::error::BackendError;
+use crate::core::error::{io_error_to_backend_error, BackendError};
 use crate::fs::dto::FileContentDto;
 use crate::fs::{get_file_language, is_binary_file, validate_path};
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ pub async fn read_file_internal(
     path: String,
 ) -> Result<FileContentDto, BackendError> {
     let path_buf = PathBuf::from(&path); // Parse path string to PathBuf
-    let validated_path = validate_path(&path_buf, workspace)?; // Validate path against workspace
+    let validated_path = validate_path(&path_buf, workspace)?; // Validate path against workspace, also checks if path exists
     let file_metadata = tokio::fs::metadata(&validated_path).await?; // Get file metadata
 
     // Check if it's a file
@@ -34,7 +34,12 @@ pub async fn read_file_internal(
             ),
         });
     }
-    // Verify if binary (placeholder function)
+    // Verify if file is accessible
+    let _file = tokio::fs::File::open(&validated_path)
+        .await
+        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+
+    // Verify if binary or text file
     let is_binary = is_binary_file(&validated_path)?;
     if is_binary {
         // Return binary file response
@@ -47,11 +52,9 @@ pub async fn read_file_internal(
         });
     } else {
         // Read text file content
-        let content = tokio::fs::read_to_string(&validated_path).await.map_err(|_e| {
-            BackendError::Filesystem {
-                message: format!("Failed to read file: {}", path),
-            }
-        })?;
+        let content = tokio::fs::read_to_string(&validated_path)
+            .await
+            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
         // Detect language
         let language = get_file_language(&validated_path).unwrap_or_else(|| "Unknown".to_string());
         // Return text file response
@@ -283,16 +286,16 @@ mod tests {
     async fn test_read_large_text_file() {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
-        
+
         // Create a large text file (under 10 MB limit)
         let large_file_path = workspace_path.join("large.txt");
-        let mut large_file = fs::File::create(&large_file_path)
-            .expect("Failed to create large file");
-        
+        let mut large_file =
+            fs::File::create(&large_file_path).expect("Failed to create large file");
+
         // Write 1 MB of data
         let large_content = "x".repeat(1024 * 1024);
         writeln!(large_file, "{}", large_content).expect("Failed to write to large file");
-        
+
         let result = read_file_internal(&workspace_path, "large.txt".to_string()).await;
 
         assert!(result.is_ok());
@@ -310,6 +313,54 @@ mod tests {
         let result = read_file_internal(&workspace_path, "../../../etc/passwd".to_string()).await;
 
         // Should fail due to path validation
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_read_symlink_success() {
+        let workspace = setup_test_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let target_path = workspace_path.join("target.txt");
+        let symlink_path = workspace_path.join("link.txt");
+
+        // Create target file
+        let mut file = fs::File::create(&target_path).expect("Failed to create target file");
+        writeln!(file, "Target content").expect("Failed to write target file");
+
+        // Create symlink
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_path, &symlink_path).expect("Failed to create symlink");
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target_path, &symlink_path)
+            .expect("Failed to create symlink");
+
+        let result = read_file_internal(&workspace_path, "link.txt".to_string()).await;
+
+        assert!(result.is_ok());
+        let dto = result.unwrap();
+        assert_eq!(dto.content, "Target content\n");
+    }
+
+    #[tokio::test]
+    async fn test_read_broken_symlink_fails() {
+        let workspace = setup_test_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        let target_path = workspace_path.join("missing.txt");
+        let symlink_path = workspace_path.join("broken_link.txt");
+
+        // Create symlink to non-existent file
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_path, &symlink_path)
+            .expect("Failed to create broken symlink");
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target_path, &symlink_path)
+            .expect("Failed to create broken symlink");
+
+        let result = read_file_internal(&workspace_path, "broken_link.txt".to_string()).await;
+
+        // Should fail effectively as Not Found or similar
         assert!(result.is_err());
     }
 }
