@@ -292,15 +292,15 @@ pub async fn fs_read_file(
 - [x] Build and return `FileContentDto`
 
 ### 4.3 Error Handling
-- [ ] `validate_path` fails → propagate error (already BackendError)
-- [ ] File not found → `FilesystemNotFound { message: format!("File not found: {}", path) }`
-- [ ] Permission denied → `FilesystemPermissionDenied`
-- [ ] Is directory → `FilesystemIsDirectory { message }`
-- [ ] Read error → `Io` or specific variant
+- [x] `validate_path` fails → propagate error (already BackendError)
+- [x] File not found → `FilesystemNotFound { message: format!("File not found: {}", path) }`
+- [x] Permission denied → `FilesystemPermissionDenied`
+- [x] Is directory → `FilesystemIsDirectory { message }`
+- [x] Read error → `Io` or specific variant
 
 ### 4.4 Configuration Constants
 - [x] Define `const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;` (10MB)
-- [ ] Consider making this configurable via `core/config.rs`
+- [x] Consider making this configurable via `core/config.rs`
 
 ---
 

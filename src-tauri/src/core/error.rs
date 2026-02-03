@@ -111,7 +111,7 @@ impl From<config::ConfigError> for BackendError {
 
 pub type Result<T> = std::result::Result<T, BackendError>;
 
-fn io_error_to_backend_error(err: std::io::Error, path: &std::path::Path) -> BackendError {
+pub fn io_error_to_backend_error(err: std::io::Error, path: &std::path::Path) -> BackendError {
     use std::io::ErrorKind;
 
     match err.kind() {
@@ -148,36 +148,36 @@ fn io_error_to_backend_error(err: std::io::Error, path: &std::path::Path) -> Bac
             source: err,
         },
     }
-}   
+}
 
 #[cfg(test)]
 mod tests {
-    use crate::core::error::BackendError;   
+    use crate::core::error::BackendError;
     #[test]
     fn test_error_variants_exist() {
         // Verify all error variants can be created
         let _ = BackendError::Io {
             message: "test".to_string(),
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "test"),
-        };  
+        };
         let _ = BackendError::Database {
             message: "test".to_string(),
-        };   
+        };
         let _ = BackendError::Git {
             message: "test".to_string(),
-        };    
+        };
         let _ = BackendError::Filesystem {
             message: "test".to_string(),
-        };    
+        };
         let _ = BackendError::Index {
             message: "test".to_string(),
-        };    
+        };
         let _ = BackendError::AI {
             message: "test".to_string(),
-        };    
+        };
         let _ = BackendError::Config {
             message: "test".to_string(),
-        };    
+        };
         let _ = BackendError::NotFound("test".to_string());
         let _ = BackendError::PermissionDenied("test".to_string());
         let _ = BackendError::Validation("test".to_string());
