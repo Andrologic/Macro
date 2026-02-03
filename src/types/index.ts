@@ -278,6 +278,7 @@ export interface AIModel {
   };
   isFree?: boolean;
   isEnabled?: boolean;
+  isManual?: boolean;
   first_seen_at?: string;
   last_seen_at?: string;
   db_id?: string;

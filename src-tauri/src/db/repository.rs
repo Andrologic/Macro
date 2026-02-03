@@ -454,7 +454,7 @@ pub async fn list_models_by_provider(
         r#"
         SELECT id, provider_id, model_id, name, description, owned_by,
                pricing_prompt, pricing_completion, pricing_request,
-               is_enabled, first_seen_at, last_seen_at
+             is_enabled, is_manual, first_seen_at, last_seen_at
         FROM ai_models
         WHERE provider_id = ?
         ORDER BY name ASC
@@ -477,6 +477,7 @@ pub async fn list_models_by_provider(
             pricing_completion: row.get("pricing_completion"),
             pricing_request: row.get("pricing_request"),
             is_enabled: row.get::<i32, _>("is_enabled") != 0,
+            is_manual: row.get::<i32, _>("is_manual") != 0,
             first_seen_at: row.get("first_seen_at"),
             last_seen_at: row.get("last_seen_at"),
         })
@@ -501,9 +502,9 @@ pub async fn upsert_provider_models(
             INSERT INTO ai_models (
                 id, provider_id, model_id, name, description, owned_by,
                 pricing_prompt, pricing_completion, pricing_request,
-                is_enabled, first_seen_at, last_seen_at
+                is_enabled, is_manual, first_seen_at, last_seen_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
@@ -530,6 +531,41 @@ pub async fn upsert_provider_models(
     }
 
     tx.commit().await?;
+
+    Ok(())
+}
+
+pub async fn register_manual_model(
+    pool: &SqlitePool,
+    provider_id: &str,
+    model_id: &str,
+    name: &str,
+) -> DbResult<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let id = format!("{}::{}", provider_id, model_id);
+
+    sqlx::query(
+        r#"
+        INSERT INTO ai_models (
+            id, provider_id, model_id, name, description, owned_by,
+            pricing_prompt, pricing_completion, pricing_request,
+            is_enabled, is_manual, first_seen_at, last_seen_at
+        )
+        VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 1, 1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            is_manual = 1,
+            last_seen_at = excluded.last_seen_at
+        "#,
+    )
+    .bind(&id)
+    .bind(provider_id)
+    .bind(model_id)
+    .bind(name)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
 
     Ok(())
 }

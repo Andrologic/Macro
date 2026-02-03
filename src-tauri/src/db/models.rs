@@ -46,6 +46,7 @@ pub struct AiModel {
     pub pricing_completion: Option<String>,
     pub pricing_request: Option<String>,
     pub is_enabled: bool,
+    pub is_manual: bool,
     pub first_seen_at: String,
     pub last_seen_at: String,
 }

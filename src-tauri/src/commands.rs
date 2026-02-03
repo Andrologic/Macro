@@ -372,6 +372,27 @@ pub async fn db_upsert_provider_models(
 }
 
 #[tauri::command]
+pub async fn db_register_manual_model(
+    pool: State<'_, DbPool>,
+    provider_id: String,
+    model_id: String,
+    name: String,
+) -> CommandResult<Vec<AiModel>> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::register_manual_model(pool, &provider_id, &model_id, &name)
+        .await
+        .map_err(CommandError::from)?;
+
+    repository::list_models_by_provider(pool, &provider_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_set_provider_model_enabled(
     pool: State<'_, DbPool>,
     provider_id: String,
