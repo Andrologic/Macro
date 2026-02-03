@@ -19,6 +19,24 @@ pub enum BackendError {
     #[error("Git error: {message}")]
     Git { message: String },
 
+    #[error("Git repository not found: {message}")]
+    GitRepositoryNotFound { message: String },
+
+    #[error("Git repository not clean: {message}")]
+    GitRepositoryNotClean { message: String },
+
+    #[error("Git branch not found: {message}")]
+    GitBranchNotFound { message: String },
+
+    #[error("Git conflict: {message}")]
+    GitConflict { message: String },
+
+    #[error("Git merge conflict: {message}")]
+    GitMergeConflict { message: String },
+
+    #[error("Git invalid commit: {message}")]
+    GitInvalidCommit { message: String },
+
     #[error("File system error: {message}")]
     Filesystem { message: String },
 
@@ -165,6 +183,24 @@ mod tests {
             message: "test".to_string(),
         };
         let _ = BackendError::Git {
+            message: "test".to_string(),
+        };
+        let _ = BackendError::GitRepositoryNotFound {
+            message: "test".to_string(),
+        };
+        let _ = BackendError::GitRepositoryNotClean {
+            message: "test".to_string(),
+        };
+        let _ = BackendError::GitBranchNotFound {
+            message: "test".to_string(),
+        };
+        let _ = BackendError::GitConflict {
+            message: "test".to_string(),
+        };
+        let _ = BackendError::GitMergeConflict {
+            message: "test".to_string(),
+        };
+        let _ = BackendError::GitInvalidCommit {
             message: "test".to_string(),
         };
         let _ = BackendError::Filesystem {

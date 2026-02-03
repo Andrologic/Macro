@@ -45,7 +45,11 @@ impl GitState {
 			return Ok(repo.clone());
 		}
 
-		let repo = Repository::discover(&canonical).or_else(|_| Repository::open(&canonical))?;
+		let repo = Repository::discover(&canonical)
+			.or_else(|_| Repository::open(&canonical))
+			.map_err(|e| BackendError::GitRepositoryNotFound {
+				message: format!("{}", e),
+			})?;
 		let repo_arc = Arc::new(Mutex::new(repo));
 		repos.insert(canonical, repo_arc.clone());
 		Ok(repo_arc)

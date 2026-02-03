@@ -1,6 +1,6 @@
 // Git Repository Helpers
 
-use git2::{Commit, Repository, StatusOptions};
+use git2::{Commit, Diff, DiffOptions, Repository, Status, StatusOptions, Tree};
 
 use crate::core::error::{BackendError, Result};
 
@@ -45,5 +45,30 @@ pub fn get_status_options() -> StatusOptions {
 		.renames_from_rewrites(true)
 		.include_unreadable(true);
 	opts
+}
+
+pub fn get_status(repo: &Repository) -> Result<Status> {
+	let statuses = repo.statuses(Some(&mut get_status_options()))?;
+	let mut summary = Status::CURRENT;
+	for entry in statuses.iter() {
+		summary |= entry.status();
+	}
+	Ok(summary)
+}
+
+pub fn get_diff<'repo>(
+	repo: &'repo Repository,
+	old_tree: Option<&'repo Tree<'repo>>,
+	new_tree: Option<&'repo Tree<'repo>>,
+) -> Result<Diff<'repo>> {
+	let mut opts = DiffOptions::new();
+	opts.include_untracked(true)
+		.recurse_untracked_dirs(true)
+		.include_unmodified(false);
+
+	repo.diff_tree_to_tree(old_tree, new_tree, Some(&mut opts))
+		.map_err(|e| BackendError::Git {
+			message: e.to_string(),
+		})
 }
 

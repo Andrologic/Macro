@@ -10,7 +10,7 @@ use tauri::State;
 
 use crate::core::error::{BackendError, Result};
 use crate::fs::validate_path;
-use crate::git::repo::{get_branch_name, get_head_commit, get_status_options};
+use crate::git::repo::{get_branch_name, get_diff, get_head_commit, get_status, get_status_options};
 use crate::git::GitState;
 
 const DEFAULT_LOG_LIMIT: usize = 50;
@@ -78,6 +78,31 @@ pub struct GitNode {
 fn to_join_error(err: tokio::task::JoinError) -> BackendError {
 	BackendError::Internal {
 		message: format!("Git task join error: {}", err),
+	}
+}
+
+fn validate_repo_path(repo_path: &str, workspace: &PathBuf) -> Result<PathBuf> {
+	let validated = validate_path(Path::new(repo_path), workspace)?;
+	for component in validated.components() {
+		if let std::path::Component::Normal(part) = component {
+			if part == ".git" {
+				return Err(BackendError::GitRepositoryNotFound {
+					message: "Direct .git access is not allowed".to_string(),
+				});
+			}
+		}
+	}
+	Ok(validated)
+}
+
+fn validate_branch_name(branch: &str) -> Result<()> {
+	let ref_name = format!("refs/heads/{}", branch);
+	if git2::Reference::is_valid_name(&ref_name) {
+		Ok(())
+	} else {
+		Err(BackendError::GitBranchNotFound {
+			message: format!("Invalid branch name: {}", branch),
+		})
 	}
 }
 
@@ -310,9 +335,9 @@ fn resolve_commit<'repo>(repo: &'repo Repository, spec: &str) -> Result<Commit<'
 }
 
 fn ensure_clean(repo: &Repository) -> Result<()> {
-	let statuses = repo.statuses(Some(&mut get_status_options()))?;
-	if !statuses.is_empty() {
-		return Err(BackendError::Git {
+	let status = get_status(repo)?;
+	if status != Status::CURRENT {
+		return Err(BackendError::GitRepositoryNotClean {
 			message: "Please commit or stash your changes first".to_string(),
 		});
 	}
@@ -329,7 +354,7 @@ pub async fn git_status(
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
-		let validated = validate_path(Path::new(&repo_path), &workspace)?;
+		let validated = validate_repo_path(&repo_path, &workspace)?;
 		let repo = git_state.open_repo(&validated)?;
 		let repo = repo.lock().map_err(|_| BackendError::Internal {
 			message: "Failed to lock repository".to_string(),
@@ -408,7 +433,7 @@ pub async fn git_log(
 	let limit = limit.map(|v| v as usize).unwrap_or(DEFAULT_LOG_LIMIT);
 
 	tokio::task::spawn_blocking(move || {
-		let validated = validate_path(Path::new(&repo_path), &workspace)?;
+		let validated = validate_repo_path(&repo_path, &workspace)?;
 		let repo = git_state.open_repo(&validated)?;
 		let repo = repo.lock().map_err(|_| BackendError::Internal {
 			message: "Failed to lock repository".to_string(),
@@ -454,7 +479,7 @@ pub async fn git_branch_list(
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
-		let validated = validate_path(Path::new(&repo_path), &workspace)?;
+		let validated = validate_repo_path(&repo_path, &workspace)?;
 		let repo = git_state.open_repo(&validated)?;
 		let repo = repo.lock().map_err(|_| BackendError::Internal {
 			message: "Failed to lock repository".to_string(),
@@ -514,7 +539,7 @@ pub async fn git_checkout(
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
-		let validated = validate_path(Path::new(&repo_path), &workspace)?;
+		let validated = validate_repo_path(&repo_path, &workspace)?;
 		let repo = git_state.open_repo(&validated)?;
 		let repo = repo.lock().map_err(|_| BackendError::Internal {
 			message: "Failed to lock repository".to_string(),
@@ -523,6 +548,7 @@ pub async fn git_checkout(
 		ensure_clean(&repo)?;
 
 		if create {
+			validate_branch_name(&branch_or_commit)?;
 			let head_commit = repo
 				.head()
 				.and_then(|head| head.peel_to_commit())
@@ -537,13 +563,32 @@ pub async fn git_checkout(
 		{
 			repo.set_head(&format!("refs/heads/{}", branch_or_commit))?;
 		} else {
-			let commit = resolve_commit(&repo, &branch_or_commit)?;
+			let ref_name = format!("refs/heads/{}", branch_or_commit);
+			if git2::Reference::is_valid_name(&ref_name) {
+				return Err(BackendError::GitBranchNotFound {
+					message: format!("Branch not found: {}", branch_or_commit),
+				});
+			}
+
+			let commit = resolve_commit(&repo, &branch_or_commit).map_err(|_| {
+				BackendError::GitInvalidCommit {
+					message: format!("Commit not found: {}", branch_or_commit),
+				}
+			})?;
 			repo.set_head_detached(commit.id())?;
 		}
 
 		let mut checkout = git2::build::CheckoutBuilder::new();
 		checkout.safe();
-		repo.checkout_head(Some(&mut checkout))?;
+		repo.checkout_head(Some(&mut checkout)).map_err(|e| BackendError::GitConflict {
+			message: e.to_string(),
+		})?;
+
+		if repo.index().map(|idx| idx.has_conflicts()).unwrap_or(false) {
+			return Err(BackendError::GitMergeConflict {
+				message: "Checkout resulted in merge conflicts".to_string(),
+			});
+		}
 		Ok(())
 	})
 	.await
@@ -562,7 +607,7 @@ pub async fn git_commit(
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
-		let validated = validate_path(Path::new(&repo_path), &workspace)?;
+		let validated = validate_repo_path(&repo_path, &workspace)?;
 		let repo = git_state.open_repo(&validated)?;
 		let repo = repo.lock().map_err(|_| BackendError::Internal {
 			message: "Failed to lock repository".to_string(),
@@ -638,7 +683,7 @@ pub async fn git_diff(
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
-		let validated = validate_path(Path::new(&repo_path), &workspace)?;
+		let validated = validate_repo_path(&repo_path, &workspace)?;
 		let repo = git_state.open_repo(&validated)?;
 		let repo = repo.lock().map_err(|_| BackendError::Internal {
 			message: "Failed to lock repository".to_string(),
@@ -656,19 +701,22 @@ pub async fn git_diff(
 			None
 		};
 
-		let diff = if let Some(head) = head {
+		let mut output = String::new();
+		if let Some(head) = head {
 			let head_commit = resolve_commit(&repo, &head)?;
 			let head_tree = head_commit.tree()?;
-			repo.diff_tree_to_tree(base_tree.as_ref(), Some(&head_tree), None)?
+			let diff = get_diff(&repo, base_tree.as_ref(), Some(&head_tree))?;
+			diff.print(DiffFormat::Patch, |_, _, line| {
+				output.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+				true
+			})?;
 		} else {
-			repo.diff_tree_to_workdir_with_index(base_tree.as_ref(), None)?
-		};
-
-		let mut output = String::new();
-		diff.print(DiffFormat::Patch, |_, _, line| {
-			output.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
-			true
-		})?;
+			let diff = repo.diff_tree_to_workdir_with_index(base_tree.as_ref(), None)?;
+			diff.print(DiffFormat::Patch, |_, _, line| {
+				output.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+				true
+			})?;
+		}
 
 		Ok(output)
 	})
@@ -687,7 +735,7 @@ pub async fn git_get_tree(
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
-		let validated = validate_path(Path::new(&repo_path), &workspace)?;
+		let validated = validate_repo_path(&repo_path, &workspace)?;
 		let repo = git_state.open_repo(&validated)?;
 		let repo = repo.lock().map_err(|_| BackendError::Internal {
 			message: "Failed to lock repository".to_string(),
@@ -700,7 +748,7 @@ pub async fn git_get_tree(
 		};
 
 		let commit = resolve_commit(&repo, &branch_name).or_else(|_| {
-			get_head_commit(&repo)?.ok_or_else(|| BackendError::Git {
+			get_head_commit(&repo)?.ok_or_else(|| BackendError::GitInvalidCommit {
 				message: "No commits found".to_string(),
 			})
 		})?;
@@ -792,8 +840,8 @@ mod tests {
 
 		let err = ensure_clean(&repo).unwrap_err();
 		match err {
-			BackendError::Git { .. } => {}
-			other => panic!("expected git error, got {other:?}"),
+			BackendError::GitRepositoryNotClean { .. } => {}
+			other => panic!("expected git not clean error, got {other:?}"),
 		}
 	}
 
