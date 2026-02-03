@@ -147,22 +147,25 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       await new Promise((resolve) => setTimeout(resolve, 300));
       
       const state = get();
-      if (state.user) {
-        const updatedUser: User = {
-          ...state.user,
-          preferences: {
-            ...state.user.preferences,
-            ...preferences,
-          },
-          updated_at: new Date().toISOString(),
-        };
-
-        set({
-          user: updatedUser,
-          session: state.session ? { ...state.session, user: updatedUser } : null,
-          isLoading: false,
-        });
+      if (!state.user) {
+        set({ isLoading: false });
+        throw new Error('No authenticated user');
       }
+
+      const updatedUser: User = {
+        ...state.user,
+        preferences: {
+          ...state.user.preferences,
+          ...preferences,
+        },
+        updated_at: new Date().toISOString(),
+      };
+
+      set({
+        user: updatedUser,
+        session: state.session ? { ...state.session, user: updatedUser } : null,
+        isLoading: false,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update preferences';
       set({

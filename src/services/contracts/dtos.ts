@@ -9,6 +9,7 @@ import type {
   AIProvider,
   AIModel,
   Project,
+  MCPServer,
 } from '../../types';
 
 export interface AppBootstrapDto {
@@ -59,4 +60,14 @@ export interface ToolSettingsDto {
 
 export interface MCPServerSettingsDto {
   servers: Record<string, MCPServer>;
+}
+
+export interface ChatCompletionRequestDto {
+  providerId: string;
+  modelId: string;
+  messages: Array<Pick<ChatMessage, 'role' | 'content'>>;
+}
+
+export interface ChatCompletionResponseDto {
+  message: Pick<ChatMessage, 'role' | 'content'>;
 }

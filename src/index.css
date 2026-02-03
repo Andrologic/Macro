@@ -14,30 +14,30 @@
   }
 
   :root {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 263.4 70% 50.4%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 263.4 70% 50.4%;
+    --background: 9 9 11;
+    --foreground: 250 250 250;
+    --card: 9 9 11;
+    --card-foreground: 250 250 250;
+    --popover: 9 9 11;
+    --popover-foreground: 250 250 250;
+    --primary: 99 102 241;
+    --primary-foreground: 250 250 250;
+    --secondary: 39 39 42;
+    --secondary-foreground: 250 250 250;
+    --muted: 39 39 42;
+    --muted-foreground: 161 161 170;
+    --accent: 39 39 42;
+    --accent-foreground: 250 250 250;
+    --destructive: 239 68 68;
+    --destructive-foreground: 250 250 250;
+    --border: 39 39 42;
+    --input: 39 39 42;
+    --ring: 99 102 241;
     --radius: 8px;
   }
 
   body {
-    @apply bg-zinc-950 text-zinc-100 font-sans antialiased;
+    @apply bg-background text-foreground font-sans antialiased;
     font-feature-settings: 'cv11', 'ss01';
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -49,20 +49,20 @@
   }
 
   ::-webkit-scrollbar-track {
-    @apply bg-zinc-950;
+    @apply bg-background;
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply bg-zinc-800 rounded-full;
+    @apply bg-secondary rounded-full;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-zinc-700;
+    @apply bg-primary;
   }
 
   /* Selection */
   ::selection {
-    @apply bg-indigo-500/20 text-indigo-500;
+    @apply bg-primary/20 text-primary;
   }
 }
 
@@ -73,15 +73,15 @@
   }
 
   .btn-primary {
-    @apply bg-indigo-500 text-white hover:bg-indigo-500/90 active:scale-[0.98];
+    @apply bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98];
   }
 
   .btn-secondary {
-    @apply bg-zinc-900 text-zinc-100 hover:bg-zinc-800 active:scale-[0.98];
+    @apply bg-secondary text-secondary-foreground hover:bg-secondary/90 active:scale-[0.98];
   }
 
   .btn-ghost {
-    @apply text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900 active:scale-[0.98];
+    @apply text-muted-foreground hover:text-foreground hover:bg-accent active:scale-[0.98];
   }
 
   .btn-success {
@@ -94,16 +94,16 @@
 
   /* Card styles */
   .card {
-    @apply bg-zinc-900 rounded-xl border border-zinc-800;
+    @apply bg-card rounded-xl border border-border;
   }
 
   .card-hover {
-    @apply card hover:border-zinc-700 hover:shadow-[0_0_20px_-4px_rgba(99,102,241,0.3)] transition-all duration-200;
+    @apply card hover:border-border/70 hover:shadow-[0_0_20px_-4px_rgba(99,102,241,0.3)] transition-all duration-200;
   }
 
   /* Input styles */
   .input {
-    @apply w-full px-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-lg text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-transparent transition-all duration-200;
+    @apply w-full px-4 py-2.5 bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-transparent transition-all duration-200;
   }
 
   /* Badge styles */
@@ -112,11 +112,11 @@
   }
 
   .badge-default {
-    @apply bg-zinc-900 text-zinc-400;
+    @apply bg-secondary text-muted-foreground;
   }
 
   .badge-primary {
-    @apply bg-indigo-500/10 text-indigo-500;
+    @apply bg-primary/10 text-primary;
   }
 
   .badge-success {
@@ -133,12 +133,12 @@
 
   /* Panel styles */
   .panel {
-    @apply bg-zinc-900 border-r border-zinc-800;
+    @apply bg-card border-r border-border;
   }
 
   /* Code block */
   .code-block {
-    @apply font-mono text-sm bg-zinc-950 rounded-lg p-4 border border-zinc-800;
+    @apply font-mono text-sm bg-background rounded-lg p-4 border border-border;
   }
 
   /* Status indicator */
@@ -158,31 +158,27 @@
   }
 
   .bg-elevated {
-    @apply bg-zinc-900;
+    @apply bg-card;
   }
 
   .text-text-primary {
-    @apply text-zinc-100;
+    @apply text-foreground;
   }
 
   .text-text-secondary {
-    @apply text-zinc-400;
+    @apply text-muted-foreground;
   }
 
   .text-text-muted {
-    @apply text-zinc-500;
+    @apply text-muted-foreground;
   }
 
   .text-accent-primary {
-    @apply text-indigo-500;
+    @apply text-primary;
   }
 
   .bg-accent-primary {
-    @apply bg-indigo-500;
-  }
-
-  .bg-border {
-    @apply bg-zinc-800;
+    @apply bg-primary;
   }
 
   .gradient-border {
@@ -201,6 +197,34 @@
   }
 
   .glass-effect {
-    @apply bg-zinc-900/50 backdrop-blur-sm border border-zinc-800/50;
+    @apply bg-card/50 backdrop-blur-sm border border-border/50;
+  }
+
+  /* Custom select styling to work with themes */
+  select {
+    @apply appearance-none cursor-pointer;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23999' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 0.5rem center;
+    background-repeat: no-repeat;
+    background-size: 1.5em 1.5em;
+  }
+
+  select option {
+    background-color: rgb(var(--card));
+    color: rgb(var(--foreground));
+    padding: 8px 12px;
+  }
+
+  select:focus {
+    outline: none;
+    border-color: rgb(var(--primary));
+    box-shadow: 0 0 0 2px rgba(var(--primary), 0.2);
+  }
+
+  /* Light mode override for select arrow */
+  @media (prefers-color-scheme: light) {
+    select {
+      background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23666' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    }
   }
 }

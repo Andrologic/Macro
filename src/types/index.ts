@@ -2,11 +2,87 @@
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
 export type PlanStatus = 'Draft' | 'Validated' | 'InProgress' | 'Completed' | 'Cancelled';
-export type TaskStatus = 'Pending' | 'InProgress' | 'AwaitingResponse' | 'Completed' | 'Failed';
+export type TaskStatus = 'Pending' | 'InProgress' | 'AwaitingResponse' | 'Completed' | 'Failed' | 'Blocked';
 export type MessageRole = 'user' | 'assistant';
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
-export type AppMode = 'Architect' | 'Implement';
+export type AppMode = 'Architect' | 'Implement' | 'Chat';
+
+// Plan Node types for dependency graph
+export type PlanNodeStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
+export type PlanNodeType = 'spec' | 'feature' | 'task' | 'milestone';
+
+export interface PlanNode {
+  id: string;
+  title: string;
+  description?: string;
+  type: PlanNodeType;
+  status: PlanNodeStatus;
+  dependencies: string[];
+  assignedBranch?: string;
+  projectId?: string;
+  estimatedTime?: string;
+}
+
+export interface PlanEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+// Predicted Git Flow types
+export interface PredictedBranch {
+  id: string;
+  name: string;
+  color: string;
+  parentBranch: string | null;
+  projectId: string;
+  taskIds: string[];
+  status: 'pending' | 'active' | 'merged';
+}
+
+export interface PredictedCommit {
+  id: string;
+  branchId: string;
+  message: string;
+  taskId?: string;
+  status: 'pending' | 'done';
+}
+
+// Plan Block for interactive messages
+export interface PlanBlock {
+  id: string;
+  type: 'spec' | 'task-group' | 'dependency';
+  title: string;
+  items: PlanBlockItem[];
+  status: 'draft' | 'accepted' | 'rejected';
+}
+
+export interface PlanBlockItem {
+  id: string;
+  text: string;
+  checked: boolean;
+}
+
+// User Needs (Architect Mode)
+export type NeedStatus = 'identified' | 'refined' | 'validated';
+export type NeedCategory = 'functional' | 'technical' | 'ux' | 'security' | 'other';
+
+export interface Need {
+  id: string;
+  title: string;
+  description: string;
+  category: NeedCategory;
+  status: NeedStatus;
+  priority: 'low' | 'medium' | 'high';
+  tags: string[];
+  sourceMessageId?: string; // Link to the chat message where this was identified
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Activity indicator for projects
+export type ProjectActivity = 'idle' | 'ai-active' | 'completed' | 'error';
 export type AuthStatus = 'authenticated' | 'unauthenticated' | 'loading';
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type Language = 'en' | 'fr';
@@ -183,6 +259,9 @@ export interface AIProvider {
   id: string;
   name: string;
   status: AIProviderStatus;
+  baseUrl?: string;
+  isLocal?: boolean;
+  isEnabled?: boolean;
 }
 
 export interface AIModel {
@@ -191,6 +270,17 @@ export interface AIModel {
   provider_id: string;
   description?: string;
   capabilities?: string[];
+  owned_by?: string;
+}
+
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  providerType: string;
+  baseUrl: string;
+  apiKey?: string;
+  isEnabled: boolean;
+  isLocal: boolean;
 }
 
 export interface GitCommit {

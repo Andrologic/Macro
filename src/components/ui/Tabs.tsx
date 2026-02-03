@@ -83,7 +83,7 @@ export const TabsTrigger: React.FC<TabsTriggerProps> = ({
         'px-4 py-2 text-sm font-medium rounded-md transition-all duration-200',
         'hover:text-text-primary',
         activeTab === value
-          ? 'bg-accent-primary/10 text-accent-primary shadow-sm'
+          ? 'bg-primary/10 text-primary shadow-sm'
           : 'text-text-secondary',
         className
       )}

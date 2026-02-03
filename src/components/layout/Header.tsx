@@ -1,8 +1,12 @@
+import { useState } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
-import { Icon } from '../ui/Icon';
+import { Icon, IconName } from '../ui/Icon';
 import { Logo } from '../ui/Logo';
 import { WindowControls } from './WindowControls';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { useTauriWindow } from '../../hooks/useTauriWindow';
+import { useTranslation } from 'react-i18next';
+import { ProjectNavigator } from '../modals/ProjectNavigator';
+import { cn } from '../../utils/cn';
 import type { AppMode } from '../../types';
 
 interface HeaderProps {
@@ -22,112 +26,164 @@ export function Header({
   const setMode = useAppStore((state) => state.setMode);
   const openSettings = useAppStore((state) => state.openSettings);
   const openAccount = useAppStore((state) => state.openAccount);
-
-  // Check if Tauri API is available
-  const isTauriAvailable = typeof window !== 'undefined' && window.__TAURI__;
-  const tauriWindow = isTauriAvailable ? getCurrentWindow() : null;
+  const selectedProjectId = useAppStore((state) => state.selectedProjectId);
+  const selectedGroupId = useAppStore((state) => state.selectedGroupId);
+  const projectGroups = useAppStore((state) => state.projectGroups);
+  const { isAvailable: isTauriAvailable, toggleMaximize } = useTauriWindow();
+  const { t } = useTranslation();
+  
+  const [projectNavigatorOpen, setProjectNavigatorOpen] = useState(false);
 
   const handleHeaderDoubleClick = () => {
-    if (tauriWindow) {
-      tauriWindow.toggleMaximize();
+    if (isTauriAvailable) {
+      toggleMaximize();
     }
   };
 
-  const modes: { value: AppMode; label: string }[] = [
-    { value: 'Architect', label: 'Architect' },
-    { value: 'Implement', label: 'Implement' },
+  const modes: { value: AppMode; label: string; icon: IconName }[] = [
+    { value: 'Architect', label: t('header.architect'), icon: 'compass' },
+    { value: 'Implement', label: t('header.implement'), icon: 'code' },
+    { value: 'Chat', label: t('header.chat'), icon: 'message-circle' },
   ];
 
+  // Get current project/group name for display
+  const getCurrentProjectName = () => {
+    if (!selectedGroupId) return null;
+    const group = projectGroups.find(g => g.id === selectedGroupId);
+    if (!group) return null;
+    
+    if (selectedProjectId) {
+      const project = group.projects.find(p => p.id === selectedProjectId);
+      return project?.name || group.name;
+    }
+    return group.name;
+  };
+
+  const projectName = getCurrentProjectName();
+
   return (
-    <header 
-      className="h-12 bg-zinc-900 border-b border-zinc-800 flex items-center px-4 shrink-0 select-none"
-      data-tauri-drag-region
-      onDoubleClick={handleHeaderDoubleClick}
-    >
-      {/* Left: Logo and App Name */}
-      <div className="flex items-center gap-2 w-48">
-        <Logo size={20} />
-        <span className="text-sm font-semibold text-zinc-100">Macro</span>
-      </div>
-
-      {/* Center: Mode Switch (Segment Control) */}
-      <div className="flex-1 flex justify-center">
-        <div className="inline-flex bg-zinc-800 rounded-lg p-1">
-          {modes.map((m) => (
-            <button
-              key={m.value}
-              onClick={() => setMode(m.value)}
-              data-tauri-drag-region="false"
-              className={`
-                px-4 py-1 rounded-md text-xs font-medium transition-all duration-200
-                ${
-                  mode === m.value
-                    ? 'bg-indigo-500 text-white shadow-sm'
-                    : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/50'
-                }
-              `}
-            >
-              {m.label}
-            </button>
-          ))}
+    <>
+      <header 
+        className="h-12 bg-card border-b border-border flex items-center px-4 shrink-0 select-none relative z-50"
+        data-tauri-drag-region
+        onDoubleClick={handleHeaderDoubleClick}
+      >
+        {/* Left: Logo, App Name, and Project Button */}
+        <div className="flex items-center gap-3 min-w-[200px]" data-tauri-drag-region>
+          <div className="flex items-center gap-2">
+            <Logo size={20} strokeWidth={3} />
+            <span className="text-sm font-semibold text-foreground">Macro</span>
+          </div>
+          
+          {/* Project Button - Hidden in Chat mode */}
+          {mode !== 'Chat' && (
+            <>
+              <div className="w-px h-5 bg-border" />
+              <button
+                onClick={() => setProjectNavigatorOpen(true)}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-lg",
+                  "hover:bg-accent transition-colors",
+                  "text-sm max-w-[180px]"
+                )}
+                data-tauri-drag-region="false"
+              >
+                <Icon name="folder-git-2" size={14} className="text-muted-foreground shrink-0" />
+                <span className="truncate text-foreground">
+                  {projectName || t('header.selectProject')}
+                </span>
+                <Icon name="chevron-down" size={12} className="text-muted-foreground shrink-0" />
+              </button>
+            </>
+          )}
         </div>
-      </div>
 
-      {/* Right: Panel toggles, settings, and account */}
-      <div className="w-48 flex items-center justify-end gap-2">
-        {/* Panel toggles */}
-        <button
-          onClick={onToggleLeft}
-          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
-          data-tauri-drag-region="false"
-        >
-          <Icon
-            name={isLeftOpen ? 'panel-left-close' : 'panel-left-open'}
-            size={16}
-            className="text-zinc-400"
-          />
-        </button>
-        <button
-          onClick={onToggleRight}
-          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
-          data-tauri-drag-region="false"
-        >
-          <Icon
-            name={isRightOpen ? 'panel-right-close' : 'panel-right-open'}
-            size={16}
-            className="text-zinc-400"
-          />
-        </button>
+        {/* Center: Mode Switch (Segment Control) */}
+        <div className="flex-1 flex justify-center" data-tauri-drag-region>
+          <div className="inline-flex bg-secondary rounded-lg p-1">
+            {modes.map((m) => (
+              <button
+                key={m.value}
+                onClick={() => setMode(m.value)}
+                data-tauri-drag-region="false"
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-200",
+                  mode === m.value
+                    ? 'bg-primary text-primary-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+                )}
+              >
+                <Icon name={m.icon} size={12} />
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
 
-        {/* Divider */}
-        <div className="w-px h-5 bg-zinc-700 mx-1" />
+        {/* Right: Panel toggles, settings, and account */}
+        <div className="min-w-[200px] flex items-center justify-end gap-2" data-tauri-drag-region>
+          {/* Panel toggles */}
+          <button
+            onClick={onToggleLeft}
+            className="p-1.5 rounded-lg hover:bg-accent transition-colors"
+            data-tauri-drag-region="false"
+          >
+            <Icon
+              name={isLeftOpen ? 'panel-left-close' : 'panel-left-open'}
+              size={16}
+              className="text-muted-foreground"
+            />
+          </button>
+          <button
+            onClick={onToggleRight}
+            className="p-1.5 rounded-lg hover:bg-accent transition-colors"
+            data-tauri-drag-region="false"
+          >
+            <Icon
+              name={isRightOpen ? 'panel-right-close' : 'panel-right-open'}
+              size={16}
+              className="text-muted-foreground"
+            />
+          </button>
 
-        {/* Settings button */}
-        <button
-          onClick={openSettings}
-          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
-          title="Settings"
-          data-tauri-drag-region="false"
-        >
-          <Icon name="settings" size={16} className="text-zinc-400" />
-        </button>
+          {/* Divider */}
+          <div className="w-px h-5 bg-border mx-1" />
 
-        {/* Account button */}
-        <button
-          onClick={openAccount}
-          className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
-          title="Account"
-          data-tauri-drag-region="false"
-        >
-          <Icon name="user" size={16} className="text-zinc-400" />
-        </button>
+          {/* Settings button */}
+          <button
+            onClick={openSettings}
+            className="p-1.5 rounded-lg hover:bg-accent transition-colors"
+            title={t('header.settings')}
+            aria-label={t('header.settings')}
+            data-tauri-drag-region="false"
+          >
+            <Icon name="settings" size={16} className="text-muted-foreground" />
+          </button>
 
-        {/* Divider before window controls - only show in Tauri mode */}
-        {isTauriAvailable && <div className="w-px h-5 bg-zinc-700 mx-1" />}
+          {/* Account button */}
+          <button
+            onClick={openAccount}
+            className="p-1.5 rounded-lg hover:bg-accent transition-colors"
+            title={t('header.account')}
+            aria-label={t('header.account')}
+            data-tauri-drag-region="false"
+          >
+            <Icon name="user" size={16} className="text-muted-foreground" />
+          </button>
 
-        {/* Window Controls */}
-        <WindowControls />
-      </div>
-    </header>
+          {/* Divider before window controls - only show in Tauri mode */}
+          {isTauriAvailable && <div className="w-px h-5 bg-border mx-1" />}
+
+          {/* Window Controls */}
+          <WindowControls />
+        </div>
+      </header>
+
+      {/* Project Navigator Modal */}
+      <ProjectNavigator 
+        isOpen={projectNavigatorOpen} 
+        onClose={() => setProjectNavigatorOpen(false)} 
+      />
+    </>
   );
 }

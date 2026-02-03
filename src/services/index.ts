@@ -17,6 +17,7 @@ export const services = {
   listCommits: provider.listCommits,
   listProviders: provider.listProviders,
   listModels: provider.listModels,
+  sendChat: provider.sendChat,
   createProject: provider.createProject,
   importGitRepo: provider.importGitRepo,
   getToolSettings: provider.getToolSettings,

@@ -38,22 +38,22 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
 
   return (
     <aside
-      className={cn('h-full bg-zinc-900 border-r border-zinc-800 flex flex-col', className)}
+      className={cn('h-full bg-card border-r border-border flex flex-col', className)}
       style={{ width: width ? `${width}px` : '280px' }}
     >
       {/* Header */}
-      <div className="h-12 border-b border-zinc-800 flex items-center justify-between px-4">
-        <h1 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-          <Icon name="layers" size={16} className="text-indigo-500" />
+      <div className="h-12 border-b border-border flex items-center justify-between px-4">
+        <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
+          <Icon name="layers" size={16} className="text-primary" />
           Projects
         </h1>
-        <button onClick={openProjectModal} className="p-1 hover:bg-zinc-800 rounded-md transition-colors">
-          <Icon name="plus" size={16} className="text-zinc-500" />
+        <button onClick={openProjectModal} className="p-1 hover:bg-accent rounded-md transition-colors">
+          <Icon name="plus" size={16} className="text-muted-foreground" />
         </button>
       </div>
 
       {/* Search Bar */}
-      <div className="p-3 border-b border-zinc-800">
+      <div className="p-3 border-b border-border">
         <SearchBar
           value={searchQuery}
           onChange={setSearchQuery}
@@ -65,9 +65,9 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
       <div className="flex-1 overflow-y-auto">
         {hasNoResults ? (
           <div className="flex flex-col items-center justify-center h-48 px-4 text-center">
-            <Icon name="search" size={32} className="text-zinc-600 mb-3" />
-            <p className="text-sm text-zinc-500">No projects found</p>
-            <p className="text-xs text-zinc-600 mt-1">
+            <Icon name="search" size={32} className="text-muted-foreground/70 mb-3" />
+            <p className="text-sm text-muted-foreground">No projects found</p>
+            <p className="text-xs text-muted-foreground/70 mt-1">
               Try a different search term
             </p>
           </div>
@@ -76,10 +76,10 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
           <div
             key={group.id}
             className={cn(
-              'border-b border-zinc-800/50 transition-all duration-200',
+              'border-b border-border/50 transition-all duration-200',
               selectedGroupId === group.id
-                ? 'bg-indigo-500/10 border-l-2 border-l-indigo-500 border-r-0 border-t-0 border-b-0'
-                : 'hover:bg-zinc-800/30'
+                ? 'bg-primary/10 border-l-2 border-l-primary border-r-0 border-t-0 border-b-0'
+                : 'hover:bg-accent/30'
             )}
           >
             {/* Group Header - Click to select group */}
@@ -90,8 +90,8 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
                 'transition-colors cursor-pointer',
                 'text-xs font-medium',
                 selectedGroupId === group.id
-                  ? 'text-zinc-100'
-                  : 'text-zinc-400'
+                  ? 'text-foreground'
+                  : 'text-muted-foreground'
               )}
             >
               <div className="flex items-center gap-2">
@@ -100,8 +100,8 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
                   size={14}
                   className={cn(
                     selectedGroupId === group.id
-                      ? 'text-indigo-400'
-                      : 'text-zinc-500'
+                      ? 'text-primary'
+                      : 'text-muted-foreground'
                   )}
                 />
                 <span>{group.name}</span>
@@ -111,12 +111,12 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
                   e.stopPropagation();
                   toggleProjectGroup(group.id);
                 }}
-                className="p-1 hover:bg-zinc-700 rounded transition-colors"
+                className="p-1 hover:bg-accent rounded transition-colors"
               >
                 <Icon
                   name={group.isOpen ? 'chevron-down' : 'chevron-right'}
                   size={14}
-                  className="text-zinc-500"
+                  className="text-muted-foreground"
                 />
               </button>
             </div>
@@ -127,7 +127,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
                 {group.projects.map((project) => (
                   <div
                     key={project.id}
-                    className="w-full h-9 px-6 flex items-center justify-between text-sm text-zinc-400"
+                    className="w-full h-9 px-6 flex items-center justify-between text-sm text-muted-foreground"
                   >
                     <div className="flex items-center gap-2">
                       <Icon
@@ -135,10 +135,10 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
                         size={14}
                         className={cn(
                           project.status === 'active'
-                            ? 'text-indigo-500'
+                            ? 'text-primary'
                             : project.status === 'paused'
                             ? 'text-amber-500'
-                            : 'text-zinc-500'
+                            : 'text-muted-foreground'
                         )}
                       />
                       <span>{project.name}</span>
@@ -155,10 +155,10 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
       </div>
 
       {/* Footer */}
-      <div className="h-12 border-t border-zinc-800 flex items-center px-4 bg-zinc-900">
+      <div className="h-12 border-t border-border flex items-center px-4 bg-card">
         <div className="flex items-center gap-2">
-          <Icon name="code" size={14} className="text-zinc-500" />
-          <span className="text-xs text-zinc-500">
+          <Icon name="code" size={14} className="text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">
             {filteredGroups.reduce((acc, g) => acc + g.projects.length, 0)}{' '}
             projects
           </span>

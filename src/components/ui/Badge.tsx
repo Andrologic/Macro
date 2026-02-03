@@ -14,7 +14,7 @@ export const Badge = React.forwardRef<HTMLDivElement, BadgeProps>(
   ) => {
     const variants = {
       default: 'bg-elevated text-text-secondary',
-      primary: 'bg-accent-primary/10 text-accent-primary',
+      primary: 'bg-primary/10 text-primary',
       success: 'bg-accent-success/10 text-accent-success',
       warning: 'bg-accent-warning/10 text-accent-warning',
       error: 'bg-accent-error/10 text-accent-error',
