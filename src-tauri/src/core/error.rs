@@ -39,6 +39,9 @@ pub enum BackendError {
     #[error("File system Is a directory: {message}")]
     FilesystemIsDirectory { message: String },
 
+    #[error("File system Is a file: {message}")]
+    FilesystemIsFile { message: String },
+
     #[error("File system Already exists: {message}")]
     FilesystemAlreadyExists { message: String },
 
