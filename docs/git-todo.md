@@ -46,7 +46,7 @@ The Git module provides operations on Git repositories using libgit2. It must:
   - Cleanup stale repositories periodically
 
 ### Error Handling
-- [ ] Add Git-specific error variants in `core/error.rs` (if not already covered)
+- [x] Add Git-specific error variants in `core/error.rs` (if not already covered)
   - `Git::RepositoryNotFound`
   - `Git::RepositoryNotClean`
   - `Git::BranchNotFound`
@@ -72,12 +72,12 @@ The Git module provides operations on Git repositories using libgit2. It must:
   - Return branch name if not detached
   - Return `None` if detached HEAD
 
-- [ ] Implement `get_status(&self) -> Result<git2::Status>`
+- [x] Implement `get_status(&self) -> Result<git2::Status>`
   - Get working tree status
   - Include staged and unstaged changes
   - Include untracked files
 
-- [ ] Implement `get_diff(&self, old_tree: Option<&git2::Tree>, new_tree: Option<&git2::Tree>) -> Result<git2::Diff>`
+- [x] Implement `get_diff(&self, old_tree: Option<&git2::Tree>, new_tree: Option<&git2::Tree>) -> Result<git2::Diff>`
   - Create diff between two trees
   - Support working tree vs HEAD
   - Support commit vs commit
@@ -246,10 +246,10 @@ async fn git_checkout(
 - [x] Return success or appropriate error
 
 ### Error Handling
-- [ ] Branch not found → `BackendError::Git { message: "Branch not found" }`
-- [ ] Commit not found → `BackendError::Git { message: "Commit not found" }`
-- [ ] Merge conflict → `BackendError::Git { message: "Checkout resulted in merge conflicts" }`
-- [ ] Uncommitted changes would be lost → `BackendError::Git { message: "Please commit or stash your changes first" }`
+- [x] Branch not found → `BackendError::Git { message: "Branch not found" }`
+- [x] Commit not found → `BackendError::Git { message: "Commit not found" }`
+- [x] Merge conflict → `BackendError::Git { message: "Checkout resulted in merge conflicts" }`
+- [x] Uncommitted changes would be lost → `BackendError::Git { message: "Please commit or stash your changes first" }`
 
 ---
 
