@@ -39,6 +39,7 @@ git2 = "0.18"
 
 # File System
 notify = "6"
+walkdir = "2"
 
 # Indexing (placeholder - will add tree-sitter later)
 # tree-sitter = "0.20"

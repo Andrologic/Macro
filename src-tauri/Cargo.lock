@@ -2429,6 +2429,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]
