@@ -38,6 +38,36 @@ export interface DbProviderConfig {
   updated_at: string;
 }
 
+export interface DbAiModel {
+  id: string;
+  provider_id: string;
+  model_id: string;
+  name: string;
+  description: string | null;
+  owned_by: string | null;
+  pricing_prompt: string | null;
+  pricing_completion: string | null;
+  pricing_request: string | null;
+  is_enabled: boolean;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface DbProviderSettings {
+  provider_id: string;
+  filter_free_models: boolean;
+}
+
+export interface DbProviderModelInput {
+  model_id: string;
+  name: string;
+  description?: string | null;
+  owned_by?: string | null;
+  pricing_prompt?: string | null;
+  pricing_completion?: string | null;
+  pricing_request?: string | null;
+}
+
 // ============ Conversations ============
 
 export async function listConversations(): Promise<DbConversation[]> {
@@ -147,6 +177,60 @@ export async function createProviderConfig(params: {
 
 export async function deleteProviderConfig(id: string): Promise<void> {
   return invoke('db_delete_provider_config', { id });
+}
+
+// ============ Provider Models ============
+
+export async function listProviderModels(providerId: string): Promise<DbAiModel[]> {
+  return invoke<DbAiModel[]>('db_list_provider_models', { providerId });
+}
+
+export async function upsertProviderModels(params: {
+  providerId: string;
+  models: DbProviderModelInput[];
+}): Promise<DbAiModel[]> {
+  return invoke<DbAiModel[]>('db_upsert_provider_models', {
+    providerId: params.providerId,
+    models: params.models,
+  });
+}
+
+export async function setProviderModelEnabled(params: {
+  providerId: string;
+  modelId: string;
+  enabled: boolean;
+}): Promise<void> {
+  return invoke('db_set_provider_model_enabled', {
+    providerId: params.providerId,
+    modelId: params.modelId,
+    enabled: params.enabled,
+  });
+}
+
+export async function setAllProviderModelsEnabled(params: {
+  providerId: string;
+  enabled: boolean;
+}): Promise<void> {
+  return invoke('db_set_all_provider_models_enabled', {
+    providerId: params.providerId,
+    enabled: params.enabled,
+  });
+}
+
+// ============ Provider Settings ============
+
+export async function getProviderSettings(providerId: string): Promise<DbProviderSettings> {
+  return invoke<DbProviderSettings>('db_get_provider_settings', { providerId });
+}
+
+export async function updateProviderSettings(params: {
+  providerId: string;
+  filterFreeModels: boolean;
+}): Promise<void> {
+  return invoke('db_update_provider_settings', {
+    providerId: params.providerId,
+    filterFreeModels: params.filterFreeModels,
+  });
 }
 
 // ============ Utility ============

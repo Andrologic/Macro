@@ -333,3 +333,106 @@ pub async fn db_delete_provider_config(
         .await
         .map_err(Into::into)
 }
+
+// ============ AI MODELS ============
+
+#[tauri::command]
+pub async fn db_list_provider_models(
+    pool: State<'_, DbPool>,
+    provider_id: String,
+) -> CommandResult<Vec<AiModel>> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::list_models_by_provider(pool, &provider_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_upsert_provider_models(
+    pool: State<'_, DbPool>,
+    provider_id: String,
+    models: Vec<ProviderModelInput>,
+) -> CommandResult<Vec<AiModel>> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::upsert_provider_models(pool, &provider_id, &models)
+        .await
+        .map_err(CommandError::from)?;
+
+    repository::list_models_by_provider(pool, &provider_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_set_provider_model_enabled(
+    pool: State<'_, DbPool>,
+    provider_id: String,
+    model_id: String,
+    enabled: bool,
+) -> CommandResult<()> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::set_model_enabled(pool, &provider_id, &model_id, enabled)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_set_all_provider_models_enabled(
+    pool: State<'_, DbPool>,
+    provider_id: String,
+    enabled: bool,
+) -> CommandResult<()> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::set_all_models_enabled(pool, &provider_id, enabled)
+        .await
+        .map_err(Into::into)
+}
+
+// ============ PROVIDER SETTINGS ============
+
+#[tauri::command]
+pub async fn db_get_provider_settings(
+    pool: State<'_, DbPool>,
+    provider_id: String,
+) -> CommandResult<ProviderSettings> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::get_provider_settings(pool, &provider_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_update_provider_settings(
+    pool: State<'_, DbPool>,
+    provider_id: String,
+    filter_free_models: bool,
+) -> CommandResult<()> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::update_provider_settings(pool, &provider_id, filter_free_models)
+        .await
+        .map_err(Into::into)
+}

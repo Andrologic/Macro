@@ -57,6 +57,10 @@ async fn create_pool(db_path: &PathBuf) -> DbResult<SqlitePool> {
 
 /// Run database migrations
 async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
+    sqlx::query("PRAGMA foreign_keys = ON;")
+        .execute(pool)
+        .await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS conversations (
@@ -110,6 +114,49 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
             is_local INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS ai_models (
+            id TEXT PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            owned_by TEXT,
+            pricing_prompt TEXT,
+            pricing_completion TEXT,
+            pricing_request TEXT,
+            is_enabled INTEGER DEFAULT 1,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            FOREIGN KEY (provider_id) REFERENCES provider_configs(id) ON DELETE CASCADE
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_ai_models_provider
+        ON ai_models(provider_id);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS provider_settings (
+            provider_id TEXT PRIMARY KEY,
+            filter_free_models INTEGER DEFAULT 0,
+            FOREIGN KEY (provider_id) REFERENCES provider_configs(id) ON DELETE CASCADE
         );
         "#,
     )

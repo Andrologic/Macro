@@ -271,6 +271,16 @@ export interface AIModel {
   description?: string;
   capabilities?: string[];
   owned_by?: string;
+  pricing?: {
+    prompt?: string;
+    completion?: string;
+    request?: string;
+  };
+  isFree?: boolean;
+  isEnabled?: boolean;
+  first_seen_at?: string;
+  last_seen_at?: string;
+  db_id?: string;
 }
 
 export interface ProviderConfig {
@@ -281,6 +291,11 @@ export interface ProviderConfig {
   apiKey?: string;
   isEnabled: boolean;
   isLocal: boolean;
+}
+
+export interface ProviderSettings {
+  providerId: string;
+  filterFreeModels: boolean;
 }
 
 export interface GitCommit {

@@ -23,9 +23,16 @@ export const AIView: React.FC = () => {
   const { t } = useTranslation();
   const {
     providerConfigs,
-    // connectionStatus, // might not be needed if we don't show global status
+    connectionStatus,
     // isLoading,
     loadProviderConfigs,
+    loadProviderModels,
+    scanModelsForProvider,
+    modelsByProvider,
+    providerSettingsById,
+    setProviderModelEnabled,
+    setAllProviderModelsEnabled,
+    updateProviderSettings,
     updateProviderConfig,
     createProviderConfig,
     deleteProviderConfig,
@@ -43,6 +50,12 @@ export const AIView: React.FC = () => {
     loadProviderConfigs();
   }, [loadProviderConfigs]);
 
+  useEffect(() => {
+    providerConfigs.forEach((provider) => {
+      loadProviderModels(provider.id);
+    });
+  }, [providerConfigs, loadProviderModels]);
+
   const filteredProviders = useMemo(() => {
     const query = searchQuery.toLowerCase();
     return providerConfigs.filter(
@@ -52,6 +65,23 @@ export const AIView: React.FC = () => {
         p.baseUrl.toLowerCase().includes(query)
     );
   }, [providerConfigs, searchQuery]);
+
+  const getProviderStatus = (provider: ProviderConfig) => {
+    if (!provider.isEnabled) {
+      return { label: 'Disabled', dot: 'bg-muted-foreground', text: 'text-muted-foreground' };
+    }
+    if (!provider.apiKey) {
+      return { label: 'No key', dot: 'bg-orange-500', text: 'text-orange-600' };
+    }
+    const status = connectionStatus[provider.id] ?? 'offline';
+    if (status === 'checking') {
+      return { label: 'Checking', dot: 'bg-blue-500', text: 'text-blue-600' };
+    }
+    if (status === 'online') {
+      return { label: 'Active', dot: 'bg-emerald-500', text: 'text-emerald-600' };
+    }
+    return { label: 'Offline', dot: 'bg-red-500', text: 'text-red-600' };
+  };
 
   const handleEdit = (config: ProviderConfig) => {
     setEditingProvider({
@@ -90,7 +120,7 @@ export const AIView: React.FC = () => {
         await createProviderConfig({
           name: editingProvider.name,
           baseUrl: editingProvider.baseUrl,
-          apiKey: editingProvider.apiKey || undefined,
+          apiKey: editingProvider.apiKey,
           isEnabled: editingProvider.isEnabled,
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
@@ -100,7 +130,7 @@ export const AIView: React.FC = () => {
         await updateProviderConfig(editingProvider.id, {
           name: editingProvider.name,
           baseUrl: editingProvider.baseUrl,
-          apiKey: editingProvider.apiKey || undefined,
+          apiKey: editingProvider.apiKey,
           isEnabled: editingProvider.isEnabled,
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
@@ -281,36 +311,149 @@ export const AIView: React.FC = () => {
        </div>
 
        <div className="grid grid-cols-1 gap-3">
-           {filteredProviders.map(provider => (
-               <div key={provider.id} className="flex items-center justify-between p-4 bg-card border border-border rounded-xl">
-                   <div className="flex items-center gap-4">
-                       <div className={cn(
-                           "w-10 h-10 rounded-lg flex items-center justify-center",
-                           provider.isEnabled ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
-                       )}>
-                           <Icon name="cpu" size={20} />
-                       </div>
+           {filteredProviders.map(provider => {
+               const status = getProviderStatus(provider);
+               const models = modelsByProvider[provider.id] || [];
+               const settings = providerSettingsById[provider.id];
+               const showFreeOnly = provider.providerType === 'openrouter' && settings?.filterFreeModels;
+               const filteredModels = showFreeOnly
+                 ? models.filter((model) => model.isFree)
+                 : models;
+               const hasKey = !!provider.apiKey;
+
+               return (
+                 <div key={provider.id} className="bg-card border border-border rounded-xl">
+                   <div className="flex items-center justify-between p-4">
+                     <div className="flex items-center gap-4">
+                         <div className={cn(
+                             "w-10 h-10 rounded-lg flex items-center justify-center",
+                             provider.isEnabled ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
+                         )}>
+                             <Icon name="cpu" size={20} />
+                         </div>
+                         <div>
+                             <h4 className="font-medium text-foreground">{provider.name}</h4>
+                             <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                 <span className="capitalize">{provider.providerType}</span>
+                                 <span>•</span>
+                                 <span>{provider.baseUrl}</span>
+                             </div>
+                         </div>
+                     </div>
+                     
+                     <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-1.5 px-2 py-1 bg-muted/50 rounded-md">
+                              <div className={cn("w-2 h-2 rounded-full", status.dot)} />
+                              <span className={cn("text-xs font-medium", status.text)}>{status.label}</span>
+                          </div>
+                          <Button variant="ghost" size="sm" onClick={() => handleEdit(provider)}>
+                              Edit
+                          </Button>
+                     </div>
+                   </div>
+
+                   <div className="border-t border-border px-4 py-3">
+                     <div className="flex items-center justify-between mb-3">
                        <div>
-                           <h4 className="font-medium text-foreground">{provider.name}</h4>
-                           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                               <span className="capitalize">{provider.providerType}</span>
-                               <span>•</span>
-                               <span>{provider.baseUrl}</span>
-                           </div>
+                         <h5 className="text-sm font-medium">Models</h5>
+                         <p className="text-xs text-muted-foreground">
+                           {models.length} total • {models.filter((m) => m.isEnabled !== false).length} enabled
+                         </p>
                        </div>
+                       <div className="flex items-center gap-2">
+                         {provider.providerType === 'openrouter' && (
+                           <div className="flex items-center gap-2 pr-2 border-r border-border">
+                             <span className="text-xs text-muted-foreground">Free only</span>
+                             <Switch
+                               checked={!!settings?.filterFreeModels}
+                               onCheckedChange={(checked) =>
+                                 updateProviderSettings(provider.id, { filterFreeModels: checked })
+                               }
+                             />
+                           </div>
+                         )}
+                         <Button
+                           variant="secondary"
+                           size="sm"
+                           onClick={async () => {
+                             if (showFreeOnly) {
+                               await Promise.all(
+                                 filteredModels.map((model) =>
+                                   setProviderModelEnabled(provider.id, model.id, true)
+                                 )
+                               );
+                               return;
+                             }
+                             await setAllProviderModelsEnabled(provider.id, true);
+                           }}
+                           disabled={filteredModels.length === 0}
+                         >
+                           Enable all
+                         </Button>
+                         <Button
+                           variant="secondary"
+                           size="sm"
+                           onClick={async () => {
+                             if (showFreeOnly) {
+                               await Promise.all(
+                                 filteredModels.map((model) =>
+                                   setProviderModelEnabled(provider.id, model.id, false)
+                                 )
+                               );
+                               return;
+                             }
+                             await setAllProviderModelsEnabled(provider.id, false);
+                           }}
+                           disabled={filteredModels.length === 0}
+                         >
+                           Disable all
+                         </Button>
+                         <Button
+                           variant="ghost"
+                           size="sm"
+                           onClick={() => scanModelsForProvider(provider.id)}
+                           disabled={!hasKey}
+                         >
+                           Refresh
+                         </Button>
+                       </div>
+                     </div>
+
+                     <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                       {filteredModels.map((model) => (
+                         <div key={model.id} className="flex items-center justify-between p-2 rounded-md border border-border/60 bg-muted/30">
+                           <div>
+                             <div className="flex items-center gap-2">
+                               <span className="text-sm font-medium text-foreground">{model.name || model.id}</span>
+                               {model.isFree && (
+                                 <span className="px-2 py-0.5 text-[10px] rounded-full bg-emerald-500/10 text-emerald-600">
+                                   Free
+                                 </span>
+                               )}
+                             </div>
+                             <div className="text-xs text-muted-foreground">{model.id}</div>
+                           </div>
+                           <Switch
+                             checked={model.isEnabled !== false}
+                             onCheckedChange={(checked) => setProviderModelEnabled(provider.id, model.id, checked)}
+                           />
+                         </div>
+                       ))}
+
+                       {filteredModels.length === 0 && (
+                         <div className="text-xs text-muted-foreground py-3">
+                           {models.length === 0
+                             ? hasKey
+                               ? 'No models yet. Refresh to scan.'
+                               : 'Add an API key to scan models.'
+                             : 'No models match the current filter.'}
+                         </div>
+                       )}
+                     </div>
                    </div>
-                   
-                   <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-1.5 px-2 py-1 bg-muted/50 rounded-md">
-                            <div className={cn("w-2 h-2 rounded-full", provider.isEnabled ? "bg-emerald-500" : "bg-orange-500")} />
-                            <span className="text-xs font-medium">{provider.isEnabled ? 'Active' : 'Disabled'}</span>
-                        </div>
-                        <Button variant="ghost" size="sm" onClick={() => handleEdit(provider)}>
-                            Edit
-                        </Button>
-                   </div>
-               </div>
-           ))}
+                 </div>
+               );
+           })}
 
            {filteredProviders.length === 0 && (
                <div className="text-center py-12 text-muted-foreground">
