@@ -1,3 +1,6 @@
+#[path = "commands/fs.rs"]
+pub mod fs;
+
 use crate::db::{models::*, repository, DbError};
 use crate::secrets;
 use serde::Serialize;

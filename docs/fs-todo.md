@@ -670,57 +670,57 @@ pub use fs::*;
 - [x] Valid relative path within workspace → returns canonical path
 - [x] Valid absolute path within workspace → returns canonical path
 - [x] Path with `../` traversing outside → returns error
-- [ ] Symlink pointing outside workspace → returns error
-- [ ] Non-existent file within workspace → returns error (or normalized path?)
-- [ ] Empty path → returns workspace root or error?
-- [ ] Path with redundant slashes (`//`) → handles gracefully
+- [x] Symlink pointing outside workspace → returns error
+- [x] Non-existent file within workspace → returns error (or normalized path?)
+- [x] Empty path → returns workspace root or error?
+- [x] Path with redundant slashes (`//`) → handles gracefully
 
 #### `normalize_path` Tests
 - [x] Path with `.` and `..` → cleaned path
-- [ ] Empty path → empty PathBuf
-- [ ] Absolute path → preserved
-- [ ] Windows path separators (if cross-platform)
+- [x] Empty path → empty PathBuf
+- [x] Absolute path → preserved
+- [x] Windows path separators (if cross-platform)
 
 #### `get_file_language` Tests
 - [x] `.rs` file → "Rust"
 - [x] Unknown extension → "Unknown"
 - [x] No extension → error
-- [ ] Case insensitive (`.RS` vs `.rs`)
-- [ ] Multiple dots (`file.test.ts`)
+- [x] Case insensitive (`.RS` vs `.rs`)
+- [x] Multiple dots (`file.test.ts`)
 
 ### 12.2 Integration Tests for Commands
 
 #### `fs_read_file` Tests
-- [ ] Read existing text file → success with content
-- [ ] Read non-existent file → `FilesystemNotFound`
-- [ ] Read file outside workspace → `FilesystemPathOutsideWorkspace`
-- [ ] Read directory → `FilesystemIsDirectory`
-- [ ] Read binary file → `is_binary: true` or error
-- [ ] Read file exceeding size limit → `FilesystemFileTooLarge`
+- [x] Read existing text file → success with content
+- [x] Read non-existent file → `FilesystemNotFound`
+- [x] Read file outside workspace → `FilesystemPathOutsideWorkspace`
+- [x] Read directory → `FilesystemIsDirectory`
+- [x] Read binary file → `is_binary: true` or error
+- [x] Read file exceeding size limit → `FilesystemFileTooLarge`
 
 #### `fs_write_file` Tests
-- [ ] Write new file → success, `created: true`
-- [ ] Overwrite existing file → success, `created: false`
-- [ ] Write with nested directories → directories created
-- [ ] Write outside workspace → `FilesystemPathOutsideWorkspace`
-- [ ] Write to read-only location → `FilesystemPermissionDenied`
+- [x] Write new file → success, `created: true`
+- [x] Overwrite existing file → success, `created: false`
+- [x] Write with nested directories → directories created
+- [x] Write outside workspace → `FilesystemPathOutsideWorkspace`
+- [x] Write to read-only location → `FilesystemPermissionDenied`
 - [ ] Atomic write verification: interrupt mid-write, verify no partial file
 
 #### `fs_list_dir` Tests
-- [ ] List empty directory → empty vec
-- [ ] List directory with files → correct entries
-- [ ] List recursively → includes nested
-- [ ] Hidden files excluded by default
-- [ ] Hidden files included when `include_hidden: true`
-- [ ] Ignored directories excluded (`.git`, `node_modules`)
-- [ ] List file (not directory) → `FilesystemIsFile`
-- [ ] List outside workspace → error
+- [x] List empty directory → empty vec
+- [x] List directory with files → correct entries
+- [x] List recursively → includes nested
+- [x] Hidden files excluded by default
+- [x] Hidden files included when `include_hidden: true`
+- [x] Ignored directories excluded (`.git`, `node_modules`)
+- [x] List file (not directory) → `FilesystemIsFile`
+- [x] List outside workspace → error
 
 #### `fs_stat` Tests
-- [ ] Stat file → all metadata correct
-- [ ] Stat directory → kind = "directory"
-- [ ] Stat symlink → detects symlink, resolves target
-- [ ] Stat non-existent → `FilesystemNotFound`
+- [x] Stat file → all metadata correct
+- [x] Stat directory → kind = "directory"
+- [x] Stat symlink → detects symlink, resolves target
+- [x] Stat non-existent → `FilesystemNotFound`
 
 #### Watcher Tests
 - [ ] Create file → event emitted
@@ -767,13 +767,13 @@ pub use fs::*;
 
 ## Completion Criteria
 
-- [ ] All core functions in `fs/mod.rs` use `BackendError`
-- [ ] All DTOs defined in `fs/dto.rs`
-- [ ] All commands implemented in `commands/fs.rs`
-- [ ] All commands registered in `lib.rs`
-- [ ] Watcher implemented and integrated
+- [x] All core functions in `fs/mod.rs` use `BackendError`
+- [x] All DTOs defined in `fs/dto.rs`
+- [x] All commands implemented in `commands/fs.rs`
+- [x] All commands registered in `lib.rs`
+- [x] Watcher implemented and integrated
 - [ ] Sandbox validation bulletproof (no escapes)
-- [ ] All tests passing
+- [x] All tests passing
 - [ ] Documentation complete
 - [ ] Tauri capabilities configured
 
@@ -782,10 +782,10 @@ pub use fs::*;
 ## Dependencies to Add (if needed)
 
 Check `src-tauri/Cargo.toml` for these:
-- [ ] `notify` - file system watching (likely already present)
-- [ ] `walkdir` - recursive directory listing
+- [x] `notify` - file system watching (likely already present)
+- [x] `walkdir` - recursive directory listing
 - [ ] `ignore` - .gitignore parsing (optional)
-- [ ] `chrono` - timestamp formatting (likely already present)
+- [x] `chrono` - timestamp formatting (likely already present)
 - [ ] `base64` - binary file encoding (if supporting base64 output)
 
 ---
