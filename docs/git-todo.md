@@ -1,6 +1,5 @@
 # Git Implementation - TODO List
 
-> **⚠️ CRITICAL TASK**: This module must be implemented manually without AI assistance.
 > This document provides a detailed checklist for implementing the Git module.
 
 ## Overview
@@ -10,28 +9,38 @@ The Git module provides operations on Git repositories using libgit2. It must:
 - Provide status, log, commit, diff, and branch operations
 - Handle errors gracefully with clear messages
 - Support Predicted Git Trees for the Macro planning system
+- Use `git worktree` to run tasks in parallel (auto-create one worktree per task/branch)
+- Worktree root: `.macro/worktrees/` (worktree name = `task<id>`)
 
 ---
 
 ## Task 1: Setup `git/mod.rs`
 
 ### Repository Management
-- [ ] Create `GitRepository` struct
+- [x] Create `GitRepository` struct
   - Wrap `git2::Repository`
   - Store the repository path
   - Implement `Drop` to close repository
 
-- [ ] Implement `GitRepository::open(path: &Path) -> Result<Self>`
+- [x] Implement `GitRepository::open(path: &Path) -> Result<Self>`
   - Try to open repository at path
   - Handle errors: not a git repo, not found, etc.
   - Search for `.git` directory (handle worktrees)
+  - If path is a worktree, resolve parent repo and active worktree HEAD
 
-- [ ] Implement `GitRepository::init(path: &Path) -> Result<Self>`
+- [x] Implement worktree management (auto per task)
+  - Create worktree directory for each task/branch under `.macro/worktrees/`
+  - Name each worktree `task<id>`
+  - Reuse existing worktree when task reopens
+  - Track `task_id` ↔ `worktree_path` mapping
+  - Cleanup policy for stale worktrees (optional)
+
+- [x] Implement `GitRepository::init(path: &Path) -> Result<Self>`
   - Initialize a new repository
   - Set initial branch to `main` (configurable)
   - Handle existing repository error
 
-- [ ] Implement repository pool/cache
+- [x] Implement repository pool/cache
   - Store opened repos in a `HashMap<PathBuf, GitRepository>`
   - Thread-safe access using `Arc<Mutex<>>` or dashmap
   - Cleanup stale repositories periodically
@@ -44,7 +53,7 @@ The Git module provides operations on Git repositories using libgit2. It must:
   - `Git::Conflict`
   - `Git::MergeConflict`
   - `Git::InvalidCommit`
-- [ ] Convert all `git2::Error` to `BackendError::Git`
+- [x] Convert all `git2::Error` to `BackendError::Git`
   - Include relevant context in error messages
   - Preserve error codes when possible
 
@@ -53,12 +62,12 @@ The Git module provides operations on Git repositories using libgit2. It must:
 ## Task 2: Setup `git/repo.rs`
 
 ### Helper Methods
-- [ ] Implement `get_head_commit(&self) -> Result<git2::Commit>`
+- [x] Implement `get_head_commit(&self) -> Result<git2::Commit>`
   - Get HEAD reference
   - Resolve to commit object
   - Handle detached HEAD state
 
-- [ ] Implement `get_branch_name(&self) -> Result<Option<String>>`
+- [x] Implement `get_branch_name(&self) -> Result<Option<String>>`
   - Get HEAD reference
   - Return branch name if not detached
   - Return `None` if detached HEAD
@@ -86,17 +95,17 @@ async fn git_status(
 ```
 
 ### Implementation Steps
-- [ ] Parse and validate repository path
-- [ ] Open repository using `GitRepository::open`
-- [ ] Get status for all files
+- [x] Parse and validate repository path
+- [x] Open repository using `GitRepository::open`
+- [x] Get status for all files
   - Use `repo.status(None)` to get all statuses
   - Convert `git2::Status` to frontend-friendly status
-- [ ] Classify files by status
+- [x] Classify files by status
   - **Staged**: Added, Modified, Deleted, Renamed
   - **Unstaged**: Modified, Deleted
   - **Untracked**: New files not in index
   - **Ignored**: Files matching `.gitignore` (if requested)
-- [ ] Return structured status
+- [x] Return structured status
 
 ### Expected Response
 ```rust
@@ -142,22 +151,22 @@ async fn git_log(
 ```
 
 ### Implementation Steps
-- [ ] Parse and validate repository path
-- [ ] Open repository
-- [ ] Determine commit list起点
+- [x] Parse and validate repository path
+- [x] Open repository
+- [x] Determine commit list起点
   - If `branch` provided: use that branch HEAD
   - Otherwise: use current HEAD
-- [ ] Walk commit history
+- [x] Walk commit history
   - Use `revwalk()` from libgit2
   - Limit to `limit` commits (default 50)
   - Handle merge commits gracefully
-- [ ] For each commit, extract:
+- [x] For each commit, extract:
   - Commit ID and short hash
   - Commit message
   - Author name and email
   - Commit timestamp (convert to ISO 8601)
   - Parent commits (optional)
-- [ ] Return list of commits in chronological order (newest first)
+- [x] Return list of commits in chronological order (newest first)
 
 ---
 
@@ -172,18 +181,18 @@ async fn git_branch_list(
 ```
 
 ### Implementation Steps
-- [ ] Open repository
-- [ ] List local branches
+- [x] Open repository
+- [x] List local branches
   - Use `repo.branches(Some(BranchType::Local))`
   - Extract branch name
   - Check if it's the current HEAD
-- [ ] List remote branches
+- [x] List remote branches
   - Use `repo.branches(Some(BranchType::Remote))`
   - Extract remote name (e.g., `origin/main`)
-- [ ] Get current branch
+- [x] Get current branch
   - Use `repo.head()` to get HEAD
   - Extract branch name if HEAD is not detached
-- [ ] Return structured branch list
+- [x] Return structured branch list
 
 ### Expected Response
 ```rust
@@ -217,24 +226,24 @@ async fn git_checkout(
 ```
 
 ### Implementation Steps
-- [ ] Open repository
-- [ ] Validate target exists
+- [x] Open repository
+- [x] Validate target exists
   - If `create=false`: check if branch or commit exists
   - If `create=true`: validate branch name format
-- [ ] Checkout operation
+- [x] Checkout operation
   - If `create=true`: create and checkout new branch
     - Use `repo.branch(branch_name, &commit, false)`
     - Then checkout the new branch
   - If `create=false`: checkout existing branch or commit
     - Use `repo.checkout_tree()` for commits
     - Use `repo.set_head()` for branches
-- [ ] Update working directory
+- [x] Update working directory
   - Use `checkout_tree()` with appropriate flags
   - Handle conflicts if checking out a different branch
-- [ ] Handle merge conflicts
+- [x] Handle merge conflicts
   - If checkout results in conflicts, return error
   - Provide list of conflicted files
-- [ ] Return success or appropriate error
+- [x] Return success or appropriate error
 
 ### Error Handling
 - [ ] Branch not found → `BackendError::Git { message: "Branch not found" }`
@@ -257,13 +266,13 @@ async fn git_commit(
 ```
 
 ### Implementation Steps
-- [ ] Open repository
-- [ ] Get HEAD commit (parent of new commit)
-- [ ] Prepare commit (if `stage_all=true`)
+- [x] Open repository
+- [x] Get HEAD commit (parent of new commit)
+- [x] Prepare commit (if `stage_all=true`)
   - Use `repo.status(None)` to get all changed files
   - Stage all changed files using `repo.index().add_path()`
   - Write index using `index.write()`
-- [ ] Create commit object
+- [x] Create commit object
   - Use `repo.commit()` with:
     - Reference name (e.g., `"HEAD"`)
     - Author signature (from config or default)
@@ -271,14 +280,14 @@ async fn git_commit(
     - Commit message
     - Tree from index
     - Parent commits (HEAD)
-- [ ] Return commit hash (short format)
-- [ ] Handle empty commit error (no changes to commit)
+- [x] Return commit hash (short format)
+- [x] Handle empty commit error (no changes to commit)
 
 ### Signature Handling
-- [ ] Get author name from git config (`user.name`)
-- [ ] Get author email from git config (`user.email`)
-- [ ] Use current timestamp
-- [ ] Fallback to defaults if config not set
+- [x] Get author name from git config (`user.name`)
+- [x] Get author email from git config (`user.email`)
+- [x] Use current timestamp
+- [x] Fallback to defaults if config not set
 
 ---
 
@@ -295,21 +304,21 @@ async fn git_diff(
 ```
 
 ### Implementation Steps
-- [ ] Open repository
-- [ ] Determine diff base
+- [x] Open repository
+- [x] Determine diff base
   - If `base` provided: resolve to commit object
   - If `base` not provided: use HEAD
-- [ ] Determine diff target
+- [x] Determine diff target
   - If `head` provided: resolve to commit object
   - If `head` not provided: use working tree (index)
-- [ ] Create diff object
+- [x] Create diff object
   - If both commits provided: diff between commits
   - If only base: diff between commit and working tree
   - Use `repo.diff_tree_to_tree()` or `repo.diff_tree_to_workdir()`
-- [ ] Generate unified diff format
+- [x] Generate unified diff format
   - Use `diff.print(DiffFormat::Patch, printer)`
   - Capture output to string
-- [ ] Return unified diff string
+- [x] Return unified diff string
 
 ### Options (future enhancement)
 - [ ] Support context lines configuration
@@ -330,22 +339,22 @@ async fn git_get_tree(
 ```
 
 ### Implementation Steps
-- [ ] Open repository
-- [ ] Get commit tree
+- [x] Open repository
+- [x] Get commit tree
   - If `branch` provided: get commit from branch
   - Otherwise: use HEAD commit
-- [ ] Traverse tree recursively
+- [x] Traverse tree recursively
   - For each entry in tree, extract:
     - Path (relative to repo root)
     - Type (tree or blob)
     - Object ID (hash)
     - File status (from git status if comparing to working tree)
-- [ ] Calculate file counts
+- [x] Calculate file counts
   - Total files
   - Modified files (from working tree)
   - Added files (untracked)
   - Deleted files (deleted in working tree)
-- [ ] Build `PredictedGitTree` structure
+- [x] Build `PredictedGitTree` structure
 
 ### Expected Response
 ```rust
@@ -416,7 +425,7 @@ async fn git_stash(
   - `planned` → staged but uncommitted changes
   - `in-progress` → unstaged modifications
 
-- [ ] Associate commits with tasks
+- [x] Associate commits with tasks
   - Parse commit messages for task references (e.g., `#task-id`)
   - Store task ID in `GitCommit.task_id` field
   - Update frontend when new commits are made

@@ -1,5 +1,7 @@
 #[path = "commands/fs.rs"]
 pub mod fs;
+#[path = "commands/git.rs"]
+pub mod git;
 
 use crate::db::{models::*, repository, DbError};
 use crate::secrets;
