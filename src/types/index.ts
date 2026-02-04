@@ -290,6 +290,9 @@ export interface GitCommit {
   author: string;
   date: string;
   status: CommitStatus;
+  parent_ids?: string[];
+  graph_depth?: number;
+  is_branch_point?: boolean;
   task_id?: string;
 }
 

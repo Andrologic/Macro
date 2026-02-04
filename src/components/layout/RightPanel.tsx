@@ -18,11 +18,19 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
   const { currentPlan, projectGroups } = useAppStore();
   const [panelView, setPanelView] = useState<PanelView>('tree');
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(null);
-  const { commits, loadCommits } = useGitStore();
+  const { trees, commitsByProject, loadTree, loadCommits } = useGitStore();
 
   useEffect(() => {
-    void loadCommits();
-  }, [loadCommits]);
+    if (!currentPlan) return;
+    const activeProjects = projectGroups
+      .flatMap((group) => group.projects)
+      .filter((project) => currentPlan.project_ids.includes(project.id));
+
+    activeProjects.forEach((project) => {
+      void loadTree(project.id);
+      void loadCommits(project.id);
+    });
+  }, [currentPlan, projectGroups, loadTree, loadCommits]);
 
   if (!currentPlan) {
     return (
@@ -99,7 +107,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
             </div>
 
             {activeProjects.map((project) => {
-              const gitTree = currentPlan.predicted_git_trees[project.id];
+              const gitTree = trees[project.id] ?? currentPlan.predicted_git_trees[project.id];
               if (!gitTree) return null;
 
               return (
@@ -130,7 +138,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
             {activeProjects.map((project) => (
               <TabsContent key={project.id} value={project.id} className="flex-1 mt-0">
                 <GitGraph
-                  commits={commits}
+                  commits={commitsByProject[project.id] ?? []}
                   selectedCommitId={selectedCommitId}
                   onCommitClick={(commit) => setSelectedCommitId(commit.id)}
                 />

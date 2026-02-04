@@ -5,12 +5,14 @@
 ## Overview
 
 The Git module provides operations on Git repositories using libgit2. It must:
-- Support multi-repo workspaces (one repo per project)
+- Support a single repo with task worktrees (one worktree per task/branch)
 - Provide status, log, commit, diff, and branch operations
 - Handle errors gracefully with clear messages
 - Support Predicted Git Trees for the Macro planning system
 - Use `git worktree` to run tasks in parallel (auto-create one worktree per task/branch)
 - Worktree root: `.macro/worktrees/` (worktree name = `task<id>`)
+
+Note historique (court) : le plan initial prévoyait du multi-repo par projet ; il a été remplacé par une stratégie worktree unique par tâche/branche.
 
 ---
 
@@ -321,9 +323,9 @@ async fn git_diff(
 - [x] Return unified diff string
 
 ### Options (future enhancement)
-- [ ] Support context lines configuration
-- [ ] Support ignoring whitespace
-- [ ] Support path filtering (diff specific files only)
+- [x] Support context lines configuration
+- [x] Support ignoring whitespace
+- [x] Support path filtering (diff specific files only)
 
 ---
 
@@ -386,9 +388,9 @@ async fn git_add(
     paths: Vec<String>,
 ) -> Result<()>
 ```
-- [ ] Stage specified files
-- [ ] Support glob patterns
-- [ ] Return error if file not found
+- [x] Stage specified files
+- [x] Support glob patterns
+- [x] Return error if file not found
 
 ### `git_reset` Command
 ```rust
@@ -399,9 +401,9 @@ async fn git_reset(
     commit: Option<String>,
 ) -> Result<()>
 ```
-- [ ] Reset to commit or HEAD
-- [ ] Support all reset modes
-- [ ] Warn on hard reset
+- [x] Reset to commit or HEAD
+- [x] Support all reset modes
+- [x] Warn on hard reset
 
 ### `git_stash` Command
 ```rust
@@ -411,16 +413,16 @@ async fn git_stash(
     message: Option<String>,
 ) -> Result<String> // Returns stash reference
 ```
-- [ ] Stash current changes
-- [ ] Support include/untracked files
-- [ ] Return stash reference
+- [x] Stash current changes
+- [x] Support include/untracked files
+- [x] Return stash reference
 
 ---
 
 ## Task 11: Integration with Macro's Predicted Git Graph
 
 ### Status Mapping
-- [ ] Map commit status to frontend expectations
+- [x] Map commit status to frontend expectations
   - `done` → committed changes
   - `planned` → staged but uncommitted changes
   - `in-progress` → unstaged modifications
@@ -431,27 +433,28 @@ async fn git_stash(
   - Update frontend when new commits are made
 
 ### Git Graph Visualization
-- [ ] Provide commit parent relationships for graph
+- [x] Provide commit parent relationships for graph
   - Include `parent_ids` in `GitCommit` response
   - Support visualizing merge commits
-- [ ] Calculate graph depth for Y-axis positioning
-- [ ] Detect branches and branch points
+- [x] Calculate graph depth for Y-axis positioning
+- [x] Detect branches and branch points
 
 ---
 
-## Task 12: Multi-Repo Support
+## Task 12: Worktree Support
 
 ### Workspace Integration
-- [ ] Store repository metadata in workspace database
-  - Table: `git_repositories (id, project_id, path, default_branch, last_commit)`
-  - Update on open/close of projects
+- [x] Store worktree metadata in workspace database
+  - Table: `git_worktrees (id, repo_id, project_id, task_id, worktree_name, path, branch, head_commit, created_at, updated_at, last_used_at, is_active, is_prunable)`
+  - Keep a minimal `git_repositories` table if needed for repo root metadata
+  - Update on task open/close and worktree reuse
 
-- [ ] Cache repository handles
+- [x] Cache repository handles
   - Keep frequently accessed repos open
   - Auto-close unused repos after timeout
   - Thread-safe access for concurrent operations
 
-- [ ] Handle submodules
+- [x] Handle submodules
   - Detect and traverse submodules
   - Provide operations on submodule repos
   - Optional: recursive status across submodules
@@ -461,17 +464,17 @@ async fn git_stash(
 ## Task 13: Security & Permissions
 
 ### Path Validation
-- [ ] Validate repository paths are within workspace
-- [ ] Prevent accessing `.git` directories directly (use Git API only)
-- [ ] Sanitize branch and tag names (prevent injection)
+- [x] Validate repository paths are within workspace
+- [x] Prevent accessing `.git` directories directly (use Git API only)
+- [x] Sanitize branch and tag names (prevent injection)
 
 ### Operation Safety
-- [ ] Warn before destructive operations (reset, hard checkout)
-- [ ] Prevent force push (remote operations)
-- [ ] Validate commit messages (optional: enforce format)
+- [x] Warn before destructive operations (reset, hard checkout)
+- [x] Prevent force push (remote operations)
+- [x] Validate commit messages (optional: enforce format)
 
 ### Configuration
-- [ ] Use safe git config defaults
+- [x] Use safe git config defaults
 - - Prevent unsafe config options
 - - Respect `.git/config` but override dangerous options
 
@@ -485,13 +488,13 @@ async fn git_stash(
 - [ ] Invalidate cache on mutations (commit, checkout, etc.)
 
 ### Async Operations
-- [ ] Use `tokio::task::spawn_blocking` for blocking git2 operations
+- [x] Use `tokio::task::spawn_blocking` for blocking git2 operations
 - [ ] Parallelize operations where possible
 - [ ] Stream large diffs instead of loading entirely in memory
 
 ### Pagination
 - [ ] Support cursor-based pagination for `git_log`
-- [ ] Limit default log size (e.g., 50 commits)
+- [x] Limit default log size (e.g., 50 commits)
 - [ ] Allow requesting older commits in batches
 
 ---
@@ -499,49 +502,49 @@ async fn git_stash(
 ## Task 15: Tests
 
 ### Unit Tests
-- [ ] Test `GitRepository::open`
+- [x] Test `GitRepository::open`
   - Valid repo → success
   - Non-git directory → error
   - Non-existent path → error
 
-- [ ] Test `GitRepository::init`
+- [x] Test `GitRepository::init`
   - Init new repo → success
   - Init existing repo → error
 
 ### Integration Tests
-- [ ] Test `git_status`
+- [x] Test `git_status`
   - Clean repo → no staged/unstaged files
   - Modified file → shows in unstaged
   - Staged file → shows in staged
   - New file → shows in untracked
 
-- [ ] Test `git_log`
+- [x] Test `git_log`
   - New repo → single commit (initial)
   - Multiple commits → returns all (limited)
   - Branch-specific log → returns commits from branch
 
-- [ ] Test `git_branch_list`
+- [x] Test `git_branch_list`
   - Default branch (`main`) listed
   - Created branches appear in list
   - Current branch marked with `is_head=true`
 
-- [ ] Test `git_checkout`
+- [x] Test `git_checkout`
   - Checkout existing branch → success
   - Checkout non-existent branch → error
   - Create and checkout new branch → success
   - Checkout commit (detached HEAD) → success
 
-- [ ] Test `git_commit`
+- [x] Test `git_commit`
   - Commit staged changes → success
   - Commit with message → stores message
   - Empty commit (no changes) → error
 
-- [ ] Test `git_diff`
+- [x] Test `git_diff`
   - Diff working tree vs HEAD → shows changes
   - Diff between commits → shows changes
   - No changes → empty diff
 
-- [ ] Test `git_get_tree`
+- [x] Test `git_get_tree`
   - Empty repo → minimal tree
   - Repo with files → lists all
   - Modified files → status = "modified"
@@ -558,18 +561,18 @@ async fn git_stash(
 
 ## Task 16: Documentation
 
-- [ ] Document command signatures in `commands/git.rs`
-- [ ] Add Rust doc comments to all public functions
-- [ ] Document `GitRepository` API
-- [ ] Document error codes and their meanings
-- [ ] Create examples for common Git workflows
-- [ ] Document multi-repo architecture
+- [x] Document command signatures in `commands/git.rs`
+- [x] Add Rust doc comments to all public functions
+- [x] Document `GitRepository` API
+- [x] Document error codes and their meanings
+- [x] Create examples for common Git workflows
+- [x] Document worktree architecture
 
 ---
 
 ## Task 17: Integration with Frontend
 
-- [ ] Update frontend Git service to use real IPC commands
+- [x] Update frontend Git service to use real IPC commands
   - Replace mock implementations
   - Handle `BackendError::Git` responses
   - Update Git store with real data
@@ -587,13 +590,13 @@ async fn git_stash(
 
 ## Completion Criteria
 
-- [ ] All core commands implemented and tested
-- [ ] Multi-repo support working
-- [ ] Predicted Git Trees accurate
-- [ ] Error handling comprehensive
+- [x] All core commands implemented and tested
+- [x] Worktree support working
+- [x] Predicted Git Trees accurate
+- [x] Error handling comprehensive
 - [ ] Frontend successfully uses all Git commands
 - [ ] Performance acceptable on large repos
-- [ ] Documentation complete
+- [x] Documentation complete
 
 ---
 

@@ -84,6 +84,10 @@ pub fn run() {
             commands::db_update_provider_config,
             commands::db_create_provider_config,
             commands::db_delete_provider_config,
+            // Git metadata commands
+            commands::db_upsert_git_repository,
+            commands::db_upsert_git_worktree,
+            commands::db_list_git_worktrees,
             // File System commands
             commands::fs::fs_read_file,
             commands::fs::fs_write_file,
@@ -100,6 +104,9 @@ pub fn run() {
             commands::git::git_branch_list,
             commands::git::git_checkout,
             commands::git::git_commit,
+            commands::git::git_add,
+            commands::git::git_reset,
+            commands::git::git_stash,
             commands::git::git_diff,
             commands::git::git_get_tree,
         ])

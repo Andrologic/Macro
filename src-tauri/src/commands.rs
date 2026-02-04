@@ -338,3 +338,50 @@ pub async fn db_delete_provider_config(
         .await
         .map_err(Into::into)
 }
+
+// ============ GIT METADATA ============
+
+#[tauri::command]
+pub async fn db_upsert_git_repository(
+    pool: State<'_, DbPool>,
+    input: CreateGitRepositoryInput,
+) -> CommandResult<GitRepositoryRecord> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::upsert_git_repository(pool, input)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_upsert_git_worktree(
+    pool: State<'_, DbPool>,
+    input: CreateGitWorktreeInput,
+) -> CommandResult<GitWorktreeRecord> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::upsert_git_worktree(pool, input)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_list_git_worktrees(
+    pool: State<'_, DbPool>,
+    project_id: String,
+) -> CommandResult<Vec<GitWorktreeRecord>> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::list_git_worktrees_by_project(pool, &project_id)
+        .await
+        .map_err(Into::into)
+}
