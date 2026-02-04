@@ -11,6 +11,7 @@ use crate::core::error::{BackendError, Result};
 pub mod repo;
 
 #[derive(Clone)]
+/// Shared Git state with repository/worktree caches.
 pub struct GitState {
 	inner: Arc<GitStateInner>,
 }
@@ -31,6 +32,7 @@ impl GitState {
 		}
 	}
 
+	/// Open a repository and cache its handle.
 	pub fn open_repo(&self, path: &Path) -> Result<Arc<Mutex<Repository>>> {
 		let canonical = path.to_path_buf();
 		let mut repos = self
@@ -136,6 +138,7 @@ pub struct GitRepository {
 }
 
 impl GitRepository {
+	/// Open an existing Git repository from a path.
 	#[allow(dead_code)]
 	pub fn open(path: &Path) -> Result<Self> {
 		let repo = Repository::discover(path).or_else(|_| Repository::open(path))?;
@@ -150,6 +153,7 @@ impl GitRepository {
 		})
 	}
 
+	/// Initialize a new Git repository at the given path.
 	#[allow(dead_code)]
 	pub fn init(path: &Path) -> Result<Self> {
 		if path.join(".git").exists() {
@@ -205,5 +209,39 @@ mod tests {
 
 		assert!(worktree_path.ends_with(Path::new(".macro/worktrees/task123")));
 		assert!(worktree_path.join(".git").exists());
+	}
+
+	#[test]
+	fn test_git_repository_open() {
+		let temp = TempDir::new().expect("temp dir");
+		let _repo = init_repo(temp.path());
+
+		let opened = GitRepository::open(temp.path()).expect("open repo");
+		assert!(opened.path.exists());
+	}
+
+	#[test]
+	fn test_git_repository_open_not_git() {
+		let temp = TempDir::new().expect("temp dir");
+		assert!(GitRepository::open(temp.path()).is_err());
+	}
+
+	#[test]
+	fn test_git_repository_open_missing_path() {
+		let temp = TempDir::new().expect("temp dir");
+		let missing = temp.path().join("missing");
+		assert!(GitRepository::open(&missing).is_err());
+	}
+
+	#[test]
+	fn test_git_repository_init() {
+		let temp = TempDir::new().expect("temp dir");
+		let repo_path = temp.path().join("repo");
+		std::fs::create_dir_all(&repo_path).unwrap();
+
+		let created = GitRepository::init(&repo_path).expect("init repo");
+		assert!(created.path.join(".git").exists());
+
+		assert!(GitRepository::init(&repo_path).is_err());
 	}
 }

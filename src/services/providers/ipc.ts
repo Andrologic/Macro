@@ -14,6 +14,8 @@ import type {
   ChatCompletionRequestDto,
   ChatCompletionResponseDto,
 } from '../contracts/dtos';
+import { useAppStore } from '../../stores/useAppStore';
+import * as tauriIpc from '../tauriIpc';
 
 const notReady = () => {
   throw {
@@ -30,11 +32,28 @@ export const listMessages = async (): Promise<MessagesDto> => notReady();
 
 export const listTasks = async (): Promise<TasksDto> => notReady();
 
-export const getGitTreeForProject = async (): Promise<GitTreeDto> => notReady();
+export const getGitTreeForProject = async (projectId: string): Promise<GitTreeDto> => {
+  const project = useAppStore.getState().getProjectById(projectId);
+  if (!project) {
+    throw { code: 'PROJECT_NOT_FOUND', message: `Unknown project: ${projectId}` };
+  }
+  const tree = await tauriIpc.gitGetTree({ repoPath: project.path });
+  return { tree };
+};
 
 export const getFileContent = async (path: string): Promise<FileContentDto> => notReady();
 
-export const listCommits = async (): Promise<CommitsDto> => notReady();
+export const listCommits = async (projectId?: string): Promise<CommitsDto> => {
+  if (!projectId) {
+    throw { code: 'PROJECT_NOT_FOUND', message: 'Project id is required' };
+  }
+  const project = useAppStore.getState().getProjectById(projectId);
+  if (!project) {
+    throw { code: 'PROJECT_NOT_FOUND', message: `Unknown project: ${projectId}` };
+  }
+  const commits = await tauriIpc.gitLog({ repoPath: project.path });
+  return { commits };
+};
 
 export const listProviders = async (): Promise<ProvidersDto> => notReady();
 

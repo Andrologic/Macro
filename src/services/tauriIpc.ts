@@ -4,6 +4,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import type { PredictedGitTree, GitCommit } from '../types';
 
 // ============ Types ============
 
@@ -36,6 +37,33 @@ export interface DbProviderConfig {
   is_local: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface GitFileStatus {
+  path: string;
+  status: string;
+  old_path?: string | null;
+}
+
+export interface GitStatusDto {
+  branch: string;
+  head_commit: GitCommit | null;
+  staged_files: GitFileStatus[];
+  unstaged_files: GitFileStatus[];
+  untracked_files: GitFileStatus[];
+  is_clean: boolean;
+}
+
+export interface GitBranchDto {
+  name: string;
+  is_head: boolean;
+  commit: string;
+}
+
+export interface GitBranchesDto {
+  local: GitBranchDto[];
+  remote: GitBranchDto[];
+  current: string | null;
 }
 
 // ============ Conversations ============
@@ -147,6 +175,111 @@ export async function createProviderConfig(params: {
 
 export async function deleteProviderConfig(id: string): Promise<void> {
   return invoke('db_delete_provider_config', { id });
+}
+
+// ============ Git ============
+
+export async function gitStatus(repoPath: string): Promise<GitStatusDto> {
+  return invoke<GitStatusDto>('git_status', { repoPath });
+}
+
+export async function gitLog(params: {
+  repoPath: string;
+  limit?: number;
+  branch?: string;
+}): Promise<GitCommit[]> {
+  return invoke<GitCommit[]>('git_log', {
+    repoPath: params.repoPath,
+    limit: params.limit ?? null,
+    branch: params.branch ?? null,
+  });
+}
+
+export async function gitBranchList(repoPath: string): Promise<GitBranchesDto> {
+  return invoke<GitBranchesDto>('git_branch_list', { repoPath });
+}
+
+export async function gitCheckout(params: {
+  repoPath: string;
+  branchOrCommit: string;
+  create: boolean;
+}): Promise<void> {
+  return invoke('git_checkout', {
+    repoPath: params.repoPath,
+    branchOrCommit: params.branchOrCommit,
+    create: params.create,
+  });
+}
+
+export async function gitCommit(params: {
+  repoPath: string;
+  message: string;
+  stageAll: boolean;
+}): Promise<string> {
+  return invoke<string>('git_commit', {
+    repoPath: params.repoPath,
+    message: params.message,
+    stageAll: params.stageAll,
+  });
+}
+
+export async function gitAdd(params: {
+  repoPath: string;
+  paths: string[];
+}): Promise<void> {
+  return invoke('git_add', { repoPath: params.repoPath, paths: params.paths });
+}
+
+export async function gitReset(params: {
+  repoPath: string;
+  mode: 'soft' | 'mixed' | 'hard';
+  commit?: string;
+  confirm?: boolean;
+}): Promise<void> {
+  return invoke('git_reset', {
+    repoPath: params.repoPath,
+    mode: params.mode,
+    commit: params.commit ?? null,
+    confirm: params.confirm ?? null,
+  });
+}
+
+export async function gitStash(params: {
+  repoPath: string;
+  message?: string;
+}): Promise<string> {
+  return invoke<string>('git_stash', {
+    repoPath: params.repoPath,
+    message: params.message ?? null,
+  });
+}
+
+export async function gitDiff(params: {
+  repoPath: string;
+  base?: string;
+  head?: string;
+  contextLines?: number;
+  ignoreWhitespace?: boolean;
+  paths?: string[];
+}): Promise<string> {
+  return invoke<string>('git_diff', {
+    repoPath: params.repoPath,
+    base: params.base ?? null,
+    head: params.head ?? null,
+    contextLines: params.contextLines ?? null,
+    ignoreWhitespace: params.ignoreWhitespace ?? null,
+    paths: params.paths ?? null,
+  });
+}
+
+export async function gitGetTree(params: {
+  repoPath: string;
+  branch?: string;
+}): Promise<PredictedGitTree> {
+  return invoke<PredictedGitTree>('git_get_tree', {
+    repoPath: params.repoPath,
+    branch: params.branch ?? null,
+  });
 }
 
 // ============ Utility ============

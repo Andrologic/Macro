@@ -72,7 +72,7 @@ export const getFileContent = async (
   return simulate(file);
 };
 
-export const listCommits = async (): Promise<CommitsDto> => {
+export const listCommits = async (_projectId?: string): Promise<CommitsDto> => {
   return simulate({ commits: mockCommits });
 };
 

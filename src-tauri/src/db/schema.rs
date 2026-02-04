@@ -46,3 +46,31 @@ pub struct IndexJob {
     pub updated_at: DateTime<Utc>,
     pub error_message: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct GitRepositoryRecord {
+    pub id: String,
+    pub project_id: String,
+    pub path: String,
+    pub default_branch: Option<String>,
+    pub last_commit: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct GitWorktreeRecord {
+    pub id: String,
+    pub repo_id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub worktree_name: String,
+    pub path: String,
+    pub branch: String,
+    pub head_commit: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub is_active: bool,
+    pub is_prunable: bool,
+}
