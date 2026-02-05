@@ -35,6 +35,29 @@ pub struct ProviderConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiModel {
+    pub id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub owned_by: Option<String>,
+    pub pricing_prompt: Option<String>,
+    pub pricing_completion: Option<String>,
+    pub pricing_request: Option<String>,
+    pub is_enabled: bool,
+    pub is_manual: bool,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSettings {
+    pub provider_id: String,
+    pub filter_free_models: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateConversationInput {
     pub title: Option<String>,
 }
@@ -103,4 +126,15 @@ pub struct CreateGitWorktreeInput {
     pub head_commit: Option<String>,
     pub is_active: bool,
     pub is_prunable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderModelInput {
+    pub model_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub owned_by: Option<String>,
+    pub pricing_prompt: Option<String>,
+    pub pricing_completion: Option<String>,
+    pub pricing_request: Option<String>,
 }

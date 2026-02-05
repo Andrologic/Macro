@@ -122,7 +122,11 @@ const TaskItem: React.FC<TaskItemProps> = ({ task, isSelected, onSelect, blocked
   );
 };
 
-export const TaskQueue: React.FC<TaskQueueProps> = ({ className }) => {
+// Performance: Memoize TaskItem to prevent re-renders when other tasks change
+const MemoizedTaskItem = React.memo(TaskItem);
+
+// Use memoized version in the component
+const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const { t } = useTranslation();
   const { selectedGroupId, selectedProjectId, selectedTaskId, setSelectedTask } = useAppStore();
   const [filter, setFilter] = useState<TaskStatus | 'all'>('all');
@@ -262,7 +266,7 @@ export const TaskQueue: React.FC<TaskQueueProps> = ({ className }) => {
           </div>
         ) : (
           filteredTasks.map((task) => (
-            <TaskItem
+            <MemoizedTaskItem
               key={task.id}
               task={task}
               isSelected={selectedTaskId === task.id}
@@ -287,5 +291,8 @@ export const TaskQueue: React.FC<TaskQueueProps> = ({ className }) => {
   );
 };
 
-// Export both named and default for lazy loading compatibility
+// Performance: Memoize the entire component to prevent re-renders
+export const TaskQueue = React.memo(TaskQueueBase);
+
+// Export default for lazy loading compatibility
 export default TaskQueue;

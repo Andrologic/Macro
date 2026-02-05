@@ -1,13 +1,59 @@
 import { create } from 'zustand';
-import { ProviderConfig, AIProvider, AIModel } from '../types';
+import { ProviderConfig, AIProvider, AIModel, ProviderSettings } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import { fetchModelsFromProvider, testProviderConnection } from '../services/providerApi';
+
+const isZeroPrice = (value?: string | null): boolean => {
+  if (value === null || value === undefined) return false;
+  const numeric = Number(value);
+  return !Number.isNaN(numeric) && numeric === 0;
+};
+
+const isFreePricing = (pricing?: { prompt?: string; completion?: string; request?: string }): boolean => {
+  if (!pricing) return false;
+  const promptFree = isZeroPrice(pricing.prompt);
+  const completionFree = isZeroPrice(pricing.completion);
+  const requestFree = pricing.request == null ? true : isZeroPrice(pricing.request);
+  return promptFree && completionFree && requestFree;
+};
+
+const computeIsFreeModel = (model: AIModel): boolean => {
+  if (model.id.endsWith(':free')) return true;
+  return isFreePricing(model.pricing);
+};
+
+const normalizeDbModel = (model: tauriIpc.DbAiModel): AIModel => {
+  const normalized: AIModel = {
+    id: model.model_id,
+    name: model.name,
+    provider_id: model.provider_id,
+    description: model.description ?? undefined,
+    owned_by: model.owned_by ?? undefined,
+    pricing: {
+      prompt: model.pricing_prompt ?? undefined,
+      completion: model.pricing_completion ?? undefined,
+      request: model.pricing_request ?? undefined,
+    },
+    isEnabled: model.is_enabled,
+    isManual: model.is_manual,
+    first_seen_at: model.first_seen_at,
+    last_seen_at: model.last_seen_at,
+    db_id: model.id,
+  };
+  return { ...normalized, isFree: computeIsFreeModel(normalized) };
+};
+
+const getFirstEnabledModelId = (models: AIModel[]): string | null => {
+  const enabled = models.find((m) => m.isEnabled !== false);
+  return enabled?.id ?? null;
+};
 
 interface ProviderStore {
   // State
   providerConfigs: ProviderConfig[];
   providers: AIProvider[];
   modelsByProvider: Record<string, AIModel[]>;
+  providerSettingsById: Record<string, ProviderSettings>;
   selectedProviderId: string | null;
   selectedModelId: string | null;
   isLoading: boolean;
@@ -19,6 +65,13 @@ interface ProviderStore {
   initialize: () => Promise<void>;
   loadProviderConfigs: () => Promise<void>;
   fetchModelsForProvider: (providerId: string) => Promise<AIModel[]>;
+  loadProviderModels: (providerId: string) => Promise<AIModel[]>;
+  scanModelsForProvider: (providerId: string) => Promise<AIModel[]>;
+  setProviderModelEnabled: (providerId: string, modelId: string, enabled: boolean) => Promise<void>;
+  setAllProviderModelsEnabled: (providerId: string, enabled: boolean) => Promise<void>;
+  addManualModel: (providerId: string, modelId: string, name: string) => Promise<void>;
+  loadProviderSettings: (providerId: string) => Promise<ProviderSettings | null>;
+  updateProviderSettings: (providerId: string, updates: Partial<ProviderSettings>) => Promise<void>;
   selectProvider: (providerId: string) => void;
   selectModel: (modelId: string) => void;
   cycleProvider: () => void;
@@ -35,6 +88,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   providerConfigs: [],
   providers: [],
   modelsByProvider: {},
+  providerSettingsById: {},
   selectedProviderId: null,
   selectedModelId: null,
   isLoading: false,
@@ -43,15 +97,22 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   connectionStatus: {},
 
   initialize: async () => {
-    const { loadProviderConfigs } = get();
+    const { loadProviderConfigs, loadProviderModels, scanModelsForProvider } = get();
     await loadProviderConfigs();
-    
-    // Select first enabled provider
-    const { providers, fetchModelsForProvider, selectProvider } = get();
+
+    const { providerConfigs, providers, selectProvider } = get();
+    for (const provider of providerConfigs) {
+      await loadProviderModels(provider.id);
+      const models = get().modelsByProvider[provider.id] || [];
+      const shouldScan = (provider.apiKey && provider.apiKey.trim() !== '') || provider.isLocal;
+      if (shouldScan && models.length === 0) {
+        await scanModelsForProvider(provider.id);
+      }
+    }
+
     const enabledProvider = providers.find((p) => p.isEnabled);
     if (enabledProvider) {
       selectProvider(enabledProvider.id);
-      await fetchModelsForProvider(enabledProvider.id);
     }
   },
 
@@ -81,6 +142,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         }));
 
         set({ providerConfigs, providers, isLoading: false });
+
+        for (const provider of providerConfigs) {
+          get().loadProviderSettings(provider.id);
+        }
       } else {
         // Fallback mock providers for development without Tauri
         const mockConfigs: ProviderConfig[] = [
@@ -102,6 +167,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         }));
 
         set({ providerConfigs: mockConfigs, providers, isLoading: false });
+
+        for (const provider of mockConfigs) {
+          get().loadProviderSettings(provider.id);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load providers';
@@ -110,11 +179,52 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   fetchModelsForProvider: async (providerId: string) => {
+    const { loadProviderModels } = get();
+    return loadProviderModels(providerId);
+  },
+
+  loadProviderModels: async (providerId: string) => {
+    const { modelsByProvider } = get();
+    if (tauriIpc.isTauriAvailable()) {
+      set({ isLoadingModels: true });
+      try {
+        const models = await tauriIpc.listProviderModels(providerId);
+        const normalized = models.map(normalizeDbModel);
+        set((state) => ({
+          modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+          isLoadingModels: false,
+        }));
+
+        const { selectedProviderId, selectedModelId } = get();
+        if (selectedProviderId === providerId) {
+          const selectedExists = normalized.some((m) => m.id === selectedModelId && m.isEnabled !== false);
+          if (!selectedExists) {
+            set({ selectedModelId: getFirstEnabledModelId(normalized) });
+          }
+        }
+
+        return normalized;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to load models';
+        set({ isLoadingModels: false, lastError: message });
+        return modelsByProvider[providerId] || [];
+      }
+    }
+
+    return modelsByProvider[providerId] || [];
+  },
+
+  scanModelsForProvider: async (providerId: string) => {
     const { providerConfigs, modelsByProvider } = get();
     const config = providerConfigs.find((c) => c.id === providerId);
-    
+
     if (!config) {
-      return [];
+      return modelsByProvider[providerId] || [];
+    }
+
+    const requiresApiKey = !config.isLocal;
+    if (requiresApiKey && (!config.apiKey || config.apiKey.trim() === '')) {
+      return modelsByProvider[providerId] || [];
     }
 
     set({ isLoadingModels: true });
@@ -129,38 +239,13 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         providerId: config.providerType,
       });
 
-      if (result.success) {
-        const models: AIModel[] = result.models.map((m) => ({
-          id: m.id,
-          name: m.name || m.id,
-          provider_id: providerId,
-          owned_by: m.owned_by,
-        }));
-
-        set((state) => ({
-          modelsByProvider: { ...state.modelsByProvider, [providerId]: models },
-          connectionStatus: { ...state.connectionStatus, [providerId]: 'online' },
-          isLoadingModels: false,
-          // Auto-select first model if none selected
-          selectedModelId: state.selectedModelId || models[0]?.id || null,
-        }));
-
-        // Update provider status
-        set((state) => ({
-          providers: state.providers.map((p) =>
-            p.id === providerId ? { ...p, status: 'online' } : p
-          ),
-        }));
-
-        return models;
-      } else {
+      if (!result.success) {
         set((state) => ({
           connectionStatus: { ...state.connectionStatus, [providerId]: 'offline' },
           isLoadingModels: false,
           lastError: result.error,
         }));
 
-        // Update provider status
         set((state) => ({
           providers: state.providers.map((p) =>
             p.id === providerId ? { ...p, status: 'offline' } : p
@@ -169,8 +254,77 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
         return modelsByProvider[providerId] || [];
       }
+
+      if (tauriIpc.isTauriAvailable()) {
+        const updated = await tauriIpc.upsertProviderModels({
+          providerId,
+          models: result.models.map((model) => ({
+            model_id: model.id,
+            name: model.name || model.id,
+            description: model.description ?? null,
+            owned_by: model.owned_by ?? null,
+            pricing_prompt: model.pricing?.prompt ?? null,
+            pricing_completion: model.pricing?.completion ?? null,
+            pricing_request: model.pricing?.request ?? null,
+          })),
+        });
+
+        const normalized = updated.map(normalizeDbModel);
+        set((state) => ({
+          modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+          connectionStatus: { ...state.connectionStatus, [providerId]: 'online' },
+          isLoadingModels: false,
+        }));
+
+        set((state) => ({
+          providers: state.providers.map((p) =>
+            p.id === providerId ? { ...p, status: 'online' } : p
+          ),
+        }));
+
+        const { selectedProviderId, selectedModelId } = get();
+        if (selectedProviderId === providerId) {
+          const selectedExists = normalized.some((m) => m.id === selectedModelId && m.isEnabled !== false);
+          if (!selectedExists) {
+            set({ selectedModelId: getFirstEnabledModelId(normalized) });
+          }
+        }
+
+        return normalized;
+      }
+
+      const models: AIModel[] = result.models.map((m) => {
+        const normalized = {
+          id: m.id,
+          name: m.name || m.id,
+          provider_id: providerId,
+          owned_by: m.owned_by,
+          description: m.description,
+          pricing: {
+            prompt: m.pricing?.prompt,
+            completion: m.pricing?.completion,
+            request: m.pricing?.request,
+          },
+          isEnabled: true,
+        } satisfies AIModel;
+        return { ...normalized, isFree: computeIsFreeModel(normalized) };
+      });
+
+      set((state) => ({
+        modelsByProvider: { ...state.modelsByProvider, [providerId]: models },
+        connectionStatus: { ...state.connectionStatus, [providerId]: 'online' },
+        isLoadingModels: false,
+      }));
+
+      set((state) => ({
+        providers: state.providers.map((p) =>
+          p.id === providerId ? { ...p, status: 'online' } : p
+        ),
+      }));
+
+      return models;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to fetch models';
+      const message = error instanceof Error ? error.message : 'Failed to scan models';
       set((state) => ({
         connectionStatus: { ...state.connectionStatus, [providerId]: 'offline' },
         isLoadingModels: false,
@@ -180,20 +334,138 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
+  setProviderModelEnabled: async (providerId: string, modelId: string, enabled: boolean) => {
+    if (tauriIpc.isTauriAvailable()) {
+      await tauriIpc.setProviderModelEnabled({ providerId, modelId, enabled });
+    }
+
+    set((state) => ({
+      modelsByProvider: {
+        ...state.modelsByProvider,
+        [providerId]: (state.modelsByProvider[providerId] || []).map((model) =>
+          model.id === modelId ? { ...model, isEnabled: enabled } : model
+        ),
+      },
+    }));
+
+    const { selectedProviderId, selectedModelId, modelsByProvider } = get();
+    if (selectedProviderId === providerId) {
+      const updatedModels = modelsByProvider[providerId] || [];
+      const selected = updatedModels.find((m) => m.id === selectedModelId);
+      if (!selected || selected.isEnabled === false) {
+        set({ selectedModelId: getFirstEnabledModelId(updatedModels) });
+      }
+    }
+  },
+
+  setAllProviderModelsEnabled: async (providerId: string, enabled: boolean) => {
+    if (tauriIpc.isTauriAvailable()) {
+      await tauriIpc.setAllProviderModelsEnabled({ providerId, enabled });
+    }
+
+    set((state) => ({
+      modelsByProvider: {
+        ...state.modelsByProvider,
+        [providerId]: (state.modelsByProvider[providerId] || []).map((model) => ({
+          ...model,
+          isEnabled: enabled,
+        })),
+      },
+    }));
+
+    const { selectedProviderId, modelsByProvider } = get();
+    if (selectedProviderId === providerId) {
+      const updatedModels = modelsByProvider[providerId] || [];
+      set({ selectedModelId: enabled ? getFirstEnabledModelId(updatedModels) : null });
+    }
+  },
+
+  addManualModel: async (providerId: string, modelId: string, name: string) => {
+    if (tauriIpc.isTauriAvailable()) {
+      const updated = await tauriIpc.registerManualModel({ providerId, modelId, name });
+      const normalized = updated.map(normalizeDbModel);
+      set((state) => ({
+        modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+      }));
+      return;
+    }
+
+    set((state) => ({
+      modelsByProvider: {
+        ...state.modelsByProvider,
+        [providerId]: [
+          ...(state.modelsByProvider[providerId] || []),
+          {
+            id: modelId,
+            name,
+            provider_id: providerId,
+            isEnabled: true,
+            isManual: true,
+            isFree: modelId.endsWith(':free'),
+          },
+        ],
+      },
+    }));
+  },
+
+  loadProviderSettings: async (providerId: string) => {
+    if (tauriIpc.isTauriAvailable()) {
+      try {
+        const settings = await tauriIpc.getProviderSettings(providerId);
+        const normalized: ProviderSettings = {
+          providerId: settings.provider_id,
+          filterFreeModels: settings.filter_free_models,
+        };
+        set((state) => ({
+          providerSettingsById: { ...state.providerSettingsById, [providerId]: normalized },
+        }));
+        return normalized;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to load provider settings';
+        set({ lastError: message });
+        return null;
+      }
+    }
+
+    const fallback: ProviderSettings = { providerId, filterFreeModels: false };
+    set((state) => ({
+      providerSettingsById: { ...state.providerSettingsById, [providerId]: fallback },
+    }));
+    return fallback;
+  },
+
+  updateProviderSettings: async (providerId: string, updates: Partial<ProviderSettings>) => {
+    const current = get().providerSettingsById[providerId] ?? {
+      providerId,
+      filterFreeModels: false,
+    };
+    const next: ProviderSettings = { ...current, ...updates, providerId };
+
+    if (tauriIpc.isTauriAvailable()) {
+      await tauriIpc.updateProviderSettings({
+        providerId,
+        filterFreeModels: next.filterFreeModels,
+      });
+    }
+
+    set((state) => ({
+      providerSettingsById: { ...state.providerSettingsById, [providerId]: next },
+    }));
+  },
+
   selectProvider: (providerId: string) => {
-    const { providers, fetchModelsForProvider, modelsByProvider } = get();
+    const { providers, loadProviderModels, modelsByProvider } = get();
     const provider = providers.find((p) => p.id === providerId);
     if (!provider) return;
 
-    const cachedModels = modelsByProvider[providerId];
+    const cachedModels = modelsByProvider[providerId] || [];
     set({
       selectedProviderId: providerId,
-      selectedModelId: cachedModels?.[0]?.id || null,
+      selectedModelId: getFirstEnabledModelId(cachedModels),
     });
 
-    // Fetch models if not cached
-    if (!cachedModels || cachedModels.length === 0) {
-      fetchModelsForProvider(providerId);
+    if (cachedModels.length === 0) {
+      loadProviderModels(providerId);
     }
   },
 
@@ -215,7 +487,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     const { selectedProviderId, modelsByProvider, selectedModelId } = get();
     if (!selectedProviderId) return;
 
-    const models = modelsByProvider[selectedProviderId] || [];
+    const models = (modelsByProvider[selectedProviderId] || []).filter(
+      (model) => model.isEnabled !== false
+    );
     if (models.length === 0) return;
 
     const currentIndex = models.findIndex((m) => m.id === selectedModelId);
@@ -251,6 +525,17 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             : p
         ),
       }));
+
+      const config = get().providerConfigs.find((c) => c.id === id);
+      const shouldScan =
+        (updates.apiKey && updates.apiKey.trim() !== '') || config?.isLocal === true;
+      if (shouldScan) {
+        await get().loadProviderModels(id);
+        const models = get().modelsByProvider[id] || [];
+        if (models.length === 0) {
+          await get().scanModelsForProvider(id);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update provider';
       set({ lastError: message });
@@ -292,6 +577,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           providerConfigs: [...state.providerConfigs, newConfig],
           providers: [...state.providers, newProvider],
         }));
+
+        await get().loadProviderSettings(created.id);
+
+        if (newConfig.isLocal || newConfig.apiKey) {
+          await get().scanModelsForProvider(created.id);
+        }
       } else {
         // Mock creation for development
         const id = `provider_${Date.now()}`;
@@ -309,6 +600,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           providerConfigs: [...state.providerConfigs, newConfig],
           providers: [...state.providers, newProvider],
         }));
+
+        if (newConfig.isLocal || newConfig.apiKey) {
+          await get().scanModelsForProvider(id);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create provider';
@@ -328,6 +623,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         providers: state.providers.filter((p) => p.id !== id),
         modelsByProvider: Object.fromEntries(
           Object.entries(state.modelsByProvider).filter(([key]) => key !== id)
+        ),
+        providerSettingsById: Object.fromEntries(
+          Object.entries(state.providerSettingsById).filter(([key]) => key !== id)
         ),
       }));
     } catch (error) {
