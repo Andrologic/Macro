@@ -1,15 +1,66 @@
-import React, { useMemo, createElement, useState } from 'react';
+import React, { useMemo, createElement, useState, useCallback } from 'react';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+
+// =============================================================================
+// HIGHLIGHT.JS - SYNTAX HIGHLIGHTING
+// =============================================================================
+
+import hljs from 'highlight.js/lib/core';
+
+// Import common languages
+import typescript from 'highlight.js/lib/languages/typescript';
+import javascript from 'highlight.js/lib/languages/javascript';
+import rust from 'highlight.js/lib/languages/rust';
+import python from 'highlight.js/lib/languages/python';
+import bash from 'highlight.js/lib/languages/bash';
+import json from 'highlight.js/lib/languages/json';
+import xml from 'highlight.js/lib/languages/xml';
+import css from 'highlight.js/lib/languages/css';
+import markdown from 'highlight.js/lib/languages/markdown';
+import yaml from 'highlight.js/lib/languages/yaml';
+import sql from 'highlight.js/lib/languages/sql';
+
+// Register languages
+hljs.registerLanguage('typescript', typescript);
+hljs.registerLanguage('javascript', javascript);
+hljs.registerLanguage('rust', rust);
+hljs.registerLanguage('python', python);
+hljs.registerLanguage('bash', bash);
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('xml', xml);
+hljs.registerLanguage('html', xml);
+hljs.registerLanguage('css', css);
+hljs.registerLanguage('markdown', markdown);
+hljs.registerLanguage('yaml', yaml);
+hljs.registerLanguage('sql', sql);
+
+// Language alias mapping
+const LANGUAGE_ALIASES: Record<string, string> = {
+  'ts': 'typescript',
+  'js': 'javascript',
+  'jsx': 'javascript',
+  'tsx': 'typescript',
+  'py': 'python',
+  'sh': 'bash',
+  'shell': 'bash',
+  'zsh': 'bash',
+  'yml': 'yaml',
+  'md': 'markdown',
+  'htm': 'xml',
+  'psql': 'sql',
+  'mysql': 'sql',
+};
 
 interface MarkdownRendererProps {
   content: string;
   className?: string;
 }
 
-/**
- * Thinking Block Component - VS Code style collapsible block
- */
+// =============================================================================
+// THINKING BLOCK COMPONENT
+// =============================================================================
+
 const ThinkingBlock: React.FC<{ content: string; blockKey: number }> = ({ content, blockKey: _blockKey }) => {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -47,11 +98,95 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number }> = ({ conten
   );
 };
 
-/**
- * Simple Markdown Renderer
- * Handles basic markdown formatting without external dependencies
- * Can be enhanced with react-markdown + rehype-highlight later
- */
+// =============================================================================
+// CODE BLOCK COMPONENT WITH SYNTAX HIGHLIGHTING
+// =============================================================================
+
+interface CodeBlockProps {
+  content: string;
+  language?: string;
+  blockKey: number;
+}
+
+const CodeBlock: React.FC<CodeBlockProps> = ({ content, language = 'text', blockKey }) => {
+  const [copied, setCopied] = useState(false);
+
+  const normalizedLang = useMemo(() => {
+    const lang = language.toLowerCase().trim();
+    return LANGUAGE_ALIASES[lang] || lang || 'text';
+  }, [language]);
+
+  const highlighted = useMemo(() => {
+    if (normalizedLang === 'text' || !hljs.getLanguage(normalizedLang)) {
+      // Try auto-detection for unknown languages
+      try {
+        const result = hljs.highlightAuto(content);
+        return result.value;
+      } catch {
+        return escapeHtml(content);
+      }
+    }
+    try {
+      const result = hljs.highlight(content, { language: normalizedLang });
+      return result.value;
+    } catch {
+      return escapeHtml(content);
+    }
+  }, [content, normalizedLang]);
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [content]);
+
+  const displayLang = language && language !== 'text' ? language : 'plaintext';
+
+  return (
+    <div key={blockKey} className="relative group my-3">
+      {/* Header */}
+      <div className="flex items-center justify-between bg-muted/80 px-3 py-1.5 rounded-t-lg border border-b-0 border-border">
+        <span className="text-xs text-muted-foreground font-mono capitalize">
+          {displayLang}
+        </span>
+        <button
+          onClick={handleCopy}
+          className={cn(
+            "flex items-center gap-1.5 text-xs transition-all duration-200",
+            copied 
+              ? "text-green-500" 
+              : "text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100"
+          )}
+        >
+          <Icon name={copied ? 'check' : 'copy'} size={12} />
+          {copied ? 'Copied!' : 'Copy'}
+        </button>
+      </div>
+      
+      {/* Code Content */}
+      <pre className="bg-[#1e1e1e] p-3 rounded-b-lg border border-border overflow-x-auto">
+        <code 
+          className="text-sm font-mono whitespace-pre hljs-code"
+          dangerouslySetInnerHTML={{ __html: highlighted }}
+        />
+      </pre>
+    </div>
+  );
+};
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+// =============================================================================
+// MAIN MARKDOWN RENDERER
+// =============================================================================
+
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   content,
   className,
@@ -66,6 +201,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     </div>
   );
 };
+
+// =============================================================================
+// MARKDOWN PARSING
+// =============================================================================
 
 interface ParsedBlock {
   type: 'paragraph' | 'code' | 'heading' | 'list' | 'blockquote' | 'thinking';
@@ -94,9 +233,7 @@ function splitThinkBlocks(content: string): Array<{ type: 'text' | 'thinking'; c
       break;
     }
 
-    // Case 2: Closing tag appears BEFORE any opening tag (or no opening tag exists)
-    // This handles the "missing start tag" scenario common in some streamed responses
-    // or when the model output starts directly with thinking content
+    // Case 2: Closing tag appears BEFORE any opening tag
     if (closeMatch && (!openMatch || closeMatch.index! < openMatch.index!)) {
       const splitIndex = closeMatch.index!;
       const thinkContent = remaining.slice(0, splitIndex).trim();
@@ -105,14 +242,12 @@ function splitThinkBlocks(content: string): Array<{ type: 'text' | 'thinking'; c
         blocks.push({ type: 'thinking', content: thinkContent });
       }
       
-      // Advance past the closing tag
       remaining = remaining.slice(splitIndex + closeMatch[0].length);
       continue;
     }
 
-    // Case 3: Opening tag found first (Standard case)
+    // Case 3: Opening tag found first
     if (openMatch) {
-      // Add text before the opening tag
       if (openMatch.index! > 0) {
         const textBefore = remaining.slice(0, openMatch.index!);
         if (textBefore.trim()) {
@@ -123,23 +258,20 @@ function splitThinkBlocks(content: string): Array<{ type: 'text' | 'thinking'; c
       const contentStart = openMatch.index! + openMatch[0].length;
       const rest = remaining.slice(contentStart);
       
-      // Find the matching closing tag in the rest
       const nextClose = rest.match(closeRegex);
       
       if (nextClose) {
-        // Closed think block
         const thinkContent = rest.slice(0, nextClose.index!).trim();
         if (thinkContent) {
           blocks.push({ type: 'thinking', content: thinkContent });
         }
         remaining = rest.slice(nextClose.index! + nextClose[0].length);
       } else {
-        // Unclosed think block (streaming or end of message)
         const thinkContent = rest.trim();
         if (thinkContent) {
           blocks.push({ type: 'thinking', content: thinkContent });
         }
-        break; // Nothing left
+        break;
       }
     }
   }
@@ -213,7 +345,7 @@ function parseMarkdownBlocks(content: string): ParsedBlock[] {
       continue;
     }
 
-    // Regular paragraph (collect consecutive non-empty lines)
+    // Regular paragraph
     if (line.trim()) {
       const paragraphLines: string[] = [];
       while (
@@ -262,25 +394,12 @@ function renderBlock(block: ParsedBlock, key: number): React.ReactNode {
   switch (block.type) {
     case 'code':
       return (
-        <div key={key} className="relative group my-3">
-          <div className="flex items-center justify-between bg-muted/80 px-3 py-1.5 rounded-t-lg border border-b-0 border-border">
-            <span className="text-xs text-muted-foreground font-mono">
-              {block.language}
-            </span>
-            <button
-              onClick={() => navigator.clipboard.writeText(block.content)}
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover:opacity-100"
-            >
-              <Icon name="copy" size={12} />
-              Copy
-            </button>
-          </div>
-          <pre className="bg-muted/50 p-3 rounded-b-lg border border-border overflow-x-auto">
-            <code className="text-sm font-mono text-foreground whitespace-pre">
-              {block.content}
-            </code>
-          </pre>
-        </div>
+        <CodeBlock 
+          key={key} 
+          content={block.content} 
+          language={block.language} 
+          blockKey={key} 
+        />
       );
 
     case 'heading': {
@@ -338,7 +457,6 @@ function renderBlock(block: ParsedBlock, key: number): React.ReactNode {
 }
 
 function renderInline(text: string): React.ReactNode {
-  // Simple regex-based inline formatting
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
   let key = 0;
@@ -348,7 +466,6 @@ function renderInline(text: string): React.ReactNode {
   let match;
 
   while ((match = inlineRegex.exec(text)) !== null) {
-    // Add text before match
     if (match.index > lastIndex) {
       parts.push(text.slice(lastIndex, match.index));
     }
@@ -356,7 +473,6 @@ function renderInline(text: string): React.ReactNode {
     const [fullMatch] = match;
 
     if (fullMatch.startsWith('`')) {
-      // Inline code
       parts.push(
         <code
           key={key++}
@@ -366,21 +482,18 @@ function renderInline(text: string): React.ReactNode {
         </code>
       );
     } else if (fullMatch.startsWith('**')) {
-      // Bold
       parts.push(
         <strong key={key++} className="font-semibold">
           {fullMatch.slice(2, -2)}
         </strong>
       );
     } else if (fullMatch.startsWith('*')) {
-      // Italic
       parts.push(
         <em key={key++} className="italic">
           {fullMatch.slice(1, -1)}
         </em>
       );
     } else if (fullMatch.startsWith('[')) {
-      // Link
       const linkMatch = fullMatch.match(/\[([^\]]+)\]\(([^)]+)\)/);
       if (linkMatch) {
         parts.push(
@@ -400,7 +513,6 @@ function renderInline(text: string): React.ReactNode {
     lastIndex = match.index + fullMatch.length;
   }
 
-  // Add remaining text
   if (lastIndex < text.length) {
     parts.push(text.slice(lastIndex));
   }
@@ -408,19 +520,15 @@ function renderInline(text: string): React.ReactNode {
   return parts.length > 0 ? parts : text;
 }
 
-/**
- * Estimate token count (rough approximation)
- * ~4 characters per token for English text
- */
+// =============================================================================
+// UTILITY EXPORTS
+// =============================================================================
+
 export function estimateTokens(text: string): number {
   if (!text) return 0;
-  // Simple heuristic: ~4 chars per token on average
   return Math.ceil(text.length / 4);
 }
 
-/**
- * Format token count for display
- */
 export function formatTokenCount(count: number): string {
   if (count < 1000) return count.toString();
   if (count < 10000) return `${(count / 1000).toFixed(1)}k`;

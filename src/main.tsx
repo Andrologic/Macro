@@ -5,6 +5,7 @@ import { ThemeProvider } from "./components/theme/ThemeProvider";
 import { usePerformanceMonitor } from "./hooks/usePerformanceMonitor";
 import "./i18n"; // Initialize i18n before React renders
 import "./index.css";
+import "./styles/highlight.css";
 
 // =============================================================================
 // PERFORMANCE MONITORING WRAPPER
