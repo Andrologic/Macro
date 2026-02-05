@@ -50,6 +50,7 @@ pub enum BackendError {
     FilesystemPermissionDenied { message: String },
 
     #[error("File system Directory not found: {message}")]
+    #[allow(dead_code)]
     FilesystemDirectoryNotFound { message: String },
 
     #[error("File system Is a directory: {message}")]
@@ -62,6 +63,7 @@ pub enum BackendError {
     FilesystemAlreadyExists { message: String },
 
     #[error("File system Binary file error: {message}")]
+    #[allow(dead_code)]
     FilesystemBinaryFile { message: String },
 
     #[error("File system File too large: {message}")]
@@ -74,18 +76,22 @@ pub enum BackendError {
     FilesystemDiskFull { message: String },
 
     #[error("Index error: {message}")]
+    #[allow(dead_code)]
     Index { message: String },
 
     #[error("AI provider error: {message}")]
+    #[allow(dead_code)]
     AI { message: String },
 
     #[error("Configuration error: {message}")]
     Config { message: String },
 
     #[error("Not found: {0}")]
+    #[allow(dead_code)]
     NotFound(String),
 
     #[error("Permission denied: {0}")]
+    #[allow(dead_code)]
     PermissionDenied(String),
 
     #[error("Validation error: {0}")]

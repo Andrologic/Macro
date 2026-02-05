@@ -16,11 +16,13 @@ pub struct FsWatcher {
     /// The underlying notify watcher
     _watcher: RecommendedWatcher,
     /// Workspace path being watched
+    #[allow(dead_code)]
     workspace: PathBuf,
     /// Channel sender for debouncing
+    #[allow(dead_code)]
     debounce_tx: mpsc::Sender<Event>,
     /// Handle to the debounce task
-    _debounce_handle: tokio::task::JoinHandle<()>,
+    _debounce_handle: tauri::async_runtime::JoinHandle<()>,
 }
 
 impl FsWatcher {
@@ -55,9 +57,9 @@ impl FsWatcher {
 
         info!("File system watcher started for: {:?}", workspace);
 
-        // Spawn the debounce task
+        // Spawn the debounce task using Tauri's async runtime
         let workspace_clone = workspace.clone();
-        let debounce_handle = tokio::spawn(async move {
+        let debounce_handle = tauri::async_runtime::spawn(async move {
             debounce_task(debounce_rx, app_handle, workspace_clone).await;
         });
 
@@ -70,6 +72,7 @@ impl FsWatcher {
     }
 
     /// Get the workspace path being watched
+    #[allow(dead_code)]
     pub fn workspace(&self) -> &Path {
         &self.workspace
     }

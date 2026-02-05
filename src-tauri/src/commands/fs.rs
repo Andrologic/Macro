@@ -289,7 +289,7 @@ fn should_ignore_path(path: &Path, include_hidden: bool) -> bool {
 async fn create_dir_entry_dto(
     entry_path: &Path,
     workspace: &Path,
-    base_path: &Path,
+    _base_path: &Path,
 ) -> Result<DirEntryDto, BackendError> {
     let metadata = tokio::fs::metadata(entry_path)
         .await
