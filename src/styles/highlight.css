@@ -1,0 +1,220 @@
+/* =============================================================================
+   HIGHLIGHT.JS SYNTAX HIGHLIGHTING THEME
+   A custom dark theme matching the app's design system
+   Based on VS Code Dark+ with custom accent colors
+   ============================================================================= */
+
+.hljs-code {
+  display: block;
+  overflow-x: auto;
+  padding: 0;
+  background: transparent;
+  color: #d4d4d4;
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono", Monaco, Inconsolata, monospace;
+  line-height: 1.6;
+}
+
+/* Comments */
+.hljs-comment,
+.hljs-quote {
+  color: #6a9955;
+  font-style: italic;
+}
+
+/* Keywords */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-addition {
+  color: #569cd6;
+}
+
+/* Control flow */
+.hljs-control-flow {
+  color: #c586c0;
+}
+
+/* Built-ins */
+.hljs-built_in,
+.hljs-name,
+.hljs-tag {
+  color: #4ec9b0;
+}
+
+/* Literals */
+.hljs-literal,
+.hljs-number,
+.hljs-bullet {
+  color: #b5cea8;
+}
+
+/* Strings */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet {
+  color: #ce9178;
+}
+
+/* Regex */
+.hljs-regexp {
+  color: #d16969;
+}
+
+/* Titles, functions */
+.hljs-title,
+.hljs-section,
+.hljs-selector-id,
+.hljs-function {
+  color: #dcdcaa;
+}
+
+/* Class names */
+.hljs-class .hljs-title,
+.hljs-title.class_ {
+  color: #4ec9b0;
+}
+
+/* Methods */
+.hljs-function .hljs-title,
+.hljs-title.function_ {
+  color: #dcdcaa;
+}
+
+/* Variables */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-class,
+.hljs-selector-attr {
+  color: #9cdcfe;
+}
+
+/* Attributes */
+.hljs-attr,
+.hljs-attribute {
+  color: #9cdcfe;
+}
+
+/* Types */
+.hljs-type {
+  color: #4ec9b0;
+}
+
+/* Parameters */
+.hljs-params {
+  color: #9cdcfe;
+}
+
+/* Operators */
+.hljs-operator,
+.hljs-selector-pseudo {
+  color: #d4d4d4;
+}
+
+/* Meta */
+.hljs-meta {
+  color: #569cd6;
+}
+
+/* Deletion */
+.hljs-deletion {
+  color: #f85149;
+}
+
+/* Emphasis */
+.hljs-emphasis {
+  font-style: italic;
+}
+
+/* Strong */
+.hljs-strong {
+  font-weight: bold;
+}
+
+/* Links */
+.hljs-link {
+  color: #3794ff;
+  text-decoration: underline;
+}
+
+/* Punctuation */
+.hljs-punctuation {
+  color: #d4d4d4;
+}
+
+/* =============================================================================
+   LANGUAGE-SPECIFIC TWEAKS
+   ============================================================================= */
+
+/* TypeScript/JavaScript specific */
+.hljs.language-typescript .hljs-keyword,
+.hljs.language-javascript .hljs-keyword {
+  color: #569cd6;
+}
+
+/* Rust specific */
+.hljs.language-rust .hljs-keyword {
+  color: #c586c0;
+}
+
+.hljs.language-rust .hljs-macro {
+  color: #4ec9b0;
+}
+
+/* Python specific */
+.hljs.language-python .hljs-decorator {
+  color: #dcdcaa;
+}
+
+.hljs.language-python .hljs-string-interpolation {
+  color: #9cdcfe;
+}
+
+/* JSON specific */
+.hljs.language-json .hljs-attr {
+  color: #9cdcfe;
+}
+
+.hljs.language-json .hljs-string {
+  color: #ce9178;
+}
+
+/* CSS specific */
+.hljs.language-css .hljs-property {
+  color: #9cdcfe;
+}
+
+.hljs.language-css .hljs-selector-tag {
+  color: #d7ba7d;
+}
+
+/* Bash/Shell specific */
+.hljs.language-bash .hljs-variable,
+.hljs.language-shell .hljs-variable {
+  color: #9cdcfe;
+}
+
+/* =============================================================================
+   SCROLLBAR STYLING FOR CODE BLOCKS
+   ============================================================================= */
+
+.hljs-code::-webkit-scrollbar {
+  height: 8px;
+}
+
+.hljs-code::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hljs-code::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 4px;
+}
+
+.hljs-code::-webkit-scrollbar-thumb:hover {
+  background: #4f4f4f;
+}
+
+/* Firefox */
+.hljs-code {
+  scrollbar-width: thin;
+  scrollbar-color: #424242 transparent;
+}
