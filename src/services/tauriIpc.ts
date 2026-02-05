@@ -64,6 +64,8 @@ export interface GitBranchesDto {
   local: GitBranchDto[];
   remote: GitBranchDto[];
   current: string | null;
+}
+
 export interface DbAiModel {
   id: string;
   provider_id: string;
@@ -308,6 +310,9 @@ export async function gitGetTree(params: {
   return invoke<PredictedGitTree>('git_get_tree', {
     repoPath: params.repoPath,
     branch: params.branch ?? null,
+  });
+}
+
 // ============ Provider Models ============
 
 export async function listProviderModels(providerId: string): Promise<DbAiModel[]> {

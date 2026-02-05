@@ -10,18 +10,22 @@ pub struct AppConfig {
     pub db_path: PathBuf,
 
     #[serde(default)]
+    #[allow(dead_code)]
     pub ai: AIConfig,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AIConfig {
     #[serde(default)]
+    #[allow(dead_code)]
     pub openai_api_key: Option<String>,
 
     #[serde(default)]
+    #[allow(dead_code)]
     pub anthropic_api_key: Option<String>,
 
     #[serde(default = "default_local_api_url")]
+    #[allow(dead_code)]
     pub local_api_url: String,
 }
 

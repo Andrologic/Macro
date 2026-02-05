@@ -56,6 +56,7 @@ pub fn get_status(repo: &Repository) -> Result<Status> {
 	Ok(summary)
 }
 
+#[allow(dead_code)]
 pub fn get_diff<'repo>(
 	repo: &'repo Repository,
 	old_tree: Option<&'repo Tree<'repo>>,
