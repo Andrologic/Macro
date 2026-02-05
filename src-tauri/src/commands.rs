@@ -1,16 +1,12 @@
 use crate::db::{models::*, repository, DbError};
-use crate::mcp::{self, McpClientManager, McpServer, McpToolResult, AddServerInput, UpdateServerInput};
 use crate::secrets;
 use serde::Serialize;
-use serde_json::Value;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
 
 pub type DbPool = Arc<Mutex<Option<SqlitePool>>>;
-pub type McpManager = Arc<McpClientManager>;
 
 #[derive(Debug, Serialize)]
 pub struct CommandError {
@@ -19,14 +15,6 @@ pub struct CommandError {
 
 impl From<DbError> for CommandError {
     fn from(err: DbError) -> Self {
-        CommandError {
-            message: err.to_string(),
-        }
-    }
-}
-
-impl From<mcp::McpError> for CommandError {
-    fn from(err: mcp::McpError) -> Self {
         CommandError {
             message: err.to_string(),
         }
@@ -466,88 +454,6 @@ pub async fn db_update_provider_settings(
     })?;
 
     repository::update_provider_settings(pool, &provider_id, filter_free_models)
-        .await
-        .map_err(Into::into)
-}
-
-// ============ MCP SERVERS ============
-
-#[tauri::command]
-pub async fn mcp_list_servers(
-    mcp: State<'_, McpManager>,
-) -> CommandResult<Vec<McpServer>> {
-    Ok(mcp.list_servers().await)
-}
-
-#[tauri::command]
-pub async fn mcp_add_server(
-    mcp: State<'_, McpManager>,
-    input: AddServerInput,
-) -> CommandResult<McpServer> {
-    mcp.add_server(input).await.map_err(Into::into)
-}
-
-#[tauri::command]
-pub async fn mcp_update_server(
-    mcp: State<'_, McpManager>,
-    id: String,
-    input: UpdateServerInput,
-) -> CommandResult<()> {
-    mcp.update_server(&id, input).await.map_err(Into::into)
-}
-
-#[tauri::command]
-pub async fn mcp_remove_server(
-    mcp: State<'_, McpManager>,
-    id: String,
-) -> CommandResult<()> {
-    mcp.remove_server(&id).await.map_err(Into::into)
-}
-
-#[tauri::command]
-pub async fn mcp_connect_server(
-    mcp: State<'_, McpManager>,
-    id: String,
-) -> CommandResult<McpServer> {
-    mcp.connect_server(&id).await.map_err(Into::into)
-}
-
-#[tauri::command]
-pub async fn mcp_disconnect_server(
-    mcp: State<'_, McpManager>,
-    id: String,
-) -> CommandResult<()> {
-    mcp.disconnect_server(&id).await.map_err(Into::into)
-}
-
-#[tauri::command]
-pub async fn mcp_call_tool(
-    mcp: State<'_, McpManager>,
-    server_id: String,
-    tool_name: String,
-    arguments: Option<HashMap<String, Value>>,
-    call_id: String,
-) -> CommandResult<McpToolResult> {
-    mcp.call_tool(&server_id, &tool_name, arguments, &call_id)
-        .await
-        .map_err(Into::into)
-}
-
-#[tauri::command]
-pub async fn mcp_ping_server(
-    mcp: State<'_, McpManager>,
-    id: String,
-) -> CommandResult<()> {
-    mcp.ping_server(&id).await.map_err(Into::into)
-}
-
-#[tauri::command]
-pub async fn mcp_get_server_logs(
-    mcp: State<'_, McpManager>,
-    id: String,
-    limit: Option<usize>,
-) -> CommandResult<Vec<String>> {
-    mcp.get_server_logs(&id, limit.unwrap_or(100))
         .await
         .map_err(Into::into)
 }

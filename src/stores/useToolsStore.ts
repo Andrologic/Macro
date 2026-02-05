@@ -1,10 +1,3 @@
-/**
- * Tools Store (Legacy)
- * 
- * This store is being deprecated in favor of useMcpStore.
- * Kept for backwards compatibility but no longer actively used.
- */
-
 import { create } from 'zustand';
 import { services } from '../services';
 import type { Tool, MCPServer } from '../types';
@@ -30,9 +23,6 @@ interface ToolsStore {
   resetToDefaults: () => Promise<void>;
 }
 
-/**
- * @deprecated Use useMcpStore instead for MCP server management
- */
 export const useToolsStore = create<ToolsStore>((set, get) => ({
   internalTools: {},
   mcpServers: [],
@@ -43,15 +33,13 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   loadSettings: async () => {
     set({ isLoading: true, lastError: null });
     try {
-      const [, mcpServersDto] = await Promise.all([
+      const [toolsDto, mcpServersDto] = await Promise.all([
         services.getToolSettings(),
         services.getMCPServerSettings(),
       ]);
 
-      // Convert the simplified DTO format to internal format
-      // The new DTO just returns empty objects, so we just clear the state
       set({
-        internalTools: {},
+        internalTools: toolsDto.tools,
         mcpServers: Object.values(mcpServersDto.servers),
         isLoading: false,
       });

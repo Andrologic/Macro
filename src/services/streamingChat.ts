@@ -2,11 +2,9 @@
  * Streaming Chat Service
  * Handles SSE streaming from OpenAI-compatible endpoints
  * Uses Tauri HTTP plugin for proper CORS handling
- * Supports tool/function calling with MCP integration
  */
 
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-import type { ChatToolDefinition, ChatToolCall, McpToolCall, McpToolResult } from '../types/mcp';
 
 // Global references to active streaming resources for cancellation
 let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -31,11 +29,8 @@ export function cancelStream(): void {
 }
 
 export interface StreamMessage {
-  role: 'user' | 'assistant' | 'tool';
-  content: string | null;
-  tool_calls?: ChatToolCall[];
-  tool_call_id?: string;
-  name?: string;
+  role: 'user' | 'assistant';
+  content: string;
 }
 
 export interface StreamingChatOptions {
@@ -45,14 +40,8 @@ export interface StreamingChatOptions {
   apiKey?: string;
   modelId: string;
   messages: StreamMessage[];
-  /** Tool definitions to send to the AI (OpenAI format) */
-  tools?: ChatToolDefinition[];
-  /** Callback for each text token */
   onToken: (token: string) => void;
-  /** Callback when tool calls are detected */
-  onToolCalls?: (toolCalls: ChatToolCall[]) => void;
-  /** Callback when streaming completes */
-  onComplete: (fullContent: string, toolCalls?: ChatToolCall[]) => void;
+  onComplete: (fullContent: string) => void;
   onError: (error: Error) => void;
   signal?: AbortSignal;
 }
@@ -68,9 +57,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     apiKey,
     modelId,
     messages,
-    tools,
     onToken,
-    onToolCalls,
     onComplete,
     onError,
     // Note: signal is not used with Tauri HTTP plugin - AbortController support is limited
@@ -99,39 +86,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   }
 
   try {
-    // Build request body
-    const requestBody: Record<string, unknown> = {
-      model: modelId,
-      messages: messages.map((m) => {
-        const msg: Record<string, unknown> = {
-          role: m.role,
-          content: m.content,
-        };
-        // Add tool-related fields if present
-        if (m.tool_calls) {
-          msg.tool_calls = m.tool_calls;
-        }
-        if (m.tool_call_id) {
-          msg.tool_call_id = m.tool_call_id;
-        }
-        if (m.name) {
-          msg.name = m.name;
-        }
-        return msg;
-      }),
-      stream: true,
-    };
-
-    // Add tools if provided
-    if (tools && tools.length > 0) {
-      requestBody.tools = tools;
-      requestBody.tool_choice = 'auto';
-    }
-
     const response = await tauriFetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify({
+        model: modelId,
+        messages: messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
+        stream: true,
+      }),
     });
 
     if (!response.ok) {
@@ -162,10 +127,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     let fullContent = '';
     let buffer = '';
     let isThinking = false;
-    
-    // Track tool calls being built up from streaming chunks
-    const toolCallsInProgress: Map<number, { id: string; name: string; arguments: string }> = new Map();
-    let finalToolCalls: ChatToolCall[] | undefined;
 
     const startThinking = () => {
       if (!isThinking) {
@@ -238,35 +199,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               fullContent += token;
               onToken(token);
             }
-
-            // Handle streaming tool calls
-            if (delta?.tool_calls) {
-              for (const toolCallDelta of delta.tool_calls) {
-                const index = toolCallDelta.index ?? 0;
-                
-                // Initialize or update tool call
-                if (!toolCallsInProgress.has(index)) {
-                  toolCallsInProgress.set(index, {
-                    id: toolCallDelta.id || '',
-                    name: toolCallDelta.function?.name || '',
-                    arguments: '',
-                  });
-                }
-                
-                const tc = toolCallsInProgress.get(index)!;
-                
-                // Update fields as they stream in
-                if (toolCallDelta.id) {
-                  tc.id = toolCallDelta.id;
-                }
-                if (toolCallDelta.function?.name) {
-                  tc.name = toolCallDelta.function.name;
-                }
-                if (toolCallDelta.function?.arguments) {
-                  tc.arguments += toolCallDelta.function.arguments;
-                }
-              }
-            }
           } catch (e) {
             // Skip malformed JSON - some providers send non-JSON lines
             console.debug('Failed to parse SSE data:', data);
@@ -276,27 +208,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     }
 
     endThinking();
-    
-    // Convert tool calls in progress to final format
-    if (toolCallsInProgress.size > 0) {
-      finalToolCalls = Array.from(toolCallsInProgress.entries())
-        .sort(([a], [b]) => a - b)
-        .map(([, tc]) => ({
-          id: tc.id,
-          type: 'function' as const,
-          function: {
-            name: tc.name,
-            arguments: tc.arguments,
-          },
-        }));
-      
-      // Notify about tool calls
-      if (onToolCalls && finalToolCalls.length > 0) {
-        onToolCalls(finalToolCalls);
-      }
-    }
-    
-    onComplete(fullContent, finalToolCalls);
+    onComplete(fullContent);
   } catch (error) {
     // Cleanup on error
     if (currentReader) {
@@ -338,7 +250,6 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     apiKey,
     modelId,
     messages,
-    tools,
     onComplete,
     onError,
   } = options;
@@ -359,36 +270,17 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
   }
 
   try {
-    const requestBody: Record<string, unknown> = {
-      model: modelId,
-      messages: messages.map((m) => {
-        const msg: Record<string, unknown> = {
-          role: m.role,
-          content: m.content,
-        };
-        if (m.tool_calls) {
-          msg.tool_calls = m.tool_calls;
-        }
-        if (m.tool_call_id) {
-          msg.tool_call_id = m.tool_call_id;
-        }
-        if (m.name) {
-          msg.name = m.name;
-        }
-        return msg;
-      }),
-      stream: false,
-    };
-
-    if (tools && tools.length > 0) {
-      requestBody.tools = tools;
-      requestBody.tool_choice = 'auto';
-    }
-
     const response = await tauriFetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify({
+        model: modelId,
+        messages: messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
+        stream: false,
+      }),
     });
 
     if (!response.ok) {
@@ -422,81 +314,3 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     throw err;
   }
 }
-
-// ============ Tool Execution Utilities ============
-
-/**
- * Parse a tool call's function name to extract server ID and tool name
- * Tool names are formatted as "serverId__toolName" to namespace them
- */
-export function parseToolName(fullName: string): { serverId: string; toolName: string } {
-  const separatorIndex = fullName.indexOf('__');
-  if (separatorIndex === -1) {
-    // If no separator, assume it's a direct tool name (legacy format)
-    return { serverId: '', toolName: fullName };
-  }
-  return {
-    serverId: fullName.substring(0, separatorIndex),
-    toolName: fullName.substring(separatorIndex + 2),
-  };
-}
-
-/**
- * Convert ChatToolCall to McpToolCall for execution
- */
-export function toMcpToolCall(chatToolCall: ChatToolCall): McpToolCall {
-  const { serverId, toolName } = parseToolName(chatToolCall.function.name);
-  
-  let args: Record<string, unknown> = {};
-  try {
-    args = JSON.parse(chatToolCall.function.arguments);
-  } catch (e) {
-    console.error('Failed to parse tool arguments:', e);
-  }
-  
-  return {
-    id: chatToolCall.id,
-    name: toolName,
-    arguments: args,
-    serverId,
-  };
-}
-
-/**
- * Format tool result for sending back to the AI
- */
-export function formatToolResultMessage(
-  toolCallId: string,
-  toolName: string,
-  result: McpToolResult
-): StreamMessage {
-  let content: string;
-  
-  if (!result.success) {
-    content = `Error: ${result.error || 'Tool execution failed'}`;
-  } else if (result.content && result.content.length > 0) {
-    // Combine all text content
-    content = result.content
-      .map((c) => {
-        if (c.type === 'text') {
-          return c.text;
-        } else if (c.type === 'image') {
-          return `[Image: ${c.mimeType}]`;
-        } else if (c.type === 'resource') {
-          return c.resource.text || `[Resource: ${c.resource.uri}]`;
-        }
-        return '';
-      })
-      .join('\n');
-  } else {
-    content = 'Tool executed successfully (no output)';
-  }
-  
-  return {
-    role: 'tool',
-    content,
-    tool_call_id: toolCallId,
-    name: toolName,
-  };
-}
-

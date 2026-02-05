@@ -2,9 +2,8 @@ import { create } from 'zustand';
 import { ChatMessage, Conversation } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 import { useProviderStore } from './useProviderStore';
-import { streamChat, cancelStream, toMcpToolCall, formatToolResultMessage } from '../services/streamingChat';
+import { streamChat, cancelStream } from '../services/streamingChat';
 import * as tauriIpc from '../services/tauriIpc';
-import { useMcpStore } from './useMcpStore';
 
 interface ChatStore {
   messages: ChatMessage[];
@@ -243,9 +242,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     getConversationMessages: (conversationId) => {
       const state = get();
-      return state.messages.filter(
-        (msg) => msg.conversation_id === conversationId && !msg.meta?.hidden
-      );
+      return state.messages.filter((msg) => msg.conversation_id === conversationId);
     },
 
     sendMessage: async ({ conversationId, content, taskId }) => {
@@ -281,165 +278,71 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const messagesForRequest = getOrderedConversationMessages(conversationId).map(
         (message) => ({
-          role: message.role as 'user' | 'assistant' | 'tool',
-          content: message.content ?? null,
-          tool_calls: message.tool_calls,
-          tool_call_id: message.tool_call_id,
-          name: message.name,
+          role: message.role as 'user' | 'assistant',
+          content: message.content,
         })
       );
 
-      const { getToolDefinitions, callTool } = useMcpStore.getState();
-      const tools = getToolDefinitions();
+      const assistantMessage: ChatMessage = {
+        id: `msg-${Date.now()}-assistant`,
+        task_id: taskId ?? '',
+        conversation_id: conversationId,
+        role: 'assistant',
+        content: '',
+        timestamp: new Date().toISOString(),
+      };
 
+      get().addMessage(assistantMessage);
+      
       const abortController = new AbortController();
-      set({ isLoading: true, isStreaming: true, abortController, lastError: null });
+      set({ isLoading: true, isStreaming: true, abortController });
 
-      const runAssistantTurn = async (requestMessages: typeof messagesForRequest) => {
-        const assistantMessage: ChatMessage = {
-          id: `msg-${Date.now()}-assistant`,
-          task_id: taskId ?? '',
-          conversation_id: conversationId,
-          role: 'assistant',
-          content: '',
-          timestamp: new Date().toISOString(),
-        };
-
-        get().addMessage(assistantMessage);
-
-        let toolCalls: ChatMessage['tool_calls'] | undefined;
-        let fullContent = '';
-        let hadError = false;
-        let errorMessage = '';
-
-        set({ isStreaming: true });
+      try {
         await streamChat({
           providerId: selectedProviderId,
           providerType: providerConfig.providerType,
           baseUrl: providerConfig.baseUrl,
           apiKey: providerConfig.apiKey,
           modelId: selectedModelId,
-          messages: requestMessages,
-          tools: tools.length > 0 ? tools : undefined,
+          messages: messagesForRequest,
           signal: abortController.signal,
           onToken: (token) => {
             get().appendToLastMessage(token);
           },
-          onToolCalls: (calls) => {
-            toolCalls = calls;
-            set((state) => ({
-              messages: state.messages.map((m) =>
-                m.id === assistantMessage.id ? { ...m, tool_calls: calls } : m
-              ),
-            }));
-          },
-          onComplete: (content, calls) => {
-            fullContent = content;
-            toolCalls = calls ?? toolCalls;
-            get().updateMessageContent(assistantMessage.id, content);
-            if (toolCalls && toolCalls.length > 0) {
-              set((state) => ({
-                messages: state.messages.map((m) =>
-                  m.id === assistantMessage.id ? { ...m, tool_calls: toolCalls } : m
-                ),
-              }));
+          onComplete: (fullContent) => {
+            // Update conversation metadata
+            set((state) => {
+              const conversations = state.conversations.map((conv) =>
+                conv.id === conversationId
+                  ? {
+                      ...conv,
+                      last_message: fullContent.slice(0, 100) + (fullContent.length > 100 ? '...' : ''),
+                      updated_at: new Date().toISOString(),
+                    }
+                  : conv
+              );
+              return { conversations, isLoading: false, isStreaming: false, abortController: null };
+            });
+
+            // Save assistant message to DB if available
+            if (tauriIpc.isTauriAvailable()) {
+              tauriIpc.createMessage(conversationId, 'assistant', fullContent).catch(console.error);
             }
           },
           onError: (error) => {
-            hadError = true;
-            errorMessage = error.message;
-            get().updateMessageContent(assistantMessage.id, `Error: ${error.message}`);
+            get().updateMessageContent(
+              assistantMessage.id,
+              `Error: ${error.message}`
+            );
             set({ isLoading: false, isStreaming: false, lastError: error.message, abortController: null });
           },
         });
-
-        set({ isStreaming: false });
-        if (hadError) {
-          throw new Error(errorMessage || 'Chat request failed');
-        }
-        return { assistantMessage, fullContent, toolCalls };
-      };
-
-      try {
-        let requestMessages = messagesForRequest;
-        let iterations = 0;
-        let finalContent = '';
-
-        while (iterations < 3) {
-          if (abortController.signal.aborted) {
-            break;
-          }
-
-          const { assistantMessage, fullContent, toolCalls } = await runAssistantTurn(requestMessages);
-          finalContent = fullContent;
-
-          if (!toolCalls || toolCalls.length === 0) {
-            break;
-          }
-
-          // Execute tool calls
-          const toolResults = [] as NonNullable<ChatMessage['tool_results']>;
-          for (const call of toolCalls) {
-            const mcpCall = toMcpToolCall(call);
-            const result = await callTool(mcpCall);
-            toolResults.push(result);
-
-            // Add hidden tool message for the model context
-            const toolMessageBase = formatToolResultMessage(call.id, call.function.name, result);
-            const toolMessage: ChatMessage = {
-              id: `msg-${Date.now()}-tool-${call.id}`,
-              task_id: taskId ?? '',
-              conversation_id: conversationId,
-              role: 'tool',
-              content: toolMessageBase.content || '',
-              tool_call_id: toolMessageBase.tool_call_id,
-              name: toolMessageBase.name,
-              timestamp: new Date().toISOString(),
-              meta: { hidden: true },
-            };
-            get().addMessage(toolMessage);
-          }
-
-          // Attach tool results to the assistant message for UI
-          set((state) => ({
-            messages: state.messages.map((m) =>
-              m.id === assistantMessage.id ? { ...m, tool_results: toolResults } : m
-            ),
-          }));
-
-          // Build new request with tool messages included
-          requestMessages = getOrderedConversationMessages(conversationId).map(
-            (message) => ({
-              role: message.role as 'user' | 'assistant' | 'tool',
-              content: message.content ?? null,
-              tool_calls: message.tool_calls,
-              tool_call_id: message.tool_call_id,
-              name: message.name,
-            })
-          );
-
-          iterations += 1;
-        }
-
-        // Update conversation metadata and persist final assistant message
-        set((state) => {
-          const conversations = state.conversations.map((conv) =>
-            conv.id === conversationId
-              ? {
-                  ...conv,
-                  last_message: finalContent.slice(0, 100) + (finalContent.length > 100 ? '...' : ''),
-                  updated_at: new Date().toISOString(),
-                }
-              : conv
-          );
-          return { conversations, isLoading: false, isStreaming: false, abortController: null };
-        });
-
-        if (tauriIpc.isTauriAvailable() && finalContent) {
-          tauriIpc.createMessage(conversationId, 'assistant', finalContent).catch(console.error);
-        }
       } catch (error) {
         const normalized = toServiceError(error);
+        get().updateMessageContent(
+          assistantMessage.id,
+          `Error: ${normalized.message}`
+        );
         set({ isLoading: false, isStreaming: false, lastError: normalized.message, abortController: null });
       }
     },
@@ -507,156 +410,65 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const messagesForRequest = getOrderedConversationMessages(conversationId).map(
         (message) => ({
-          role: message.role as 'user' | 'assistant' | 'tool',
-          content: message.content ?? null,
-          tool_calls: message.tool_calls,
-          tool_call_id: message.tool_call_id,
-          name: message.name,
+          role: message.role as 'user' | 'assistant',
+          content: message.content,
         })
       );
 
-      const { getToolDefinitions, callTool } = useMcpStore.getState();
-      const tools = getToolDefinitions();
+      const assistantMessage: ChatMessage = {
+        id: `msg-${Date.now()}-assistant`,
+        task_id: target.task_id,
+        conversation_id: conversationId,
+        role: 'assistant',
+        content: '',
+        timestamp: new Date().toISOString(),
+      };
 
+      get().addMessage(assistantMessage);
+      
       const abortController = new AbortController();
       set({ isLoading: true, isStreaming: true, abortController });
 
-      const runAssistantTurn = async (requestMessages: typeof messagesForRequest) => {
-        const assistantMessage: ChatMessage = {
-          id: `msg-${Date.now()}-assistant`,
-          task_id: target.task_id,
-          conversation_id: conversationId,
-          role: 'assistant',
-          content: '',
-          timestamp: new Date().toISOString(),
-        };
-
-        get().addMessage(assistantMessage);
-
-        let toolCalls: ChatMessage['tool_calls'] | undefined;
-        let fullContent = '';
-        let hadError = false;
-        let errorMessage = '';
-
-        set({ isStreaming: true });
+      try {
         await streamChat({
           providerId: selectedProviderId,
           providerType: providerConfig.providerType,
           baseUrl: providerConfig.baseUrl,
           apiKey: providerConfig.apiKey,
           modelId: selectedModelId,
-          messages: requestMessages,
-          tools: tools.length > 0 ? tools : undefined,
+          messages: messagesForRequest,
           signal: abortController.signal,
           onToken: (token) => {
             get().appendToLastMessage(token);
           },
-          onToolCalls: (calls) => {
-            toolCalls = calls;
-            set((state) => ({
-              messages: state.messages.map((m) =>
-                m.id === assistantMessage.id ? { ...m, tool_calls: calls } : m
-              ),
-            }));
-          },
-          onComplete: (content, calls) => {
-            fullContent = content;
-            toolCalls = calls ?? toolCalls;
-            get().updateMessageContent(assistantMessage.id, content);
-            if (toolCalls && toolCalls.length > 0) {
-              set((state) => ({
-                messages: state.messages.map((m) =>
-                  m.id === assistantMessage.id ? { ...m, tool_calls: toolCalls } : m
-                ),
-              }));
-            }
+          onComplete: (fullContent) => {
+            set((state) => {
+              const conversations = state.conversations.map((conv) =>
+                conv.id === conversationId
+                  ? {
+                      ...conv,
+                      last_message: fullContent.slice(0, 100) + (fullContent.length > 100 ? '...' : ''),
+                      updated_at: new Date().toISOString(),
+                    }
+                  : conv
+              );
+              return { conversations, isLoading: false, isStreaming: false, abortController: null };
+            });
           },
           onError: (error) => {
-            hadError = true;
-            errorMessage = error.message;
-            get().updateMessageContent(assistantMessage.id, `Error: ${error.message}`);
+            get().updateMessageContent(
+              assistantMessage.id,
+              `Error: ${error.message}`
+            );
             set({ isLoading: false, isStreaming: false, lastError: error.message, abortController: null });
           },
         });
-
-        set({ isStreaming: false });
-        if (hadError) {
-          throw new Error(errorMessage || 'Chat request failed');
-        }
-        return { assistantMessage, fullContent, toolCalls };
-      };
-
-      try {
-        let requestMessages = messagesForRequest;
-        let iterations = 0;
-        let finalContent = '';
-
-        while (iterations < 3) {
-          if (abortController.signal.aborted) {
-            break;
-          }
-
-          const { assistantMessage, fullContent, toolCalls } = await runAssistantTurn(requestMessages);
-          finalContent = fullContent;
-
-          if (!toolCalls || toolCalls.length === 0) {
-            break;
-          }
-
-          const toolResults = [] as NonNullable<ChatMessage['tool_results']>;
-          for (const call of toolCalls) {
-            const mcpCall = toMcpToolCall(call);
-            const result = await callTool(mcpCall);
-            toolResults.push(result);
-
-            const toolMessageBase = formatToolResultMessage(call.id, call.function.name, result);
-            const toolMessage: ChatMessage = {
-              id: `msg-${Date.now()}-tool-${call.id}`,
-              task_id: target.task_id,
-              conversation_id: conversationId,
-              role: 'tool',
-              content: toolMessageBase.content || '',
-              tool_call_id: toolMessageBase.tool_call_id,
-              name: toolMessageBase.name,
-              timestamp: new Date().toISOString(),
-              meta: { hidden: true },
-            };
-            get().addMessage(toolMessage);
-          }
-
-          set((state) => ({
-            messages: state.messages.map((m) =>
-              m.id === assistantMessage.id ? { ...m, tool_results: toolResults } : m
-            ),
-          }));
-
-          requestMessages = getOrderedConversationMessages(conversationId).map(
-            (message) => ({
-              role: message.role as 'user' | 'assistant' | 'tool',
-              content: message.content ?? null,
-              tool_calls: message.tool_calls,
-              tool_call_id: message.tool_call_id,
-              name: message.name,
-            })
-          );
-
-          iterations += 1;
-        }
-
-        set((state) => {
-          const conversations = state.conversations.map((conv) =>
-            conv.id === conversationId
-              ? {
-                  ...conv,
-                  last_message: finalContent.slice(0, 100) + (finalContent.length > 100 ? '...' : ''),
-                  updated_at: new Date().toISOString(),
-                }
-              : conv
-          );
-          return { conversations, isLoading: false, isStreaming: false, abortController: null };
-        });
       } catch (error) {
         const normalized = toServiceError(error);
+        get().updateMessageContent(
+          assistantMessage.id,
+          `Error: ${normalized.message}`
+        );
         set({ isLoading: false, isStreaming: false, lastError: normalized.message, abortController: null });
       }
     },
@@ -687,7 +499,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 id: m.id,
                 task_id: '',
                 conversation_id: m.conversation_id,
-                role: m.role as 'user' | 'assistant' | 'tool',
+                role: m.role as 'user' | 'assistant',
                 content: m.content,
                 timestamp: m.created_at,
               }))

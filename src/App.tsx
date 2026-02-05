@@ -11,7 +11,6 @@ import { useAIStore } from './stores/useAIStore';
 import { useAuthStore } from './stores/useAuthStore';
 import { useToolsStore } from './stores/useToolsStore';
 import { useProviderStore } from './stores/useProviderStore';
-import { useMcpStore } from './stores/useMcpStore';
 import { Skeleton } from './components/shared/Skeleton';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -57,7 +56,6 @@ const App: React.FC = () => {
   const initializeTasks = useTaskStore((state) => state.initialize);
   const initializeAI = useAIStore((state) => state.initialize);
   const initializeTools = useToolsStore((state) => state.loadSettings);
-  const initializeMcp = useMcpStore((state) => state.loadServers);
   const initializeProviders = useProviderStore((state) => state.initialize);
   const checkSession = useAuthStore((state) => state.checkSession);
 
@@ -240,7 +238,6 @@ const App: React.FC = () => {
           await Promise.all([
             initWithTracking('AI Store', initializeAI, 'low'),
             initWithTracking('Tools Store', initializeTools, 'low'),
-            initWithTracking('MCP Store', initializeMcp, 'low'),
             initWithTracking('Provider Store', initializeProviders, 'low'),
           ]);
           setInitStatus((prev) => ({ ...prev, low: true }));
