@@ -25,7 +25,11 @@
     "changesAutoSave": "Sauvegarde automatique",
     "areYouSure": "Êtes-vous sûr ?",
     "local": "Local",
-    "noKey": "Pas de clé"
+    "noKey": "Pas de clé",
+    "copy": "Copier",
+    "regenerate": "Régénérer",
+    "editMessage": "Modifier votre message...",
+    "doubleClickToEdit": "Double-cliquez pour modifier"
   },
   "header": {
     "architect": "Architecte",

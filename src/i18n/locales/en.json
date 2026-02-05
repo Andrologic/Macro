@@ -25,7 +25,11 @@
     "changesAutoSave": "Changes auto-save",
     "areYouSure": "Are you sure?",
     "local": "Local",
-    "noKey": "No Key"
+    "noKey": "No Key",
+    "copy": "Copy",
+    "regenerate": "Regenerate",
+    "editMessage": "Edit your message...",
+    "doubleClickToEdit": "Double-click to edit"
   },
   "header": {
     "architect": "Architect",
