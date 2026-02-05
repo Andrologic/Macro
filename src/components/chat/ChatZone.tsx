@@ -43,7 +43,7 @@ const ChatZone: React.FC = () => {
     if (mode === 'Architect') {
       const architectTitle = 'Architect Session';
       const architectConvo = conversations.find(c => c.title === architectTitle);
-      
+
       if (architectConvo) {
         if (selectedConversationId !== architectConvo.id) {
           selectConversation(architectConvo.id);
@@ -52,10 +52,10 @@ const ChatZone: React.FC = () => {
         // Create if missing. Note: This might trigger multiple creates if not careful.
         // We rely on conversations being loaded.
         if (!isLoading && conversations.length > 0) {
-           createConversation(architectTitle, null, null);
+          createConversation(architectTitle, null, null);
         } else if (!isLoading && conversations.length === 0) {
-           // Initial load case
-           createConversation(architectTitle, null, null);
+          // Initial load case
+          createConversation(architectTitle, null, null);
         }
       }
     }
@@ -374,5 +374,8 @@ const ChatZone: React.FC = () => {
   );
 };
 
+// Performance: Memoize to prevent re-renders when parent updates
+const MemoizedChatZone = React.memo(ChatZone);
+
 // Export both named and default for lazy loading compatibility
-export default ChatZone;
+export default MemoizedChatZone;

@@ -587,10 +587,249 @@ pub async fn create_provider_config(
 }
 
 pub async fn delete_provider_config(pool: &SqlitePool, id: &str) -> DbResult<()> {
+    sqlx::query("DELETE FROM ai_models WHERE provider_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+    sqlx::query("DELETE FROM provider_settings WHERE provider_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
     sqlx::query("DELETE FROM provider_configs WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
+
+    Ok(())
+}
+
+// ============ AI MODELS ============
+
+pub async fn list_models_by_provider(
+    pool: &SqlitePool,
+    provider_id: &str,
+) -> DbResult<Vec<AiModel>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, provider_id, model_id, name, description, owned_by,
+               pricing_prompt, pricing_completion, pricing_request,
+             is_enabled, is_manual, first_seen_at, last_seen_at
+        FROM ai_models
+        WHERE provider_id = ?
+        ORDER BY name ASC
+        "#,
+    )
+    .bind(provider_id)
+    .fetch_all(pool)
+    .await?;
+
+    let models = rows
+        .into_iter()
+        .map(|row| AiModel {
+            id: row.get("id"),
+            provider_id: row.get("provider_id"),
+            model_id: row.get("model_id"),
+            name: row.get("name"),
+            description: row.get("description"),
+            owned_by: row.get("owned_by"),
+            pricing_prompt: row.get("pricing_prompt"),
+            pricing_completion: row.get("pricing_completion"),
+            pricing_request: row.get("pricing_request"),
+            is_enabled: row.get::<i32, _>("is_enabled") != 0,
+            is_manual: row.get::<i32, _>("is_manual") != 0,
+            first_seen_at: row.get("first_seen_at"),
+            last_seen_at: row.get("last_seen_at"),
+        })
+        .collect();
+
+    Ok(models)
+}
+
+pub async fn upsert_provider_models(
+    pool: &SqlitePool,
+    provider_id: &str,
+    models: &[ProviderModelInput],
+) -> DbResult<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let mut tx = pool.begin().await?;
+
+    for model in models {
+        let id = format!("{}::{}", provider_id, model.model_id);
+        sqlx::query(
+            r#"
+            INSERT INTO ai_models (
+                id, provider_id, model_id, name, description, owned_by,
+                pricing_prompt, pricing_completion, pricing_request,
+                is_enabled, is_manual, first_seen_at, last_seen_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                owned_by = excluded.owned_by,
+                pricing_prompt = excluded.pricing_prompt,
+                pricing_completion = excluded.pricing_completion,
+                pricing_request = excluded.pricing_request,
+                last_seen_at = excluded.last_seen_at
+            "#,
+        )
+        .bind(&id)
+        .bind(provider_id)
+        .bind(&model.model_id)
+        .bind(&model.name)
+        .bind(&model.description)
+        .bind(&model.owned_by)
+        .bind(&model.pricing_prompt)
+        .bind(&model.pricing_completion)
+        .bind(&model.pricing_request)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+
+    Ok(())
+}
+
+pub async fn register_manual_model(
+    pool: &SqlitePool,
+    provider_id: &str,
+    model_id: &str,
+    name: &str,
+) -> DbResult<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let id = format!("{}::{}", provider_id, model_id);
+
+    sqlx::query(
+        r#"
+        INSERT INTO ai_models (
+            id, provider_id, model_id, name, description, owned_by,
+            pricing_prompt, pricing_completion, pricing_request,
+            is_enabled, is_manual, first_seen_at, last_seen_at
+        )
+        VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 1, 1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            is_manual = 1,
+            last_seen_at = excluded.last_seen_at
+        "#,
+    )
+    .bind(&id)
+    .bind(provider_id)
+    .bind(model_id)
+    .bind(name)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn set_model_enabled(
+    pool: &SqlitePool,
+    provider_id: &str,
+    model_id: &str,
+    enabled: bool,
+) -> DbResult<()> {
+    let id = format!("{}::{}", provider_id, model_id);
+    sqlx::query(
+        r#"
+        UPDATE ai_models
+        SET is_enabled = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(enabled as i32)
+    .bind(&id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn set_all_models_enabled(
+    pool: &SqlitePool,
+    provider_id: &str,
+    enabled: bool,
+) -> DbResult<()> {
+    sqlx::query(
+        r#"
+        UPDATE ai_models
+        SET is_enabled = ?
+        WHERE provider_id = ?
+        "#,
+    )
+    .bind(enabled as i32)
+    .bind(provider_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+// ============ PROVIDER SETTINGS ============
+
+pub async fn ensure_provider_settings(pool: &SqlitePool, provider_id: &str) -> DbResult<()> {
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO provider_settings (provider_id, filter_free_models)
+        VALUES (?, 0)
+        "#,
+    )
+    .bind(provider_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn get_provider_settings(
+    pool: &SqlitePool,
+    provider_id: &str,
+) -> DbResult<ProviderSettings> {
+    ensure_provider_settings(pool, provider_id).await?;
+
+    let row = sqlx::query(
+        r#"
+        SELECT provider_id, filter_free_models
+        FROM provider_settings
+        WHERE provider_id = ?
+        "#,
+    )
+    .bind(provider_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(ProviderSettings {
+        provider_id: row.get("provider_id"),
+        filter_free_models: row.get::<i32, _>("filter_free_models") != 0,
+    })
+}
+
+pub async fn update_provider_settings(
+    pool: &SqlitePool,
+    provider_id: &str,
+    filter_free_models: bool,
+) -> DbResult<()> {
+    ensure_provider_settings(pool, provider_id).await?;
+
+    sqlx::query(
+        r#"
+        UPDATE provider_settings
+        SET filter_free_models = ?
+        WHERE provider_id = ?
+        "#,
+    )
+    .bind(filter_free_models as i32)
+    .bind(provider_id)
+    .execute(pool)
+    .await?;
 
     Ok(())
 }

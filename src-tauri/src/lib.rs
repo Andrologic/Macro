@@ -20,6 +20,12 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
+// Command to show the main window explicitly from frontend
+#[tauri::command]
+async fn show_main_window(window: tauri::WebviewWindow) {
+    let _ = window.show();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging
@@ -69,6 +75,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             // Database commands
+            show_main_window,
             commands::db_list_conversations,
             commands::db_get_conversation,
             commands::db_create_conversation,
@@ -109,6 +116,13 @@ pub fn run() {
             commands::git::git_stash,
             commands::git::git_diff,
             commands::git::git_get_tree,
+            commands::db_list_provider_models,
+            commands::db_upsert_provider_models,
+            commands::db_set_provider_model_enabled,
+            commands::db_set_all_provider_models_enabled,
+            commands::db_register_manual_model,
+            commands::db_get_provider_settings,
+            commands::db_update_provider_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

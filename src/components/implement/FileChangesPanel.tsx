@@ -129,7 +129,8 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({ node, depth, onFileClic
   );
 };
 
-export const FileChangesPanel: React.FC<FileChangesPanelProps> = ({ className }) => {
+// Base component - wrapped with React.memo below for performance
+const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) => {
   const { t } = useTranslation();
   const { selectedGroupId, selectedTaskId } = useAppStore();
   const {
@@ -269,5 +270,10 @@ export const FileChangesPanel: React.FC<FileChangesPanelProps> = ({ className })
   );
 };
 
-// Export both named and default for lazy loading compatibility
+// Performance: Memoize the entire panel to prevent re-renders
+
+// Performance: Memoize the entire panel to prevent re-renders
+export const FileChangesPanel = React.memo(FileChangesPanelBase);
+
+// Export default for lazy loading compatibility
 export default FileChangesPanel;
