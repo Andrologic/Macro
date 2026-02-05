@@ -114,9 +114,9 @@ const ChatZone: React.FC = () => {
     if (!editingMessageId) return;
     const content = editingValue.trim();
     if (!content) return;
-    await editMessage(editingMessageId, content);
     setEditingMessageId(null);
     setEditingValue('');
+    await editMessage(editingMessageId, content);
   };
 
   const handleCopy = async (content: string, messageId: string) => {
@@ -236,7 +236,7 @@ const ChatZone: React.FC = () => {
                               <MarkdownRenderer content={message.content} />
                             ) : (
                               message.content.split('\n').map((line, i) => (
-                                <p key={i} className="mb-2 last:mb-0">
+                                <p key={i} className="mb-2 last:mb-0 break-words">
                                   {line}
                                 </p>
                               ))
