@@ -1,10 +1,9 @@
 // Core types for the Macro application
-import type { ChatToolCall, McpToolResult } from './mcp';
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
 export type PlanStatus = 'Draft' | 'Validated' | 'InProgress' | 'Completed' | 'Cancelled';
 export type TaskStatus = 'Pending' | 'InProgress' | 'AwaitingResponse' | 'Completed' | 'Failed' | 'Blocked';
-export type MessageRole = 'user' | 'assistant' | 'tool';
+export type MessageRole = 'user' | 'assistant';
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement' | 'Chat';
@@ -88,14 +87,11 @@ export type AuthStatus = 'authenticated' | 'unauthenticated' | 'loading';
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type Language = 'en' | 'fr';
 
-// Tools & MCP types - Legacy (kept for compatibility, prefer mcp.ts types)
+// Tools & MCP types
 export type ToolStatus = 'enabled' | 'disabled' | 'error' | 'loading';
 export type ToolCategory = 'git' | 'filesystem' | 'web' | 'database' | 'terminal' | 'ai' | 'productivity' | 'external';
 export type MCPServerStatus = 'online' | 'offline' | 'degraded' | 'unconfigured';
 export type MCPServerCategory = 'database' | 'productivity' | 'communication' | 'development' | 'ai' | 'other';
-
-// Re-export MCP types
-export * from './mcp';
 
 export interface ApiContract {
   id: string;
@@ -221,13 +217,6 @@ export interface ChatMessage {
   conversation_id: string;
   role: MessageRole;
   content: string;
-  tool_calls?: ChatToolCall[];
-  tool_call_id?: string;
-  name?: string;
-  tool_results?: McpToolResult[];
-  meta?: {
-    hidden?: boolean;
-  };
   timestamp: string;
   code_diff?: CodeDiff;
   choices?: AIChoice[];

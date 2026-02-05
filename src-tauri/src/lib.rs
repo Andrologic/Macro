@@ -1,10 +1,8 @@
 mod commands;
 mod db;
-mod mcp;
 mod secrets;
 
-use commands::{DbPool, McpManager};
-use mcp::create_mcp_manager;
+use commands::DbPool;
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -25,19 +23,6 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
-
-            // Initialize MCP manager
-            let mcp_manager = create_mcp_manager(&app_handle);
-            app.manage(mcp_manager.clone() as McpManager);
-
-            // Load MCP configs asynchronously
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = mcp_manager.load_configs().await {
-                    eprintln!("Failed to load MCP configs: {}", e);
-                } else {
-                    println!("MCP configs loaded successfully");
-                }
-            });
 
             // Initialize database asynchronously
             tauri::async_runtime::spawn(async move {
@@ -79,16 +64,6 @@ pub fn run() {
             commands::db_register_manual_model,
             commands::db_get_provider_settings,
             commands::db_update_provider_settings,
-            // MCP commands
-            commands::mcp_list_servers,
-            commands::mcp_add_server,
-            commands::mcp_update_server,
-            commands::mcp_remove_server,
-            commands::mcp_connect_server,
-            commands::mcp_disconnect_server,
-            commands::mcp_call_tool,
-            commands::mcp_ping_server,
-            commands::mcp_get_server_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
