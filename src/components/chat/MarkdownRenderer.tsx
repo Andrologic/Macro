@@ -1,6 +1,7 @@
 import React, { useMemo, createElement, useState, useCallback } from 'react';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { MermaidRenderer } from './MermaidRenderer';
 
 // =============================================================================
 // HIGHLIGHT.JS - SYNTAX HIGHLIGHTING
@@ -393,12 +394,21 @@ function parseMarkdown(content: string): React.ReactNode[] {
 function renderBlock(block: ParsedBlock, key: number): React.ReactNode {
   switch (block.type) {
     case 'code':
+      if (block.language?.toLowerCase() === 'mermaid' || block.language?.toLowerCase() === 'mmd') {
+        return (
+          <MermaidRenderer
+            key={key}
+            code={block.content}
+            blockKey={key}
+          />
+        );
+      }
       return (
-        <CodeBlock 
-          key={key} 
-          content={block.content} 
-          language={block.language} 
-          blockKey={key} 
+        <CodeBlock
+          key={key}
+          content={block.content}
+          language={block.language}
+          blockKey={key}
         />
       );
 
