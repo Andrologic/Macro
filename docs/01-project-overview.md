@@ -86,10 +86,10 @@ Le "pourquoi" derrière chaque décision IA est tracé avec le code.
 - Données privées utilisateur
 
 ### Données Partagées (Git)
-- Plans et tâques → branche `.macro-plans`
+- Plans et tâques → branche `.macro`
 - Métadonnées projet → `.project-meta.yaml`
 - Contrats API → fichiers OpenAPI/GraphQL par projet
-- Graphe du dépôt git prédit → commité dans `.macro-plans`
+- Graphe du dépôt git prédit → commité dans `.macro`
 
 ---
 
