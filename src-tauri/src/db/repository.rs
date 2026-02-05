@@ -159,6 +159,167 @@ pub async fn toggle_pin_conversation(pool: &SqlitePool, id: &str) -> DbResult<bo
     Ok(new_pinned != 0)
 }
 
+// ============ GIT REPOSITORIES ============
+
+pub async fn upsert_git_repository(
+    pool: &SqlitePool,
+    input: CreateGitRepositoryInput,
+) -> DbResult<GitRepositoryRecord> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let new_id = uuid::Uuid::new_v4().to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO git_repositories (id, project_id, path, default_branch, last_commit, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+            project_id = excluded.project_id,
+            default_branch = excluded.default_branch,
+            last_commit = excluded.last_commit,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(&new_id)
+    .bind(&input.project_id)
+    .bind(&input.path)
+    .bind(&input.default_branch)
+    .bind(&input.last_commit)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    let row = sqlx::query(
+        r#"
+        SELECT id, project_id, path, default_branch, last_commit, created_at, updated_at
+        FROM git_repositories
+        WHERE path = ?
+        "#,
+    )
+    .bind(&input.path)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(GitRepositoryRecord {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        path: row.get("path"),
+        default_branch: row.get("default_branch"),
+        last_commit: row.get("last_commit"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+pub async fn upsert_git_worktree(
+    pool: &SqlitePool,
+    input: CreateGitWorktreeInput,
+) -> DbResult<GitWorktreeRecord> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let new_id = uuid::Uuid::new_v4().to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO git_worktrees (
+            id, repo_id, project_id, task_id, worktree_name, path, branch, head_commit,
+            created_at, updated_at, last_used_at, is_active, is_prunable
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+            repo_id = excluded.repo_id,
+            project_id = excluded.project_id,
+            task_id = excluded.task_id,
+            worktree_name = excluded.worktree_name,
+            branch = excluded.branch,
+            head_commit = excluded.head_commit,
+            updated_at = excluded.updated_at,
+            last_used_at = excluded.last_used_at,
+            is_active = excluded.is_active,
+            is_prunable = excluded.is_prunable
+        "#,
+    )
+    .bind(&new_id)
+    .bind(&input.repo_id)
+    .bind(&input.project_id)
+    .bind(&input.task_id)
+    .bind(&input.worktree_name)
+    .bind(&input.path)
+    .bind(&input.branch)
+    .bind(&input.head_commit)
+    .bind(&now)
+    .bind(&now)
+    .bind(&now)
+    .bind(if input.is_active { 1 } else { 0 })
+    .bind(if input.is_prunable { 1 } else { 0 })
+    .execute(pool)
+    .await?;
+
+    let row = sqlx::query(
+        r#"
+        SELECT id, repo_id, project_id, task_id, worktree_name, path, branch, head_commit,
+               created_at, updated_at, last_used_at, is_active, is_prunable
+        FROM git_worktrees
+        WHERE path = ?
+        "#,
+    )
+    .bind(&input.path)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(GitWorktreeRecord {
+        id: row.get("id"),
+        repo_id: row.get("repo_id"),
+        project_id: row.get("project_id"),
+        task_id: row.get("task_id"),
+        worktree_name: row.get("worktree_name"),
+        path: row.get("path"),
+        branch: row.get("branch"),
+        head_commit: row.get("head_commit"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+        last_used_at: row.get("last_used_at"),
+        is_active: row.get::<i32, _>("is_active") != 0,
+        is_prunable: row.get::<i32, _>("is_prunable") != 0,
+    })
+}
+
+pub async fn list_git_worktrees_by_project(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> DbResult<Vec<GitWorktreeRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, repo_id, project_id, task_id, worktree_name, path, branch, head_commit,
+               created_at, updated_at, last_used_at, is_active, is_prunable
+        FROM git_worktrees
+        WHERE project_id = ?
+        ORDER BY updated_at DESC
+        "#,
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| GitWorktreeRecord {
+            id: row.get("id"),
+            repo_id: row.get("repo_id"),
+            project_id: row.get("project_id"),
+            task_id: row.get("task_id"),
+            worktree_name: row.get("worktree_name"),
+            path: row.get("path"),
+            branch: row.get("branch"),
+            head_commit: row.get("head_commit"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            last_used_at: row.get("last_used_at"),
+            is_active: row.get::<i32, _>("is_active") != 0,
+            is_prunable: row.get::<i32, _>("is_prunable") != 0,
+        })
+        .collect())
+}
+
 // ============ MESSAGES ============
 
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {

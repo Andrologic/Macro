@@ -95,7 +95,7 @@ Not necessary. The AI should generate code directly in the context of the curren
 
 ### 4.3 Architecture & Performance
 21. Should we use SQLite via Tauri for storing project state and history, including workspace-level cross-project relationships and metadata?
-SQLite stores only local data that should not be shared (e.g., chat history). Everything that must be shared for team work is stored in git: plans, tasks, predicted git repository graphs, project metadata, team templates. These are committed to dedicated branches (.macro-plans, .macro-templates) with versioning and auditability.
+SQLite stores only local data that should not be shared (e.g., chat history). Everything that must be shared for team work is stored in git: plans, tasks, predicted git repository graphs, project metadata, team templates. These are committed to dedicated branches (.macro, .macro-templates) with versioning and auditability.
 Yes. SQLite should store only informations that should stay local, like chat history. To improve collaboration, we should store plans, tasks, and project relationships in git via branching and a special folder structure.
 22. How do we handle large file systems and multiple projects without blocking the UI thread, especially during cross-project indexing?
 We should implement background indexing using Rust threads in the Tauri backend. The indexing process should be incremental and only index files that have changed. The AI should also be able to request specific files or directories to be indexed on-demand. Additionally, we can use a vector database for efficient semantic search across multiple projects.
@@ -140,19 +140,19 @@ Yes. Project metadata stored in `.project-meta.yaml` file committed to git. This
 41. How to handle **project switching** — sidebar, command palette, or dedicated "Project Manager" window, especially when switching between projects within the same workspace?
 42. Should we support **guest access** or sharing (read-only views, comment access) for code reviews, like Speckle, at the project or workspace level?
 43. Do we need **role management** (Owner, Contributor, Viewer) for team collaboration features, with workspace-level vs. project-level permissions?
-44. Should projects track **"AI sessions"** as entities at the workspace level — linking each plan, task, files, commits, and affected projects?Yes. Plans, tasks, and predicted git repository graphs stored in dedicated branches (e.g., `.macro-plans/` branch). Each plan with its tasks and predictions is committed to this branch. Team members can clone and switch to `.macro-plans` branch to view all historical plans. Branches can be merged to main for permanent archiving.45. How to handle **project import/export** — zip export, JSON manifest, or custom format for easy sharing, and should we support workspace-level import/export?
+44. Should projects track **"AI sessions"** as entities at the workspace level — linking each plan, task, files, commits, and affected projects?Yes. Plans, tasks, and predicted git repository graphs stored in dedicated branches (e.g., `.macro/` branch). Each plan with its tasks and predictions is committed to this branch. Team members can clone and switch to `.macro` branch to view all historical plans. Branches can be merged to main for permanent archiving.45. How to handle **project import/export** — zip export, JSON manifest, or custom format for easy sharing, and should we support workspace-level import/export?
 
 ### 4.6 Git & Version Control Integration
 46. Should Git be **deeply integrated** into Macro (like VS Code Git extension) or basic status only, especially for multi-repo workspaces?
 47. How should AI-generated changes interact with Git — automatic commits per intent, manual review before commit, or staging area, and how does this apply to cross-project atomic operations?
-Automatic commits to dedicated branches. Each plan and its tasks are committed to a dedicated feature branch automatically. Predicted git repository graph is updated in `.macro-plans` branch. For cross-project operations, each project has its own branch but they are linked by plan ID.
+Automatic commits to dedicated branches. Each plan and its tasks are committed to a dedicated feature branch automatically. Predicted git repository graph is updated in `.macro` branch. For cross-project operations, each project has its own branch but they are linked by plan ID.
 48. Do we want **Git branch visualization** (graph, diff, branch management) integrated in the UI, including cross-project branch visualization?
 49. Should Macro support **commit message templates** using AI (summarizing changes in structured format), especially for cross-project commits?
 50. Should we implement **"Plan-based branching"** — each AI plan creates a feature branch automatically, including cross-project branches?
-Yes. Each plan creates a dedicated feature branch automatically (e.g., `plan/user-profile-feature/`). For multi-project plans, each project has its own branch but they share same plan ID. The predicted git repository graph is committed to `.macro-plans` branch. When plan is completed, branches can be merged to main.
+Yes. Each plan creates a dedicated feature branch automatically (e.g., `plan/user-profile-feature/`). For multi-project plans, each project has its own branch but they share same plan ID. The predicted git repository graph is committed to `.macro` branch. When plan is completed, branches can be merged to main.
 51. How to handle **conflict resolution** — custom UI or delegate to standard Git tools, especially for cross-project merge conflicts?
 52. Should we provide **"Time-Travel"** like Speckle — visual history of changes with ability to inspect older versions, including cross-project intent history?
-Yes. Use git history for Time-Travel. Navigate through `.macro-plans` branch to view historical plans, tasks, and their predicted git repository graphs. Each plan is committed as a separate commit in this branch. Can checkout specific plan commit to see exact state of plan and predictions.
+Yes. Use git history for Time-Travel. Navigate through `.macro` branch to view historical plans, tasks, and their predicted git repository graphs. Each plan is committed as a separate commit in this branch. Can checkout specific plan commit to see exact state of plan and predictions.
 53. Do we need **Git hooks integration** (pre-commit lint/tests, post-commit notifications) built into workflow gates, and how do hooks work across multiple repos?
 54. Should we support **stashing / worktree management** for quick context switches during AI tasks, across multiple projects?
 55. How to link **AI-generated changes to Git commits** — store plan ID, task ID, commit hash, review status, and cross-project relationships for auditability?
@@ -169,7 +169,7 @@ No. Use git directly. Git stores all metadata needed. For fast UI rendering, cac
 61. Should we support **real-time collaboration** (multiple developers editing same file, cursor presence, cursors), and how does this work across multiple projects in a workspace?
 No. Focus on asynchronous collaboration via git. Team members work on their own copies of the codebase and share changes through git commits and pushes. Real-time collaboration adds complexity and is not aligned with the "Macro Method" of structured planning and task execution.
 62. Do we need **"Share Plan"** — ability to share AI plan + tasks + predicted git repository graph as a reusable workflow, including cross-project workflows?
-No. Plans, tasks, and predicted git repository graphs are stored in `.macro-plans` branch. Team members simply checkout this branch to view historical plans. To share a plan, commit it to `.macro-plans` and push to remote.
+No. Plans, tasks, and predicted git repository graphs are stored in `.macro` branch. Team members simply checkout this branch to view historical plans. To share a plan, commit it to `.macro` and push to remote.
 63. Should we implement **"Review Mode"** like Speckle — side-by-side diff with threaded comments per change, especially for cross-project changes?
 Out of scope for now.
 64. How to handle **offline-first collaboration** — conflict resolution when rejoining after editing offline, in multi-project scenarios?

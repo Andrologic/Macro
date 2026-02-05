@@ -55,3 +55,52 @@ pub struct UpdateProviderConfigInput {
     pub api_key: Option<String>,
     pub is_enabled: Option<bool>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitRepositoryRecord {
+    pub id: String,
+    pub project_id: String,
+    pub path: String,
+    pub default_branch: Option<String>,
+    pub last_commit: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitWorktreeRecord {
+    pub id: String,
+    pub repo_id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub worktree_name: String,
+    pub path: String,
+    pub branch: String,
+    pub head_commit: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_used_at: Option<String>,
+    pub is_active: bool,
+    pub is_prunable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateGitRepositoryInput {
+    pub project_id: String,
+    pub path: String,
+    pub default_branch: Option<String>,
+    pub last_commit: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateGitWorktreeInput {
+    pub repo_id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub worktree_name: String,
+    pub path: String,
+    pub branch: String,
+    pub head_commit: Option<String>,
+    pub is_active: bool,
+    pub is_prunable: bool,
+}
