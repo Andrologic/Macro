@@ -1,7 +1,12 @@
-import React, { useMemo, createElement, useState, useCallback } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import { MermaidRenderer } from './MermaidRenderer';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import ReactMarkdown from 'react-markdown';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 
 // =============================================================================
 // HIGHLIGHT.JS - SYNTAX HIGHLIGHTING
@@ -185,40 +190,22 @@ function escapeHtml(text: string): string {
 }
 
 // =============================================================================
-// MAIN MARKDOWN RENDERER
+// MARKDOWN PIPELINE (REMARK/REHYPE)
 // =============================================================================
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
-  content,
-  className,
-}) => {
-  const renderedContent = useMemo(() => {
-    return parseMarkdown(content);
-  }, [content]);
+let blockKeySeed = 0;
 
-  return (
-    <div className={cn('markdown-content', className)}>
-      {renderedContent}
-    </div>
-  );
+const getTextFromChildren = (children: React.ReactNode): string => {
+  if (children === null || children === undefined) return '';
+  if (typeof children === 'string' || typeof children === 'number') return String(children);
+  if (Array.isArray(children)) return children.map(getTextFromChildren).join('');
+  if (React.isValidElement(children)) return getTextFromChildren(children.props.children);
+  return '';
 };
 
-// =============================================================================
-// MARKDOWN PARSING
-// =============================================================================
-
-interface ParsedBlock {
-  type: 'paragraph' | 'code' | 'heading' | 'list' | 'blockquote' | 'thinking';
-  content: string;
-  language?: string;
-  level?: number;
-}
-
-function splitThinkBlocks(content: string): Array<{ type: 'text' | 'thinking'; content: string }> {
-  const blocks: Array<{ type: 'text' | 'thinking'; content: string }> = [];
+const normalizeThinkingBlocks = (content: string): string => {
+  const output: string[] = [];
   let remaining = content;
-
-  // Regex for tags - handle variations
   const openRegex = /<\s*(think|thinking)\s*>/i;
   const closeRegex = /<\s*\/\s*(think|thinking)\s*>/i;
 
@@ -226,309 +213,186 @@ function splitThinkBlocks(content: string): Array<{ type: 'text' | 'thinking'; c
     const openMatch = remaining.match(openRegex);
     const closeMatch = remaining.match(closeRegex);
 
-    // Case 1: No tags found
     if (!openMatch && !closeMatch) {
-      if (remaining.trim()) {
-        blocks.push({ type: 'text', content: remaining });
-      }
+      output.push(remaining);
       break;
     }
 
-    // Case 2: Closing tag appears BEFORE any opening tag
     if (closeMatch && (!openMatch || closeMatch.index! < openMatch.index!)) {
       const splitIndex = closeMatch.index!;
       const thinkContent = remaining.slice(0, splitIndex).trim();
-      
+
       if (thinkContent) {
-        blocks.push({ type: 'thinking', content: thinkContent });
+        output.push(`\n\n\`\`\`thinking\n${thinkContent}\n\`\`\`\n\n`);
       }
-      
+
       remaining = remaining.slice(splitIndex + closeMatch[0].length);
       continue;
     }
 
-    // Case 3: Opening tag found first
     if (openMatch) {
       if (openMatch.index! > 0) {
-        const textBefore = remaining.slice(0, openMatch.index!);
-        if (textBefore.trim()) {
-          blocks.push({ type: 'text', content: textBefore });
-        }
+        output.push(remaining.slice(0, openMatch.index!));
       }
 
       const contentStart = openMatch.index! + openMatch[0].length;
       const rest = remaining.slice(contentStart);
-      
       const nextClose = rest.match(closeRegex);
-      
+
       if (nextClose) {
         const thinkContent = rest.slice(0, nextClose.index!).trim();
         if (thinkContent) {
-          blocks.push({ type: 'thinking', content: thinkContent });
+          output.push(`\n\n\`\`\`thinking\n${thinkContent}\n\`\`\`\n\n`);
         }
         remaining = rest.slice(nextClose.index! + nextClose[0].length);
       } else {
         const thinkContent = rest.trim();
         if (thinkContent) {
-          blocks.push({ type: 'thinking', content: thinkContent });
+          output.push(`\n\n\`\`\`thinking\n${thinkContent}\n\`\`\`\n\n`);
         }
         break;
       }
     }
   }
 
-  return blocks;
-}
+  return output.join('');
+};
 
-function parseMarkdownBlocks(content: string): ParsedBlock[] {
-  const blocks: ParsedBlock[] = [];
-  const lines = content.split('\n');
-  let i = 0;
+// =============================================================================
+// MAIN MARKDOWN RENDERER
+// =============================================================================
 
-  while (i < lines.length) {
-    const line = lines[i];
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
+  content,
+  className,
+}) => {
+  const normalizedContent = useMemo(() => normalizeThinkingBlocks(content), [content]);
 
-    // Code block
-    if (line.startsWith('```')) {
-      const language = line.slice(3).trim();
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith('```')) {
-        codeLines.push(lines[i]);
-        i++;
+  const components = useMemo(() => ({
+    a: ({ href, children, ...props }: React.ComponentProps<'a'>) => (
+      <a
+        {...props}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary hover:underline"
+      >
+        {children}
+      </a>
+    ),
+    h1: (props: React.ComponentProps<'h1'>) => (
+      <h1 {...props} className={cn('text-xl font-bold mt-4 mb-2', props.className)} />
+    ),
+    h2: (props: React.ComponentProps<'h2'>) => (
+      <h2 {...props} className={cn('text-lg font-semibold mt-4 mb-2', props.className)} />
+    ),
+    h3: (props: React.ComponentProps<'h3'>) => (
+      <h3 {...props} className={cn('text-base font-semibold mt-3 mb-2', props.className)} />
+    ),
+    h4: (props: React.ComponentProps<'h4'>) => (
+      <h4 {...props} className={cn('text-sm font-semibold mt-3 mb-2', props.className)} />
+    ),
+    h5: (props: React.ComponentProps<'h5'>) => (
+      <h5 {...props} className={cn('text-sm font-medium mt-3 mb-2', props.className)} />
+    ),
+    h6: (props: React.ComponentProps<'h6'>) => (
+      <h6 {...props} className={cn('text-xs font-medium mt-3 mb-2', props.className)} />
+    ),
+    blockquote: (props: React.ComponentProps<'blockquote'>) => (
+      <blockquote
+        {...props}
+        className={cn('border-l-2 border-primary/50 pl-3 my-2 text-muted-foreground italic', props.className)}
+      />
+    ),
+    code: ({ className, children, ...props }: React.ComponentProps<'code'>) => {
+      const blockKeyRef = useRef(++blockKeySeed);
+      const languageMatch = /language-([^\s]+)/i.exec(className || '');
+      const language = languageMatch?.[1] || '';
+      const codeText = getTextFromChildren(children).replace(/\n$/, '');
+
+      if (language.toLowerCase() === 'mermaid' || language.toLowerCase() === 'mmd') {
+        return <MermaidRenderer code={codeText} blockKey={blockKeyRef.current} />;
       }
-      blocks.push({
-        type: 'code',
-        content: codeLines.join('\n'),
-        language: language || 'text',
-      });
-      i++;
-      continue;
-    }
 
-    // Heading
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
-    if (headingMatch) {
-      blocks.push({
-        type: 'heading',
-        content: headingMatch[2],
-        level: headingMatch[1].length,
-      });
-      i++;
-      continue;
-    }
-
-    // Blockquote
-    if (line.startsWith('> ')) {
-      const quoteLines: string[] = [];
-      while (i < lines.length && lines[i].startsWith('> ')) {
-        quoteLines.push(lines[i].slice(2));
-        i++;
+      if (language.toLowerCase() === 'thinking') {
+        return <ThinkingBlock content={codeText} blockKey={blockKeyRef.current} />;
       }
-      blocks.push({
-        type: 'blockquote',
-        content: quoteLines.join('\n'),
-      });
-      continue;
-    }
 
-    // Unordered list
-    if (line.match(/^[-*]\s+/)) {
-      const listItems: string[] = [];
-      while (i < lines.length && lines[i].match(/^[-*]\s+/)) {
-        listItems.push(lines[i].replace(/^[-*]\s+/, ''));
-        i++;
-      }
-      blocks.push({
-        type: 'list',
-        content: listItems.join('\n'),
-      });
-      continue;
-    }
-
-    // Regular paragraph
-    if (line.trim()) {
-      const paragraphLines: string[] = [];
-      while (
-        i < lines.length &&
-        lines[i].trim() &&
-        !lines[i].startsWith('```') &&
-        !lines[i].startsWith('#') &&
-        !lines[i].startsWith('> ') &&
-        !lines[i].match(/^[-*]\s+/)
-      ) {
-        paragraphLines.push(lines[i]);
-        i++;
-      }
-      blocks.push({
-        type: 'paragraph',
-        content: paragraphLines.join(' '),
-      });
-      continue;
-    }
-
-    i++;
-  }
-
-  return blocks;
-}
-
-function parseMarkdown(content: string): React.ReactNode[] {
-  const blocks: ParsedBlock[] = [];
-  const segments = splitThinkBlocks(content);
-
-  for (const segment of segments) {
-    if (segment.type === 'thinking') {
-      const trimmed = segment.content.trim();
-      if (trimmed) {
-        blocks.push({ type: 'thinking', content: trimmed });
-      }
-    } else {
-      blocks.push(...parseMarkdownBlocks(segment.content));
-    }
-  }
-
-  return blocks.map((block, index) => renderBlock(block, index));
-}
-
-function renderBlock(block: ParsedBlock, key: number): React.ReactNode {
-  switch (block.type) {
-    case 'code':
-      if (block.language?.toLowerCase() === 'mermaid' || block.language?.toLowerCase() === 'mmd') {
+      if (className && className.includes('language-')) {
         return (
-          <MermaidRenderer
-            key={key}
-            code={block.content}
-            blockKey={key}
+          <CodeBlock
+            content={codeText}
+            language={language || 'text'}
+            blockKey={blockKeyRef.current}
           />
         );
       }
+
       return (
-        <CodeBlock
-          key={key}
-          content={block.content}
-          language={block.language}
-          blockKey={key}
-        />
-      );
-
-    case 'heading': {
-      const HeadingTag = `h${block.level}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
-      const sizeClasses: Record<number, string> = {
-        1: 'text-xl font-bold',
-        2: 'text-lg font-semibold',
-        3: 'text-base font-semibold',
-        4: 'text-sm font-semibold',
-        5: 'text-sm font-medium',
-        6: 'text-xs font-medium',
-      };
-      return createElement(
-        HeadingTag,
-        {
-          key,
-          className: cn('text-foreground mt-4 mb-2', sizeClasses[block.level || 1]),
-        },
-        renderInline(block.content)
-      );
-    }
-
-    case 'blockquote':
-      return (
-        <blockquote
-          key={key}
-          className="border-l-2 border-primary/50 pl-3 my-2 text-muted-foreground italic"
-        >
-          {renderInline(block.content)}
-        </blockquote>
-      );
-
-    case 'list':
-      return (
-        <ul key={key} className="list-disc list-inside my-2 space-y-1">
-          {block.content.split('\n').map((item, i) => (
-            <li key={i} className="text-foreground">
-              {renderInline(item)}
-            </li>
-          ))}
-        </ul>
-      );
-
-    case 'thinking':
-      return <ThinkingBlock key={key} content={block.content} blockKey={key} />;
-
-    case 'paragraph':
-    default:
-      return (
-        <p key={key} className="text-foreground my-2 leading-relaxed">
-          {renderInline(block.content)}
-        </p>
-      );
-  }
-}
-
-function renderInline(text: string): React.ReactNode {
-  const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let key = 0;
-
-  // Combined regex for inline code, bold, italic, and links
-  const inlineRegex = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))/g;
-  let match;
-
-  while ((match = inlineRegex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
-    }
-
-    const [fullMatch] = match;
-
-    if (fullMatch.startsWith('`')) {
-      parts.push(
         <code
-          key={key++}
-          className="px-1.5 py-0.5 bg-muted rounded text-sm font-mono text-primary"
+          {...props}
+          className={cn('px-1.5 py-0.5 bg-muted rounded text-sm font-mono text-primary', className)}
         >
-          {fullMatch.slice(1, -1)}
+          {children}
         </code>
       );
-    } else if (fullMatch.startsWith('**')) {
-      parts.push(
-        <strong key={key++} className="font-semibold">
-          {fullMatch.slice(2, -2)}
-        </strong>
-      );
-    } else if (fullMatch.startsWith('*')) {
-      parts.push(
-        <em key={key++} className="italic">
-          {fullMatch.slice(1, -1)}
-        </em>
-      );
-    } else if (fullMatch.startsWith('[')) {
-      const linkMatch = fullMatch.match(/\[([^\]]+)\]\(([^)]+)\)/);
-      if (linkMatch) {
-        parts.push(
-          <a
-            key={key++}
-            href={linkMatch[2]}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-primary hover:underline"
-          >
-            {linkMatch[1]}
-          </a>
+    },
+    pre: ({ children }) => <>{children}</>,
+    ul: (props: React.ComponentProps<'ul'>) => (
+      <ul {...props} className={cn('list-disc list-inside my-2 space-y-1', props.className)} />
+    ),
+    ol: (props: React.ComponentProps<'ol'>) => (
+      <ol {...props} className={cn('list-decimal list-inside my-2 space-y-1', props.className)} />
+    ),
+    li: (props: React.ComponentProps<'li'>) => (
+      <li {...props} className={cn('text-foreground', props.className)} />
+    ),
+    table: (props: React.ComponentProps<'table'>) => (
+      <table {...props} className={cn('w-full text-sm border border-border rounded-lg overflow-hidden', props.className)} />
+    ),
+    thead: (props: React.ComponentProps<'thead'>) => (
+      <thead {...props} className={cn('bg-muted/40', props.className)} />
+    ),
+    tbody: (props: React.ComponentProps<'tbody'>) => (
+      <tbody {...props} className={cn('divide-y divide-border', props.className)} />
+    ),
+    tr: (props: React.ComponentProps<'tr'>) => (
+      <tr {...props} className={cn('divide-x divide-border', props.className)} />
+    ),
+    th: (props: React.ComponentProps<'th'>) => (
+      <th {...props} className={cn('text-left font-semibold px-3 py-2', props.className)} />
+    ),
+    td: (props: React.ComponentProps<'td'>) => (
+      <td {...props} className={cn('px-3 py-2 align-top', props.className)} />
+    ),
+    input: ({ type, ...props }: React.ComponentProps<'input'>) => {
+      if (type === 'checkbox') {
+        return (
+          <input
+            {...props}
+            type="checkbox"
+            disabled
+            className={cn('mr-2 align-middle accent-primary', props.className)}
+          />
         );
       }
-    }
+      return <input {...props} />;
+    },
+  }), []);
 
-    lastIndex = match.index + fullMatch.length;
-  }
-
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
-  }
-
-  return parts.length > 0 ? parts : text;
-}
+  return (
+    <div className={cn('markdown-content', className)}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        skipHtml
+        components={components}
+      >
+        {normalizedContent}
+      </ReactMarkdown>
+    </div>
+  );
+};
 
 // =============================================================================
 // UTILITY EXPORTS
