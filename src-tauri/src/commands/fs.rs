@@ -7,6 +7,9 @@ use crate::fs::dto::{DirEntryDto, FileContentDto, FileStatsDto, WriteResultDto};
 use crate::fs::{get_file_language, is_binary_file, validate_path, validate_path_for_write};
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
+
 // Constants
 const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 const MAX_WRITE_SIZE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
