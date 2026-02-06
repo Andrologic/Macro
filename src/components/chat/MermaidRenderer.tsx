@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import mermaid from 'mermaid';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
-import { useAppStore } from '../../stores/useAppStore';
+import { useTheme } from '../theme/ThemeProvider';
 
 interface MermaidRendererProps {
   code: string;
@@ -12,58 +12,42 @@ interface MermaidRendererProps {
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-const toHex = (value: string): string => {
-  const trimmed = value.trim();
-  if (!trimmed) return '#000000';
-  if (trimmed.startsWith('#')) return trimmed;
-
-  const rgbMatch = trimmed.match(/rgba?\(([^)]+)\)/i);
-  if (rgbMatch) {
-    const parts = rgbMatch[1].split(',').map((part) => Number(part.trim()));
-    const [r, g, b] = parts;
-    return `#${[r, g, b]
-      .map((c) => clamp(Math.round(c), 0, 255).toString(16).padStart(2, '0'))
-      .join('')}`;
-  }
-
-  const parts = trimmed.split(' ').filter(Boolean).map((part) => Number(part));
-  if (parts.length >= 3 && parts.every((val) => !Number.isNaN(val))) {
-    const [r, g, b] = parts;
-    return `#${[r, g, b]
-      .map((c) => clamp(Math.round(c), 0, 255).toString(16).padStart(2, '0'))
-      .join('')}`;
-  }
-
-  return '#000000';
+/**
+ * Lighten a hex color by a given amount (0-1).
+ */
+const lighten = (hex: string, amount: number): string => {
+  const num = parseInt(hex.replace('#', ''), 16);
+  const r = Math.min(255, ((num >> 16) & 0xff) + Math.round(255 * amount));
+  const g = Math.min(255, ((num >> 8) & 0xff) + Math.round(255 * amount));
+  const b = Math.min(255, (num & 0xff) + Math.round(255 * amount));
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
 };
 
-const getThemeColor = (name: string, fallback: string): string => {
-  if (typeof window === 'undefined') return fallback;
-  const value = getComputedStyle(document.documentElement).getPropertyValue(`--${name}`);
-  const hex = toHex(value || fallback);
-  return hex.startsWith('#') ? hex : `#${hex}`;
+/**
+ * Darken a hex color by a given amount (0-1).
+ */
+const darken = (hex: string, amount: number): string => {
+  const num = parseInt(hex.replace('#', ''), 16);
+  const r = Math.max(0, ((num >> 16) & 0xff) - Math.round(255 * amount));
+  const g = Math.max(0, ((num >> 8) & 0xff) - Math.round(255 * amount));
+  const b = Math.max(0, (num & 0xff) - Math.round(255 * amount));
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
 };
 
-const isMermaidComplete = (code: string): boolean => {
-  const trimmed = code.trim();
-  if (!trimmed) return false;
-
-  // If we still have markdown fences, validate closure
-  if (trimmed.includes('```')) {
-    if (!trimmed.endsWith('```')) return false;
-    const mermaidContent = trimmed.replace(/^```(?:mermaid|mmd)?\n?/, '').replace(/```$/, '');
-    if (!mermaidContent.trim()) return false;
-    const hasMermaidSyntax = /^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|gantt|pie|mindmap|erDiagram|gitGraph|journey|C4Context|requirementDiagram|relationDiagram|info|flowchart\.?(LR|TD|BT|RL)|graph\.?(LR|TD|BT|RL))/i.test(mermaidContent.trim());
-    return hasMermaidSyntax;
-  }
-
-  // MarkdownRenderer already strips fences, so treat non-empty code as complete
-  return true;
+const enhanceSvgSizing = (svgMarkup: string): string => {
+  if (!svgMarkup.includes('<svg')) return svgMarkup;
+  let processed = svgMarkup.replace(
+    /width="[^"]*"/gi,
+    'style="max-width: 100%; max-height: 100%; width: auto; height: auto;"'
+  );
+  processed = processed.replace(/height="[^"]*"/gi, '');
+  processed = processed.replace('<svg', '<svg class="mermaid-svg"');
+  return processed;
 };
 
 export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey }) => {
   const { t } = useTranslation();
-  const activeThemeId = useAppStore((state) => state.activeThemeId);
+  const { theme, isDark } = useTheme();
 
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
@@ -86,33 +70,184 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
   const bindFunctionsRef = useRef<((element: Element) => void) | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const expandedContainerRef = useRef<HTMLDivElement>(null);
+  const pendingSinceRef = useRef<number | null>(null);
+  const pendingTimeoutRef = useRef<number | null>(null);
+
+  // Build a stable key from the theme colors object so useMemo recalculates on any theme change
+  const themeKey = useMemo(() => JSON.stringify(theme.colors) + theme.type, [theme]);
 
   const mermaidConfig = useMemo(() => {
-    const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+    const c = theme.colors;
+
+    // Node fill: use a tinted version of the background so nodes are distinct
+    // but text inside remains readable
+    const nodeFill = isDark ? lighten(c.background, 0.08) : darken(c.background, 0.05);
+    const nodeFill2 = isDark ? lighten(c.background, 0.12) : darken(c.background, 0.08);
+
     return {
       startOnLoad: false,
-      securityLevel: 'strict' as const,
+      securityLevel: 'loose' as const,
       theme: 'base' as const,
       darkMode: isDark,
       fontFamily: '"JetBrains Mono", "Fira Code", "SF Mono", Monaco, Inconsolata, monospace',
+      fontSize: 14,
       themeVariables: {
-        background: getThemeColor('background', '#0b0b0b'),
-        primaryColor: getThemeColor('card', '#111827'),
-        primaryTextColor: getThemeColor('foreground', '#f8fafc'),
-        primaryBorderColor: getThemeColor('border', '#334155'),
-        secondaryColor: getThemeColor('muted', '#1f2937'),
-        secondaryTextColor: getThemeColor('foreground', '#f8fafc'),
-        tertiaryColor: getThemeColor('accent', '#111827'),
-        tertiaryTextColor: getThemeColor('foreground', '#f8fafc'),
-        lineColor: getThemeColor('muted-foreground', '#94a3b8'),
-        noteBkgColor: getThemeColor('muted', '#1f2937'),
-        noteTextColor: getThemeColor('foreground', '#f8fafc'),
+        // -- Backgrounds --
+        background: 'transparent',
+        mainBkg: nodeFill,
+        secondBkg: nodeFill2,
+        tertiaryColor: isDark ? lighten(c.background, 0.15) : darken(c.background, 0.1),
+
+        // -- Primary node (most flowchart nodes) --
+        primaryColor: nodeFill,
+        primaryTextColor: c.foreground,
+        primaryBorderColor: c.border,
+
+        // -- Secondary / tertiary --
+        secondaryColor: nodeFill2,
+        secondaryTextColor: c.foreground,
+        secondaryBorderColor: c.border,
+        tertiaryTextColor: c.foreground,
+        tertiaryBorderColor: c.border,
+
+        // -- Lines --
+        lineColor: c.mutedForeground,
+
+        // -- Notes --
+        noteBkgColor: isDark ? lighten(c.background, 0.06) : darken(c.background, 0.04),
+        noteTextColor: c.foreground,
+        noteBorderColor: c.border,
+
+        // -- Labels --
+        labelBackground: c.background,
+        labelTextColor: c.foreground,
+        labelText: c.foreground,
+
+        // -- Actors (sequence diagrams) --
+        actorBkg: c.primary,
+        actorTextColor: c.primaryForeground,
+        actorBorder: c.primary,
+        actorLineColor: c.mutedForeground,
+
+        // -- Signals / messages --
+        signalColor: c.foreground,
+        signalTextColor: c.foreground,
+
+        // -- Loop boxes --
+        loopTextColor: c.foreground,
+        activationBorderColor: c.primary,
+        activationBkgColor: isDark ? lighten(c.background, 0.1) : darken(c.background, 0.06),
+
+        // -- Sections (gantt, pie) --
+        sectionBkgColor: nodeFill,
+        altSectionBkgColor: nodeFill2,
+        sectionBkgColor2: nodeFill2,
+        taskBkgColor: c.primary,
+        taskTextColor: c.primaryForeground,
+        taskBorderColor: c.primary,
+        activeTaskBkgColor: c.primary,
+        activeTaskBorderColor: c.ring,
+        doneTaskBkgColor: c.muted,
+        doneTaskBorderColor: c.border,
+
+        // -- Grid --
+        gridColor: c.border,
+        todayLineColor: c.destructive,
+
+        // -- Class diagram --
+        classText: c.foreground,
+
+        // -- State diagram --
+        labelColor: c.foreground,
+        altBackground: nodeFill2,
+
+        // -- ER diagram --
+        attributeBackgroundColorEven: nodeFill,
+        attributeBackgroundColorOdd: nodeFill2,
+
+        // -- Pie chart --
+        pie1: c.primary,
+        pie2: isDark ? '#22c55e' : '#16a34a',
+        pie3: isDark ? '#3b82f6' : '#2563eb',
+        pie4: isDark ? '#f59e0b' : '#d97706',
+        pie5: isDark ? '#ec4899' : '#db2777',
+        pie6: isDark ? '#8b5cf6' : '#7c3aed',
+        pie7: isDark ? '#14b8a6' : '#0d9488',
+        pie8: isDark ? '#ef4444' : '#dc2626',
+        pie9: c.muted,
+        pie10: c.accent,
+        pie11: c.ring,
+        pie12: c.secondary,
+        pieStrokeColor: c.border,
+        pieTitleTextColor: c.foreground,
+        pieSectionTextColor: c.foreground,
+        pieLegendTextColor: c.foreground,
+
+        // -- Flowchart fill types for subgraphs --
+        fillType0: isDark ? lighten(c.background, 0.06) : darken(c.background, 0.03),
+        fillType1: isDark ? lighten(c.background, 0.1) : darken(c.background, 0.06),
+        fillType2: isDark ? lighten(c.background, 0.14) : darken(c.background, 0.09),
+        fillType3: isDark ? lighten(c.background, 0.18) : darken(c.background, 0.12),
+        fillType4: isDark ? lighten(c.background, 0.22) : darken(c.background, 0.15),
+        fillType5: isDark ? lighten(c.background, 0.26) : darken(c.background, 0.18),
+        fillType6: isDark ? lighten(c.background, 0.3) : darken(c.background, 0.21),
+        fillType7: isDark ? lighten(c.background, 0.34) : darken(c.background, 0.24),
+
+        // -- Ensure edge labels are readable --
+        edgeLabelBackground: isDark ? lighten(c.background, 0.05) : darken(c.background, 0.02),
+
+        // -- Cluster (subgraph) --
+        clusterBkg: isDark ? lighten(c.background, 0.04) : darken(c.background, 0.02),
+        clusterBorder: c.border,
+        titleColor: c.foreground,
+
+        // -- Git graph --
+        git0: c.primary,
+        git1: isDark ? '#22c55e' : '#16a34a',
+        git2: isDark ? '#3b82f6' : '#2563eb',
+        git3: isDark ? '#f59e0b' : '#d97706',
+        git4: isDark ? '#ec4899' : '#db2777',
+        git5: isDark ? '#8b5cf6' : '#7c3aed',
+        git6: isDark ? '#14b8a6' : '#0d9488',
+        git7: isDark ? '#ef4444' : '#dc2626',
+        gitBranchLabel0: c.primaryForeground,
+        gitInv0: c.primaryForeground,
+
+        // -- Requirement --
+        requirementBackground: nodeFill,
+        requirementBorderColor: c.border,
+        requirementTextColor: c.foreground,
+        relationColor: c.mutedForeground,
+        relationLabelBackground: c.background,
+        relationLabelColor: c.foreground,
       },
       flowchart: {
         useMaxWidth: true,
+        htmlLabels: true,
+        curve: 'basis' as const,
+        padding: 10,
       },
+      gantt: {
+        useMaxWidth: true,
+        padding: 10,
+        barHeight: 20,
+        fontSize: 13,
+      },
+      sequence: {
+        useMaxWidth: true,
+        boxMargin: 8,
+        boxTextMargin: 4,
+        noteMargin: 8,
+        messageMargin: 30,
+      },
+      class: { useMaxWidth: true },
+      state: { useMaxWidth: true },
+      er: { useMaxWidth: true },
+      pie: { useMaxWidth: true, textPosition: 0.75 },
+      git: { useMaxWidth: true },
     };
-  }, [activeThemeId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [themeKey]);
 
   const cleanupErrorElements = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -129,26 +264,34 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
       return;
     }
 
-    // Check if mermaid block is still being streamed
-    if (!isMermaidComplete(code)) {
-      setSvg('');
-      setError(null);
-      setIsRendering(true);
-      return;
-    }
-
     setIsRendering(true);
     setError(null);
     cleanupErrorElements();
 
     try {
       await mermaid.initialize(mermaidConfig);
-      await mermaid.parse(code.replace(/^```(?:mermaid|mmd)?\n?/, '').replace(/```$/, ''));
-      const renderId = `${renderIdRef.current}-${renderCountRef.current++}`;
       const cleanCode = code.replace(/^```(?:mermaid|mmd)?\n?/, '').replace(/```$/, '');
+      const parseResult = await mermaid.parse(cleanCode, { suppressErrors: true });
+
+      if (!parseResult) {
+        const pendingSince = pendingSinceRef.current ?? Date.now();
+        pendingSinceRef.current = pendingSince;
+
+        if (Date.now() - pendingSince < 2000) {
+          setSvg('');
+          setError(null);
+          setIsRendering(true);
+          return;
+        }
+
+        throw new Error('Invalid Mermaid syntax');
+      }
+
+      const renderId = `${renderIdRef.current}-${renderCountRef.current++}`;
       const { svg: renderedSvg, bindFunctions } = await mermaid.render(renderId, cleanCode);
       bindFunctionsRef.current = bindFunctions || null;
-      setSvg(renderedSvg);
+      setSvg(enhanceSvgSizing(renderedSvg));
+      pendingSinceRef.current = null;
       cleanupErrorElements();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -160,6 +303,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     }
   }, [code, mermaidConfig, cleanupErrorElements]);
 
+  // Re-render when code changes OR when theme changes
   useEffect(() => {
     if (!code.trim()) {
       setIsRendering(false);
@@ -167,14 +311,21 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     }
 
     setIsRendering(true);
+    pendingSinceRef.current = Date.now();
+    if (pendingTimeoutRef.current) {
+      window.clearTimeout(pendingTimeoutRef.current);
+    }
+
     const handle = window.setTimeout(() => {
       void renderDiagram();
     }, 250);
 
+    pendingTimeoutRef.current = handle;
+
     return () => {
       window.clearTimeout(handle);
     };
-  }, [code, renderDiagram]);
+  }, [code, renderDiagram, themeKey]);
 
   useEffect(() => {
     if (!svg) return;
@@ -230,7 +381,8 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
 
   const startPan = (event: React.PointerEvent<HTMLDivElement>, isModal = false) => {
     if (event.button !== 0) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
     panStartRef.current = { x: event.clientX, y: event.clientY };
     panOriginRef.current = isModal ? expandedOffset : offset;
     if (isModal) {
@@ -243,6 +395,8 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
   const onPanMove = (event: React.PointerEvent<HTMLDivElement>, isModal = false) => {
     const active = isModal ? isExpandedPanning : isPanning;
     if (!active) return;
+    event.preventDefault();
+    event.stopPropagation();
     const deltaX = event.clientX - panStartRef.current.x;
     const deltaY = event.clientY - panStartRef.current.y;
     const next = {
@@ -257,6 +411,8 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
   };
 
   const endPan = (event: React.PointerEvent<HTMLDivElement>, isModal = false) => {
+    event.preventDefault();
+    event.stopPropagation();
     if (isModal) {
       setIsExpandedPanning(false);
     } else {
@@ -307,37 +463,40 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
         </div>
       </div>
 
-      <div className="relative">
-        <div className="max-h-[420px] overflow-hidden">
+      <div className="relative w-full">
+        <div className="w-full h-[320px] overflow-hidden relative bg-card/20">
           <div
-            className="mermaid-container min-h-[180px]"
-            data-theme={activeThemeId}
-            onWheel={(event) => handleWheel(event)}
+            className="mermaid-wrapper w-full h-full flex items-center justify-center p-3"
           >
             {showCodeInline ? (
-              <div className="w-full h-full px-3 py-2">
+              <div className="w-full h-full px-3 py-2 overflow-auto">
                 <pre className="text-xs font-mono whitespace-pre-wrap text-foreground/90">
                   {code}
                 </pre>
               </div>
             ) : isRendering ? (
-              <div className="flex flex-col items-center justify-center gap-2 h-full min-h-[180px]">
+              <div className="flex flex-col items-center justify-center gap-2 h-full">
                 <div className="w-8 h-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
                 <span className="text-xs text-muted-foreground">{t('chat.renderingDiagram')}</span>
               </div>
             ) : error ? (
-              <div className="text-xs text-destructive text-center">
+              <div className="text-xs text-destructive text-center px-4">
                 <div className="font-medium">{t('chat.mermaidRenderError')}</div>
                 <div className="mt-1 opacity-70">{error}</div>
               </div>
             ) : (
               <div
                 ref={containerRef}
-                className={cn(
-                  'origin-top-left touch-none select-none',
-                  isPanning ? 'cursor-grabbing' : 'cursor-grab'
-                )}
-                style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})` }}
+                className="mermaid-diagram-container origin-top-left"
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  cursor: isPanning ? 'grabbing' : 'grab',
+                  transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+                  userSelect: 'none',
+                  touchAction: 'none',
+                }}
+                onWheel={(event) => handleWheel(event)}
                 onPointerDown={(event) => startPan(event)}
                 onPointerMove={(event) => onPanMove(event)}
                 onPointerUp={(event) => endPan(event)}
@@ -414,13 +573,11 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
               </div>
             </div>
 
-            <div className="flex-1 overflow-hidden grid grid-cols-1">
-              <div className="relative h-full">
-                <div className="h-full overflow-hidden">
+            <div className="flex-1 overflow-hidden">
+              <div className="w-full h-full relative">
+                <div className="w-full h-full overflow-hidden bg-card/20">
                   <div
-                    className="mermaid-container min-h-full"
-                    data-theme={activeThemeId}
-                    onWheel={(event) => handleWheel(event, true)}
+                    className="mermaid-wrapper w-full h-full flex items-center justify-center p-4"
                   >
                     {showCodeExpanded ? (
                       <div className="w-full h-full px-4 py-3 overflow-auto">
@@ -434,18 +591,23 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
                         <span className="text-sm text-muted-foreground">{t('chat.renderingDiagram')}</span>
                       </div>
                     ) : error ? (
-                      <div className="text-xs text-destructive text-center">
+                      <div className="text-sm text-destructive text-center px-6">
                         <div className="font-medium">{t('chat.mermaidRenderError')}</div>
-                        <div className="mt-1 opacity-70">{error}</div>
+                        <div className="mt-2 opacity-70">{error}</div>
                       </div>
                     ) : (
                       <div
                         ref={expandedContainerRef}
-                        className={cn(
-                          'origin-top-left touch-none select-none',
-                          isExpandedPanning ? 'cursor-grabbing' : 'cursor-grab'
-                        )}
-                        style={{ transform: `translate(${expandedOffset.x}px, ${expandedOffset.y}px) scale(${expandedScale})` }}
+                        className="mermaid-diagram-container origin-top-left"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          cursor: isExpandedPanning ? 'grabbing' : 'grab',
+                          transform: `translate(${expandedOffset.x}px, ${expandedOffset.y}px) scale(${expandedScale})`,
+                          userSelect: 'none',
+                          touchAction: 'none',
+                        }}
+                        onWheel={(event) => handleWheel(event, true)}
                         onPointerDown={(event) => startPan(event, true)}
                         onPointerMove={(event) => onPanMove(event, true)}
                         onPointerUp={(event) => endPan(event, true)}
