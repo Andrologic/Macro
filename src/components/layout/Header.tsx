@@ -208,15 +208,15 @@ export function Header({
           )}
         </div>
 
-        {/* Center Section: Mode Selection */}
-        <div className="flex-1 flex justify-center min-w-0 px-2" data-tauri-drag-region>
+        {/* Center Section: Mode Selection - Fixed Position */}
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none" data-tauri-drag-region>
           {/* Desktop: Segment Control */}
-          <div className="hidden lg:inline-flex bg-secondary rounded-lg p-1 shrink-0">
+          <div className="hidden lg:inline-flex bg-secondary rounded-lg p-1 shrink-0 pointer-events-auto">
             {modeOptions.map(renderModeButton)}
           </div>
 
           {/* Mobile: Dropdown Menu */}
-          <div className="lg:hidden relative" ref={modeMenuRef}>
+          <div className="lg:hidden relative pointer-events-auto" ref={modeMenuRef}>
             <button
               onClick={() => setModeMenuOpen(!modeMenuOpen)}
               className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary hover:bg-accent transition-colors text-xs font-medium"
