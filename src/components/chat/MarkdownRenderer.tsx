@@ -67,7 +67,11 @@ interface MarkdownRendererProps {
 // THINKING BLOCK COMPONENT
 // =============================================================================
 
-const ThinkingBlock: React.FC<{ content: string; blockKey: number }> = ({ content, blockKey: _blockKey }) => {
+const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: React.ReactNode }> = ({
+  content,
+  blockKey: _blockKey,
+  children,
+}) => {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
@@ -96,7 +100,7 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number }> = ({ conten
       {isOpen && (
         <div className="px-3 pb-3 pt-1 border-t border-primary/10">
           <div className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">
-            {content}
+            {children ?? content}
           </div>
         </div>
       )}
@@ -203,9 +207,10 @@ const getTextFromChildren = (children: React.ReactNode): string => {
   return '';
 };
 
-const normalizeThinkingBlocks = (content: string): string => {
-  const output: string[] = [];
+const splitThinkBlocks = (content: string): Array<{ type: 'text' | 'thinking'; content: string }> => {
+  const blocks: Array<{ type: 'text' | 'thinking'; content: string }> = [];
   let remaining = content;
+
   const openRegex = /<\s*(think|thinking)\s*>/i;
   const closeRegex = /<\s*\/\s*(think|thinking)\s*>/i;
 
@@ -214,7 +219,9 @@ const normalizeThinkingBlocks = (content: string): string => {
     const closeMatch = remaining.match(closeRegex);
 
     if (!openMatch && !closeMatch) {
-      output.push(remaining);
+      if (remaining.trim()) {
+        blocks.push({ type: 'text', content: remaining });
+      }
       break;
     }
 
@@ -223,7 +230,7 @@ const normalizeThinkingBlocks = (content: string): string => {
       const thinkContent = remaining.slice(0, splitIndex).trim();
 
       if (thinkContent) {
-        output.push(`\n\n\`\`\`thinking\n${thinkContent}\n\`\`\`\n\n`);
+        blocks.push({ type: 'thinking', content: thinkContent });
       }
 
       remaining = remaining.slice(splitIndex + closeMatch[0].length);
@@ -232,7 +239,10 @@ const normalizeThinkingBlocks = (content: string): string => {
 
     if (openMatch) {
       if (openMatch.index! > 0) {
-        output.push(remaining.slice(0, openMatch.index!));
+        const textBefore = remaining.slice(0, openMatch.index!);
+        if (textBefore.trim()) {
+          blocks.push({ type: 'text', content: textBefore });
+        }
       }
 
       const contentStart = openMatch.index! + openMatch[0].length;
@@ -242,20 +252,20 @@ const normalizeThinkingBlocks = (content: string): string => {
       if (nextClose) {
         const thinkContent = rest.slice(0, nextClose.index!).trim();
         if (thinkContent) {
-          output.push(`\n\n\`\`\`thinking\n${thinkContent}\n\`\`\`\n\n`);
+          blocks.push({ type: 'thinking', content: thinkContent });
         }
         remaining = rest.slice(nextClose.index! + nextClose[0].length);
       } else {
         const thinkContent = rest.trim();
         if (thinkContent) {
-          output.push(`\n\n\`\`\`thinking\n${thinkContent}\n\`\`\`\n\n`);
+          blocks.push({ type: 'thinking', content: thinkContent });
         }
         break;
       }
     }
   }
 
-  return output.join('');
+  return blocks;
 };
 
 // =============================================================================
@@ -266,7 +276,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   content,
   className,
 }) => {
-  const normalizedContent = useMemo(() => normalizeThinkingBlocks(content), [content]);
+  const segments = useMemo(() => splitThinkBlocks(content), [content]);
 
   const components = useMemo(() => ({
     a: ({ href, children, ...props }: React.ComponentProps<'a'>) => (
@@ -304,7 +314,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         className={cn('border-l-2 border-primary/50 pl-3 my-2 text-muted-foreground italic', props.className)}
       />
     ),
-    code: ({ className, children, ...props }: React.ComponentProps<'code'>) => {
+    code: ({ className, children, inline, ...props }: React.ComponentProps<'code'> & { inline?: boolean }) => {
       const blockKeyRef = useRef(++blockKeySeed);
       const languageMatch = /language-([^\s]+)/i.exec(className || '');
       const language = languageMatch?.[1] || '';
@@ -318,7 +328,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         return <ThinkingBlock content={codeText} blockKey={blockKeyRef.current} />;
       }
 
-      if (className && className.includes('language-')) {
+      if (!inline) {
         return (
           <CodeBlock
             content={codeText}
@@ -382,14 +392,34 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
 
   return (
     <div className={cn('markdown-content', className)}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
-        skipHtml
-        components={components}
-      >
-        {normalizedContent}
-      </ReactMarkdown>
+      {segments.map((segment, index) => {
+        if (segment.type === 'thinking') {
+          return (
+            <ThinkingBlock key={`thinking-${index}`} content={segment.content} blockKey={index}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                skipHtml
+                components={components}
+              >
+                {segment.content}
+              </ReactMarkdown>
+            </ThinkingBlock>
+          );
+        }
+
+        return (
+          <ReactMarkdown
+            key={`text-${index}`}
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+            skipHtml
+            components={components}
+          >
+            {segment.content}
+          </ReactMarkdown>
+        );
+      })}
     </div>
   );
 };

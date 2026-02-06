@@ -291,6 +291,27 @@ const ChatZone: React.FC = () => {
                           </div>
                         )}
 
+                        {message.role === 'assistant' && !isEditing && (
+                          <div className="absolute bottom-2 right-2 flex items-center gap-1">
+                            <button
+                              onClick={() => handleCopy(message.content, message.id)}
+                              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                              title={t('common.copy') || 'Copy raw'}
+                            >
+                              <Icon
+                                name="copy"
+                                size={12}
+                                className={cn(
+                                  'transition-colors',
+                                  copiedMessageId === message.id
+                                    ? 'text-green-500'
+                                    : 'text-muted-foreground hover:text-foreground'
+                                )}
+                              />
+                            </button>
+                          </div>
+                        )}
+
                         {/* Choices */}
                         {message.choices && (
                           <div className="mt-4 space-y-2">
