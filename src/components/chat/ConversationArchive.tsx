@@ -36,10 +36,18 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
 
   return (
     <div className="relative">
-      <button
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onSelect}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onSelect();
+          }
+        }}
         className={cn(
-          'w-full text-left px-3 py-2.5 rounded-lg border transition-all duration-200 group',
+          'w-full text-left px-3 py-2.5 rounded-lg border transition-all duration-200 group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
           isSelected
             ? 'bg-primary/10 border-primary/30'
             : 'border-transparent hover:bg-accent'
@@ -102,7 +110,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             <Icon name="more-vertical" size={12} className="text-muted-foreground" />
           </button>
         </div>
-      </button>
+      </div>
 
       {/* Context Menu */}
       {showMenu && (

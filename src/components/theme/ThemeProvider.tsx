@@ -1,8 +1,28 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, createContext, useContext } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import { applyTheme } from '../../utils/themeUtils';
 import { useDynamicAppIcon } from '../../hooks/useDynamicAppIcon';
 import { Theme, ThemeManifest } from '../../types/theme';
+
+// =============================================================================
+// THEME CONTEXT
+// =============================================================================
+
+interface ThemeContextType {
+  theme: Theme;
+  isDark: boolean;
+  isLoading: boolean;
+}
+
+const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
+
+export function useTheme() {
+  const context = useContext(ThemeContext);
+  if (!context) {
+    throw new Error('useTheme must be used within a ThemeProvider');
+  }
+  return context;
+}
 
 // =============================================================================
 // THEME CACHE CONSTANTS
@@ -247,7 +267,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     }
   }, [manifest, isLoading, activeThemeId]);
 
-  return <>{children}</>;
+  const contextValue: ThemeContextType = {
+    theme: currentTheme,
+    isDark: currentTheme.type === 'dark',
+    isLoading,
+  };
+
+  return (
+    <ThemeContext.Provider value={contextValue}>
+      {children}
+    </ThemeContext.Provider>
+  );
 }
 
 // =============================================================================

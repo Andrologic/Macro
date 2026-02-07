@@ -37,6 +37,7 @@ const ChatZone: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [inputValue, setInputValue] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
   // Architect Mode: Ensure single conversation
   useEffect(() => {
@@ -113,9 +114,19 @@ const ChatZone: React.FC = () => {
     if (!editingMessageId) return;
     const content = editingValue.trim();
     if (!content) return;
-    await editMessage(editingMessageId, content);
     setEditingMessageId(null);
     setEditingValue('');
+    await editMessage(editingMessageId, content);
+  };
+
+  const handleCopy = async (content: string, messageId: string) => {
+    await navigator.clipboard.writeText(content);
+    setCopiedMessageId(messageId);
+    setTimeout(() => setCopiedMessageId(null), 2000);
+  };
+
+  const handleRegenerate = async (messageId: string, content: string) => {
+    await editMessage(messageId, content);
   };
 
   return (
@@ -170,16 +181,21 @@ const ChatZone: React.FC = () => {
                   <div key={message.id} className="relative">
                     <div
                       className={cn(
-                        'relative',
-                        message.role === 'user' ? 'ml-auto mr-0 max-w-lg' : 'mr-auto ml-0 max-w-none'
+                        'relative transition-all duration-200',
+                        message.role === 'user'
+                          ? isEditing
+                            ? 'ml-auto mr-0 max-w-3xl'
+                            : 'ml-auto mr-0 max-w-lg'
+                          : 'mr-auto ml-0 max-w-none'
                       )}
                     >
                       <div
                         className={cn(
-                          'relative p-4 rounded-lg',
+                          'relative rounded-lg group',
                           message.role === 'user'
                             ? 'bg-muted/80 border border-border/50'
-                            : 'bg-transparent border-0'
+                            : 'bg-transparent border-0',
+                          isEditing ? 'p-4' : 'p-4 pb-10'
                         )}
                       >
                         {/* Content */}
@@ -188,18 +204,20 @@ const ChatZone: React.FC = () => {
                             <textarea
                               value={editingValue}
                               onChange={(event) => setEditingValue(event.target.value)}
-                              className="w-full min-h-[80px] resize-none bg-card border border-border rounded-lg p-2 text-sm text-foreground"
+                              placeholder={t('common.editMessage') || 'Edit your message...'}
+                              className="w-full min-h-[120px] max-h-[400px] resize-y bg-background border-2 border-border rounded-lg p-3 text-sm text-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/10 transition-all leading-relaxed"
+                              autoFocus
                             />
                             <div className="flex items-center gap-2 justify-end">
                               <button
                                 onClick={handleEditCancel}
-                                className="px-3 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-accent"
+                                className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
                               >
                                 {t('common.cancel')}
                               </button>
                               <button
                                 onClick={handleEditSave}
-                                className="px-3 py-1.5 rounded-md text-xs bg-primary text-primary-foreground hover:bg-primary/90"
+                                className="px-3 py-1.5 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium"
                               >
                                 {t('chat.saveRegenerate')}
                               </button>
@@ -218,7 +236,7 @@ const ChatZone: React.FC = () => {
                               <MarkdownRenderer content={message.content} />
                             ) : (
                               message.content.split('\n').map((line, i) => (
-                                <p key={i} className="mb-2 last:mb-0">
+                                <p key={i} className="mb-2 last:mb-0 break-words">
                                   {line}
                                 </p>
                               ))
@@ -231,12 +249,65 @@ const ChatZone: React.FC = () => {
                         )}
 
                         {message.role === 'user' && !isEditing && (
-                          <div className="mt-3 flex justify-end">
+                          <div className="absolute bottom-2 right-2 flex items-center gap-1">
+                            <button
+                              onClick={() => handleCopy(message.content, message.id)}
+                              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                              title={t('common.copy') || 'Copy'}
+                            >
+                              <Icon
+                                name="copy"
+                                size={12}
+                                className={cn(
+                                  'transition-colors',
+                                  copiedMessageId === message.id
+                                    ? 'text-green-500'
+                                    : 'text-muted-foreground hover:text-foreground'
+                                )}
+                              />
+                            </button>
                             <button
                               onClick={() => handleEditStart(message.id, message.content)}
-                              className="text-xs text-muted-foreground hover:text-foreground"
+                              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                              title={t('common.edit')}
                             >
-                              {t('common.edit')}
+                              <Icon
+                                name="edit"
+                                size={12}
+                                className="text-muted-foreground hover:text-foreground transition-colors"
+                              />
+                            </button>
+                            <button
+                              onClick={() => handleRegenerate(message.id, message.content)}
+                              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                              title={t('common.regenerate') || 'Regenerate'}
+                            >
+                              <Icon
+                                name="refresh-cw"
+                                size={12}
+                                className="text-muted-foreground hover:text-foreground transition-colors"
+                              />
+                            </button>
+                          </div>
+                        )}
+
+                        {message.role === 'assistant' && !isEditing && (
+                          <div className="absolute bottom-2 right-2 flex items-center gap-1">
+                            <button
+                              onClick={() => handleCopy(message.content, message.id)}
+                              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                              title={t('common.copy') || 'Copy raw'}
+                            >
+                              <Icon
+                                name="copy"
+                                size={12}
+                                className={cn(
+                                  'transition-colors',
+                                  copiedMessageId === message.id
+                                    ? 'text-green-500'
+                                    : 'text-muted-foreground hover:text-foreground'
+                                )}
+                              />
                             </button>
                           </div>
                         )}

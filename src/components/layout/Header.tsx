@@ -173,12 +173,12 @@ export function Header({
   return (
     <>
       <header 
-        className="h-12 bg-card border-b border-border flex items-center px-4 shrink-0 select-none relative z-50 overflow-hidden"
+        className="h-12 bg-card border-b border-border flex items-center justify-between px-4 shrink-0 select-none relative z-50 overflow-hidden"
         data-tauri-drag-region
         onDoubleClick={handleHeaderDoubleClick}
       >
         {/* Left Section: Logo, App Name, Project Button */}
-        <div className="flex items-center gap-2 min-w-0 overflow-hidden" data-tauri-drag-region>
+        <div className="flex-1 flex items-center gap-2 min-w-0 overflow-hidden" data-tauri-drag-region>
           <div className="flex items-center gap-2 shrink-0">
             <Logo size={20} strokeWidth={3} />
             <span className="hidden lg:block text-sm font-semibold text-foreground">
@@ -208,15 +208,15 @@ export function Header({
           )}
         </div>
 
-        {/* Center Section: Mode Selection */}
-        <div className="flex-1 flex justify-center min-w-0 px-2" data-tauri-drag-region>
+        {/* Center Section: Mode Selection - Fixed Position */}
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none" data-tauri-drag-region="false">
           {/* Desktop: Segment Control */}
-          <div className="hidden lg:inline-flex bg-secondary rounded-lg p-1 shrink-0">
+          <div className="hidden lg:inline-flex bg-secondary rounded-lg p-1 shrink-0 pointer-events-auto">
             {modeOptions.map(renderModeButton)}
           </div>
 
           {/* Mobile: Dropdown Menu */}
-          <div className="lg:hidden relative" ref={modeMenuRef}>
+          <div className="lg:hidden relative pointer-events-auto" ref={modeMenuRef}>
             <button
               onClick={() => setModeMenuOpen(!modeMenuOpen)}
               className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary hover:bg-accent transition-colors text-xs font-medium"
@@ -263,7 +263,7 @@ export function Header({
         </div>
 
         {/* Right Section: Controls */}
-        <div className="flex items-center justify-end gap-2 min-w-[100px] sm:min-w-[160px] md:min-w-[200px]" data-tauri-drag-region>
+        <div className="flex-1 flex items-center justify-end gap-2 min-w-[100px] sm:min-w-[160px] md:min-w-[200px]" data-tauri-drag-region>
           {/* Panel Toggle Buttons - Synced with App.tsx small screen breakpoints */}
           <button
             onClick={onToggleLeft}

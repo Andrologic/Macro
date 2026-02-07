@@ -1,0 +1,263 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import mermaid from 'mermaid';
+import { Icon } from '../ui/Icon';
+import { cn } from '../../utils/cn';
+import { useTheme } from '../theme/ThemeProvider';
+
+interface MermaidRendererProps {
+  code: string;
+  blockKey: number;
+}
+
+// Global initialization counter for unique IDs
+let renderCount = 0;
+
+// Cleanup function to remove error SVGs that Mermaid injects into the body
+const cleanupErrorSvgs = () => {
+  if (typeof document === 'undefined') return;
+  // Remove mermaid error SVGs from body
+  document.querySelectorAll('svg[id^="mermaid-"][role="graphics-document document"]').forEach((el) => {
+    const svg = el as SVGSVGElement;
+    // Check if it's an error SVG (contains error-text class)
+    if (svg.innerHTML.includes('error-text') || svg.innerHTML.includes('Syntax error')) {
+      el.remove();
+    }
+  });
+  // Also remove any orphaned mermaid divs in body
+  document.querySelectorAll('div[id^="dmermaid-"]').forEach((el) => {
+    el.remove();
+  });
+};
+
+export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey }) => {
+  const { t } = useTranslation();
+  const { isDark } = useTheme();
+  
+  const [svg, setSvg] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [showCode, setShowCode] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Clean the mermaid code (remove code fences if present)
+  const cleanCode = code.replace(/^```(?:mermaid|mmd)?\n?/, '').replace(/```$/, '').trim();
+
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoading(true);
+    setError(null);
+
+    const renderDiagram = async () => {
+      // Clean up any previous error SVGs in body
+      cleanupErrorSvgs();
+
+      try {
+        // Initialize mermaid with the correct theme
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'loose',
+          theme: isDark ? 'dark' : 'default',
+          fontFamily: '"Inter", system-ui, sans-serif',
+          suppressErrorRendering: true, // Prevent automatic error SVG injection
+        });
+
+        // First validate the syntax with parse
+        const isValid = await mermaid.parse(cleanCode, { suppressErrors: true });
+        
+        if (!isValid) {
+          throw new Error('Invalid Mermaid syntax');
+        }
+
+        // Generate unique ID
+        const id = `mermaid-${blockKey}-${renderCount++}`;
+        
+        // Render the diagram
+        const { svg: renderedSvg } = await mermaid.render(id, cleanCode);
+        
+        // Clean up any error SVGs that might have been injected
+        cleanupErrorSvgs();
+        
+        if (isMounted) {
+          setSvg(renderedSvg);
+          setError(null);
+        }
+      } catch (err) {
+        // Clean up error SVGs from body
+        cleanupErrorSvgs();
+        
+        if (isMounted) {
+          const message = err instanceof Error ? err.message : 'Unknown error';
+          setError(message);
+          setSvg('');
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    // Small delay to ensure theme is applied
+    const timeoutId = setTimeout(renderDiagram, 50);
+    
+    return () => {
+      isMounted = false;
+      clearTimeout(timeoutId);
+      // Cleanup on unmount
+      cleanupErrorSvgs();
+    };
+  }, [cleanCode, isDark, blockKey]);
+
+  // Cleanup on mount and when component changes
+  useEffect(() => {
+    cleanupErrorSvgs();
+  }, []);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const renderContent = () => {
+    if (showCode) {
+      return (
+        <pre className="p-4 text-xs font-mono whitespace-pre-wrap text-foreground/90 overflow-auto">
+          {code}
+        </pre>
+      );
+    }
+
+    if (isLoading) {
+      return (
+        <div className="flex flex-col items-center justify-center h-64 gap-3">
+          <div className="w-8 h-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+          <span className="text-xs text-muted-foreground">{t('chat.renderingDiagram')}</span>
+        </div>
+      );
+    }
+
+    if (error) {
+      return (
+        <div className="flex flex-col items-center justify-center h-64 text-destructive">
+          <Icon name="alert-circle" size={24} className="mb-2" />
+          <span className="text-sm font-medium">{t('chat.mermaidRenderError')}</span>
+          <span className="text-xs opacity-70 mt-1">{error}</span>
+        </div>
+      );
+    }
+
+    return (
+      <div 
+        ref={containerRef}
+        className="flex items-center justify-center p-4 min-h-[200px]"
+        dangerouslySetInnerHTML={{ __html: svg }}
+      />
+    );
+  };
+
+  const renderExpandedModal = () => {
+    if (!isExpanded) return null;
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+        <div className="w-[92vw] h-[86vh] bg-card border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center">
+                <Icon name="git-branch" size={13} className="text-primary" />
+              </div>
+              <span className="text-sm font-medium text-foreground">{t('chat.mermaidDiagram')}</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={handleCopy}
+                className={cn(
+                  'w-8 h-8 flex items-center justify-center rounded-md hover:bg-accent transition-colors',
+                  copied ? 'text-green-500' : 'text-muted-foreground'
+                )}
+                title={copied ? t('chat.copied') : t('chat.copyCode')}
+              >
+                <Icon name={copied ? 'check' : 'copy'} size={13} />
+              </button>
+              <button
+                onClick={() => setIsExpanded(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-accent transition-colors text-muted-foreground"
+                title={t('common.close')}
+              >
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+          </div>
+          
+          {/* Content */}
+          <div className="flex-1 overflow-auto p-6">
+            {showCode ? (
+              <pre className="text-sm font-mono whitespace-pre-wrap text-foreground/90">
+                {code}
+              </pre>
+            ) : (
+              <div 
+                className="flex items-center justify-center h-full"
+                dangerouslySetInnerHTML={{ __html: svg }}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="my-3 rounded-lg border border-border bg-card/40 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-muted/30">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center">
+            <Icon name="git-branch" size={12} className="text-primary" />
+          </div>
+          <span className="text-xs font-medium text-foreground">{t('chat.mermaidDiagram')}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={handleCopy}
+            className={cn(
+              'w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors',
+              copied ? 'text-green-500' : 'text-muted-foreground'
+            )}
+            title={copied ? t('chat.copied') : t('chat.copyCode')}
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={12} />
+          </button>
+          <button
+            onClick={() => setShowCode((v) => !v)}
+            className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors text-muted-foreground"
+            title={showCode ? t('chat.hideCode') : t('chat.showCode')}
+          >
+            <Icon name="code" size={12} />
+          </button>
+          <button
+            onClick={() => setIsExpanded(true)}
+            className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors text-muted-foreground"
+            title={t('chat.expand')}
+          >
+            <Icon name="maximize" size={12} />
+          </button>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="relative">
+        {renderContent()}
+      </div>
+
+      {/* Expanded Modal */}
+      {renderExpandedModal()}
+    </div>
+  );
+};
