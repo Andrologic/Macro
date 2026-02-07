@@ -87,6 +87,9 @@ import {
   Server,
   Database,
   ArrowLeft,
+  Globe,
+  ExternalLink,
+  BookOpen,
 } from 'lucide-react';
 
 export type IconName =
@@ -177,7 +180,10 @@ export type IconName =
   | 'image'
   | 'flag'
   | 'target'
-  | 'milestone';
+  | 'milestone'
+  | 'globe'
+  | 'external-link'
+  | 'book-open';
 
 interface IconProps {
   name: IconName;
@@ -275,6 +281,9 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'flag': Flag,
   'target': Target,
   'milestone': Milestone,
+  'globe': Globe,
+  'external-link': ExternalLink,
+  'book-open': BookOpen,
 };
 
 export const Icon: React.FC<IconProps> = ({ name, size = 16, className, style }) => {

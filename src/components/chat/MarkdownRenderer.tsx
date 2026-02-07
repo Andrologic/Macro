@@ -203,7 +203,7 @@ const getTextFromChildren = (children: React.ReactNode): string => {
   if (children === null || children === undefined) return '';
   if (typeof children === 'string' || typeof children === 'number') return String(children);
   if (Array.isArray(children)) return children.map(getTextFromChildren).join('');
-  if (React.isValidElement(children)) return getTextFromChildren(children.props.children);
+  if (React.isValidElement(children)) return getTextFromChildren((children.props as any).children);
   return '';
 };
 
@@ -314,7 +314,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         className={cn('border-l-2 border-primary/50 pl-3 my-2 text-muted-foreground italic', props.className)}
       />
     ),
-    code: ({ className, children, inline, ...props }: React.ComponentProps<'code'> & { inline?: boolean }) => {
+    code: ({ className, children, ...props }: React.ComponentProps<'code'>) => {
       const blockKeyRef = useRef(++blockKeySeed);
       const languageMatch = /language-([^\s]+)/i.exec(className || '');
       const language = languageMatch?.[1] || '';
@@ -328,7 +328,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         return <ThinkingBlock content={codeText} blockKey={blockKeyRef.current} />;
       }
 
-      if (!inline) {
+      // In react-markdown v9+, 'inline' prop is no longer passed.
+      // We detect blocks by checking if there's a language or if the code contains newlines.
+      const isBlock = !!language || codeText.includes('\n');
+
+      if (isBlock) {
         return (
           <CodeBlock
             content={codeText}
@@ -341,13 +345,16 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
       return (
         <code
           {...props}
-          className={cn('px-1.5 py-0.5 bg-muted rounded text-sm font-mono text-primary', className)}
+          className={cn(
+            'px-1.5 py-0.5 mx-0.5 bg-muted border border-border/50 rounded-md text-[0.875em] font-mono text-primary font-medium',
+            className
+          )}
         >
           {children}
         </code>
       );
     },
-    pre: ({ children }) => <>{children}</>,
+    pre: (props: any) => <>{props.children}</>,
     ul: (props: React.ComponentProps<'ul'>) => (
       <ul {...props} className={cn('list-disc list-inside my-2 space-y-1', props.className)} />
     ),

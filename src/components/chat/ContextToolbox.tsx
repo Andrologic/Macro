@@ -1,9 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useToolsStore } from '../../stores/useToolsStore';
+import { useCitationsStore } from '../../stores/useCitationsStore';
+import { useChatStore } from '../../stores/useChatStore';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import type { Tool } from '../../types';
+import { extractDomain, getFaviconUrl } from '../../services/webSearch';
 
 interface ContextToolboxProps {
   className?: string;
@@ -15,47 +18,134 @@ interface ContextToolboxProps {
  * PERFORMANCE: Lazy loaded via ModeRouter, only rendered when Chat mode is active
  */
 
-interface AttachedFile {
-  id: string;
-  name: string;
-  type: 'file' | 'url' | 'image';
-  path?: string;
-  url?: string;
-}
-
-const mockAttachedFiles: AttachedFile[] = [
-  { id: 'att-1', name: 'requirements.md', type: 'file', path: '/docs/requirements.md' },
-  { id: 'att-2', name: 'React Documentation', type: 'url', url: 'https://react.dev' },
-  { id: 'att-3', name: 'screenshot.png', type: 'image', path: '/images/screenshot.png' },
-];
-
-const mockSummary = `Cette conversation explore les meilleures pratiques pour optimiser les performances React, notamment :
-
-• **Memoization** avec React.memo, useMemo et useCallback
-• **Code Splitting** pour charger les composants à la demande
-• **Virtualization** pour les longues listes
-• **State Management** optimisé
-
-L'utilisateur cherche à améliorer les performances de son application e-commerce.`;
-
 export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => {
   const { t } = useTranslation();
   const { internalTools, mcpServers } = useToolsStore();
-  const [activeTab, setActiveTab] = useState<'context' | 'tools' | 'summary'>('context');
+  const { getConversationCitations, addCitation, removeCitation } = useCitationsStore();
+  const { selectedConversationId, createConversation } = useChatStore();
+  const [activeTab, setActiveTab] = useState<'context' | 'tools' | 'sources'>('context');
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Get citations for current conversation
+  const currentCitations = selectedConversationId 
+    ? getConversationCitations(selectedConversationId) 
+    : [];
+  const webCitations = currentCitations.filter((c) => c.type === 'web');
+  const fileCitations = currentCitations.filter((c) => c.type === 'file' || c.type === 'document');
 
   // Filter enabled tools
   const enabledTools = Object.values(internalTools).filter((t: Tool) => t.status === 'enabled');
   const onlineMcpServers = mcpServers.filter((s) => s.status === 'online');
 
-  const tabs: { id: 'context' | 'tools' | 'summary'; label: string; icon: IconName }[] = [
+  const tabs: { id: 'context' | 'tools' | 'sources'; label: string; icon: IconName }[] = [
     { id: 'context', label: 'Contexte', icon: 'paperclip' },
     { id: 'tools', label: 'Outils', icon: 'tool' },
-    { id: 'summary', label: 'Résumé', icon: 'file-text' },
+    { id: 'sources', label: 'Sources', icon: 'file-text' },
   ];
+
+  // Open URL in external browser
+  const openUrl = (url: string) => {
+    // Fallback to window.open for web mode
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  const ensureConversation = async () => {
+    if (selectedConversationId) return selectedConversationId;
+    const conversation = await createConversation(t('chat.newChat', 'New Chat'), null, null);
+    return conversation.id;
+  };
+
+  const readFileContent = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(file);
+    });
+  };
+
+  const handleFileSelect = async (files: FileList | null) => {
+    if (!files) return;
+    const conversationId = await ensureConversation();
+    
+    for (const file of files) {
+      try {
+        const content = await readFileContent(file);
+        addCitation({
+          type: 'file',
+          source: file.name,
+          title: file.name,
+          snippet: content.slice(0, 1000) + (content.length > 1000 ? '...' : ''),
+          path: file.name,
+          messageId: `manual-${Date.now()}`,
+          conversationId: conversationId,
+        });
+      } catch (error) {
+        console.error('Failed to read file:', error);
+      }
+    }
+  };
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (activeTab !== 'context') return;
+    e.preventDefault();
+    setIsDragging(true);
+  }, [activeTab]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    handleFileSelect(e.dataTransfer.files);
+  }, [handleFileSelect]);
+
+  const handleAddUrl = async () => {
+    const url = window.prompt(t('chat.enterUrl', 'Enter URL:'));
+    if (!url) return;
+    
+    const conversationId = await ensureConversation();
+    
+    // Minimal citation since we don't have a search/fetch results here
+    addCitation({
+      type: 'web',
+      source: url,
+      title: extractDomain(url),
+      url: url,
+      messageId: `manual-${Date.now()}`,
+      conversationId: conversationId,
+    });
+  };
+
+  const handlePaste = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) return;
+
+      const conversationId = await ensureConversation();
+      addCitation({
+        type: 'document',
+        source: 'Clipboard',
+        title: 'Clipboard text',
+        snippet: text.slice(0, 1000) + (text.length > 1000 ? '...' : ''),
+        messageId: `manual-${Date.now()}`,
+        conversationId: conversationId,
+      });
+    } catch (err) {
+      console.error('Failed to read clipboard:', err);
+    }
+  };
 
   return (
     <aside
       className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
     >
       {/* Header */}
       <div className="h-12 border-b border-border flex items-center justify-between px-4">
@@ -66,6 +156,13 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       </div>
 
       {/* Tabs */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => handleFileSelect(e.target.files)}
+      />
       <div className="h-10 border-b border-border flex items-center px-2 gap-1">
         {tabs.map((tab) => (
           <button
@@ -85,7 +182,16 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-4 relative">
+        {isDragging && activeTab === 'context' && (
+          <div className="absolute inset-0 bg-primary/10 border-2 border-dashed border-primary/50 m-4 rounded-lg flex items-center justify-center z-10 pointer-events-none">
+            <div className="text-center">
+              <Icon name="upload" size={24} className="text-primary mx-auto mb-2" />
+              <p className="text-sm text-primary font-medium">Déposez ici</p>
+            </div>
+          </div>
+        )}
+
         {/* Context Tab */}
         {activeTab === 'context' && (
           <div className="space-y-4">
@@ -95,45 +201,47 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                 <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   Fichiers attachés
                 </h3>
-                <button className="p-1 hover:bg-accent rounded transition-colors">
+                <button 
+                  onClick={() => fileInputRef.current?.click()}
+                  className="p-1 hover:bg-accent rounded transition-colors"
+                >
                   <Icon name="plus" size={12} className="text-muted-foreground" />
                 </button>
               </div>
 
-              {mockAttachedFiles.length > 0 ? (
+              {fileCitations.length > 0 ? (
                 <div className="space-y-2">
-                  {mockAttachedFiles.map((file) => (
+                  {fileCitations.map((citation) => (
                     <div
-                      key={file.id}
+                      key={citation.id}
                       className="flex items-center gap-3 px-3 py-2 rounded-lg border border-border hover:bg-accent/50 transition-colors group"
                     >
                       <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
-                        <Icon
-                          name={
-                            file.type === 'file' ? 'file' :
-                            file.type === 'url' ? 'link' : 'image'
-                          }
-                          size={14}
-                          className="text-muted-foreground"
-                        />
+                        <Icon name="file" size={14} className="text-muted-foreground" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm text-foreground truncate">{file.name}</p>
+                        <p className="text-sm text-foreground truncate">{citation.title}</p>
                         <p className="text-xs text-muted-foreground truncate">
-                          {file.path || file.url}
+                          {citation.path || citation.source}
                         </p>
                       </div>
-                      <button className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button 
+                        onClick={() => removeCitation(citation.id)}
+                        className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
                         <Icon name="x" size={12} className="text-muted-foreground" />
                       </button>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-center py-6 border border-dashed border-border rounded-lg">
+                <div 
+                  className="text-center py-6 border border-dashed border-border rounded-lg cursor-pointer hover:bg-accent/50 transition-colors"
+                  onClick={() => fileInputRef.current?.click()}
+                >
                   <Icon name="paperclip" size={24} className="text-muted-foreground/50 mx-auto mb-2" />
                   <p className="text-xs text-muted-foreground">
-                    Glissez des fichiers ou URLs ici
+                    Glissez des fichiers ici
                   </p>
                 </div>
               )}
@@ -145,19 +253,28 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                 Actions rapides
               </h3>
               <div className="grid grid-cols-2 gap-2">
-                <button className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors">
+                <button 
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors"
+                >
                   <Icon name="upload" size={14} className="text-muted-foreground" />
                   Upload
                 </button>
-                <button className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors">
+                <button 
+                  onClick={handleAddUrl}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors"
+                >
                   <Icon name="link" size={14} className="text-muted-foreground" />
                   Add URL
                 </button>
-                <button className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors">
+                <button 
+                  onClick={handlePaste}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors"
+                >
                   <Icon name="clipboard" size={14} className="text-muted-foreground" />
                   Paste
                 </button>
-                <button className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors">
+                <button className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors opacity-50 cursor-not-allowed">
                   <Icon name="camera" size={14} className="text-muted-foreground" />
                   Screenshot
                 </button>
@@ -239,76 +356,130 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
           </div>
         )}
 
-        {/* Summary Tab */}
-        {activeTab === 'summary' && (
+        {/* Sources Tab */}
+        {activeTab === 'sources' && (
           <div className="space-y-4">
-            {/* AI Summary */}
+            {/* Web Sources */}
             <div>
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Résumé IA
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+                  <Icon name="globe" size={12} />
+                  Pages web
                 </h3>
-                <button className="flex items-center gap-1 px-2 py-1 rounded text-xs text-primary hover:bg-primary/10 transition-colors">
-                  <Icon name="refresh-cw" size={10} />
-                  Actualiser
-                </button>
+                {webCitations.length > 0 && (
+                  <span className="text-xs text-muted-foreground">{webCitations.length}</span>
+                )}
               </div>
-              <div className="p-3 rounded-lg bg-muted/50 border border-border">
-                <p className="text-sm text-foreground leading-relaxed whitespace-pre-line">
-                  {mockSummary}
+              
+              {webCitations.length > 0 ? (
+                <div className="space-y-2">
+                  {webCitations.map((citation) => (
+                    <button
+                      key={citation.id}
+                      onClick={() => citation.url && openUrl(citation.url)}
+                      className="w-full flex items-start gap-3 px-3 py-2 rounded-lg border border-border hover:bg-accent/50 transition-colors text-left group"
+                    >
+                      <div className="w-6 h-6 rounded bg-muted flex items-center justify-center shrink-0 mt-0.5 overflow-hidden">
+                        {citation.url ? (
+                          <img 
+                            src={getFaviconUrl(citation.url)} 
+                            alt="" 
+                            className="w-4 h-4"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <Icon name="globe" size={12} className="text-muted-foreground" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-foreground truncate group-hover:text-primary transition-colors">
+                          {citation.title}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {citation.url ? extractDomain(citation.url) : citation.source}
+                        </p>
+                        {citation.snippet && (
+                          <p className="text-xs text-muted-foreground/70 line-clamp-2 mt-1">
+                            {citation.snippet}
+                          </p>
+                        )}
+                      </div>
+                      <Icon name="external-link" size={12} className="text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-1" />
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-6 border border-dashed border-border rounded-lg">
+                  <Icon name="globe" size={24} className="text-muted-foreground/50 mx-auto mb-2" />
+                  <p className="text-xs text-muted-foreground">
+                    Aucune page web consultée
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* File Sources */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+                  <Icon name="file-text" size={12} />
+                  Documents
+                </h3>
+                {fileCitations.length > 0 && (
+                  <span className="text-xs text-muted-foreground">{fileCitations.length}</span>
+                )}
+              </div>
+              
+              {fileCitations.length > 0 ? (
+                <div className="space-y-2">
+                  {fileCitations.map((citation) => (
+                    <div
+                      key={citation.id}
+                      className="flex items-start gap-3 px-3 py-2 rounded-lg border border-border hover:bg-accent/50 transition-colors group"
+                    >
+                      <div className="w-6 h-6 rounded bg-muted flex items-center justify-center shrink-0 mt-0.5">
+                        <Icon name="file" size={12} className="text-muted-foreground" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-foreground truncate">
+                          {citation.title}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {citation.path || citation.source}
+                        </p>
+                        {citation.snippet && (
+                          <p className="text-xs text-muted-foreground/70 line-clamp-2 mt-1">
+                            {citation.snippet}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-6 border border-dashed border-border rounded-lg">
+                  <Icon name="file-text" size={24} className="text-muted-foreground/50 mx-auto mb-2" />
+                  <p className="text-xs text-muted-foreground">
+                    Aucun document attaché
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Empty State */}
+            {currentCitations.length === 0 && (
+              <div className="text-center py-8">
+                <Icon name="book-open" size={32} className="text-muted-foreground/30 mx-auto mb-3" />
+                <p className="text-sm text-muted-foreground">
+                  Aucune source pour cette conversation
+                </p>
+                <p className="text-xs text-muted-foreground/70 mt-1">
+                  Les pages web et documents utilisés apparaîtront ici
                 </p>
               </div>
-            </div>
-
-            {/* Export Options */}
-            <div>
-              <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
-                Exporter
-              </h3>
-              <div className="grid grid-cols-2 gap-2">
-                <button className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors">
-                  <Icon name="file-text" size={14} />
-                  Markdown
-                </button>
-                <button className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors">
-                  <Icon name="file" size={14} />
-                  PDF
-                </button>
-                <button className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors">
-                  <Icon name="copy" size={14} />
-                  Copier
-                </button>
-                <button className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors">
-                  <Icon name="share" size={14} />
-                  Partager
-                </button>
-              </div>
-            </div>
-
-            {/* Stats */}
-            <div>
-              <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
-                Statistiques
-              </h3>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-3 rounded-lg bg-muted/50 text-center">
-                  <p className="text-lg font-semibold text-foreground">12</p>
-                  <p className="text-xs text-muted-foreground">Messages</p>
-                </div>
-                <div className="p-3 rounded-lg bg-muted/50 text-center">
-                  <p className="text-lg font-semibold text-foreground">2.4k</p>
-                  <p className="text-xs text-muted-foreground">Tokens</p>
-                </div>
-                <div className="p-3 rounded-lg bg-muted/50 text-center">
-                  <p className="text-lg font-semibold text-foreground">15m</p>
-                  <p className="text-xs text-muted-foreground">Durée</p>
-                </div>
-                <div className="p-3 rounded-lg bg-muted/50 text-center">
-                  <p className="text-lg font-semibold text-foreground">3</p>
-                  <p className="text-xs text-muted-foreground">Fichiers</p>
-                </div>
-              </div>
-            </div>
+            )}
           </div>
         )}
       </div>

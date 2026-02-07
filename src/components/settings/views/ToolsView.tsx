@@ -7,6 +7,32 @@ import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';
 import { cn } from '../../../utils/cn';
 
+// Web search settings stored in localStorage
+const WEB_SEARCH_SETTINGS_KEY = 'macro_web_search_settings';
+
+interface WebSearchSettings {
+  tavilyApiKey: string;
+  braveApiKey: string;
+  provider: 'tavily' | 'brave';
+  enabled: boolean;
+}
+
+const getWebSearchSettings = (): WebSearchSettings => {
+  try {
+    const saved = localStorage.getItem(WEB_SEARCH_SETTINGS_KEY);
+    if (saved) {
+      return JSON.parse(saved);
+    }
+  } catch (e) {
+    console.error('Failed to load web search settings', e);
+  }
+  return { tavilyApiKey: '', braveApiKey: '', provider: 'tavily', enabled: true };
+};
+
+const saveWebSearchSettings = (settings: WebSearchSettings) => {
+  localStorage.setItem(WEB_SEARCH_SETTINGS_KEY, JSON.stringify(settings));
+};
+
 export const ToolsView: React.FC = () => {
     const {
         internalTools,
@@ -17,10 +43,17 @@ export const ToolsView: React.FC = () => {
     } = useToolsStore();
 
     const [searchQuery, setSearchQuery] = useState('');
+    const [webSearchSettings, setWebSearchSettings] = useState<WebSearchSettings>(getWebSearchSettings);
 
     useEffect(() => {
         loadSettings();
     }, [loadSettings]);
+
+    const updateWebSearchSettings = (updates: Partial<WebSearchSettings>) => {
+      const newSettings = { ...webSearchSettings, ...updates };
+      setWebSearchSettings(newSettings);
+      saveWebSearchSettings(newSettings);
+    };
 
     const filteredTools = useMemo(() => {
         const query = searchQuery.toLowerCase();
@@ -51,8 +84,12 @@ export const ToolsView: React.FC = () => {
                />
              </div>
 
-            <Tabs defaultValue="tools" className="flex-1 flex flex-col overflow-hidden">
+            <Tabs defaultValue="websearch" className="flex-1 flex flex-col overflow-hidden">
                 <TabsList className="mb-4">
+                    <TabsTrigger value="websearch" className="flex items-center gap-2">
+                        <Icon name="search" size={14} />
+                        Web Search
+                    </TabsTrigger>
                     <TabsTrigger value="tools" className="flex items-center gap-2">
                         <Icon name="tool" size={14} />
                         Built-in Tools
@@ -62,6 +99,134 @@ export const ToolsView: React.FC = () => {
                         MCP Servers
                     </TabsTrigger>
                 </TabsList>
+
+                <TabsContent value="websearch" className="flex-1 overflow-y-auto pr-2 space-y-4">
+                    {/* Web Search Configuration */}
+                    <div className="p-4 bg-card border border-border rounded-xl">
+                        <div className="flex items-start justify-between mb-4">
+                            <div className="flex gap-4">
+                                <div className="p-2 bg-primary/10 rounded-lg text-primary h-fit">
+                                    <Icon name="globe" size={18} />
+                                </div>
+                                <div className="space-y-1">
+                                    <h4 className="font-medium text-foreground">Web Search</h4>
+                                    <p className="text-sm text-muted-foreground">
+                                        Enable AI to search the web for up-to-date information with citations.
+                                    </p>
+                                </div>
+                            </div>
+                            <Switch 
+                                checked={webSearchSettings.enabled} 
+                                onCheckedChange={(checked) => updateWebSearchSettings({ enabled: checked })} 
+                            />
+                        </div>
+
+                        {webSearchSettings.enabled && (
+                            <div className="space-y-4 pt-4 border-t border-border">
+                                {/* Provider Selection */}
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium text-foreground">Search Provider</label>
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={() => updateWebSearchSettings({ provider: 'tavily' })}
+                                            className={cn(
+                                                "flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors",
+                                                webSearchSettings.provider === 'tavily'
+                                                    ? "bg-primary/10 border-primary text-primary"
+                                                    : "bg-card border-border text-muted-foreground hover:bg-accent"
+                                            )}
+                                        >
+                                            Tavily (Recommended)
+                                        </button>
+                                        <button
+                                            onClick={() => updateWebSearchSettings({ provider: 'brave' })}
+                                            className={cn(
+                                                "flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors",
+                                                webSearchSettings.provider === 'brave'
+                                                    ? "bg-primary/10 border-primary text-primary"
+                                                    : "bg-card border-border text-muted-foreground hover:bg-accent"
+                                            )}
+                                        >
+                                            Brave Search
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* API Keys */}
+                                {webSearchSettings.provider === 'tavily' && (
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium text-foreground">
+                                            Tavily API Key
+                                        </label>
+                                        <Input
+                                            type="password"
+                                            placeholder="tvly-xxxxxxxxxxxxxxxx"
+                                            value={webSearchSettings.tavilyApiKey}
+                                            onChange={(e) => updateWebSearchSettings({ tavilyApiKey: e.target.value })}
+                                            className="font-mono"
+                                        />
+                                        <p className="text-xs text-muted-foreground">
+                                            Get your API key at{' '}
+                                            <a 
+                                                href="https://tavily.com" 
+                                                target="_blank" 
+                                                rel="noopener noreferrer"
+                                                className="text-primary hover:underline"
+                                            >
+                                                tavily.com
+                                            </a>
+                                            {' '}(1000 free searches/month)
+                                        </p>
+                                    </div>
+                                )}
+
+                                {webSearchSettings.provider === 'brave' && (
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium text-foreground">
+                                            Brave Search API Key
+                                        </label>
+                                        <Input
+                                            type="password"
+                                            placeholder="BSAxxxxxxxxxxxxxxxx"
+                                            value={webSearchSettings.braveApiKey}
+                                            onChange={(e) => updateWebSearchSettings({ braveApiKey: e.target.value })}
+                                            className="font-mono"
+                                        />
+                                        <p className="text-xs text-muted-foreground">
+                                            Get your API key at{' '}
+                                            <a 
+                                                href="https://brave.com/search/api/" 
+                                                target="_blank" 
+                                                rel="noopener noreferrer"
+                                                className="text-primary hover:underline"
+                                            >
+                                                brave.com/search/api
+                                            </a>
+                                            {' '}(2000 free searches/month)
+                                        </p>
+                                    </div>
+                                )}
+
+                                {/* Status */}
+                                <div className="flex items-center gap-2 text-xs pt-2">
+                                    <span className={cn(
+                                        "w-2 h-2 rounded-full",
+                                        (webSearchSettings.provider === 'tavily' && webSearchSettings.tavilyApiKey) ||
+                                        (webSearchSettings.provider === 'brave' && webSearchSettings.braveApiKey)
+                                            ? "bg-emerald-500"
+                                            : "bg-amber-500"
+                                    )} />
+                                    <span className="text-muted-foreground">
+                                        {(webSearchSettings.provider === 'tavily' && webSearchSettings.tavilyApiKey) ||
+                                        (webSearchSettings.provider === 'brave' && webSearchSettings.braveApiKey)
+                                            ? "Configured"
+                                            : "API key required"}
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </TabsContent>
 
                 <TabsContent value="tools" className="flex-1 overflow-y-auto pr-2 space-y-3">
                     {filteredTools.map(tool => (

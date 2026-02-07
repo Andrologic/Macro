@@ -155,7 +155,7 @@
   }
 
   .markdown-content code {
-    @apply px-1.5 py-0.5 bg-muted rounded text-sm font-mono text-primary;
+    @apply px-1.5 py-0.5 mx-0.5 bg-muted border border-border/50 rounded-md text-[0.875em] font-mono text-primary font-medium;
   }
 
   .markdown-content pre code {
