@@ -1,10 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/useChatStore';
+import { useCitationsStore } from '../../stores/useCitationsStore';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { cn } from '../../utils/cn';
-import { mockChatConversations } from '../../mock-data/plans';
 import type { Conversation } from '../../types';
 
 interface ConversationArchiveProps {
@@ -33,6 +33,47 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   isPinned,
 }) => {
   const [showMenu, setShowMenu] = useState(false);
+  const { renameConversation, deleteConversation } = useChatStore();
+  const { clearConversationCitations } = useCitationsStore();
+
+  const handleRename = async () => {
+    const newTitle = window.prompt('Rename conversation:', conversation.title);
+    if (newTitle && newTitle !== conversation.title) {
+      await renameConversation(conversation.id, newTitle);
+    }
+    setShowMenu(false);
+  };
+
+  const handleDelete = async () => {
+    if (window.confirm('Are you sure you want to delete this conversation?')) {
+      await deleteConversation(conversation.id);
+      clearConversationCitations(conversation.id);
+    }
+    setShowMenu(false);
+  };
+
+  const handleExport = () => {
+    const { messages } = useChatStore.getState();
+    const conversationMessages = messages.filter(m => m.conversation_id === conversation.id);
+    
+    const exportData = {
+      title: conversation.title,
+      messages: conversationMessages,
+      exportedAt: new Date().toISOString()
+    };
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${conversation.title.replace(/\s+/g, '_')}_export.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    setShowMenu(false);
+  };
 
   return (
     <div className="relative">
@@ -114,33 +155,48 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
 
       {/* Context Menu */}
       {showMenu && (
-        <div
-          className="absolute right-2 top-full z-50 mt-1 w-36 bg-card border border-border rounded-lg shadow-lg py-1"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            onClick={() => {
-              onPin?.();
-              setShowMenu(false);
-            }}
-            className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+        <>
+          <div 
+            className="fixed inset-0 z-40" 
+            onClick={() => setShowMenu(false)}
+          />
+          <div
+            className="absolute right-2 top-full z-50 mt-1 w-36 bg-card border border-border rounded-lg shadow-lg py-1"
+            onClick={(e) => e.stopPropagation()}
           >
-            <Icon name="pin" size={12} />
-            {isPinned ? 'Unpin' : 'Pin'}
-          </button>
-          <button className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2">
-            <Icon name="edit" size={12} />
-            Rename
-          </button>
-          <button className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2">
-            <Icon name="download" size={12} />
-            Export
-          </button>
-          <button className="w-full px-3 py-1.5 text-left text-sm text-red-400 hover:bg-red-500/10 flex items-center gap-2">
-            <Icon name="trash" size={12} />
-            Delete
-          </button>
-        </div>
+            <button
+              onClick={() => {
+                onPin?.();
+                setShowMenu(false);
+              }}
+              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+            >
+              <Icon name="pin" size={12} />
+              {isPinned ? 'Unpin' : 'Pin'}
+            </button>
+            <button 
+              onClick={handleRename}
+              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+            >
+              <Icon name="edit" size={12} />
+              Rename
+            </button>
+            <button 
+              onClick={handleExport}
+              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+            >
+              <Icon name="download" size={12} />
+              Export
+            </button>
+            <button 
+              onClick={handleDelete}
+              className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 flex items-center gap-2"
+            >
+              <Icon name="trash" size={12} />
+              Delete
+            </button>
+          </div>
+        </>
       )}
     </div>
   );
@@ -149,6 +205,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
 export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ className }) => {
   const { t } = useTranslation();
   const {
+    conversations,
     selectedConversationId,
     selectConversation,
     createConversation,
@@ -157,9 +214,12 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   const [searchQuery, setSearchQuery] = useState('');
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
 
-  // Use mock data for chat-only conversations (project_id === null)
-  // In real app, this would filter store conversations
-  const chatConversations = mockChatConversations;
+  // Use real conversations from store (filter to chat-only conversations with no project_id)
+  const chatConversations = useMemo(() => 
+    conversations.filter(c => !c.project_id).sort((a, b) => 
+      new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    ),
+  [conversations]);
 
   // Filter conversations
   const filteredConversations = useMemo(() => {
@@ -192,7 +252,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   };
 
   const handleNewChat = () => {
-    createConversation('New Chat', null, null);
+    createConversation(t('chat.newConversation', 'New Conversation'), null, null);
   };
 
   return (

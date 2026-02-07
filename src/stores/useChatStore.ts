@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { ChatMessage, Conversation } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 import { useProviderStore } from './useProviderStore';
+import { useCitationsStore } from './useCitationsStore';
 import { streamChat, cancelStream } from '../services/streamingChat';
 import * as tauriIpc from '../services/tauriIpc';
 
@@ -45,6 +46,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return state.messages
       .filter((msg) => msg.conversation_id === conversationId)
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  };
+
+  const prepareMessagesForRequest = (conversationId: string) => {
+    const citations = useCitationsStore.getState().getConversationCitations(conversationId);
+    const orderedMessages = getOrderedConversationMessages(conversationId);
+    const lastUserIndex = orderedMessages.map(m => m.role).lastIndexOf('user');
+
+    return orderedMessages.map((message, index) => {
+      let messageContent = message.content;
+
+      // Inject context into the last user message
+      if (index === lastUserIndex && citations.length > 0) {
+        const contextBlock = citations
+          .map((c, i) => `[File/Source ${i + 1}: ${c.title}]\n${c.snippet || ''}`)
+          .join('\n\n---\n\n');
+        
+        messageContent = `CONTEXT INFORMATION:\n\n${contextBlock}\n\nUSER REQUEST: ${message.content}`;
+      }
+
+      return {
+        role: message.role as 'user' | 'assistant',
+        content: messageContent,
+      };
+    });
   };
 
   const recalcConversation = (conversationId: string, messages: ChatMessage[]) => {
@@ -276,12 +301,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         tauriIpc.createMessage(conversationId, 'user', content).catch(console.error);
       }
 
-      const messagesForRequest = getOrderedConversationMessages(conversationId).map(
-        (message) => ({
-          role: message.role as 'user' | 'assistant',
-          content: message.content,
-        })
-      );
+      const messagesForRequest = prepareMessagesForRequest(conversationId);
 
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-assistant`,
@@ -408,12 +428,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return { messages: trimmedMessages, conversations, lastError: null };
       });
 
-      const messagesForRequest = getOrderedConversationMessages(conversationId).map(
-        (message) => ({
-          role: message.role as 'user' | 'assistant',
-          content: message.content,
-        })
-      );
+      const messagesForRequest = prepareMessagesForRequest(conversationId);
 
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-assistant`,
