@@ -13,6 +13,23 @@ interface MermaidRendererProps {
 // Global initialization counter for unique IDs
 let renderCount = 0;
 
+// Cleanup function to remove error SVGs that Mermaid injects into the body
+const cleanupErrorSvgs = () => {
+  if (typeof document === 'undefined') return;
+  // Remove mermaid error SVGs from body
+  document.querySelectorAll('svg[id^="mermaid-"][role="graphics-document document"]').forEach((el) => {
+    const svg = el as SVGSVGElement;
+    // Check if it's an error SVG (contains error-text class)
+    if (svg.innerHTML.includes('error-text') || svg.innerHTML.includes('Syntax error')) {
+      el.remove();
+    }
+  });
+  // Also remove any orphaned mermaid divs in body
+  document.querySelectorAll('div[id^="dmermaid-"]').forEach((el) => {
+    el.remove();
+  });
+};
+
 export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey }) => {
   const { t } = useTranslation();
   const { isDark } = useTheme();
@@ -35,6 +52,9 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     setError(null);
 
     const renderDiagram = async () => {
+      // Clean up any previous error SVGs in body
+      cleanupErrorSvgs();
+
       try {
         // Initialize mermaid with the correct theme
         mermaid.initialize({
@@ -42,7 +62,15 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
           securityLevel: 'loose',
           theme: isDark ? 'dark' : 'default',
           fontFamily: '"Inter", system-ui, sans-serif',
+          suppressErrorRendering: true, // Prevent automatic error SVG injection
         });
+
+        // First validate the syntax with parse
+        const isValid = await mermaid.parse(cleanCode, { suppressErrors: true });
+        
+        if (!isValid) {
+          throw new Error('Invalid Mermaid syntax');
+        }
 
         // Generate unique ID
         const id = `mermaid-${blockKey}-${renderCount++}`;
@@ -50,11 +78,17 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
         // Render the diagram
         const { svg: renderedSvg } = await mermaid.render(id, cleanCode);
         
+        // Clean up any error SVGs that might have been injected
+        cleanupErrorSvgs();
+        
         if (isMounted) {
           setSvg(renderedSvg);
           setError(null);
         }
       } catch (err) {
+        // Clean up error SVGs from body
+        cleanupErrorSvgs();
+        
         if (isMounted) {
           const message = err instanceof Error ? err.message : 'Unknown error';
           setError(message);
@@ -73,8 +107,15 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     return () => {
       isMounted = false;
       clearTimeout(timeoutId);
+      // Cleanup on unmount
+      cleanupErrorSvgs();
     };
   }, [cleanCode, isDark, blockKey]);
+
+  // Cleanup on mount and when component changes
+  useEffect(() => {
+    cleanupErrorSvgs();
+  }, []);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(code);
