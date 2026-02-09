@@ -61,7 +61,13 @@ const LANGUAGE_ALIASES: Record<string, string> = {
 interface MarkdownRendererProps {
   content: string;
   className?: string;
+  isStreaming?: boolean;
 }
+
+type RenderSegment =
+  | { type: 'text'; content: string }
+  | { type: 'thinking'; content: string }
+  | { type: 'tool'; toolName: string; detail?: string };
 
 // =============================================================================
 // THINKING BLOCK COMPONENT
@@ -104,6 +110,33 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+const ToolCallBlock: React.FC<{ toolName: string; detail?: string; isStreaming?: boolean }> = ({
+  toolName,
+  detail,
+  isStreaming = false,
+}) => {
+  return (
+    <div className="my-2 rounded-lg border border-border bg-card/60 px-2.5 py-1.5">
+      <div className="flex items-center gap-2 min-w-0">
+        <div className="w-5 h-5 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+          <Icon name="tool" size={11} className="text-primary" />
+        </div>
+        <span className="text-xs text-muted-foreground shrink-0">Tool</span>
+        <span className="text-xs font-medium text-foreground truncate">{toolName}</span>
+        {detail && (
+          <span className="text-xs text-muted-foreground/80 font-mono truncate">
+            {detail}
+          </span>
+        )}
+        <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-primary/80 bg-primary/10 rounded px-1.5 py-0.5 shrink-0">
+          <span className={cn('w-1.5 h-1.5 rounded-full bg-primary', isStreaming && 'animate-pulse')} />
+          {isStreaming ? 'run' : 'done'}
+        </span>
+      </div>
     </div>
   );
 };
@@ -268,6 +301,58 @@ const splitThinkBlocks = (content: string): Array<{ type: 'text' | 'thinking'; c
   return blocks;
 };
 
+const splitToolBlocks = (content: string): RenderSegment[] => {
+  const segments: RenderSegment[] = [];
+  const lines = content.split('\n');
+  const textBuffer: string[] = [];
+  const toolLineRegex = /^(?:\[\s*TOOL\s*\]|🔧\s*\*\*Tool:\*\*)\s*([a-zA-Z0-9_-]+)(?:\s*\("(.+?)"\))?\s*$/i;
+
+  const flushText = () => {
+    if (textBuffer.length === 0) return;
+    const text = textBuffer.join('\n');
+    if (text.trim()) {
+      segments.push({ type: 'text', content: text });
+    }
+    textBuffer.length = 0;
+  };
+
+  for (const line of lines) {
+    const match = line.trim().match(toolLineRegex);
+    if (match) {
+      flushText();
+      const nextToolSegment: RenderSegment = {
+        type: 'tool',
+        toolName: match[1],
+        detail: match[2],
+      };
+      const previous = segments[segments.length - 1];
+      const sameAsPrevious =
+        previous?.type === 'tool' &&
+        previous.toolName === nextToolSegment.toolName &&
+        (previous.detail || '').normalize('NFC') === (nextToolSegment.detail || '').normalize('NFC');
+      if (!sameAsPrevious) {
+        segments.push(nextToolSegment);
+      }
+      continue;
+    }
+    textBuffer.push(line);
+  }
+
+  flushText();
+  return segments;
+};
+
+const normalizeToolCallMarkup = (content: string): string => {
+  return content.replace(
+    /<tool_call>\s*([a-zA-Z0-9_-]+)\s*([\s\S]*?)<\/tool_call>/gi,
+    (_full, toolName: string, body: string) => {
+      const argValueMatch = body.match(/<arg_value>\s*([\s\S]*?)\s*<\/arg_value>/i);
+      const detail = argValueMatch?.[1]?.trim();
+      return detail ? `\n[TOOL] ${toolName} ("${detail}")\n` : `\n[TOOL] ${toolName}\n`;
+    }
+  );
+};
+
 // =============================================================================
 // MAIN MARKDOWN RENDERER
 // =============================================================================
@@ -275,8 +360,23 @@ const splitThinkBlocks = (content: string): Array<{ type: 'text' | 'thinking'; c
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   content,
   className,
+  isStreaming = false,
 }) => {
-  const segments = useMemo(() => splitThinkBlocks(content), [content]);
+  const segments = useMemo<RenderSegment[]>(() => {
+    const normalizedContent = normalizeToolCallMarkup(content);
+    const thinkSegments = splitThinkBlocks(normalizedContent);
+    const expanded: RenderSegment[] = [];
+
+    for (const segment of thinkSegments) {
+      if (segment.type === 'thinking') {
+        expanded.push(segment);
+        continue;
+      }
+      expanded.push(...splitToolBlocks(segment.content));
+    }
+
+    return expanded;
+  }, [content]);
 
   const components = useMemo(() => ({
     a: ({ href, children, ...props }: React.ComponentProps<'a'>) => (
@@ -412,6 +512,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                 {segment.content}
               </ReactMarkdown>
             </ThinkingBlock>
+          );
+        }
+
+        if (segment.type === 'tool') {
+          return (
+            <ToolCallBlock
+              key={`tool-${index}`}
+              toolName={segment.toolName}
+              detail={segment.detail}
+              isStreaming={isStreaming}
+            />
           );
         }
 

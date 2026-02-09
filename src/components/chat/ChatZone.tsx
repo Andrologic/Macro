@@ -244,7 +244,13 @@ const ChatZone: React.FC = () => {
                             )}
                           >
                             {message.role === 'assistant' ? (
-                              <MarkdownRenderer content={message.content} />
+                              <MarkdownRenderer
+                                content={message.content}
+                                isStreaming={
+                                  isStreaming &&
+                                  message === currentMessages[currentMessages.length - 1]
+                                }
+                              />
                             ) : (
                               message.content.split('\n').map((line, i) => (
                                 <p key={i} className="mb-2 last:mb-0 break-words">

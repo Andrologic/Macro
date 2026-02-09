@@ -1,9 +1,10 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useToolsStore } from '../../stores/useToolsStore';
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { Icon, IconName } from '../ui/Icon';
+import { Input } from '../ui/Input';
 import { cn } from '../../utils/cn';
 import type { Tool } from '../../types';
 import { extractDomain, getFaviconUrl } from '../../services/webSearch';
@@ -21,18 +22,30 @@ interface ContextToolboxProps {
 export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => {
   const { t } = useTranslation();
   const { internalTools, mcpServers } = useToolsStore();
-  const { getConversationCitations, addCitation, removeCitation } = useCitationsStore();
+  const {
+    getConversationContextCitations,
+    getConversationSourceCitations,
+    addCitation,
+    removeCitation,
+  } = useCitationsStore();
   const { selectedConversationId, createConversation } = useChatStore();
   const [activeTab, setActiveTab] = useState<'context' | 'tools' | 'sources'>('context');
   const [isDragging, setIsDragging] = useState(false);
+  const [isAddingUrl, setIsAddingUrl] = useState(false);
+  const [urlInput, setUrlInput] = useState('');
+  const [urlError, setUrlError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const urlInputRef = useRef<HTMLInputElement>(null);
 
   // Get citations for current conversation
-  const currentCitations = selectedConversationId 
-    ? getConversationCitations(selectedConversationId) 
+  const contextCitations = selectedConversationId
+    ? getConversationContextCitations(selectedConversationId)
     : [];
-  const webCitations = currentCitations.filter((c) => c.type === 'web');
-  const fileCitations = currentCitations.filter((c) => c.type === 'file' || c.type === 'document');
+  const sourceCitations = selectedConversationId
+    ? getConversationSourceCitations(selectedConversationId)
+    : [];
+  const webCitations = contextCitations.filter((c) => c.type === 'web');
+  const fileCitations = contextCitations.filter((c) => c.type === 'file' || c.type === 'document');
 
   // Filter enabled tools
   const enabledTools = Object.values(internalTools).filter((t: Tool) => t.status === 'enabled');
@@ -43,6 +56,12 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     { id: 'tools', label: 'Outils', icon: 'tool' },
     { id: 'sources', label: 'Sources', icon: 'file-text' },
   ];
+
+  useEffect(() => {
+    if (isAddingUrl) {
+      urlInputRef.current?.focus();
+    }
+  }, [isAddingUrl]);
 
   // Open URL in external browser
   const openUrl = (url: string) => {
@@ -74,6 +93,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
         const content = await readFileContent(file);
         addCitation({
           type: 'file',
+          scope: 'context',
           source: file.name,
           title: file.name,
           snippet: content.slice(0, 1000) + (content.length > 1000 ? '...' : ''),
@@ -104,21 +124,59 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     handleFileSelect(e.dataTransfer.files);
   }, [handleFileSelect]);
 
+  const normalizeUrl = (value: string): string => {
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  };
+
+  const isValidWebUrl = (value: string): boolean => {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  };
+
+  const handleOpenAddUrl = () => {
+    setIsAddingUrl(true);
+    setUrlError('');
+  };
+
+  const handleCancelAddUrl = () => {
+    setIsAddingUrl(false);
+    setUrlInput('');
+    setUrlError('');
+  };
+
   const handleAddUrl = async () => {
-    const url = window.prompt(t('chat.enterUrl', 'Enter URL:'));
-    if (!url) return;
-    
+    const normalizedUrl = normalizeUrl(urlInput);
+    if (!normalizedUrl) {
+      setUrlError(t('chat.enterUrl', 'Enter URL:'));
+      return;
+    }
+    if (!isValidWebUrl(normalizedUrl)) {
+      setUrlError(t('chat.invalidUrl', 'Invalid URL'));
+      return;
+    }
+
     const conversationId = await ensureConversation();
     
     // Minimal citation since we don't have a search/fetch results here
     addCitation({
       type: 'web',
-      source: url,
-      title: extractDomain(url),
-      url: url,
+      scope: 'context',
+      source: normalizedUrl,
+      title: extractDomain(normalizedUrl),
+      url: normalizedUrl,
       messageId: `manual-${Date.now()}`,
       conversationId: conversationId,
     });
+
+    setUrlInput('');
+    setUrlError('');
+    setIsAddingUrl(false);
   };
 
   const handlePaste = async () => {
@@ -129,6 +187,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       const conversationId = await ensureConversation();
       addCitation({
         type: 'document',
+        scope: 'context',
         source: 'Clipboard',
         title: 'Clipboard text',
         snippet: text.slice(0, 1000) + (text.length > 1000 ? '...' : ''),
@@ -247,6 +306,72 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
               )}
             </div>
 
+            {/* Added Links */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+                  <Icon name="link" size={12} />
+                  Liens ajoutés
+                </h3>
+                {webCitations.length > 0 && (
+                  <span className="text-xs text-muted-foreground">{webCitations.length}</span>
+                )}
+              </div>
+
+              {webCitations.length > 0 ? (
+                <div className="space-y-2">
+                  {webCitations.map((citation) => (
+                    <div
+                      key={citation.id}
+                      className="flex items-start gap-3 px-3 py-2 rounded-lg border border-border hover:bg-accent/50 transition-colors group"
+                    >
+                      <button
+                        onClick={() => citation.url && openUrl(citation.url)}
+                        className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center shrink-0 hover:bg-accent transition-colors overflow-hidden"
+                      >
+                        {citation.url ? (
+                          <img
+                            src={getFaviconUrl(citation.url)}
+                            alt=""
+                            className="w-4 h-4"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <Icon name="globe" size={14} className="text-muted-foreground" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => citation.url && openUrl(citation.url)}
+                        className="flex-1 min-w-0 text-left"
+                      >
+                        <p className="text-sm text-foreground truncate group-hover:text-primary transition-colors">
+                          {citation.title}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {citation.url || citation.source}
+                        </p>
+                      </button>
+                      <button
+                        onClick={() => removeCitation(citation.id)}
+                        className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <Icon name="x" size={12} className="text-muted-foreground" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-6 border border-dashed border-border rounded-lg">
+                  <Icon name="link" size={24} className="text-muted-foreground/50 mx-auto mb-2" />
+                  <p className="text-xs text-muted-foreground">
+                    Aucun lien ajouté
+                  </p>
+                </div>
+              )}
+            </div>
+
             {/* Quick Actions */}
             <div>
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
@@ -261,7 +386,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                   Upload
                 </button>
                 <button 
-                  onClick={handleAddUrl}
+                  onClick={handleOpenAddUrl}
                   className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors"
                 >
                   <Icon name="link" size={14} className="text-muted-foreground" />
@@ -279,6 +404,51 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                   Screenshot
                 </button>
               </div>
+              {isAddingUrl && (
+                <div className="mt-2 p-3 rounded-lg border border-border bg-accent/20 space-y-2">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Add URL
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      ref={urlInputRef}
+                      value={urlInput}
+                      onChange={(e) => {
+                        setUrlInput(e.target.value);
+                        if (urlError) setUrlError('');
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddUrl();
+                        }
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          handleCancelAddUrl();
+                        }
+                      }}
+                      error={Boolean(urlError)}
+                      placeholder="https://example.com/article"
+                      className="h-9"
+                    />
+                    <button
+                      onClick={handleAddUrl}
+                      className="h-9 px-3 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+                    >
+                      Add
+                    </button>
+                    <button
+                      onClick={handleCancelAddUrl}
+                      className="h-9 px-3 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {urlError && (
+                    <p className="text-xs text-red-500">{urlError}</p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -359,124 +529,56 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
         {/* Sources Tab */}
         {activeTab === 'sources' && (
           <div className="space-y-4">
-            {/* Web Sources */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2">
-                  <Icon name="globe" size={12} />
-                  Pages web
-                </h3>
-                {webCitations.length > 0 && (
-                  <span className="text-xs text-muted-foreground">{webCitations.length}</span>
-                )}
-              </div>
-              
-              {webCitations.length > 0 ? (
-                <div className="space-y-2">
-                  {webCitations.map((citation) => (
-                    <button
-                      key={citation.id}
-                      onClick={() => citation.url && openUrl(citation.url)}
-                      className="w-full flex items-start gap-3 px-3 py-2 rounded-lg border border-border hover:bg-accent/50 transition-colors text-left group"
-                    >
-                      <div className="w-6 h-6 rounded bg-muted flex items-center justify-center shrink-0 mt-0.5 overflow-hidden">
-                        {citation.url ? (
-                          <img 
-                            src={getFaviconUrl(citation.url)} 
-                            alt="" 
-                            className="w-4 h-4"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).style.display = 'none';
-                            }}
-                          />
-                        ) : (
-                          <Icon name="globe" size={12} className="text-muted-foreground" />
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-foreground truncate group-hover:text-primary transition-colors">
-                          {citation.title}
-                        </p>
-                        <p className="text-xs text-muted-foreground truncate">
-                          {citation.url ? extractDomain(citation.url) : citation.source}
-                        </p>
-                        {citation.snippet && (
-                          <p className="text-xs text-muted-foreground/70 line-clamp-2 mt-1">
-                            {citation.snippet}
-                          </p>
-                        )}
-                      </div>
-                      <Icon name="external-link" size={12} className="text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-1" />
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-6 border border-dashed border-border rounded-lg">
-                  <Icon name="globe" size={24} className="text-muted-foreground/50 mx-auto mb-2" />
-                  <p className="text-xs text-muted-foreground">
-                    Aucune page web consultée
-                  </p>
-                </div>
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+                <Icon name="book-open" size={12} />
+                Passages importants
+              </h3>
+              {sourceCitations.length > 0 && (
+                <span className="text-xs text-muted-foreground">{sourceCitations.length}</span>
               )}
             </div>
 
-            {/* File Sources */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2">
-                  <Icon name="file-text" size={12} />
-                  Documents
-                </h3>
-                {fileCitations.length > 0 && (
-                  <span className="text-xs text-muted-foreground">{fileCitations.length}</span>
-                )}
-              </div>
-              
-              {fileCitations.length > 0 ? (
-                <div className="space-y-2">
-                  {fileCitations.map((citation) => (
-                    <div
-                      key={citation.id}
-                      className="flex items-start gap-3 px-3 py-2 rounded-lg border border-border hover:bg-accent/50 transition-colors group"
-                    >
-                      <div className="w-6 h-6 rounded bg-muted flex items-center justify-center shrink-0 mt-0.5">
-                        <Icon name="file" size={12} className="text-muted-foreground" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-foreground truncate">
-                          {citation.title}
-                        </p>
-                        <p className="text-xs text-muted-foreground truncate">
-                          {citation.path || citation.source}
-                        </p>
-                        {citation.snippet && (
-                          <p className="text-xs text-muted-foreground/70 line-clamp-2 mt-1">
-                            {citation.snippet}
-                          </p>
-                        )}
-                      </div>
+            {sourceCitations.length > 0 ? (
+              <div className="space-y-2">
+                {sourceCitations.map((citation) => (
+                  <div
+                    key={citation.id}
+                    className="flex items-start gap-3 px-3 py-2 rounded-lg border border-border hover:bg-accent/50 transition-colors"
+                  >
+                    <div className="w-6 h-6 rounded bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+                      <Icon name="file-text" size={12} className="text-primary" />
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-6 border border-dashed border-border rounded-lg">
-                  <Icon name="file-text" size={24} className="text-muted-foreground/50 mx-auto mb-2" />
-                  <p className="text-xs text-muted-foreground">
-                    Aucun document attaché
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Empty State */}
-            {currentCitations.length === 0 && (
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-foreground truncate">{citation.title}</p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {citation.url || citation.source}
+                      </p>
+                      {citation.snippet && (
+                        <p className="text-xs text-muted-foreground/80 line-clamp-3 mt-1">
+                          {citation.snippet}
+                        </p>
+                      )}
+                    </div>
+                    {citation.url && (
+                      <button
+                        onClick={() => openUrl(citation.url!)}
+                        className="p-1 rounded hover:bg-accent transition-colors"
+                      >
+                        <Icon name="external-link" size={12} className="text-muted-foreground" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
               <div className="text-center py-8">
                 <Icon name="book-open" size={32} className="text-muted-foreground/30 mx-auto mb-3" />
                 <p className="text-sm text-muted-foreground">
-                  Aucune source pour cette conversation
+                  Aucun passage important
                 </p>
                 <p className="text-xs text-muted-foreground/70 mt-1">
-                  Les pages web et documents utilisés apparaîtront ici
+                  Les passages apparaissent ici quand l'IA appelle l'outil de marquage
                 </p>
               </div>
             )}
