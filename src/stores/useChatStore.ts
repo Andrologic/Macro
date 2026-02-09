@@ -41,6 +41,27 @@ interface ChatStore {
 }
 
 export const useChatStore = create<ChatStore>((set, get) => {
+  const handleToolCall = (
+    conversationId: string,
+    assistantMessageId: string,
+    toolName: string,
+    args: Record<string, unknown>
+  ) => {
+    if (toolName !== 'mark_source_passage') return;
+    const title = typeof args.title === 'string' ? args.title.trim() : '';
+    const passage = typeof args.passage === 'string' ? args.passage.trim() : '';
+    if (!title || !passage) return;
+
+    useCitationsStore.getState().addSourcePassage({
+      conversationId,
+      messageId: assistantMessageId,
+      title,
+      passage,
+      source: typeof args.source === 'string' ? args.source : undefined,
+      url: typeof args.url === 'string' ? args.url : undefined,
+    });
+  };
+
   const getOrderedConversationMessages = (conversationId: string) => {
     const state = get();
     return state.messages
@@ -49,17 +70,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const prepareMessagesForRequest = (conversationId: string) => {
-    const citations = useCitationsStore.getState().getConversationCitations(conversationId);
+    const contextCitations = useCitationsStore.getState().getConversationContextCitations(conversationId);
+    const sourceCitations = useCitationsStore.getState().getConversationSourceCitations(conversationId);
+    const citations = [...contextCitations, ...sourceCitations];
+    const fileCitations = contextCitations.filter((c) => c.type === 'file' || c.type === 'document');
+    const availableFiles = fileCitations
+      .map((c) => c.path || c.title || c.source)
+      .filter(Boolean)
+      .join(', ');
     const orderedMessages = getOrderedConversationMessages(conversationId);
     const lastUserIndex = orderedMessages.map(m => m.role).lastIndexOf('user');
 
-    return orderedMessages.map((message, index) => {
+    const preparedMessages = orderedMessages.map((message, index) => {
       let messageContent = message.content;
 
       // Inject context into the last user message
       if (index === lastUserIndex && citations.length > 0) {
         const contextBlock = citations
-          .map((c, i) => `[File/Source ${i + 1}: ${c.title}]\n${c.snippet || ''}`)
+          .map((c, i) => {
+            const kind = c.scope === 'source' ? 'Important Source' : 'Context';
+            return `[${kind} ${i + 1}: ${c.title}]\n${c.snippet || c.source || ''}`;
+          })
           .join('\n\n---\n\n');
         
         messageContent = `CONTEXT INFORMATION:\n\n${contextBlock}\n\nUSER REQUEST: ${message.content}`;
@@ -70,6 +101,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         content: messageContent,
       };
     });
+
+    return [
+      {
+        role: 'system' as const,
+        content:
+          `When the user asks to inspect or analyze an attached file, call read_file first using the file name/path. Available files: ${availableFiles || 'none'}. ` +
+          'When you use a crucial excerpt from provided context or web results, call mark_source_passage with title and passage. Only call it for genuinely important passages.',
+      },
+      ...preparedMessages,
+    ];
   };
 
   const recalcConversation = (conversationId: string, messages: ChatMessage[]) => {
@@ -302,6 +343,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       const messagesForRequest = prepareMessagesForRequest(conversationId);
+      const fileToolContext = useCitationsStore
+        .getState()
+        .getConversationContextCitations(conversationId)
+        .filter((c) => c.type === 'file' || c.type === 'document')
+        .map((c) => ({
+          title: c.title,
+          source: c.source,
+          path: c.path,
+          snippet: c.snippet,
+        }));
 
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-assistant`,
@@ -325,6 +376,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           apiKey: providerConfig.apiKey,
           modelId: selectedModelId,
           messages: messagesForRequest,
+          fileToolContext,
           signal: abortController.signal,
           onToken: (token) => {
             get().appendToLastMessage(token);
@@ -355,6 +407,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
               `Error: ${error.message}`
             );
             set({ isLoading: false, isStreaming: false, lastError: error.message, abortController: null });
+          },
+          onToolCall: (toolName, args) => {
+            handleToolCall(conversationId, assistantMessage.id, toolName, args);
           },
         });
       } catch (error) {
@@ -396,6 +451,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const conversationId = target.conversation_id;
 
+      if (tauriIpc.isTauriAvailable()) {
+        tauriIpc.deleteMessagesAfter(conversationId, messageId).catch(console.error);
+      }
+
       set((current) => {
         const updatedMessages = current.messages.map((message) =>
           message.id === messageId ? { ...message, content: newContent } : message
@@ -428,7 +487,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return { messages: trimmedMessages, conversations, lastError: null };
       });
 
+      // Keep manual context, but drop source passages produced by assistant messages that were trimmed.
+      const keptConversationMessageIds = get()
+        .messages
+        .filter((message) => message.conversation_id === conversationId)
+        .map((message) => message.id);
+      useCitationsStore
+        .getState()
+        .pruneConversationSourceCitations(conversationId, keptConversationMessageIds);
+
       const messagesForRequest = prepareMessagesForRequest(conversationId);
+      const fileToolContext = useCitationsStore
+        .getState()
+        .getConversationContextCitations(conversationId)
+        .filter((c) => c.type === 'file' || c.type === 'document')
+        .map((c) => ({
+          title: c.title,
+          source: c.source,
+          path: c.path,
+          snippet: c.snippet,
+        }));
 
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-assistant`,
@@ -452,6 +530,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           apiKey: providerConfig.apiKey,
           modelId: selectedModelId,
           messages: messagesForRequest,
+          fileToolContext,
           signal: abortController.signal,
           onToken: (token) => {
             get().appendToLastMessage(token);
@@ -476,6 +555,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
               `Error: ${error.message}`
             );
             set({ isLoading: false, isStreaming: false, lastError: error.message, abortController: null });
+          },
+          onToolCall: (toolName, args) => {
+            handleToolCall(conversationId, assistantMessage.id, toolName, args);
           },
         });
       } catch (error) {

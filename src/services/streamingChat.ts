@@ -67,28 +67,84 @@ export interface StreamingChatOptions {
   webSearchOptions?: WebSearchOptions;
   onToolCall?: (toolName: string, args: Record<string, unknown>) => void;
   onToolResult?: (toolName: string, result: string) => void;
+  fileToolContext?: Array<{
+    title: string;
+    source: string;
+    path?: string;
+    snippet?: string;
+  }>;
 }
 
 // Tool definitions for the LLM
-const TOOLS = [
-  {
-    type: 'function',
-    function: {
-      name: 'web_search',
-      description: 'Search the web for current information. Use this when you need up-to-date information about any topic.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description: 'The search query to look up',
-          },
+const WEB_SEARCH_TOOL = {
+  type: 'function',
+  function: {
+    name: 'web_search',
+    description: 'Search the web for current information. Use this when you need up-to-date information about any topic.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'The search query to look up',
         },
-        required: ['query'],
       },
+      required: ['query'],
     },
   },
-];
+};
+
+const MARK_SOURCE_PASSAGE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'mark_source_passage',
+    description: 'Store an important passage in the Sources tab when a specific excerpt is critical for the answer.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description: 'Short title of the passage.',
+        },
+        passage: {
+          type: 'string',
+          description: 'Important excerpt to save.',
+        },
+        source: {
+          type: 'string',
+          description: 'Source label such as filename or site/domain.',
+        },
+        url: {
+          type: 'string',
+          description: 'URL of the source when available.',
+        },
+      },
+      required: ['title', 'passage'],
+    },
+  },
+};
+
+const READ_FILE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'read_file',
+    description: 'Read a file already attached in the conversation context. Use this when asked to analyze or inspect a file.',
+    parameters: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          description: 'File name/path/source to read (example: hotas.pr0).',
+        },
+        extract_text: {
+          type: 'boolean',
+          description: 'Optional hint to request text extraction for binary-like formats (e.g. .docx).',
+        },
+      },
+      required: ['file'],
+    },
+  },
+};
 
 /**
  * Send a streaming chat completion request
@@ -108,8 +164,30 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     webSearchOptions,
     onToolCall,
     onToolResult,
+    fileToolContext = [],
     // Note: signal is not used with Tauri HTTP plugin - AbortController support is limited
   } = options;
+
+  const formatToolUsageLabel = (toolName: string, args: Record<string, unknown>) => {
+    if (toolName === 'web_search') {
+      const query = typeof args.query === 'string' ? args.query : '';
+      return `\n\n[TOOL] web_search${query ? ` ("${query}")` : ''}\n`;
+    }
+
+    if (toolName === 'mark_source_passage') {
+      const title = typeof args.title === 'string' ? args.title : '';
+      return `\n\n[TOOL] mark_source_passage${title ? ` ("${title}")` : ''}\n`;
+    }
+
+    if (toolName === 'read_file') {
+      const file = typeof args.file === 'string' ? args.file : '';
+      const extractText = args.extract_text === true;
+      const suffix = extractText ? ', extract_text=true' : '';
+      return `\n\n[TOOL] read_file${file ? ` ("${file}"${suffix})` : ''}\n`;
+    }
+
+    return `\n\n[TOOL] ${toolName}\n`;
+  };
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -145,10 +223,15 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     stream: true,
   };
 
-  // Add tools if web search is enabled
-  if (enableWebSearch && webSearchOptions?.tavilyApiKey) {
-    requestBody.tools = TOOLS;
+  // Always expose source-marking tool. Add web search tool only when configured.
+  const tools: unknown[] = [MARK_SOURCE_PASSAGE_TOOL, READ_FILE_TOOL];
+  if (
+    enableWebSearch &&
+    (webSearchOptions?.tavilyApiKey || webSearchOptions?.braveApiKey)
+  ) {
+    tools.push(WEB_SEARCH_TOOL);
   }
+  requestBody.tools = tools;
 
   try {
     const response = await tauriFetch(`${baseUrl}/chat/completions`, {
@@ -303,6 +386,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         try {
           const args = JSON.parse(toolCall.function.arguments);
           onToolCall?.(toolName, args);
+
+          const toolUsageMsg = formatToolUsageLabel(toolName, args);
+          fullContent += toolUsageMsg;
+          onToken(toolUsageMsg);
           
           if (toolName === 'web_search') {
             // Execute web search
@@ -314,7 +401,61 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             fullContent += searchMsg;
             onToken(searchMsg);
           }
+
+          if (toolName === 'read_file') {
+            const normalizeMatch = (value?: string) =>
+              (value || '')
+                .trim()
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase();
+
+            const requestedRaw = typeof args.file === 'string' ? args.file.trim() : '';
+            const requested = normalizeMatch(requestedRaw);
+            const extractText = args.extract_text === true;
+            const available = fileToolContext.map((f) => f.path || f.title || f.source).filter(Boolean);
+
+            const match = fileToolContext.find((f) => {
+              const title = normalizeMatch(f.title);
+              const source = normalizeMatch(f.source);
+              const path = normalizeMatch(f.path);
+              return (
+                requested === title ||
+                requested === source ||
+                requested === path ||
+                title.includes(requested) ||
+                source.includes(requested) ||
+                path.includes(requested)
+              );
+            });
+
+            if (!requested) {
+              toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
+            } else if (!match) {
+              toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+            } else {
+              const label = match.path || match.title || match.source;
+              const content = (match.snippet || '').trim();
+              const base = content
+                ? `FILE: ${label}\n\n${content}`
+                : `FILE: ${label}\n\nNo textual content available for this file in context.`;
+
+              const isDocx = /\.docx$/i.test(label || '');
+              const extractNotice =
+                extractText && isDocx
+                  ? '\n\nNote: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
+                  : '';
+
+              toolResult = `${base}${extractNotice}`;
+            }
+          }
           
+          if (toolName === 'mark_source_passage') {
+            toolResult = 'Source passage marked successfully.';
+          } else if (toolName !== 'web_search' && toolName !== 'read_file') {
+            toolResult = `Unsupported tool: ${toolName}`;
+          }
+
           onToolResult?.(toolName, toolResult);
         } catch (e) {
           toolResult = `Error executing tool ${toolName}: ${e instanceof Error ? e.message : String(e)}`;

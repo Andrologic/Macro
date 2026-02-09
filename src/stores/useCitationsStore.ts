@@ -5,11 +5,13 @@
 
 import { create } from 'zustand';
 
-export type CitationType = 'web' | 'file' | 'document';
+export type CitationType = 'web' | 'file' | 'document' | 'source_passage';
+export type CitationScope = 'context' | 'source';
 
 export interface Citation {
   id: string;
   type: CitationType;
+  scope: CitationScope;
   source: string; // URL for web, filename for files
   title: string;
   snippet?: string;
@@ -29,10 +31,21 @@ interface CitationsState {
   
   // Actions
   addCitation: (citation: Omit<Citation, 'id' | 'timestamp'>) => string;
+  addSourcePassage: (payload: {
+    conversationId: string;
+    messageId: string;
+    title: string;
+    passage: string;
+    source?: string;
+    url?: string;
+  }) => string;
   addWebCitations: (results: WebSearchResult[], messageId: string, conversationId: string) => void;
   removeCitation: (id: string) => void;
   clearConversationCitations: (conversationId: string) => void;
+  pruneConversationSourceCitations: (conversationId: string, keepMessageIds: string[]) => void;
   getConversationCitations: (conversationId: string) => Citation[];
+  getConversationContextCitations: (conversationId: string) => Citation[];
+  getConversationSourceCitations: (conversationId: string) => Citation[];
   getCitationsByType: (conversationId: string, type: CitationType) => Citation[];
 }
 
@@ -62,10 +75,33 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
     return id;
   },
 
+  addSourcePassage: ({ conversationId, messageId, title, passage, source, url }) => {
+    const id = `cite-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const citation: Citation = {
+      id,
+      type: 'source_passage',
+      scope: 'source',
+      source: source || url || title,
+      title,
+      snippet: passage,
+      url,
+      messageId,
+      conversationId,
+      timestamp: new Date().toISOString(),
+    };
+
+    set((state) => ({
+      citations: [...state.citations, citation],
+    }));
+
+    return id;
+  },
+
   addWebCitations: (results, messageId, conversationId) => {
     const newCitations: Citation[] = results.map((result, index) => ({
       id: `cite-${Date.now()}-${index}-${Math.random().toString(36).substr(2, 9)}`,
       type: 'web' as CitationType,
+      scope: 'context' as CitationScope,
       source: result.url,
       title: result.title,
       snippet: result.snippet,
@@ -92,8 +128,32 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
     }));
   },
 
+  pruneConversationSourceCitations: (conversationId, keepMessageIds) => {
+    const keepSet = new Set(keepMessageIds);
+    set((state) => ({
+      citations: state.citations.filter((c) => {
+        if (c.conversationId !== conversationId) return true;
+        if (c.scope === 'context') return true;
+        if (c.scope === 'source') return keepSet.has(c.messageId);
+        return true;
+      }),
+    }));
+  },
+
   getConversationCitations: (conversationId) => {
     return get().citations.filter((c) => c.conversationId === conversationId);
+  },
+
+  getConversationContextCitations: (conversationId) => {
+    return get().citations.filter(
+      (c) => c.conversationId === conversationId && c.scope === 'context'
+    );
+  },
+
+  getConversationSourceCitations: (conversationId) => {
+    return get().citations.filter(
+      (c) => c.conversationId === conversationId && c.scope === 'source'
+    );
   },
 
   getCitationsByType: (conversationId, type) => {
