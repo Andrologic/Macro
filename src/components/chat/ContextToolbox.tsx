@@ -5,8 +5,8 @@ import { useCitationsStore } from '../../stores/useCitationsStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { Icon, IconName } from '../ui/Icon';
 import { Input } from '../ui/Input';
+import { Switch } from '../ui/Switch';
 import { cn } from '../../utils/cn';
-import type { Tool } from '../../types';
 import { extractDomain, getFaviconUrl } from '../../services/webSearch';
 
 interface ContextToolboxProps {
@@ -21,7 +21,7 @@ interface ContextToolboxProps {
 
 export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => {
   const { t } = useTranslation();
-  const { internalTools, mcpServers } = useToolsStore();
+  const { getChatModeTools, isChatToolEnabled, toggleChatTool, mcpServers } = useToolsStore();
   const {
     getConversationContextCitations,
     getConversationSourceCitations,
@@ -48,7 +48,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const fileCitations = contextCitations.filter((c) => c.type === 'file' || c.type === 'document');
 
   // Filter enabled tools
-  const enabledTools = Object.values(internalTools).filter((t: Tool) => t.status === 'enabled');
+  const chatTools = getChatModeTools();
   const onlineMcpServers = mcpServers.filter((s) => s.status === 'online');
 
   const tabs: { id: 'context' | 'tools' | 'sources'; label: string; icon: IconName }[] = [
@@ -462,8 +462,8 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                 Outils intégrés
               </h3>
               <div className="space-y-1">
-                {enabledTools.length > 0 ? (
-                  enabledTools.map((tool) => (
+                {chatTools.length > 0 ? (
+                  chatTools.map((tool) => (
                     <div
                       key={tool.id}
                       className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-accent transition-colors"
@@ -477,7 +477,12 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                           {tool.description}
                         </p>
                       </div>
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                      <div className="flex items-center shrink-0">
+                        <Switch
+                          checked={isChatToolEnabled(tool.id)}
+                          onCheckedChange={() => toggleChatTool(tool.id)}
+                        />
+                      </div>
                     </div>
                   ))
                 ) : (

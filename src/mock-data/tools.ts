@@ -4,23 +4,51 @@ import type { Tool, MCPServer } from '../types';
 export const mockInternalTools: Tool[] = [
   // Web Search Tool (uses Tavily/Brave API)
   {
-    id: 'web-search',
+    id: 'web_search',
     name: 'Web Search',
     category: 'web',
     status: 'enabled',
     description: 'Search the web for information with citations',
     icon: 'search',
-    config: { provider: 'tavily', maxResults: 5 },
+    config: {
+      enabled: true,
+      visible: true,
+      chatMode: true,
+      internal: false,
+      provider: 'tavily',
+      maxResults: 5,
+    },
   },
   // File reading tool
   {
-    id: 'file-read',
+    id: 'read_file',
     name: 'Read File',
     category: 'filesystem',
     status: 'enabled',
     description: 'Read file contents from the workspace',
-    icon: 'file',
-    config: {},
+    icon: 'file-text',
+    config: {
+      enabled: true,
+      visible: true,
+      chatMode: true,
+      internal: false,
+    },
+  },
+  // Internal source citation helper (always enabled, hidden from settings/UI)
+  {
+    id: 'mark_source_passage',
+    name: 'Mark Source Passage',
+    category: 'ai',
+    status: 'enabled',
+    description: 'Store critical passages for the Sources tab',
+    icon: 'book-open',
+    config: {
+      enabled: true,
+      visible: false,
+      chatMode: true,
+      internal: true,
+      locked: true,
+    },
   },
 ];
 
@@ -29,7 +57,8 @@ export const mockMCPServers: MCPServer[] = [];
 
 // Default settings
 export const defaultToolSettings: Record<string, boolean> = {
-  'web-search': true,
-  'file-read': true,
+  web_search: true,
+  read_file: true,
+  mark_source_passage: true,
 };
 export const defaultMCPServerSettings: Record<string, boolean> = {};

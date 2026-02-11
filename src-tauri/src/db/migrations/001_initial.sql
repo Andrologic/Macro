@@ -4,6 +4,7 @@
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY NOT NULL,
     title TEXT NOT NULL,
+    description TEXT,
     task_id TEXT,
     project_id TEXT,
     last_message TEXT,
