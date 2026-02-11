@@ -121,10 +121,10 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               )}
             </div>
 
-            {/* Last message preview */}
-            {conversation.last_message && (
+            {/* Description preview */}
+            {conversation.description && (
               <p className="text-xs text-muted-foreground mt-0.5 truncate">
-                {conversation.last_message}
+                {conversation.description}
               </p>
             )}
 
@@ -231,7 +231,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     return chatConversations.filter(
       (conv) =>
         conv.title.toLowerCase().includes(query) ||
-        conv.last_message?.toLowerCase().includes(query)
+        conv.description?.toLowerCase().includes(query)
     );
   }, [chatConversations, searchQuery]);
 

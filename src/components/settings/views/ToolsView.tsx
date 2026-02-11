@@ -40,6 +40,7 @@ export const ToolsView: React.FC = () => {
         loadSettings,
         toggleTool,
         toggleMCPServer,
+        isToolEnabled,
     } = useToolsStore();
 
     const [searchQuery, setSearchQuery] = useState('');
@@ -58,9 +59,10 @@ export const ToolsView: React.FC = () => {
     const filteredTools = useMemo(() => {
         const query = searchQuery.toLowerCase();
         return Object.values(internalTools).filter(
-            (t) => 
-                t.name.toLowerCase().includes(query) || 
-                t.description.toLowerCase().includes(query)
+            (t) =>
+                t.config?.visible !== false &&
+                (t.name.toLowerCase().includes(query) ||
+                t.description.toLowerCase().includes(query))
         );
     }, [internalTools, searchQuery]);
 
@@ -233,7 +235,7 @@ export const ToolsView: React.FC = () => {
                         <div key={tool.id} className="flex items-start justify-between p-4 bg-card border border-border rounded-xl">
                             <div className="flex gap-4">
                                 <div className="p-2 bg-primary/10 rounded-lg text-primary h-fit">
-                                    <Icon name={tool.id === 'read_file' ? 'file-text' : 'terminal'} size={18} />
+                                    <Icon name={(tool.icon as any) || 'tool'} size={18} />
                                 </div>
                                 <div className="space-y-1">
                                     <h4 className="font-medium text-foreground">{tool.name}</h4>
@@ -244,7 +246,7 @@ export const ToolsView: React.FC = () => {
                                 </div>
                             </div>
                             <Switch 
-                                checked={tool.status === 'enabled'} 
+                                checked={isToolEnabled(tool.id)} 
                                 onCheckedChange={() => toggleTool(tool.id)} 
                             />
                         </div>

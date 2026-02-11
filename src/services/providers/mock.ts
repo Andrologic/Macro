@@ -29,6 +29,17 @@ import type {
 import type { Project } from '../../types';
 import { delay, maybeFail } from '../utils';
 
+const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
+const LEGACY_TOOL_ID_MAP: Record<string, string> = {
+  'web-search': 'web_search',
+  'file-read': 'read_file',
+};
+
+const normalizeToolId = (id: string): string => LEGACY_TOOL_ID_MAP[id] || id;
+
+const normalizeToolSettings = (settings: Record<string, boolean>): Record<string, boolean> =>
+  Object.fromEntries(Object.entries(settings).map(([id, enabled]) => [normalizeToolId(id), enabled]));
+
 // =============================================================================
 // MOCK PROVIDER CONFIGURATION
 // =============================================================================
@@ -233,25 +244,30 @@ export const getToolSettings = async (): Promise<any> => {
   maybeFail(ERROR_RATE);
   
   // Return mock tool settings from localStorage or defaults
-  const savedTools = localStorage.getItem('macro_tool_settings');
+  const savedTools = localStorage.getItem(TOOL_SETTINGS_STORAGE_KEY);
   let enabledTools: Record<string, boolean> = {};
   
   try {
     if (savedTools && savedTools !== "undefined") {
-      enabledTools = JSON.parse(savedTools);
+      enabledTools = normalizeToolSettings(JSON.parse(savedTools));
     }
   } catch (e) {
     console.error("Failed to parse tool settings", e);
   }
 
+  // Persist normalized IDs back to storage to migrate legacy keys once.
+  localStorage.setItem(TOOL_SETTINGS_STORAGE_KEY, JSON.stringify(enabledTools));
+
   const tools: Record<string, any> = {};
-  Object.entries(mockInternalTools).forEach(([id, tool]) => {
+  mockInternalTools.forEach((tool) => {
+    const id = tool.id;
+    const enabled = enabledTools[id] !== false;
     tools[id] = {
       ...tool,
-      status: enabledTools[id] !== false ? 'enabled' : 'disabled',
+      status: enabled ? 'enabled' : 'disabled',
       config: {
         ...tool.config,
-        enabled: enabledTools[id] !== false,
+        enabled,
       }
     };
   });
@@ -263,7 +279,10 @@ export const updateToolSettings = async (settings: ToolSettingsDto): Promise<voi
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
   
-  localStorage.setItem('macro_tool_settings', JSON.stringify(settings.tools || {}));
+  localStorage.setItem(
+    TOOL_SETTINGS_STORAGE_KEY,
+    JSON.stringify(normalizeToolSettings(settings.tools || {}))
+  );
   return simulate(undefined);
 };
 

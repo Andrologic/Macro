@@ -225,6 +225,7 @@ export interface ChatMessage {
 export interface Conversation {
   id: string;
   title: string;
+  description?: string;
   task_id: string | null;
   project_id: string | null;
   last_message: string;

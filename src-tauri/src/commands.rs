@@ -93,6 +93,28 @@ pub async fn db_rename_conversation(
 }
 
 #[tauri::command]
+pub async fn db_update_conversation_details(
+    pool: State<'_, DbPool>,
+    id: String,
+    title: Option<String>,
+    description: Option<String>,
+) -> CommandResult<()> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::update_conversation_details(
+        pool,
+        &id,
+        title.as_deref(),
+        description.as_deref(),
+    )
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_delete_conversation_by_id(
     pool: State<'_, DbPool>,
     id: String,

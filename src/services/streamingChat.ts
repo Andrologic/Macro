@@ -73,6 +73,7 @@ export interface StreamingChatOptions {
     path?: string;
     snippet?: string;
   }>;
+  allowedToolIds?: string[];
 }
 
 // Tool definitions for the LLM
@@ -165,8 +166,11 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     onToolCall,
     onToolResult,
     fileToolContext = [],
+    allowedToolIds,
     // Note: signal is not used with Tauri HTTP plugin - AbortController support is limited
   } = options;
+
+  const allowedTools = new Set(allowedToolIds || ['mark_source_passage', 'read_file', 'web_search']);
 
   const formatToolUsageLabel = (toolName: string, args: Record<string, unknown>) => {
     if (toolName === 'web_search') {
@@ -224,14 +228,23 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   };
 
   // Always expose source-marking tool. Add web search tool only when configured.
-  const tools: unknown[] = [MARK_SOURCE_PASSAGE_TOOL, READ_FILE_TOOL];
+  const tools: unknown[] = [];
+  if (allowedTools.has('mark_source_passage')) {
+    tools.push(MARK_SOURCE_PASSAGE_TOOL);
+  }
+  if (allowedTools.has('read_file')) {
+    tools.push(READ_FILE_TOOL);
+  }
   if (
+    allowedTools.has('web_search') &&
     enableWebSearch &&
     (webSearchOptions?.tavilyApiKey || webSearchOptions?.braveApiKey)
   ) {
     tools.push(WEB_SEARCH_TOOL);
   }
-  requestBody.tools = tools;
+  if (tools.length > 0) {
+    requestBody.tools = tools;
+  }
 
   try {
     const response = await tauriFetch(`${baseUrl}/chat/completions`, {
@@ -385,6 +398,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         
         try {
           const args = JSON.parse(toolCall.function.arguments);
+
+          if (!allowedTools.has(toolName)) {
+            toolResult = `Tool ${toolName} is disabled in chat mode.`;
+            toolResults.push({
+              tool_call_id: toolCall.id,
+              content: toolResult,
+            });
+            continue;
+          }
+
           onToolCall?.(toolName, args);
 
           const toolUsageMsg = formatToolUsageLabel(toolName, args);

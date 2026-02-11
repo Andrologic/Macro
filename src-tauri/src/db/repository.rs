@@ -8,7 +8,7 @@ use sqlx::Row;
 pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, title, created_at, updated_at, last_message, message_count, is_pinned
+        SELECT id, title, description, created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
         ORDER BY is_pinned DESC, updated_at DESC
         "#,
@@ -21,6 +21,7 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
         .map(|row| Conversation {
             id: row.get("id"),
             title: row.get("title"),
+            description: row.get("description"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
             last_message: row.get("last_message"),
@@ -35,7 +36,7 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
 pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Conversation>> {
     let row = sqlx::query(
         r#"
-        SELECT id, title, created_at, updated_at, last_message, message_count, is_pinned
+        SELECT id, title, description, created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
         WHERE id = ?
         "#,
@@ -47,6 +48,7 @@ pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Co
     Ok(row.map(|row| Conversation {
         id: row.get("id"),
         title: row.get("title"),
+        description: row.get("description"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
         last_message: row.get("last_message"),
@@ -65,8 +67,8 @@ pub async fn create_conversation(
 
     sqlx::query(
         r#"
-        INSERT INTO conversations (id, title, created_at, updated_at, message_count, is_pinned)
-        VALUES (?, ?, ?, ?, 0, 0)
+        INSERT INTO conversations (id, title, description, created_at, updated_at, message_count, is_pinned)
+        VALUES (?, ?, NULL, ?, ?, 0, 0)
         "#,
     )
     .bind(&id)
@@ -79,6 +81,7 @@ pub async fn create_conversation(
     Ok(Conversation {
         id,
         title,
+        description: None,
         created_at: now.clone(),
         updated_at: now,
         last_message: None,
@@ -123,6 +126,31 @@ pub async fn rename_conversation(pool: &SqlitePool, id: &str, title: &str) -> Db
         "#,
     )
     .bind(title)
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn update_conversation_details(
+    pool: &SqlitePool,
+    id: &str,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> DbResult<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        UPDATE conversations
+        SET title = COALESCE(?, title), description = COALESCE(?, description), updated_at = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(title)
+    .bind(description)
     .bind(&now)
     .bind(id)
     .execute(pool)

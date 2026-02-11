@@ -3,8 +3,56 @@ import { ChatMessage, Conversation } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 import { useProviderStore } from './useProviderStore';
 import { useCitationsStore } from './useCitationsStore';
-import { streamChat, cancelStream } from '../services/streamingChat';
+import { streamChat, cancelStream, sendChatNonStreaming } from '../services/streamingChat';
+import { useToolsStore } from './useToolsStore';
 import * as tauriIpc from '../services/tauriIpc';
+
+const METADATA_MAX_TITLE_LENGTH = 72;
+const METADATA_MAX_DESCRIPTION_LENGTH = 180;
+const metadataGenerationInFlight = new Set<string>();
+
+const getConversationFallbackTitle = (content: string): string => {
+  const cleaned = content.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return 'New Conversation';
+  const words = cleaned.split(' ').slice(0, 6).join(' ');
+  return words.slice(0, METADATA_MAX_TITLE_LENGTH);
+};
+
+const getConversationFallbackDescription = (content: string): string => {
+  const cleaned = content.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return 'General discussion.';
+  return cleaned.slice(0, METADATA_MAX_DESCRIPTION_LENGTH);
+};
+
+const extractMetadataFromModelOutput = (raw: string): { title: string; description: string } => {
+  const noThinking = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const firstBrace = noThinking.indexOf('{');
+  const lastBrace = noThinking.lastIndexOf('}');
+  if (firstBrace === -1 || lastBrace <= firstBrace) {
+    throw new Error('No JSON object found');
+  }
+
+  const parsed = JSON.parse(noThinking.slice(firstBrace, lastBrace + 1)) as {
+    title?: unknown;
+    description?: unknown;
+  };
+
+  if (typeof parsed.title !== 'string' || typeof parsed.description !== 'string') {
+    throw new Error('Invalid metadata shape');
+  }
+
+  const title = parsed.title.replace(/\s+/g, ' ').trim().slice(0, METADATA_MAX_TITLE_LENGTH);
+  const description = parsed.description
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, METADATA_MAX_DESCRIPTION_LENGTH);
+
+  if (!title || !description) {
+    throw new Error('Empty metadata values');
+  }
+
+  return { title, description };
+};
 
 interface ChatStore {
   messages: ChatMessage[];
@@ -69,7 +117,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   };
 
-  const prepareMessagesForRequest = (conversationId: string) => {
+  const prepareMessagesForRequest = (conversationId: string, allowedToolIds: string[]) => {
     const contextCitations = useCitationsStore.getState().getConversationContextCitations(conversationId);
     const sourceCitations = useCitationsStore.getState().getConversationSourceCitations(conversationId);
     const citations = [...contextCitations, ...sourceCitations];
@@ -102,12 +150,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
       };
     });
 
+    const systemInstructions: string[] = [];
+    if (allowedToolIds.includes('read_file')) {
+      systemInstructions.push(
+        `When the user asks to inspect or analyze an attached file, call read_file first using the file name/path. Available files: ${availableFiles || 'none'}.`
+      );
+    }
+    if (allowedToolIds.includes('mark_source_passage')) {
+      systemInstructions.push(
+        'When you use a crucial excerpt from provided context or web results, call mark_source_passage with title and passage. Only call it for genuinely important passages.'
+      );
+    }
+
     return [
       {
         role: 'system' as const,
-        content:
-          `When the user asks to inspect or analyze an attached file, call read_file first using the file name/path. Available files: ${availableFiles || 'none'}. ` +
-          'When you use a crucial excerpt from provided context or web results, call mark_source_passage with title and passage. Only call it for genuinely important passages.',
+        content: systemInstructions.join(' ') || 'Use context information when it is provided.',
       },
       ...preparedMessages,
     ];
@@ -123,6 +181,109 @@ export const useChatStore = create<ChatStore>((set, get) => {
       last_message: lastMessage?.content ?? '',
       updated_at: new Date().toISOString(),
     };
+  };
+
+  const getAllowedChatToolIds = (): string[] => {
+    const toolsState = useToolsStore.getState();
+    return toolsState.getEnabledChatToolIds();
+  };
+
+  const prepareMetadataMessages = (firstUserContent: string) => [
+    {
+      role: 'system' as const,
+      content:
+        'Generate concise metadata for this conversation. Return ONLY valid JSON with keys: title, description. ' +
+        'title: 3-7 words, specific and action-oriented. description: one clear sentence under 180 characters.',
+    },
+    {
+      role: 'user' as const,
+      content: firstUserContent,
+    },
+  ];
+
+  const updateConversationMetadataLocally = (
+    conversationId: string,
+    metadata: { title: string; description: string }
+  ) => {
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation.id === conversationId
+          ? {
+              ...conversation,
+              title: metadata.title,
+              description: metadata.description,
+              updated_at: new Date().toISOString(),
+            }
+          : conversation
+      ),
+    }));
+  };
+
+  const maybeGenerateConversationMetadata = async (params: {
+    conversationId: string;
+    firstUserContent: string;
+    providerId: string;
+    providerType: string;
+    baseUrl: string;
+    apiKey?: string;
+    modelId: string;
+  }) => {
+    const { conversationId, firstUserContent, providerId, providerType, baseUrl, apiKey, modelId } = params;
+
+    if (metadataGenerationInFlight.has(conversationId)) return;
+    metadataGenerationInFlight.add(conversationId);
+
+    try {
+      const output = await sendChatNonStreaming({
+        providerId,
+        providerType,
+        baseUrl,
+        apiKey,
+        modelId,
+        messages: prepareMetadataMessages(firstUserContent),
+        onComplete: () => {},
+        onError: () => {},
+      });
+
+      let metadata: { title: string; description: string };
+      try {
+        metadata = extractMetadataFromModelOutput(output);
+      } catch {
+        metadata = {
+          title: getConversationFallbackTitle(firstUserContent),
+          description: getConversationFallbackDescription(firstUserContent),
+        };
+      }
+
+      updateConversationMetadataLocally(conversationId, metadata);
+
+      if (tauriIpc.isTauriAvailable()) {
+        tauriIpc
+          .updateConversationDetails({
+            id: conversationId,
+            title: metadata.title,
+            description: metadata.description,
+          })
+          .catch(console.error);
+      }
+    } catch {
+      const metadata = {
+        title: getConversationFallbackTitle(firstUserContent),
+        description: getConversationFallbackDescription(firstUserContent),
+      };
+      updateConversationMetadataLocally(conversationId, metadata);
+      if (tauriIpc.isTauriAvailable()) {
+        tauriIpc
+          .updateConversationDetails({
+            id: conversationId,
+            title: metadata.title,
+            description: metadata.description,
+          })
+          .catch(console.error);
+      }
+    } finally {
+      metadataGenerationInFlight.delete(conversationId);
+    }
   };
 
   return {
@@ -223,6 +384,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           newConversation = {
             id: dbConv.id,
             title: dbConv.title,
+            description: dbConv.description || '',
             task_id: taskId,
             project_id: projectId,
             last_message: dbConv.last_message || '',
@@ -236,6 +398,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           newConversation = {
             id: `conv-${Date.now()}`,
             title,
+            description: '',
             task_id: taskId,
             project_id: projectId,
             last_message: '',
@@ -248,6 +411,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         newConversation = {
           id: `conv-${Date.now()}`,
           title,
+          description: '',
           task_id: taskId,
           project_id: projectId,
           last_message: '',
@@ -325,6 +489,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
 
+      const userMessageCountBeforeSend = getOrderedConversationMessages(conversationId).filter(
+        (message) => message.role === 'user'
+      ).length;
+
       const userMessage: ChatMessage = {
         id: `msg-${Date.now()}`,
         task_id: taskId ?? '',
@@ -337,12 +505,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set({ lastError: null });
       get().addMessage(userMessage);
 
+      if (userMessageCountBeforeSend === 0) {
+        void maybeGenerateConversationMetadata({
+          conversationId,
+          firstUserContent: content,
+          providerId: selectedProviderId,
+          providerType: providerConfig.providerType,
+          baseUrl: providerConfig.baseUrl,
+          apiKey: providerConfig.apiKey,
+          modelId: selectedModelId,
+        });
+      }
+
       // Save user message to DB if available
       if (tauriIpc.isTauriAvailable()) {
         tauriIpc.createMessage(conversationId, 'user', content).catch(console.error);
       }
 
-      const messagesForRequest = prepareMessagesForRequest(conversationId);
+      const allowedToolIds = getAllowedChatToolIds();
+      const messagesForRequest = prepareMessagesForRequest(conversationId, allowedToolIds);
       const fileToolContext = useCitationsStore
         .getState()
         .getConversationContextCitations(conversationId)
@@ -377,6 +558,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           modelId: selectedModelId,
           messages: messagesForRequest,
           fileToolContext,
+          allowedToolIds,
           signal: abortController.signal,
           onToken: (token) => {
             get().appendToLastMessage(token);
@@ -496,7 +678,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         .getState()
         .pruneConversationSourceCitations(conversationId, keptConversationMessageIds);
 
-      const messagesForRequest = prepareMessagesForRequest(conversationId);
+      const allowedToolIds = getAllowedChatToolIds();
+      const messagesForRequest = prepareMessagesForRequest(conversationId, allowedToolIds);
       const fileToolContext = useCitationsStore
         .getState()
         .getConversationContextCitations(conversationId)
@@ -531,6 +714,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           modelId: selectedModelId,
           messages: messagesForRequest,
           fileToolContext,
+          allowedToolIds,
           signal: abortController.signal,
           onToken: (token) => {
             get().appendToLastMessage(token);
@@ -579,6 +763,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           const conversations: Conversation[] = dbConversations.map((c) => ({
             id: c.id,
             title: c.title,
+            description: c.description || '',
             task_id: null,
             project_id: null,
             last_message: c.last_message || '',

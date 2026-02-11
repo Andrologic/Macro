@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct Conversation {
     pub id: String,
     pub title: String,
+    pub description: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub last_message: Option<String>,

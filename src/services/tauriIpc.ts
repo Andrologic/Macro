@@ -11,6 +11,7 @@ import type { PredictedGitTree, GitCommit } from '../types';
 export interface DbConversation {
   id: string;
   title: string;
+  description: string | null;
   created_at: string;
   updated_at: string;
   last_message: string | null;
@@ -113,6 +114,18 @@ export async function createConversation(title?: string): Promise<DbConversation
 
 export async function renameConversation(id: string, title: string): Promise<void> {
   return invoke('db_rename_conversation', { id, title });
+}
+
+export async function updateConversationDetails(params: {
+  id: string;
+  title?: string;
+  description?: string;
+}): Promise<void> {
+  return invoke('db_update_conversation_details', {
+    id: params.id,
+    title: params.title ?? null,
+    description: params.description ?? null,
+  });
 }
 
 export async function deleteConversation(id: string): Promise<void> {

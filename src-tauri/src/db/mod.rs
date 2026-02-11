@@ -67,6 +67,7 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
         CREATE TABLE IF NOT EXISTS conversations (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
+            description TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             last_message TEXT,
@@ -77,6 +78,18 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     )
     .execute(pool)
     .await?;
+
+    let conversation_columns = sqlx::query("PRAGMA table_info(conversations)")
+        .fetch_all(pool)
+        .await?;
+    let has_description = conversation_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "description");
+    if !has_description {
+        sqlx::query("ALTER TABLE conversations ADD COLUMN description TEXT")
+            .execute(pool)
+            .await?;
+    }
 
     sqlx::query(
         r#"

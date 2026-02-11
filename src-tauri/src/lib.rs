@@ -80,6 +80,7 @@ pub fn run() {
             commands::db_get_conversation,
             commands::db_create_conversation,
             commands::db_rename_conversation,
+            commands::db_update_conversation_details,
             commands::db_delete_conversation_by_id,
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
