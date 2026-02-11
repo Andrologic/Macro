@@ -123,6 +123,37 @@ Create a `.env` file in the project root:
 VITE_DATA_PROVIDER=mock  # or 'ipc' for production
 ```
 
+### Local API Keys for Dev
+
+To avoid re-entering provider API keys in Settings on every dev restart, create a local keys file:
+
+```bash
+cp public/ai-keys.local.example.json public/ai-keys.local.json
+```
+
+Then edit `public/ai-keys.local.json` with your real keys.
+
+- File format supports provider IDs (`openai`, `anthropic`, `openrouter`, `zai`, etc.)
+- Provider keys are matched flexibly (`zai` and `z.ai` both work)
+- `apiKey` is enough in most cases
+- `baseUrl` is optional and only needed for custom/proxy endpoints
+- This file is ignored by git (`public/ai-keys.local.json`)
+
+Example:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "apiKey": "sk-..."
+    },
+    "openrouter": {
+      "apiKey": "test-api-key..."
+    }
+  }
+}
+```
+
 ### Tauri Development
 
 For Tauri development, ensure you have the required system dependencies:

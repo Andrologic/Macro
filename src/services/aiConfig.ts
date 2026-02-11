@@ -7,6 +7,9 @@ export interface AIConfigFile {
   providers?: Record<string, AIProviderConfig>;
 }
 
+const normalizeProviderKey = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, '');
+
 let cachedConfig: AIConfigFile | null = null;
 let loadingConfig: Promise<AIConfigFile | null> | null = null;
 
@@ -36,10 +39,37 @@ export const loadAIConfigFile = async (): Promise<AIConfigFile | null> => {
 
 export const getProviderConfig = async (providerId: string): Promise<AIProviderConfig> => {
   const fileConfig = await loadAIConfigFile();
-  const providerConfig = fileConfig?.providers?.[providerId] ?? {};
+  const providerConfig = findProviderConfig(fileConfig, providerId) ?? {};
 
   return {
     apiKey: providerConfig.apiKey,
     baseUrl: normalizeBaseUrl(providerConfig.baseUrl),
   };
+};
+
+export const findProviderConfig = (
+  fileConfig: AIConfigFile | null,
+  providerId: string,
+  providerName?: string
+): AIProviderConfig | undefined => {
+  const providers = fileConfig?.providers;
+  if (!providers) return undefined;
+
+  const directMatch = providers[providerId];
+  if (directMatch) return directMatch;
+
+  if (providerName) {
+    const byName = providers[providerName];
+    if (byName) return byName;
+  }
+
+  const normalizedId = normalizeProviderKey(providerId);
+  const normalizedName = providerName ? normalizeProviderKey(providerName) : null;
+
+  const entry = Object.entries(providers).find(([key]) => {
+    const normalizedKey = normalizeProviderKey(key);
+    return normalizedKey === normalizedId || (normalizedName !== null && normalizedKey === normalizedName);
+  });
+
+  return entry?.[1];
 };

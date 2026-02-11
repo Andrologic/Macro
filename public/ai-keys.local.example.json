@@ -1,0 +1,16 @@
+{
+  "providers": {
+    "openai": {
+      "apiKey": "test-api-key"
+    },
+    "anthropic": {
+      "apiKey": "test-api-key"
+    },
+    "openrouter": {
+      "apiKey": "test-api-key"
+    },
+    "z.ai": {
+      "apiKey": "your-zai-key"
+    }
+  }
+}

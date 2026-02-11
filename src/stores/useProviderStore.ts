@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { ProviderConfig, AIProvider, AIModel, ProviderSettings } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import { fetchModelsFromProvider, testProviderConnection } from '../services/providerApi';
+import { findProviderConfig, loadAIConfigFile } from '../services/aiConfig';
 
 const isZeroPrice = (value?: string | null): boolean => {
   if (value === null || value === undefined) return false;
@@ -46,6 +47,28 @@ const normalizeDbModel = (model: tauriIpc.DbAiModel): AIModel => {
 const getFirstEnabledModelId = (models: AIModel[]): string | null => {
   const enabled = models.find((m) => m.isEnabled !== false);
   return enabled?.id ?? null;
+};
+
+const mergeLocalProviderConfig = async (
+  providerConfigs: ProviderConfig[]
+): Promise<ProviderConfig[]> => {
+  const localConfig = await loadAIConfigFile();
+  if (!localConfig?.providers) return providerConfigs;
+
+  return providerConfigs.map((provider) => {
+    const localProvider = findProviderConfig(localConfig, provider.id, provider.name);
+    if (!localProvider) return provider;
+
+    const hasExistingApiKey = !!provider.apiKey?.trim();
+    const localApiKey = localProvider.apiKey?.trim();
+    const localBaseUrl = localProvider.baseUrl?.trim();
+
+    return {
+      ...provider,
+      apiKey: hasExistingApiKey ? provider.apiKey : localApiKey || provider.apiKey,
+      baseUrl: localBaseUrl || provider.baseUrl,
+    };
+  });
 };
 
 interface ProviderStore {
@@ -97,18 +120,31 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   connectionStatus: {},
 
   initialize: async () => {
-    const { loadProviderConfigs, loadProviderModels, scanModelsForProvider } = get();
+    const { loadProviderConfigs, loadProviderModels, scanModelsForProvider, testConnection } = get();
     await loadProviderConfigs();
 
     const { providerConfigs, providers, selectProvider } = get();
+    const connectivityChecks: Array<Promise<unknown>> = [];
+
     for (const provider of providerConfigs) {
       await loadProviderModels(provider.id);
       const models = get().modelsByProvider[provider.id] || [];
-      const shouldScan = (provider.apiKey && provider.apiKey.trim() !== '') || provider.isLocal;
-      if (shouldScan && models.length === 0) {
-        await scanModelsForProvider(provider.id);
+
+      const hasCredentials = (provider.apiKey && provider.apiKey.trim() !== '') || provider.isLocal;
+      const shouldCheckConnectivity = provider.isEnabled && hasCredentials;
+
+      if (!shouldCheckConnectivity) {
+        continue;
+      }
+
+      if (models.length === 0) {
+        connectivityChecks.push(scanModelsForProvider(provider.id));
+      } else {
+        connectivityChecks.push(testConnection(provider.id));
       }
     }
+
+    void Promise.allSettled(connectivityChecks);
 
     const enabledProvider = providers.find((p) => p.isEnabled);
     if (enabledProvider) {
@@ -122,7 +158,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     try {
       if (tauriIpc.isTauriAvailable()) {
         const configs = await tauriIpc.listProviderConfigs();
-        const providerConfigs: ProviderConfig[] = configs.map((c) => ({
+        const normalizedConfigs: ProviderConfig[] = configs.map((c) => ({
           id: c.id,
           name: c.name,
           providerType: c.provider_type,
@@ -131,6 +167,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           isEnabled: c.is_enabled,
           isLocal: c.is_local,
         }));
+        const providerConfigs = await mergeLocalProviderConfig(normalizedConfigs);
         
         const providers: AIProvider[] = providerConfigs.map((c) => ({
           id: c.id,
@@ -156,8 +193,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           { id: 'ollama', name: 'Ollama', providerType: 'ollama', baseUrl: 'http://localhost:11434/v1', isEnabled: true, isLocal: true },
           { id: 'lmstudio', name: 'LM Studio', providerType: 'lmstudio', baseUrl: 'http://localhost:1234/v1', isEnabled: true, isLocal: true },
         ];
+        const providerConfigs = await mergeLocalProviderConfig(mockConfigs);
         
-        const providers: AIProvider[] = mockConfigs.map((c) => ({
+        const providers: AIProvider[] = providerConfigs.map((c) => ({
           id: c.id,
           name: c.name,
           status: 'offline',
@@ -166,9 +204,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           isEnabled: c.isEnabled,
         }));
 
-        set({ providerConfigs: mockConfigs, providers, isLoading: false });
+        set({ providerConfigs, providers, isLoading: false });
 
-        for (const provider of mockConfigs) {
+        for (const provider of providerConfigs) {
           get().loadProviderSettings(provider.id);
         }
       }
