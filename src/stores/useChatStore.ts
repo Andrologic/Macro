@@ -138,6 +138,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (toolName !== 'mark_source_passage') return;
     const title = typeof args.title === 'string' ? args.title.trim() : '';
     const passage = typeof args.passage === 'string' ? args.passage.trim() : '';
+    const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
+    const kind = rawKind === 'interesting' ? 'interesting' : 'used';
+    const reason = typeof args.reason === 'string' ? args.reason.trim() : undefined;
     if (!title || !passage) return;
 
     useCitationsStore.getState().addSourcePassage({
@@ -147,6 +150,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       passage,
       source: typeof args.source === 'string' ? args.source : undefined,
       url: typeof args.url === 'string' ? args.url : undefined,
+      kind,
+      reason,
     });
   };
 
@@ -198,7 +203,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     if (allowedToolIds.includes('mark_source_passage')) {
       systemInstructions.push(
-        'When you use a crucial excerpt from provided context or web results, call mark_source_passage with title and passage. Only call it for genuinely important passages.'
+        'Use mark_source_passage for source tracking. Use kind="interesting" for key excerpts worth keeping while analyzing sources. Use kind="used" only for excerpts you actually used in your final answer. Always include concise title and exact passage. Add source or url when available, and reason when helpful. Only mark genuinely important passages.'
       );
     }
 

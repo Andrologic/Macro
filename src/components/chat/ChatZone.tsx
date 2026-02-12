@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useProviderStore } from '../../stores/useProviderStore';
-import { useCitationsStore } from '../../stores/useCitationsStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
@@ -40,12 +39,6 @@ const ChatZone: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-
-  // File attachments for current message
-  const { getCitationsByType, removeCitation } = useCitationsStore();
-  const currentFileAttachments = selectedConversationId
-    ? getCitationsByType(selectedConversationId, 'file')
-    : [];
 
   // Architect Mode: Ensure single conversation
   useEffect(() => {
@@ -146,10 +139,6 @@ const ChatZone: React.FC = () => {
 
   const handleRegenerate = async (messageId: string, content: string) => {
     await editMessage(messageId, content);
-  };
-
-  const handleRemoveAttachment = (citationId: string) => {
-    removeCitation(citationId);
   };
 
   return (
@@ -397,27 +386,6 @@ const ChatZone: React.FC = () => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3">
           <div className="w-full max-w-3xl mx-auto space-y-3">
-            {/* File Attachments Preview */}
-            {currentFileAttachments.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {currentFileAttachments.map((attachment) => (
-                  <div
-                    key={attachment.id}
-                    className="flex items-center gap-2 px-2 py-1 bg-muted/50 border border-border rounded-lg text-xs"
-                  >
-                    <Icon name="file" size={12} className="text-muted-foreground" />
-                    <span className="text-foreground truncate max-w-[150px]">{attachment.title}</span>
-                    <button
-                      onClick={() => handleRemoveAttachment(attachment.id)}
-                      className="p-0.5 hover:bg-accent rounded transition-colors"
-                    >
-                      <Icon name="x" size={10} className="text-muted-foreground hover:text-foreground" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ProviderDropdown />

@@ -7,6 +7,7 @@ import { create } from 'zustand';
 
 export type CitationType = 'web' | 'file' | 'document' | 'source_passage';
 export type CitationScope = 'context' | 'source';
+export type SourcePassageKind = 'interesting' | 'used';
 
 export interface Citation {
   id: string;
@@ -24,6 +25,9 @@ export interface Citation {
   // File-specific
   path?: string;
   language?: string;
+  // Source passage-specific
+  kind?: SourcePassageKind;
+  reason?: string;
 }
 
 interface CitationsState {
@@ -38,6 +42,8 @@ interface CitationsState {
     passage: string;
     source?: string;
     url?: string;
+    kind?: SourcePassageKind;
+    reason?: string;
   }) => string;
   addWebCitations: (results: WebSearchResult[], messageId: string, conversationId: string) => void;
   removeCitation: (id: string) => void;
@@ -46,6 +52,8 @@ interface CitationsState {
   getConversationCitations: (conversationId: string) => Citation[];
   getConversationContextCitations: (conversationId: string) => Citation[];
   getConversationSourceCitations: (conversationId: string) => Citation[];
+  getConversationInterestingSourceCitations: (conversationId: string) => Citation[];
+  getConversationUsedSourceCitations: (conversationId: string) => Citation[];
   getCitationsByType: (conversationId: string, type: CitationType) => Citation[];
 }
 
@@ -75,18 +83,34 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
     return id;
   },
 
-  addSourcePassage: ({ conversationId, messageId, title, passage, source, url }) => {
+  addSourcePassage: ({ conversationId, messageId, title, passage, source, url, kind = 'used', reason }) => {
     const id = `cite-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const normalizedTitle = title.trim();
+    const normalizedPassage = passage.trim();
+    const normalizedReason = typeof reason === 'string' ? reason.trim() : undefined;
+
+    const existing = get().citations.find((c) =>
+      c.conversationId === conversationId &&
+      c.messageId === messageId &&
+      c.type === 'source_passage' &&
+      (c.kind || 'used') === kind &&
+      c.title === normalizedTitle &&
+      (c.snippet || '') === normalizedPassage
+    );
+    if (existing) return existing.id;
+
     const citation: Citation = {
       id,
       type: 'source_passage',
       scope: 'source',
       source: source || url || title,
-      title,
-      snippet: passage,
+      title: normalizedTitle,
+      snippet: normalizedPassage,
       url,
       messageId,
       conversationId,
+      kind,
+      reason: normalizedReason || undefined,
       timestamp: new Date().toISOString(),
     };
 
@@ -153,7 +177,25 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
   getConversationSourceCitations: (conversationId) => {
     return get().citations.filter(
       (c) => c.conversationId === conversationId && c.scope === 'source'
-    );
+    ).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  },
+
+  getConversationInterestingSourceCitations: (conversationId) => {
+    return get().citations.filter(
+      (c) =>
+        c.conversationId === conversationId &&
+        c.scope === 'source' &&
+        (c.kind || 'used') === 'interesting'
+    ).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  },
+
+  getConversationUsedSourceCitations: (conversationId) => {
+    return get().citations.filter(
+      (c) =>
+        c.conversationId === conversationId &&
+        c.scope === 'source' &&
+        (c.kind || 'used') === 'used'
+    ).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   },
 
   getCitationsByType: (conversationId, type) => {
