@@ -193,6 +193,55 @@
   .spinner {
     @apply w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin;
   }
+
+  /* ── Scroll separator animations ── */
+  .scroll-separator-line {
+    background: linear-gradient(
+      90deg,
+      transparent 5%,
+      rgb(var(--primary) / 0.6) 30%,
+      rgb(var(--primary)) 50%,
+      rgb(var(--primary) / 0.6) 70%,
+      transparent 95%
+    );
+    transform-origin: center;
+    will-change: transform, opacity;
+  }
+
+  .separator-locked {
+    animation: separatorExpand 300ms ease-out forwards;
+  }
+
+  .separator-releasing,
+  .separator-detaching {
+    animation: separatorCollapse 400ms ease-in forwards;
+  }
+
+  .separator-reattaching {
+    animation: separatorExpand 300ms ease-out forwards;
+  }
+}
+
+@keyframes separatorExpand {
+  from {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+@keyframes separatorCollapse {
+  from {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+  to {
+    transform: scaleX(0);
+    opacity: 0;
+  }
 }
 
 @layer utilities {

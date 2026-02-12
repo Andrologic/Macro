@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
@@ -9,6 +9,8 @@ import { cn } from '../../utils/cn';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
 import { MarkdownRenderer, estimateTokens, formatTokenCount } from './MarkdownRenderer';
+import { useScrollMagnet } from '../../hooks/useScrollMagnet';
+import { ScrollSeparator } from './ScrollSeparator';
 
 /**
  * ChatZone - Main chat interface used across all modes
@@ -35,14 +37,13 @@ const ChatZone: React.FC = () => {
   const { selectedProviderId, selectedModelId } = useProviderStore();
   const { mode } = useAppStore();
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const [inputValue, setInputValue] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
   // File attachments for current message
   const { getCitationsByType, removeCitation } = useCitationsStore();
-  const currentFileAttachments = selectedConversationId 
+  const currentFileAttachments = selectedConversationId
     ? getCitationsByType(selectedConversationId, 'file')
     : [];
 
@@ -88,9 +89,11 @@ const ChatZone: React.FC = () => {
     0
   );
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [currentMessages]);
+  // Scroll magnetism: auto-scroll during streaming, animated separator
+  const { scrollContainerRef, separatorState } = useScrollMagnet(
+    isStreaming,
+    [currentMessages],
+  );
 
 
   const ensureConversation = async () => {
@@ -182,7 +185,7 @@ const ChatZone: React.FC = () => {
         </header>
 
         {/* Conversation Content */}
-        <div className="flex-1 overflow-y-auto px-12 py-8">
+        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-12 py-8">
           {selectedConversationId && currentMessages.length > 0 ? (
             <div className="max-w-4xl mx-auto space-y-6">
               {currentMessages.map((message) => {
@@ -349,7 +352,7 @@ const ChatZone: React.FC = () => {
                   </div>
                 );
               })}
-              <div ref={messagesEndRef} className="h-8" />
+              <div className="h-8" />
             </div>
           ) : (
             <div className="flex items-center justify-center h-full">
@@ -379,7 +382,8 @@ const ChatZone: React.FC = () => {
         </div>
 
         {/* Input Area */}
-        <footer className="border-t border-border/50 bg-card/30 p-3">
+        <ScrollSeparator state={separatorState} />
+        <footer className="bg-card/30 p-3">
           <div className="w-full max-w-3xl mx-auto space-y-3">
             {/* File Attachments Preview */}
             {currentFileAttachments.length > 0 && (
