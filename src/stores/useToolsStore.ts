@@ -250,8 +250,10 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     const state = get();
     const tool = state.internalTools[toolId];
     if (!tool || !isChatEligibleTool(tool)) return false;
+    const globallyEnabled = isToolEnabledState(tool);
+    if (!globallyEnabled) return false;
     if (isLockedTool(tool)) return true;
-    return state.chatToolStates[toolId] ?? isToolEnabledState(tool);
+    return state.chatToolStates[toolId] ?? globallyEnabled;
   },
 
   getChatModeTools: () => {

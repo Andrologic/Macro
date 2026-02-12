@@ -129,30 +129,159 @@ interface ChatStore {
 }
 
 export const useChatStore = create<ChatStore>((set, get) => {
+  const sanitizeAssistantContentForModel = (content: string): string => {
+    return content
+      .split('\n')
+      .filter((line) => {
+        const trimmed = line.trim();
+        if (/^\[\s*TOOL\s*\]/i.test(trimmed)) return false;
+        if (/^\[\s*TOOL_DONE\s*\]/i.test(trimmed)) return false;
+        if (/^🔍\s*\*\*(Recherche web|Web search):\*\*/i.test(trimmed)) return false;
+        return true;
+      })
+      .join('\n')
+      .trim();
+  };
+
+  const ensureToolsLoaded = async (): Promise<void> => {
+    const toolsState = useToolsStore.getState();
+    if (Object.keys(toolsState.internalTools).length > 0) return;
+    await toolsState.loadSettings();
+  };
+
+  const isSourceToolEnabled = (toolId: string): boolean => {
+    return useToolsStore.getState().isChatToolEnabled(toolId);
+  };
+
   const handleToolCall = (
     conversationId: string,
     assistantMessageId: string,
     toolName: string,
     args: Record<string, unknown>
-  ) => {
-    if (toolName !== 'mark_source_passage') return;
-    const title = typeof args.title === 'string' ? args.title.trim() : '';
-    const passage = typeof args.passage === 'string' ? args.passage.trim() : '';
-    const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
-    const kind = rawKind === 'interesting' ? 'interesting' : 'used';
-    const reason = typeof args.reason === 'string' ? args.reason.trim() : undefined;
-    if (!title || !passage) return;
+  ): string | void => {
+    if (!isSourceToolEnabled(toolName)) {
+      return `Tool ${toolName} is disabled in chat mode.`;
+    }
 
-    useCitationsStore.getState().addSourcePassage({
-      conversationId,
-      messageId: assistantMessageId,
-      title,
-      passage,
-      source: typeof args.source === 'string' ? args.source : undefined,
-      url: typeof args.url === 'string' ? args.url : undefined,
-      kind,
-      reason,
-    });
+    if (toolName === 'mark_source_passage') {
+      const title = typeof args.title === 'string' ? args.title.trim() : '';
+      const passage = typeof args.passage === 'string' ? args.passage.trim() : '';
+      const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
+      const kind = rawKind === 'interesting' ? 'interesting' : 'used';
+      const reason = typeof args.reason === 'string' ? args.reason.trim() : undefined;
+      if (!title || !passage) return 'Missing title or passage for source marking.';
+
+      useCitationsStore.getState().addSourcePassage({
+        conversationId,
+        messageId: assistantMessageId,
+        title,
+        passage,
+        source: typeof args.source === 'string' ? args.source : undefined,
+        url: typeof args.url === 'string' ? args.url : undefined,
+        kind,
+        reason,
+      });
+      return `Source passage marked successfully (kind=${kind}).`;
+    }
+
+    if (toolName === 'read_sources') {
+      const kindArg = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : 'all';
+      const kind = kindArg === 'interesting' || kindArg === 'used' ? kindArg : 'all';
+      const query = typeof args.query === 'string' ? args.query.trim().toLowerCase() : '';
+      const includeSnippet = args.include_snippet !== false;
+      const rawLimit = typeof args.limit === 'number' ? Math.floor(args.limit) : 10;
+      const limit = Math.max(1, Math.min(50, rawLimit));
+
+      const all = useCitationsStore.getState().getConversationSourceCitations(conversationId);
+      const filtered = all.filter((citation) => {
+        const citationKind = citation.kind || 'used';
+        if (kind !== 'all' && citationKind !== kind) return false;
+        if (!query) return true;
+        return [citation.title, citation.snippet, citation.source, citation.url, citation.reason]
+          .filter(Boolean)
+          .some((value) => value!.toLowerCase().includes(query));
+      });
+
+      const items = filtered.slice(0, limit).map((citation) => ({
+        citation_id: citation.id,
+        kind: citation.kind || 'used',
+        title: citation.title,
+        source: citation.source,
+        url: citation.url,
+        reason: citation.reason,
+        message_id: citation.messageId,
+        timestamp: citation.timestamp,
+        ...(includeSnippet ? { passage: citation.snippet || '' } : {}),
+      }));
+
+      return JSON.stringify(
+        {
+          total: all.length,
+          matched: filtered.length,
+          returned: items.length,
+          items,
+        },
+        null,
+        2
+      );
+    }
+
+    if (toolName === 'edit_source_passage') {
+      const citationId = typeof args.citation_id === 'string' ? args.citation_id.trim() : '';
+      const action = typeof args.action === 'string' ? args.action.trim().toLowerCase() : '';
+      if (!citationId || !action) return 'Missing citation_id or action for edit_source_passage.';
+
+      const citationsStore = useCitationsStore.getState();
+      const citation = citationsStore
+        .getConversationSourceCitations(conversationId)
+        .find((c) => c.id === citationId);
+      if (!citation) return `Source citation not found: ${citationId}`;
+
+      if (action === 'delete') {
+        citationsStore.removeCitation(citationId);
+        return `Deleted source citation ${citationId}.`;
+      }
+
+      if (action === 'reclassify') {
+        const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
+        if (rawKind !== 'interesting' && rawKind !== 'used') {
+          return 'Invalid kind for reclassify. Use "interesting" or "used".';
+        }
+        const updated = citationsStore.updateSourcePassage({
+          conversationId,
+          citationId,
+          kind: rawKind,
+        });
+        return updated
+          ? `Reclassified source citation ${citationId} to ${rawKind}.`
+          : `Failed to reclassify source citation ${citationId}.`;
+      }
+
+      if (action === 'update') {
+        const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
+        const normalizedKind = rawKind === 'interesting' || rawKind === 'used' ? rawKind : undefined;
+        const updated = citationsStore.updateSourcePassage({
+          conversationId,
+          citationId,
+          title: typeof args.title === 'string' ? args.title : undefined,
+          passage: typeof args.passage === 'string' ? args.passage : undefined,
+          source: typeof args.source === 'string' ? args.source : undefined,
+          url: typeof args.url === 'string' ? args.url : undefined,
+          reason:
+            typeof args.reason === 'string'
+              ? args.reason
+              : args.reason === null
+                ? null
+                : undefined,
+          kind: normalizedKind,
+        });
+        return updated
+          ? `Updated source citation ${citationId}.`
+          : `Failed to update source citation ${citationId}.`;
+      }
+
+      return `Unsupported action for edit_source_passage: ${action}`;
+    }
   };
 
   const getOrderedConversationMessages = (conversationId: string) => {
@@ -165,7 +294,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const prepareMessagesForRequest = (conversationId: string, allowedToolIds: string[]) => {
     const contextCitations = useCitationsStore.getState().getConversationContextCitations(conversationId);
     const sourceCitations = useCitationsStore.getState().getConversationSourceCitations(conversationId);
-    const citations = [...contextCitations, ...sourceCitations];
+    const citations = allowedToolIds.includes('mark_source_passage')
+      ? [...contextCitations, ...sourceCitations]
+      : contextCitations;
     const fileCitations = contextCitations.filter((c) => c.type === 'file' || c.type === 'document');
     const availableFiles = fileCitations
       .map((c) => c.path || c.title || c.source)
@@ -176,6 +307,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const preparedMessages = orderedMessages.map((message, index) => {
       let messageContent = message.content;
+      if (message.role === 'assistant') {
+        messageContent = sanitizeAssistantContentForModel(messageContent);
+      }
 
       // Inject context into the last user message
       if (index === lastUserIndex && citations.length > 0) {
@@ -204,6 +338,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (allowedToolIds.includes('mark_source_passage')) {
       systemInstructions.push(
         'Use mark_source_passage for source tracking. Use kind="interesting" for key excerpts worth keeping while analyzing sources. Use kind="used" only for excerpts you actually used in your final answer. Always include concise title and exact passage. Add source or url when available, and reason when helpful. Only mark genuinely important passages.'
+      );
+    }
+    if (allowedToolIds.includes('read_sources')) {
+      systemInstructions.push(
+        'Use read_sources when you need to review previously saved source passages before answering or editing citations.'
+      );
+    }
+    if (allowedToolIds.includes('edit_source_passage')) {
+      systemInstructions.push(
+        'Use edit_source_passage only when the user asks to update, reclassify, or delete saved source passages.'
       );
     }
 
@@ -577,6 +721,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         tauriIpc.createMessage(conversationId, 'user', content).catch(console.error);
       }
 
+      try {
+        await ensureToolsLoaded();
+      } catch {
+        // Continue with currently available tool state (safe default is no tools)
+      }
       const allowedToolIds = getAllowedChatToolIds();
       const messagesForRequest = prepareMessagesForRequest(conversationId, allowedToolIds);
       const fileToolContext = useCitationsStore
@@ -656,7 +805,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             set({ isLoading: false, isStreaming: false, lastError: error.message, abortController: null });
           },
           onToolCall: (toolName, args) => {
-            handleToolCall(conversationId, assistantMessage.id, toolName, args);
+            return handleToolCall(conversationId, assistantMessage.id, toolName, args);
           },
         });
       } catch (error) {
@@ -744,6 +893,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         .getState()
         .pruneConversationSourceCitations(conversationId, keptConversationMessageIds);
 
+      try {
+        await ensureToolsLoaded();
+      } catch {
+        // Continue with currently available tool state (safe default is no tools)
+      }
       const allowedToolIds = getAllowedChatToolIds();
       const messagesForRequest = prepareMessagesForRequest(conversationId, allowedToolIds);
       const fileToolContext = useCitationsStore
@@ -817,7 +971,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             set({ isLoading: false, isStreaming: false, lastError: error.message, abortController: null });
           },
           onToolCall: (toolName, args) => {
-            handleToolCall(conversationId, assistantMessage.id, toolName, args);
+            return handleToolCall(conversationId, assistantMessage.id, toolName, args);
           },
         });
       } catch (error) {

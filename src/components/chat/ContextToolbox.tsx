@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useToolsStore } from '../../stores/useToolsStore';
 import { useCitationsStore } from '../../stores/useCitationsStore';
@@ -37,6 +37,9 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
   const [urlInput, setUrlInput] = useState('');
   const [urlError, setUrlError] = useState('');
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'interesting' | 'used'>('all');
+  const [sourceSearch, setSourceSearch] = useState('');
+  const [sourceSort, setSourceSort] = useState<'recent' | 'title' | 'source'>('recent');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
   const webSearchSettings = getWebSearchSettings();
@@ -115,6 +118,10 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       } catch (error) {
         console.error('Failed to read file:', error);
       }
+    }
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
@@ -203,8 +210,16 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
         });
       }
     } catch (error) {
-      setUrlError(error instanceof Error ? error.message : 'Unable to fetch URL');
-      return;
+      console.error('Failed to fetch URL preview, adding raw link instead:', error);
+      addCitation({
+        type: 'web',
+        scope: 'context',
+        source: normalizedUrl,
+        title: extractDomain(normalizedUrl),
+        url: normalizedUrl,
+        messageId: `manual-${Date.now()}`,
+        conversationId: conversationId,
+      });
     } finally {
       setIsFetchingUrl(false);
     }
@@ -233,6 +248,72 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       console.error('Failed to read clipboard:', err);
     }
   };
+
+  const goToMessage = (messageId: string) => {
+    window.dispatchEvent(new CustomEvent('macro:focus-message', { detail: { messageId } }));
+  };
+
+  const copyCitationSnippet = async (snippet?: string) => {
+    if (!snippet) return;
+    try {
+      await navigator.clipboard.writeText(snippet);
+    } catch (error) {
+      console.error('Failed to copy source snippet:', error);
+    }
+  };
+
+  const formatRelativeTime = (timestamp: string): string => {
+    const ts = new Date(timestamp).getTime();
+    if (!Number.isFinite(ts)) return '';
+    const diffMs = Date.now() - ts;
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return 'now';
+    if (diffMin < 60) return `${diffMin}m`;
+    const diffHours = Math.floor(diffMin / 60);
+    if (diffHours < 24) return `${diffHours}h`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d`;
+  };
+
+  const allSourceCitations = useMemo(() => {
+    return [...interestingSourceCitations, ...usedSourceCitations];
+  }, [interestingSourceCitations, usedSourceCitations]);
+
+  const uniqueSourceCount = useMemo(() => {
+    return new Set(
+      allSourceCitations
+        .map((citation) => citation.url || citation.source || citation.title)
+        .filter(Boolean)
+    ).size;
+  }, [allSourceCitations]);
+
+  const filteredSourceCitations = useMemo(() => {
+    const normalizedSearch = sourceSearch.trim().toLowerCase();
+
+    let next = allSourceCitations.filter((citation) => {
+      const kind = citation.kind || 'used';
+      if (sourceFilter !== 'all' && kind !== sourceFilter) return false;
+      if (!normalizedSearch) return true;
+
+      return [citation.title, citation.snippet, citation.source, citation.url, citation.reason]
+        .filter(Boolean)
+        .some((value) => value!.toLowerCase().includes(normalizedSearch));
+    });
+
+    next = [...next].sort((a, b) => {
+      if (sourceSort === 'title') {
+        return a.title.localeCompare(b.title, 'fr', { sensitivity: 'base' });
+      }
+      if (sourceSort === 'source') {
+        const aSource = (a.url || a.source || '').toLowerCase();
+        const bSource = (b.url || b.source || '').toLowerCase();
+        return aSource.localeCompare(bSource, 'fr', { sensitivity: 'base' });
+      }
+      return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+    });
+
+    return next;
+  }, [allSourceCitations, sourceFilter, sourceSearch, sourceSort]);
 
   return (
     <aside
@@ -502,8 +583,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                   chatTools.map((tool) => (
                     (() => {
                       const webSearchLockedByKey = tool.id === 'web_search' && !hasSelectedWebSearchKey;
-                      const lockedByPolicy = tool.config?.locked === true;
-                      const switchDisabled = webSearchLockedByKey || lockedByPolicy;
+                      const switchDisabled = webSearchLockedByKey;
 
                       return (
                     <div
@@ -536,13 +616,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                         <div className="pointer-events-none absolute -top-2 right-2 hidden group-hover:block z-10">
                           <div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">
                             Ajoutez une clé API dans Paramètres &gt; Outils &gt; Web Search
-                          </div>
-                        </div>
-                      )}
-                      {lockedByPolicy && (
-                        <div className="pointer-events-none absolute -top-2 right-2 hidden group-hover:block z-10">
-                          <div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">
-                            Outil requis pour le suivi des sources
                           </div>
                         </div>
                       )}
@@ -599,119 +672,155 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
         {/* Sources Tab */}
         {activeTab === 'sources' && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2">
                 <Icon name="book-open" size={12} />
-                Sources marquées
+                Sources
               </h3>
-              {sourceCitationsCount > 0 && (
-                <span className="text-xs text-muted-foreground">{sourceCitationsCount}</span>
-              )}
+              <span className="text-xs text-muted-foreground">
+                {interestingSourceCitations.length} repérés • {usedSourceCitations.length} utilisés • {uniqueSourceCount} sources
+              </span>
+            </div>
+
+            {!isChatToolEnabled('mark_source_passage') && (
+              <div className="rounded-md border border-muted bg-muted/50 px-2.5 py-1.5">
+                <p className="text-[11px] text-muted-foreground">
+                  <span className="font-medium">Collecte désactivée</span> — activez l'outil Sources pour enregistrer de nouveaux passages.
+                </p>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Input
+                value={sourceSearch}
+                onChange={(e) => setSourceSearch(e.target.value)}
+                placeholder="Rechercher dans les sources"
+                className="h-9"
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSourceFilter('all')}
+                  className={cn(
+                    'px-2.5 py-1 text-xs rounded-md border transition-colors',
+                    sourceFilter === 'all' ? 'bg-primary/10 text-primary border-primary/30' : 'border-border text-muted-foreground hover:text-foreground hover:bg-accent'
+                  )}
+                >
+                  Tout
+                </button>
+                <button
+                  onClick={() => setSourceFilter('interesting')}
+                  className={cn(
+                    'px-2.5 py-1 text-xs rounded-md border transition-colors',
+                    sourceFilter === 'interesting' ? 'bg-amber-500/10 text-amber-600 border-amber-500/30' : 'border-border text-muted-foreground hover:text-foreground hover:bg-accent'
+                  )}
+                >
+                  Repérés
+                </button>
+                <button
+                  onClick={() => setSourceFilter('used')}
+                  className={cn(
+                    'px-2.5 py-1 text-xs rounded-md border transition-colors',
+                    sourceFilter === 'used' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/30' : 'border-border text-muted-foreground hover:text-foreground hover:bg-accent'
+                  )}
+                >
+                  Utilisés
+                </button>
+                <select
+                  value={sourceSort}
+                  onChange={(e) => setSourceSort(e.target.value as 'recent' | 'title' | 'source')}
+                  className="ml-auto shrink-0 h-8 w-auto rounded-md border border-border bg-card pl-2 pr-7 text-xs text-muted-foreground"
+                >
+                  <option value="recent">Plus récent</option>
+                  <option value="title">Titre</option>
+                  <option value="source">Source</option>
+                </select>
+              </div>
             </div>
 
             {sourceCitationsCount > 0 ? (
-              <div className="space-y-4">
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Passages intéressants</h4>
-                    {interestingSourceCitations.length > 0 && (
-                      <span className="text-xs text-muted-foreground">{interestingSourceCitations.length}</span>
-                    )}
-                  </div>
-                  {interestingSourceCitations.length > 0 ? (
-                    <div className="space-y-2">
-                      {interestingSourceCitations.map((citation) => (
-                        <div
-                          key={citation.id}
-                          className="flex items-start gap-3 px-3 py-2 rounded-lg border border-amber-500/20 bg-amber-500/5 hover:bg-accent/50 transition-colors"
-                        >
-                          <div className="w-6 h-6 rounded bg-amber-500/10 flex items-center justify-center shrink-0 mt-0.5">
-                            <Icon name="sparkles" size={12} className="text-amber-500" />
+              <div className="space-y-2">
+                {filteredSourceCitations.length > 0 ? filteredSourceCitations.map((citation) => {
+                  const kind = citation.kind || 'used';
+                  const isInteresting = kind === 'interesting';
+                  return (
+                    <div
+                      key={citation.id}
+                      className={cn(
+                        'rounded-lg border px-2.5 py-1.5 transition-colors hover:bg-accent/50',
+                        isInteresting ? 'border-amber-500/20 bg-amber-500/5' : 'border-emerald-500/20 bg-emerald-500/5'
+                      )}
+                    >
+                      <div className="flex items-start gap-1.5">
+                        <div className={cn(
+                          'w-5 h-5 rounded flex items-center justify-center shrink-0 mt-0.5',
+                          isInteresting ? 'bg-amber-500/10' : 'bg-emerald-500/10'
+                        )}>
+                          <Icon name={isInteresting ? 'sparkles' : 'check'} size={10} className={cn(isInteresting ? 'text-amber-500' : 'text-emerald-500')} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <p className="text-[13px] leading-5 text-foreground truncate">{citation.title}</p>
+                            <span className={cn(
+                              'text-[10px] px-1.5 py-0.5 rounded border shrink-0',
+                              isInteresting ? 'text-amber-700 border-amber-500/30 bg-amber-500/10 dark:text-amber-300' : 'text-emerald-700 border-emerald-500/30 bg-emerald-500/10 dark:text-emerald-300'
+                            )}>
+                              {isInteresting ? 'Repéré' : 'Utilisé'}
+                            </span>
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm text-foreground truncate">{citation.title}</p>
-                            <p className="text-xs text-muted-foreground truncate">
-                              {citation.url || citation.source}
-                            </p>
-                            {citation.reason && (
-                              <p className="text-xs text-amber-700/90 dark:text-amber-300/90 mt-1">
-                                {citation.reason}
-                              </p>
-                            )}
-                            {citation.snippet && (
-                              <p className="text-xs text-muted-foreground/80 line-clamp-3 mt-1">
-                                {citation.snippet}
-                              </p>
-                            )}
+                          <div className="flex items-center gap-1.5 text-[11px] leading-4 text-muted-foreground min-w-0">
+                            <span className="truncate">{citation.url || citation.source}</span>
+                            <span className="shrink-0">•</span>
+                            <span className="shrink-0">{formatRelativeTime(citation.timestamp)}</span>
                           </div>
-                          {citation.url && (
-                            <button
-                              onClick={() => openUrl(citation.url!)}
-                              className="p-1 rounded hover:bg-accent transition-colors"
-                            >
-                              <Icon name="external-link" size={12} className="text-muted-foreground" />
-                            </button>
+                          {citation.reason && (
+                            <p className="text-[11px] leading-4 text-muted-foreground mt-0.5 line-clamp-1">{citation.reason}</p>
+                          )}
+                          {citation.snippet && (
+                            <p className="text-[11px] leading-4 text-foreground/90 line-clamp-2 mt-0.5">{citation.snippet}</p>
                           )}
                         </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-4 border border-dashed border-border rounded-lg">
-                      <p className="text-xs text-muted-foreground">Aucun passage intéressant pour le moment</p>
-                    </div>
-                  )}
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Passages utilisés</h4>
-                    {usedSourceCitations.length > 0 && (
-                      <span className="text-xs text-muted-foreground">{usedSourceCitations.length}</span>
-                    )}
-                  </div>
-                  {usedSourceCitations.length > 0 ? (
-                    <div className="space-y-2">
-                      {usedSourceCitations.map((citation) => (
-                        <div
-                          key={citation.id}
-                          className="flex items-start gap-3 px-3 py-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 hover:bg-accent/50 transition-colors"
+                      </div>
+                       <div className="mt-1 flex items-center gap-1">
+                        {citation.url && (
+                          <button
+                            onClick={() => openUrl(citation.url!)}
+                            title="Ouvrir la source"
+                            className="p-1 rounded border border-border hover:bg-accent transition-colors"
+                          >
+                            <Icon name="external-link" size={12} className="text-muted-foreground" />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => goToMessage(citation.messageId)}
+                          title="Voir dans la réponse"
+                          className="p-1 rounded border border-border hover:bg-accent transition-colors"
                         >
-                          <div className="w-6 h-6 rounded bg-emerald-500/10 flex items-center justify-center shrink-0 mt-0.5">
-                            <Icon name="check" size={12} className="text-emerald-500" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm text-foreground truncate">{citation.title}</p>
-                            <p className="text-xs text-muted-foreground truncate">
-                              {citation.url || citation.source}
-                            </p>
-                            {citation.reason && (
-                              <p className="text-xs text-emerald-700/90 dark:text-emerald-300/90 mt-1">
-                                {citation.reason}
-                              </p>
-                            )}
-                            {citation.snippet && (
-                              <p className="text-xs text-muted-foreground/80 line-clamp-3 mt-1">
-                                {citation.snippet}
-                              </p>
-                            )}
-                          </div>
-                          {citation.url && (
-                            <button
-                              onClick={() => openUrl(citation.url!)}
-                              className="p-1 rounded hover:bg-accent transition-colors"
-                            >
-                              <Icon name="external-link" size={12} className="text-muted-foreground" />
-                            </button>
-                          )}
-                        </div>
-                      ))}
+                          <Icon name="message-square" size={12} className="text-muted-foreground" />
+                        </button>
+                        {citation.snippet && (
+                          <button
+                            onClick={() => copyCitationSnippet(citation.snippet)}
+                            title="Copier l'extrait"
+                            className="p-1 rounded border border-border hover:bg-accent transition-colors"
+                          >
+                            <Icon name="copy" size={12} className="text-muted-foreground" />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => removeCitation(citation.id)}
+                          title="Supprimer"
+                          className="p-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors ml-auto"
+                        >
+                          <Icon name="trash" size={12} />
+                        </button>
+                      </div>
                     </div>
-                  ) : (
-                    <div className="text-center py-4 border border-dashed border-border rounded-lg">
-                      <p className="text-xs text-muted-foreground">Aucun passage utilisé pour le moment</p>
-                    </div>
-                  )}
-                </div>
+                  );
+                }) : (
+                  <div className="text-center py-6 border border-dashed border-border rounded-lg">
+                    <p className="text-sm text-muted-foreground">Aucun résultat pour ce filtre</p>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-center py-8">
