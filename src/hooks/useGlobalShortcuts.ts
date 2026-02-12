@@ -10,6 +10,7 @@ const CHAT_INPUT_SELECTOR = '[data-shortcut-chat-input="true"]';
 
 export const useGlobalShortcuts = (): void => {
   const bindings = useShortcutsStore((state) => state.bindings);
+  const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const settingsOpen = useAppStore((state) => state.settingsOpen);
   const mode = useAppStore((state) => state.mode);
   const isStreaming = useChatStore((state) => state.isStreaming);
@@ -62,6 +63,12 @@ export const useGlobalShortcuts = (): void => {
           element.focus();
           return true;
         }
+        case 'chat.historyPrevious':
+          window.dispatchEvent(new CustomEvent('macro:prompt-history', { detail: { direction: 'up' } }));
+          return true;
+        case 'chat.historyNext':
+          window.dispatchEvent(new CustomEvent('macro:prompt-history', { detail: { direction: 'down' } }));
+          return true;
         default:
           return false;
       }
@@ -71,6 +78,10 @@ export const useGlobalShortcuts = (): void => {
       if (event.repeat) return;
 
       const editable = isEditableTarget(event.target);
+      const focusedElement = document.activeElement;
+      const isChatInputFocused =
+        focusedElement instanceof HTMLElement && focusedElement.matches(CHAT_INPUT_SELECTOR);
+
       const matchingShortcut = shortcutDefinitions.find((definition) => {
         const binding = bindings[definition.id];
         if (!binding) return false;
@@ -81,6 +92,12 @@ export const useGlobalShortcuts = (): void => {
         if (definition.id === 'chat.stopStreaming' && !isStreaming) return false;
         if (definition.id.startsWith('app.switchMode') && settingsOpen) return false;
         if (definition.id === 'chat.newConversation' && mode !== 'Chat') return false;
+        if (
+          (definition.id === 'chat.historyPrevious' || definition.id === 'chat.historyNext') &&
+          (promptHistoryNavigationMode !== 'shortcut_only' || !isChatInputFocused)
+        ) {
+          return false;
+        }
 
         return true;
       });
@@ -96,5 +113,5 @@ export const useGlobalShortcuts = (): void => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [bindings, isStreaming, mode, settingsOpen]);
+  }, [bindings, isStreaming, mode, promptHistoryNavigationMode, settingsOpen]);
 };

@@ -4,6 +4,7 @@ import { eventToBinding, formatBindingForDisplay, normalizeBinding } from '../..
 import { useShortcutsStore } from '../../../stores/useShortcutsStore';
 import { Input } from '../../ui/Input';
 import { Icon } from '../../ui/Icon';
+import { Switch } from '../../ui/Switch';
 import { cn } from '../../../utils/cn';
 
 const categoryLabels: Record<ShortcutCategory, string> = {
@@ -15,10 +16,18 @@ const categoryLabels: Record<ShortcutCategory, string> = {
 };
 
 export const ShortcutsView: React.FC = () => {
-  const { bindings, setBinding, resetBinding, resetAll } = useShortcutsStore();
+  const {
+    bindings,
+    promptHistoryNavigationMode,
+    setPromptHistoryNavigationMode,
+    setBinding,
+    resetBinding,
+    resetAll,
+  } = useShortcutsStore();
   const [search, setSearch] = useState('');
   const [recordingId, setRecordingId] = useState<ShortcutId | null>(null);
   const [pendingBinding, setPendingBinding] = useState<string | null>(null);
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
   useEffect(() => {
     if (!recordingId) return;
@@ -97,7 +106,7 @@ export const ShortcutsView: React.FC = () => {
           className="max-w-sm"
         />
         <button
-          onClick={() => resetAll()}
+          onClick={() => setConfirmResetOpen(true)}
           className="h-9 px-3 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
         >
           Reset all
@@ -125,63 +134,96 @@ export const ShortcutsView: React.FC = () => {
                   const conflicts = conflictMap[shortcut.id] || [];
                   const hasConflict = conflicts.length > 0;
                   const isRecording = recordingId === shortcut.id;
+                  const isPromptHistoryShortcut =
+                    shortcut.id === 'chat.historyPrevious' || shortcut.id === 'chat.historyNext';
+                  const isPromptHistoryShortcutDisabled =
+                    isPromptHistoryShortcut && promptHistoryNavigationMode !== 'shortcut_only';
 
                   return (
-                    <div
-                      key={shortcut.id}
-                      className={cn(
-                        'rounded-lg border border-border bg-card/50 p-3',
-                        hasConflict && 'border-amber-500/40'
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-foreground">{shortcut.label}</p>
-                          <p className="text-xs text-muted-foreground">{shortcut.description}</p>
-                          {hasConflict && (
-                            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                              Conflict with: {conflicts.join(', ')}
-                            </p>
-                          )}
+                    <React.Fragment key={shortcut.id}>
+                      {shortcut.id === 'chat.historyPrevious' && (
+                        <div className="rounded-lg border border-border bg-card/50 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-medium text-foreground">Prompt history behavior</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                Use dedicated shortcuts (Ctrl/Cmd + ArrowUp/ArrowDown) instead of contextual ArrowUp/ArrowDown.
+                              </p>
+                            </div>
+                            <Switch
+                              checked={promptHistoryNavigationMode === 'shortcut_only'}
+                              onCheckedChange={(checked) =>
+                                setPromptHistoryNavigationMode(checked ? 'shortcut_only' : 'contextual_arrows')
+                              }
+                            />
+                          </div>
                         </div>
+                      )}
 
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className={cn(
-                            'text-xs px-2 py-1 rounded border bg-background',
-                            isRecording ? 'border-primary text-primary' : 'border-border text-foreground'
-                          )}>
-                            {isRecording ? (pendingBinding ? formatBindingForDisplay(pendingBinding) : 'Listening...') : formatBindingForDisplay(binding)}
-                          </span>
+                      <div
+                        className={cn(
+                          'rounded-lg border border-border bg-card/50 p-3',
+                          hasConflict && 'border-amber-500/40',
+                          isPromptHistoryShortcutDisabled && 'opacity-50'
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-foreground">{shortcut.label}</p>
+                            <p className="text-xs text-muted-foreground">{shortcut.description}</p>
+                            {isPromptHistoryShortcutDisabled && (
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Disabled while contextual ArrowUp/ArrowDown mode is active.
+                              </p>
+                            )}
+                            {hasConflict && (
+                              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                                Conflict with: {conflicts.join(', ')}
+                              </p>
+                            )}
+                          </div>
 
-                          <button
-                            onClick={() => {
-                              setPendingBinding(null);
-                              setRecordingId(shortcut.id);
-                            }}
-                            className="p-1.5 rounded border border-border hover:bg-accent transition-colors"
-                            title="Record shortcut"
-                          >
-                            <Icon name="edit" size={12} className="text-muted-foreground" />
-                          </button>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className={cn(
+                              'text-xs px-2 py-1 rounded border bg-background',
+                              isRecording ? 'border-primary text-primary' : 'border-border text-foreground'
+                            )}>
+                              {isRecording ? (pendingBinding ? formatBindingForDisplay(pendingBinding) : 'Listening...') : formatBindingForDisplay(binding)}
+                            </span>
 
-                          <button
-                            onClick={() => setBinding(shortcut.id, null)}
-                            className="p-1.5 rounded border border-border hover:bg-accent transition-colors"
-                            title="Disable shortcut"
-                          >
-                            <Icon name="minus" size={12} className="text-muted-foreground" />
-                          </button>
+                            <button
+                              onClick={() => {
+                                setPendingBinding(null);
+                                setRecordingId(shortcut.id);
+                              }}
+                              disabled={isPromptHistoryShortcutDisabled}
+                              className="p-1.5 rounded border border-border hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Record shortcut"
+                            >
+                              <Icon name="edit" size={12} className="text-muted-foreground" />
+                            </button>
 
-                          <button
-                            onClick={() => resetBinding(shortcut.id)}
-                            className="p-1.5 rounded border border-border hover:bg-accent transition-colors"
-                            title="Reset to default"
-                          >
-                            <Icon name="rotate-ccw" size={12} className="text-muted-foreground" />
-                          </button>
+                            <button
+                              onClick={() => setBinding(shortcut.id, null)}
+                              disabled={isPromptHistoryShortcutDisabled}
+                              className="p-1.5 rounded border border-border hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Disable shortcut"
+                            >
+                              <Icon name="minus" size={12} className="text-muted-foreground" />
+                            </button>
+
+                            <button
+                              onClick={() => resetBinding(shortcut.id)}
+                              disabled={isPromptHistoryShortcutDisabled}
+                              className="p-1.5 rounded border border-border hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Reset to default"
+                            >
+                              <Icon name="rotate-ccw" size={12} className="text-muted-foreground" />
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    </React.Fragment>
                   );
                 })}
               </div>
@@ -189,6 +231,36 @@ export const ShortcutsView: React.FC = () => {
           );
         })}
       </div>
+
+      {confirmResetOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-2xl">
+            <div className="px-4 py-3 border-b border-border">
+              <h3 className="text-sm font-semibold text-foreground">Reset all shortcuts?</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                This will restore all key bindings to their default values.
+              </p>
+            </div>
+            <div className="px-4 py-3 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setConfirmResetOpen(false)}
+                className="h-8 px-3 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  resetAll();
+                  setConfirmResetOpen(false);
+                }}
+                className="h-8 px-3 rounded-md bg-destructive/90 text-destructive-foreground text-sm hover:bg-destructive transition-colors"
+              >
+                Reset all
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
