@@ -12,7 +12,9 @@ import { useAIStore } from './stores/useAIStore';
 import { useAuthStore } from './stores/useAuthStore';
 import { useToolsStore } from './stores/useToolsStore';
 import { useProviderStore } from './stores/useProviderStore';
+import { useShortcutsStore } from './stores/useShortcutsStore';
 import { Skeleton } from './components/shared/Skeleton';
+import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 type InitPriority = 'critical' | 'high' | 'normal' | 'low';
@@ -59,7 +61,10 @@ const App: React.FC = () => {
   const initializeAI = useAIStore((state) => state.initialize);
   const initializeTools = useToolsStore((state) => state.loadSettings);
   const initializeProviders = useProviderStore((state) => state.initialize);
+  const initializeShortcuts = useShortcutsStore((state) => state.initialize);
   const checkSession = useAuthStore((state) => state.checkSession);
+
+  useGlobalShortcuts();
 
   // ==========================================================================
   // INITIALIZATION STATE
@@ -230,6 +235,7 @@ const App: React.FC = () => {
       const normalPriorityInit = Promise.all([
         initWithTracking('Chat Store', initializeChat, 'normal'),
         initWithTracking('Task Store', initializeTasks, 'normal'),
+        initWithTracking('Shortcuts', initializeShortcuts, 'normal'),
       ]).then(() => {
         setInitStatus((prev) => ({ ...prev, normal: true }));
       });
@@ -272,28 +278,12 @@ const App: React.FC = () => {
     initializeApp,
     initializeChat,
     initializeTasks,
+    initializeShortcuts,
     initializeAI,
     initializeTools,
     initializeProviders,
     checkSession,
   ]);
-
-  // ==========================================================================
-  // GLOBAL KEYBOARD SHORTCUTS
-  // ==========================================================================
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent): void => {
-      // New Chat: Ctrl+N or Cmd+N
-      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
-        e.preventDefault();
-        void useChatStore.getState().createConversation('New Conversation', null, null);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
   // ==========================================================================
   // RENDER

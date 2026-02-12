@@ -646,6 +646,7 @@ const ChatZone: React.FC = () => {
             >
               <input
                 type="text"
+                data-shortcut-chat-input="true"
                 placeholder={
                   !selectedProviderId || !selectedModelId
                     ? t('chat.selectProvider')

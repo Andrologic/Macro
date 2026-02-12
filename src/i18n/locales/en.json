@@ -206,11 +206,13 @@
     "appearance": "Appearance",
     "ai": "AI & Models",
     "tools": "Tools & MCP",
+    "shortcuts": "Shortcuts",
     "desc": {
       "general": "Configure language and application preferences",
       "appearance": "Customize the look and feel of the application",
       "ai": "Manage AI models, providers and API keys",
-      "tools": "Configure external tools and MCP servers"
+      "tools": "Configure external tools and MCP servers",
+      "shortcuts": "Configure keyboard shortcuts and key bindings"
     },
     "language_region": "Language & Region",
     "language": "Language",

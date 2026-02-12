@@ -27,6 +27,7 @@ export const PREF_KEYS = {
   LANGUAGE: "language",
   UI_ZOOM_MODE: "uiZoomMode",
   UI_ZOOM_LEVEL: "uiZoomLevel",
+  SHORTCUT_BINDINGS: "shortcutBindings",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -46,6 +47,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.LANGUAGE]: "en",
   [PREF_KEYS.UI_ZOOM_MODE]: "auto",
   [PREF_KEYS.UI_ZOOM_LEVEL]: 1,
+  [PREF_KEYS.SHORTCUT_BINDINGS]: {},
 };
 
 // Store instance (singleton)
