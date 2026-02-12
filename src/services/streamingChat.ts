@@ -32,10 +32,17 @@ export function cancelStream(): void {
 
 export interface StreamMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
+  content: StreamMessageContent;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
 }
+
+export type StreamMessageContent =
+  | string
+  | Array<
+      | { type: 'text'; text: string }
+      | { type: 'image_url'; image_url: { url: string } }
+    >;
 
 export interface ToolCall {
   id: string;

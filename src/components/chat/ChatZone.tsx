@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
+import type { MessageImageAttachment } from '../../stores/useChatStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
@@ -10,6 +11,7 @@ import { ModelDropdown } from '../ai/ModelDropdown';
 import { MarkdownRenderer, estimateTokens, formatTokenCount } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
+import { ImagePreviewModal } from '../modals/ImagePreviewModal';
 
 /**
  * ChatZone - Main chat interface used across all modes
@@ -31,6 +33,8 @@ const ChatZone: React.FC = () => {
     stopStreaming,
     sendMessage,
     editMessage,
+    getMessageImages,
+    setMessageImages,
   } = useChatStore();
 
   const { selectedProviderId, selectedModelId } = useProviderStore();
@@ -40,6 +44,7 @@ const ChatZone: React.FC = () => {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
 
   // Architect Mode: Ensure single conversation
   useEffect(() => {
@@ -65,6 +70,8 @@ const ChatZone: React.FC = () => {
   }, [mode, conversations, selectedConversationId, isLoading, createConversation, selectConversation]);
 
   const [editingValue, setEditingValue] = useState('');
+  const [editingImages, setEditingImages] = useState<MessageImageAttachment[]>([]);
+  const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
 
   // Filter messages by selected conversation
   const currentMessages = selectedConversationId
@@ -105,30 +112,155 @@ const ChatZone: React.FC = () => {
     return conversation.id;
   };
 
+  const readClipboardImage = (file: File): Promise<{ dataUrl: string; width?: number; height?: number }> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+        if (!dataUrl) {
+          reject(new Error('Failed to parse pasted image'));
+          return;
+        }
+
+        const img = new Image();
+        img.onload = () => {
+          resolve({ dataUrl, width: img.width, height: img.height });
+        };
+        img.onerror = () => resolve({ dataUrl });
+        img.src = dataUrl;
+      };
+      reader.onerror = () => reject(reader.error || new Error('Failed to read pasted image'));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const appendPastedImages = async (files: File[], destination: 'composer' | 'editing') => {
+    const nextImages: MessageImageAttachment[] = [];
+
+    for (const file of files) {
+      try {
+        const parsed = await readClipboardImage(file);
+        nextImages.push({
+          id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          mimeType: file.type || 'image/png',
+          dataUrl: parsed.dataUrl,
+          width: parsed.width,
+          height: parsed.height,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('Failed to parse pasted image:', error);
+      }
+    }
+
+    if (nextImages.length > 0) {
+      if (destination === 'editing') {
+        setEditingImages((prev) => [...prev, ...nextImages]);
+      } else {
+        setComposerImages((prev) => [...prev, ...nextImages]);
+      }
+    }
+  };
+
+  const readImageFilesFromClipboardApi = async (): Promise<File[]> => {
+    if (typeof navigator === 'undefined' || !navigator.clipboard?.read) return [];
+
+    try {
+      const clipboardItems = await navigator.clipboard.read();
+      const files: File[] = [];
+
+      for (const item of clipboardItems) {
+        const imageType = item.types.find((type) => type.startsWith('image/'));
+        if (!imageType) continue;
+
+        const blob = await item.getType(imageType);
+        const extension = imageType.split('/')[1] || 'png';
+        files.push(new File([blob], `pasted-${Date.now()}.${extension}`, { type: imageType }));
+      }
+
+      return files;
+    } catch (error) {
+      console.error('Clipboard API image read failed:', error);
+      return [];
+    }
+  };
+
+  const handlePasteFor = async (
+    event: React.ClipboardEvent<HTMLElement>,
+    destination: 'composer' | 'editing'
+  ) => {
+    const directFiles = Array.from(event.clipboardData.items || [])
+      .filter((item) => item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+
+    const files = directFiles.length > 0 ? directFiles : await readImageFilesFromClipboardApi();
+    if (files.length === 0) return;
+
+    event.preventDefault();
+    await appendPastedImages(files, destination);
+  };
+
+  const handleComposerPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
+    await handlePasteFor(event, 'composer');
+  };
+
+  const handleEditingPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
+    await handlePasteFor(event, 'editing');
+  };
+
+  const removeComposerImage = (imageId: string) => {
+    setComposerImages((prev) => prev.filter((image) => image.id !== imageId));
+  };
+
+  const removeEditingImage = (imageId: string) => {
+    setEditingImages((prev) => prev.filter((image) => image.id !== imageId));
+  };
+
+  const preventImageMouseDown = (event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const openImagePreview = (
+    event: React.MouseEvent<HTMLElement>,
+    image: MessageImageAttachment
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setPreviewImage(image);
+  };
+
   const handleSend = async () => {
-    if (!inputValue.trim() || isLoading) return;
+    if ((!inputValue.trim() && composerImages.length === 0) || isLoading) return;
     const conversationId = await ensureConversation();
     const content = inputValue.trim();
+    const imagesForMessage = composerImages;
     setInputValue('');
-    await sendMessage({ conversationId, content });
+    setComposerImages([]);
+    await sendMessage({ conversationId, content, images: imagesForMessage });
   };
 
   const handleEditStart = (messageId: string, content: string) => {
     setEditingMessageId(messageId);
     setEditingValue(content);
+    setEditingImages(getMessageImages(messageId));
   };
 
   const handleEditCancel = () => {
     setEditingMessageId(null);
     setEditingValue('');
+    setEditingImages([]);
   };
 
   const handleEditSave = async () => {
     if (!editingMessageId) return;
     const content = editingValue.trim();
     if (!content) return;
+    setMessageImages(editingMessageId, editingImages);
     setEditingMessageId(null);
     setEditingValue('');
+    setEditingImages([]);
     await editMessage(editingMessageId, content);
   };
 
@@ -141,6 +273,8 @@ const ChatZone: React.FC = () => {
   const handleRegenerate = async (messageId: string, content: string) => {
     await editMessage(messageId, content);
   };
+
+  const canSend = Boolean(inputValue.trim()) || composerImages.length > 0;
 
   useEffect(() => {
     const handleFocusMessage = (event: Event) => {
@@ -211,6 +345,8 @@ const ChatZone: React.FC = () => {
             <div className="max-w-4xl mx-auto space-y-6">
               {currentMessages.map((message) => {
                 const isEditing = editingMessageId === message.id;
+                const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
+                const visibleImages = isEditing ? editingImages : messageImages;
 
                 return (
                   <div
@@ -247,9 +383,35 @@ const ChatZone: React.FC = () => {
                         {/* Content */}
                         {isEditing ? (
                           <div className="space-y-2">
+                            {visibleImages.length > 0 && (
+                              <div className="flex flex-wrap gap-2">
+                                {visibleImages.map((image) => (
+                                  <div key={image.id} className="relative w-16 h-16 rounded-md border border-border overflow-hidden bg-muted/40">
+                                    <button
+                                      type="button"
+                                      onMouseDown={preventImageMouseDown}
+                                      onClick={(event) => openImagePreview(event, image)}
+                                      className="w-full h-full cursor-zoom-in"
+                                      title="Open image"
+                                    >
+                                      <img src={image.dataUrl} alt="Attached" className="w-full h-full object-cover" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => removeEditingImage(image.id)}
+                                      className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/90 border border-border flex items-center justify-center hover:bg-accent transition-colors"
+                                      title="Remove image"
+                                    >
+                                      <Icon name="x" size={11} className="text-muted-foreground" />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                             <textarea
                               value={editingValue}
                               onChange={(event) => setEditingValue(event.target.value)}
+                              onPasteCapture={handleEditingPaste}
                               placeholder={t('common.editMessage') || 'Edit your message...'}
                               className="w-full min-h-[120px] max-h-[400px] resize-y bg-background border-2 border-border rounded-lg p-3 text-sm text-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/10 transition-all leading-relaxed"
                               autoFocus
@@ -292,6 +454,22 @@ const ChatZone: React.FC = () => {
                                   {line}
                                 </p>
                               ))
+                            )}
+                            {message.role === 'user' && messageImages.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {messageImages.map((image) => (
+                                  <button
+                                    key={image.id}
+                                    type="button"
+                                    onMouseDown={preventImageMouseDown}
+                                    onClick={(event) => openImagePreview(event, image)}
+                                    className="relative w-14 h-14 rounded-md border border-border overflow-hidden bg-muted/30 hover:opacity-90 transition-opacity"
+                                    title="Open image"
+                                  >
+                                    <img src={image.dataUrl} alt="Attached" className="w-full h-full object-cover" />
+                                  </button>
+                                ))}
+                              </div>
                             )}
                             {/* Streaming indicator */}
                             {isStreaming && message.role === 'assistant' && message === currentMessages[currentMessages.length - 1] && (
@@ -416,6 +594,32 @@ const ChatZone: React.FC = () => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3">
           <div className="w-full max-w-3xl mx-auto space-y-3">
+            {composerImages.length > 0 && (
+              <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-card/60 p-2">
+                {composerImages.map((image) => (
+                  <div key={image.id} className="relative w-16 h-16 rounded-md border border-border overflow-hidden bg-muted/30">
+                    <button
+                      type="button"
+                      onMouseDown={preventImageMouseDown}
+                      onClick={(event) => openImagePreview(event, image)}
+                      className="w-full h-full cursor-zoom-in"
+                      title="Open image"
+                    >
+                      <img src={image.dataUrl} alt="Pasted" className="w-full h-full object-cover" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeComposerImage(image.id)}
+                      className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/90 border border-border flex items-center justify-center hover:bg-accent transition-colors"
+                      title="Remove image"
+                    >
+                      <Icon name="x" size={11} className="text-muted-foreground" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ProviderDropdown />
@@ -436,7 +640,10 @@ const ChatZone: React.FC = () => {
               )}
             </div>
 
-            <div className="flex items-center gap-3 bg-card/80 border border-border rounded-xl p-2">
+            <div
+              className="flex items-center gap-3 bg-card/80 border border-border rounded-xl p-2"
+              onPasteCapture={handleComposerPaste}
+            >
               <input
                 type="text"
                 placeholder={
@@ -466,10 +673,10 @@ const ChatZone: React.FC = () => {
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={isLoading || !inputValue.trim() || !selectedProviderId || !selectedModelId}
+                  disabled={isLoading || !canSend || !selectedProviderId || !selectedModelId}
                   className={cn(
                     'rounded-lg px-3 h-9 flex items-center transition-colors',
-                    isLoading || !inputValue.trim() || !selectedProviderId || !selectedModelId
+                    isLoading || !canSend || !selectedProviderId || !selectedModelId
                       ? 'bg-muted text-muted-foreground cursor-not-allowed'
                       : 'bg-primary hover:bg-primary/90 text-primary-foreground'
                   )}
@@ -485,6 +692,12 @@ const ChatZone: React.FC = () => {
           </div>
         </footer>
       </div>
+
+      <ImagePreviewModal
+        isOpen={Boolean(previewImage)}
+        image={previewImage}
+        onClose={() => setPreviewImage(null)}
+      />
     </main>
   );
 };
