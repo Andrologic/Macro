@@ -10,6 +10,7 @@ import {
 
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
 export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools';
+export type UiZoomMode = 'auto' | 'override';
 
 interface AppStore {
   mode: AppMode;
@@ -31,6 +32,8 @@ interface AppStore {
   isLeftPanelOpen: boolean;
   isRightPanelOpen: boolean;
   enabledModes: AppMode[];
+  uiZoomMode: UiZoomMode;
+  uiZoomLevel: number;
   // Architect mode state
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
@@ -45,6 +48,8 @@ interface AppStore {
   toggleProjectGroup: (groupId: string) => void;
   getProjectById: (id: string) => Project | undefined;
   setEnabledModes: (modes: AppMode[]) => void;
+  setUiZoomMode: (mode: UiZoomMode) => void;
+  setUiZoomLevel: (level: number) => void;
   setPlanNodes: (nodes: PlanNode[]) => void;
   setPredictedBranches: (branches: PredictedBranch[]) => void;
   openSettings: (tab?: SettingsTab) => void;
@@ -98,6 +103,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isLeftPanelOpen: true,
   isRightPanelOpen: true,
   enabledModes: ['Architect', 'Implement', 'Chat'],
+  uiZoomMode: 'auto',
+  uiZoomLevel: 1,
   planNodes: [],
   predictedBranches: [],
 
@@ -118,6 +125,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setSelectedTask: (taskId) => set({ selectedTaskId: taskId }),
 
   setEnabledModes: (modes) => set({ enabledModes: modes }),
+
+  setUiZoomMode: (mode) => {
+    set({ uiZoomMode: mode });
+    void savePreference(PREF_KEYS.UI_ZOOM_MODE, mode);
+  },
+
+  setUiZoomLevel: (level) => {
+    const clampedLevel = Math.max(0.75, Math.min(2, level));
+    set({ uiZoomLevel: clampedLevel });
+    void savePreference(PREF_KEYS.UI_ZOOM_LEVEL, clampedLevel);
+  },
 
   setPlanNodes: (nodes) => set({ planNodes: nodes }),
 
@@ -288,12 +306,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     try {
       // Load persisted panel preferences
-      const [leftWidth, rightWidth, leftOpen, rightOpen] = await Promise.all([
+      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel] = await Promise.all([
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
         loadPreference<boolean>(PREF_KEYS.IS_LEFT_PANEL_OPEN),
         loadPreference<boolean>(PREF_KEYS.IS_RIGHT_PANEL_OPEN),
+        loadPreference<UiZoomMode>(PREF_KEYS.UI_ZOOM_MODE),
+        loadPreference<number>(PREF_KEYS.UI_ZOOM_LEVEL),
       ]);
+
+      const normalizedZoomMode: UiZoomMode = uiZoomMode === 'override' ? 'override' : 'auto';
+      const normalizedZoomLevel = Math.max(0.75, Math.min(2, uiZoomLevel));
 
       const { plan, projectGroups } = await services.getAppBootstrap();
       set({
@@ -304,6 +327,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         rightPanelWidth: rightWidth,
         isLeftPanelOpen: leftOpen,
         isRightPanelOpen: rightOpen,
+        uiZoomMode: normalizedZoomMode,
+        uiZoomLevel: normalizedZoomLevel,
         isLoading: false,
       });
     } catch (error) {

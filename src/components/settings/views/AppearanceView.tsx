@@ -12,9 +12,17 @@ interface LoadedTheme extends ThemeManifestItem {
 
 export const AppearanceView: React.FC = () => {
   const { t } = useTranslation();
-  const { activeThemeId, setTheme } = useAppStore();
+  const {
+    activeThemeId,
+    setTheme,
+    uiZoomMode,
+    uiZoomLevel,
+    setUiZoomMode,
+    setUiZoomLevel,
+  } = useAppStore();
   const [themes, setThemes] = useState<LoadedTheme[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const zoomPercent = Math.round(uiZoomLevel * 100);
 
   useEffect(() => {
     const loadThemes = async () => {
@@ -49,6 +57,73 @@ export const AppearanceView: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+      <section className="space-y-4">
+        <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
+          {t('settings.zoom') || 'Zoom'}
+        </h4>
+
+        <div className="space-y-4 bg-card/40 p-4 rounded-xl border border-border/50">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setUiZoomMode('auto')}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-sm font-medium transition-colors',
+                uiZoomMode === 'auto'
+                  ? 'bg-primary/15 text-primary border border-primary/30'
+                  : 'bg-muted/50 text-muted-foreground border border-border/60 hover:text-foreground'
+              )}
+            >
+              {t('settings.zoom_auto') || 'Auto'}
+            </button>
+            <button
+              onClick={() => setUiZoomMode('override')}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-sm font-medium transition-colors',
+                uiZoomMode === 'override'
+                  ? 'bg-primary/15 text-primary border border-primary/30'
+                  : 'bg-muted/50 text-muted-foreground border border-border/60 hover:text-foreground'
+              )}
+            >
+              {t('settings.zoom_override') || 'Override'}
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <label className="text-sm text-foreground">
+              {t('settings.zoom_level') || 'Interface zoom'}
+            </label>
+            <span className="text-xs font-medium px-2 py-1 rounded-md bg-muted text-muted-foreground min-w-[56px] text-center">
+              {zoomPercent}%
+            </span>
+          </div>
+
+          <input
+            type="range"
+            min={75}
+            max={200}
+            step={5}
+            value={zoomPercent}
+            onChange={(event) => setUiZoomLevel(Number(event.target.value) / 100)}
+            disabled={uiZoomMode === 'auto'}
+            className="w-full accent-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          />
+
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">
+              {uiZoomMode === 'auto'
+                ? t('settings.zoom_auto_desc') || 'Uses your system display scaling (Wayland/X11/macOS/Windows).'
+                : t('settings.zoom_override_desc') || 'Manually set interface zoom from 75% to 200%.'}
+            </p>
+            <button
+              onClick={() => setUiZoomLevel(1)}
+              className="text-xs px-2 py-1 rounded-md border border-border/60 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            >
+              {t('settings.zoom_reset') || 'Reset'}
+            </button>
+          </div>
+        </div>
+      </section>
+
       <section>
         <h4 className="text-sm font-medium text-primary uppercase tracking-wider mb-4">
           {t('settings.theme') || 'Theme'}

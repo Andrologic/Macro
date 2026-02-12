@@ -25,6 +25,8 @@ export const PREF_KEYS = {
   // App preferences
   THEME: "theme",
   LANGUAGE: "language",
+  UI_ZOOM_MODE: "uiZoomMode",
+  UI_ZOOM_LEVEL: "uiZoomLevel",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -42,6 +44,8 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.IS_RIGHT_PANEL_OPEN]: true,
   [PREF_KEYS.THEME]: "macro-dark",
   [PREF_KEYS.LANGUAGE]: "en",
+  [PREF_KEYS.UI_ZOOM_MODE]: "auto",
+  [PREF_KEYS.UI_ZOOM_LEVEL]: 1,
 };
 
 // Store instance (singleton)

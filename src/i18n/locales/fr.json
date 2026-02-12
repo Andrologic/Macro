@@ -222,7 +222,14 @@
     "desktop_notifications_desc": "Afficher des notifications natives pour les événements importants",
     "analytics": "Analytiques",
     "analytics_desc": "Partager des données d'utilisation anonymes pour améliorer Macro",
-    "theme": "Thème"
+    "theme": "Thème",
+    "zoom": "Zoom",
+    "zoom_auto": "Auto",
+    "zoom_override": "Personnalisé",
+    "zoom_level": "Zoom de l'interface",
+    "zoom_reset": "Réinitialiser",
+    "zoom_auto_desc": "Utilise le scaling système de l'écran (Wayland/X11/macOS/Windows).",
+    "zoom_override_desc": "Règle manuellement le zoom de l'interface entre 75% et 200%."
   },
   "providers": {
     "add": "Ajouter un fournisseur",

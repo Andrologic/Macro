@@ -32,6 +32,7 @@ export function useWindowRestoration() {
     setPosition: (x: number, y: number) => Promise<void>;
     getOuterSize: () => Promise<{ width: number; height: number }>;
     getOuterPosition: () => Promise<{ x: number; y: number }>;
+    getScaleFactor: () => Promise<number>;
     maximize: () => Promise<void>;
     isMaximized: () => Promise<boolean>;
   } | null>(null);
@@ -62,6 +63,7 @@ export function useWindowRestoration() {
           const pos = await win.outerPosition();
           return { x: pos.x, y: pos.y };
         },
+        getScaleFactor: () => win.scaleFactor(),
         maximize: () => win.maximize(),
         isMaximized: () => win.isMaximized(),
       };
@@ -81,14 +83,22 @@ export function useWindowRestoration() {
 
       // Only save size/position if not maximized
       if (!isMax) {
-        const size = await api.getOuterSize();
-        const pos = await api.getOuterPosition();
+        const [size, pos, scaleFactor] = await Promise.all([
+          api.getOuterSize(),
+          api.getOuterPosition(),
+          api.getScaleFactor(),
+        ]);
+
+        const logicalWidth = Math.round(size.width / scaleFactor);
+        const logicalHeight = Math.round(size.height / scaleFactor);
+        const logicalX = Math.round(pos.x / scaleFactor);
+        const logicalY = Math.round(pos.y / scaleFactor);
 
         await Promise.all([
-          savePreference(PREF_KEYS.WINDOW_WIDTH, size.width),
-          savePreference(PREF_KEYS.WINDOW_HEIGHT, size.height),
-          savePreference(PREF_KEYS.WINDOW_X, pos.x),
-          savePreference(PREF_KEYS.WINDOW_Y, pos.y),
+          savePreference(PREF_KEYS.WINDOW_WIDTH, logicalWidth),
+          savePreference(PREF_KEYS.WINDOW_HEIGHT, logicalHeight),
+          savePreference(PREF_KEYS.WINDOW_X, logicalX),
+          savePreference(PREF_KEYS.WINDOW_Y, logicalY),
         ]);
       }
 
