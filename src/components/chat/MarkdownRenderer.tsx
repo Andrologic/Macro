@@ -67,7 +67,7 @@ interface MarkdownRendererProps {
 type RenderSegment =
   | { type: 'text'; content: string }
   | { type: 'thinking'; content: string }
-  | { type: 'tool'; toolName: string; detail?: string };
+  | { type: 'tool'; toolName: string; detail?: string; status: 'run' | 'done' };
 
 // =============================================================================
 // THINKING BLOCK COMPONENT
@@ -114,10 +114,10 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
   );
 };
 
-const ToolCallBlock: React.FC<{ toolName: string; detail?: string; isStreaming?: boolean }> = ({
+const ToolCallBlock: React.FC<{ toolName: string; detail?: string; status: 'run' | 'done' }> = ({
   toolName,
   detail,
-  isStreaming = false,
+  status,
 }) => {
   return (
     <div className="my-2 rounded-lg border border-border bg-card/60 px-2.5 py-1.5">
@@ -133,8 +133,8 @@ const ToolCallBlock: React.FC<{ toolName: string; detail?: string; isStreaming?:
           </span>
         )}
         <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-primary/80 bg-primary/10 rounded px-1.5 py-0.5 shrink-0">
-          <span className={cn('w-1.5 h-1.5 rounded-full bg-primary', isStreaming && 'animate-pulse')} />
-          {isStreaming ? 'run' : 'done'}
+          <span className={cn('w-1.5 h-1.5 rounded-full bg-primary', status === 'run' && 'animate-pulse')} />
+          {status}
         </span>
       </div>
     </div>
@@ -301,11 +301,13 @@ const splitThinkBlocks = (content: string): Array<{ type: 'text' | 'thinking'; c
   return blocks;
 };
 
-const splitToolBlocks = (content: string): RenderSegment[] => {
+const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[] => {
   const segments: RenderSegment[] = [];
   const lines = content.split('\n');
   const textBuffer: string[] = [];
-  const toolLineRegex = /^(?:\[\s*TOOL\s*\]|🔧\s*\*\*Tool:\*\*)\s*([a-zA-Z0-9_-]+)(?:\s*\("(.+?)"\))?\s*$/i;
+  const toolStartRegex = /^(?:\[\s*TOOL\s*\]|🔧\s*\*\*Tool:\*\*)\s*([a-zA-Z0-9_-]+)(?:\s*\("(.+?)"\))?\s*$/i;
+  const toolDoneRegex = /^\[\s*TOOL_DONE\s*\]\s*([a-zA-Z0-9_-]+)(?:\s*\("(.+?)"\))?\s*$/i;
+  const pendingToolIndexes: number[] = [];
 
   const flushText = () => {
     if (textBuffer.length === 0) return;
@@ -317,24 +319,55 @@ const splitToolBlocks = (content: string): RenderSegment[] => {
   };
 
   for (const line of lines) {
-    const match = line.trim().match(toolLineRegex);
-    if (match) {
+    const trimmedLine = line.trim();
+    const startMatch = trimmedLine.match(toolStartRegex);
+    if (startMatch) {
       flushText();
       const nextToolSegment: RenderSegment = {
         type: 'tool',
-        toolName: match[1],
-        detail: match[2],
+        toolName: startMatch[1],
+        detail: startMatch[2],
+        status: isStreaming ? 'run' : 'done',
       };
       const previous = segments[segments.length - 1];
       const sameAsPrevious =
         previous?.type === 'tool' &&
         previous.toolName === nextToolSegment.toolName &&
-        (previous.detail || '').normalize('NFC') === (nextToolSegment.detail || '').normalize('NFC');
+        (previous.detail || '').normalize('NFC') === (nextToolSegment.detail || '').normalize('NFC') &&
+        previous.status === nextToolSegment.status;
       if (!sameAsPrevious) {
         segments.push(nextToolSegment);
+        if (nextToolSegment.status === 'run') {
+          pendingToolIndexes.push(segments.length - 1);
+        }
       }
       continue;
     }
+
+    const doneMatch = trimmedLine.match(toolDoneRegex);
+    if (doneMatch) {
+      flushText();
+      const doneToolName = doneMatch[1];
+      const doneDetail = doneMatch[2];
+      const pendingIndex = pendingToolIndexes.findIndex((segmentIndex) => {
+        const segment = segments[segmentIndex];
+        if (!segment || segment.type !== 'tool') return false;
+        if (segment.toolName !== doneToolName || segment.status !== 'run') return false;
+        if (!doneDetail) return true;
+        return (segment.detail || '').normalize('NFC') === doneDetail.normalize('NFC');
+      });
+
+      if (pendingIndex !== -1) {
+        const segmentIndex = pendingToolIndexes[pendingIndex];
+        const segment = segments[segmentIndex];
+        if (segment && segment.type === 'tool') {
+          segment.status = 'done';
+        }
+        pendingToolIndexes.splice(pendingIndex, 1);
+      }
+      continue;
+    }
+
     textBuffer.push(line);
   }
 
@@ -372,11 +405,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         expanded.push(segment);
         continue;
       }
-      expanded.push(...splitToolBlocks(segment.content));
+      expanded.push(...splitToolBlocks(segment.content, isStreaming));
     }
 
     return expanded;
-  }, [content]);
+  }, [content, isStreaming]);
 
   const components = useMemo(() => ({
     a: ({ href, children, ...props }: React.ComponentProps<'a'>) => (
@@ -521,7 +554,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
               key={`tool-${index}`}
               toolName={segment.toolName}
               detail={segment.detail}
-              isStreaming={isStreaming}
+              status={segment.status}
             />
           );
         }

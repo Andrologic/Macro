@@ -218,6 +218,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     return `\n\n[TOOL] ${toolName}\n`;
   };
 
+  const formatToolDoneLabel = (toolName: string) => `\n[TOOL_DONE] ${toolName}\n`;
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -423,6 +425,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       for (const toolCall of validToolCalls) {
         const toolName = toolCall.function.name;
         let toolResult = '';
+        let shouldEmitToolDone = false;
         
         try {
           const args = JSON.parse(toolCall.function.arguments);
@@ -441,6 +444,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           const toolUsageMsg = formatToolUsageLabel(toolName, args);
           fullContent += toolUsageMsg;
           onToken(toolUsageMsg);
+          shouldEmitToolDone = true;
           
           if (toolName === 'web_search') {
             // Execute web search
@@ -520,6 +524,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           onToolResult?.(toolName, toolResult);
         } catch (e) {
           toolResult = `Error executing tool ${toolName}: ${e instanceof Error ? e.message : String(e)}`;
+        } finally {
+          if (shouldEmitToolDone) {
+            const toolDoneMsg = formatToolDoneLabel(toolName);
+            fullContent += toolDoneMsg;
+            onToken(toolDoneMsg);
+          }
         }
         
         toolResults.push({
