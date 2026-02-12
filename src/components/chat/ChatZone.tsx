@@ -209,7 +209,11 @@ const ChatZone: React.FC = () => {
                           message.role === 'user'
                             ? 'bg-muted/80 border border-border/50'
                             : 'bg-transparent border-0',
-                          isEditing ? 'p-4' : 'p-4 pb-9'
+                          isEditing
+                            ? 'p-2'
+                            : message.role === 'assistant'
+                              ? 'p-2 pb-6'
+                              : 'p-2 pb-9'
                         )}
                       >
                         {/* Content */}
@@ -269,7 +273,7 @@ const ChatZone: React.FC = () => {
                         )}
 
                         {message.role === 'user' && !isEditing && (
-                          <div className="absolute bottom-1 right-2 flex items-center gap-1">
+                          <div className="absolute bottom-2 right-2 flex items-center gap-1">
                             <button
                               onClick={() => handleCopy(message.content, message.id)}
                               className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
@@ -352,7 +356,6 @@ const ChatZone: React.FC = () => {
                   </div>
                 );
               })}
-              <div className="h-4" />
             </div>
           ) : (
             <div className="flex items-center justify-center h-full">
