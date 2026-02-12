@@ -25,7 +25,8 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const { getChatModeTools, isChatToolEnabled, toggleChatTool, mcpServers } = useToolsStore();
   const {
     getConversationContextCitations,
-    getConversationSourceCitations,
+    getConversationInterestingSourceCitations,
+    getConversationUsedSourceCitations,
     addCitation,
     removeCitation,
   } = useCitationsStore();
@@ -47,9 +48,13 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const contextCitations = selectedConversationId
     ? getConversationContextCitations(selectedConversationId)
     : [];
-  const sourceCitations = selectedConversationId
-    ? getConversationSourceCitations(selectedConversationId)
+  const interestingSourceCitations = selectedConversationId
+    ? getConversationInterestingSourceCitations(selectedConversationId)
     : [];
+  const usedSourceCitations = selectedConversationId
+    ? getConversationUsedSourceCitations(selectedConversationId)
+    : [];
+  const sourceCitationsCount = interestingSourceCitations.length + usedSourceCitations.length;
   const webCitations = contextCitations.filter((c) => c.type === 'web');
   const fileCitations = contextCitations.filter((c) => c.type === 'file' || c.type === 'document');
 
@@ -497,6 +502,8 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                   chatTools.map((tool) => (
                     (() => {
                       const webSearchLockedByKey = tool.id === 'web_search' && !hasSelectedWebSearchKey;
+                      const lockedByPolicy = tool.config?.locked === true;
+                      const switchDisabled = webSearchLockedByKey || lockedByPolicy;
 
                       return (
                     <div
@@ -518,9 +525,9 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                       <div className="flex items-center shrink-0">
                         <Switch
                           checked={webSearchLockedByKey ? false : isChatToolEnabled(tool.id)}
-                          disabled={webSearchLockedByKey}
+                          disabled={switchDisabled}
                           onCheckedChange={() => {
-                            if (webSearchLockedByKey) return;
+                            if (switchDisabled) return;
                             toggleChatTool(tool.id);
                           }}
                         />
@@ -529,6 +536,13 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                         <div className="pointer-events-none absolute -top-2 right-2 hidden group-hover:block z-10">
                           <div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">
                             Ajoutez une clé API dans Paramètres &gt; Outils &gt; Web Search
+                          </div>
+                        </div>
+                      )}
+                      {lockedByPolicy && (
+                        <div className="pointer-events-none absolute -top-2 right-2 hidden group-hover:block z-10">
+                          <div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">
+                            Outil requis pour le suivi des sources
                           </div>
                         </div>
                       )}
@@ -588,50 +602,122 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2">
                 <Icon name="book-open" size={12} />
-                Passages importants
+                Sources marquées
               </h3>
-              {sourceCitations.length > 0 && (
-                <span className="text-xs text-muted-foreground">{sourceCitations.length}</span>
+              {sourceCitationsCount > 0 && (
+                <span className="text-xs text-muted-foreground">{sourceCitationsCount}</span>
               )}
             </div>
 
-            {sourceCitations.length > 0 ? (
-              <div className="space-y-2">
-                {sourceCitations.map((citation) => (
-                  <div
-                    key={citation.id}
-                    className="flex items-start gap-3 px-3 py-2 rounded-lg border border-border hover:bg-accent/50 transition-colors"
-                  >
-                    <div className="w-6 h-6 rounded bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
-                      <Icon name="file-text" size={12} className="text-primary" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-foreground truncate">{citation.title}</p>
-                      <p className="text-xs text-muted-foreground truncate">
-                        {citation.url || citation.source}
-                      </p>
-                      {citation.snippet && (
-                        <p className="text-xs text-muted-foreground/80 line-clamp-3 mt-1">
-                          {citation.snippet}
-                        </p>
-                      )}
-                    </div>
-                    {citation.url && (
-                      <button
-                        onClick={() => openUrl(citation.url!)}
-                        className="p-1 rounded hover:bg-accent transition-colors"
-                      >
-                        <Icon name="external-link" size={12} className="text-muted-foreground" />
-                      </button>
+            {sourceCitationsCount > 0 ? (
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Passages intéressants</h4>
+                    {interestingSourceCitations.length > 0 && (
+                      <span className="text-xs text-muted-foreground">{interestingSourceCitations.length}</span>
                     )}
                   </div>
-                ))}
+                  {interestingSourceCitations.length > 0 ? (
+                    <div className="space-y-2">
+                      {interestingSourceCitations.map((citation) => (
+                        <div
+                          key={citation.id}
+                          className="flex items-start gap-3 px-3 py-2 rounded-lg border border-amber-500/20 bg-amber-500/5 hover:bg-accent/50 transition-colors"
+                        >
+                          <div className="w-6 h-6 rounded bg-amber-500/10 flex items-center justify-center shrink-0 mt-0.5">
+                            <Icon name="sparkles" size={12} className="text-amber-500" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-foreground truncate">{citation.title}</p>
+                            <p className="text-xs text-muted-foreground truncate">
+                              {citation.url || citation.source}
+                            </p>
+                            {citation.reason && (
+                              <p className="text-xs text-amber-700/90 dark:text-amber-300/90 mt-1">
+                                {citation.reason}
+                              </p>
+                            )}
+                            {citation.snippet && (
+                              <p className="text-xs text-muted-foreground/80 line-clamp-3 mt-1">
+                                {citation.snippet}
+                              </p>
+                            )}
+                          </div>
+                          {citation.url && (
+                            <button
+                              onClick={() => openUrl(citation.url!)}
+                              className="p-1 rounded hover:bg-accent transition-colors"
+                            >
+                              <Icon name="external-link" size={12} className="text-muted-foreground" />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-4 border border-dashed border-border rounded-lg">
+                      <p className="text-xs text-muted-foreground">Aucun passage intéressant pour le moment</p>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Passages utilisés</h4>
+                    {usedSourceCitations.length > 0 && (
+                      <span className="text-xs text-muted-foreground">{usedSourceCitations.length}</span>
+                    )}
+                  </div>
+                  {usedSourceCitations.length > 0 ? (
+                    <div className="space-y-2">
+                      {usedSourceCitations.map((citation) => (
+                        <div
+                          key={citation.id}
+                          className="flex items-start gap-3 px-3 py-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 hover:bg-accent/50 transition-colors"
+                        >
+                          <div className="w-6 h-6 rounded bg-emerald-500/10 flex items-center justify-center shrink-0 mt-0.5">
+                            <Icon name="check" size={12} className="text-emerald-500" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-foreground truncate">{citation.title}</p>
+                            <p className="text-xs text-muted-foreground truncate">
+                              {citation.url || citation.source}
+                            </p>
+                            {citation.reason && (
+                              <p className="text-xs text-emerald-700/90 dark:text-emerald-300/90 mt-1">
+                                {citation.reason}
+                              </p>
+                            )}
+                            {citation.snippet && (
+                              <p className="text-xs text-muted-foreground/80 line-clamp-3 mt-1">
+                                {citation.snippet}
+                              </p>
+                            )}
+                          </div>
+                          {citation.url && (
+                            <button
+                              onClick={() => openUrl(citation.url!)}
+                              className="p-1 rounded hover:bg-accent transition-colors"
+                            >
+                              <Icon name="external-link" size={12} className="text-muted-foreground" />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-4 border border-dashed border-border rounded-lg">
+                      <p className="text-xs text-muted-foreground">Aucun passage utilisé pour le moment</p>
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="text-center py-8">
                 <Icon name="book-open" size={32} className="text-muted-foreground/30 mx-auto mb-3" />
                 <p className="text-sm text-muted-foreground">
-                  Aucun passage important
+                  Aucun passage marqué
                 </p>
                 <p className="text-xs text-muted-foreground/70 mt-1">
                   Les passages apparaissent ici quand l'IA appelle l'outil de marquage

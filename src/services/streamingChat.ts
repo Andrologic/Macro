@@ -118,7 +118,7 @@ const MARK_SOURCE_PASSAGE_TOOL = {
   type: 'function',
   function: {
     name: 'mark_source_passage',
-    description: 'Store an important passage in the Sources tab when a specific excerpt is critical for the answer.',
+    description: 'Store important source passages. Use kind="interesting" for notable excerpts and kind="used" for excerpts directly used in the final answer.',
     parameters: {
       type: 'object',
       properties: {
@@ -129,6 +129,15 @@ const MARK_SOURCE_PASSAGE_TOOL = {
         passage: {
           type: 'string',
           description: 'Important excerpt to save.',
+        },
+        kind: {
+          type: 'string',
+          enum: ['interesting', 'used'],
+          description: 'Classification of the passage: interesting while analyzing, or used in the final answer.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Optional short reason describing why this passage matters.',
         },
         source: {
           type: 'string',
@@ -205,7 +214,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
     if (toolName === 'mark_source_passage') {
       const title = typeof args.title === 'string' ? args.title : '';
-      return `\n\n[TOOL] mark_source_passage${title ? ` ("${title}")` : ''}\n`;
+      const kind = typeof args.kind === 'string' ? args.kind : 'used';
+      return `\n\n[TOOL] mark_source_passage${title ? ` ("${title}", kind=${kind})` : ''}\n`;
     }
 
     if (toolName === 'read_file') {
@@ -516,7 +526,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           }
           
           if (toolName === 'mark_source_passage') {
-            toolResult = 'Source passage marked successfully.';
+            const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
+            const kind = rawKind === 'interesting' ? 'interesting' : 'used';
+            toolResult = `Source passage marked successfully (kind=${kind}).`;
           } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
             toolResult = `Unsupported tool: ${toolName}`;
           }

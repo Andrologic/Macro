@@ -305,8 +305,8 @@ const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[]
   const segments: RenderSegment[] = [];
   const lines = content.split('\n');
   const textBuffer: string[] = [];
-  const toolStartRegex = /^(?:\[\s*TOOL\s*\]|🔧\s*\*\*Tool:\*\*)\s*([a-zA-Z0-9_-]+)(?:\s*\("(.+?)"\))?\s*$/i;
-  const toolDoneRegex = /^\[\s*TOOL_DONE\s*\]\s*([a-zA-Z0-9_-]+)(?:\s*\("(.+?)"\))?\s*$/i;
+  const toolStartRegex = /^(?:\[\s*TOOL\s*\]|🔧\s*\*\*Tool:\*\*)\s*([a-zA-Z0-9_-]+)(?:\s*\((.+?)\))?\s*$/i;
+  const toolDoneRegex = /^\[\s*TOOL_DONE\s*\]\s*([a-zA-Z0-9_-]+)(?:\s*\((.+?)\))?\s*$/i;
   const pendingToolIndexes: number[] = [];
 
   const flushText = () => {

@@ -49,17 +49,17 @@ export const mockInternalTools: Tool[] = [
       internal: false,
     },
   },
-  // Internal source citation helper (always enabled, hidden from settings/UI)
+  // Internal source citation helper (always enabled, visible in chat toolbox)
   {
     id: 'mark_source_passage',
-    name: 'Mark Source Passage',
+    name: 'Sources',
     category: 'ai',
     status: 'enabled',
-    description: 'Store critical passages for the Sources tab',
+    description: 'Track interesting passages and passages used by the AI',
     icon: 'book-open',
     config: {
       enabled: true,
-      visible: false,
+      visible: true,
       chatMode: true,
       internal: true,
       locked: true,
