@@ -4,12 +4,15 @@ import { normalizeBinding } from '../shortcuts/utils';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
 
 type ShortcutBindings = Record<ShortcutId, string | null>;
+export type PromptHistoryNavigationMode = 'contextual_arrows' | 'shortcut_only';
 
 interface ShortcutsStore {
   bindings: ShortcutBindings;
+  promptHistoryNavigationMode: PromptHistoryNavigationMode;
   isLoaded: boolean;
   initialize: () => Promise<void>;
   setBinding: (id: ShortcutId, binding: string | null) => void;
+  setPromptHistoryNavigationMode: (mode: PromptHistoryNavigationMode) => void;
   resetBinding: (id: ShortcutId) => void;
   resetAll: () => void;
 }
@@ -30,13 +33,19 @@ const persistBindings = async (bindings: ShortcutBindings) => {
 
 export const useShortcutsStore = create<ShortcutsStore>((set) => ({
   bindings: buildNormalizedDefaults(),
+  promptHistoryNavigationMode: 'contextual_arrows',
   isLoaded: false,
 
   initialize: async () => {
     const defaults = buildNormalizedDefaults();
     try {
-      const rawStored = await loadPreference<Record<string, unknown>>(PREF_KEYS.SHORTCUT_BINDINGS);
+      const [rawStored, rawNavigationMode] = await Promise.all([
+        loadPreference<Record<string, unknown>>(PREF_KEYS.SHORTCUT_BINDINGS),
+        loadPreference<string>(PREF_KEYS.PROMPT_HISTORY_NAV_MODE),
+      ]);
       const stored = rawStored && typeof rawStored === 'object' ? rawStored : {};
+      const promptHistoryNavigationMode: PromptHistoryNavigationMode =
+        rawNavigationMode === 'shortcut_only' ? 'shortcut_only' : 'contextual_arrows';
 
       const merged: ShortcutBindings = { ...defaults };
       Object.keys(defaults).forEach((id) => {
@@ -48,9 +57,9 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => ({
         }
       });
 
-      set({ bindings: merged, isLoaded: true });
+      set({ bindings: merged, promptHistoryNavigationMode, isLoaded: true });
     } catch {
-      set({ bindings: defaults, isLoaded: true });
+      set({ bindings: defaults, promptHistoryNavigationMode: 'contextual_arrows', isLoaded: true });
     }
   },
 
@@ -65,6 +74,11 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => ({
       return { bindings: nextBindings };
     }),
 
+  setPromptHistoryNavigationMode: (mode) => {
+    void savePreference(PREF_KEYS.PROMPT_HISTORY_NAV_MODE, mode);
+    set({ promptHistoryNavigationMode: mode });
+  },
+
   resetBinding: (id) =>
     set((state) => {
       const nextBindings = {
@@ -77,7 +91,10 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => ({
 
   resetAll: () => {
     const nextBindings = buildNormalizedDefaults();
-    void persistBindings(nextBindings);
-    set({ bindings: nextBindings });
+    void Promise.all([
+      persistBindings(nextBindings),
+      savePreference(PREF_KEYS.PROMPT_HISTORY_NAV_MODE, 'contextual_arrows'),
+    ]);
+    set({ bindings: nextBindings, promptHistoryNavigationMode: 'contextual_arrows' });
   },
 }));

@@ -12,7 +12,9 @@ export type ShortcutId =
   | 'ai.cycleProvider'
   | 'ai.cycleModel'
   | 'chat.stopStreaming'
-  | 'chat.focusInput';
+  | 'chat.focusInput'
+  | 'chat.historyPrevious'
+  | 'chat.historyNext';
 
 export interface ShortcutDefinition {
   id: ShortcutId;
@@ -108,6 +110,22 @@ export const shortcutDefinitions: ShortcutDefinition[] = [
     label: 'Focus chat input',
     description: 'Move cursor to chat composer',
     defaultBinding: 'Mod+/',
+  },
+  {
+    id: 'chat.historyPrevious',
+    category: 'chat',
+    label: 'Prompt history previous',
+    description: 'Navigate to the previous prompt in chat input',
+    defaultBinding: 'Mod+ArrowUp',
+    allowInEditable: true,
+  },
+  {
+    id: 'chat.historyNext',
+    category: 'chat',
+    label: 'Prompt history next',
+    description: 'Navigate to the next prompt in chat input',
+    defaultBinding: 'Mod+ArrowDown',
+    allowInEditable: true,
   },
 ];
 

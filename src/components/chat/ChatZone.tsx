@@ -4,6 +4,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import type { MessageImageAttachment } from '../../stores/useChatStore';
 import { useProviderStore } from '../../stores/useProviderStore';
+import { useShortcutsStore } from '../../stores/useShortcutsStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
@@ -38,6 +39,7 @@ const ChatZone: React.FC = () => {
   } = useChatStore();
 
   const { selectedProviderId, selectedModelId } = useProviderStore();
+  const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const { mode } = useAppStore();
 
   const [inputValue, setInputValue] = useState('');
@@ -72,11 +74,20 @@ const ChatZone: React.FC = () => {
   const [editingValue, setEditingValue] = useState('');
   const [editingImages, setEditingImages] = useState<MessageImageAttachment[]>([]);
   const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
+  const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
+  const [draftBeforeHistory, setDraftBeforeHistory] = useState('');
 
   // Filter messages by selected conversation
   const currentMessages = selectedConversationId
     ? getConversationMessages(selectedConversationId)
     : [];
+
+  const promptHistory = useMemo(() => {
+    return currentMessages
+      .filter((message) => message.role === 'user')
+      .map((message) => message.content.trim())
+      .filter((content) => content.length > 0);
+  }, [currentMessages]);
 
   // Get current conversation details
   const currentConversation = selectedConversationId
@@ -275,6 +286,58 @@ const ChatZone: React.FC = () => {
   };
 
   const canSend = Boolean(inputValue.trim()) || composerImages.length > 0;
+
+  const navigatePromptHistory = (direction: 'up' | 'down') => {
+    if (promptHistory.length === 0) return;
+
+    if (direction === 'up') {
+      if (promptHistoryIndex === null) {
+        setDraftBeforeHistory(inputValue);
+        const lastIndex = promptHistory.length - 1;
+        setPromptHistoryIndex(lastIndex);
+        setInputValue(promptHistory[lastIndex]);
+        return;
+      }
+
+      if (promptHistoryIndex > 0) {
+        const nextIndex = promptHistoryIndex - 1;
+        setPromptHistoryIndex(nextIndex);
+        setInputValue(promptHistory[nextIndex]);
+      }
+      return;
+    }
+
+    if (promptHistoryIndex === null) return;
+
+    if (promptHistoryIndex < promptHistory.length - 1) {
+      const nextIndex = promptHistoryIndex + 1;
+      setPromptHistoryIndex(nextIndex);
+      setInputValue(promptHistory[nextIndex]);
+      return;
+    }
+
+    setPromptHistoryIndex(null);
+    setInputValue(draftBeforeHistory);
+  };
+
+  useEffect(() => {
+    setPromptHistoryIndex(null);
+    setDraftBeforeHistory('');
+  }, [selectedConversationId]);
+
+  useEffect(() => {
+    const handlePromptHistoryEvent = (event: Event) => {
+      const customEvent = event as CustomEvent<{ direction?: 'up' | 'down' }>;
+      const direction = customEvent.detail?.direction;
+      if (!direction) return;
+      navigatePromptHistory(direction);
+    };
+
+    window.addEventListener('macro:prompt-history', handlePromptHistoryEvent as EventListener);
+    return () => {
+      window.removeEventListener('macro:prompt-history', handlePromptHistoryEvent as EventListener);
+    };
+  }, [navigatePromptHistory]);
 
   useEffect(() => {
     const handleFocusMessage = (event: Event) => {
@@ -654,8 +717,37 @@ const ChatZone: React.FC = () => {
                 }
                 className="flex-1 bg-transparent border-0 outline-none text-sm text-foreground placeholder:text-muted-foreground h-9 px-2"
                 value={inputValue}
-                onChange={(event) => setInputValue(event.target.value)}
+                onChange={(event) => {
+                  setInputValue(event.target.value);
+                  if (promptHistoryIndex !== null) {
+                    setPromptHistoryIndex(null);
+                  }
+                }}
                 onKeyDown={(event) => {
+                  if (promptHistoryNavigationMode === 'contextual_arrows') {
+                    if (event.key === 'ArrowUp') {
+                      const input = event.currentTarget;
+                      const start = input.selectionStart ?? 0;
+                      const end = input.selectionEnd ?? 0;
+                      if (start === 0 && end === 0) {
+                        event.preventDefault();
+                        navigatePromptHistory('up');
+                        return;
+                      }
+                    }
+                    if (event.key === 'ArrowDown') {
+                      const input = event.currentTarget;
+                      const length = input.value.length;
+                      const start = input.selectionStart ?? length;
+                      const end = input.selectionEnd ?? length;
+                      if (start === length && end === length) {
+                        event.preventDefault();
+                        navigatePromptHistory('down');
+                        return;
+                      }
+                    }
+                  }
+
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
                     handleSend();

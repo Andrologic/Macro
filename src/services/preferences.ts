@@ -28,6 +28,7 @@ export const PREF_KEYS = {
   UI_ZOOM_MODE: "uiZoomMode",
   UI_ZOOM_LEVEL: "uiZoomLevel",
   SHORTCUT_BINDINGS: "shortcutBindings",
+  PROMPT_HISTORY_NAV_MODE: "promptHistoryNavigationMode",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -48,6 +49,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.UI_ZOOM_MODE]: "auto",
   [PREF_KEYS.UI_ZOOM_LEVEL]: 1,
   [PREF_KEYS.SHORTCUT_BINDINGS]: {},
+  [PREF_KEYS.PROMPT_HISTORY_NAV_MODE]: "contextual_arrows",
 };
 
 // Store instance (singleton)
