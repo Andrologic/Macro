@@ -159,7 +159,7 @@
   }
 
   .markdown-content pre code {
-    @apply p-0 bg-transparent text-inherit;
+    @apply p-0 mx-0 bg-transparent text-inherit border-0;
   }
 
   .markdown-content table {
