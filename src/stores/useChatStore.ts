@@ -4,12 +4,51 @@ import { toServiceError } from '../services/contracts/errors';
 import { useProviderStore } from './useProviderStore';
 import { useCitationsStore } from './useCitationsStore';
 import { streamChat, cancelStream, sendChatNonStreaming } from '../services/streamingChat';
+import { getStreamingWebSearchConfig } from '../services/webSearchSettings';
 import { useToolsStore } from './useToolsStore';
 import * as tauriIpc from '../services/tauriIpc';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
 const metadataGenerationInFlight = new Set<string>();
+
+const createTokenBatcher = (appendChunk: (chunk: string) => void) => {
+  let buffer = '';
+  let rafId: number | null = null;
+
+  const flush = () => {
+    rafId = null;
+    if (!buffer) return;
+    const chunk = buffer;
+    buffer = '';
+    appendChunk(chunk);
+  };
+
+  return {
+    push: (token: string) => {
+      buffer += token;
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(flush);
+    },
+    flushNow: () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      if (!buffer) return;
+      const chunk = buffer;
+      buffer = '';
+      appendChunk(chunk);
+    },
+    dispose: () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      buffer = '';
+    },
+  };
+};
 
 const getConversationFallbackTitle = (content: string): string => {
   const cleaned = content.replace(/\s+/g, ' ').trim();
@@ -66,6 +105,7 @@ interface ChatStore {
   updateMessageContent: (messageId: string, content: string) => void;
   updateLastMessage: (content: string) => void;
   appendToLastMessage: (token: string) => void;
+  appendToMessage: (messageId: string, tokenChunk: string) => void;
   clearMessages: () => void;
   selectConversation: (conversationId: string) => void;
   createConversation: (
@@ -365,6 +405,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return { messages: updatedMessages };
       }),
 
+    appendToMessage: (messageId, tokenChunk) =>
+      set((state) => {
+        const updatedMessages = state.messages.map((message) =>
+          message.id === messageId
+            ? { ...message, content: message.content + tokenChunk }
+            : message
+        );
+        return { messages: updatedMessages };
+      }),
+
     clearMessages: () => set({ messages: [] }),
 
     selectConversation: (conversationId) =>
@@ -534,6 +584,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           path: c.path,
           snippet: c.snippet,
         }));
+      const { enableWebSearch, enableWebFetch, webSearchOptions } = getStreamingWebSearchConfig();
 
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-assistant`,
@@ -548,6 +599,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       
       const abortController = new AbortController();
       set({ isLoading: true, isStreaming: true, abortController });
+      const tokenBatcher = createTokenBatcher((tokenChunk) => {
+        get().appendToMessage(assistantMessage.id, tokenChunk);
+      });
 
       try {
         await streamChat({
@@ -559,11 +613,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: messagesForRequest,
           fileToolContext,
           allowedToolIds,
+          enableWebSearch,
+          enableWebFetch,
+          webSearchOptions,
           signal: abortController.signal,
           onToken: (token) => {
-            get().appendToLastMessage(token);
+            tokenBatcher.push(token);
           },
           onComplete: (fullContent) => {
+            tokenBatcher.flushNow();
             // Update conversation metadata
             set((state) => {
               const conversations = state.conversations.map((conv) =>
@@ -582,8 +640,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (tauriIpc.isTauriAvailable()) {
               tauriIpc.createMessage(conversationId, 'assistant', fullContent).catch(console.error);
             }
+            tokenBatcher.dispose();
           },
           onError: (error) => {
+            tokenBatcher.dispose();
             get().updateMessageContent(
               assistantMessage.id,
               `Error: ${error.message}`
@@ -595,6 +655,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
         });
       } catch (error) {
+        tokenBatcher.dispose();
         const normalized = toServiceError(error);
         get().updateMessageContent(
           assistantMessage.id,
@@ -690,6 +751,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           path: c.path,
           snippet: c.snippet,
         }));
+      const { enableWebSearch, enableWebFetch, webSearchOptions } = getStreamingWebSearchConfig();
 
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-assistant`,
@@ -704,6 +766,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       
       const abortController = new AbortController();
       set({ isLoading: true, isStreaming: true, abortController });
+      const tokenBatcher = createTokenBatcher((tokenChunk) => {
+        get().appendToMessage(assistantMessage.id, tokenChunk);
+      });
 
       try {
         await streamChat({
@@ -715,11 +780,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: messagesForRequest,
           fileToolContext,
           allowedToolIds,
+          enableWebSearch,
+          enableWebFetch,
+          webSearchOptions,
           signal: abortController.signal,
           onToken: (token) => {
-            get().appendToLastMessage(token);
+            tokenBatcher.push(token);
           },
           onComplete: (fullContent) => {
+            tokenBatcher.flushNow();
             set((state) => {
               const conversations = state.conversations.map((conv) =>
                 conv.id === conversationId
@@ -732,8 +801,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
               );
               return { conversations, isLoading: false, isStreaming: false, abortController: null };
             });
+            tokenBatcher.dispose();
           },
           onError: (error) => {
+            tokenBatcher.dispose();
             get().updateMessageContent(
               assistantMessage.id,
               `Error: ${error.message}`
@@ -745,6 +816,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
         });
       } catch (error) {
+        tokenBatcher.dispose();
         const normalized = toServiceError(error);
         get().updateMessageContent(
           assistantMessage.id,

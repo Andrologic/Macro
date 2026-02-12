@@ -17,6 +17,13 @@ export interface WebSearchOptions {
   includeRawContent?: boolean;
 }
 
+export interface WebFetchResult {
+  url: string;
+  title: string;
+  snippet: string;
+  content: string;
+}
+
 export interface TavilySearchResult {
   url: string;
   title: string;
@@ -204,8 +211,81 @@ export function getFaviconUrl(url: string): string {
   }
 }
 
+function normalizeUrl(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return trimmed;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function htmlToText(html: string): { title: string; content: string } {
+  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return { title: '', content: text };
+  }
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+
+  doc.querySelectorAll('script, style, noscript').forEach((node) => node.remove());
+
+  const title = (doc.querySelector('title')?.textContent || '').trim();
+  const main = doc.querySelector('main, article, [role="main"]') || doc.body;
+  const content = (main?.textContent || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return { title, content };
+}
+
+export async function fetchWebPage(inputUrl: string): Promise<WebFetchResult> {
+  const normalizedUrl = normalizeUrl(inputUrl);
+  if (!normalizedUrl) {
+    throw new Error('URL vide');
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(normalizedUrl);
+  } catch {
+    throw new Error('URL invalide');
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Seuls les liens HTTP/HTTPS sont supportes');
+  }
+
+  const response = await tauriFetch(normalizedUrl, {
+    method: 'GET',
+    headers: {
+      'Accept': 'text/html,application/xhtml+xml',
+      'User-Agent': 'Macro/1.0 (+https://macro.app)',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Impossible de recuperer la page (${response.status})`);
+  }
+
+  const html = await response.text();
+  const { title, content } = htmlToText(html);
+  const snippet = content.slice(0, 350);
+
+  return {
+    url: normalizedUrl,
+    title: title || extractDomain(normalizedUrl),
+    snippet,
+    content: content.slice(0, 12000),
+  };
+}
+
 export default {
   webSearch,
+  fetchWebPage,
   formatSearchResultsAsContext,
   extractDomain,
   getFaviconUrl,

@@ -6,32 +6,11 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../ui/Tabs';
 import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';
 import { cn } from '../../../utils/cn';
-
-// Web search settings stored in localStorage
-const WEB_SEARCH_SETTINGS_KEY = 'macro_web_search_settings';
-
-interface WebSearchSettings {
-  tavilyApiKey: string;
-  braveApiKey: string;
-  provider: 'tavily' | 'brave';
-  enabled: boolean;
-}
-
-const getWebSearchSettings = (): WebSearchSettings => {
-  try {
-    const saved = localStorage.getItem(WEB_SEARCH_SETTINGS_KEY);
-    if (saved) {
-      return JSON.parse(saved);
-    }
-  } catch (e) {
-    console.error('Failed to load web search settings', e);
-  }
-  return { tavilyApiKey: '', braveApiKey: '', provider: 'tavily', enabled: true };
-};
-
-const saveWebSearchSettings = (settings: WebSearchSettings) => {
-  localStorage.setItem(WEB_SEARCH_SETTINGS_KEY, JSON.stringify(settings));
-};
+import {
+  WebSearchSettings,
+  getWebSearchSettings,
+  saveWebSearchSettings,
+} from '../../../services/webSearchSettings';
 
 export const ToolsView: React.FC = () => {
     const {
@@ -45,6 +24,12 @@ export const ToolsView: React.FC = () => {
 
     const [searchQuery, setSearchQuery] = useState('');
     const [webSearchSettings, setWebSearchSettings] = useState<WebSearchSettings>(getWebSearchSettings);
+    const hasSelectedWebSearchKey = useMemo(() => {
+        if (webSearchSettings.provider === 'tavily') {
+            return webSearchSettings.tavilyApiKey.trim().length > 0;
+        }
+        return webSearchSettings.braveApiKey.trim().length > 0;
+    }, [webSearchSettings]);
 
     useEffect(() => {
         loadSettings();
@@ -117,14 +102,8 @@ export const ToolsView: React.FC = () => {
                                     </p>
                                 </div>
                             </div>
-                            <Switch 
-                                checked={webSearchSettings.enabled} 
-                                onCheckedChange={(checked) => updateWebSearchSettings({ enabled: checked })} 
-                            />
                         </div>
-
-                        {webSearchSettings.enabled && (
-                            <div className="space-y-4 pt-4 border-t border-border">
+                        <div className="space-y-4 pt-4 border-t border-border">
                                 {/* Provider Selection */}
                                 <div className="space-y-2">
                                     <label className="text-sm font-medium text-foreground">Search Provider</label>
@@ -213,27 +192,35 @@ export const ToolsView: React.FC = () => {
                                 <div className="flex items-center gap-2 text-xs pt-2">
                                     <span className={cn(
                                         "w-2 h-2 rounded-full",
-                                        (webSearchSettings.provider === 'tavily' && webSearchSettings.tavilyApiKey) ||
-                                        (webSearchSettings.provider === 'brave' && webSearchSettings.braveApiKey)
+                                        hasSelectedWebSearchKey
                                             ? "bg-emerald-500"
                                             : "bg-amber-500"
                                     )} />
                                     <span className="text-muted-foreground">
-                                        {(webSearchSettings.provider === 'tavily' && webSearchSettings.tavilyApiKey) ||
-                                        (webSearchSettings.provider === 'brave' && webSearchSettings.braveApiKey)
+                                        {hasSelectedWebSearchKey
                                             ? "Configured"
-                                            : "API key required"}
+                                            : "API key required to enable Web Search"}
                                     </span>
                                 </div>
-                            </div>
-                        )}
+                        </div>
                     </div>
                 </TabsContent>
 
                 <TabsContent value="tools" className="flex-1 overflow-y-auto pr-2 space-y-3">
                     {filteredTools.map(tool => (
-                        <div key={tool.id} className="flex items-start justify-between p-4 bg-card border border-border rounded-xl">
-                            <div className="flex gap-4">
+                        (() => {
+                            const webSearchLockedByKey =
+                                tool.id === 'web_search' && !hasSelectedWebSearchKey;
+
+                            return (
+                        <div
+                            key={tool.id}
+                            className={cn(
+                                'relative group flex items-start justify-between p-4 bg-card border border-border rounded-xl',
+                                webSearchLockedByKey && 'cursor-help'
+                            )}
+                        >
+                            <div className={cn('flex gap-4', webSearchLockedByKey && 'opacity-50')}>
                                 <div className="p-2 bg-primary/10 rounded-lg text-primary h-fit">
                                     <Icon name={(tool.icon as any) || 'tool'} size={18} />
                                 </div>
@@ -246,10 +233,25 @@ export const ToolsView: React.FC = () => {
                                 </div>
                             </div>
                             <Switch 
-                                checked={isToolEnabled(tool.id)} 
-                                onCheckedChange={() => toggleTool(tool.id)} 
+                                checked={webSearchLockedByKey ? false : isToolEnabled(tool.id)} 
+                                disabled={webSearchLockedByKey}
+                                onCheckedChange={() => {
+                                    if (webSearchLockedByKey) return;
+                                    void toggleTool(tool.id);
+                                }} 
+                                className={cn(webSearchLockedByKey && 'opacity-50')}
+                                id={tool.id}
                             />
+                            {webSearchLockedByKey && (
+                                <div className="pointer-events-none absolute -top-2 right-3 hidden group-hover:block z-10">
+                                    <div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">
+                                        Add an API key in Web Search settings to enable this tool.
+                                    </div>
+                                </div>
+                            )}
                         </div>
+                            );
+                        })()
                     ))}
                     {filteredTools.length === 0 && (
                         <p className="text-center text-muted-foreground py-8">No tools found.</p>
