@@ -185,7 +185,7 @@ const ChatZone: React.FC = () => {
         </header>
 
         {/* Conversation Content */}
-        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-12 py-8">
+        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-12 pt-8 pb-4">
           {selectedConversationId && currentMessages.length > 0 ? (
             <div className="max-w-4xl mx-auto space-y-6">
               {currentMessages.map((message) => {
@@ -209,7 +209,7 @@ const ChatZone: React.FC = () => {
                           message.role === 'user'
                             ? 'bg-muted/80 border border-border/50'
                             : 'bg-transparent border-0',
-                          isEditing ? 'p-4' : 'p-4 pb-10'
+                          isEditing ? 'p-4' : 'p-4 pb-9'
                         )}
                       >
                         {/* Content */}
@@ -269,7 +269,7 @@ const ChatZone: React.FC = () => {
                         )}
 
                         {message.role === 'user' && !isEditing && (
-                          <div className="absolute bottom-2 right-2 flex items-center gap-1">
+                          <div className="absolute bottom-1 right-2 flex items-center gap-1">
                             <button
                               onClick={() => handleCopy(message.content, message.id)}
                               className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
@@ -312,7 +312,7 @@ const ChatZone: React.FC = () => {
                         )}
 
                         {message.role === 'assistant' && !isEditing && (
-                          <div className="absolute bottom-2 right-2 flex items-center gap-1">
+                          <div className="absolute bottom-1 right-2 flex items-center gap-1">
                             <button
                               onClick={() => handleCopy(message.content, message.id)}
                               className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
@@ -352,7 +352,7 @@ const ChatZone: React.FC = () => {
                   </div>
                 );
               })}
-              <div className="h-8" />
+              <div className="h-4" />
             </div>
           ) : (
             <div className="flex items-center justify-center h-full">
