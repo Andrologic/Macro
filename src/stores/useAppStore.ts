@@ -9,7 +9,7 @@ import {
 } from '../services/preferences';
 
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
-export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools';
+export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools' | 'shortcuts';
 export type UiZoomMode = 'auto' | 'override';
 
 interface AppStore {

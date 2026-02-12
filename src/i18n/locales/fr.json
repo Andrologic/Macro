@@ -206,11 +206,13 @@
     "appearance": "Apparence",
     "ai": "IA & Modèles",
     "tools": "Outils & MCP",
+    "shortcuts": "Raccourcis",
     "desc": {
       "general": "Configurer la langue et les préférences de l'application",
       "appearance": "Personnaliser l'apparence de l'application",
       "ai": "Gérer les modèles d'IA, les fournisseurs et les clés API",
-      "tools": "Configurer les outils externes et les serveurs MCP"
+      "tools": "Configurer les outils externes et les serveurs MCP",
+      "shortcuts": "Configurer les raccourcis clavier et combinaisons"
     },
     "language_region": "Langue & Région",
     "language": "Langue",

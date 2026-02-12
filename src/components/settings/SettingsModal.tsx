@@ -7,6 +7,7 @@ import { GeneralView } from './views/GeneralView';
 import { AppearanceView } from './views/AppearanceView';
 import { AIView } from './views/AIView';
 import { ToolsView } from './views/ToolsView';
+import { ShortcutsView } from './views/ShortcutsView';
 
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
@@ -20,6 +21,7 @@ export const SettingsModal: React.FC = () => {
     { id: 'appearance', icon: 'palette', label: t('settings.appearance') || 'Appearance' },
     { id: 'ai', icon: 'cpu', label: t('settings.ai') || 'AI & Models' },
     { id: 'tools', icon: 'tool', label: t('settings.tools') || 'Tools & MCP' },
+    { id: 'shortcuts', icon: 'zap', label: t('settings.shortcuts') || 'Shortcuts' },
   ];
 
   return (
@@ -90,8 +92,9 @@ export const SettingsModal: React.FC = () => {
                  {activeSettingsTab === 'appearance' && <AppearanceView />}
                  {activeSettingsTab === 'ai' && <AIView />}
                  {activeSettingsTab === 'tools' && <ToolsView />}
-             </div>
-           </div>
+                 {activeSettingsTab === 'shortcuts' && <ShortcutsView />}
+              </div>
+            </div>
          </div>
        </div>
      </div>
