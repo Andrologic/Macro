@@ -7,7 +7,8 @@ import { Icon, IconName } from '../ui/Icon';
 import { Input } from '../ui/Input';
 import { Switch } from '../ui/Switch';
 import { cn } from '../../utils/cn';
-import { extractDomain, getFaviconUrl } from '../../services/webSearch';
+import { extractDomain, fetchWebPage, getFaviconUrl } from '../../services/webSearch';
+import { getWebSearchSettings } from '../../services/webSearchSettings';
 
 interface ContextToolboxProps {
   className?: string;
@@ -32,10 +33,15 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const [activeTab, setActiveTab] = useState<'context' | 'tools' | 'sources'>('context');
   const [isDragging, setIsDragging] = useState(false);
   const [isAddingUrl, setIsAddingUrl] = useState(false);
+  const [isFetchingUrl, setIsFetchingUrl] = useState(false);
   const [urlInput, setUrlInput] = useState('');
   const [urlError, setUrlError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
+  const webSearchSettings = getWebSearchSettings();
+  const hasSelectedWebSearchKey = webSearchSettings.provider === 'tavily'
+    ? webSearchSettings.tavilyApiKey.trim().length > 0
+    : webSearchSettings.braveApiKey.trim().length > 0;
 
   // Get citations for current conversation
   const contextCitations = selectedConversationId
@@ -163,16 +169,40 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
 
     const conversationId = await ensureConversation();
     
-    // Minimal citation since we don't have a search/fetch results here
-    addCitation({
-      type: 'web',
-      scope: 'context',
-      source: normalizedUrl,
-      title: extractDomain(normalizedUrl),
-      url: normalizedUrl,
-      messageId: `manual-${Date.now()}`,
-      conversationId: conversationId,
-    });
+    setIsFetchingUrl(true);
+    try {
+      const settings = getWebSearchSettings();
+      const shouldFetch = settings.fetchEnabled;
+
+      if (shouldFetch) {
+        const fetched = await fetchWebPage(normalizedUrl);
+        addCitation({
+          type: 'web',
+          scope: 'context',
+          source: fetched.url,
+          title: fetched.title,
+          snippet: fetched.snippet,
+          url: fetched.url,
+          messageId: `manual-${Date.now()}`,
+          conversationId: conversationId,
+        });
+      } else {
+        addCitation({
+          type: 'web',
+          scope: 'context',
+          source: normalizedUrl,
+          title: extractDomain(normalizedUrl),
+          url: normalizedUrl,
+          messageId: `manual-${Date.now()}`,
+          conversationId: conversationId,
+        });
+      }
+    } catch (error) {
+      setUrlError(error instanceof Error ? error.message : 'Unable to fetch URL');
+      return;
+    } finally {
+      setIsFetchingUrl(false);
+    }
 
     setUrlInput('');
     setUrlError('');
@@ -433,9 +463,10 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                     />
                     <button
                       onClick={handleAddUrl}
+                      disabled={isFetchingUrl}
                       className="h-9 px-3 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
                     >
-                      Add
+                      {isFetchingUrl ? 'Fetching...' : 'Add'}
                     </button>
                     <button
                       onClick={handleCancelAddUrl}
@@ -464,9 +495,16 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
               <div className="space-y-1">
                 {chatTools.length > 0 ? (
                   chatTools.map((tool) => (
+                    (() => {
+                      const webSearchLockedByKey = tool.id === 'web_search' && !hasSelectedWebSearchKey;
+
+                      return (
                     <div
                       key={tool.id}
-                      className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-accent transition-colors"
+                      className={cn(
+                        'relative group flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-accent transition-colors',
+                        webSearchLockedByKey && 'opacity-50'
+                      )}
                     >
                       <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
                         <Icon name={tool.icon as any} size={12} className="text-primary" />
@@ -479,11 +517,24 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                       </div>
                       <div className="flex items-center shrink-0">
                         <Switch
-                          checked={isChatToolEnabled(tool.id)}
-                          onCheckedChange={() => toggleChatTool(tool.id)}
+                          checked={webSearchLockedByKey ? false : isChatToolEnabled(tool.id)}
+                          disabled={webSearchLockedByKey}
+                          onCheckedChange={() => {
+                            if (webSearchLockedByKey) return;
+                            toggleChatTool(tool.id);
+                          }}
                         />
                       </div>
+                      {webSearchLockedByKey && (
+                        <div className="pointer-events-none absolute -top-2 right-2 hidden group-hover:block z-10">
+                          <div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">
+                            Ajoutez une clé API dans Paramètres &gt; Outils &gt; Web Search
+                          </div>
+                        </div>
+                      )}
                     </div>
+                      );
+                    })()
                   ))
                 ) : (
                   <p className="text-sm text-muted-foreground text-center py-4">

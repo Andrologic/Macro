@@ -19,6 +19,21 @@ export const mockInternalTools: Tool[] = [
       maxResults: 5,
     },
   },
+  // Web fetch tool (direct URL retrieval, no API key required)
+  {
+    id: 'web_fetch',
+    name: 'Web Fetch',
+    category: 'web',
+    status: 'enabled',
+    description: 'Fetch and read a specific URL directly',
+    icon: 'globe',
+    config: {
+      enabled: true,
+      visible: true,
+      chatMode: true,
+      internal: false,
+    },
+  },
   // File reading tool
   {
     id: 'read_file',
@@ -58,6 +73,7 @@ export const mockMCPServers: MCPServer[] = [];
 // Default settings
 export const defaultToolSettings: Record<string, boolean> = {
   web_search: true,
+  web_fetch: true,
   read_file: true,
   mark_source_passage: true,
 };

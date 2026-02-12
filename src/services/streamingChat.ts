@@ -6,7 +6,7 @@
  */
 
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-import { webSearch, formatSearchResultsAsContext, WebSearchOptions } from './webSearch';
+import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions } from './webSearch';
 
 // Global references to active streaming resources for cancellation
 let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -64,6 +64,7 @@ export interface StreamingChatOptions {
   signal?: AbortSignal;
   // Tool calling options
   enableWebSearch?: boolean;
+  enableWebFetch?: boolean;
   webSearchOptions?: WebSearchOptions;
   onToolCall?: (toolName: string, args: Record<string, unknown>) => void;
   onToolResult?: (toolName: string, result: string) => void;
@@ -91,6 +92,24 @@ const WEB_SEARCH_TOOL = {
         },
       },
       required: ['query'],
+    },
+  },
+};
+
+const WEB_FETCH_TOOL = {
+  type: 'function',
+  function: {
+    name: 'web_fetch',
+    description: 'Fetch and read the content of a specific URL.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description: 'URL to fetch and read',
+        },
+      },
+      required: ['url'],
     },
   },
 };
@@ -162,6 +181,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     onComplete,
     onError,
     enableWebSearch = true,
+    enableWebFetch = true,
     webSearchOptions,
     onToolCall,
     onToolResult,
@@ -170,12 +190,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     // Note: signal is not used with Tauri HTTP plugin - AbortController support is limited
   } = options;
 
-  const allowedTools = new Set(allowedToolIds || ['mark_source_passage', 'read_file', 'web_search']);
+  const allowedTools = new Set(allowedToolIds || ['mark_source_passage', 'read_file', 'web_search', 'web_fetch']);
 
   const formatToolUsageLabel = (toolName: string, args: Record<string, unknown>) => {
     if (toolName === 'web_search') {
       const query = typeof args.query === 'string' ? args.query : '';
       return `\n\n[TOOL] web_search${query ? ` ("${query}")` : ''}\n`;
+    }
+
+    if (toolName === 'web_fetch') {
+      const url = typeof args.url === 'string' ? args.url : '';
+      return `\n\n[TOOL] web_fetch${url ? ` ("${url}")` : ''}\n`;
     }
 
     if (toolName === 'mark_source_passage') {
@@ -241,6 +266,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     (webSearchOptions?.tavilyApiKey || webSearchOptions?.braveApiKey)
   ) {
     tools.push(WEB_SEARCH_TOOL);
+  }
+  if (allowedTools.has('web_fetch') && enableWebFetch) {
+    tools.push(WEB_FETCH_TOOL);
   }
   if (tools.length > 0) {
     requestBody.tools = tools;
@@ -425,6 +453,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             onToken(searchMsg);
           }
 
+          if (toolName === 'web_fetch') {
+            const url = typeof args.url === 'string' ? args.url : '';
+            if (!url.trim()) {
+              toolResult = 'Missing URL for web_fetch.';
+            } else {
+              const fetched = await fetchWebPage(url);
+              toolResult = `TITLE: ${fetched.title}\nURL: ${fetched.url}\n\n${fetched.content}`;
+            }
+          }
+
           if (toolName === 'read_file') {
             const normalizeMatch = (value?: string) =>
               (value || '')
@@ -475,7 +513,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           
           if (toolName === 'mark_source_passage') {
             toolResult = 'Source passage marked successfully.';
-          } else if (toolName !== 'web_search' && toolName !== 'read_file') {
+          } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
             toolResult = `Unsupported tool: ${toolName}`;
           }
 

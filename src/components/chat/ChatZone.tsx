@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
@@ -84,10 +84,19 @@ const ChatZone: React.FC = () => {
 
   // Estimate tokens for input
   const inputTokens = estimateTokens(inputValue);
-  const contextTokens = currentMessages.reduce(
-    (sum, msg) => sum + estimateTokens(msg.content),
-    0
+  const rawContextTokens = useMemo(
+    () => currentMessages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0),
+    [currentMessages]
   );
+  const stableContextTokensRef = useRef(rawContextTokens);
+
+  useEffect(() => {
+    if (!isStreaming) {
+      stableContextTokensRef.current = rawContextTokens;
+    }
+  }, [isStreaming, rawContextTokens]);
+
+  const contextTokens = isStreaming ? stableContextTokensRef.current : rawContextTokens;
 
   // Scroll magnetism: auto-scroll during streaming, animated separator
   const { scrollContainerRef, separatorState } = useScrollMagnet(

@@ -495,7 +495,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
       }
       return <input {...props} />;
     },
-  }), []);
+  }), [isStreaming]);
 
   return (
     <div className={cn('markdown-content', className)}>
