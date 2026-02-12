@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, Suspense, lazy } from 'react';
 import { Header } from './components/layout/Header';
 import { Toaster } from './components/ui/Toaster';
 import { useWindowRestoration } from './hooks/useWindowRestoration';
+import { useUiZoom } from './hooks/useUiZoom';
 import { PanelResizer } from './components/layout/PanelResizer';
 import { ModeRouter, preloadAllModes } from './components/layout/ModeRouter';
 import { useAppStore } from './stores/useAppStore';
@@ -46,6 +47,7 @@ const CodeFileViewerModal = lazy(() => import('./components/modals/CodeFileViewe
 const App: React.FC = () => {
   // Restore window size/position from preferences
   useWindowRestoration();
+  useUiZoom();
 
   // ==========================================================================
   // STORE INITIALIZATION FUNCTIONS
