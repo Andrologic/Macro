@@ -39,6 +39,7 @@ const ChatZone: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
 
   // Architect Mode: Ensure single conversation
   useEffect(() => {
@@ -141,6 +142,28 @@ const ChatZone: React.FC = () => {
     await editMessage(messageId, content);
   };
 
+  useEffect(() => {
+    const handleFocusMessage = (event: Event) => {
+      const customEvent = event as CustomEvent<{ messageId?: string }>;
+      const messageId = customEvent.detail?.messageId;
+      if (!messageId) return;
+
+      const target = document.getElementById(`chat-message-${messageId}`);
+      if (!target) return;
+
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setHighlightedMessageId(messageId);
+      window.setTimeout(() => {
+        setHighlightedMessageId((current) => (current === messageId ? null : current));
+      }, 1800);
+    };
+
+    window.addEventListener('macro:focus-message', handleFocusMessage as EventListener);
+    return () => {
+      window.removeEventListener('macro:focus-message', handleFocusMessage as EventListener);
+    };
+  }, []);
+
   return (
     <main className="h-full flex bg-background">
       {/* Main Chat Area */}
@@ -190,7 +213,14 @@ const ChatZone: React.FC = () => {
                 const isEditing = editingMessageId === message.id;
 
                 return (
-                  <div key={message.id} className="relative">
+                  <div
+                    key={message.id}
+                    id={`chat-message-${message.id}`}
+                    className={cn(
+                      'relative rounded-lg transition-colors duration-500',
+                      highlightedMessageId === message.id && 'bg-primary/10 ring-1 ring-primary/40'
+                    )}
+                  >
                     <div
                       className={cn(
                         'relative transition-all duration-200',

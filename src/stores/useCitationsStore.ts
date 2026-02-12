@@ -46,6 +46,16 @@ interface CitationsState {
     reason?: string;
   }) => string;
   addWebCitations: (results: WebSearchResult[], messageId: string, conversationId: string) => void;
+  updateSourcePassage: (payload: {
+    conversationId: string;
+    citationId: string;
+    title?: string;
+    passage?: string;
+    source?: string;
+    url?: string;
+    kind?: SourcePassageKind;
+    reason?: string | null;
+  }) => boolean;
   removeCitation: (id: string) => void;
   clearConversationCitations: (conversationId: string) => void;
   pruneConversationSourceCitations: (conversationId: string, keepMessageIds: string[]) => void;
@@ -69,6 +79,18 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
   citations: [],
 
   addCitation: (citationData) => {
+    if (citationData.type === 'web' || citationData.type === 'file') {
+      const existing = get().citations.find((c) => {
+        if (c.conversationId !== citationData.conversationId) return false;
+        if (c.scope !== citationData.scope || c.type !== citationData.type) return false;
+        if (citationData.type === 'web') {
+          return (c.url || c.source) === (citationData.url || citationData.source);
+        }
+        return (c.path || c.source) === (citationData.path || citationData.source);
+      });
+      if (existing) return existing.id;
+    }
+
     const id = `cite-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const citation: Citation = {
       ...citationData,
@@ -138,6 +160,45 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
     set((state) => ({
       citations: [...state.citations, ...newCitations],
     }));
+  },
+
+  updateSourcePassage: ({ conversationId, citationId, title, passage, source, url, kind, reason }) => {
+    const citation = get().citations.find((c) => c.id === citationId);
+    if (!citation) return false;
+    if (citation.conversationId !== conversationId) return false;
+    if (citation.scope !== 'source' || citation.type !== 'source_passage') return false;
+
+    const nextTitle = typeof title === 'string' ? title.trim() : citation.title;
+    const nextPassage = typeof passage === 'string' ? passage.trim() : (citation.snippet || '');
+    const nextSource = typeof source === 'string' ? source.trim() : citation.source;
+    const nextUrl = typeof url === 'string' ? url.trim() : citation.url;
+    const nextKind = kind || citation.kind || 'used';
+    const nextReason = reason === null
+      ? undefined
+      : typeof reason === 'string'
+        ? (reason.trim() || undefined)
+        : citation.reason;
+
+    if (!nextTitle || !nextPassage) return false;
+
+    set((state) => ({
+      citations: state.citations.map((c) =>
+        c.id === citationId
+          ? {
+              ...c,
+              title: nextTitle,
+              snippet: nextPassage,
+              source: nextSource || nextUrl || nextTitle,
+              url: nextUrl || undefined,
+              kind: nextKind,
+              reason: nextReason,
+              timestamp: new Date().toISOString(),
+            }
+          : c
+      ),
+    }));
+
+    return true;
   },
 
   removeCitation: (id) => {

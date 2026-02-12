@@ -66,7 +66,7 @@ export interface StreamingChatOptions {
   enableWebSearch?: boolean;
   enableWebFetch?: boolean;
   webSearchOptions?: WebSearchOptions;
-  onToolCall?: (toolName: string, args: Record<string, unknown>) => void;
+  onToolCall?: (toolName: string, args: Record<string, unknown>) => string | void;
   onToolResult?: (toolName: string, result: string) => void;
   fileToolContext?: Array<{
     title: string;
@@ -153,6 +153,85 @@ const MARK_SOURCE_PASSAGE_TOOL = {
   },
 };
 
+const READ_SOURCES_TOOL = {
+  type: 'function',
+  function: {
+    name: 'read_sources',
+    description: 'Read saved source passages from the current conversation. Can filter by kind and query.',
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: {
+          type: 'string',
+          enum: ['all', 'interesting', 'used'],
+          description: 'Optional filter by source passage kind.',
+        },
+        query: {
+          type: 'string',
+          description: 'Optional keyword filter over title, passage, source, url, and reason.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Optional maximum number of passages to return (1-50).',
+        },
+        include_snippet: {
+          type: 'boolean',
+          description: 'Include full passage snippets in results. Defaults to true.',
+        },
+      },
+      required: [],
+    },
+  },
+};
+
+const EDIT_SOURCE_PASSAGE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'edit_source_passage',
+    description: 'Update, reclassify, or delete a saved source passage by citation_id.',
+    parameters: {
+      type: 'object',
+      properties: {
+        citation_id: {
+          type: 'string',
+          description: 'ID of the source citation to modify.',
+        },
+        action: {
+          type: 'string',
+          enum: ['update', 'reclassify', 'delete'],
+          description: 'Type of modification to apply.',
+        },
+        title: {
+          type: 'string',
+          description: 'Updated title for action="update".',
+        },
+        passage: {
+          type: 'string',
+          description: 'Updated passage text for action="update".',
+        },
+        source: {
+          type: 'string',
+          description: 'Updated source label for action="update".',
+        },
+        url: {
+          type: 'string',
+          description: 'Updated URL for action="update".',
+        },
+        reason: {
+          type: 'string',
+          description: 'Updated or new reason for action="update".',
+        },
+        kind: {
+          type: 'string',
+          enum: ['interesting', 'used'],
+          description: 'Required for action="reclassify". Optional for action="update".',
+        },
+      },
+      required: ['citation_id', 'action'],
+    },
+  },
+};
+
 const READ_FILE_TOOL = {
   type: 'function',
   function: {
@@ -199,7 +278,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     // Note: signal is not used with Tauri HTTP plugin - AbortController support is limited
   } = options;
 
-  const allowedTools = new Set(allowedToolIds || ['mark_source_passage', 'read_file', 'web_search', 'web_fetch']);
+  const allowedTools = new Set(allowedToolIds ?? []);
 
   const formatToolUsageLabel = (toolName: string, args: Record<string, unknown>) => {
     if (toolName === 'web_search') {
@@ -216,6 +295,19 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       const title = typeof args.title === 'string' ? args.title : '';
       const kind = typeof args.kind === 'string' ? args.kind : 'used';
       return `\n\n[TOOL] mark_source_passage${title ? ` ("${title}", kind=${kind})` : ''}\n`;
+    }
+
+    if (toolName === 'read_sources') {
+      const kind = typeof args.kind === 'string' ? args.kind : 'all';
+      const query = typeof args.query === 'string' ? args.query : '';
+      const suffix = query ? `, query="${query}"` : '';
+      return `\n\n[TOOL] read_sources (kind=${kind}${suffix})\n`;
+    }
+
+    if (toolName === 'edit_source_passage') {
+      const action = typeof args.action === 'string' ? args.action : '';
+      const citationId = typeof args.citation_id === 'string' ? args.citation_id : '';
+      return `\n\n[TOOL] edit_source_passage${citationId ? ` (id=${citationId}, action=${action || 'update'})` : ''}\n`;
     }
 
     if (toolName === 'read_file') {
@@ -264,10 +356,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     stream: true,
   };
 
-  // Always expose source-marking tool. Add web search tool only when configured.
+  // Expose only explicitly allowed tools. Web search also requires provider keys.
   const tools: unknown[] = [];
   if (allowedTools.has('mark_source_passage')) {
     tools.push(MARK_SOURCE_PASSAGE_TOOL);
+  }
+  if (allowedTools.has('read_sources')) {
+    tools.push(READ_SOURCES_TOOL);
+  }
+  if (allowedTools.has('edit_source_passage')) {
+    tools.push(EDIT_SOURCE_PASSAGE_TOOL);
   }
   if (allowedTools.has('read_file')) {
     tools.push(READ_FILE_TOOL);
@@ -436,6 +534,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         const toolName = toolCall.function.name;
         let toolResult = '';
         let shouldEmitToolDone = false;
+        let customToolResult: string | undefined;
         
         try {
           const args = JSON.parse(toolCall.function.arguments);
@@ -449,7 +548,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             continue;
           }
 
-          onToolCall?.(toolName, args);
+          const customResult = onToolCall?.(toolName, args);
+          customToolResult = typeof customResult === 'string' ? customResult : undefined;
 
           const toolUsageMsg = formatToolUsageLabel(toolName, args);
           fullContent += toolUsageMsg;
@@ -529,6 +629,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
             const kind = rawKind === 'interesting' ? 'interesting' : 'used';
             toolResult = `Source passage marked successfully (kind=${kind}).`;
+          } else if (toolName === 'read_sources') {
+            toolResult = customToolResult || 'No source passages available.';
+          } else if (toolName === 'edit_source_passage') {
+            toolResult = customToolResult || 'Source passage edit request processed.';
           } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
             toolResult = `Unsupported tool: ${toolName}`;
           }

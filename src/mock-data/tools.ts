@@ -62,7 +62,34 @@ export const mockInternalTools: Tool[] = [
       visible: true,
       chatMode: true,
       internal: true,
-      locked: true,
+    },
+  },
+  {
+    id: 'read_sources',
+    name: 'Read Sources',
+    category: 'ai',
+    status: 'enabled',
+    description: 'Read and filter source passages already saved in this conversation',
+    icon: 'book-open',
+    config: {
+      enabled: true,
+      visible: true,
+      chatMode: true,
+      internal: true,
+    },
+  },
+  {
+    id: 'edit_source_passage',
+    name: 'Edit Sources',
+    category: 'ai',
+    status: 'enabled',
+    description: 'Update, reclassify, or delete saved source passages',
+    icon: 'edit',
+    config: {
+      enabled: true,
+      visible: true,
+      chatMode: true,
+      internal: true,
     },
   },
 ];
@@ -76,5 +103,7 @@ export const defaultToolSettings: Record<string, boolean> = {
   web_fetch: true,
   read_file: true,
   mark_source_passage: true,
+  read_sources: true,
+  edit_source_passage: true,
 };
 export const defaultMCPServerSettings: Record<string, boolean> = {};
