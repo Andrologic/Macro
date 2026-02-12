@@ -93,6 +93,39 @@ const extractMetadataFromModelOutput = (raw: string): { title: string; descripti
   return { title, description };
 };
 
+const MESSAGE_IMAGES_STORAGE_KEY = 'macro_chat_message_images';
+
+export interface MessageImageAttachment {
+  id: string;
+  mimeType: string;
+  dataUrl: string;
+  width?: number;
+  height?: number;
+  createdAt: string;
+}
+
+const loadMessageImagesFromStorage = (): Record<string, MessageImageAttachment[]> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(MESSAGE_IMAGES_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, MessageImageAttachment[]>;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+};
+
+const saveMessageImagesToStorage = (imagesByMessageId: Record<string, MessageImageAttachment[]>) => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(MESSAGE_IMAGES_STORAGE_KEY, JSON.stringify(imagesByMessageId));
+  } catch {
+    // Ignore storage errors
+  }
+};
+
 interface ChatStore {
   messages: ChatMessage[];
   conversations: Conversation[];
@@ -101,6 +134,7 @@ interface ChatStore {
   isStreaming: boolean;
   lastError: string | null;
   abortController: AbortController | null;
+  messageImagesByMessageId: Record<string, MessageImageAttachment[]>;
   addMessage: (message: ChatMessage) => void;
   updateMessageContent: (messageId: string, content: string) => void;
   updateLastMessage: (content: string) => void;
@@ -122,9 +156,12 @@ interface ChatStore {
     conversationId: string;
     content: string;
     taskId?: string | null;
+    images?: MessageImageAttachment[];
   }) => Promise<void>;
   stopStreaming: () => void;
   editMessage: (messageId: string, newContent: string) => Promise<void>;
+  setMessageImages: (messageId: string, images: MessageImageAttachment[]) => void;
+  getMessageImages: (messageId: string) => MessageImageAttachment[];
   initialize: () => Promise<void>;
 }
 
@@ -291,7 +328,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   };
 
-  const prepareMessagesForRequest = (conversationId: string, allowedToolIds: string[]) => {
+  const prepareMessagesForRequest = (
+    conversationId: string,
+    allowedToolIds: string[],
+    messageWithImagesId?: string
+  ) => {
     const contextCitations = useCitationsStore.getState().getConversationContextCitations(conversationId);
     const sourceCitations = useCitationsStore.getState().getConversationSourceCitations(conversationId);
     const citations = allowedToolIds.includes('mark_source_passage')
@@ -304,6 +345,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .join(', ');
     const orderedMessages = getOrderedConversationMessages(conversationId);
     const lastUserIndex = orderedMessages.map(m => m.role).lastIndexOf('user');
+    const messageImagesByMessageId = get().messageImagesByMessageId;
 
     const preparedMessages = orderedMessages.map((message, index) => {
       let messageContent = message.content;
@@ -321,6 +363,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
           .join('\n\n---\n\n');
         
         messageContent = `CONTEXT INFORMATION:\n\n${contextBlock}\n\nUSER REQUEST: ${message.content}`;
+      }
+
+      if (message.role === 'user' && messageWithImagesId && message.id === messageWithImagesId) {
+        const images = messageImagesByMessageId[message.id] || [];
+        if (images.length > 0) {
+          return {
+            role: 'user' as const,
+            content: [
+              { type: 'text' as const, text: messageContent },
+              ...images.map((image) => ({
+                type: 'image_url' as const,
+                image_url: { url: image.dataUrl },
+              })),
+            ],
+          };
+        }
       }
 
       return {
@@ -483,6 +541,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     isStreaming: false,
     lastError: null,
     abortController: null,
+    messageImagesByMessageId: {},
 
     addMessage: (message) =>
       set((state) => {
@@ -566,6 +625,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     clearMessages: () => set({ messages: [] }),
 
+    setMessageImages: (messageId, images) =>
+      set((state) => {
+        const next = { ...state.messageImagesByMessageId };
+        if (images.length > 0) {
+          next[messageId] = images;
+        } else {
+          delete next[messageId];
+        }
+        saveMessageImagesToStorage(next);
+        return { messageImagesByMessageId: next };
+      }),
+
+    getMessageImages: (messageId) => {
+      const state = get();
+      return state.messageImagesByMessageId[messageId] || [];
+    },
+
     selectConversation: (conversationId) =>
       set((state) => {
         const updatedConversations = state.conversations.map((conv) =>
@@ -645,6 +721,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set((state) => {
         const newConversations = state.conversations.filter((c) => c.id !== conversationId);
         const newMessages = state.messages.filter((m) => m.conversation_id !== conversationId);
+        const removedMessageIds = new Set(
+          state.messages
+            .filter((m) => m.conversation_id === conversationId)
+            .map((m) => m.id)
+        );
+        const nextImages = { ...state.messageImagesByMessageId };
+        removedMessageIds.forEach((id) => {
+          delete nextImages[id];
+        });
+        saveMessageImagesToStorage(nextImages);
         const newSelectedId =
           state.selectedConversationId === conversationId
             ? newConversations[0]?.id ?? null
@@ -652,6 +738,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return {
           conversations: newConversations,
           messages: newMessages,
+          messageImagesByMessageId: nextImages,
           selectedConversationId: newSelectedId,
         };
       });
@@ -674,7 +761,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return state.messages.filter((msg) => msg.conversation_id === conversationId);
     },
 
-    sendMessage: async ({ conversationId, content, taskId }) => {
+    sendMessage: async ({ conversationId, content, taskId, images }) => {
       const { selectedProviderId, selectedModelId, providerConfigs } = useProviderStore.getState();
 
       if (!selectedProviderId || !selectedModelId) {
@@ -692,7 +779,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         (message) => message.role === 'user'
       ).length;
 
-      const userMessage: ChatMessage = {
+      let userMessage: ChatMessage = {
         id: `msg-${Date.now()}`,
         task_id: taskId ?? '',
         conversation_id: conversationId,
@@ -701,8 +788,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
         timestamp: new Date().toISOString(),
       };
 
+      if (tauriIpc.isTauriAvailable()) {
+        try {
+          const dbMessage = await tauriIpc.createMessage(conversationId, 'user', content);
+          userMessage = {
+            id: dbMessage.id,
+            task_id: taskId ?? '',
+            conversation_id: dbMessage.conversation_id,
+            role: 'user',
+            content: dbMessage.content,
+            timestamp: dbMessage.created_at,
+          };
+        } catch (error) {
+          console.error('Failed to create user message in DB:', error);
+        }
+      }
+
       set({ lastError: null });
       get().addMessage(userMessage);
+      if (images && images.length > 0) {
+        get().setMessageImages(userMessage.id, images);
+      }
 
       if (userMessageCountBeforeSend === 0) {
         void maybeGenerateConversationMetadata({
@@ -716,18 +822,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
       }
 
-      // Save user message to DB if available
-      if (tauriIpc.isTauriAvailable()) {
-        tauriIpc.createMessage(conversationId, 'user', content).catch(console.error);
-      }
-
       try {
         await ensureToolsLoaded();
       } catch {
         // Continue with currently available tool state (safe default is no tools)
       }
       const allowedToolIds = getAllowedChatToolIds();
-      const messagesForRequest = prepareMessagesForRequest(conversationId, allowedToolIds);
+      const messagesForRequest = prepareMessagesForRequest(
+        conversationId,
+        allowedToolIds,
+        userMessage.id
+      );
       const fileToolContext = useCitationsStore
         .getState()
         .getConversationContextCitations(conversationId)
@@ -881,7 +986,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
           conv.id === conversationId ? { ...conv, ...conversationMeta } : conv
         );
 
-        return { messages: trimmedMessages, conversations, lastError: null };
+        const keptConversationMessageIds = new Set(
+          trimmedMessages
+            .filter((message) => message.conversation_id === conversationId)
+            .map((message) => message.id)
+        );
+        const nextImages = { ...current.messageImagesByMessageId };
+        Object.keys(nextImages).forEach((messageIdKey) => {
+          const message = trimmedMessages.find((m) => m.id === messageIdKey);
+          if (!message || (message.conversation_id === conversationId && !keptConversationMessageIds.has(messageIdKey))) {
+            delete nextImages[messageIdKey];
+          }
+        });
+        saveMessageImagesToStorage(nextImages);
+
+        return {
+          messages: trimmedMessages,
+          conversations,
+          messageImagesByMessageId: nextImages,
+          lastError: null,
+        };
       });
 
       // Keep manual context, but drop source passages produced by assistant messages that were trimmed.
@@ -899,7 +1023,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         // Continue with currently available tool state (safe default is no tools)
       }
       const allowedToolIds = getAllowedChatToolIds();
-      const messagesForRequest = prepareMessagesForRequest(conversationId, allowedToolIds);
+      const messagesForRequest = prepareMessagesForRequest(
+        conversationId,
+        allowedToolIds,
+        messageId
+      );
       const fileToolContext = useCitationsStore
         .getState()
         .getConversationContextCitations(conversationId)
@@ -1022,6 +1150,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
           set({
             conversations,
             messages: allMessages,
+            messageImagesByMessageId: (() => {
+              const loaded = loadMessageImagesFromStorage();
+              const existingMessageIds = new Set(allMessages.map((m) => m.id));
+              const pruned: Record<string, MessageImageAttachment[]> = {};
+              Object.entries(loaded).forEach(([messageId, items]) => {
+                if (existingMessageIds.has(messageId) && Array.isArray(items) && items.length > 0) {
+                  pruned[messageId] = items;
+                }
+              });
+              saveMessageImagesToStorage(pruned);
+              return pruned;
+            })(),
             selectedConversationId: conversations[0]?.id ?? null,
             isLoading: false,
           });
@@ -1030,6 +1170,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           set({
             conversations: [],
             messages: [],
+            messageImagesByMessageId: loadMessageImagesFromStorage(),
             selectedConversationId: null,
             isLoading: false,
           });
@@ -1041,6 +1182,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         set({
           conversations: [],
           messages: [],
+          messageImagesByMessageId: loadMessageImagesFromStorage(),
           selectedConversationId: null,
           isLoading: false,
           lastError: normalized.message,
