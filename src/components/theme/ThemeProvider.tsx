@@ -29,7 +29,7 @@ export function useTheme() {
 // =============================================================================
 
 const THEME_CACHE_KEY = 'macro-theme-cache';
-const THEME_CACHE_VERSION = '1';
+const THEME_CACHE_VERSION = '2';
 
 interface CachedTheme {
   version: string;
