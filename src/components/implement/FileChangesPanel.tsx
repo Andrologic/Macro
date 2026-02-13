@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from 'react';
+import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
-import { useFileChangesStore } from '../../stores/useFileChangesStore';
-import { buildFolderTree, FolderNode } from '../../mock-data/file-changes';
+import { useFileChangesStore, buildFolderTree, FolderNode } from '../../stores/useFileChangesStore';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal.tsx';
@@ -137,11 +137,19 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     changes,
     isDiffModalOpen,
     selectedChangeId,
+    isLoading,
+    lastError,
+    loadCurrentChanges,
     openDiffModal,
     closeDiffModal,
     markAllAsReviewed,
     getStats,
   } = useFileChangesStore();
+
+  useEffect(() => {
+    if (!selectedGroupId || !selectedTaskId) return;
+    void loadCurrentChanges();
+  }, [selectedGroupId, selectedTaskId, loadCurrentChanges]);
 
   const stats = getStats();
   const folderTree = useMemo(() => buildFolderTree(changes), [changes]);
@@ -232,6 +240,21 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
       {/* File Tree */}
       <div className="flex-1 overflow-y-auto py-2">
+        {isLoading && (
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+            Loading repository changes...
+          </div>
+        )}
+        {!isLoading && lastError && (
+          <div className="px-4 py-8 text-center text-sm text-red-500">
+            {lastError}
+          </div>
+        )}
+        {!isLoading && !lastError && folderTree.length === 0 && (
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+            No pending file changes for this task.
+          </div>
+        )}
         {folderTree.map((node) => (
           <FolderTreeItem key={node.path} node={node} depth={0} onFileClick={handleFileClick} />
         ))}

@@ -73,7 +73,10 @@ export interface StreamingChatOptions {
   enableWebSearch?: boolean;
   enableWebFetch?: boolean;
   webSearchOptions?: WebSearchOptions;
-  onToolCall?: (toolName: string, args: Record<string, unknown>) => string | void;
+  onToolCall?: (
+    toolName: string,
+    args: Record<string, unknown>
+  ) => Promise<string | void> | string | void;
   onToolResult?: (toolName: string, result: string) => void;
   fileToolContext?: Array<{
     title: string;
@@ -261,6 +264,111 @@ const READ_FILE_TOOL = {
   },
 };
 
+const LIST_TOOL = {
+  type: 'function',
+  function: {
+    name: 'list',
+    description: 'List files and directories under a path in the local workspace.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Directory path to list. Defaults to current workspace root.' },
+        recursive: { type: 'boolean', description: 'Whether to list recursively.' },
+        include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
+        max_depth: { type: 'number', description: 'Maximum recursion depth when recursive=true.' },
+      },
+      required: [],
+    },
+  },
+};
+
+const READ_WORKSPACE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'read',
+    description: 'Read a file from the local workspace by path.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path of the file to read.' },
+        start_line: { type: 'number', description: 'Optional 1-based start line.' },
+        end_line: { type: 'number', description: 'Optional 1-based end line.' },
+      },
+      required: ['path'],
+    },
+  },
+};
+
+const WRITE_WORKSPACE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'write',
+    description: 'Create or overwrite a workspace file with full content.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path of the file to write.' },
+        content: { type: 'string', description: 'Final file content.' },
+        create_dirs: { type: 'boolean', description: 'Create missing parent directories.' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+};
+
+const EDIT_WORKSPACE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'edit',
+    description: 'Edit a workspace file by replacing exact text.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path of the file to edit.' },
+        old_text: { type: 'string', description: 'Exact text to replace.' },
+        new_text: { type: 'string', description: 'Replacement text.' },
+        replace_all: { type: 'boolean', description: 'Replace all matches (default false = first only).' },
+      },
+      required: ['path', 'old_text', 'new_text'],
+    },
+  },
+};
+
+const GLOB_WORKSPACE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'glob',
+    description: 'Find workspace files matching a glob pattern (example: src/**/*.ts).',
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Glob pattern.' },
+        include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
+      },
+      required: ['pattern'],
+    },
+  },
+};
+
+const GREP_WORKSPACE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'grep',
+    description: 'Search text in workspace files.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Text or regex to search for.' },
+        is_regexp: { type: 'boolean', description: 'Treat query as regex when true.' },
+        include_pattern: { type: 'string', description: 'Optional file glob filter.' },
+        include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
+        max_results: { type: 'number', description: 'Maximum result rows to return.' },
+      },
+      required: ['query'],
+    },
+  },
+};
+
 /**
  * Send a streaming chat completion request
  */
@@ -324,6 +432,36 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       return `\n\n[TOOL] read_file${file ? ` ("${file}"${suffix})` : ''}\n`;
     }
 
+    if (toolName === 'list') {
+      const path = typeof args.path === 'string' ? args.path : '.';
+      return `\n\n[TOOL] list${path ? ` ("${path}")` : ''}\n`;
+    }
+
+    if (toolName === 'read') {
+      const path = typeof args.path === 'string' ? args.path : '';
+      return `\n\n[TOOL] read${path ? ` ("${path}")` : ''}\n`;
+    }
+
+    if (toolName === 'write') {
+      const path = typeof args.path === 'string' ? args.path : '';
+      return `\n\n[TOOL] write${path ? ` ("${path}")` : ''}\n`;
+    }
+
+    if (toolName === 'edit') {
+      const path = typeof args.path === 'string' ? args.path : '';
+      return `\n\n[TOOL] edit${path ? ` ("${path}")` : ''}\n`;
+    }
+
+    if (toolName === 'glob') {
+      const pattern = typeof args.pattern === 'string' ? args.pattern : '';
+      return `\n\n[TOOL] glob${pattern ? ` ("${pattern}")` : ''}\n`;
+    }
+
+    if (toolName === 'grep') {
+      const query = typeof args.query === 'string' ? args.query : '';
+      return `\n\n[TOOL] grep${query ? ` ("${query}")` : ''}\n`;
+    }
+
     return `\n\n[TOOL] ${toolName}\n`;
   };
 
@@ -376,6 +514,24 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   }
   if (allowedTools.has('read_file')) {
     tools.push(READ_FILE_TOOL);
+  }
+  if (allowedTools.has('list')) {
+    tools.push(LIST_TOOL);
+  }
+  if (allowedTools.has('read')) {
+    tools.push(READ_WORKSPACE_TOOL);
+  }
+  if (allowedTools.has('write')) {
+    tools.push(WRITE_WORKSPACE_TOOL);
+  }
+  if (allowedTools.has('edit')) {
+    tools.push(EDIT_WORKSPACE_TOOL);
+  }
+  if (allowedTools.has('glob')) {
+    tools.push(GLOB_WORKSPACE_TOOL);
+  }
+  if (allowedTools.has('grep')) {
+    tools.push(GREP_WORKSPACE_TOOL);
   }
   if (
     allowedTools.has('web_search') &&
@@ -547,7 +703,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           const args = JSON.parse(toolCall.function.arguments);
 
           if (!allowedTools.has(toolName)) {
-            toolResult = `Tool ${toolName} is disabled in chat mode.`;
+            toolResult = `Tool ${toolName} is disabled for the current mode.`;
             toolResults.push({
               tool_call_id: toolCall.id,
               content: toolResult,
@@ -555,7 +711,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             continue;
           }
 
-          const customResult = onToolCall?.(toolName, args);
+          const customResult = await onToolCall?.(toolName, args);
           customToolResult = typeof customResult === 'string' ? customResult : undefined;
 
           const toolUsageMsg = formatToolUsageLabel(toolName, args);
@@ -640,6 +796,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             toolResult = customToolResult || 'No source passages available.';
           } else if (toolName === 'edit_source_passage') {
             toolResult = customToolResult || 'Source passage edit request processed.';
+          } else if (customToolResult) {
+            toolResult = customToolResult;
           } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
             toolResult = `Unsupported tool: ${toolName}`;
           }

@@ -1,0 +1,15 @@
+Bonjour et bienvenue dans ce document test. Ce document contient plusieurs phrases répétitives pour tester les patterns de recherche.
+
+Le mot important est "répéter". Nous allons répéter ce mot plusieurs fois dans le texte. répéter, répéter, répéter. Voilà, nous avons répété le mot "répéter".
+
+Maintenant, parlons des couleurs préférées. Ma couleur préférée est le bleu. Le bleu est une couleur apaisante. J'aime beaucoup le bleu. Le bleu me rappelle l'océan. L'océan est bleu. Tout est bleu.
+
+Dans un autre paragraphe, nous allons parler des saisons. Les saisons sont au nombre de quatre. Les quatre saisons sont : printemps, été, automne et hiver. Chaque saison a ses charmes. Les saisons se succèdent.
+
+La phrase "j'aime les saucisses" va apparaître plusieurs fois. j'aime les saucisses, j'aime les saucisses, j'aime les saucisses. Encore une fois, j'aime les saucisses.
+
+Les nombres suivants sont importants : 123, 123, 456, 789, 123, 456, 123. On voit bien que 123 apparaît plus fréquemment.
+
+Pour conclure, je vous remercie de votre attention. Je vous remercie encore une fois. Merci beaucoup. Merci pour votre patience. Merci et à bientôt !
+
+Pattern final : IMPORTANT x3, NORMAL x1, IMPORTANT x3, NORMAL x1, IMPORTANT x3.

@@ -6,6 +6,9 @@ import { useCitationsStore } from './useCitationsStore';
 import { streamChat, cancelStream, sendChatNonStreaming } from '../services/streamingChat';
 import { getStreamingWebSearchConfig } from '../services/webSearchSettings';
 import { useToolsStore } from './useToolsStore';
+import { useAppStore } from './useAppStore';
+import { getToolModePolicy } from '../services/toolModePolicy';
+import { executeWorkspaceTool } from '../services/workspaceToolExecutor';
 import * as tauriIpc from '../services/tauriIpc';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
@@ -187,17 +190,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const isSourceToolEnabled = (toolId: string): boolean => {
+    const mode = useAppStore.getState().mode;
+    const modePolicy = getToolModePolicy(mode);
+    if (!modePolicy.allowedToolIds.includes(toolId)) {
+      return false;
+    }
     return useToolsStore.getState().isChatToolEnabled(toolId);
   };
 
-  const handleToolCall = (
+  const handleToolCall = async (
     conversationId: string,
     assistantMessageId: string,
     toolName: string,
     args: Record<string, unknown>
-  ): string | void => {
+  ): Promise<string | void> => {
     if (!isSourceToolEnabled(toolName)) {
-      return `Tool ${toolName} is disabled in chat mode.`;
+      return `Tool ${toolName} is disabled for the current mode.`;
     }
 
     if (toolName === 'mark_source_passage') {
@@ -319,6 +327,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       return `Unsupported action for edit_source_passage: ${action}`;
     }
+
+    if (
+      toolName === 'list' ||
+      toolName === 'read' ||
+      toolName === 'write' ||
+      toolName === 'edit' ||
+      toolName === 'glob' ||
+      toolName === 'grep'
+    ) {
+      const mode = useAppStore.getState().mode;
+      return executeWorkspaceTool(toolName, args, mode);
+    }
   };
 
   const getOrderedConversationMessages = (conversationId: string) => {
@@ -430,9 +450,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
-  const getAllowedChatToolIds = (): string[] => {
+  const getAllowedToolIdsForCurrentMode = (): string[] => {
+    const mode = useAppStore.getState().mode;
+    const modePolicy = getToolModePolicy(mode);
     const toolsState = useToolsStore.getState();
-    return toolsState.getEnabledChatToolIds();
+
+    if (mode === 'Chat') {
+      const enabledChatTools = toolsState.getEnabledChatToolIds();
+      return enabledChatTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId));
+    }
+
+    const enabledTools = Object.values(toolsState.internalTools)
+      .filter((tool) => toolsState.isToolEnabled(tool.id))
+      .map((tool) => tool.id);
+
+    return enabledTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId));
   };
 
   const prepareMetadataMessages = (firstUserContent: string) => [
@@ -827,7 +859,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } catch {
         // Continue with currently available tool state (safe default is no tools)
       }
-      const allowedToolIds = getAllowedChatToolIds();
+      const allowedToolIds = getAllowedToolIdsForCurrentMode();
       const messagesForRequest = prepareMessagesForRequest(
         conversationId,
         allowedToolIds,
@@ -1022,7 +1054,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } catch {
         // Continue with currently available tool state (safe default is no tools)
       }
-      const allowedToolIds = getAllowedChatToolIds();
+      const allowedToolIds = getAllowedToolIdsForCurrentMode();
       const messagesForRequest = prepareMessagesForRequest(
         conversationId,
         allowedToolIds,
