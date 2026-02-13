@@ -6,6 +6,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../ui/Tabs';
 import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';
 import { cn } from '../../../utils/cn';
+import { useAppStore } from '../../../stores/useAppStore';
+import { getToolModePolicy } from '../../../services/toolModePolicy';
 import {
   WebSearchSettings,
   getWebSearchSettings,
@@ -21,6 +23,11 @@ export const ToolsView: React.FC = () => {
         toggleMCPServer,
         isToolEnabled,
     } = useToolsStore();
+    const mode = useAppStore((state) => state.mode);
+
+    const chatPolicy = useMemo(() => getToolModePolicy('Chat'), []);
+    const architectPolicy = useMemo(() => getToolModePolicy('Architect'), []);
+    const implementPolicy = useMemo(() => getToolModePolicy('Implement'), []);
 
     const [searchQuery, setSearchQuery] = useState('');
     const [webSearchSettings, setWebSearchSettings] = useState<WebSearchSettings>(getWebSearchSettings);
@@ -62,6 +69,11 @@ export const ToolsView: React.FC = () => {
 
     return (
         <div className="h-full flex flex-col animate-in fade-in slide-in-from-bottom-2 duration-300">
+               <div className="mb-4 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+                 {mode === 'Chat'
+                   ? 'Chat mode: user-selected tools from the Chat toolbox are respected before execution.'
+                   : 'Architect/Implement: enabled tools may run automatically when the model needs them; usage is shown inline in chat.'}
+               </div>
              <div className="mb-6">
                 <Input 
                    placeholder="Search tools & servers..." 
@@ -229,6 +241,18 @@ export const ToolsView: React.FC = () => {
                                     <p className="text-sm text-muted-foreground">{tool.description}</p>
                                     <div className="flex gap-2">
                                         <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground capitalize">{tool.category}</span>
+                                                                                {chatPolicy.allowedToolIds.includes(tool.id) && (
+                                                                                    <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">Chat</span>
+                                                                                )}
+                                                                                {architectPolicy.allowedToolIds.includes(tool.id) && (
+                                                                                    <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">Architect</span>
+                                                                                )}
+                                                                                {implementPolicy.allowedToolIds.includes(tool.id) && (
+                                                                                    <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">Implement</span>
+                                                                                )}
+                                                                                {(tool.id === 'write' || tool.id === 'edit') && (
+                                                                                    <span className="text-xs bg-amber-500/10 px-2 py-0.5 rounded text-amber-600 dark:text-amber-400">Architect: .macro only</span>
+                                                                                )}
                                     </div>
                                 </div>
                             </div>

@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
@@ -61,6 +61,33 @@ impl Default for AIConfig {
     }
 }
 
+fn resolve_workspace_path_for_cwd(workspace_path: PathBuf, cwd: &Path) -> PathBuf {
+    if workspace_path != PathBuf::from(".") {
+        return workspace_path;
+    }
+
+    let cwd_name = cwd.file_name().and_then(|name| name.to_str());
+    if cwd_name != Some("src-tauri") {
+        return workspace_path;
+    }
+
+    cwd.parent()
+        .map(|parent| parent.to_path_buf())
+        .unwrap_or(workspace_path)
+}
+
+fn normalize_workspace_path(workspace_path: PathBuf) -> PathBuf {
+    match std::env::current_dir() {
+        Ok(cwd) => resolve_workspace_path_for_cwd(workspace_path, &cwd),
+        Err(_) => workspace_path,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_resolve_workspace_path_for_cwd(workspace_path: PathBuf, cwd: &Path) -> PathBuf {
+    resolve_workspace_path_for_cwd(workspace_path, cwd)
+}
+
 pub fn load_config() -> crate::core::Result<AppConfig> {
     let mut settings = config::Config::builder()
         .set_default("workspace_path", ".")?
@@ -72,7 +99,7 @@ pub fn load_config() -> crate::core::Result<AppConfig> {
         settings = settings.add_source(config::File::with_name(&settings_file).required(false));
     }
 
-    settings
+    let mut config: AppConfig = settings
         .build()
         .map_err(|e| crate::core::error::BackendError::Config {
             message: e.to_string(),
@@ -80,5 +107,9 @@ pub fn load_config() -> crate::core::Result<AppConfig> {
         .try_deserialize()
         .map_err(|e| crate::core::error::BackendError::Config {
             message: e.to_string(),
-        })
+        })?;
+
+    config.workspace_path = normalize_workspace_path(config.workspace_path);
+
+    Ok(config)
 }

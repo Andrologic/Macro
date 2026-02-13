@@ -98,6 +98,49 @@ export interface DbProviderModelInput {
   pricing_request?: string | null;
 }
 
+export interface FsFileContentDto {
+  content: string;
+  language: string;
+  is_binary: boolean;
+  size: number;
+  encoding: string;
+}
+
+export interface FsDirEntryDto {
+  path: string;
+  relative_path: string;
+  name: string;
+  kind: string;
+  size?: number | null;
+  modified?: string | null;
+  created?: string | null;
+  language?: string | null;
+  is_hidden: boolean;
+  is_readonly: boolean;
+}
+
+export interface FsFileStatsDto {
+  path: string;
+  name: string;
+  kind: string;
+  size: number;
+  created?: string | null;
+  modified: string;
+  accessed?: string | null;
+  permissions: string;
+  language?: string | null;
+  is_readonly: boolean;
+  is_hidden: boolean;
+  is_symlink: boolean;
+  symlink_target?: string | null;
+}
+
+export interface FsWriteResultDto {
+  path: string;
+  bytes_written: number;
+  created: boolean;
+}
+
 // ============ Conversations ============
 
 export async function listConversations(): Promise<DbConversation[]> {
@@ -173,6 +216,86 @@ export async function deleteMessagesAfter(
   afterMessageId: string
 ): Promise<void> {
   return invoke('db_delete_messages_after', { conversationId, afterMessageId });
+}
+
+// ============ File System ============
+
+export async function fsReadFile(path: string): Promise<FsFileContentDto> {
+  return invoke<FsFileContentDto>('fs_read_file', { path });
+}
+
+export async function fsWriteFile(params: {
+  path: string;
+  content: string;
+  createDirs?: boolean;
+}): Promise<FsWriteResultDto> {
+  return invoke<FsWriteResultDto>('fs_write_file', {
+    path: params.path,
+    content: params.content,
+    createDirs: params.createDirs ?? null,
+  });
+}
+
+export async function fsListDir(params: {
+  path: string;
+  recursive?: boolean;
+  includeHidden?: boolean;
+  maxDepth?: number;
+}): Promise<FsDirEntryDto[]> {
+  return invoke<FsDirEntryDto[]>('fs_list_dir', {
+    path: params.path,
+    recursive: params.recursive ?? null,
+    includeHidden: params.includeHidden ?? null,
+    maxDepth: params.maxDepth ?? null,
+  });
+}
+
+export async function fsStat(path: string): Promise<FsFileStatsDto> {
+  return invoke<FsFileStatsDto>('fs_stat', { path });
+}
+
+export async function fsExists(path: string): Promise<boolean> {
+  return invoke<boolean>('fs_exists', { path });
+}
+
+export async function fsDelete(params: {
+  path: string;
+  recursive?: boolean;
+}): Promise<void> {
+  return invoke('fs_delete', {
+    path: params.path,
+    recursive: params.recursive ?? null,
+  });
+}
+
+export async function fsCreateDir(params: {
+  path: string;
+  recursive?: boolean;
+}): Promise<void> {
+  return invoke('fs_create_dir', {
+    path: params.path,
+    recursive: params.recursive ?? null,
+  });
+}
+
+export async function fsCopy(params: {
+  src: string;
+  dest: string;
+}): Promise<number> {
+  return invoke<number>('fs_copy', {
+    src: params.src,
+    dest: params.dest,
+  });
+}
+
+export async function fsMove(params: {
+  src: string;
+  dest: string;
+}): Promise<void> {
+  return invoke('fs_move', {
+    src: params.src,
+    dest: params.dest,
+  });
 }
 
 // ============ Provider Configs ============
