@@ -36,8 +36,7 @@ concurrency = 64
 
 # Cache configuration - Optimized for performance
 [install.cache]
-# The directory to use for the cache
-dir = "~/.bun/install/cache"
+
 # Keep cache enabled for fast reinstalls
 disable = false
 # Use manifest cache for faster resolution
