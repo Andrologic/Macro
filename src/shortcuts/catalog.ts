@@ -7,6 +7,7 @@ export type ShortcutId =
   | 'app.switchMode.architect'
   | 'app.switchMode.implement'
   | 'app.switchMode.chat'
+  | 'app.switchMode.debug'
   | 'app.toggleLeftPanel'
   | 'app.toggleRightPanel'
   | 'ai.cycleProvider'
@@ -68,6 +69,13 @@ export const shortcutDefinitions: ShortcutDefinition[] = [
     label: 'Switch to Chat mode',
     description: 'Switch active mode to Chat',
     defaultBinding: 'Mod+3',
+  },
+  {
+    id: 'app.switchMode.debug',
+    category: 'mode',
+    label: 'Switch to Debug mode',
+    description: 'Switch active mode to Debug',
+    defaultBinding: 'Mod+4',
   },
   {
     id: 'app.toggleLeftPanel',

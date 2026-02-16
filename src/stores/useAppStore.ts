@@ -83,6 +83,29 @@ interface ImportProjectData {
   path?: string;
 }
 
+const derivePlanNodesFromPlan = (plan: Plan | null): PlanNode[] => {
+  if (!plan?.tasks?.length) {
+    return [];
+  }
+
+  return plan.tasks.map((task) => ({
+    id: task.id,
+    title: task.title,
+    description: task.description,
+    type: 'task',
+    status:
+      task.status === 'Completed'
+        ? 'completed'
+        : task.status === 'InProgress'
+          ? 'in-progress'
+          : task.status === 'Blocked'
+            ? 'blocked'
+            : 'pending',
+    dependencies: task.dependencies,
+    projectId: task.project_id,
+  }));
+};
+
 export const useAppStore = create<AppStore>((set, get) => ({
   mode: 'Implement',
   currentPlan: null,
@@ -102,7 +125,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   rightPanelWidth: 320,
   isLeftPanelOpen: true,
   isRightPanelOpen: true,
-  enabledModes: ['Architect', 'Implement', 'Chat'],
+  enabledModes: ['Architect', 'Implement', 'Chat', 'Debug'],
   uiZoomMode: 'auto',
   uiZoomLevel: 1,
   planNodes: [],
@@ -118,9 +141,27 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   setProjectGroups: (groups) => set({ projectGroups: groups }),
 
-  setSelectedGroup: (groupId) => set({ selectedGroupId: groupId, selectedProjectId: null }),
+  setSelectedGroup: (groupId) => {
+    set({ selectedGroupId: groupId, selectedProjectId: null });
+    void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, groupId);
+    void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, null);
+  },
 
-  setSelectedProject: (projectId) => set({ selectedProjectId: projectId }),
+  setSelectedProject: (projectId) => {
+    set({ selectedProjectId: projectId });
+    void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, projectId);
+
+    if (projectId) {
+      const state = get();
+      const matchingGroup = state.projectGroups.find((group) =>
+        group.projects.some((project) => project.id === projectId)
+      );
+      if (matchingGroup) {
+        set({ selectedGroupId: matchingGroup.id });
+        void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, matchingGroup.id);
+      }
+    }
+  },
 
   setSelectedTask: (taskId) => set({ selectedTaskId: taskId }),
 
@@ -168,26 +209,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   createProject: async (data: CreateProjectData) => {
     set({ isLoading: true, lastError: null });
     try {
-      // Generate a new project ID
-      const projectId = `project_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-      const newProject: Project = {
-        id: projectId,
-        name: data.name,
-        path: data.path || data.name.toLowerCase().replace(/\s+/g, '-'),
-        created_at: new Date().toISOString(),
-        status: 'active',
-        metadata: {
-          description: data.description,
-          tags: [],
-          team_members: [],
-          api_contracts: [],
-          dependencies: [],
-        },
-      };
+      const { project: newProject } = await services.createProject(data);
+      let targetGroupId = data.groupId;
 
       if (data.groupId) {
-        // Add project to existing group
         set((state) => ({
           projectGroups: state.projectGroups.map((group) =>
             group.id === data.groupId
@@ -196,10 +221,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
           ),
         }));
       } else {
-        // Create new group with this project
-        const groupId = `group_${Date.now()}`;
+        targetGroupId = `group_${Date.now()}`;
         const newGroup: ProjectGroup = {
-          id: groupId,
+          id: targetGroupId,
           name: data.name,
           isOpen: true,
           projects: [newProject],
@@ -208,6 +232,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
           projectGroups: [...state.projectGroups, newGroup],
         }));
       }
+
+      set((state) => ({
+        currentPlan: state.currentPlan
+          ? {
+              ...state.currentPlan,
+              project_ids: state.currentPlan.project_ids.includes(newProject.id)
+                ? state.currentPlan.project_ids
+                : [...state.currentPlan.project_ids, newProject.id],
+            }
+          : state.currentPlan,
+      }));
+
+      set({
+        selectedGroupId: targetGroupId,
+        selectedProjectId: newProject.id,
+      });
+      void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, targetGroupId);
+      void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, newProject.id);
 
       set({ isLoading: false, lastError: null });
     } catch (error) {
@@ -220,26 +262,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   importProject: async (data: ImportProjectData) => {
     set({ isLoading: true, lastError: null });
     try {
-      // Generate a new project ID
-      const projectId = `project_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-      const newProject: Project = {
-        id: projectId,
-        name: data.projectName,
-        path: data.path || data.projectName.toLowerCase().replace(/\s+/g, '-'),
-        created_at: new Date().toISOString(),
-        status: 'active',
-        metadata: {
-          description: `Imported from ${data.gitUrl}`,
-          tags: [],
-          team_members: [],
-          api_contracts: [],
-          dependencies: [],
-        },
-      };
+      const { project: newProject } = await services.importGitRepo(data);
+      let targetGroupId = data.groupId;
 
       if (data.groupId) {
-        // Add project to existing group
         set((state) => ({
           projectGroups: state.projectGroups.map((group) =>
             group.id === data.groupId
@@ -248,10 +274,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
           ),
         }));
       } else {
-        // Create new group with this project
-        const groupId = `group_${Date.now()}`;
+        targetGroupId = `group_${Date.now()}`;
         const newGroup: ProjectGroup = {
-          id: groupId,
+          id: targetGroupId,
           name: data.projectName,
           isOpen: true,
           projects: [newProject],
@@ -260,6 +285,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
           projectGroups: [...state.projectGroups, newGroup],
         }));
       }
+
+      set((state) => ({
+        currentPlan: state.currentPlan
+          ? {
+              ...state.currentPlan,
+              project_ids: state.currentPlan.project_ids.includes(newProject.id)
+                ? state.currentPlan.project_ids
+                : [...state.currentPlan.project_ids, newProject.id],
+            }
+          : state.currentPlan,
+      }));
+
+      set({
+        selectedGroupId: targetGroupId,
+        selectedProjectId: newProject.id,
+      });
+      void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, targetGroupId);
+      void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, newProject.id);
 
       set({ isLoading: false, lastError: null });
     } catch (error) {
@@ -306,23 +349,53 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     try {
       // Load persisted panel preferences
-      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel] = await Promise.all([
+      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId] = await Promise.all([
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
         loadPreference<boolean>(PREF_KEYS.IS_LEFT_PANEL_OPEN),
         loadPreference<boolean>(PREF_KEYS.IS_RIGHT_PANEL_OPEN),
         loadPreference<UiZoomMode>(PREF_KEYS.UI_ZOOM_MODE),
         loadPreference<number>(PREF_KEYS.UI_ZOOM_LEVEL),
+        loadPreference<string | null>(PREF_KEYS.LAST_SELECTED_GROUP_ID),
+        loadPreference<string | null>(PREF_KEYS.LAST_SELECTED_PROJECT_ID),
       ]);
 
       const normalizedZoomMode: UiZoomMode = uiZoomMode === 'override' ? 'override' : 'auto';
       const normalizedZoomLevel = Math.max(0.75, Math.min(2, uiZoomLevel));
 
-      const { plan, projectGroups } = await services.getAppBootstrap();
+      const { plan, projectGroups, planNodes, predictedBranches } = await services.getAppBootstrap();
+
+      let resolvedGroupId: string | null = null;
+      let resolvedProjectId: string | null = null;
+
+      if (lastSelectedProjectId) {
+        const groupForProject = projectGroups.find((group) =>
+          group.projects.some((project) => project.id === lastSelectedProjectId)
+        );
+        if (groupForProject) {
+          resolvedGroupId = groupForProject.id;
+          resolvedProjectId = lastSelectedProjectId;
+        }
+      }
+
+      if (!resolvedGroupId && lastSelectedGroupId) {
+        const existingGroup = projectGroups.find((group) => group.id === lastSelectedGroupId);
+        if (existingGroup) {
+          resolvedGroupId = existingGroup.id;
+        }
+      }
+
+      if (!resolvedGroupId) {
+        resolvedGroupId = projectGroups[0]?.id ?? null;
+      }
+
       set({
         currentPlan: plan,
         projectGroups,
-        selectedGroupId: projectGroups[0]?.id ?? null,
+        planNodes: planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan),
+        predictedBranches: predictedBranches ?? [],
+        selectedGroupId: resolvedGroupId,
+        selectedProjectId: resolvedProjectId,
         leftPanelWidth: leftWidth,
         rightPanelWidth: rightWidth,
         isLeftPanelOpen: leftOpen,

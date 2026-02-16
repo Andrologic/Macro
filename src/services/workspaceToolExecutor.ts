@@ -1,6 +1,7 @@
 import * as tauriIpc from './tauriIpc';
 import type { AppMode } from '../types';
 import { isMacroScopedPath } from './toolModePolicy';
+import { useAppStore } from '../stores/useAppStore';
 
 type ToolArgs = Record<string, unknown>;
 
@@ -14,6 +15,43 @@ export const assertPathAllowed = (mode: AppMode, path: string): void => {
 };
 
 const toString = (value: unknown): string => (typeof value === 'string' ? value : '');
+
+const getSelectedProjectRoot = (): string => {
+  const appState = useAppStore.getState();
+  if (!appState.selectedGroupId) return '.';
+
+  const group = appState.projectGroups.find((candidate) => candidate.id === appState.selectedGroupId);
+  if (!group) return '.';
+
+  const project = appState.selectedProjectId
+    ? group.projects.find((candidate) => candidate.id === appState.selectedProjectId)
+    : group.projects[0];
+
+  return project?.path || '.';
+};
+
+const resolvePathForMode = (inputPath: string, mode: AppMode): string => {
+  if (mode !== 'Debug') {
+    return inputPath;
+  }
+
+  const root = getSelectedProjectRoot().replace(/\\/g, '/').replace(/\/$/, '') || '.';
+  const normalizedInput = (inputPath || '.').replace(/\\/g, '/');
+
+  if (normalizedInput.startsWith('/')) {
+    return normalizedInput;
+  }
+
+  if (normalizedInput === '.' || normalizedInput === '') {
+    return root;
+  }
+
+  if (root === '.') {
+    return normalizedInput;
+  }
+
+  return `${root}/${normalizedInput}`;
+};
 
 export const globToRegex = (pattern: string): RegExp => {
   const escaped = pattern
@@ -33,11 +71,13 @@ export const pathMatchesGlob = (path: string, pattern: string): boolean => {
   }
 };
 
-const readAllCandidateFiles = async (includeHidden = false) => {
+const readAllCandidateFiles = async (includeHidden = false, mode: AppMode) => {
+  const debugMode = mode === 'Debug';
   const entries = await tauriIpc.fsListDir({
-    path: '.',
+    path: resolvePathForMode('.', mode),
     recursive: true,
     includeHidden,
+    allowOutsideWorkspace: debugMode,
   });
   return entries.filter((entry) => entry.kind === 'file');
 };
@@ -53,19 +93,31 @@ export const executeWorkspaceTool = async (
 
   try {
     if (toolName === 'list') {
-      const path = toString(args.path) || '.';
+      const inputPath = toString(args.path) || '.';
+      const path = resolvePathForMode(inputPath, mode);
       const recursive = args.recursive !== false;
       const includeHidden = args.include_hidden === true;
       const maxDepth = typeof args.max_depth === 'number' ? Math.max(1, Math.floor(args.max_depth)) : undefined;
+      const debugMode = mode === 'Debug';
 
-      const entries = await tauriIpc.fsListDir({ path, recursive, includeHidden, maxDepth });
+      const entries = await tauriIpc.fsListDir({
+        path,
+        recursive,
+        includeHidden,
+        maxDepth,
+        allowOutsideWorkspace: debugMode,
+      });
       return JSON.stringify({ path, count: entries.length, entries }, null, 2);
     }
 
     if (toolName === 'read') {
-      const path = toString(args.path);
-      if (!path) return 'Missing path argument for read tool.';
-      const result = await tauriIpc.fsReadFile(path);
+      const inputPath = toString(args.path);
+      if (!inputPath) return 'Missing path argument for read tool.';
+      const path = resolvePathForMode(inputPath, mode);
+      const result = await tauriIpc.fsReadFileWithOptions({
+        path,
+        allowOutsideWorkspace: mode === 'Debug',
+      });
       if (result.is_binary) {
         return `File ${path} is binary (${result.size} bytes, encoding=${result.encoding}).`;
       }
@@ -79,27 +131,38 @@ export const executeWorkspaceTool = async (
     }
 
     if (toolName === 'write') {
-      const path = toString(args.path);
+      const inputPath = toString(args.path);
       const content = toString(args.content);
-      if (!path) return 'Missing path argument for write tool.';
+      if (!inputPath) return 'Missing path argument for write tool.';
+      const path = resolvePathForMode(inputPath, mode);
       assertPathAllowed(mode, path);
       const createDirs = args.create_dirs !== false;
-      const writeResult = await tauriIpc.fsWriteFile({ path, content, createDirs });
+      const writeResult = await tauriIpc.fsWriteFile({
+        path,
+        content,
+        createDirs,
+        allowOutsideWorkspace: mode === 'Debug',
+      });
       return JSON.stringify({ ok: true, ...writeResult }, null, 2);
     }
 
     if (toolName === 'edit') {
-      const path = toString(args.path);
+      const inputPath = toString(args.path);
       const oldText = toString(args.old_text);
       const newText = toString(args.new_text);
       const replaceAll = args.replace_all === true;
 
-      if (!path) return 'Missing path argument for edit tool.';
+      if (!inputPath) return 'Missing path argument for edit tool.';
       if (!oldText) return 'Missing old_text argument for edit tool.';
+
+      const path = resolvePathForMode(inputPath, mode);
 
       assertPathAllowed(mode, path);
 
-      const current = await tauriIpc.fsReadFile(path);
+      const current = await tauriIpc.fsReadFileWithOptions({
+        path,
+        allowOutsideWorkspace: mode === 'Debug',
+      });
       if (current.is_binary) {
         return `Cannot edit binary file: ${path}`;
       }
@@ -114,14 +177,19 @@ export const executeWorkspaceTool = async (
         ? current.content.split(oldText).join(newText)
         : current.content.replace(oldText, newText);
 
-      const writeResult = await tauriIpc.fsWriteFile({ path, content: updated, createDirs: true });
+      const writeResult = await tauriIpc.fsWriteFile({
+        path,
+        content: updated,
+        createDirs: true,
+        allowOutsideWorkspace: mode === 'Debug',
+      });
       return JSON.stringify({ ok: true, replacements: replaceAll ? occurrences : 1, ...writeResult }, null, 2);
     }
 
     if (toolName === 'glob') {
       const pattern = toString(args.pattern) || '**/*';
       const includeHidden = args.include_hidden === true;
-      const files = await readAllCandidateFiles(includeHidden);
+      const files = await readAllCandidateFiles(includeHidden, mode);
       const matches = files
         .map((entry) => entry.relative_path)
         .filter((relativePath) => pathMatchesGlob(relativePath, pattern));
@@ -137,7 +205,7 @@ export const executeWorkspaceTool = async (
       const includePattern = toString(args.include_pattern);
       const maxResults = typeof args.max_results === 'number' ? Math.max(1, Math.floor(args.max_results)) : 50;
 
-      const files = await readAllCandidateFiles(includeHidden);
+      const files = await readAllCandidateFiles(includeHidden, mode);
       let matcher: RegExp | null = null;
       if (isRegexp) {
         try {
@@ -153,7 +221,10 @@ export const executeWorkspaceTool = async (
           continue;
         }
 
-        const content = await tauriIpc.fsReadFile(file.relative_path);
+        const content = await tauriIpc.fsReadFileWithOptions({
+          path: resolvePathForMode(file.relative_path, mode),
+          allowOutsideWorkspace: mode === 'Debug',
+        });
         if (content.is_binary) continue;
 
         const lines = content.content.split('\n');
