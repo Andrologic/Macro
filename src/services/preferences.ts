@@ -31,6 +31,10 @@ export const PREF_KEYS = {
   PROMPT_HISTORY_NAV_MODE: "promptHistoryNavigationMode",
   LAST_SELECTED_GROUP_ID: "lastSelectedGroupId",
   LAST_SELECTED_PROJECT_ID: "lastSelectedProjectId",
+  LAST_OPEN_PROJECT_PATH: "lastOpenProjectPath",
+  LAST_ACTIVE_MODE: "lastActiveMode",
+  RECENT_PROJECTS: "recentProjects",
+  MACRO_ENABLED_PROJECTS: "macroEnabledProjects",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -54,6 +58,10 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.PROMPT_HISTORY_NAV_MODE]: "contextual_arrows",
   [PREF_KEYS.LAST_SELECTED_GROUP_ID]: null,
   [PREF_KEYS.LAST_SELECTED_PROJECT_ID]: null,
+  [PREF_KEYS.LAST_OPEN_PROJECT_PATH]: null,
+  [PREF_KEYS.LAST_ACTIVE_MODE]: 'Implement',
+  [PREF_KEYS.RECENT_PROJECTS]: [],
+  [PREF_KEYS.MACRO_ENABLED_PROJECTS]: [],
 };
 
 // Store instance (singleton)
@@ -91,19 +99,17 @@ async function getStore(): Promise<Store | null> {
  * Save a preference value
  */
 export async function savePreference<T>(key: PrefKey, value: T): Promise<void> {
+  // Always mirror to localStorage synchronously for crash/close resilience
+  localStorage.setItem(`macro_${key}`, JSON.stringify(value));
+
   try {
     const store = await getStore();
     if (store) {
       await store.set(key, value);
       await store.save();
-    } else {
-      // Fallback to localStorage
-      localStorage.setItem(`macro_${key}`, JSON.stringify(value));
     }
   } catch (error) {
     console.error(`Failed to save preference ${key}:`, error);
-    // Fallback to localStorage on error
-    localStorage.setItem(`macro_${key}`, JSON.stringify(value));
   }
 }
 
@@ -112,20 +118,21 @@ export async function savePreference<T>(key: PrefKey, value: T): Promise<void> {
  */
 export async function loadPreference<T>(key: PrefKey): Promise<T> {
   const defaultValue = PREF_DEFAULTS[key] as T;
+  const localStorageKey = `macro_${key}`;
 
   try {
+    const localValue = localStorage.getItem(localStorageKey);
+    if (localValue) {
+      return JSON.parse(localValue) as T;
+    }
+
     const store = await getStore();
     if (store) {
       const value = await store.get<T>(key);
       return value !== null && value !== undefined ? value : defaultValue;
-    } else {
-      // Fallback to localStorage
-      const stored = localStorage.getItem(`macro_${key}`);
-      if (stored) {
-        return JSON.parse(stored) as T;
-      }
-      return defaultValue;
     }
+
+    return defaultValue;
   } catch (error) {
     console.error(`Failed to load preference ${key}:`, error);
     return defaultValue;

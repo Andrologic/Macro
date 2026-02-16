@@ -5,6 +5,7 @@ import { Icon } from '../../ui/Icon';
 import { Button } from '../../ui/Button';
 import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';
+import { ConfirmPromptModal } from '../../ui/ConfirmPromptModal';
 import { toast } from '../../ui/Toaster';
 import { cn } from '../../../utils/cn';
 import type { ProviderConfig } from '../../../types';
@@ -49,6 +50,7 @@ export const AIView: React.FC = () => {
   const [addingModelForProvider, setAddingModelForProvider] = useState<string | null>(null);
   const [manualModelId, setManualModelId] = useState('');
   const [manualModelName, setManualModelName] = useState('');
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
 
   useEffect(() => {
     loadProviderConfigs();
@@ -188,12 +190,11 @@ export const AIView: React.FC = () => {
   
   const handleDelete = async () => {
       if(!editingProvider || isCreating) return;
-      if(confirm(t('common.confirmDelete') || 'Are you sure?')) {
-          await deleteProviderConfig(editingProvider.id);
-          setEditingProvider(null);
-          toast.success("Provider deleted");
-      }
-  }
+      await deleteProviderConfig(editingProvider.id);
+      setEditingProvider(null);
+      setIsDeleteConfirmOpen(false);
+      toast.success("Provider deleted");
+    }
 
   if (editingProvider) {
     return (
@@ -209,7 +210,7 @@ export const AIView: React.FC = () => {
           </div>
           <div className="flex items-center gap-2">
              {!isCreating && (
-                 <Button variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10" onClick={handleDelete}>
+                 <Button variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10" onClick={() => setIsDeleteConfirmOpen(true)}>
                      <Icon name="trash" size={16} className="mr-2" />
                      {t('common.delete') || 'Delete'}
                  </Button>
@@ -291,6 +292,19 @@ export const AIView: React.FC = () => {
                 </Button>
             </div>
         </div>
+
+        <ConfirmPromptModal
+          isOpen={isDeleteConfirmOpen}
+          title={t('common.delete', 'Delete')}
+          description={t('common.confirmDelete') || 'Are you sure?'}
+          confirmLabel={t('common.delete', 'Delete')}
+          cancelLabel={t('common.cancel', 'Cancel')}
+          confirmVariant="error"
+          onCancel={() => setIsDeleteConfirmOpen(false)}
+          onConfirm={() => {
+            void handleDelete();
+          }}
+        />
       </div>
     );
   }

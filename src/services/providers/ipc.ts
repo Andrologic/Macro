@@ -14,7 +14,7 @@ import type {
   ChatCompletionRequestDto,
   ChatCompletionResponseDto,
 } from '../contracts/dtos';
-import type { Task } from '../../types';
+import type { ProjectGroup, Task } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
 
@@ -113,6 +113,60 @@ export const importGitRepo = async (data: {
   });
 
   return { project };
+};
+
+export const renameProjectGroup = async (data: {
+  groupId: string;
+  name: string;
+}): Promise<{ projectGroup: ProjectGroup }> => {
+  const projectGroup = await tauriIpc.workspaceRenameProjectGroup({
+    groupId: data.groupId,
+    name: data.name,
+  });
+
+  return { projectGroup };
+};
+
+export const renameProject = async (data: {
+  projectId: string;
+  name: string;
+}): Promise<ProjectDto> => {
+  const project = await tauriIpc.workspaceRenameProject({
+    projectId: data.projectId,
+    name: data.name,
+  });
+
+  return { project };
+};
+
+export const archiveProjectGroup = async (data: {
+  groupId: string;
+}): Promise<{ projectGroup: ProjectGroup }> => {
+  const projectGroup = await tauriIpc.workspaceArchiveProjectGroup({
+    groupId: data.groupId,
+  });
+
+  return { projectGroup };
+};
+
+export const archiveProject = async (data: {
+  projectId: string;
+}): Promise<ProjectDto> => {
+  const project = await tauriIpc.workspaceArchiveProject({
+    projectId: data.projectId,
+  });
+
+  return { project };
+};
+
+export const closeProject = async (data: {
+  projectId: string;
+}): Promise<{ projectGroups: ProjectGroup[] }> => {
+  const projectGroups = await tauriIpc.workspaceCloseProject({
+    projectId: data.projectId,
+  });
+
+  return { projectGroups };
 };
 
 // Tools & MCP Settings

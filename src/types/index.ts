@@ -76,6 +76,7 @@ export interface Need {
   status: NeedStatus;
   priority: 'low' | 'medium' | 'high';
   tags: string[];
+  projectId?: string;
   sourceMessageId?: string; // Link to the chat message where this was identified
   createdAt: string;
   updatedAt: string;

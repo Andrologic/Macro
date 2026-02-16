@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNeedsStore } from '../../stores/useNeedsStore';
+import { useAppStore } from '../../stores/useAppStore';
 import type { NeedCategory } from '../../types';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
@@ -34,13 +35,29 @@ const CATEGORY_COLORS: Record<NeedCategory, string> = {
 const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
   const { t } = useTranslation();
   const { needs, selectNeed, selectedNeedId } = useNeedsStore();
+  const { selectedProjectId, selectedGroupId, projectGroups } = useAppStore();
   const [filter, setFilter] = useState<'all' | NeedCategory>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
 
+  const scopedNeeds = useMemo(() => {
+    if (selectedProjectId) {
+      return needs.filter((need) => need.projectId === selectedProjectId);
+    }
+
+    if (selectedGroupId) {
+      const group = projectGroups.find((candidate) => candidate.id === selectedGroupId);
+      const groupProjectIds = new Set(group?.projects.map((project) => project.id) ?? []);
+      if (groupProjectIds.size === 0) return [];
+      return needs.filter((need) => need.projectId && groupProjectIds.has(need.projectId));
+    }
+
+    return [];
+  }, [needs, selectedProjectId, selectedGroupId, projectGroups]);
+
   const filteredNeeds = useMemo(() => {
-    if (filter === 'all') return needs;
-    return needs.filter((n) => n.category === filter);
-  }, [needs, filter]);
+    if (filter === 'all') return scopedNeeds;
+    return scopedNeeds.filter((n) => n.category === filter);
+  }, [scopedNeeds, filter]);
 
   const handleNeedClick = (needId: string) => {
     selectNeed(needId);
@@ -62,7 +79,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
         </h1>
         <div className="flex items-center gap-1">
           <span className="text-xs text-muted-foreground px-2 py-0.5 bg-muted rounded-full">
-            {needs.length}
+            {scopedNeeds.length}
           </span>
         </div>
       </div>
@@ -102,7 +119,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
         {filteredNeeds.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50 p-4 text-center">
             <Icon name="sparkles" size={32} className="mb-2" />
-            <p className="text-sm">No needs identified yet.</p>
+            <p className="text-sm">No needs identified for this project yet.</p>
             <p className="text-xs mt-1">Chat with the Architect to uncover project requirements.</p>
           </div>
         ) : (
