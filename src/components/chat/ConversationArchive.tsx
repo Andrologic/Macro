@@ -4,6 +4,7 @@ import { useChatStore } from '../../stores/useChatStore';
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
+import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
 import type { Conversation } from '../../types';
 
@@ -33,23 +34,22 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   isPinned,
 }) => {
   const [showMenu, setShowMenu] = useState(false);
+  const [isRenameOpen, setIsRenameOpen] = useState(false);
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const { renameConversation, deleteConversation } = useChatStore();
   const { clearConversationCitations } = useCitationsStore();
 
-  const handleRename = async () => {
-    const newTitle = window.prompt('Rename conversation:', conversation.title);
+  const handleRename = async (newTitle?: string) => {
     if (newTitle && newTitle !== conversation.title) {
       await renameConversation(conversation.id, newTitle);
     }
-    setShowMenu(false);
+    setIsRenameOpen(false);
   };
 
   const handleDelete = async () => {
-    if (window.confirm('Are you sure you want to delete this conversation?')) {
-      await deleteConversation(conversation.id);
-      clearConversationCitations(conversation.id);
-    }
-    setShowMenu(false);
+    await deleteConversation(conversation.id);
+    clearConversationCitations(conversation.id);
+    setIsDeleteOpen(false);
   };
 
   const handleExport = () => {
@@ -175,7 +175,10 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               {isPinned ? 'Unpin' : 'Pin'}
             </button>
             <button 
-              onClick={handleRename}
+              onClick={() => {
+                setShowMenu(false);
+                setIsRenameOpen(true);
+              }}
               className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="edit" size={12} />
@@ -189,7 +192,10 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               Export
             </button>
             <button 
-              onClick={handleDelete}
+              onClick={() => {
+                setShowMenu(false);
+                setIsDeleteOpen(true);
+              }}
               className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 flex items-center gap-2"
             >
               <Icon name="trash" size={12} />
@@ -198,6 +204,34 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
           </div>
         </>
       )}
+
+      <ConfirmPromptModal
+        isOpen={isRenameOpen}
+        title="Rename conversation"
+        description="Choose a new title for this conversation."
+        confirmLabel="Rename"
+        cancelLabel="Cancel"
+        initialValue={conversation.title}
+        inputPlaceholder="Conversation name"
+        requireInput
+        onCancel={() => setIsRenameOpen(false)}
+        onConfirm={(value) => {
+          void handleRename(value);
+        }}
+      />
+
+      <ConfirmPromptModal
+        isOpen={isDeleteOpen}
+        title="Delete conversation"
+        description="Are you sure you want to delete this conversation?"
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        confirmVariant="error"
+        onCancel={() => setIsDeleteOpen(false)}
+        onConfirm={() => {
+          void handleDelete();
+        }}
+      />
     </div>
   );
 };

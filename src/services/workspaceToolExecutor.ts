@@ -18,16 +18,36 @@ const toString = (value: unknown): string => (typeof value === 'string' ? value 
 
 const getSelectedProjectRoot = (): string => {
   const appState = useAppStore.getState();
-  if (!appState.selectedGroupId) return '.';
+  const normalize = (value?: string): string => (value || '').replace(/\\/g, '/').replace(/\/$/, '');
 
-  const group = appState.projectGroups.find((candidate) => candidate.id === appState.selectedGroupId);
-  if (!group) return '.';
+  if (appState.selectedProjectId) {
+    for (const group of appState.projectGroups) {
+      const selectedProject = group.projects.find((project) => project.id === appState.selectedProjectId);
+      if (selectedProject?.path) {
+        return normalize(selectedProject.path) || '.';
+      }
+    }
+  }
 
-  const project = appState.selectedProjectId
-    ? group.projects.find((candidate) => candidate.id === appState.selectedProjectId)
-    : group.projects[0];
+  if (appState.selectedGroupId) {
+    const group = appState.projectGroups.find((candidate) => candidate.id === appState.selectedGroupId);
+    const fallbackGroupProject = group?.projects[0];
+    if (fallbackGroupProject?.path) {
+      return normalize(fallbackGroupProject.path) || '.';
+    }
+  }
 
-  return project?.path || '.';
+  const recentProjectPath = appState.recentProjects[0]?.path;
+  if (recentProjectPath) {
+    return normalize(recentProjectPath) || '.';
+  }
+
+  const macroEnabledProjectPath = appState.macroEnabledProjects[0]?.path;
+  if (macroEnabledProjectPath) {
+    return normalize(macroEnabledProjectPath) || '.';
+  }
+
+  return '.';
 };
 
 const resolvePathForMode = (inputPath: string, mode: AppMode): string => {
@@ -114,12 +134,59 @@ export const executeWorkspaceTool = async (
       const inputPath = toString(args.path);
       if (!inputPath) return 'Missing path argument for read tool.';
       const path = resolvePathForMode(inputPath, mode);
-      const result = await tauriIpc.fsReadFileWithOptions({
-        path,
-        allowOutsideWorkspace: mode === 'Debug',
-      });
+      let result;
+      let resolvedPath = path;
+
+      try {
+        result = await tauriIpc.fsReadFileWithOptions({
+          path,
+          allowOutsideWorkspace: mode === 'Debug',
+        });
+      } catch (readError) {
+        if (mode !== 'Debug' || inputPath.startsWith('/')) {
+          throw readError;
+        }
+
+        const root = resolvePathForMode('.', mode);
+        const normalizedInput = inputPath.replace(/\\/g, '/').replace(/^\.\//, '');
+        const entries = await tauriIpc.fsListDir({
+          path: root,
+          recursive: true,
+          includeHidden: false,
+          allowOutsideWorkspace: true,
+        });
+
+        const candidates = entries
+          .filter((entry) => entry.kind === 'file')
+          .filter((entry) => {
+            const rel = entry.relative_path.replace(/\\/g, '/').replace(/^\.\//, '');
+            const abs = entry.path.replace(/\\/g, '/');
+            return (
+              rel === normalizedInput ||
+              rel.endsWith(`/${normalizedInput}`) ||
+              abs.endsWith(`/${normalizedInput}`)
+            );
+          });
+
+        if (candidates.length === 1) {
+          resolvedPath = candidates[0].path;
+          result = await tauriIpc.fsReadFileWithOptions({
+            path: resolvedPath,
+            allowOutsideWorkspace: true,
+          });
+        } else if (candidates.length > 1) {
+          const suggestion = candidates
+            .slice(0, 5)
+            .map((entry) => entry.relative_path)
+            .join(', ');
+          return `Error executing read: multiple files match "${inputPath}" under ${root}. Be explicit. Matches: ${suggestion}`;
+        } else {
+          throw readError;
+        }
+      }
+
       if (result.is_binary) {
-        return `File ${path} is binary (${result.size} bytes, encoding=${result.encoding}).`;
+        return `File ${resolvedPath} is binary (${result.size} bytes, encoding=${result.encoding}).`;
       }
 
       const startLine = typeof args.start_line === 'number' ? Math.max(1, Math.floor(args.start_line)) : 1;
@@ -127,7 +194,10 @@ export const executeWorkspaceTool = async (
 
       const lines = result.content.split('\n');
       const selected = lines.slice(startLine - 1, endLine ? endLine : undefined);
-      return `FILE: ${path}\nLANGUAGE: ${result.language}\nSIZE: ${result.size}\n\n${selected.join('\n')}`;
+      const resolvedNotice = resolvedPath !== path
+        ? `RESOLVED_PATH: ${resolvedPath} (from requested: ${inputPath})\n`
+        : '';
+      return `FILE: ${resolvedPath}\n${resolvedNotice}LANGUAGE: ${result.language}\nSIZE: ${result.size}\n\n${selected.join('\n')}`;
     }
 
     if (toolName === 'write') {

@@ -73,3 +73,45 @@ pub async fn workspace_import_git_repo(
 
 	workspace::import_git_repo(&workspace_path.inner().clone(), request).await
 }
+
+#[tauri::command]
+pub async fn workspace_rename_project_group(
+	workspace_path: State<'_, PathBuf>,
+	group_id: String,
+	name: String,
+) -> Result<ProjectGroupDto> {
+	workspace::rename_project_group(&workspace_path.inner().clone(), &group_id, &name).await
+}
+
+#[tauri::command]
+pub async fn workspace_rename_project(
+	workspace_path: State<'_, PathBuf>,
+	project_id: String,
+	name: String,
+) -> Result<ProjectDto> {
+	workspace::rename_project(&workspace_path.inner().clone(), &project_id, &name).await
+}
+
+#[tauri::command]
+pub async fn workspace_archive_project_group(
+	workspace_path: State<'_, PathBuf>,
+	group_id: String,
+) -> Result<ProjectGroupDto> {
+	workspace::archive_project_group(&workspace_path.inner().clone(), &group_id).await
+}
+
+#[tauri::command]
+pub async fn workspace_archive_project(
+	workspace_path: State<'_, PathBuf>,
+	project_id: String,
+) -> Result<ProjectDto> {
+	workspace::archive_project(&workspace_path.inner().clone(), &project_id).await
+}
+
+#[tauri::command]
+pub async fn workspace_close_project(
+	workspace_path: State<'_, PathBuf>,
+	project_id: String,
+) -> Result<Vec<ProjectGroupDto>> {
+	workspace::close_project(&workspace_path.inner().clone(), &project_id).await
+}
