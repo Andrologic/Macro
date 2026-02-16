@@ -278,6 +278,11 @@ export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ 
         </button>
       </div>
 
+      <div className="px-4 py-2 border-b border-border bg-muted/20">
+        <p className="text-[11px] text-muted-foreground">Root path</p>
+        <p className="text-xs font-mono text-foreground truncate">{activeRootPath}</p>
+      </div>
+
       <div className="flex-1 overflow-y-auto p-2">
         {isLoading && (
           <div className="px-2 py-4 text-sm text-muted-foreground">Loading files…</div>
