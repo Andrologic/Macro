@@ -21,6 +21,7 @@ const FileChangesPanel = lazy(() => import('../implement/FileChangesPanel'));
 const ConversationArchive = lazy(() => import('../chat/ConversationArchive'));
 const ContextToolbox = lazy(() => import('../chat/ContextToolbox'));
 const DebugWorkspaceExplorer = lazy(() => import('../debug/DebugWorkspaceExplorer'));
+const DebugInspector = lazy(() => import('../debug/DebugInspector'));
 
 // Shared - ChatZone is used by all modes, but still lazy loaded
 const ChatZone = lazy(() => import('../chat/ChatZone'));
@@ -103,7 +104,7 @@ const modeConfigs: Record<AppMode, PanelConfig> = {
   Debug: {
     left: DebugWorkspaceExplorer,
     center: ChatZone,
-    right: ContextToolbox,
+    right: DebugInspector,
   },
 };
 
@@ -173,7 +174,7 @@ export const preloadModeComponents = (mode: AppMode): void => {
       break;
     case 'Debug':
       import('../debug/DebugWorkspaceExplorer');
-      import('../chat/ContextToolbox');
+      import('../debug/DebugInspector');
       break;
   }
   
