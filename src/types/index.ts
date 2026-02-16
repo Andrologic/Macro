@@ -6,7 +6,7 @@ export type TaskStatus = 'Pending' | 'InProgress' | 'AwaitingResponse' | 'Comple
 export type MessageRole = 'user' | 'assistant';
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
-export type AppMode = 'Architect' | 'Implement' | 'Chat';
+export type AppMode = 'Architect' | 'Implement' | 'Chat' | 'Debug';
 
 // Plan Node types for dependency graph
 export type PlanNodeStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';

@@ -18,6 +18,7 @@
     "core:window:allow-set-position",
     "core:window:allow-is-maximized",
     "opener:default",
+    "dialog:default",
     "store:default",
     {
       "identifier": "http:default",

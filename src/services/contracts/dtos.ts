@@ -1,6 +1,8 @@
 import type {
   Plan,
   ProjectGroup,
+  PlanNode,
+  PredictedBranch,
   Conversation,
   ChatMessage,
   PredictedGitTree,
@@ -15,6 +17,8 @@ import type {
 export interface AppBootstrapDto {
   plan: Plan | null;
   projectGroups: ProjectGroup[];
+  planNodes?: PlanNode[];
+  predictedBranches?: PredictedBranch[];
 }
 
 export interface ConversationsDto {

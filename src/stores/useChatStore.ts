@@ -195,6 +195,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!modePolicy.allowedToolIds.includes(toolId)) {
       return false;
     }
+
+    if (mode === 'Debug') {
+      return useToolsStore.getState().isToolEnabled(toolId);
+    }
+
     return useToolsStore.getState().isChatToolEnabled(toolId);
   };
 
@@ -458,6 +463,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (mode === 'Chat') {
       const enabledChatTools = toolsState.getEnabledChatToolIds();
       return enabledChatTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId));
+    }
+
+    if (mode === 'Debug') {
+      const enabledTools = Object.values(toolsState.internalTools)
+        .filter((tool) => toolsState.isToolEnabled(tool.id))
+        .map((tool) => tool.id);
+      return enabledTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId));
     }
 
     const enabledTools = Object.values(toolsState.internalTools)

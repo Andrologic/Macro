@@ -6,6 +6,7 @@ import {
   mockCommits,
   getGitTree,
 } from '../../mock-data/auth-scenario';
+import { mockPlanNodes, mockPredictedBranches } from '../../mock-data/plans';
 import { MOCK_CODE_FILES } from '../../mock-data/code-files';
 import { mockProviders, mockModels } from '../../mock-data/ai';
 import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
@@ -56,7 +57,12 @@ const simulate = async <T>(value: T): Promise<T> => {
 };
 
 export const getAppBootstrap = async (): Promise<AppBootstrapDto> => {
-  return simulate({ plan: mockAuthPlan, projectGroups: mockProjects });
+  return simulate({
+    plan: mockAuthPlan,
+    projectGroups: mockProjects,
+    planNodes: mockPlanNodes,
+    predictedBranches: mockPredictedBranches,
+  });
 };
 
 export const listConversations = async (): Promise<ConversationsDto> => {
