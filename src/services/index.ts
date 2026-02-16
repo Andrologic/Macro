@@ -1,11 +1,15 @@
 import * as mockProvider from './providers/mock';
 import * as ipcProvider from './providers/ipc';
+import { isTauriAvailable } from './tauriIpc';
 
 export type DataProvider = 'mock' | 'ipc';
 
 const providerName = (import.meta.env.VITE_DATA_PROVIDER as DataProvider) ?? 'mock';
 
-const provider = providerName === 'ipc' ? ipcProvider : mockProvider;
+const provider =
+  providerName === 'ipc' && isTauriAvailable()
+    ? ipcProvider
+    : mockProvider;
 
 export const services = {
   getAppBootstrap: provider.getAppBootstrap,

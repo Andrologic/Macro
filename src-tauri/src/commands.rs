@@ -2,6 +2,8 @@
 pub mod fs;
 #[path = "commands/git.rs"]
 pub mod git;
+#[path = "commands/workspace.rs"]
+pub mod workspace;
 
 use crate::db::{models::*, repository, DbError};
 use crate::secrets;

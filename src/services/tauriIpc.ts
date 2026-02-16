@@ -4,7 +4,16 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import type { PredictedGitTree, GitCommit } from '../types';
+import type {
+  PredictedGitTree,
+  GitCommit,
+  Plan,
+  ProjectGroup,
+  PlanNode,
+  PredictedBranch,
+  Task,
+  Project,
+} from '../types';
 
 // ============ Types ============
 
@@ -141,6 +150,19 @@ export interface FsWriteResultDto {
   created: boolean;
 }
 
+export interface WorkspaceBootstrapDto {
+  plan: Plan | null;
+  projectGroups: ProjectGroup[];
+  planNodes: PlanNode[];
+  predictedBranches: PredictedBranch[];
+}
+
+export interface WorkspaceMetadataDto {
+  workspace_path: string;
+  metadata_path: string;
+  project_count: number;
+}
+
 // ============ Conversations ============
 
 export async function listConversations(): Promise<DbConversation[]> {
@@ -224,15 +246,27 @@ export async function fsReadFile(path: string): Promise<FsFileContentDto> {
   return invoke<FsFileContentDto>('fs_read_file', { path });
 }
 
+export async function fsReadFileWithOptions(params: {
+  path: string;
+  allowOutsideWorkspace?: boolean;
+}): Promise<FsFileContentDto> {
+  return invoke<FsFileContentDto>('fs_read_file', {
+    path: params.path,
+    allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
+  });
+}
+
 export async function fsWriteFile(params: {
   path: string;
   content: string;
   createDirs?: boolean;
+  allowOutsideWorkspace?: boolean;
 }): Promise<FsWriteResultDto> {
   return invoke<FsWriteResultDto>('fs_write_file', {
     path: params.path,
     content: params.content,
     createDirs: params.createDirs ?? null,
+    allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
   });
 }
 
@@ -241,12 +275,14 @@ export async function fsListDir(params: {
   recursive?: boolean;
   includeHidden?: boolean;
   maxDepth?: number;
+  allowOutsideWorkspace?: boolean;
 }): Promise<FsDirEntryDto[]> {
   return invoke<FsDirEntryDto[]>('fs_list_dir', {
     path: params.path,
     recursive: params.recursive ?? null,
     includeHidden: params.includeHidden ?? null,
     maxDepth: params.maxDepth ?? null,
+    allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
   });
 }
 
@@ -446,6 +482,54 @@ export async function gitGetTree(params: {
   return invoke<PredictedGitTree>('git_get_tree', {
     repoPath: params.repoPath,
     branch: params.branch ?? null,
+  });
+}
+
+// ============ Workspace ============
+
+export async function workspaceGetBootstrap(): Promise<WorkspaceBootstrapDto> {
+  return invoke<WorkspaceBootstrapDto>('workspace_get_bootstrap');
+}
+
+export async function workspaceListProjects(): Promise<ProjectGroup[]> {
+  return invoke<ProjectGroup[]>('workspace_list_projects');
+}
+
+export async function workspaceListTasks(): Promise<Task[]> {
+  return invoke<Task[]>('workspace_list_tasks');
+}
+
+export async function workspaceGetMetadata(): Promise<WorkspaceMetadataDto> {
+  return invoke<WorkspaceMetadataDto>('workspace_get_metadata');
+}
+
+export async function workspaceCreateProject(params: {
+  name: string;
+  description: string;
+  groupId?: string | null;
+  path?: string;
+}): Promise<Project> {
+  return invoke<Project>('workspace_create_project', {
+    name: params.name,
+    description: params.description,
+    group_id: params.groupId ?? null,
+    path: params.path ?? null,
+  });
+}
+
+export async function workspaceImportGitRepo(params: {
+  gitUrl: string;
+  projectName: string;
+  branch: string;
+  groupId?: string | null;
+  path?: string;
+}): Promise<Project> {
+  return invoke<Project>('workspace_import_git_repo', {
+    git_url: params.gitUrl,
+    project_name: params.projectName,
+    branch: params.branch,
+    group_id: params.groupId ?? null,
+    path: params.path ?? null,
   });
 }
 

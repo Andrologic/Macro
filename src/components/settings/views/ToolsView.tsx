@@ -28,6 +28,7 @@ export const ToolsView: React.FC = () => {
     const chatPolicy = useMemo(() => getToolModePolicy('Chat'), []);
     const architectPolicy = useMemo(() => getToolModePolicy('Architect'), []);
     const implementPolicy = useMemo(() => getToolModePolicy('Implement'), []);
+    const debugPolicy = useMemo(() => getToolModePolicy('Debug'), []);
 
     const [searchQuery, setSearchQuery] = useState('');
     const [webSearchSettings, setWebSearchSettings] = useState<WebSearchSettings>(getWebSearchSettings);
@@ -72,7 +73,9 @@ export const ToolsView: React.FC = () => {
                <div className="mb-4 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
                  {mode === 'Chat'
                    ? 'Chat mode: user-selected tools from the Chat toolbox are respected before execution.'
-                   : 'Architect/Implement: enabled tools may run automatically when the model needs them; usage is shown inline in chat.'}
+                                     : mode === 'Debug'
+                                         ? 'Debug mode: all globally enabled tools are available for testing (no chat-mode restriction).'
+                                         : 'Architect/Implement: enabled tools may run automatically when the model needs them; usage is shown inline in chat.'}
                </div>
              <div className="mb-6">
                 <Input 
@@ -249,6 +252,9 @@ export const ToolsView: React.FC = () => {
                                                                                 )}
                                                                                 {implementPolicy.allowedToolIds.includes(tool.id) && (
                                                                                     <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">Implement</span>
+                                                                                )}
+                                                                                {debugPolicy.allowedToolIds.includes(tool.id) && (
+                                                                                    <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">Debug</span>
                                                                                 )}
                                                                                 {(tool.id === 'write' || tool.id === 'edit') && (
                                                                                     <span className="text-xs bg-amber-500/10 px-2 py-0.5 rounded text-amber-600 dark:text-amber-400">Architect: .macro only</span>

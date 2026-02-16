@@ -41,6 +41,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(Arc::new(Mutex::new(None)) as DbPool)
         .manage(GitState::new())
@@ -96,6 +97,13 @@ pub fn run() {
             commands::db_upsert_git_repository,
             commands::db_upsert_git_worktree,
             commands::db_list_git_worktrees,
+            // Workspace commands
+            commands::workspace::workspace_get_bootstrap,
+            commands::workspace::workspace_list_projects,
+            commands::workspace::workspace_list_tasks,
+            commands::workspace::workspace_get_metadata,
+            commands::workspace::workspace_create_project,
+            commands::workspace::workspace_import_git_repo,
             // File System commands
             commands::fs::fs_read_file,
             commands::fs::fs_write_file,

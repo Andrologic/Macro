@@ -29,6 +29,8 @@ export const PREF_KEYS = {
   UI_ZOOM_LEVEL: "uiZoomLevel",
   SHORTCUT_BINDINGS: "shortcutBindings",
   PROMPT_HISTORY_NAV_MODE: "promptHistoryNavigationMode",
+  LAST_SELECTED_GROUP_ID: "lastSelectedGroupId",
+  LAST_SELECTED_PROJECT_ID: "lastSelectedProjectId",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -50,6 +52,8 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.UI_ZOOM_LEVEL]: 1,
   [PREF_KEYS.SHORTCUT_BINDINGS]: {},
   [PREF_KEYS.PROMPT_HISTORY_NAV_MODE]: "contextual_arrows",
+  [PREF_KEYS.LAST_SELECTED_GROUP_ID]: null,
+  [PREF_KEYS.LAST_SELECTED_PROJECT_ID]: null,
 };
 
 // Store instance (singleton)

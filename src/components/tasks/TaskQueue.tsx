@@ -1,9 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
+import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
-import { mockAuthPlan } from '../../mock-data/auth-scenario';
 import type { Task, TaskStatus } from '../../types';
 
 interface TaskQueueProps {
@@ -129,10 +129,8 @@ const MemoizedTaskItem = React.memo(TaskItem);
 const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const { t } = useTranslation();
   const { selectedGroupId, selectedProjectId, selectedTaskId, setSelectedTask } = useAppStore();
+  const tasks = useTaskStore((state) => state.tasks);
   const [filter, setFilter] = useState<TaskStatus | 'all'>('all');
-
-  // Use mock tasks
-  const tasks = mockAuthPlan.tasks;
 
   // Get dependency names for blocking info
   const getBlockingTasks = (task: Task): string[] => {
@@ -182,6 +180,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const completedCount = tasks.filter(t => t.status === 'Completed').length;
   const inProgressCount = tasks.filter(t => t.status === 'InProgress').length;
   const totalCount = tasks.length;
+  const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
   if (!selectedGroupId) {
     return (
@@ -228,7 +227,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         <div className="h-1.5 bg-muted rounded-full overflow-hidden">
           <div
             className="h-full bg-primary rounded-full transition-all duration-500"
-            style={{ width: `${(completedCount / totalCount) * 100}%` }}
+            style={{ width: `${progressPercent}%` }}
           />
         </div>
       </div>

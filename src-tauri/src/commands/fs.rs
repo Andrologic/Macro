@@ -4,7 +4,9 @@
 
 use crate::core::error::{io_error_to_backend_error, BackendError};
 use crate::fs::dto::{DirEntryDto, FileContentDto, FileStatsDto, WriteResultDto};
-use crate::fs::{get_file_language, is_binary_file, validate_path, validate_path_for_write};
+use crate::fs::{
+    get_file_language, is_binary_file, normalize_path, validate_path, validate_path_for_write,
+};
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
@@ -34,9 +36,19 @@ static DEFAULT_IGNORED: [&str; 12] = [
 pub async fn read_file_internal(
     workspace: &PathBuf,
     path: String,
+    allow_outside_workspace: Option<bool>,
 ) -> Result<FileContentDto, BackendError> {
     let path_buf = PathBuf::from(&path); // Parse path string to PathBuf
-    let validated_path = validate_path(&path_buf, workspace)?; // Validate path against workspace, also checks if path exists
+    let allow_outside = allow_outside_workspace.unwrap_or(false);
+    let validated_path = if allow_outside {
+        if path_buf.is_absolute() {
+            normalize_path(&path_buf)
+        } else {
+            normalize_path(&workspace.join(&path_buf))
+        }
+    } else {
+        validate_path(&path_buf, workspace)?
+    };
     let file_metadata = tokio::fs::metadata(&validated_path)
         .await
         .map_err(|e| io_error_to_backend_error(e, &validated_path))?; // Get file metadata
@@ -94,8 +106,9 @@ pub async fn read_file_internal(
 pub async fn fs_read_file(
     workspace: tauri::State<'_, PathBuf>,
     path: String,
+    allow_outside_workspace: Option<bool>,
 ) -> Result<FileContentDto, BackendError> {
-    read_file_internal(&workspace, path).await
+    read_file_internal(&workspace, path, allow_outside_workspace).await
 }
 
 /// Internal function for writing files with atomic write support
@@ -104,6 +117,7 @@ pub async fn write_file_internal(
     path: String,
     content: String,
     create_dirs: Option<bool>,
+    allow_outside_workspace: Option<bool>,
 ) -> Result<WriteResultDto, BackendError> {
     let path_buf = PathBuf::from(&path);
     
@@ -119,7 +133,16 @@ pub async fn write_file_internal(
     }
 
     // Validate path for write (handles non-existent files)
-    let validated_path = validate_path_for_write(&path_buf, workspace)?;
+    let allow_outside = allow_outside_workspace.unwrap_or(false);
+    let validated_path = if allow_outside {
+        if path_buf.is_absolute() {
+            normalize_path(&path_buf)
+        } else {
+            normalize_path(&workspace.join(&path_buf))
+        }
+    } else {
+        validate_path_for_write(&path_buf, workspace)?
+    };
 
     // Check if file already exists
     let created = !validated_path.exists();
@@ -180,8 +203,9 @@ pub async fn fs_write_file(
     path: String,
     content: String,
     create_dirs: Option<bool>,
+    allow_outside_workspace: Option<bool>,
 ) -> Result<WriteResultDto, BackendError> {
-    write_file_internal(&workspace, path, content, create_dirs).await
+    write_file_internal(&workspace, path, content, create_dirs, allow_outside_workspace).await
 }
 
 /// Internal function for listing directory contents
@@ -191,9 +215,19 @@ pub async fn list_dir_internal(
     recursive: Option<bool>,
     include_hidden: Option<bool>,
     max_depth: Option<u32>,
+    allow_outside_workspace: Option<bool>,
 ) -> Result<Vec<DirEntryDto>, BackendError> {
     let path_buf = PathBuf::from(&path);
-    let validated_path = validate_path(&path_buf, workspace)?;
+    let allow_outside = allow_outside_workspace.unwrap_or(false);
+    let validated_path = if allow_outside {
+        if path_buf.is_absolute() {
+            normalize_path(&path_buf)
+        } else {
+            normalize_path(&workspace.join(&path_buf))
+        }
+    } else {
+        validate_path(&path_buf, workspace)?
+    };
 
     // Verify path is a directory
     let metadata = tokio::fs::metadata(&validated_path)
@@ -292,7 +326,7 @@ fn should_ignore_path(path: &Path, include_hidden: bool) -> bool {
 async fn create_dir_entry_dto(
     entry_path: &Path,
     workspace: &Path,
-    _base_path: &Path,
+    base_path: &Path,
 ) -> Result<DirEntryDto, BackendError> {
     let metadata = tokio::fs::metadata(entry_path)
         .await
@@ -308,7 +342,8 @@ async fn create_dir_entry_dto(
         .to_string();
 
     let relative_path = entry_path
-        .strip_prefix(workspace)
+        .strip_prefix(base_path)
+        .or_else(|_| entry_path.strip_prefix(workspace))
         .unwrap_or(entry_path)
         .to_string_lossy()
         .to_string();
@@ -367,8 +402,17 @@ pub async fn fs_list_dir(
     recursive: Option<bool>,
     include_hidden: Option<bool>,
     max_depth: Option<u32>,
+    allow_outside_workspace: Option<bool>,
 ) -> Result<Vec<DirEntryDto>, BackendError> {
-    list_dir_internal(&workspace, path, recursive, include_hidden, max_depth).await
+    list_dir_internal(
+        &workspace,
+        path,
+        recursive,
+        include_hidden,
+        max_depth,
+        allow_outside_workspace,
+    )
+    .await
 }
 
 /// Internal function for getting file stats

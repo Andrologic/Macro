@@ -35,6 +35,7 @@
     "architect": "Architect",
     "implement": "Implement",
     "chat": "Chat",
+    "debug": "Debug",
     "selectProject": "Select Project",
     "toggleLeftPanel": "Toggle left panel",
     "toggleRightPanel": "Toggle right panel",
