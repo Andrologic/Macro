@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
+import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { DiffViewer } from './DiffViewer';
-import { mockAuthPlan } from '../../mock-data/auth-scenario';
 
 interface LiveCodePreviewProps {
   className?: string;
@@ -15,13 +15,6 @@ interface FileTab {
   path: string;
   status: 'added' | 'modified' | 'deleted';
 }
-
-const mockModifiedFiles: FileTab[] = [
-  { id: 'file-1', path: 'src/components/auth/LoginPage.tsx', status: 'added' },
-  { id: 'file-2', path: 'src/hooks/useAuth.ts', status: 'added' },
-  { id: 'file-3', path: 'src/services/authService.ts', status: 'modified' },
-  { id: 'file-4', path: 'src/types/auth.ts', status: 'added' },
-];
 
 const statusColors = {
   added: 'text-emerald-500',
@@ -38,14 +31,37 @@ const statusIcons: Record<string, IconName> = {
 export const LiveCodePreview: React.FC<LiveCodePreviewProps> = ({ className }) => {
   const { t } = useTranslation();
   const { selectedGroupId, selectedTaskId } = useAppStore();
-  const [selectedFileId, setSelectedFileId] = useState<string | null>(mockModifiedFiles[0]?.id || null);
+  const tasks = useTaskStore((state) => state.tasks);
+  const currentTask = tasks.find((task) => task.id === selectedTaskId);
+
+  const modifiedFiles: FileTab[] =
+    currentTask?.estimated_changes.map((change, index) => ({
+      id: `${currentTask.id}-${index}`,
+      path: change.path,
+      status:
+        change.operation === 'Delete'
+          ? 'deleted'
+          : change.operation === 'Modify'
+            ? 'modified'
+            : 'added',
+    })) ?? [];
+
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(modifiedFiles[0]?.id || null);
   const [viewMode, setViewMode] = useState<'diff' | 'preview'>('diff');
 
-  // Get current task
-  const currentTask = mockAuthPlan.tasks.find(t => t.id === selectedTaskId);
+  useEffect(() => {
+    if (!modifiedFiles.length) {
+      setSelectedFileId(null);
+      return;
+    }
+
+    if (!selectedFileId || !modifiedFiles.some((file) => file.id === selectedFileId)) {
+      setSelectedFileId(modifiedFiles[0].id);
+    }
+  }, [modifiedFiles, selectedFileId]);
 
   // Get code diff for selected file
-  const selectedFile = mockModifiedFiles.find(f => f.id === selectedFileId);
+  const selectedFile = modifiedFiles.find(f => f.id === selectedFileId);
   const codeDiff = currentTask?.code_diff;
 
   if (!selectedGroupId) {
@@ -90,7 +106,7 @@ export const LiveCodePreview: React.FC<LiveCodePreviewProps> = ({ className }) =
         </h1>
         <div className="flex items-center gap-1">
           <span className="text-xs text-muted-foreground">
-            {mockModifiedFiles.length} fichier{mockModifiedFiles.length > 1 ? 's' : ''}
+            {modifiedFiles.length} fichier{modifiedFiles.length > 1 ? 's' : ''}
           </span>
         </div>
       </div>
@@ -126,7 +142,7 @@ export const LiveCodePreview: React.FC<LiveCodePreviewProps> = ({ className }) =
       {/* File Tabs */}
       <div className="border-b border-border overflow-x-auto">
         <div className="flex px-2 py-1.5 gap-1">
-          {mockModifiedFiles.map((file) => {
+          {modifiedFiles.map((file) => {
             const fileName = file.path.split('/').pop() || file.path;
             const isSelected = selectedFileId === file.id;
 

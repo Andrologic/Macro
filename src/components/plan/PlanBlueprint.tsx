@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
-import { mockPlanNodes } from '../../mock-data/plans';
 import type { PlanNode, PlanNodeStatus, PlanNodeType } from '../../types';
 
 interface PlanBlueprintProps {
@@ -103,23 +102,23 @@ const NodeItem: React.FC<NodeItemProps> = ({ node, isSelected, onSelect }) => {
 
 export const PlanBlueprint: React.FC<PlanBlueprintProps> = ({ className }) => {
   const { t } = useTranslation();
-  const { selectedGroupId } = useAppStore();
+  const { selectedGroupId, planNodes } = useAppStore();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [filter, setFilter] = useState<PlanNodeStatus | 'all'>('all');
 
   // Group nodes by type
-  const specs = mockPlanNodes.filter((n: PlanNode) => n.type === 'spec');
-  const features = mockPlanNodes.filter((n: PlanNode) => n.type === 'feature');
-  const milestones = mockPlanNodes.filter((n: PlanNode) => n.type === 'milestone');
+  const specs = planNodes.filter((n: PlanNode) => n.type === 'spec');
+  const features = planNodes.filter((n: PlanNode) => n.type === 'feature');
+  const milestones = planNodes.filter((n: PlanNode) => n.type === 'milestone');
 
   // Filter nodes
   const filterNodes = (nodes: PlanNode[]) =>
     filter === 'all' ? nodes : nodes.filter((n: PlanNode) => n.status === filter);
 
   // Stats
-  const completedCount = mockPlanNodes.filter((n: PlanNode) => n.status === 'completed').length;
-  const totalCount = mockPlanNodes.length;
-  const progress = Math.round((completedCount / totalCount) * 100);
+  const completedCount = planNodes.filter((n: PlanNode) => n.status === 'completed').length;
+  const totalCount = planNodes.length;
+  const progress = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
   if (!selectedGroupId) {
     return (

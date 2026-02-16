@@ -16,36 +16,38 @@ const BASE_SOURCE_TOOLS = [
 
 const WORKSPACE_READ_TOOLS = ['list', 'read', 'glob', 'grep'] as const;
 const WORKSPACE_WRITE_TOOLS = ['write', 'edit'] as const;
+const CHAT_SAFE_TOOLS = ['read_sources', 'read_file', 'web_search', 'web_fetch'] as const;
+
+const ALL_WORKSPACE_TOOLS = [
+  ...BASE_SOURCE_TOOLS,
+  ...WORKSPACE_READ_TOOLS,
+  ...WORKSPACE_WRITE_TOOLS,
+] as const;
 
 export const getToolModePolicy = (mode: AppMode): ToolModePolicy => {
   if (mode === 'Architect') {
     return {
-      allowedToolIds: [
-        ...BASE_SOURCE_TOOLS,
-        ...WORKSPACE_READ_TOOLS,
-        ...WORKSPACE_WRITE_TOOLS,
-      ],
+      allowedToolIds: [...ALL_WORKSPACE_TOOLS],
       enforceMacroOnlyWrites: true,
     };
   }
 
   if (mode === 'Chat') {
     return {
-      allowedToolIds: [
-        ...BASE_SOURCE_TOOLS,
-        ...WORKSPACE_READ_TOOLS,
-        ...WORKSPACE_WRITE_TOOLS,
-      ],
+      allowedToolIds: [...CHAT_SAFE_TOOLS],
+      enforceMacroOnlyWrites: false,
+    };
+  }
+
+  if (mode === 'Debug') {
+    return {
+      allowedToolIds: [...ALL_WORKSPACE_TOOLS],
       enforceMacroOnlyWrites: false,
     };
   }
 
   return {
-    allowedToolIds: [
-      ...BASE_SOURCE_TOOLS,
-      ...WORKSPACE_READ_TOOLS,
-      ...WORKSPACE_WRITE_TOOLS,
-    ],
+    allowedToolIds: [...ALL_WORKSPACE_TOOLS],
     enforceMacroOnlyWrites: false,
   };
 };

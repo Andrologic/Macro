@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
-import { mockPlanNodes, mockPredictedBranches } from '../../mock-data/plans';
 import type { PlanNode, PlanNodeStatus } from '../../types';
 
 interface StrategyGraphProps {
@@ -61,7 +60,7 @@ function useElementSize<T extends HTMLElement>() {
 // Base component - wrapped with React.memo below for performance
 const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const { t } = useTranslation();
-  const { selectedGroupId, selectedProjectId, projectGroups } = useAppStore();
+  const { selectedGroupId, selectedProjectId, projectGroups, planNodes, predictedBranches } = useAppStore();
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'graph' | 'branches'>('graph');
   const { ref: containerRef, width: containerWidth } = useElementSize<HTMLDivElement>();
@@ -71,16 +70,16 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     let nodes: PlanNode[] = [];
 
     if (selectedProjectId) {
-      nodes = mockPlanNodes.filter((n: PlanNode) => n.projectId === selectedProjectId);
+      nodes = planNodes.filter((n: PlanNode) => n.projectId === selectedProjectId);
     } else if (selectedGroupId) {
       // Find all project IDs in this group
       const group = projectGroups.find(g => g.id === selectedGroupId);
       if (group && group.projects) {
         const projectIds = group.projects.map(p => p.id);
-        nodes = mockPlanNodes.filter((n: PlanNode) => n.projectId && projectIds.includes(n.projectId));
+        nodes = planNodes.filter((n: PlanNode) => n.projectId && projectIds.includes(n.projectId));
       }
     } else {
-      nodes = mockPlanNodes;
+      nodes = planNodes;
     }
 
     if (nodes.length === 0) return { nodes: [], edges: [], width: 0, height: 0, branches: [], laneHeaders: [], colWidth: 140, effectiveLeftPadding: 0 };
@@ -206,7 +205,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       colWidth: COL_WIDTH,
       effectiveLeftPadding
     };
-  }, [selectedGroupId, selectedProjectId, projectGroups, containerWidth]);
+  }, [selectedGroupId, selectedProjectId, projectGroups, planNodes, containerWidth]);
 
   const handledMouseMove = () => { };
 
@@ -457,7 +456,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           </>
         ) : (
           <div className="h-full overflow-y-auto p-4 space-y-3">
-            {mockPredictedBranches.map((branch) => (
+            {predictedBranches.map((branch) => (
               <div
                 key={branch.id}
                 className="rounded-lg border border-border overflow-hidden bg-card"
@@ -491,7 +490,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                 {/* Branch Tasks List */}
                 <div className="bg-muted/10 border-t border-border/50 divide-y divide-border/50">
                   {branch.taskIds.map(taskId => {
-                    const task = mockPlanNodes.find((n: PlanNode) => n.id === taskId);
+                    const task = planNodes.find((n: PlanNode) => n.id === taskId);
                     if (!task) return null;
                     return (
                       <div key={taskId} className="px-3 py-2 flex items-center justify-between group hover:bg-muted/20 transition-colors">
