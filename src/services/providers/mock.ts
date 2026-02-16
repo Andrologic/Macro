@@ -27,7 +27,7 @@ import type {
   MCPServerSettingsDto,
   FileContentDto,
 } from '../contracts/dtos';
-import type { Project } from '../../types';
+import type { Project, ProjectGroup } from '../../types';
 import { delay, maybeFail } from '../utils';
 
 const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
@@ -242,6 +242,128 @@ export const importGitRepo = async (data: {
   };
 
   return simulate({ project: newProject });
+};
+
+export const renameProjectGroup = async (data: {
+  groupId: string;
+  name: string;
+}): Promise<{ projectGroup: ProjectGroup }> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+
+  const found = mockProjects.find((group) => group.id === data.groupId);
+  const projectGroup: ProjectGroup = found
+    ? { ...found, name: data.name }
+    : {
+        id: data.groupId,
+        name: data.name,
+        isOpen: true,
+        projects: [],
+      };
+
+  return simulate({ projectGroup });
+};
+
+export const renameProject = async (data: {
+  projectId: string;
+  name: string;
+}): Promise<ProjectDto> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+
+  const existingProject = mockProjects
+    .flatMap((group) => group.projects)
+    .find((project) => project.id === data.projectId);
+
+  const project: Project = existingProject
+    ? { ...existingProject, name: data.name }
+    : {
+        id: data.projectId,
+        name: data.name,
+        path: '.',
+        created_at: new Date().toISOString(),
+        status: 'active',
+        metadata: {
+          description: '',
+          tags: [],
+          team_members: [],
+          api_contracts: [],
+          dependencies: [],
+        },
+      };
+
+  return simulate({ project });
+};
+
+export const archiveProjectGroup = async (data: {
+  groupId: string;
+}): Promise<{ projectGroup: ProjectGroup }> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+
+  const found = mockProjects.find((group) => group.id === data.groupId);
+  const projectGroup: ProjectGroup = found
+    ? {
+        ...found,
+        projects: found.projects.map((project) => ({
+          ...project,
+          status: 'archived',
+        })),
+      }
+    : {
+        id: data.groupId,
+        name: 'Archived Group',
+        isOpen: true,
+        projects: [],
+      };
+
+  return simulate({ projectGroup });
+};
+
+export const archiveProject = async (data: {
+  projectId: string;
+}): Promise<ProjectDto> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+
+  const existingProject = mockProjects
+    .flatMap((group) => group.projects)
+    .find((project) => project.id === data.projectId);
+
+  const project: Project = existingProject
+    ? { ...existingProject, status: 'archived' }
+    : {
+        id: data.projectId,
+        name: 'Archived Project',
+        path: '.',
+        created_at: new Date().toISOString(),
+        status: 'archived',
+        metadata: {
+          description: '',
+          tags: [],
+          team_members: [],
+          api_contracts: [],
+          dependencies: [],
+        },
+      };
+
+  return simulate({ project });
+};
+
+export const closeProject = async (data: {
+  projectId: string;
+}): Promise<{ projectGroups: ProjectGroup[] }> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+
+  const projectGroups = mockProjects
+    .map((group) => ({
+      ...group,
+      projects: group.projects.filter((project) => project.id !== data.projectId),
+    }))
+    .filter((group) => group.projects.length > 0);
+
+  return simulate({ projectGroups });
 };
 
 // Tools & MCP Settings
