@@ -109,6 +109,140 @@ pub async fn import_git_repo(
 	Ok(project)
 }
 
+pub async fn rename_project_group(
+	workspace_path: &PathBuf,
+	group_id: &str,
+	name: &str,
+) -> Result<ProjectGroupDto> {
+	let trimmed_name = name.trim();
+	if trimmed_name.is_empty() {
+		return Err(BackendError::Validation(
+			"Project group name cannot be empty".to_string(),
+		));
+	}
+
+	let mut state = load_or_create_state(workspace_path).await?;
+	let group = state
+		.project_groups
+		.iter_mut()
+		.find(|group| group.id == group_id)
+		.ok_or_else(|| BackendError::Validation(format!("Unknown project group id: {}", group_id)))?;
+
+	group.name = trimmed_name.to_string();
+	let updated_group = group.clone();
+
+	persist_state(workspace_path, &state).await?;
+	Ok(updated_group)
+}
+
+pub async fn rename_project(
+	workspace_path: &PathBuf,
+	project_id: &str,
+	name: &str,
+) -> Result<ProjectDto> {
+	let trimmed_name = name.trim();
+	if trimmed_name.is_empty() {
+		return Err(BackendError::Validation(
+			"Project name cannot be empty".to_string(),
+		));
+	}
+
+	let mut state = load_or_create_state(workspace_path).await?;
+	let mut updated_project: Option<ProjectDto> = None;
+
+	for group in state.project_groups.iter_mut() {
+		if let Some(project) = group.projects.iter_mut().find(|project| project.id == project_id) {
+			project.name = trimmed_name.to_string();
+			updated_project = Some(project.clone());
+			break;
+		}
+	}
+
+	let updated_project = updated_project
+		.ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+
+	persist_state(workspace_path, &state).await?;
+	Ok(updated_project)
+}
+
+pub async fn archive_project_group(
+	workspace_path: &PathBuf,
+	group_id: &str,
+) -> Result<ProjectGroupDto> {
+	let mut state = load_or_create_state(workspace_path).await?;
+	let group = state
+		.project_groups
+		.iter_mut()
+		.find(|group| group.id == group_id)
+		.ok_or_else(|| BackendError::Validation(format!("Unknown project group id: {}", group_id)))?;
+
+	for project in group.projects.iter_mut() {
+		project.status = "archived".to_string();
+	}
+
+	let updated_group = group.clone();
+	persist_state(workspace_path, &state).await?;
+	Ok(updated_group)
+}
+
+pub async fn archive_project(
+	workspace_path: &PathBuf,
+	project_id: &str,
+) -> Result<ProjectDto> {
+	let mut state = load_or_create_state(workspace_path).await?;
+	let mut updated_project: Option<ProjectDto> = None;
+
+	for group in state.project_groups.iter_mut() {
+		if let Some(project) = group.projects.iter_mut().find(|project| project.id == project_id) {
+			project.status = "archived".to_string();
+			updated_project = Some(project.clone());
+			break;
+		}
+	}
+
+	let updated_project = updated_project
+		.ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+
+	persist_state(workspace_path, &state).await?;
+	Ok(updated_project)
+}
+
+pub async fn close_project(
+	workspace_path: &PathBuf,
+	project_id: &str,
+) -> Result<Vec<ProjectGroupDto>> {
+	let mut state = load_or_create_state(workspace_path).await?;
+	let initial_project_count: usize = state
+		.project_groups
+		.iter()
+		.map(|group| group.projects.len())
+		.sum();
+
+	for group in state.project_groups.iter_mut() {
+		group.projects.retain(|project| project.id != project_id);
+	}
+
+	state.project_groups.retain(|group| !group.projects.is_empty());
+
+	let remaining_project_count: usize = state
+		.project_groups
+		.iter()
+		.map(|group| group.projects.len())
+		.sum();
+
+	if initial_project_count == remaining_project_count {
+		return Err(BackendError::Validation(format!("Unknown project id: {}", project_id)));
+	}
+
+	if let Some(plan) = state.current_plan.as_mut() {
+		plan.project_ids.retain(|id| id != project_id);
+		plan.updated_at = Utc::now().to_rfc3339();
+	}
+
+	persist_state(workspace_path, &state).await?;
+	Ok(state.project_groups)
+}
+
 fn workspace_state_path(workspace_path: &Path) -> PathBuf {
 	workspace_path
 		.join(WORKSPACE_META_DIR)

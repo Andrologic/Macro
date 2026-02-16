@@ -583,6 +583,30 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     let buffer = '';
     let isThinking = false;
     let toolCalls: ToolCall[] = [];
+    const readEvidenceBySource = new Map<string, string>();
+
+    const normalizeSourceKey = (value?: string): string =>
+      (value || '')
+        .trim()
+        .replace(/\\/g, '/')
+        .replace(/^\.\//, '')
+        .toLowerCase();
+
+    const rememberReadEvidence = (source: string, content: string) => {
+      const key = normalizeSourceKey(source);
+      if (!key || !content.trim()) return;
+      readEvidenceBySource.set(key, content);
+    };
+
+    const rememberReadEvidenceFromWorkspaceResult = (result: string) => {
+      const fileHeaderMatch = result.match(/^FILE:\s*(.+)$/m);
+      if (!fileHeaderMatch) return;
+
+      const filePath = fileHeaderMatch[1].trim();
+      const separatorIndex = result.indexOf('\n\n');
+      const content = separatorIndex >= 0 ? result.slice(separatorIndex + 2) : '';
+      rememberReadEvidence(filePath, content);
+    };
 
     const startThinking = () => {
       if (!isThinking) {
@@ -770,7 +794,20 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             if (!requested) {
               toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
             } else if (!match) {
-              toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+              if (allowedTools.has('read') && onToolCall) {
+                const workspaceResult = await onToolCall('read', {
+                  path: requestedRaw,
+                });
+
+                if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
+                  toolResult = workspaceResult;
+                  rememberReadEvidenceFromWorkspaceResult(workspaceResult);
+                } else {
+                  toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+                }
+              } else {
+                toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+              }
             } else {
               const label = match.path || match.title || match.source;
               const content = (match.snippet || '').trim();
@@ -785,13 +822,35 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                   : '';
 
               toolResult = `${base}${extractNotice}`;
+              if (label) {
+                rememberReadEvidence(label, content);
+              }
             }
           }
           
           if (toolName === 'mark_source_passage') {
             const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
             const kind = rawKind === 'interesting' ? 'interesting' : 'used';
-            toolResult = `Source passage marked successfully (kind=${kind}).`;
+            const source = typeof args.source === 'string' ? args.source : '';
+            const title = typeof args.title === 'string' ? args.title : '';
+            const passage = typeof args.passage === 'string' ? args.passage : '';
+            const normalizedPassage = passage.trim();
+
+            const sourceKey = normalizeSourceKey(source || title);
+            const sourceEvidence = sourceKey ? readEvidenceBySource.get(sourceKey) : undefined;
+            const anyEvidence = Array.from(readEvidenceBySource.values());
+            const hasMatchingEvidence = normalizedPassage
+              ? (
+                  (sourceEvidence && sourceEvidence.includes(normalizedPassage)) ||
+                  anyEvidence.some((evidence) => evidence.includes(normalizedPassage))
+                )
+              : false;
+
+            if (!hasMatchingEvidence) {
+              toolResult = 'Error executing tool mark_source_passage: passage is not present in previously read file content.';
+            } else {
+              toolResult = `Source passage marked successfully (kind=${kind}).`;
+            }
           } else if (toolName === 'read_sources') {
             toolResult = customToolResult || 'No source passages available.';
           } else if (toolName === 'edit_source_passage') {
@@ -805,6 +864,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           onToolResult?.(toolName, toolResult);
         } catch (e) {
           toolResult = `Error executing tool ${toolName}: ${e instanceof Error ? e.message : String(e)}`;
+          onToolResult?.(toolName, toolResult);
         } finally {
           if (shouldEmitToolDone) {
             const toolDoneMsg = formatToolDoneLabel(toolName);
@@ -821,11 +881,46 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       
       // If we have tool results, make a follow-up request to get the final response
       if (toolResults.length > 0) {
+        const hasToolErrors = toolResults.some((result) => {
+          const content = result.content.trim();
+          return (
+            /^Error executing/i.test(content) ||
+            /^Missing\s+/i.test(content) ||
+            /^No match found/i.test(content) ||
+            /^File not found/i.test(content) ||
+            /^Cannot\s+/i.test(content)
+          );
+        });
+        const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
+
         const messagesWithToolResults: StreamMessage[] = [
           ...messages,
           { role: 'assistant', content: fullContent, tool_calls: validToolCalls },
           ...toolResults.map(tr => ({ role: 'tool' as const, content: tr.content, tool_call_id: tr.tool_call_id })),
         ];
+
+        const guardSystemMessages: StreamMessage[] = [];
+        if (hasToolErrors) {
+          guardSystemMessages.push({
+            role: 'system',
+            content:
+              'One or more tool calls failed. Do not fabricate file contents or command outputs. ' +
+              'State the exact failure and ask for a corrected path/context when needed.',
+          });
+        }
+        if (hasFileReadResults) {
+          guardSystemMessages.push({
+            role: 'system',
+            content:
+              'For file analysis tasks, use ONLY the exact tool outputs provided in this conversation. ' +
+              'Do not invent code symbols, structs, handlers, routes, or data not present in tool output. ' +
+              'If uncertain, say that the information is not present in the file content you received.',
+          });
+        }
+
+        const guardedMessages: StreamMessage[] = guardSystemMessages.length > 0
+          ? [...guardSystemMessages, ...messagesWithToolResults]
+          : messagesWithToolResults;
         
         // Make a follow-up request without tools to get the final response
         const followUpResponse = await tauriFetch(`${baseUrl}/chat/completions`, {
@@ -833,7 +928,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           headers,
           body: JSON.stringify({
             model: modelId,
-            messages: messagesWithToolResults.map((m) => ({
+            messages: guardedMessages.map((m) => ({
               role: m.role,
               content: m.content,
               ...(m.tool_calls && { tool_calls: m.tool_calls }),

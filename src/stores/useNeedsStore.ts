@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Need } from '../types';
+import { useAppStore } from './useAppStore';
 
 interface NeedsState {
   needs: Need[];
@@ -26,6 +27,7 @@ const MOCK_NEEDS: Need[] = [
     status: 'identified',
     priority: 'high',
     tags: ['auth', 'security'],
+    projectId: 'proj-1',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
@@ -37,6 +39,7 @@ const MOCK_NEEDS: Need[] = [
     status: 'validated',
     priority: 'medium',
     tags: ['responsive', 'mobile'],
+    projectId: 'proj-2',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }
@@ -48,9 +51,11 @@ export const useNeedsStore = create<NeedsState>((set, get) => ({
 
   addNeed: (needData) => {
     const id = crypto.randomUUID();
+    const selectedProjectId = useAppStore.getState().selectedProjectId;
     const newNeed: Need = {
       ...needData,
       id,
+      projectId: needData.projectId ?? selectedProjectId ?? undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

@@ -533,6 +533,50 @@ export async function workspaceImportGitRepo(params: {
   });
 }
 
+export async function workspaceRenameProjectGroup(params: {
+  groupId: string;
+  name: string;
+}): Promise<ProjectGroup> {
+  return invoke<ProjectGroup>('workspace_rename_project_group', {
+    group_id: params.groupId,
+    name: params.name,
+  });
+}
+
+export async function workspaceRenameProject(params: {
+  projectId: string;
+  name: string;
+}): Promise<Project> {
+  return invoke<Project>('workspace_rename_project', {
+    project_id: params.projectId,
+    name: params.name,
+  });
+}
+
+export async function workspaceArchiveProjectGroup(params: {
+  groupId: string;
+}): Promise<ProjectGroup> {
+  return invoke<ProjectGroup>('workspace_archive_project_group', {
+    group_id: params.groupId,
+  });
+}
+
+export async function workspaceArchiveProject(params: {
+  projectId: string;
+}): Promise<Project> {
+  return invoke<Project>('workspace_archive_project', {
+    project_id: params.projectId,
+  });
+}
+
+export async function workspaceCloseProject(params: {
+  projectId: string;
+}): Promise<ProjectGroup[]> {
+  return invoke<ProjectGroup[]>('workspace_close_project', {
+    project_id: params.projectId,
+  });
+}
+
 // ============ Provider Models ============
 
 export async function listProviderModels(providerId: string): Promise<DbAiModel[]> {

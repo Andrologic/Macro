@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { Icon } from '../ui/Icon';
+import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
 import type { NeedCategory } from '../../types';
 
@@ -20,6 +21,7 @@ export const NeedDetailsModal: React.FC<NeedDetailsModalProps> = ({ needId, isOp
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState<NeedCategory>('other');
   const [priority, setPriority] = useState<'low' | 'medium' | 'high'>('medium');
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
 
   useEffect(() => {
     if (need) {
@@ -43,10 +45,9 @@ export const NeedDetailsModal: React.FC<NeedDetailsModalProps> = ({ needId, isOp
   };
 
   const handleDelete = () => {
-    if (confirm(t('common.confirmDelete', 'Are you sure you want to delete this need?'))) {
-      deleteNeed(needId);
-      onClose();
-    }
+    deleteNeed(needId);
+    setIsDeleteConfirmOpen(false);
+    onClose();
   };
 
   return (
@@ -139,7 +140,7 @@ export const NeedDetailsModal: React.FC<NeedDetailsModalProps> = ({ needId, isOp
         {/* Footer */}
         <div className="bg-muted/30 px-6 py-4 border-t border-border flex items-center justify-between">
           <button
-            onClick={handleDelete}
+            onClick={() => setIsDeleteConfirmOpen(true)}
             className="flex items-center gap-2 px-3 py-2 text-red-500 hover:bg-red-500/10 rounded-lg transition-colors text-sm font-medium"
           >
             <Icon name="trash" size={14} />
@@ -161,6 +162,17 @@ export const NeedDetailsModal: React.FC<NeedDetailsModalProps> = ({ needId, isOp
           </div>
         </div>
       </div>
+
+      <ConfirmPromptModal
+        isOpen={isDeleteConfirmOpen}
+        title={t('common.delete', 'Delete')}
+        description={t('common.confirmDelete', 'Are you sure you want to delete this need?')}
+        confirmLabel={t('common.delete', 'Delete')}
+        cancelLabel={t('common.cancel', 'Cancel')}
+        confirmVariant="error"
+        onCancel={() => setIsDeleteConfirmOpen(false)}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 };

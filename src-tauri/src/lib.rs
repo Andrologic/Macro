@@ -104,6 +104,11 @@ pub fn run() {
             commands::workspace::workspace_get_metadata,
             commands::workspace::workspace_create_project,
             commands::workspace::workspace_import_git_repo,
+            commands::workspace::workspace_rename_project_group,
+            commands::workspace::workspace_rename_project,
+            commands::workspace::workspace_archive_project_group,
+            commands::workspace::workspace_archive_project,
+            commands::workspace::workspace_close_project,
             // File System commands
             commands::fs::fs_read_file,
             commands::fs::fs_write_file,
