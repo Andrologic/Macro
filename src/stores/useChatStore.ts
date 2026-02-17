@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { ChatMessage, Conversation } from '../types';
+import { AppMode, ChatMessage, Conversation } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 import { useProviderStore } from './useProviderStore';
 import { useCitationsStore } from './useCitationsStore';
@@ -133,6 +133,7 @@ interface ChatStore {
   messages: ChatMessage[];
   conversations: Conversation[];
   selectedConversationId: string | null;
+  selectedConversationIdsByMode: Partial<Record<AppMode, string | null>>;
   isLoading: boolean;
   isStreaming: boolean;
   lastError: string | null;
@@ -150,8 +151,15 @@ interface ChatStore {
     taskId: string | null,
     projectId: string | null
   ) => Promise<Conversation>;
+  ensureConversationForCurrentMode: () => Promise<string | null>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
-  deleteConversation: (conversationId: string) => Promise<void>;
+  deleteConversation: (
+    conversationId: string,
+    confirmation?: {
+      mode: 'chat' | 'implement' | 'architect';
+      typedProjectName?: string;
+    }
+  ) => Promise<void>;
   markAsRead: (conversationId: string) => void;
   getConversationByTask: (taskId: string) => Conversation | undefined;
   getConversationMessages: (conversationId: string) => ChatMessage[];
@@ -455,6 +463,46 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
+  const isConversationAllowedForMode = (
+    conversation: Conversation,
+    mode: AppMode,
+    selectedProjectId: string | null,
+    selectedTaskId: string | null
+  ): boolean => {
+    if (mode === 'Chat' || mode === 'Debug') {
+      return !conversation.project_id && !conversation.task_id;
+    }
+
+    if (mode === 'Architect') {
+      if (!selectedProjectId) return false;
+      return conversation.project_id === selectedProjectId && !conversation.task_id;
+    }
+
+    if (mode === 'Implement') {
+      if (!selectedTaskId) return false;
+      return conversation.task_id === selectedTaskId;
+    }
+
+    return false;
+  };
+
+  const getFallbackConversationIdForMode = (
+    conversations: Conversation[],
+    mode: AppMode,
+    selectedProjectId: string | null,
+    selectedTaskId: string | null
+  ): string | null => {
+    const scoped = conversations
+      .filter((conversation) =>
+        isConversationAllowedForMode(conversation, mode, selectedProjectId, selectedTaskId)
+      )
+      .sort((a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      );
+
+    return scoped[0]?.id ?? null;
+  };
+
   const getAllowedToolIdsForCurrentMode = (): string[] => {
     const mode = useAppStore.getState().mode;
     const modePolicy = getToolModePolicy(mode);
@@ -581,6 +629,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messages: [],
     conversations: [],
     selectedConversationId: null,
+    selectedConversationIdsByMode: {},
     isLoading: false,
     isStreaming: false,
     lastError: null,
@@ -688,24 +737,53 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     selectConversation: (conversationId) =>
       set((state) => {
+        const appState = useAppStore.getState();
+        const conversation = state.conversations.find((conv) => conv.id === conversationId);
+        if (!conversation) {
+          return {};
+        }
+
+        if (
+          !isConversationAllowedForMode(
+            conversation,
+            appState.mode,
+            appState.selectedProjectId,
+            appState.selectedTaskId
+          )
+        ) {
+          return {};
+        }
+
         const updatedConversations = state.conversations.map((conv) =>
           conv.id === conversationId ? { ...conv, is_unread: false } : conv
         );
-        return { selectedConversationId: conversationId, conversations: updatedConversations };
+        return {
+          selectedConversationId: conversationId,
+          selectedConversationIdsByMode: {
+            ...state.selectedConversationIdsByMode,
+            [appState.mode]: conversationId,
+          },
+          conversations: updatedConversations,
+        };
       }),
 
     createConversation: async (title, taskId, projectId) => {
       let newConversation: Conversation;
+      const mode = useAppStore.getState().mode;
 
       if (tauriIpc.isTauriAvailable()) {
         try {
-          const dbConv = await tauriIpc.createConversation(title);
+          const dbConv = await tauriIpc.createConversation({
+            title,
+            taskId,
+            projectId,
+          });
           newConversation = {
             id: dbConv.id,
             title: dbConv.title,
             description: dbConv.description || '',
-            task_id: taskId,
-            project_id: projectId,
+            task_id: dbConv.task_id,
+            project_id: dbConv.project_id,
             last_message: dbConv.last_message || '',
             message_count: dbConv.message_count,
             updated_at: dbConv.updated_at,
@@ -743,8 +821,102 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set((state) => ({
         conversations: [newConversation, ...state.conversations],
         selectedConversationId: newConversation.id,
+        selectedConversationIdsByMode: {
+          ...state.selectedConversationIdsByMode,
+          [mode]: newConversation.id,
+        },
       }));
       return newConversation;
+    },
+
+    ensureConversationForCurrentMode: async () => {
+      const appState = useAppStore.getState();
+      const state = get();
+      const mode = appState.mode;
+      const selectedProjectId = appState.selectedProjectId;
+      const selectedTaskId = appState.selectedTaskId;
+
+      if (mode === 'Debug') {
+        const debugFallback = getFallbackConversationIdForMode(
+          state.conversations,
+          'Debug',
+          selectedProjectId,
+          selectedTaskId
+        );
+
+        if (
+          state.selectedConversationId !== debugFallback ||
+          state.selectedConversationIdsByMode.Debug !== debugFallback
+        ) {
+          set((current) => ({
+            selectedConversationId: debugFallback,
+            selectedConversationIdsByMode: {
+              ...current.selectedConversationIdsByMode,
+              Debug: debugFallback,
+            },
+          }));
+        }
+
+        return debugFallback;
+      }
+
+      const rememberedId = state.selectedConversationIdsByMode[mode] ?? null;
+      const rememberedConversation = rememberedId
+        ? state.conversations.find((conversation) => conversation.id === rememberedId)
+        : null;
+
+      if (
+        rememberedConversation &&
+        isConversationAllowedForMode(
+          rememberedConversation,
+          mode,
+          selectedProjectId,
+          selectedTaskId
+        )
+      ) {
+        if (state.selectedConversationId !== rememberedConversation.id) {
+          get().selectConversation(rememberedConversation.id);
+        }
+        return rememberedConversation.id;
+      }
+
+      const fallbackConversationId = getFallbackConversationIdForMode(
+        state.conversations,
+        mode,
+        selectedProjectId,
+        selectedTaskId
+      );
+
+      if (fallbackConversationId) {
+        if (state.selectedConversationId !== fallbackConversationId) {
+          get().selectConversation(fallbackConversationId);
+        }
+        return fallbackConversationId;
+      }
+
+      if (mode === 'Architect' && selectedProjectId) {
+        const project = appState.getProjectById(selectedProjectId);
+        const title = project ? `Architect · ${project.name}` : 'Architect Session';
+        const created = await get().createConversation(title, null, selectedProjectId);
+        return created.id;
+      }
+
+      if (mode === 'Implement' && selectedTaskId) {
+        const task = appState.currentPlan?.tasks.find((candidate) => candidate.id === selectedTaskId);
+        const title = task ? `Task · ${task.title}` : 'Task Session';
+        const projectId = task?.project_id ?? selectedProjectId;
+        const created = await get().createConversation(title, selectedTaskId, projectId ?? null);
+        return created.id;
+      }
+
+      set((current) => ({
+        selectedConversationId: null,
+        selectedConversationIdsByMode: {
+          ...current.selectedConversationIdsByMode,
+          [mode]: null,
+        },
+      }));
+      return null;
     },
 
     renameConversation: async (conversationId, title) => {
@@ -758,11 +930,40 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }));
     },
 
-    deleteConversation: async (conversationId) => {
+    deleteConversation: async (conversationId, confirmation) => {
+      const conversation = get().conversations.find((candidate) => candidate.id === conversationId);
+      if (!conversation) {
+        throw new Error('Conversation introuvable.');
+      }
+
+      if (conversation.task_id) {
+        if (confirmation?.mode !== 'implement') {
+          throw new Error(
+            'Suppression bloquée: une conversation Implement nécessite une confirmation explicite.'
+          );
+        }
+      } else if (conversation.project_id) {
+        const projectName =
+          useAppStore.getState().getProjectById(conversation.project_id)?.name?.trim() || null;
+
+        if (confirmation?.mode !== 'architect') {
+          throw new Error(
+            'Suppression bloquée: une conversation Architect nécessite de confirmer le nom du projet.'
+          );
+        }
+
+        if (projectName && confirmation.typedProjectName?.trim() !== projectName) {
+          throw new Error('Le nom du projet ne correspond pas.');
+        }
+      } else if (confirmation && confirmation.mode !== 'chat') {
+        throw new Error('Type de confirmation invalide pour une conversation Chat.');
+      }
+
       if (tauriIpc.isTauriAvailable()) {
         await tauriIpc.deleteConversation(conversationId);
       }
       set((state) => {
+        const appState = useAppStore.getState();
         const newConversations = state.conversations.filter((c) => c.id !== conversationId);
         const newMessages = state.messages.filter((m) => m.conversation_id !== conversationId);
         const removedMessageIds = new Set(
@@ -775,15 +976,38 @@ export const useChatStore = create<ChatStore>((set, get) => {
           delete nextImages[id];
         });
         saveMessageImagesToStorage(nextImages);
+
+        const nextByMode = { ...state.selectedConversationIdsByMode };
+        (Object.keys(nextByMode) as AppMode[]).forEach((modeKey) => {
+          if (nextByMode[modeKey] === conversationId) {
+            nextByMode[modeKey] = null;
+          }
+        });
+
+        const fallbackForCurrentMode = getFallbackConversationIdForMode(
+          newConversations,
+          appState.mode,
+          appState.selectedProjectId,
+          appState.selectedTaskId
+        );
+
         const newSelectedId =
           state.selectedConversationId === conversationId
-            ? newConversations[0]?.id ?? null
+            ? fallbackForCurrentMode
             : state.selectedConversationId;
+
+        nextByMode[appState.mode] =
+          newSelectedId &&
+          newConversations.some((conversation) => conversation.id === newSelectedId)
+            ? newSelectedId
+            : fallbackForCurrentMode;
+
         return {
           conversations: newConversations,
           messages: newMessages,
           messageImagesByMessageId: nextImages,
           selectedConversationId: newSelectedId,
+          selectedConversationIdsByMode: nextByMode,
         };
       });
     },
@@ -797,7 +1021,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     getConversationByTask: (taskId) => {
       const state = get();
-      return state.conversations.find((conv) => conv.task_id === taskId);
+      return state.conversations
+        .filter((conv) => conv.task_id === taskId)
+        .sort((a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+        )[0];
     },
 
     getConversationMessages: (conversationId) => {
@@ -1167,13 +1395,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             id: c.id,
             title: c.title,
             description: c.description || '',
-            task_id: null,
-            project_id: null,
+            task_id: c.task_id,
+            project_id: c.project_id,
             last_message: c.last_message || '',
             message_count: c.message_count,
             updated_at: c.updated_at,
             is_unread: false,
           }));
+
+          const conversationById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
 
           // Load messages for all conversations
           const allMessages: ChatMessage[] = [];
@@ -1182,7 +1412,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             allMessages.push(
               ...dbMessages.map((m) => ({
                 id: m.id,
-                task_id: '',
+                task_id: conversationById.get(m.conversation_id)?.task_id ?? '',
                 conversation_id: m.conversation_id,
                 role: m.role as 'user' | 'assistant',
                 content: m.content,
@@ -1206,7 +1436,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
               saveMessageImagesToStorage(pruned);
               return pruned;
             })(),
-            selectedConversationId: conversations[0]?.id ?? null,
+            selectedConversationId: null,
+            selectedConversationIdsByMode: {},
             isLoading: false,
           });
         } else {
@@ -1216,6 +1447,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             messages: [],
             messageImagesByMessageId: loadMessageImagesFromStorage(),
             selectedConversationId: null,
+            selectedConversationIdsByMode: {},
             isLoading: false,
           });
         }
@@ -1228,6 +1460,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: [],
           messageImagesByMessageId: loadMessageImagesFromStorage(),
           selectedConversationId: null,
+          selectedConversationIdsByMode: {},
           isLoading: false,
           lastError: normalized.message,
         });

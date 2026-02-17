@@ -73,6 +73,103 @@ const projectNameFromPath = (path: string): string => {
   return parts[parts.length - 1] || path;
 };
 
+const isLegacyWorkspaceMockPath = (path?: string): boolean => {
+  const normalized = normalizePath(path || '');
+  return normalized.startsWith('/path/to/');
+};
+
+const pruneLegacyWorkspaceMocks = (groups: ProjectGroup[]): ProjectGroup[] => {
+  return groups
+    .map((group) => ({
+      ...group,
+      projects: group.projects.filter((project) => !isLegacyWorkspaceMockPath(project.path)),
+    }))
+    .filter((group) => group.projects.length > 0);
+};
+
+const pruneLegacyRememberedProjects = (
+  projects: RememberedProject[]
+): RememberedProject[] => projects.filter((project) => !isLegacyWorkspaceMockPath(project.path));
+
+const mergeRememberedProjectsIntoGroups = (
+  groups: ProjectGroup[],
+  rememberedProjects: RememberedProject[]
+): ProjectGroup[] => {
+  const existingPaths = new Set(
+    groups
+      .flatMap((group) => group.projects)
+      .map((project) => normalizePath(project.path))
+  );
+
+  const missingPaths = new Set<string>();
+
+  const missingRemembered = rememberedProjects.filter((remembered) => {
+    const normalizedPath = normalizePath(remembered.path);
+    if (!normalizedPath) return false;
+    if (existingPaths.has(normalizedPath)) return false;
+    if (missingPaths.has(normalizedPath)) return false;
+
+    missingPaths.add(normalizedPath);
+    return true;
+  });
+
+  if (missingRemembered.length === 0) {
+    return groups;
+  }
+
+  const sessionGroups = missingRemembered.map((remembered, index) => {
+    const normalizedPath = normalizePath(remembered.path);
+    const sessionProjectId = `session-project-${Date.now()}-${index}`;
+    const sessionGroupId = `session-group-${Date.now()}-${index}`;
+    const projectName = remembered.name?.trim() || projectNameFromPath(normalizedPath);
+
+    return {
+      id: sessionGroupId,
+      name: projectName,
+      isOpen: true,
+      projects: [
+        {
+          id: sessionProjectId,
+          name: projectName,
+          path: normalizedPath,
+          created_at: new Date().toISOString(),
+          status: 'active' as const,
+          metadata: {
+            description: 'Restored from session history',
+            tags: [],
+            team_members: [],
+            api_contracts: [],
+            dependencies: [],
+          },
+        },
+      ],
+    };
+  });
+
+  return [...groups, ...sessionGroups];
+};
+
+const dedupeProjectGroupsByPath = (groups: ProjectGroup[]): ProjectGroup[] => {
+  const seenPaths = new Set<string>();
+
+  return groups
+    .map((group) => {
+      const dedupedProjects = group.projects.filter((project) => {
+        const normalizedPath = normalizePath(project.path);
+        if (!normalizedPath) return false;
+        if (seenPaths.has(normalizedPath)) return false;
+        seenPaths.add(normalizedPath);
+        return true;
+      });
+
+      return {
+        ...group,
+        projects: dedupedProjects,
+      };
+    })
+    .filter((group) => group.projects.length > 0);
+};
+
 interface AppStore {
   mode: AppMode;
   currentPlan: Plan | null;
@@ -636,13 +733,22 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const normalizedZoomLevel = Math.max(0.75, Math.min(2, uiZoomLevel));
 
       const { plan, projectGroups, planNodes, predictedBranches } = await services.getAppBootstrap();
-      let resolvedProjectGroups = projectGroups;
+      const cleanedProjectGroups = pruneLegacyWorkspaceMocks(projectGroups);
+      const cleanedRecentProjects = pruneLegacyRememberedProjects(recentProjects);
+      const cleanedMacroEnabledProjects = pruneLegacyRememberedProjects(macroEnabledProjects);
+
+      const rememberedCandidates = [...cleanedRecentProjects, ...cleanedMacroEnabledProjects]
+        .filter((project) => typeof project.path === 'string' && project.path.trim().length > 0)
+        .sort((a, b) => new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime());
+
+      let resolvedProjectGroups = mergeRememberedProjectsIntoGroups(cleanedProjectGroups, rememberedCandidates);
+      resolvedProjectGroups = dedupeProjectGroupsByPath(resolvedProjectGroups);
 
       let resolvedGroupId: string | null = null;
       let resolvedProjectId: string | null = null;
 
       if (lastSelectedProjectId) {
-        const groupForProject = projectGroups.find((group) =>
+        const groupForProject = resolvedProjectGroups.find((group) =>
           group.projects.some((project) => project.id === lastSelectedProjectId)
         );
         if (groupForProject) {
@@ -652,19 +758,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
 
       if (!resolvedGroupId && lastSelectedGroupId) {
-        const existingGroup = projectGroups.find((group) => group.id === lastSelectedGroupId);
+        const existingGroup = resolvedProjectGroups.find((group) => group.id === lastSelectedGroupId);
         if (existingGroup) {
           resolvedGroupId = existingGroup.id;
         }
       }
 
       if (!resolvedGroupId) {
-        const firstValidRecent = recentProjects.find((recent) =>
-          projectGroups.some((group) => group.projects.some((project) => project.path === recent.path))
+        const firstValidRecent = cleanedRecentProjects.find((recent) =>
+          resolvedProjectGroups.some((group) => group.projects.some((project) => project.path === recent.path))
         );
 
         if (firstValidRecent) {
-          const groupForRecent = projectGroups.find((group) =>
+          const groupForRecent = resolvedProjectGroups.find((group) =>
             group.projects.some((project) => project.path === firstValidRecent.path)
           );
           const projectForRecent = groupForRecent?.projects.find((project) => project.path === firstValidRecent.path);
@@ -740,8 +846,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         predictedBranches: predictedBranches ?? [],
         selectedGroupId: resolvedGroupId,
         selectedProjectId: resolvedProjectId,
-        recentProjects,
-        macroEnabledProjects,
+        recentProjects: cleanedRecentProjects,
+        macroEnabledProjects: cleanedMacroEnabledProjects,
         leftPanelWidth: leftWidth,
         rightPanelWidth: rightWidth,
         isLeftPanelOpen: leftOpen,
@@ -750,6 +856,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         uiZoomLevel: normalizedZoomLevel,
         isLoading: false,
       });
+
+      void savePreference(PREF_KEYS.RECENT_PROJECTS, cleanedRecentProjects);
+      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, cleanedMacroEnabledProjects);
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });

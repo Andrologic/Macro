@@ -21,6 +21,8 @@ export interface DbConversation {
   id: string;
   title: string;
   description: string | null;
+  task_id: string | null;
+  project_id: string | null;
   created_at: string;
   updated_at: string;
   last_message: string | null;
@@ -173,8 +175,16 @@ export async function getConversation(id: string): Promise<DbConversation | null
   return invoke<DbConversation | null>('db_get_conversation', { id });
 }
 
-export async function createConversation(title?: string): Promise<DbConversation> {
-  return invoke<DbConversation>('db_create_conversation', { title });
+export async function createConversation(params?: {
+  title?: string;
+  taskId?: string | null;
+  projectId?: string | null;
+}): Promise<DbConversation> {
+  return invoke<DbConversation>('db_create_conversation', {
+    title: params?.title,
+    taskId: params?.taskId ?? null,
+    projectId: params?.projectId ?? null,
+  });
 }
 
 export async function renameConversation(id: string, title: string): Promise<void> {
