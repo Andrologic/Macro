@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/useChatStore';
 import { useCitationsStore } from '../../stores/useCitationsStore';
+import { useAppStore } from '../../stores/useAppStore';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -36,8 +37,19 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   const [showMenu, setShowMenu] = useState(false);
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const { renameConversation, deleteConversation } = useChatStore();
+  const getProjectById = useAppStore((state) => state.getProjectById);
   const { clearConversationCitations } = useCitationsStore();
+
+  const deleteKind: 'chat' | 'implement' | 'architect' = conversation.task_id
+    ? 'implement'
+    : conversation.project_id
+      ? 'architect'
+      : 'chat';
+  const architectProjectName = conversation.project_id
+    ? getProjectById(conversation.project_id)?.name || ''
+    : '';
 
   const handleRename = async (newTitle?: string) => {
     if (newTitle && newTitle !== conversation.title) {
@@ -46,10 +58,26 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
     setIsRenameOpen(false);
   };
 
-  const handleDelete = async () => {
-    await deleteConversation(conversation.id);
-    clearConversationCitations(conversation.id);
-    setIsDeleteOpen(false);
+  const handleDelete = async (typedProjectName?: string) => {
+    try {
+      if (deleteKind === 'architect') {
+        await deleteConversation(conversation.id, {
+          mode: 'architect',
+          typedProjectName,
+        });
+      } else if (deleteKind === 'implement') {
+        await deleteConversation(conversation.id, { mode: 'implement' });
+      } else {
+        await deleteConversation(conversation.id, { mode: 'chat' });
+      }
+
+      clearConversationCitations(conversation.id);
+      setDeleteError(null);
+      setIsDeleteOpen(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Suppression impossible.';
+      setDeleteError(message);
+    }
   };
 
   const handleExport = () => {
@@ -194,6 +222,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             <button 
               onClick={() => {
                 setShowMenu(false);
+                setDeleteError(null);
                 setIsDeleteOpen(true);
               }}
               className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 flex items-center gap-2"
@@ -222,14 +251,30 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
 
       <ConfirmPromptModal
         isOpen={isDeleteOpen}
-        title="Delete conversation"
-        description="Are you sure you want to delete this conversation?"
+        title={
+          deleteKind === 'architect'
+            ? 'Delete Architect conversation'
+            : deleteKind === 'implement'
+              ? 'Delete Implement conversation'
+              : 'Delete conversation'
+        }
+        description={
+          deleteError ||
+          (deleteKind === 'architect'
+            ? `Type ${architectProjectName} to confirm deletion.`
+            : deleteKind === 'implement'
+              ? 'Confirm deletion of this task conversation.'
+              : 'Are you sure you want to delete this conversation?')
+        }
         confirmLabel="Delete"
         cancelLabel="Cancel"
         confirmVariant="error"
+        inputPlaceholder={deleteKind === 'architect' ? 'Project name' : undefined}
+        requireInput={deleteKind === 'architect'}
+        initialValue=""
         onCancel={() => setIsDeleteOpen(false)}
-        onConfirm={() => {
-          void handleDelete();
+        onConfirm={(value) => {
+          void handleDelete(value);
         }}
       />
     </div>

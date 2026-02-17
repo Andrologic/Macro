@@ -67,13 +67,22 @@ pub async fn db_get_conversation(
 pub async fn db_create_conversation(
     pool: State<'_, DbPool>,
     title: Option<String>,
+    task_id: Option<String>,
+    project_id: Option<String>,
 ) -> CommandResult<Conversation> {
     let pool_guard = pool.lock().await;
     let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
         message: "Database not initialized".to_string(),
     })?;
 
-    repository::create_conversation(pool, CreateConversationInput { title })
+    repository::create_conversation(
+        pool,
+        CreateConversationInput {
+            title,
+            task_id,
+            project_id,
+        },
+    )
         .await
         .map_err(Into::into)
 }
