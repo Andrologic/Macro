@@ -128,9 +128,24 @@ const MemoizedTaskItem = React.memo(TaskItem);
 // Use memoized version in the component
 const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const { t } = useTranslation();
-  const { selectedGroupId, selectedProjectId, selectedTaskId, setSelectedTask } = useAppStore();
+  const { selectedGroupId, selectedProjectId, selectedTaskId, setSelectedTask, projectGroups } = useAppStore();
   const tasks = useTaskStore((state) => state.tasks);
   const [filter, setFilter] = useState<TaskStatus | 'all'>('all');
+
+  const scopedTasks = useMemo(() => {
+    if (selectedProjectId) {
+      return tasks.filter((task) => task.project_id === selectedProjectId);
+    }
+
+    if (selectedGroupId) {
+      const group = projectGroups.find((candidate) => candidate.id === selectedGroupId);
+      const groupProjectIds = new Set(group?.projects.map((project) => project.id) ?? []);
+      if (groupProjectIds.size === 0) return [];
+      return tasks.filter((task) => groupProjectIds.has(task.project_id));
+    }
+
+    return [];
+  }, [tasks, selectedProjectId, selectedGroupId, projectGroups]);
 
   // Get dependency names for blocking info
   const getBlockingTasks = (task: Task): string[] => {
@@ -149,12 +164,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   // Filter and sort tasks
   const filteredTasks = useMemo(() => {
-    let result = [...tasks];
-
-    // Filter by project if selected
-    if (selectedProjectId) {
-      result = result.filter(t => t.project_id === selectedProjectId);
-    }
+    let result = [...scopedTasks];
 
     // Filter by status
     if (filter !== 'all') {
@@ -174,12 +184,12 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     result.sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
 
     return result;
-  }, [tasks, filter, selectedProjectId]);
+  }, [scopedTasks, filter]);
 
   // Stats
-  const completedCount = tasks.filter(t => t.status === 'Completed').length;
-  const inProgressCount = tasks.filter(t => t.status === 'InProgress').length;
-  const totalCount = tasks.length;
+  const completedCount = scopedTasks.filter(t => t.status === 'Completed').length;
+  const inProgressCount = scopedTasks.filter(t => t.status === 'InProgress').length;
+  const totalCount = scopedTasks.length;
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
   if (!selectedGroupId) {

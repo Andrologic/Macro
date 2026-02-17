@@ -31,7 +31,7 @@ const statusLabels: Record<TaskStatus, string> = {
 };
 
 export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
-  const { currentPlan } = useAppStore();
+  const { currentPlan, setSelectedTask } = useAppStore();
   const { selectedConversationId, selectConversation, getConversationByTask } =
     useChatStore();
   const [sortOption, setSortOption] = useState<TaskSortOption>('updated');
@@ -75,6 +75,7 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
   }, [projectTasks, sortOption, getConversationByTask]);
 
   const handleTaskClick = (taskId: string) => {
+    setSelectedTask(taskId);
     const conversation = getConversationByTask(taskId);
     if (conversation) {
       selectConversation(conversation.id);

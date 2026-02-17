@@ -89,7 +89,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
         <button
           onClick={() => setFilter('all')}
           className={cn(
-            'px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors shrink-0',
+            'px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors shrink-0 inline-flex items-center justify-center leading-none',
             filter === 'all'
               ? 'bg-primary/10 text-primary'
               : 'text-muted-foreground hover:bg-accent hover:text-foreground'

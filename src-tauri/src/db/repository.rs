@@ -8,7 +8,7 @@ use sqlx::Row;
 pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, title, description, created_at, updated_at, last_message, message_count, is_pinned
+        SELECT id, title, description, task_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
         ORDER BY is_pinned DESC, updated_at DESC
         "#,
@@ -22,6 +22,8 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
             id: row.get("id"),
             title: row.get("title"),
             description: row.get("description"),
+            task_id: row.get("task_id"),
+            project_id: row.get("project_id"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
             last_message: row.get("last_message"),
@@ -36,7 +38,7 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
 pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Conversation>> {
     let row = sqlx::query(
         r#"
-        SELECT id, title, description, created_at, updated_at, last_message, message_count, is_pinned
+        SELECT id, title, description, task_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
         WHERE id = ?
         "#,
@@ -49,6 +51,8 @@ pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Co
         id: row.get("id"),
         title: row.get("title"),
         description: row.get("description"),
+        task_id: row.get("task_id"),
+        project_id: row.get("project_id"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
         last_message: row.get("last_message"),
@@ -67,12 +71,14 @@ pub async fn create_conversation(
 
     sqlx::query(
         r#"
-        INSERT INTO conversations (id, title, description, created_at, updated_at, message_count, is_pinned)
-        VALUES (?, ?, NULL, ?, ?, 0, 0)
+        INSERT INTO conversations (id, title, description, task_id, project_id, created_at, updated_at, message_count, is_pinned)
+        VALUES (?, ?, NULL, ?, ?, ?, ?, 0, 0)
         "#,
     )
     .bind(&id)
     .bind(&title)
+    .bind(&input.task_id)
+    .bind(&input.project_id)
     .bind(&now)
     .bind(&now)
     .execute(pool)
@@ -82,6 +88,8 @@ pub async fn create_conversation(
         id,
         title,
         description: None,
+        task_id: input.task_id,
+        project_id: input.project_id,
         created_at: now.clone(),
         updated_at: now,
         last_message: None,

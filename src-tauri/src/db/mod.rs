@@ -68,6 +68,8 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
             description TEXT,
+            task_id TEXT,
+            project_id TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             last_message TEXT,
@@ -85,11 +87,45 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     let has_description = conversation_columns
         .iter()
         .any(|row| row.get::<String, _>("name") == "description");
+    let has_task_id = conversation_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "task_id");
+    let has_project_id = conversation_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "project_id");
     if !has_description {
         sqlx::query("ALTER TABLE conversations ADD COLUMN description TEXT")
             .execute(pool)
             .await?;
     }
+    if !has_task_id {
+        sqlx::query("ALTER TABLE conversations ADD COLUMN task_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !has_project_id {
+        sqlx::query("ALTER TABLE conversations ADD COLUMN project_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_conversations_project_scope
+        ON conversations(project_id, updated_at DESC);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_conversations_task_scope
+        ON conversations(task_id, updated_at DESC);
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         r#"

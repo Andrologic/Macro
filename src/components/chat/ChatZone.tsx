@@ -22,12 +22,12 @@ import { ImagePreviewModal } from '../modals/ImagePreviewModal';
  */
 const ChatZone: React.FC = () => {
   const { t } = useTranslation();
-  const { currentPlan } = useAppStore();
+  const { currentPlan, mode, selectedProjectId, selectedTaskId, getProjectById } = useAppStore();
   const {
     conversations,
     selectedConversationId,
-    selectConversation,
     createConversation,
+    ensureConversationForCurrentMode,
     getConversationMessages,
     isLoading,
     isStreaming,
@@ -40,7 +40,6 @@ const ChatZone: React.FC = () => {
 
   const { selectedProviderId, selectedModelId } = useProviderStore();
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
-  const { mode } = useAppStore();
 
   const [inputValue, setInputValue] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -48,28 +47,18 @@ const ChatZone: React.FC = () => {
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
 
-  // Architect Mode: Ensure single conversation
+  // Ensure mode-scoped conversation is selected (or created when required)
   useEffect(() => {
-    if (mode === 'Architect') {
-      const architectTitle = 'Architect Session';
-      const architectConvo = conversations.find(c => c.title === architectTitle);
-
-      if (architectConvo) {
-        if (selectedConversationId !== architectConvo.id) {
-          selectConversation(architectConvo.id);
-        }
-      } else {
-        // Create if missing. Note: This might trigger multiple creates if not careful.
-        // We rely on conversations being loaded.
-        if (!isLoading && conversations.length > 0) {
-          createConversation(architectTitle, null, null);
-        } else if (!isLoading && conversations.length === 0) {
-          // Initial load case
-          createConversation(architectTitle, null, null);
-        }
-      }
-    }
-  }, [mode, conversations, selectedConversationId, isLoading, createConversation, selectConversation]);
+    if (isLoading) return;
+    void ensureConversationForCurrentMode();
+  }, [
+    mode,
+    selectedProjectId,
+    selectedTaskId,
+    conversations,
+    isLoading,
+    ensureConversationForCurrentMode,
+  ]);
 
   const [editingValue, setEditingValue] = useState('');
   const [editingImages, setEditingImages] = useState<MessageImageAttachment[]>([]);
@@ -93,6 +82,48 @@ const ChatZone: React.FC = () => {
   const currentConversation = selectedConversationId
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
+
+  const selectedTask = useMemo(
+    () => currentPlan?.tasks.find((task) => task.id === selectedTaskId) ?? null,
+    [currentPlan, selectedTaskId]
+  );
+
+  const selectedProjectName = useMemo(
+    () => (selectedProjectId ? getProjectById(selectedProjectId)?.name ?? null : null),
+    [selectedProjectId, getProjectById]
+  );
+
+  const modeHeader = useMemo(() => {
+    if (mode === 'Architect') {
+      return {
+        icon: 'compass' as const,
+        title: `Architect - ${selectedProjectName || 'Select a project'}`,
+        subtitle: currentConversation?.title || null,
+      };
+    }
+
+    if (mode === 'Implement') {
+      return {
+        icon: 'check-square' as const,
+        title: `Implement - ${selectedTask?.title || 'Select a task'}`,
+        subtitle: selectedProjectName || currentConversation?.title || null,
+      };
+    }
+
+    if (mode === 'Debug') {
+      return {
+        icon: 'terminal' as const,
+        title: currentConversation?.title || 'Debug Session',
+        subtitle: selectedProjectName || null,
+      };
+    }
+
+    return {
+      icon: 'message-square' as const,
+      title: currentConversation?.title || 'New Conversation',
+      subtitle: null,
+    };
+  }, [mode, selectedProjectName, selectedTask?.title, currentConversation?.title]);
 
   // Estimate tokens for input
   const inputTokens = estimateTokens(inputValue);
@@ -119,6 +150,8 @@ const ChatZone: React.FC = () => {
 
   const ensureConversation = async () => {
     if (selectedConversationId) return selectedConversationId;
+    const ensured = await ensureConversationForCurrentMode();
+    if (ensured) return ensured;
     const conversation = await createConversation('New Conversation', null, null);
     return conversation.id;
   };
@@ -368,29 +401,17 @@ const ChatZone: React.FC = () => {
         {/* Header */}
         <header className="h-14 border-b border-border/50 flex items-center justify-between px-4 bg-card/30">
           <div className="flex items-center gap-3 min-w-0">
-            {currentConversation && (
-              <>
-                <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-                  {currentConversation.task_id ? (
-                    <Icon name="check-square" size={10} className="text-primary" />
-                  ) : (
-                    <Icon name="message-square" size={10} className="text-primary" />
-                  )}
+            <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+              <Icon name={modeHeader.icon} size={10} className="text-primary" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-sm font-medium text-foreground truncate">{modeHeader.title}</h1>
+              {modeHeader.subtitle && (
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-muted-foreground text-xs truncate">{modeHeader.subtitle}</span>
                 </div>
-                <div className="min-w-0">
-                  <h1 className="text-sm font-medium text-foreground truncate">
-                    {currentConversation.title}
-                  </h1>
-                  {currentPlan && currentConversation.task_id && (
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-muted-foreground text-xs">
-                        Task {currentConversation.task_id}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
+              )}
+            </div>
           </div>
 
           {currentPlan && (

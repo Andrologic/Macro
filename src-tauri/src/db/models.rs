@@ -5,6 +5,8 @@ pub struct Conversation {
     pub id: String,
     pub title: String,
     pub description: Option<String>,
+    pub task_id: Option<String>,
+    pub project_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub last_message: Option<String>,
@@ -61,6 +63,8 @@ pub struct ProviderSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateConversationInput {
     pub title: Option<String>,
+    pub task_id: Option<String>,
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -28,62 +28,7 @@ const addPaths = (nodes: GitNodeInput[], parentPath = ''): GitNode[] => {
 };
 
 export const mockProjects: ProjectGroup[] = [
-  {
-    id: 'group-1',
-    name: 'E-Commerce Platform',
-    isOpen: true,
-    projects: [
-      {
-        id: 'proj-1',
-        name: 'Frontend',
-        path: '/path/to/frontend',
-        created_at: '2026-01-10T09:00:00Z',
-        status: 'active',
-        metadata: {
-          description: 'React + TypeScript frontend for e-commerce platform',
-          tags: ['react', 'typescript', 'vite', 'tailwind'],
-          team_members: ['Alice', 'Bob', 'Charlie'],
-          api_contracts: [],
-          dependencies: [],
-        },
-      },
-      {
-        id: 'proj-2',
-        name: 'Backend',
-        path: '/path/to/backend',
-        created_at: '2026-01-10T09:00:00Z',
-        status: 'active',
-        metadata: {
-          description: 'Rust + Tauri backend API with SQLite database',
-          tags: ['rust', 'tauri', 'sqlite', 'api'],
-          team_members: ['Charlie', 'Diana'],
-          api_contracts: [],
-          dependencies: [],
-        },
-      },
-    ],
-  },
-  {
-    id: 'group-2',
-    name: 'Standalone Tools',
-    isOpen: false,
-    projects: [
-      {
-        id: 'proj-3',
-        name: 'CLI Tool',
-        path: '/path/to/cli-tool',
-        created_at: '2026-01-12T14:00:00Z',
-        status: 'active',
-        metadata: {
-          description: 'Command-line utility for data migration',
-          tags: ['rust', 'cli', 'migration'],
-          team_members: ['Eve'],
-          api_contracts: [],
-          dependencies: [],
-        },
-      },
-    ],
-  },
+  
 ];
 
 export const mockAuthPlan: Plan = {
@@ -92,7 +37,7 @@ export const mockAuthPlan: Plan = {
   created_at: '2026-01-14T10:00:00Z',
   updated_at: '2026-01-14T11:30:00Z',
   status: 'InProgress',
-  project_ids: ['proj-1', 'proj-2'],
+  project_ids: [],
   tasks: [
     {
       id: 'task-1',
