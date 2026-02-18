@@ -496,28 +496,28 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
               <div className="grid grid-cols-2 gap-2">
                 <button 
                   onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors"
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0"
                 >
                   <Icon name="upload" size={14} className="text-muted-foreground" />
-                  Upload
+                  <span className="truncate">Upload</span>
                 </button>
                 <button 
                   onClick={handleOpenAddUrl}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors"
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0"
                 >
                   <Icon name="link" size={14} className="text-muted-foreground" />
-                  Add URL
+                  <span className="truncate">Add URL</span>
                 </button>
                 <button 
                   onClick={handlePaste}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors"
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0"
                 >
                   <Icon name="clipboard" size={14} className="text-muted-foreground" />
-                  Paste
+                  <span className="truncate">Paste</span>
                 </button>
-                <button className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors opacity-50 cursor-not-allowed">
+                <button className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors opacity-50 cursor-not-allowed min-w-0 overflow-hidden">
                   <Icon name="camera" size={14} className="text-muted-foreground" />
-                  Screenshot
+                  <span className="truncate">Screenshot</span>
                 </button>
               </div>
               {isAddingUrl && (

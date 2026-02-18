@@ -22,7 +22,9 @@ interface ConversationArchiveProps {
 interface ConversationItemProps {
   conversation: Conversation;
   isSelected: boolean;
+  isChecked: boolean;
   onSelect: () => void;
+  onToggleCheck: () => void;
   onPin?: () => void;
   isPinned?: boolean;
 }
@@ -30,7 +32,9 @@ interface ConversationItemProps {
 const ConversationItem: React.FC<ConversationItemProps> = ({
   conversation,
   isSelected,
+  isChecked,
   onSelect,
+  onToggleCheck,
   onPin,
   isPinned,
 }) => {
@@ -123,6 +127,19 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
         )}
       >
         <div className="flex items-start gap-3">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onToggleCheck();
+            }}
+            className="mt-1 h-4 w-4 rounded border border-border bg-background flex items-center justify-center shrink-0 hover:border-primary/60 transition-colors"
+            aria-label={isChecked ? 'Deselect conversation' : 'Select conversation'}
+          >
+            {isChecked && <Icon name="check" size={11} className="text-primary" />}
+          </button>
+
           {/* Icon */}
           <div className={cn(
             'w-8 h-8 rounded-lg flex items-center justify-center shrink-0',
@@ -288,17 +305,25 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     selectedConversationId,
     selectConversation,
     createConversation,
+    deleteConversation,
   } = useChatStore();
+  const { clearConversationCitations } = useCitationsStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
+  const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
 
   // Use real conversations from store (filter to chat-only conversations with no project_id)
-  const chatConversations = useMemo(() => 
-    conversations.filter(c => !c.project_id).sort((a, b) => 
-      new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-    ),
-  [conversations]);
+  const chatConversations = useMemo(
+    () =>
+      conversations
+        .filter((conversation) => !conversation.project_id && !conversation.task_id)
+        .filter((conversation) => !archivedIds.has(conversation.id))
+        .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
+    [conversations, archivedIds]
+  );
 
   // Filter conversations
   const filteredConversations = useMemo(() => {
@@ -330,14 +355,85 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     });
   };
 
+  const toggleSelection = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const visibleConversationIds = useMemo(
+    () => filteredConversations.map((conversation) => conversation.id),
+    [filteredConversations]
+  );
+
+  const isAllVisibleSelected =
+    visibleConversationIds.length > 0 &&
+    visibleConversationIds.every((conversationId) => selectedIds.has(conversationId));
+
+  const handleToggleSelectAll = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (isAllVisibleSelected) {
+        visibleConversationIds.forEach((id) => next.delete(id));
+      } else {
+        visibleConversationIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const handleArchiveSelected = () => {
+    if (selectedIds.size === 0) return;
+    setArchivedIds((prev) => {
+      const next = new Set(prev);
+      selectedIds.forEach((id) => next.add(id));
+      return next;
+    });
+
+    if (selectedConversationId && selectedIds.has(selectedConversationId)) {
+      const nextConversation = filteredConversations.find(
+        (conversation) => !selectedIds.has(conversation.id)
+      );
+      if (nextConversation) {
+        selectConversation(nextConversation.id);
+      }
+    }
+
+    setSelectedIds(new Set());
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.size === 0) return;
+    const ids = Array.from(selectedIds);
+
+    for (const conversationId of ids) {
+      try {
+        await deleteConversation(conversationId, { mode: 'chat' });
+        clearConversationCitations(conversationId);
+      } catch {
+        // Ignore individual failures to allow best-effort bulk deletion
+      }
+    }
+
+    setSelectedIds(new Set());
+    setIsBulkDeleteOpen(false);
+  };
+
   const handleNewChat = () => {
     createConversation(t('chat.newConversation', 'New Conversation'), null, null);
   };
 
   return (
-    <aside
-      className={cn("h-full w-full bg-card border-r border-border flex flex-col", className)}
-    >
+    <>
+      <aside
+        className={cn("h-full w-full bg-card border-r border-border flex flex-col", className)}
+      >
       {/* Header */}
       <div className="h-12 border-b border-border flex items-center justify-between px-4">
         <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
@@ -351,6 +447,38 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
         >
           <Icon name="plus" size={16} className="text-muted-foreground" />
         </button>
+      </div>
+
+      <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-2 min-w-0">
+        <button
+          onClick={handleToggleSelectAll}
+          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors min-w-0 shrink"
+          disabled={visibleConversationIds.length === 0}
+        >
+          <Icon name={isAllVisibleSelected ? 'square' : 'check-square'} size={12} />
+          <span className="truncate">{t('common.selectAll', 'Tout sélectionner')}</span>
+        </button>
+
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={handleArchiveSelected}
+            disabled={selectedIds.size === 0}
+            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title={t('common.archive', 'Archiver')}
+          >
+            <Icon name="archive" size={12} />
+            <span className="hidden 2xl:inline">{t('common.archive', 'Archiver')}</span>
+          </button>
+          <button
+            onClick={() => setIsBulkDeleteOpen(true)}
+            disabled={selectedIds.size === 0}
+            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title={t('common.delete', 'Delete')}
+          >
+            <Icon name="trash" size={12} />
+            <span className="hidden 2xl:inline">{t('common.delete', 'Delete')}</span>
+          </button>
+        </div>
       </div>
 
       {/* Search */}
@@ -379,7 +507,9 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                   key={conv.id}
                   conversation={conv}
                   isSelected={selectedConversationId === conv.id}
+                  isChecked={selectedIds.has(conv.id)}
                   onSelect={() => selectConversation(conv.id)}
+                  onToggleCheck={() => toggleSelection(conv.id)}
                   onPin={() => togglePin(conv.id)}
                   isPinned
                 />
@@ -404,7 +534,9 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                 key={conv.id}
                 conversation={conv}
                 isSelected={selectedConversationId === conv.id}
+                isChecked={selectedIds.has(conv.id)}
                 onSelect={() => selectConversation(conv.id)}
+                onToggleCheck={() => toggleSelection(conv.id)}
                 onPin={() => togglePin(conv.id)}
                 isPinned={false}
               />
@@ -443,7 +575,25 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           Archives
         </button>
       </div>
-    </aside>
+      </aside>
+
+      <ConfirmPromptModal
+        isOpen={isBulkDeleteOpen}
+        title={t('chat.deleteConversation', 'Delete conversation')}
+        description={
+          selectedIds.size > 1
+            ? `${t('common.areYouSure', 'Are you sure?')} ${selectedIds.size} conversations will be deleted.`
+            : t('chat.deleteConversation', 'Delete this conversation?')
+        }
+        confirmLabel={t('common.delete', 'Delete')}
+        cancelLabel={t('common.cancel', 'Cancel')}
+        confirmVariant="error"
+        onCancel={() => setIsBulkDeleteOpen(false)}
+        onConfirm={() => {
+          void handleDeleteSelected();
+        }}
+      />
+    </>
   );
 };
 

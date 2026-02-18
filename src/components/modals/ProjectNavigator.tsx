@@ -561,17 +561,13 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
         </DndContext>
 
         {/* Footer Actions */}
-        <div className="flex items-center justify-between px-4 py-3 border-t border-border bg-muted/30">
+        <div className="flex items-center px-4 py-3 border-t border-border bg-muted/30">
           <button
             onClick={handleNewProject}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-foreground hover:bg-accent transition-colors"
           >
             <Icon name="plus" size={14} />
             {t('projects.new', 'New Project')}
-          </button>
-          <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-foreground hover:bg-accent transition-colors">
-            <Icon name="git-branch" size={14} />
-            {t('projects.import', 'Import from Git')}
           </button>
         </div>
       </div>
