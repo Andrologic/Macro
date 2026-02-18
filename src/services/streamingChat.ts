@@ -85,6 +85,7 @@ export interface StreamingChatOptions {
     snippet?: string;
   }>;
   allowedToolIds?: string[];
+  showToolTraces?: boolean;
 }
 
 // Tool definitions for the LLM
@@ -390,6 +391,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     onToolResult,
     fileToolContext = [],
     allowedToolIds,
+    showToolTraces = false,
     // Note: signal is not used with Tauri HTTP plugin - AbortController support is limited
   } = options;
 
@@ -464,8 +466,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
     return `\n\n[TOOL] ${toolName}\n`;
   };
-
-  const formatToolDoneLabel = (toolName: string) => `\n[TOOL_DONE] ${toolName}\n`;
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -720,7 +720,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       for (const toolCall of validToolCalls) {
         const toolName = toolCall.function.name;
         let toolResult = '';
-        let shouldEmitToolDone = false;
         let customToolResult: string | undefined;
         
         try {
@@ -738,10 +737,11 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           const customResult = await onToolCall?.(toolName, args);
           customToolResult = typeof customResult === 'string' ? customResult : undefined;
 
-          const toolUsageMsg = formatToolUsageLabel(toolName, args);
-          fullContent += toolUsageMsg;
-          onToken(toolUsageMsg);
-          shouldEmitToolDone = true;
+          if (showToolTraces) {
+            const toolUsageMsg = formatToolUsageLabel(toolName, args);
+            fullContent += toolUsageMsg;
+            onToken(toolUsageMsg);
+          }
           
           if (toolName === 'web_search') {
             // Execute web search
@@ -749,9 +749,11 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             toolResult = formatSearchResultsAsContext(searchResults);
             
             // Show search indicator in chat
-            const searchMsg = `\n\n🔍 **Recherche web:** "${args.query}"\n`;
-            fullContent += searchMsg;
-            onToken(searchMsg);
+            if (showToolTraces) {
+              const searchMsg = `\n\n🔍 **Recherche web:** "${args.query}"\n`;
+              fullContent += searchMsg;
+              onToken(searchMsg);
+            }
           }
 
           if (toolName === 'web_fetch') {
@@ -891,12 +893,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         } catch (e) {
           toolResult = `Error executing tool ${toolName}: ${e instanceof Error ? e.message : String(e)}`;
           onToolResult?.(toolName, toolResult);
-        } finally {
-          if (shouldEmitToolDone) {
-            const toolDoneMsg = formatToolDoneLabel(toolName);
-            fullContent += toolDoneMsg;
-            onToken(toolDoneMsg);
-          }
         }
         
         toolResults.push({

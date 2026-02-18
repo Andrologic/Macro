@@ -225,7 +225,6 @@ interface AppStore {
   openProjectModal: () => void;
   closeProjectModal: () => void;
   createProject: (data: CreateProjectData) => Promise<void>;
-  importProject: (data: ImportProjectData) => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
   setRightPanelWidth: (width: number) => void;
   setLeftPanelOpen: (open: boolean) => void;
@@ -236,14 +235,6 @@ interface AppStore {
 interface CreateProjectData {
   name: string;
   description: string;
-  groupId: string | null;
-  path?: string;
-}
-
-interface ImportProjectData {
-  gitUrl: string;
-  projectName: string;
-  branch: string;
   groupId: string | null;
   path?: string;
 }
@@ -535,79 +526,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     try {
       const { project: newProject } = await services.createProject(data);
-      const state = get();
-      const { projectGroups: syncedGroups, plan, planNodes, predictedBranches } = await services.getAppBootstrap();
-      const groupForProject = syncedGroups.find((group) =>
-        group.projects.some((project) => project.id === newProject.id)
-      );
-      const hasSyncedProject = Boolean(groupForProject);
-
-      const {
-        projectGroups: nextProjectGroups,
-        targetGroupId,
-      } = hasSyncedProject
-        ? {
-            projectGroups: syncedGroups,
-            targetGroupId: groupForProject?.id ?? data.groupId ?? `group_${Date.now()}`,
-          }
-        : insertProjectInGroups(state.projectGroups, newProject, data.groupId);
-
-      const rememberedProject: RememberedProject | null = targetGroupId
-        ? {
-            projectId: newProject.id,
-            groupId: targetGroupId,
-            name: newProject.name,
-            path: newProject.path,
-            lastOpenedAt: new Date().toISOString(),
-          }
-        : null;
-
-      const nextRecentProjects = rememberedProject
-        ? upsertRememberedProject(state.recentProjects, rememberedProject)
-        : state.recentProjects;
-      const nextMacroEnabledProjects = rememberedProject
-        ? upsertRememberedProject(state.macroEnabledProjects, rememberedProject)
-        : state.macroEnabledProjects;
-
-      const nextPlan = hasSyncedProject
-        ? plan
-        : state.currentPlan
-          ? {
-              ...state.currentPlan,
-              project_ids: state.currentPlan.project_ids.includes(newProject.id)
-                ? state.currentPlan.project_ids
-                : [...state.currentPlan.project_ids, newProject.id],
-            }
-          : state.currentPlan;
-
-      set({
-        currentPlan: nextPlan,
-        projectGroups: nextProjectGroups,
-        planNodes: hasSyncedProject ? (planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan)) : state.planNodes,
-        predictedBranches: hasSyncedProject ? (predictedBranches ?? []) : state.predictedBranches,
-        selectedGroupId: targetGroupId,
-        selectedProjectId: newProject.id,
-        recentProjects: nextRecentProjects,
-        macroEnabledProjects: nextMacroEnabledProjects,
-      });
-      void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, targetGroupId);
-      void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, newProject.id);
-      void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, newProject.path);
-      void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
-
-      set({ isLoading: false, lastError: null });
-    } catch (error) {
-      const normalized = toServiceError(error);
-      set({ isLoading: false, lastError: normalized.message });
-      throw normalized;
-    }
-  },
-
-  importProject: async (data: ImportProjectData) => {
-    set({ isLoading: true, lastError: null });
-    try {
-      const { project: newProject } = await services.importGitRepo(data);
       const state = get();
       const { projectGroups: syncedGroups, plan, planNodes, predictedBranches } = await services.getAppBootstrap();
       const groupForProject = syncedGroups.find((group) =>
