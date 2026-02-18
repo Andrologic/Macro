@@ -320,6 +320,17 @@ const ChatZone: React.FC = () => {
 
   const canSend = Boolean(inputValue.trim()) || composerImages.length > 0;
 
+  const handleDebugRefresh = async () => {
+    if (isStreaming) {
+      stopStreaming();
+    }
+    await createConversation('Debug Session', null, null);
+    setInputValue('');
+    setComposerImages([]);
+    setPromptHistoryIndex(null);
+    setDraftBeforeHistory('');
+  };
+
   const navigatePromptHistory = (direction: 'up' | 'down') => {
     if (promptHistory.length === 0) return;
 
@@ -414,13 +425,23 @@ const ChatZone: React.FC = () => {
             </div>
           </div>
 
-          {currentPlan && (
-            <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
+            {mode === 'Debug' && (
+              <button
+                onClick={() => void handleDebugRefresh()}
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                title="Reset debug chat"
+              >
+                <Icon name="refresh-cw" size={12} />
+                Reset
+              </button>
+            )}
+            {currentPlan && (
               <span className="text-xs text-muted-foreground font-mono">
                 {currentPlan.tasks.filter((t) => t.status === 'Completed').length}/{currentPlan.tasks.length}
               </span>
-            </div>
-          )}
+            )}
+          </div>
         </header>
 
         {/* Conversation Content */}

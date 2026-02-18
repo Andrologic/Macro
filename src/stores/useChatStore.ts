@@ -9,6 +9,7 @@ import { useToolsStore } from './useToolsStore';
 import { useAppStore } from './useAppStore';
 import { getToolModePolicy } from '../services/toolModePolicy';
 import { executeWorkspaceTool } from '../services/workspaceToolExecutor';
+import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
 import * as tauriIpc from '../services/tauriIpc';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
@@ -98,6 +99,108 @@ const extractMetadataFromModelOutput = (raw: string): { title: string; descripti
 
 const MESSAGE_IMAGES_STORAGE_KEY = 'macro_chat_message_images';
 
+type AISelectionModeKey = 'ChatDebug' | 'Architect' | 'Implement';
+
+interface PersistedAISelection {
+  providerId: string | null;
+  modelId: string | null;
+  updatedAt: string;
+}
+
+interface PersistedAIContextSelections {
+  version: 1;
+  modeSelections: Partial<Record<AISelectionModeKey, PersistedAISelection>>;
+  conversationSelections: Record<string, PersistedAISelection>;
+}
+
+const EMPTY_AI_CONTEXT_SELECTIONS: PersistedAIContextSelections = {
+  version: 1,
+  modeSelections: {},
+  conversationSelections: {},
+};
+
+const getSelectionModeKey = (mode: AppMode): AISelectionModeKey => {
+  if (mode === 'Chat' || mode === 'Debug') {
+    return 'ChatDebug';
+  }
+  if (mode === 'Architect') {
+    return 'Architect';
+  }
+  return 'Implement';
+};
+
+const normalizePersistedSelection = (value: unknown): PersistedAISelection | null => {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as {
+    providerId?: unknown;
+    modelId?: unknown;
+    updatedAt?: unknown;
+  };
+
+  const providerId =
+    candidate.providerId === null || typeof candidate.providerId === 'string'
+      ? candidate.providerId
+      : null;
+  const modelId =
+    candidate.modelId === null || typeof candidate.modelId === 'string'
+      ? candidate.modelId
+      : null;
+
+  if (!providerId || !modelId) {
+    return null;
+  }
+
+  return {
+    providerId,
+    modelId,
+    updatedAt:
+      typeof candidate.updatedAt === 'string' && candidate.updatedAt.trim().length > 0
+        ? candidate.updatedAt
+        : new Date().toISOString(),
+  };
+};
+
+const normalizeAIContextSelections = (value: unknown): PersistedAIContextSelections => {
+  if (!value || typeof value !== 'object') {
+    return { ...EMPTY_AI_CONTEXT_SELECTIONS };
+  }
+
+  const raw = value as {
+    version?: unknown;
+    modeSelections?: unknown;
+    conversationSelections?: unknown;
+  };
+
+  const modeSelections: Partial<Record<AISelectionModeKey, PersistedAISelection>> = {};
+  if (raw.modeSelections && typeof raw.modeSelections === 'object') {
+    const modeMap = raw.modeSelections as Record<string, unknown>;
+    for (const key of ['ChatDebug', 'Architect', 'Implement'] as AISelectionModeKey[]) {
+      const normalized = normalizePersistedSelection(modeMap[key]);
+      if (normalized) {
+        modeSelections[key] = normalized;
+      }
+    }
+  }
+
+  const conversationSelections: Record<string, PersistedAISelection> = {};
+  if (raw.conversationSelections && typeof raw.conversationSelections === 'object') {
+    for (const [conversationId, selection] of Object.entries(
+      raw.conversationSelections as Record<string, unknown>
+    )) {
+      const normalized = normalizePersistedSelection(selection);
+      if (normalized) {
+        conversationSelections[conversationId] = normalized;
+      }
+    }
+  }
+
+  return {
+    version: raw.version === 1 ? 1 : 1,
+    modeSelections,
+    conversationSelections,
+  };
+};
+
 export interface MessageImageAttachment {
   id: string;
   mimeType: string;
@@ -177,6 +280,188 @@ interface ChatStore {
 }
 
 export const useChatStore = create<ChatStore>((set, get) => {
+  let aiSelections = { ...EMPTY_AI_CONTEXT_SELECTIONS };
+  let aiSelectionsLoaded = false;
+  let providerSelectionUnsubscribe: (() => void) | null = null;
+
+  const persistAiSelections = () => {
+    if (!aiSelectionsLoaded) return;
+    void savePreference(PREF_KEYS.AI_CONTEXT_SELECTIONS, aiSelections);
+  };
+
+  const getCurrentSelection = (): PersistedAISelection | null => {
+    const providerState = useProviderStore.getState();
+    if (!providerState.selectedProviderId || !providerState.selectedModelId) {
+      return null;
+    }
+
+    return {
+      providerId: providerState.selectedProviderId,
+      modelId: providerState.selectedModelId,
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  const hasProviderCredentials = (providerId: string): boolean => {
+    const provider = useProviderStore.getState().providerConfigs.find((candidate) => candidate.id === providerId);
+    if (!provider || !provider.isEnabled) return false;
+    return provider.isLocal || !!provider.apiKey?.trim();
+  };
+
+  const isSelectionUsable = (selection: PersistedAISelection | null): boolean => {
+    if (!selection?.providerId || !selection.modelId) return false;
+    if (!hasProviderCredentials(selection.providerId)) return false;
+
+    const providerState = useProviderStore.getState();
+    const models = providerState.modelsByProvider[selection.providerId] || [];
+    return models.some((model) => model.id === selection.modelId && model.isEnabled !== false);
+  };
+
+  const persistSelectionForContext = (mode: AppMode, conversationId: string | null) => {
+    const selection = getCurrentSelection();
+    if (!selection) return;
+
+    const modeKey = getSelectionModeKey(mode);
+    aiSelections = {
+      ...aiSelections,
+      modeSelections: {
+        ...aiSelections.modeSelections,
+        [modeKey]: selection,
+      },
+      conversationSelections: conversationId
+        ? {
+            ...aiSelections.conversationSelections,
+            [conversationId]: selection,
+          }
+        : aiSelections.conversationSelections,
+    };
+    persistAiSelections();
+  };
+
+  const removeConversationSelection = (conversationId: string) => {
+    if (!aiSelections.conversationSelections[conversationId]) return;
+    const nextConversationSelections = { ...aiSelections.conversationSelections };
+    delete nextConversationSelections[conversationId];
+    aiSelections = {
+      ...aiSelections,
+      conversationSelections: nextConversationSelections,
+    };
+    persistAiSelections();
+  };
+
+  const applySelection = async (selection: PersistedAISelection | null): Promise<boolean> => {
+    if (!selection?.providerId || !selection.modelId) {
+      return false;
+    }
+
+    const providerStore = useProviderStore.getState();
+    const provider = providerStore.providerConfigs.find((candidate) => candidate.id === selection.providerId);
+    if (!provider || !provider.isEnabled) {
+      return false;
+    }
+    if (!provider.isLocal && !provider.apiKey?.trim()) {
+      return false;
+    }
+
+    useProviderStore.setState({
+      selectedProviderId: selection.providerId,
+      selectedModelId: selection.modelId,
+    });
+
+    let loadedModels = await providerStore.loadProviderModels(selection.providerId);
+    let modelExists = loadedModels.some(
+      (model) => model.id === selection.modelId && model.isEnabled !== false
+    );
+
+    if (!modelExists) {
+      loadedModels = await providerStore.scanModelsForProvider(selection.providerId);
+      modelExists = loadedModels.some(
+        (model) => model.id === selection.modelId && model.isEnabled !== false
+      );
+    }
+
+    if (!modelExists) {
+      return false;
+    }
+
+    useProviderStore.getState().selectModel(selection.modelId);
+    return true;
+  };
+
+  const applyFallbackSelection = async (): Promise<boolean> => {
+    const providerStore = useProviderStore.getState();
+    const candidateProviders = providerStore.providerConfigs.filter(
+      (provider) => provider.isEnabled && (provider.isLocal || !!provider.apiKey?.trim())
+    );
+
+    for (const provider of candidateProviders) {
+      providerStore.selectProvider(provider.id);
+      const models = await providerStore.loadProviderModels(provider.id);
+      const firstEnabledModel = models.find((model) => model.isEnabled !== false);
+      if (firstEnabledModel) {
+        useProviderStore.getState().selectModel(firstEnabledModel.id);
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const applySelectionForContext = async (mode: AppMode, conversationId: string | null) => {
+    const modeKey = getSelectionModeKey(mode);
+    const conversationSelection = conversationId
+      ? aiSelections.conversationSelections[conversationId] || null
+      : null;
+
+    if (conversationSelection) {
+      const appliedConversation = await applySelection(conversationSelection);
+      if (appliedConversation) {
+        return;
+      }
+
+      removeConversationSelection(conversationId!);
+    }
+
+    const modeSelection = aiSelections.modeSelections[modeKey] || null;
+    if (modeSelection) {
+      const appliedMode = await applySelection(modeSelection);
+      if (appliedMode) {
+        return;
+      }
+
+      const nextModeSelections = { ...aiSelections.modeSelections };
+      delete nextModeSelections[modeKey];
+      aiSelections = {
+        ...aiSelections,
+        modeSelections: nextModeSelections,
+      };
+      persistAiSelections();
+    }
+
+    const currentSelection = getCurrentSelection();
+    if (!isSelectionUsable(currentSelection)) {
+      await applyFallbackSelection();
+    }
+  };
+
+  const ensureProviderSelectionSync = () => {
+    if (providerSelectionUnsubscribe) return;
+
+    providerSelectionUnsubscribe = useProviderStore.subscribe((nextState, previousState) => {
+      if (!aiSelectionsLoaded) return;
+
+      const providerChanged = nextState.selectedProviderId !== previousState.selectedProviderId;
+      const modelChanged = nextState.selectedModelId !== previousState.selectedModelId;
+      if (!providerChanged && !modelChanged) {
+        return;
+      }
+
+      const appState = useAppStore.getState();
+      const selectedConversationId = get().selectedConversationId;
+      persistSelectionForContext(appState.mode, selectedConversationId);
+    });
+  };
+
   const sanitizeAssistantContentForModel = (content: string): string => {
     return content
       .split('\n')
@@ -439,6 +724,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (allowedToolIds.includes('edit_source_passage')) {
       systemInstructions.push(
         'Use edit_source_passage only when the user asks to update, reclassify, or delete saved source passages.'
+      );
+    }
+    if (useAppStore.getState().mode === 'Debug') {
+      systemInstructions.push(
+        'In Debug mode, for any question about current directory, file existence, path, or file content, you MUST call workspace tools first (list/read). ' +
+        'If filename is ambiguous (example: "readme"), list the directory first and then read the exact matched filename (example: README.md). ' +
+        'If a read fails, report the exact tool error and ask for a precise path. Never invent file content or project paths.'
       );
     }
 
@@ -735,7 +1027,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return state.messageImagesByMessageId[messageId] || [];
     },
 
-    selectConversation: (conversationId) =>
+    selectConversation: (conversationId) => {
       set((state) => {
         const appState = useAppStore.getState();
         const conversation = state.conversations.find((conv) => conv.id === conversationId);
@@ -765,7 +1057,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
           conversations: updatedConversations,
         };
-      }),
+      });
+
+      const appState = useAppStore.getState();
+      void applySelectionForContext(appState.mode, conversationId);
+    },
 
     createConversation: async (title, taskId, projectId) => {
       let newConversation: Conversation;
@@ -826,6 +1122,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           [mode]: newConversation.id,
         },
       }));
+      persistSelectionForContext(mode, newConversation.id);
       return newConversation;
     },
 
@@ -857,6 +1154,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }));
         }
 
+        void applySelectionForContext(mode, debugFallback);
+
         return debugFallback;
       }
 
@@ -876,6 +1175,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ) {
         if (state.selectedConversationId !== rememberedConversation.id) {
           get().selectConversation(rememberedConversation.id);
+        } else {
+          void applySelectionForContext(mode, rememberedConversation.id);
         }
         return rememberedConversation.id;
       }
@@ -890,6 +1191,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (fallbackConversationId) {
         if (state.selectedConversationId !== fallbackConversationId) {
           get().selectConversation(fallbackConversationId);
+        } else {
+          void applySelectionForContext(mode, fallbackConversationId);
         }
         return fallbackConversationId;
       }
@@ -916,6 +1219,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           [mode]: null,
         },
       }));
+      void applySelectionForContext(mode, null);
       return null;
     },
 
@@ -962,6 +1266,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (tauriIpc.isTauriAvailable()) {
         await tauriIpc.deleteConversation(conversationId);
       }
+      removeConversationSelection(conversationId);
       set((state) => {
         const appState = useAppStore.getState();
         const newConversations = state.conversations.filter((c) => c.id !== conversationId);
@@ -1035,6 +1340,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     sendMessage: async ({ conversationId, content, taskId, images }) => {
       const { selectedProviderId, selectedModelId, providerConfigs } = useProviderStore.getState();
+      persistSelectionForContext(useAppStore.getState().mode, conversationId);
 
       if (!selectedProviderId || !selectedModelId) {
         set({ lastError: 'Select a provider and model before sending a message.' });
@@ -1388,6 +1694,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     initialize: async () => {
       set({ isLoading: true, lastError: null });
       try {
+        aiSelections = normalizeAIContextSelections(
+          await loadPreference<PersistedAIContextSelections>(PREF_KEYS.AI_CONTEXT_SELECTIONS)
+        );
+        aiSelectionsLoaded = true;
+        ensureProviderSelectionSync();
+
         // Try to load from Tauri DB if available
         if (tauriIpc.isTauriAvailable()) {
           const dbConversations = await tauriIpc.listConversations();
@@ -1402,6 +1714,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
             updated_at: c.updated_at,
             is_unread: false,
           }));
+
+          const existingConversationIds = new Set(conversations.map((conversation) => conversation.id));
+          const nextConversationSelections: Record<string, PersistedAISelection> = {};
+          Object.entries(aiSelections.conversationSelections).forEach(([conversationId, selection]) => {
+            if (existingConversationIds.has(conversationId)) {
+              nextConversationSelections[conversationId] = selection;
+            }
+          });
+          if (
+            Object.keys(nextConversationSelections).length !==
+            Object.keys(aiSelections.conversationSelections).length
+          ) {
+            aiSelections = {
+              ...aiSelections,
+              conversationSelections: nextConversationSelections,
+            };
+            persistAiSelections();
+          }
 
           const conversationById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
 
@@ -1440,6 +1770,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             selectedConversationIdsByMode: {},
             isLoading: false,
           });
+
+          const appState = useAppStore.getState();
+          void applySelectionForContext(appState.mode, null);
         } else {
           // Development mode without Tauri - start with empty state
           set({
@@ -1450,6 +1783,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             selectedConversationIdsByMode: {},
             isLoading: false,
           });
+
+          const appState = useAppStore.getState();
+          void applySelectionForContext(appState.mode, null);
         }
       } catch (error) {
         const normalized = toServiceError(error);
@@ -1464,6 +1800,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           isLoading: false,
           lastError: normalized.message,
         });
+
+        aiSelectionsLoaded = true;
+        ensureProviderSelectionSync();
       }
     },
   };

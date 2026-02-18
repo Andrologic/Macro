@@ -776,54 +776,80 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             const requested = normalizeMatch(requestedRaw);
             const extractText = args.extract_text === true;
             const available = fileToolContext.map((f) => f.path || f.title || f.source).filter(Boolean);
+            let workspaceReadAttempted = false;
+            const workspaceMode = allowedTools.has('read') || allowedTools.has('list');
 
-            const match = fileToolContext.find((f) => {
-              const title = normalizeMatch(f.title);
-              const source = normalizeMatch(f.source);
-              const path = normalizeMatch(f.path);
-              return (
-                requested === title ||
-                requested === source ||
-                requested === path ||
-                title.includes(requested) ||
-                source.includes(requested) ||
-                path.includes(requested)
-              );
-            });
+            if (requestedRaw && allowedTools.has('read') && onToolCall) {
+              workspaceReadAttempted = true;
+              const workspaceResult = await onToolCall('read', {
+                path: requestedRaw,
+                start_line: typeof args.start_line === 'number' ? args.start_line : undefined,
+                end_line: typeof args.end_line === 'number' ? args.end_line : undefined,
+              });
 
-            if (!requested) {
-              toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
-            } else if (!match) {
-              if (allowedTools.has('read') && onToolCall) {
-                const workspaceResult = await onToolCall('read', {
-                  path: requestedRaw,
-                });
+              if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
+                const isWorkspaceReadError =
+                  /^Error executing read:/i.test(workspaceResult) ||
+                  /^Missing\s+/i.test(workspaceResult) ||
+                  /^No match found/i.test(workspaceResult) ||
+                  /^File not found/i.test(workspaceResult) ||
+                  /^Cannot\s+/i.test(workspaceResult);
 
-                if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
+                if (isWorkspaceReadError) {
+                  toolResult = `Error executing tool read_file: ${workspaceResult}`;
+                } else {
                   toolResult = workspaceResult;
                   rememberReadEvidenceFromWorkspaceResult(workspaceResult);
-                } else {
-                  toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
                 }
               } else {
-                toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+                toolResult = 'Error executing tool read_file: workspace read returned no content.';
               }
+            }
+
+            if (toolResult.trim()) {
+              // We already have authoritative workspace output; do not fall back to context snippets.
+            } else if (workspaceReadAttempted) {
+              toolResult = `Error executing tool read_file: unable to read "${requestedRaw}" from workspace.`;
+            } else if (workspaceMode) {
+              toolResult =
+                `Error executing tool read_file: workspace read tool is unavailable for "${requestedRaw}".` +
+                ` Use the read tool directly with an explicit path.`;
             } else {
-              const label = match.path || match.title || match.source;
-              const content = (match.snippet || '').trim();
-              const base = content
-                ? `FILE: ${label}\n\n${content}`
-                : `FILE: ${label}\n\nNo textual content available for this file in context.`;
+              const match = fileToolContext.find((f) => {
+                const title = normalizeMatch(f.title);
+                const source = normalizeMatch(f.source);
+                const path = normalizeMatch(f.path);
+                return (
+                  requested === title ||
+                  requested === source ||
+                  requested === path ||
+                  title.includes(requested) ||
+                  source.includes(requested) ||
+                  path.includes(requested)
+                );
+              });
 
-              const isDocx = /\.docx$/i.test(label || '');
-              const extractNotice =
-                extractText && isDocx
-                  ? '\n\nNote: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
-                  : '';
+              if (!requested) {
+                toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
+              } else if (!match) {
+                toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+              } else {
+                const label = match.path || match.title || match.source;
+                const content = (match.snippet || '').trim();
+                const base = content
+                  ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
+                  : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
 
-              toolResult = `${base}${extractNotice}`;
-              if (label) {
-                rememberReadEvidence(label, content);
+                const isDocx = /\.docx$/i.test(label || '');
+                const extractNotice =
+                  extractText && isDocx
+                    ? '\n\nNote: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
+                    : '';
+
+                toolResult = `${base}${extractNotice}`;
+                if (label) {
+                  rememberReadEvidence(label, content);
+                }
               }
             }
           }
@@ -892,6 +918,70 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           );
         });
         const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
+        const hasWorkspaceFileReadResults = toolResults.some((result) =>
+          /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*WORKSPACE_FILE/m.test(result.content)
+        );
+        const hasContextSnippetReadResults = toolResults.some((result) =>
+          /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*CONTEXT_SNIPPET/m.test(result.content)
+        );
+        const hasWorkspaceReadCall = validToolCalls.some((call) =>
+          call.function.name === 'read' || call.function.name === 'read_file' || call.function.name === 'list'
+        );
+        if (hasWorkspaceFileReadResults) {
+          const readBlocks = toolResults
+            .filter((result) => /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*WORKSPACE_FILE/m.test(result.content))
+            .map((result) => {
+              const fileMatch = result.content.match(/^FILE:\s*(.+)$/m);
+              const filePath = fileMatch?.[1]?.trim() || 'unknown-file';
+              const separatorIndex = result.content.indexOf('\n\n');
+              const rawContent = separatorIndex >= 0
+                ? result.content.slice(separatorIndex + 2)
+                : result.content;
+
+              return `Contenu exact lu via l’outil pour ${filePath}:\n\n\`\`\`\n${rawContent}\n\`\`\``;
+            });
+
+          if (readBlocks.length > 0) {
+            const deterministicResponse = readBlocks.join('\n\n---\n\n');
+            fullContent += `\n\n${deterministicResponse}`;
+            onToken(`\n\n${deterministicResponse}`);
+            onComplete(fullContent);
+            return;
+          }
+        }
+
+        if (hasContextSnippetReadResults && !hasWorkspaceFileReadResults && hasWorkspaceReadCall) {
+          const deterministicError = [
+            'La lecture fichier ne provient pas du workspace actif (context snippet uniquement).',
+            'Je refuse de synthétiser ce contenu pour éviter les hallucinations.',
+            'Relance avec un chemin explicite (ex: README.md) ou vérifie le root Debug.',
+          ].join('\n');
+
+          fullContent += `\n\n${deterministicError}`;
+          onToken(`\n\n${deterministicError}`);
+          onComplete(fullContent);
+          return;
+        }
+
+        if (hasToolErrors && hasWorkspaceReadCall) {
+          const errorLines = toolResults
+            .map((result) => result.content.trim())
+            .filter((content) => /^Error executing/i.test(content) || /^Missing\s+/i.test(content) || /^File not found/i.test(content));
+
+          if (errorLines.length > 0) {
+            const deterministicError = [
+              'La lecture workspace a échoué. Sortie brute des outils :',
+              ...errorLines.map((line) => `- ${line}`),
+              '',
+              'Je ne peux pas déduire le contenu du fichier sans sortie de lecture valide.',
+            ].join('\n');
+
+            fullContent += `\n\n${deterministicError}`;
+            onToken(`\n\n${deterministicError}`);
+            onComplete(fullContent);
+            return;
+          }
+        }
 
         const messagesWithToolResults: StreamMessage[] = [
           ...messages,
