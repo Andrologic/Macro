@@ -1406,6 +1406,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         // Continue with currently available tool state (safe default is no tools)
       }
       const allowedToolIds = getAllowedToolIdsForCurrentMode();
+      const showToolTraces = useAppStore.getState().mode === 'Debug';
       const messagesForRequest = prepareMessagesForRequest(
         conversationId,
         allowedToolIds,
@@ -1450,6 +1451,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: messagesForRequest,
           fileToolContext,
           allowedToolIds,
+          showToolTraces,
           enableWebSearch,
           enableWebFetch,
           webSearchOptions,
@@ -1601,6 +1603,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         // Continue with currently available tool state (safe default is no tools)
       }
       const allowedToolIds = getAllowedToolIdsForCurrentMode();
+      const showToolTraces = useAppStore.getState().mode === 'Debug';
       const messagesForRequest = prepareMessagesForRequest(
         conversationId,
         allowedToolIds,
@@ -1645,6 +1648,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: messagesForRequest,
           fileToolContext,
           allowedToolIds,
+          showToolTraces,
           enableWebSearch,
           enableWebFetch,
           webSearchOptions,
