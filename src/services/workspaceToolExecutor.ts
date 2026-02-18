@@ -16,6 +16,19 @@ export const assertPathAllowed = (mode: AppMode, path: string): void => {
 
 const toString = (value: unknown): string => (typeof value === 'string' ? value : '');
 
+const sanitizePathInput = (value: string): string =>
+  value
+    .trim()
+    .replace(/^['"`]+/, '')
+    .replace(/['"`]+$/, '')
+    .replace(/^\.\//, '');
+
+const formatWithLineNumbers = (lines: string[], startLine: number): string => {
+  return lines
+    .map((line, index) => `${String(startLine + index).padStart(4, ' ')} | ${line}`)
+    .join('\n');
+};
+
 const getSelectedProjectRoot = (): string => {
   const appState = useAppStore.getState();
   const normalize = (value?: string): string => (value || '').replace(/\\/g, '/').replace(/\/$/, '');
@@ -37,14 +50,11 @@ const getSelectedProjectRoot = (): string => {
     }
   }
 
-  const recentProjectPath = appState.recentProjects[0]?.path;
-  if (recentProjectPath) {
-    return normalize(recentProjectPath) || '.';
-  }
-
-  const macroEnabledProjectPath = appState.macroEnabledProjects[0]?.path;
-  if (macroEnabledProjectPath) {
-    return normalize(macroEnabledProjectPath) || '.';
+  for (const group of appState.projectGroups) {
+    const firstProject = group.projects[0];
+    if (firstProject?.path) {
+      return normalize(firstProject.path) || '.';
+    }
   }
 
   return '.';
@@ -113,7 +123,7 @@ export const executeWorkspaceTool = async (
 
   try {
     if (toolName === 'list') {
-      const inputPath = toString(args.path) || '.';
+      const inputPath = sanitizePathInput(toString(args.path) || '.');
       const path = resolvePathForMode(inputPath, mode);
       const recursive = args.recursive !== false;
       const includeHidden = args.include_hidden === true;
@@ -131,7 +141,7 @@ export const executeWorkspaceTool = async (
     }
 
     if (toolName === 'read') {
-      const inputPath = toString(args.path);
+      const inputPath = sanitizePathInput(toString(args.path));
       if (!inputPath) return 'Missing path argument for read tool.';
       const path = resolvePathForMode(inputPath, mode);
       let result;
@@ -168,14 +178,38 @@ export const executeWorkspaceTool = async (
             );
           });
 
-        if (candidates.length === 1) {
-          resolvedPath = candidates[0].path;
+        const fallbackCandidates =
+          candidates.length > 0
+            ? candidates
+            : entries
+                .filter((entry) => entry.kind === 'file')
+                .filter((entry) => {
+                  const rel = entry.relative_path.replace(/\\/g, '/').replace(/^\.\//, '');
+                  const relLower = rel.toLowerCase();
+                  const inputLower = normalizedInput.toLowerCase();
+                  const basename = rel.split('/').pop() || rel;
+                  const basenameLower = basename.toLowerCase();
+                  const basenameNoExt = basenameLower.replace(/\.[^/.]+$/, '');
+                  const inputNoExt = inputLower.replace(/\.[^/.]+$/, '');
+
+                  return (
+                    relLower === inputLower ||
+                    relLower.endsWith(`/${inputLower}`) ||
+                    basenameLower === inputLower ||
+                    basenameNoExt === inputNoExt ||
+                    basenameLower.startsWith(`${inputLower}.`) ||
+                    basenameLower.startsWith(`${inputNoExt}.`)
+                  );
+                });
+
+        if (fallbackCandidates.length === 1) {
+          resolvedPath = fallbackCandidates[0].path;
           result = await tauriIpc.fsReadFileWithOptions({
             path: resolvedPath,
             allowOutsideWorkspace: true,
           });
-        } else if (candidates.length > 1) {
-          const suggestion = candidates
+        } else if (fallbackCandidates.length > 1) {
+          const suggestion = fallbackCandidates
             .slice(0, 5)
             .map((entry) => entry.relative_path)
             .join(', ');
@@ -194,14 +228,16 @@ export const executeWorkspaceTool = async (
 
       const lines = result.content.split('\n');
       const selected = lines.slice(startLine - 1, endLine ? endLine : undefined);
+      const effectiveEndLine = endLine ?? startLine + selected.length - 1;
+      const numberedContent = formatWithLineNumbers(selected, startLine);
       const resolvedNotice = resolvedPath !== path
         ? `RESOLVED_PATH: ${resolvedPath} (from requested: ${inputPath})\n`
         : '';
-      return `FILE: ${resolvedPath}\n${resolvedNotice}LANGUAGE: ${result.language}\nSIZE: ${result.size}\n\n${selected.join('\n')}`;
+      return `FILE: ${resolvedPath}\nSOURCE: WORKSPACE_FILE\n${resolvedNotice}LANGUAGE: ${result.language}\nSIZE: ${result.size}\nLINES: ${startLine}-${effectiveEndLine}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
     }
 
     if (toolName === 'write') {
-      const inputPath = toString(args.path);
+      const inputPath = sanitizePathInput(toString(args.path));
       const content = toString(args.content);
       if (!inputPath) return 'Missing path argument for write tool.';
       const path = resolvePathForMode(inputPath, mode);
@@ -217,7 +253,7 @@ export const executeWorkspaceTool = async (
     }
 
     if (toolName === 'edit') {
-      const inputPath = toString(args.path);
+      const inputPath = sanitizePathInput(toString(args.path));
       const oldText = toString(args.old_text);
       const newText = toString(args.new_text);
       const replaceAll = args.replace_all === true;

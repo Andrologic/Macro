@@ -35,6 +35,7 @@ export const PREF_KEYS = {
   LAST_ACTIVE_MODE: "lastActiveMode",
   RECENT_PROJECTS: "recentProjects",
   MACRO_ENABLED_PROJECTS: "macroEnabledProjects",
+  AI_CONTEXT_SELECTIONS: "aiContextSelections",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -62,6 +63,11 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.LAST_ACTIVE_MODE]: 'Implement',
   [PREF_KEYS.RECENT_PROJECTS]: [],
   [PREF_KEYS.MACRO_ENABLED_PROJECTS]: [],
+  [PREF_KEYS.AI_CONTEXT_SELECTIONS]: {
+    version: 1,
+    modeSelections: {},
+    conversationSelections: {},
+  },
 };
 
 // Store instance (singleton)
