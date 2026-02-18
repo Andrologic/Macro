@@ -513,6 +513,14 @@ export async function workspaceGetMetadata(): Promise<WorkspaceMetadataDto> {
   return invoke<WorkspaceMetadataDto>('workspace_get_metadata');
 }
 
+export async function workspaceGetActiveRoot(): Promise<string> {
+  return invoke<string>('workspace_get_active_root');
+}
+
+export async function workspaceSetActiveRoot(path: string): Promise<string> {
+  return invoke<string>('workspace_set_active_root', { path });
+}
+
 export async function workspaceCreateProject(params: {
   name: string;
   description: string;

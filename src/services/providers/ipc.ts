@@ -17,6 +17,34 @@ import type {
 import type { ProjectGroup, Task } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
+import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
+
+const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
+const MCP_SERVER_SETTINGS_STORAGE_KEY = 'macro_mcp_server_settings';
+
+const normalizeToolSettings = (settings: Record<string, boolean>): Record<string, boolean> => {
+  return Object.fromEntries(Object.entries(settings).filter(([, value]) => typeof value === 'boolean'));
+};
+
+const loadLocalToolSettings = (): Record<string, boolean> => {
+  try {
+    const raw = localStorage.getItem(TOOL_SETTINGS_STORAGE_KEY);
+    if (!raw || raw === 'undefined') return {};
+    return normalizeToolSettings(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+};
+
+const loadLocalMcpSettings = (): Record<string, boolean> => {
+  try {
+    const raw = localStorage.getItem(MCP_SERVER_SETTINGS_STORAGE_KEY);
+    if (!raw || raw === 'undefined') return {};
+    return normalizeToolSettings(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+};
 
 const notReady = () => {
   throw {
@@ -170,10 +198,63 @@ export const closeProject = async (data: {
 };
 
 // Tools & MCP Settings
-export const getToolSettings = async (): Promise<ToolSettingsDto> => notReady();
+export const getToolSettings = async (): Promise<ToolSettingsDto> => {
+  const enabledMap = loadLocalToolSettings();
+  const tools = Object.fromEntries(
+    mockInternalTools.map((tool) => {
+      const enabled = enabledMap[tool.id] ?? tool.config?.enabled !== false;
+      return [
+        tool.id,
+        {
+          ...tool,
+          status: enabled ? 'enabled' : 'disabled',
+          config: {
+            ...tool.config,
+            enabled,
+          },
+        },
+      ];
+    })
+  );
 
-export const updateToolSettings = async (_settings: ToolSettingsDto): Promise<void> => notReady();
+  return { tools: tools as unknown as Record<string, boolean> };
+};
 
-export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => notReady();
+export const updateToolSettings = async (settings: ToolSettingsDto): Promise<void> => {
+  localStorage.setItem(TOOL_SETTINGS_STORAGE_KEY, JSON.stringify(normalizeToolSettings(settings.tools || {})));
+};
 
-export const updateMCPServerSettings = async (_settings: MCPServerSettingsDto): Promise<void> => notReady();
+export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
+  const enabledMap = loadLocalMcpSettings();
+  const servers = Object.fromEntries(
+    mockMCPServers.map((server) => {
+      const enabled = enabledMap[server.id] ?? false;
+      return [
+        server.id,
+        {
+          ...server,
+          status: (enabled ? 'online' : 'offline') as 'online' | 'offline',
+          config: {
+            ...server.config,
+            enabled,
+          },
+        },
+      ];
+    })
+  );
+
+  return { servers };
+};
+
+export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): Promise<void> => {
+  const enabledMap: Record<string, boolean> = {};
+  Object.entries(settings.servers || {}).forEach(([id, server]) => {
+    const enabled =
+      typeof server === 'boolean'
+        ? server
+        : (server as unknown as { config?: { enabled?: boolean } }).config?.enabled ?? false;
+    enabledMap[id] = enabled;
+  });
+
+  localStorage.setItem(MCP_SERVER_SETTINGS_STORAGE_KEY, JSON.stringify(enabledMap));
+};

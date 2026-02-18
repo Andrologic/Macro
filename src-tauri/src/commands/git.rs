@@ -12,6 +12,7 @@ use crate::core::error::{BackendError, Result};
 use crate::fs::validate_path;
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
 use crate::git::GitState;
+use crate::WorkspaceRoot;
 
 const DEFAULT_LOG_LIMIT: usize = 50;
 
@@ -1076,11 +1077,11 @@ fn build_git_tree(repo: &Repository, branch: Option<&str>) -> Result<PredictedGi
 #[tauri::command]
 /// Get the status of a Git repository.
 pub async fn git_status(
-	workspace: State<'_, PathBuf>,
+	workspace_root: State<'_, WorkspaceRoot>,
 	git_state: State<'_, GitState>,
 	repo_path: String,
 ) -> Result<GitStatusDto> {
-	let workspace = workspace.inner().clone();
+	let workspace = workspace_root.inner().read().await.clone();
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
@@ -1099,13 +1100,13 @@ pub async fn git_status(
 #[tauri::command]
 /// Get commit history for a Git repository.
 pub async fn git_log(
-	workspace: State<'_, PathBuf>,
+	workspace_root: State<'_, WorkspaceRoot>,
 	git_state: State<'_, GitState>,
 	repo_path: String,
 	limit: Option<u32>,
 	branch: Option<String>,
 ) -> Result<Vec<GitCommitDto>> {
-	let workspace = workspace.inner().clone();
+	let workspace = workspace_root.inner().read().await.clone();
 	let git_state = git_state.inner().clone();
 	let limit = limit.map(|v| v as usize).unwrap_or(DEFAULT_LOG_LIMIT);
 
@@ -1125,11 +1126,11 @@ pub async fn git_log(
 #[tauri::command]
 /// List local and remote branches for a Git repository.
 pub async fn git_branch_list(
-	workspace: State<'_, PathBuf>,
+	workspace_root: State<'_, WorkspaceRoot>,
 	git_state: State<'_, GitState>,
 	repo_path: String,
 ) -> Result<GitBranchesDto> {
-	let workspace = workspace.inner().clone();
+	let workspace = workspace_root.inner().read().await.clone();
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
@@ -1148,13 +1149,13 @@ pub async fn git_branch_list(
 #[tauri::command]
 /// Checkout an existing branch/commit or create a new branch.
 pub async fn git_checkout(
-	workspace: State<'_, PathBuf>,
+	workspace_root: State<'_, WorkspaceRoot>,
 	git_state: State<'_, GitState>,
 	repo_path: String,
 	branch_or_commit: String,
 	create: bool,
 ) -> Result<()> {
-	let workspace = workspace.inner().clone();
+	let workspace = workspace_root.inner().read().await.clone();
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
@@ -1173,13 +1174,13 @@ pub async fn git_checkout(
 #[tauri::command]
 /// Create a commit in a Git repository.
 pub async fn git_commit(
-	workspace: State<'_, PathBuf>,
+	workspace_root: State<'_, WorkspaceRoot>,
 	git_state: State<'_, GitState>,
 	repo_path: String,
 	message: String,
 	stage_all: bool,
 ) -> Result<String> {
-	let workspace = workspace.inner().clone();
+	let workspace = workspace_root.inner().read().await.clone();
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
@@ -1198,12 +1199,12 @@ pub async fn git_commit(
 #[tauri::command]
 /// Stage files into the Git index.
 pub async fn git_add(
-	workspace: State<'_, PathBuf>,
+	workspace_root: State<'_, WorkspaceRoot>,
 	git_state: State<'_, GitState>,
 	repo_path: String,
 	paths: Vec<String>,
 ) -> Result<()> {
-	let workspace = workspace.inner().clone();
+	let workspace = workspace_root.inner().read().await.clone();
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
@@ -1222,14 +1223,14 @@ pub async fn git_add(
 #[tauri::command]
 /// Reset the repository to a given commit.
 pub async fn git_reset(
-	workspace: State<'_, PathBuf>,
+	workspace_root: State<'_, WorkspaceRoot>,
 	git_state: State<'_, GitState>,
 	repo_path: String,
 	mode: String,
 	commit: Option<String>,
 	confirm: Option<bool>,
 ) -> Result<()> {
-	let workspace = workspace.inner().clone();
+	let workspace = workspace_root.inner().read().await.clone();
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
@@ -1254,12 +1255,12 @@ pub async fn git_reset(
 #[tauri::command]
 /// Stash local changes in the Git repository.
 pub async fn git_stash(
-	workspace: State<'_, PathBuf>,
+	workspace_root: State<'_, WorkspaceRoot>,
 	git_state: State<'_, GitState>,
 	repo_path: String,
 	message: Option<String>,
 ) -> Result<String> {
-	let workspace = workspace.inner().clone();
+	let workspace = workspace_root.inner().read().await.clone();
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
@@ -1278,7 +1279,7 @@ pub async fn git_stash(
 #[tauri::command]
 /// Generate a diff between commits or working tree.
 pub async fn git_diff(
-	workspace: State<'_, PathBuf>,
+	workspace_root: State<'_, WorkspaceRoot>,
 	git_state: State<'_, GitState>,
 	repo_path: String,
 	base: Option<String>,
@@ -1287,7 +1288,7 @@ pub async fn git_diff(
 	ignore_whitespace: Option<bool>,
 	paths: Option<Vec<String>>,
 ) -> Result<String> {
-	let workspace = workspace.inner().clone();
+	let workspace = workspace_root.inner().read().await.clone();
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
@@ -1315,12 +1316,12 @@ pub async fn git_diff(
 #[tauri::command]
 /// Build a predicted Git tree structure.
 pub async fn git_get_tree(
-	workspace: State<'_, PathBuf>,
+	workspace_root: State<'_, WorkspaceRoot>,
 	git_state: State<'_, GitState>,
 	repo_path: String,
 	branch: Option<String>,
 ) -> Result<PredictedGitTreeDto> {
-	let workspace = workspace.inner().clone();
+	let workspace = workspace_root.inner().read().await.clone();
 	let git_state = git_state.inner().clone();
 
 	tokio::task::spawn_blocking(move || {
