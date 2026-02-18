@@ -737,7 +737,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const cleanedRecentProjects = pruneLegacyRememberedProjects(recentProjects);
       const cleanedMacroEnabledProjects = pruneLegacyRememberedProjects(macroEnabledProjects);
 
-      const rememberedCandidates = [...cleanedRecentProjects, ...cleanedMacroEnabledProjects]
+      const rememberedCandidates = [...cleanedMacroEnabledProjects]
         .filter((project) => typeof project.path === 'string' && project.path.trim().length > 0)
         .sort((a, b) => new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime());
 
