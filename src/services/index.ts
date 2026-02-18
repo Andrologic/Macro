@@ -4,7 +4,8 @@ import { isTauriAvailable } from './tauriIpc';
 
 export type DataProvider = 'mock' | 'ipc';
 
-const providerName = (import.meta.env.VITE_DATA_PROVIDER as DataProvider) ?? 'mock';
+const envProvider = import.meta.env.VITE_DATA_PROVIDER as DataProvider | undefined;
+const providerName: DataProvider = envProvider ?? (isTauriAvailable() ? 'ipc' : 'mock');
 
 const provider =
   providerName === 'ipc' && isTauriAvailable()

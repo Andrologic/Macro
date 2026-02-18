@@ -6,6 +6,8 @@ describe('workspaceToolExecutor helpers', () => {
     expect(isWriteTool('write')).toBe(true);
     expect(isWriteTool('edit')).toBe(true);
     expect(isWriteTool('read')).toBe(false);
+    expect(isWriteTool('git_commit')).toBe(false);
+    expect(isWriteTool('git_add')).toBe(false);
   });
 
   it('enforces architect write path scope', () => {

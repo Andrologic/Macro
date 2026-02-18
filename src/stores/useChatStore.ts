@@ -489,11 +489,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return false;
     }
 
-    if (mode === 'Debug') {
-      return useToolsStore.getState().isToolEnabled(toolId);
+    const toolsState = useToolsStore.getState();
+    if (mode === 'Chat') {
+      return toolsState.isChatToolEnabled(toolId);
     }
 
-    return useToolsStore.getState().isChatToolEnabled(toolId);
+    return toolsState.isToolEnabled(toolId);
   };
 
   const handleToolCall = async (
@@ -632,7 +633,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       toolName === 'write' ||
       toolName === 'edit' ||
       toolName === 'glob' ||
-      toolName === 'grep'
+      toolName === 'grep' ||
+      toolName.startsWith('git_')
     ) {
       const mode = useAppStore.getState().mode;
       return executeWorkspaceTool(toolName, args, mode);

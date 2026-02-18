@@ -370,6 +370,173 @@ const GREP_WORKSPACE_TOOL = {
   },
 };
 
+const GIT_STATUS_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_status',
+    description: 'Get git status for current repository context.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string', description: 'Optional repository path override.' },
+      },
+      required: [],
+    },
+  },
+};
+
+const GIT_LOG_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_log',
+    description: 'Get git commit history.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+        limit: { type: 'number' },
+        branch: { type: 'string' },
+      },
+      required: [],
+    },
+  },
+};
+
+const GIT_BRANCH_LIST_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_branch_list',
+    description: 'List local and remote branches.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+      },
+      required: [],
+    },
+  },
+};
+
+const GIT_DIFF_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_diff',
+    description: 'Generate repository diff.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+        base: { type: 'string' },
+        head: { type: 'string' },
+        context_lines: { type: 'number' },
+        ignore_whitespace: { type: 'boolean' },
+        paths: { type: 'array', items: { type: 'string' } },
+      },
+      required: [],
+    },
+  },
+};
+
+const GIT_GET_TREE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_get_tree',
+    description: 'Get predicted git tree for current branch/repository.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+        branch: { type: 'string' },
+      },
+      required: [],
+    },
+  },
+};
+
+const GIT_ADD_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_add',
+    description: 'Stage files in the repository index.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+        paths: { type: 'array', items: { type: 'string' } },
+      },
+      required: [],
+    },
+  },
+};
+
+const GIT_COMMIT_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_commit',
+    description: 'Create commit in repository.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+        message: { type: 'string' },
+        stage_all: { type: 'boolean' },
+      },
+      required: ['message'],
+    },
+  },
+};
+
+const GIT_CHECKOUT_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_checkout',
+    description: 'Checkout branch or commit, optionally creating branch.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+        branch_or_commit: { type: 'string' },
+        create: { type: 'boolean' },
+      },
+      required: ['branch_or_commit'],
+    },
+  },
+};
+
+const GIT_RESET_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_reset',
+    description: 'Reset repository to commit/HEAD in soft/mixed/hard mode.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+        mode: { type: 'string', enum: ['soft', 'mixed', 'hard'] },
+        commit: { type: 'string' },
+        confirm: { type: 'boolean' },
+      },
+      required: ['mode'],
+    },
+  },
+};
+
+const GIT_STASH_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_stash',
+    description: 'Stash local changes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+        message: { type: 'string' },
+      },
+      required: [],
+    },
+  },
+};
+
 /**
  * Send a streaming chat completion request
  */
@@ -532,6 +699,36 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   }
   if (allowedTools.has('grep')) {
     tools.push(GREP_WORKSPACE_TOOL);
+  }
+  if (allowedTools.has('git_status')) {
+    tools.push(GIT_STATUS_TOOL);
+  }
+  if (allowedTools.has('git_log')) {
+    tools.push(GIT_LOG_TOOL);
+  }
+  if (allowedTools.has('git_branch_list')) {
+    tools.push(GIT_BRANCH_LIST_TOOL);
+  }
+  if (allowedTools.has('git_diff')) {
+    tools.push(GIT_DIFF_TOOL);
+  }
+  if (allowedTools.has('git_get_tree')) {
+    tools.push(GIT_GET_TREE_TOOL);
+  }
+  if (allowedTools.has('git_add')) {
+    tools.push(GIT_ADD_TOOL);
+  }
+  if (allowedTools.has('git_commit')) {
+    tools.push(GIT_COMMIT_TOOL);
+  }
+  if (allowedTools.has('git_checkout')) {
+    tools.push(GIT_CHECKOUT_TOOL);
+  }
+  if (allowedTools.has('git_reset')) {
+    tools.push(GIT_RESET_TOOL);
+  }
+  if (allowedTools.has('git_stash')) {
+    tools.push(GIT_STASH_TOOL);
   }
   if (
     allowedTools.has('web_search') &&

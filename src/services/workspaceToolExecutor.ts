@@ -4,6 +4,7 @@ import { isMacroScopedPath } from './toolModePolicy';
 import { useAppStore } from '../stores/useAppStore';
 
 type ToolArgs = Record<string, unknown>;
+const isGitTool = (toolName: string): boolean => toolName.startsWith('git_');
 
 export const isWriteTool = (toolName: string): boolean => toolName === 'write' || toolName === 'edit';
 
@@ -15,6 +16,25 @@ export const assertPathAllowed = (mode: AppMode, path: string): void => {
 };
 
 const toString = (value: unknown): string => (typeof value === 'string' ? value : '');
+
+const formatToolError = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+
+  if (error && typeof error === 'object') {
+    const maybe = error as Record<string, unknown>;
+    const code = typeof maybe.code === 'string' ? maybe.code : undefined;
+    const message = typeof maybe.message === 'string' ? maybe.message : undefined;
+    if (code && message) return `${code}: ${message}`;
+    if (message) return message;
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+
+  return String(error);
+};
 
 const sanitizePathInput = (value: string): string =>
   value
@@ -112,6 +132,54 @@ const readAllCandidateFiles = async (includeHidden = false, mode: AppMode) => {
   return entries.filter((entry) => entry.kind === 'file');
 };
 
+const resolveGitRepoPath = (args: ToolArgs, mode: AppMode): string => {
+  const explicitRepoPath = sanitizePathInput(toString(args.repo_path));
+  if (explicitRepoPath) {
+    return resolvePathForMode(explicitRepoPath, mode);
+  }
+
+  return resolvePathForMode('.', mode);
+};
+
+const shouldFallbackRepoPath = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const maybe = error as Record<string, unknown>;
+  const code = typeof maybe.code === 'string' ? maybe.code : '';
+  const message = typeof maybe.message === 'string' ? maybe.message.toLowerCase() : '';
+  return (
+    code === 'FilesystemNotFound' ||
+    code === 'GitRepositoryNotFound' ||
+    code === 'InvalidPath' ||
+    code === 'FilesystemPathOutsideWorkspace' ||
+    message.includes('outside the workspace')
+  );
+};
+
+const runGitWithRepoFallback = async <T>(
+  primaryRepoPath: string,
+  execute: (repoPath: string) => Promise<T>,
+  allowFallbackToDot: boolean
+): Promise<{ value: T; repoPath: string }> => {
+  const candidates = allowFallbackToDot
+    ? Array.from(new Set([primaryRepoPath, '.'].filter(Boolean)))
+    : [primaryRepoPath];
+  let lastError: unknown;
+
+  for (const candidate of candidates) {
+    try {
+      const value = await execute(candidate);
+      return { value, repoPath: candidate };
+    } catch (error) {
+      lastError = error;
+      if (!shouldFallbackRepoPath(error) || candidate === candidates[candidates.length - 1]) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError;
+};
+
 export const executeWorkspaceTool = async (
   toolName: string,
   args: ToolArgs,
@@ -122,6 +190,194 @@ export const executeWorkspaceTool = async (
   }
 
   try {
+    if (isGitTool(toolName)) {
+      const allowRepoFallback = false;
+      const repoPath = resolveGitRepoPath(args, mode);
+      let effectiveRepoPath = repoPath;
+
+      if (toolName === 'git_status') {
+        const { value: status, repoPath: resolvedRepoPath } = await runGitWithRepoFallback(repoPath, (candidate) =>
+          tauriIpc.gitStatus(candidate),
+          allowRepoFallback
+        );
+        return JSON.stringify({ repo_path: resolvedRepoPath, ...status }, null, 2);
+      }
+
+      if (toolName === 'git_log') {
+        const limit = typeof args.limit === 'number' ? Math.max(1, Math.floor(args.limit)) : undefined;
+        const branch = toString(args.branch) || undefined;
+        const { value: commits, repoPath: resolvedRepoPath } = await runGitWithRepoFallback(repoPath, (candidate) =>
+          tauriIpc.gitLog({ repoPath: candidate, limit, branch }),
+          allowRepoFallback
+        );
+        return JSON.stringify({ repo_path: resolvedRepoPath, count: commits.length, commits }, null, 2);
+      }
+
+      if (toolName === 'git_branch_list') {
+        const { value: branches, repoPath: resolvedRepoPath } = await runGitWithRepoFallback(repoPath, (candidate) =>
+          tauriIpc.gitBranchList(candidate),
+          allowRepoFallback
+        );
+        return JSON.stringify({ repo_path: resolvedRepoPath, ...branches }, null, 2);
+      }
+
+      if (toolName === 'git_diff') {
+        const base = toString(args.base) || undefined;
+        const head = toString(args.head) || undefined;
+        const contextLines = typeof args.context_lines === 'number' ? Math.max(0, Math.floor(args.context_lines)) : undefined;
+        const ignoreWhitespace = args.ignore_whitespace === true;
+        const paths = Array.isArray(args.paths)
+          ? args.paths.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : undefined;
+        const { value: patch } = await runGitWithRepoFallback(repoPath, (candidate) =>
+          tauriIpc.gitDiff({
+            repoPath: candidate,
+            base,
+            head,
+            contextLines,
+            ignoreWhitespace,
+            paths,
+          }),
+          allowRepoFallback
+        );
+        return patch || '';
+      }
+
+      if (toolName === 'git_get_tree') {
+        const branch = toString(args.branch) || undefined;
+        const { value: tree, repoPath: resolvedRepoPath } = await runGitWithRepoFallback(repoPath, (candidate) =>
+          tauriIpc.gitGetTree({ repoPath: candidate, branch }),
+          allowRepoFallback
+        );
+        return JSON.stringify({ repo_path: resolvedRepoPath, ...tree }, null, 2);
+      }
+
+      if (toolName === 'git_add') {
+        const paths = Array.isArray(args.paths)
+          ? args.paths.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : ['.'];
+        await runGitWithRepoFallback(repoPath, (candidate) => {
+          effectiveRepoPath = candidate;
+          return tauriIpc.gitAdd({ repoPath: candidate, paths });
+        }, allowRepoFallback);
+        const { value: status } = await runGitWithRepoFallback(effectiveRepoPath, (candidate) =>
+          tauriIpc.gitStatus(candidate),
+          allowRepoFallback
+        );
+        return JSON.stringify(
+          {
+            ok: true,
+            repo_path: effectiveRepoPath,
+            staged_paths: paths,
+            staged_count: status.staged_files.length,
+            branch: status.branch,
+          },
+          null,
+          2
+        );
+      }
+
+      if (toolName === 'git_commit') {
+        const message = toString(args.message);
+        if (!message) return 'Missing message argument for git_commit tool.';
+
+        const { value: before } = await runGitWithRepoFallback(repoPath, (candidate) => {
+          effectiveRepoPath = candidate;
+          return tauriIpc.gitLog({ repoPath: candidate, limit: 1 });
+        }, allowRepoFallback);
+        const headBefore = before[0]?.id ?? null;
+
+        const { value: hash } = await runGitWithRepoFallback(effectiveRepoPath, (candidate) => {
+          effectiveRepoPath = candidate;
+          return tauriIpc.gitCommit({
+            repoPath: candidate,
+            message,
+            stageAll: args.stage_all !== false,
+          });
+        }, allowRepoFallback);
+
+        const { value: after } = await runGitWithRepoFallback(effectiveRepoPath, (candidate) =>
+          tauriIpc.gitLog({ repoPath: candidate, limit: 1 }),
+          allowRepoFallback
+        );
+        const headAfter = after[0]?.id ?? null;
+        const { value: status } = await runGitWithRepoFallback(effectiveRepoPath, (candidate) =>
+          tauriIpc.gitStatus(candidate),
+          allowRepoFallback
+        );
+
+        return JSON.stringify(
+          {
+            ok: true,
+            repo_path: effectiveRepoPath,
+            branch: status.branch,
+            hash,
+            head_before: headBefore,
+            head_after: headAfter,
+            head_changed: headBefore !== headAfter,
+          },
+          null,
+          2
+        );
+      }
+
+      if (toolName === 'git_checkout') {
+        const branchOrCommit = toString(args.branch_or_commit) || toString(args.branch);
+        if (!branchOrCommit) return 'Missing branch_or_commit argument for git_checkout tool.';
+
+        await runGitWithRepoFallback(repoPath, (candidate) => {
+          effectiveRepoPath = candidate;
+          return tauriIpc.gitCheckout({
+            repoPath: candidate,
+            branchOrCommit,
+            create: args.create === true,
+          });
+        }, allowRepoFallback);
+        const { value: status } = await runGitWithRepoFallback(effectiveRepoPath, (candidate) =>
+          tauriIpc.gitStatus(candidate),
+          allowRepoFallback
+        );
+        return JSON.stringify({ ok: true, repo_path: effectiveRepoPath, branch: status.branch, target: branchOrCommit }, null, 2);
+      }
+
+      if (toolName === 'git_reset') {
+        const modeArg = toString(args.mode);
+        if (modeArg !== 'soft' && modeArg !== 'mixed' && modeArg !== 'hard') {
+          return 'Missing or invalid mode for git_reset. Use one of: soft, mixed, hard.';
+        }
+
+        await runGitWithRepoFallback(repoPath, (candidate) => {
+          effectiveRepoPath = candidate;
+          return tauriIpc.gitReset({
+            repoPath: candidate,
+            mode: modeArg,
+            commit: toString(args.commit) || undefined,
+            confirm: args.confirm === true ? true : undefined,
+          });
+        }, allowRepoFallback);
+        const { value: status } = await runGitWithRepoFallback(effectiveRepoPath, (candidate) =>
+          tauriIpc.gitStatus(candidate),
+          allowRepoFallback
+        );
+        return JSON.stringify({ ok: true, repo_path: effectiveRepoPath, branch: status.branch }, null, 2);
+      }
+
+      if (toolName === 'git_stash') {
+        const message = toString(args.message) || undefined;
+        const { value: stashId } = await runGitWithRepoFallback(repoPath, (candidate) => {
+          effectiveRepoPath = candidate;
+          return tauriIpc.gitStash({ repoPath: candidate, message });
+        }, allowRepoFallback);
+        const { value: status } = await runGitWithRepoFallback(effectiveRepoPath, (candidate) =>
+          tauriIpc.gitStatus(candidate),
+          allowRepoFallback
+        );
+        return JSON.stringify({ ok: true, repo_path: effectiveRepoPath, branch: status.branch, stash: stashId }, null, 2);
+      }
+
+      return `Unknown Git tool: ${toolName}`;
+    }
+
     if (toolName === 'list') {
       const inputPath = sanitizePathInput(toString(args.path) || '.');
       const path = resolvePathForMode(inputPath, mode);
@@ -351,6 +607,6 @@ export const executeWorkspaceTool = async (
 
     return undefined;
   } catch (error) {
-    return `Error executing ${toolName}: ${error instanceof Error ? error.message : String(error)}`;
+    return `Error executing ${toolName}: ${formatToolError(error)}`;
   }
 };
