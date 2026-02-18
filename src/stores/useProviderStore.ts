@@ -3,6 +3,9 @@ import { ProviderConfig, AIProvider, AIModel, ProviderSettings } from '../types'
 import * as tauriIpc from '../services/tauriIpc';
 import { fetchModelsFromProvider, testProviderConnection } from '../services/providerApi';
 import { findProviderConfig, loadAIConfigFile } from '../services/aiConfig';
+import { loadPreference, PREF_KEYS } from '../services/preferences';
+import { AppMode } from '../types';
+import { useAppStore } from './useAppStore';
 
 const isZeroPrice = (value?: string | null): boolean => {
   if (value === null || value === undefined) return false;
@@ -47,6 +50,56 @@ const normalizeDbModel = (model: tauriIpc.DbAiModel): AIModel => {
 const getFirstEnabledModelId = (models: AIModel[]): string | null => {
   const enabled = models.find((m) => m.isEnabled !== false);
   return enabled?.id ?? null;
+};
+
+type AISelectionModeKey = 'ChatDebug' | 'Architect' | 'Implement';
+
+interface PersistedAISelection {
+  providerId: string | null;
+  modelId: string | null;
+  updatedAt: string;
+}
+
+interface PersistedAIContextSelections {
+  version: 1;
+  modeSelections: Partial<Record<AISelectionModeKey, PersistedAISelection>>;
+}
+
+const getSelectionModeKey = (mode: AppMode): AISelectionModeKey => {
+  if (mode === 'Chat' || mode === 'Debug') return 'ChatDebug';
+  if (mode === 'Architect') return 'Architect';
+  return 'Implement';
+};
+
+const normalizePersistedSelection = (value: unknown): PersistedAISelection | null => {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as { providerId?: unknown; modelId?: unknown; updatedAt?: unknown };
+  if (typeof candidate.providerId !== 'string' || !candidate.providerId.trim()) return null;
+  if (typeof candidate.modelId !== 'string' || !candidate.modelId.trim()) return null;
+
+  return {
+    providerId: candidate.providerId,
+    modelId: candidate.modelId,
+    updatedAt:
+      typeof candidate.updatedAt === 'string' && candidate.updatedAt.trim().length > 0
+        ? candidate.updatedAt
+        : new Date().toISOString(),
+  };
+};
+
+const getModeSelectionFromPreference = (
+  value: unknown,
+  mode: AppMode
+): PersistedAISelection | null => {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as PersistedAIContextSelections;
+  const modeSelections = raw.modeSelections;
+  if (!modeSelections || typeof modeSelections !== 'object') return null;
+  return normalizePersistedSelection(modeSelections[getSelectionModeKey(mode)]);
+};
+
+const providerHasCredentials = (provider: ProviderConfig): boolean => {
+  return provider.isEnabled && (provider.isLocal || !!provider.apiKey?.trim());
 };
 
 const mergeLocalProviderConfig = async (
@@ -145,6 +198,44 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
 
     void Promise.allSettled(connectivityChecks);
+
+    const currentMode = useAppStore.getState().mode;
+    const persistedSelection = getModeSelectionFromPreference(
+      await loadPreference(PREF_KEYS.AI_CONTEXT_SELECTIONS),
+      currentMode
+    );
+
+    if (persistedSelection?.providerId && persistedSelection.modelId) {
+      const preferredProvider = providerConfigs.find((provider) => provider.id === persistedSelection.providerId);
+      if (preferredProvider && providerHasCredentials(preferredProvider)) {
+        set({
+          selectedProviderId: preferredProvider.id,
+          selectedModelId: persistedSelection.modelId,
+        });
+
+        let preferredModels = get().modelsByProvider[persistedSelection.providerId] || [];
+        if (preferredModels.length === 0) {
+          preferredModels = await loadProviderModels(preferredProvider.id);
+        }
+
+        let hasPreferredModel = preferredModels.some(
+          (model) => model.id === persistedSelection.modelId && model.isEnabled !== false
+        );
+
+        if (!hasPreferredModel) {
+          preferredModels = await scanModelsForProvider(preferredProvider.id);
+          hasPreferredModel = preferredModels.some(
+            (model) => model.id === persistedSelection.modelId && model.isEnabled !== false
+          );
+        }
+
+        if (hasPreferredModel) {
+          set({ selectedProviderId: preferredProvider.id });
+          get().selectModel(persistedSelection.modelId);
+          return;
+        }
+      }
+    }
 
     const enabledProvider = providers.find((p) => p.isEnabled);
     if (enabledProvider) {
