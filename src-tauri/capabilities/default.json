@@ -17,6 +17,7 @@
     "core:window:allow-set-size",
     "core:window:allow-set-position",
     "core:window:allow-is-maximized",
+    "core:webview:allow-set-webview-zoom",
     "opener:default",
     "dialog:default",
     "store:default",
