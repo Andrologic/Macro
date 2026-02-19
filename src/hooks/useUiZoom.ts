@@ -30,14 +30,13 @@ export function useUiZoom() {
 
         const win = getCurrentWindow();
         const webview = getCurrentWebview();
-        const systemScale = await win.scaleFactor();
-        const effectiveScale = uiZoomMode === 'auto' ? systemScale : uiZoomLevel;
+        const effectiveScale = uiZoomMode === 'auto' ? 1 : uiZoomLevel;
 
         await webview.setZoom(effectiveScale);
 
         if (uiZoomMode === 'auto') {
-          unlisten = await win.onScaleChanged(({ payload }) => {
-            void webview.setZoom(payload.scaleFactor);
+          unlisten = await win.onScaleChanged(() => {
+            void webview.setZoom(1);
           });
         }
       } catch (error) {
