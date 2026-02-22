@@ -24,6 +24,8 @@ describe('toolModePolicy', () => {
     const policy = getToolModePolicy('Architect');
     expect(policy.allowedToolIds.includes('write')).toBe(true);
     expect(policy.allowedToolIds.includes('edit')).toBe(true);
+    expect(policy.allowedToolIds.includes('git_status')).toBe(true);
+    expect(policy.allowedToolIds.includes('git_commit')).toBe(false);
     expect(policy.enforceMacroOnlyWrites).toBe(true);
   });
 
@@ -31,6 +33,8 @@ describe('toolModePolicy', () => {
     const policy = getToolModePolicy('Implement');
     expect(policy.allowedToolIds.includes('write')).toBe(true);
     expect(policy.allowedToolIds.includes('edit')).toBe(true);
+    expect(policy.allowedToolIds.includes('git_status')).toBe(true);
+    expect(policy.allowedToolIds.includes('git_commit')).toBe(true);
     expect(policy.enforceMacroOnlyWrites).toBe(false);
   });
 

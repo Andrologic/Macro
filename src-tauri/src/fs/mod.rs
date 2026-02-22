@@ -305,26 +305,8 @@ pub fn is_binary_file(path: &Path) -> Result<bool> {
         ".env",
     ];
     let text_extensions = [
-        "txt",
-        "md",
-        "rs",
-        "py",
-        "js",
-        "ts",
-        "java",
-        "c",
-        "cpp",
-        "html",
-        "css",
-        "json",
-        "xml",
-        "yaml",
-        "yml",
-        "toml",
-        "sh",
-        "go",
-        "rb",
-        "php",
+        "txt", "md", "rs", "py", "js", "ts", "java", "c", "cpp", "html", "css", "json", "xml",
+        "yaml", "yml", "toml", "sh", "go", "rb", "php",
     ];
     let binary_extensions = [
         // Images
@@ -578,6 +560,9 @@ mod tests {
 
     #[test]
     fn test_normalize_path_absolute() {
+        #[cfg(windows)]
+        let path = normalize_path(Path::new("C:\\a\\b\\..\\c"));
+        #[cfg(not(windows))]
         let path = normalize_path(Path::new("/a/b/../c"));
         assert!(path.is_absolute());
         assert!(path.ends_with("a/c"));
@@ -586,7 +571,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_normalize_path_windows_separators() {
-        assert_eq!(normalize_path(Path::new("a\\b\\c")), PathBuf::from("a\\b\\c"));
+        assert_eq!(
+            normalize_path(Path::new("a\\b\\c")),
+            PathBuf::from("a\\b\\c")
+        );
     }
 
     // ============ get_file_language tests ============
