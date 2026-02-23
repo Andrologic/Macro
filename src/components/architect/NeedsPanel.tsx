@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useAppStore } from '../../stores/useAppStore';
+import { useChatStore } from '../../stores/useChatStore';
 import type { NeedCategory } from '../../types';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
@@ -35,24 +36,14 @@ const CATEGORY_COLORS: Record<NeedCategory, string> = {
 const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
   const { t } = useTranslation();
   const { needs, selectNeed, selectedNeedId } = useNeedsStore();
-  const { selectedProjectId, selectedGroupId, projectGroups } = useAppStore();
+  const { activeArchitectPlanId } = useAppStore();
   const [filter, setFilter] = useState<'all' | NeedCategory>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const scopedNeeds = useMemo(() => {
-    if (selectedProjectId) {
-      return needs.filter((need) => need.projectId === selectedProjectId);
-    }
-
-    if (selectedGroupId) {
-      const group = projectGroups.find((candidate) => candidate.id === selectedGroupId);
-      const groupProjectIds = new Set(group?.projects.map((project) => project.id) ?? []);
-      if (groupProjectIds.size === 0) return [];
-      return needs.filter((need) => need.projectId && groupProjectIds.has(need.projectId));
-    }
-
-    return [];
-  }, [needs, selectedProjectId, selectedGroupId, projectGroups]);
+    if (!activeArchitectPlanId) return [];
+    return needs.filter((need) => need.planId === activeArchitectPlanId);
+  }, [needs, activeArchitectPlanId]);
 
   const filteredNeeds = useMemo(() => {
     if (filter === 'all') return scopedNeeds;
@@ -85,14 +76,14 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
             <button
               onClick={() => {
                 // Send a message to the active Architect chat to generate the plan
-                const chatStore = (window as any)._useChatStore?.getState();
+                const chatStore = useChatStore.getState();
                 const appStore = useAppStore.getState();
                 if (chatStore && appStore.mode === 'Architect') {
                   const conversationId = chatStore.selectedConversationIdsByMode['Architect'];
                   if (conversationId) {
                     chatStore.sendMessage({
                       conversationId,
-                      content: "Based on the identified needs, please generate a structured project plan using the `generate_plan` tool.",
+                      content: "Based on the identified needs for the active plan, generate a structured strategy using the `generate_plan` tool.",
                     });
                   }
                 }

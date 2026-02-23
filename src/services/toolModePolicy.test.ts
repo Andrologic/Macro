@@ -25,6 +25,13 @@ describe('toolModePolicy', () => {
     expect(policy.allowedToolIds.includes('write')).toBe(true);
     expect(policy.allowedToolIds.includes('edit')).toBe(true);
     expect(policy.allowedToolIds.includes('git_status')).toBe(true);
+    expect(policy.allowedToolIds.includes('create_plan')).toBe(true);
+    expect(policy.allowedToolIds.includes('list_plans')).toBe(true);
+    expect(policy.allowedToolIds.includes('update_plan')).toBe(true);
+    expect(policy.allowedToolIds.includes('delete_plan')).toBe(true);
+    expect(policy.allowedToolIds.includes('get_strategy')).toBe(true);
+    expect(policy.allowedToolIds.includes('update_strategy')).toBe(true);
+    expect(policy.allowedToolIds.includes('delete_strategy')).toBe(true);
     expect(policy.allowedToolIds.includes('git_commit')).toBe(false);
     expect(policy.enforceMacroOnlyWrites).toBe(true);
   });
@@ -63,6 +70,10 @@ describe('toolModePolicy', () => {
     expect(isMacroScopedPath('.macro')).toBe(true);
     expect(isMacroScopedPath('.macro/branches/main/plan.md')).toBe(true);
     expect(isMacroScopedPath('./.macro/branches/main/plan.md')).toBe(true);
+    expect(isMacroScopedPath('.macro/../src/App.tsx')).toBe(false);
+    expect(isMacroScopedPath('.macro/../../etc/passwd')).toBe(false);
+    expect(isMacroScopedPath('/.macro/branches/main/plan.md')).toBe(false);
+    expect(isMacroScopedPath('C:/repo/.macro/branches/main/plan.md')).toBe(false);
     expect(isMacroScopedPath('src/App.tsx')).toBe(false);
   });
 });

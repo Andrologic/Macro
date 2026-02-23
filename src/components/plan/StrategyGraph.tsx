@@ -86,12 +86,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       nodes = planNodes;
     }
 
-    // Fallback: if filtering yielded nothing but planNodes exist globally, show them all
-    if (nodes.length === 0 && planNodes.length > 0) {
-      console.warn('[StrategyGraph] No nodes matched current project filter, showing all', planNodes.length, 'nodes');
-      nodes = planNodes;
-    }
-
     if (nodes.length === 0) return { nodes: [], edges: [], width: 0, height: 0, branches: [], laneHeaders: [], colWidth: 140, effectiveLeftPadding: 0 };
 
     // Calculate Ranks (Y-axis) based on dependency depth
@@ -247,15 +241,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     };
   }, [selectedGroupId, selectedProjectId, projectGroups, planNodes, containerWidth]);
 
-  console.log('[StrategyGraph Render]', {
-    containerWidth,
-    viewMode,
-    planNodesCount: planNodes.length,
-    layoutNodesCount: layoutData.nodes.length,
-    selectedProjectId,
-    selectedGroupId
-  });
-
   const getStatusIconName = (status: PlanNodeStatus) => {
     switch (status) {
       case 'completed': return 'check';
@@ -274,13 +259,21 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     if (!selectedProjectId && !selectedGroupId) {
       return (
         <aside
-          className={cn("h-full w-full bg-card border-l border-border flex items-center justify-center", className)}
+          className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
         >
-          <div className="text-center px-6">
-            <Icon name="git-branch" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
-            <p className="text-muted-foreground text-sm">
-              {t('architect.selectProject', 'Select a project to view the strategy')}
-            </p>
+          <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
+            <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Icon name="git-branch" size={16} className="text-primary" />
+              {t('architect.strategy', 'Strategy')}
+            </h1>
+          </div>
+          <div className="flex-1 text-center px-6 flex items-center justify-center">
+            <div>
+              <Icon name="git-branch" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
+              <p className="text-muted-foreground text-sm">
+                {t('architect.selectProject', 'Select a project to view the strategy')}
+              </p>
+            </div>
           </div>
         </aside>
       );
@@ -288,11 +281,17 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
     return (
       <aside className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}>
+        <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
+          <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <Icon name="git-branch" size={16} className="text-primary" />
+            {t('architect.strategy', 'Strategy')}
+          </h1>
+        </div>
         <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-6 text-center">
           <Icon name="git-merge" size={48} className="text-muted-foreground/30 mb-4" />
-          <h3 className="text-sm font-semibold text-foreground mb-1">No plan generated yet</h3>
+          <h3 className="text-sm font-semibold text-foreground mb-1">No strategy generated yet</h3>
           <p className="text-xs text-muted-foreground max-w-[250px] mb-6">
-            Generate a strategy graph based on your identified project needs.
+            Generate a strategy graph based on this plan's identified needs.
           </p>
           <button
             onClick={() => {
@@ -303,14 +302,14 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                 if (conversationId) {
                   chatStore.sendMessage({
                     conversationId,
-                    content: "Please generate a structured project plan for the current project using the `generate_plan` tool.",
+                    content: "Please generate a structured strategy for the active plan using the `generate_plan` tool.",
                   });
                 }
               }
             }}
             className="px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors rounded-lg flex items-center gap-2 text-sm font-medium shadow-sm hover:shadow"
           >
-            <Icon name="wand-2" size={16} />
+            <Icon name="sparkles" size={16} />
             {t('architect.generatePlan', 'Generate Plan')}
           </button>
         </div>

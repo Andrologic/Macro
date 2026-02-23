@@ -1,12 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { useTranslation } from 'react-i18next';
 import { loadPreference, savePreference, PREF_KEYS } from '../../../services/preferences';
 import { Icon } from '../../ui/Icon';
 import { cn } from '../../../utils/cn';
 
 export const PromptsView: React.FC = () => {
-    const { t } = useTranslation();
-
     const [architectPrompt, setArchitectPrompt] = useState('');
     const [implementPrompt, setImplementPrompt] = useState('');
     const [chatPrompt, setChatPrompt] = useState('');
@@ -47,7 +44,7 @@ export const PromptsView: React.FC = () => {
 
     const handleReset = async () => {
         // Basic defaults
-        setArchitectPrompt("You are the Architect. Your role is to explore the problem space, identify user needs, and generate a strategic plan. When you have enough needs, use the generate_plan tool.");
+        setArchitectPrompt("You are the Architect AI. Manage isolated plans in `.macro` metadata. Each plan has its own conversation, needs, and strategy. Follow Git Flow from develop. Use add_need and generate_plan for baseline strategy. Use get_strategy/update_strategy/delete_strategy for strategy changes. Use create_plan/list_plans/get_plan/update_plan/delete_plan/restore_plan/set_active_plan for plan management.");
         setImplementPrompt("You are the Implementer. Follow the tasks to implement the specific feature.");
         setChatPrompt("You are a helpful AI assistant.");
         setDebugPrompt("You are the Debugger. Use workspace tools to investigate and fix issues.");
@@ -99,7 +96,7 @@ export const PromptsView: React.FC = () => {
                         ) : saveSuccess ? (
                             <Icon name="check" size={14} />
                         ) : (
-                            <Icon name="save" size={14} />
+                            <Icon name="download" size={14} />
                         )}
                         {saveSuccess ? 'Saved' : 'Save Changes'}
                     </button>
