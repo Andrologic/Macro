@@ -560,7 +560,7 @@ const GENERATE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'generate_plan',
-    description: 'Generate a structured implementation plan based on the collected needs. This creates a list of tasks/features.',
+    description: 'Generate a structured implementation plan based on the collected needs. Maximize parallelism: group sequential tasks into separate branches (e.g. `feature/frontend`, `feature/backend`). Tasks within the same branch should execute sequentially by setting dependencies to the previous task in that branch.',
     parameters: {
       type: 'object',
       properties: {
@@ -572,9 +572,10 @@ const GENERATE_PLAN_TOOL = {
               title: { type: 'string' },
               description: { type: 'string' },
               type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+              assignedBranch: { type: 'string', description: 'The git branch name this task belongs to, e.g., "feature/cart-ui"' },
               dependencies: { type: 'array', items: { type: 'string' }, description: 'Titles of nodes this one depends on.' },
             },
-            required: ['title', 'type'],
+            required: ['title', 'type', 'assignedBranch'],
           },
           description: 'List of plan nodes representing the tasks to be done.',
         },
