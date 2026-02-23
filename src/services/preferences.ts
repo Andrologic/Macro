@@ -36,6 +36,10 @@ export const PREF_KEYS = {
   RECENT_PROJECTS: "recentProjects",
   MACRO_ENABLED_PROJECTS: "macroEnabledProjects",
   AI_CONTEXT_SELECTIONS: "aiContextSelections",
+  PROMPT_ARCHITECT: "promptArchitect",
+  PROMPT_IMPLEMENT: "promptImplement",
+  PROMPT_CHAT: "promptChat",
+  PROMPT_DEBUG: "promptDebug",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -68,6 +72,10 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
     modeSelections: {},
     conversationSelections: {},
   },
+  [PREF_KEYS.PROMPT_ARCHITECT]: "You are the Architect. Your role is to explore the problem space, identify user needs, and generate a strategic plan. You operate in an autonomous loop: you must call tools iteratively to gather context, use `add_need` to build a list of requirements, and finally use `generate_plan` to finalize the architecture. Do not stop calling tools until your plan is completely generated or you absolutely need to ask the user a question.",
+  [PREF_KEYS.PROMPT_IMPLEMENT]: "You are the Implementer. Follow the tasks to implement the specific feature.",
+  [PREF_KEYS.PROMPT_CHAT]: "You are a helpful AI assistant.",
+  [PREF_KEYS.PROMPT_DEBUG]: "You are the Debugger. Use workspace tools to investigate and fix issues.",
 };
 
 // Store instance (singleton)

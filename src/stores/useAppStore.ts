@@ -10,7 +10,7 @@ import {
 import * as tauriIpc from '../services/tauriIpc';
 
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
-export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools' | 'shortcuts';
+export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools' | 'shortcuts' | 'prompts';
 export type UiZoomMode = 'auto' | 'override';
 
 interface RememberedProject {
@@ -588,20 +588,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
         projectGroups: nextProjectGroups,
         targetGroupId,
       } = hasSyncedProject
-        ? {
+          ? {
             projectGroups: syncedGroups,
             targetGroupId: groupForProject?.id ?? data.groupId ?? `group_${Date.now()}`,
           }
-        : insertProjectInGroups(state.projectGroups, newProject, data.groupId);
+          : insertProjectInGroups(state.projectGroups, newProject, data.groupId);
 
       const rememberedProject: RememberedProject | null = targetGroupId
         ? {
-            projectId: newProject.id,
-            groupId: targetGroupId,
-            name: newProject.name,
-            path: newProject.path,
-            lastOpenedAt: new Date().toISOString(),
-          }
+          projectId: newProject.id,
+          groupId: targetGroupId,
+          name: newProject.name,
+          path: newProject.path,
+          lastOpenedAt: new Date().toISOString(),
+        }
         : null;
 
       const nextRecentProjects = rememberedProject
@@ -615,11 +615,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         ? plan
         : state.currentPlan
           ? {
-              ...state.currentPlan,
-              project_ids: state.currentPlan.project_ids.includes(newProject.id)
-                ? state.currentPlan.project_ids
-                : [...state.currentPlan.project_ids, newProject.id],
-            }
+            ...state.currentPlan,
+            project_ids: state.currentPlan.project_ids.includes(newProject.id)
+              ? state.currentPlan.project_ids
+              : [...state.currentPlan.project_ids, newProject.id],
+          }
           : state.currentPlan;
 
       set({

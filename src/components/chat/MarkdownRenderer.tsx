@@ -87,10 +87,10 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
         onClick={() => setIsOpen(!isOpen)}
         className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-primary/10 transition-colors"
       >
-        <Icon 
-          name={isOpen ? 'chevron-down' : 'chevron-right'} 
-          size={14} 
-          className="text-primary/80 shrink-0" 
+        <Icon
+          name={isOpen ? 'chevron-down' : 'chevron-right'}
+          size={14}
+          className="text-primary/80 shrink-0"
         />
         <span className="text-xs font-medium text-primary/80">
           Thinking...
@@ -101,7 +101,7 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
           </span>
         )}
       </button>
-      
+
       {/* Content - collapsible */}
       {isOpen && (
         <div className="px-3 pb-3 pt-1 border-t border-primary/10">
@@ -196,8 +196,8 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ content, language = 'text', block
           onClick={handleCopy}
           className={cn(
             "flex items-center gap-1.5 text-xs transition-all duration-200",
-            copied 
-              ? "text-green-500" 
+            copied
+              ? "text-green-500"
               : "text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100"
           )}
         >
@@ -205,10 +205,10 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ content, language = 'text', block
           {copied ? 'Copied!' : 'Copy'}
         </button>
       </div>
-      
+
       {/* Code Content */}
       <pre className="bg-[#1e1e1e] p-3 rounded-b-lg border border-border overflow-x-auto">
-        <code 
+        <code
           className="text-sm font-mono whitespace-pre hljs-code"
           dangerouslySetInnerHTML={{ __html: highlighted }}
         />
@@ -376,14 +376,38 @@ const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[]
 };
 
 const normalizeToolCallMarkup = (content: string): string => {
-  return content.replace(
+  // 1. Handle the old format: <tool_call> toolName <arg_value>...
+  let normalized = content.replace(
     /<tool_call>\s*([a-zA-Z0-9_-]+)\s*([\s\S]*?)<\/tool_call>/gi,
     (_full, toolName: string, body: string) => {
+      // If it looks like JSON, skip it for the next regex
+      if (body.trim().startsWith('{')) return _full;
+
       const argValueMatch = body.match(/<arg_value>\s*([\s\S]*?)\s*<\/arg_value>/i);
       const detail = argValueMatch?.[1]?.trim();
       return detail ? `\n[TOOL] ${toolName} ("${detail}")\n` : `\n[TOOL] ${toolName}\n`;
     }
   );
+
+  // 2. Handle the standard JSON format used by local models: <tool_call> {"name": "...", "arguments": {...}} </tool_call>
+  normalized = normalized.replace(
+    /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/gi,
+    (_full, jsonBody: string) => {
+      try {
+        const parsed = JSON.parse(jsonBody);
+        if (parsed.name) {
+          // You could stringify specific arguments you want to display, or just show the tool name
+          const detail = parsed.arguments?.title || parsed.arguments?.query || parsed.arguments?.path || '';
+          return detail ? `\n[TOOL] ${parsed.name} ("${detail}")\n` : `\n[TOOL] ${parsed.name}\n`;
+        }
+      } catch (e) {
+        // Ignore JSON parse errors and just hide it or show a generic fallback
+      }
+      return `\n[TOOL] unknown\n`;
+    }
+  );
+
+  return normalized;
 };
 
 // =============================================================================

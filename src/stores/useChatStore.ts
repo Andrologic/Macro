@@ -10,6 +10,7 @@ import { useAppStore } from './useAppStore';
 import { getToolModePolicy } from '../services/toolModePolicy';
 import { executeWorkspaceTool } from '../services/workspaceToolExecutor';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
+import { useNeedsStore } from './useNeedsStore';
 import * as tauriIpc from '../services/tauriIpc';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
@@ -330,9 +331,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       },
       conversationSelections: conversationId
         ? {
-            ...aiSelections.conversationSelections,
-            [conversationId]: selection,
-          }
+          ...aiSelections.conversationSelections,
+          [conversationId]: selection,
+        }
         : aiSelections.conversationSelections,
     };
     persistAiSelections();
@@ -627,6 +628,54 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Unsupported action for edit_source_passage: ${action}`;
     }
 
+    if (toolName === 'add_need') {
+      const { title, description, category, priority, tags } = args as any;
+      if (!title || !description || !category || !priority) {
+        return 'Missing required fields for add_need (title, description, category, priority).';
+      }
+
+      const id = useNeedsStore.getState().addNeed({
+        title,
+        description,
+        category,
+        priority,
+        tags: Array.isArray(tags) ? tags : [],
+        status: 'identified',
+        sourceMessageId: assistantMessageId,
+      });
+
+      return `Successfully added need: "${title}" (ID: ${id}).`;
+    }
+
+    if (toolName === 'generate_plan') {
+      const nodes = Array.isArray(args.nodes) ? args.nodes : [];
+      if (nodes.length === 0) {
+        return 'No nodes provided for the plan.';
+      }
+
+      const planNodes = nodes.map((n: any, i) => ({
+        id: `node-${Date.now()}-${i}`,
+        title: n.title,
+        description: n.description || '',
+        type: n.type || 'task',
+        status: 'pending',
+        dependencies: Array.isArray(n.dependencies) ? n.dependencies : [], // These are titles right now, need to be generic
+      }));
+
+      // A simple heuristic to resolve dependencies by title
+      planNodes.forEach((node: any) => {
+        if (node.dependencies.length > 0) {
+          node.dependencies = node.dependencies.map((depTitle: string) => {
+            const depNode = planNodes.find((n: any) => n.title === depTitle);
+            return depNode ? depNode.id : depTitle;
+          });
+        }
+      });
+
+      useAppStore.getState().setPlanNodes(planNodes);
+      return `Successfully generated a plan with ${nodes.length} nodes.`;
+    }
+
     if (
       toolName === 'list' ||
       toolName === 'read' ||
@@ -648,7 +697,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   };
 
-  const prepareMessagesForRequest = (
+  const prepareMessagesForRequest = async (
     conversationId: string,
     allowedToolIds: string[],
     messageWithImagesId?: string
@@ -681,7 +730,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             return `[${kind} ${i + 1}: ${c.title}]\n${c.snippet || c.source || ''}`;
           })
           .join('\n\n---\n\n');
-        
+
         messageContent = `CONTEXT INFORMATION:\n\n${contextBlock}\n\nUSER REQUEST: ${message.content}`;
       }
 
@@ -734,6 +783,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
         'If filename is ambiguous (example: "readme"), list the directory first and then read the exact matched filename (example: README.md). ' +
         'If a read fails, report the exact tool error and ask for a precise path. Never invent file content or project paths.'
       );
+    }
+
+    const appMode = useAppStore.getState().mode;
+    let modePrompt = '';
+
+    switch (appMode) {
+      case 'Architect':
+        modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_ARCHITECT);
+        break;
+      case 'Implement':
+        modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_IMPLEMENT);
+        break;
+      case 'Chat':
+        modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_CHAT);
+        break;
+      case 'Debug':
+        modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_DEBUG);
+        break;
+    }
+
+    if (modePrompt) {
+      systemInstructions.unshift(modePrompt);
     }
 
     return [
@@ -842,11 +913,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       conversations: state.conversations.map((conversation) =>
         conversation.id === conversationId
           ? {
-              ...conversation,
-              title: metadata.title,
-              description: metadata.description,
-              updated_at: new Date().toISOString(),
-            }
+            ...conversation,
+            title: metadata.title,
+            description: metadata.description,
+            updated_at: new Date().toISOString(),
+          }
           : conversation
       ),
     }));
@@ -874,8 +945,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         apiKey,
         modelId,
         messages: prepareMetadataMessages(firstUserContent),
-        onComplete: () => {},
-        onError: () => {},
+        onComplete: () => { },
+        onError: () => { },
       });
 
       let metadata: { title: string; description: string };
@@ -935,12 +1006,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const conversations = state.conversations.map((conv) =>
           conv.id === message.conversation_id
             ? {
-                ...conv,
-                last_message: message.content,
-                message_count: conv.message_count + 1,
-                updated_at: new Date().toISOString(),
-                is_unread: message.role === 'assistant' ? true : conv.is_unread,
-              }
+              ...conv,
+              last_message: message.content,
+              message_count: conv.message_count + 1,
+              updated_at: new Date().toISOString(),
+              is_unread: message.role === 'assistant' ? true : conv.is_unread,
+            }
             : conv
         );
         return {
@@ -1305,7 +1376,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         nextByMode[appState.mode] =
           newSelectedId &&
-          newConversations.some((conversation) => conversation.id === newSelectedId)
+            newConversations.some((conversation) => conversation.id === newSelectedId)
             ? newSelectedId
             : fallbackForCurrentMode;
 
@@ -1409,7 +1480,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       const allowedToolIds = getAllowedToolIdsForCurrentMode();
       const showToolTraces = useAppStore.getState().mode === 'Debug';
-      const messagesForRequest = prepareMessagesForRequest(
+      const messagesForRequest = await prepareMessagesForRequest(
         conversationId,
         allowedToolIds,
         userMessage.id
@@ -1436,7 +1507,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       };
 
       get().addMessage(assistantMessage);
-      
+
       const abortController = new AbortController();
       set({ isLoading: true, isStreaming: true, abortController });
       const tokenBatcher = createTokenBatcher((tokenChunk) => {
@@ -1463,15 +1534,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
           onComplete: (fullContent) => {
             tokenBatcher.flushNow();
+            get().updateMessageContent(assistantMessage.id, fullContent);
+
             // Update conversation metadata
             set((state) => {
               const conversations = state.conversations.map((conv) =>
                 conv.id === conversationId
                   ? {
-                      ...conv,
-                      last_message: fullContent.slice(0, 100) + (fullContent.length > 100 ? '...' : ''),
-                      updated_at: new Date().toISOString(),
-                    }
+                    ...conv,
+                    last_message: fullContent.slice(0, 100) + (fullContent.length > 100 ? '...' : ''),
+                    updated_at: new Date().toISOString(),
+                  }
                   : conv
               );
               return { conversations, isLoading: false, isStreaming: false, abortController: null };
@@ -1606,7 +1679,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       const allowedToolIds = getAllowedToolIdsForCurrentMode();
       const showToolTraces = useAppStore.getState().mode === 'Debug';
-      const messagesForRequest = prepareMessagesForRequest(
+      const messagesForRequest = await prepareMessagesForRequest(
         conversationId,
         allowedToolIds,
         messageId
@@ -1633,7 +1706,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       };
 
       get().addMessage(assistantMessage);
-      
+
       const abortController = new AbortController();
       set({ isLoading: true, isStreaming: true, abortController });
       const tokenBatcher = createTokenBatcher((tokenChunk) => {
@@ -1660,14 +1733,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
           onComplete: (fullContent) => {
             tokenBatcher.flushNow();
+            get().updateMessageContent(assistantMessage.id, fullContent);
+
             set((state) => {
               const conversations = state.conversations.map((conv) =>
                 conv.id === conversationId
                   ? {
-                      ...conv,
-                      last_message: fullContent.slice(0, 100) + (fullContent.length > 100 ? '...' : ''),
-                      updated_at: new Date().toISOString(),
-                    }
+                    ...conv,
+                    last_message: fullContent.slice(0, 100) + (fullContent.length > 100 ? '...' : ''),
+                    updated_at: new Date().toISOString(),
+                  }
                   : conv
               );
               return { conversations, isLoading: false, isStreaming: false, abortController: null };
