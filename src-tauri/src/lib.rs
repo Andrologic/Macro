@@ -135,6 +135,8 @@ pub fn run() {
             commands::git::git_stash,
             commands::git::git_diff,
             commands::git::git_get_tree,
+            commands::git::git_worktree_create,
+            commands::git::git_worktree_remove,
             commands::db_list_provider_models,
             commands::db_upsert_provider_models,
             commands::db_set_provider_model_enabled,

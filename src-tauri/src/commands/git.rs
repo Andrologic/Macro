@@ -1337,6 +1337,56 @@ pub async fn git_get_tree(
 	.map_err(to_join_error)?
 }
 
+#[tauri::command]
+/// Create a Git worktree for a specific task.
+pub async fn git_worktree_create(
+	workspace_root: State<'_, WorkspaceRoot>,
+	git_state: State<'_, GitState>,
+	repo_path: String,
+	task_id: String,
+	branch_name: String,
+) -> Result<String> {
+	let workspace = workspace_root.inner().read().await.clone();
+	let git_state = git_state.inner().clone();
+
+	tokio::task::spawn_blocking(move || {
+		let validated = validate_repo_path(&repo_path, &workspace)?;
+		let repo = git_state.open_repo(&validated)?;
+		let repo = repo.lock().map_err(|_| BackendError::Internal {
+			message: "Failed to lock repository".to_string(),
+		})?;
+
+		let worktree_path = git_state.ensure_task_worktree(&repo, &task_id, &branch_name)?;
+		Ok(worktree_path.to_string_lossy().into_owned())
+	})
+	.await
+	.map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Remove a Git worktree for a specific task.
+pub async fn git_worktree_remove(
+	workspace_root: State<'_, WorkspaceRoot>,
+	git_state: State<'_, GitState>,
+	repo_path: String,
+	task_id: String,
+) -> Result<()> {
+	let workspace = workspace_root.inner().read().await.clone();
+	let git_state = git_state.inner().clone();
+
+	tokio::task::spawn_blocking(move || {
+		let validated = validate_repo_path(&repo_path, &workspace)?;
+		let repo = git_state.open_repo(&validated)?;
+		let repo = repo.lock().map_err(|_| BackendError::Internal {
+			message: "Failed to lock repository".to_string(),
+		})?;
+
+		git_state.remove_task_worktree(&repo, &task_id)
+	})
+	.await
+	.map_err(to_join_error)?
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

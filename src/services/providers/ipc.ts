@@ -81,6 +81,34 @@ export const getGitTreeForProject = async (projectId: string): Promise<GitTreeDt
   return { tree };
 };
 
+export const gitWorktreeCreate = async (
+  projectId: string,
+  taskId: string,
+  branchName: string
+): Promise<string> => {
+  const project = useAppStore.getState().getProjectById(projectId);
+  if (!project) throw { code: 'PROJECT_NOT_FOUND', message: `Unknown project: ${projectId}` };
+
+  return tauriIpc.gitWorktreeCreate({
+    repoPath: project.path,
+    taskId,
+    branchName,
+  });
+};
+
+export const gitWorktreeRemove = async (
+  projectId: string,
+  taskId: string
+): Promise<void> => {
+  const project = useAppStore.getState().getProjectById(projectId);
+  if (!project) throw { code: 'PROJECT_NOT_FOUND', message: `Unknown project: ${projectId}` };
+
+  return tauriIpc.gitWorktreeRemove({
+    repoPath: project.path,
+    taskId,
+  });
+};
+
 export const getFileContent = async (path: string): Promise<FileContentDto> => {
   const file = await tauriIpc.fsReadFile(path);
   return {
