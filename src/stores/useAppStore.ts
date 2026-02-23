@@ -224,6 +224,7 @@ interface AppStore {
   recentProjects: RememberedProject[];
   macroEnabledProjects: RememberedProject[];
   // Architect mode state
+  activeArchitectPlanId: string | null;
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
   setMode: (mode: AppMode) => void;
@@ -246,6 +247,7 @@ interface AppStore {
   setUiZoomLevel: (level: number) => void;
   setPlanNodes: (nodes: PlanNode[]) => void;
   setPredictedBranches: (branches: PredictedBranch[]) => void;
+  setActiveArchitectPlanId: (planId: string | null) => void;
   openSettings: (tab?: SettingsTab) => void;
   closeSettings: () => void;
   setSettingsTab: (tab: SettingsTab) => void;
@@ -316,6 +318,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   uiZoomLevel: 1,
   recentProjects: [],
   macroEnabledProjects: [],
+  activeArchitectPlanId: null,
   planNodes: [],
   predictedBranches: [],
 
@@ -415,6 +418,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setPlanNodes: (nodes) => set({ planNodes: nodes }),
 
   setPredictedBranches: (branches) => set({ predictedBranches: branches }),
+
+  setActiveArchitectPlanId: (planId) => set({ activeArchitectPlanId: planId }),
 
   setTaskSortOption: (option) => set({ taskSortOption: option }),
 

@@ -70,6 +70,7 @@ export type NeedCategory = 'functional' | 'technical' | 'ux' | 'security' | 'oth
 
 export interface Need {
   id: string;
+  planId?: string;
   title: string;
   description: string;
   category: NeedCategory;

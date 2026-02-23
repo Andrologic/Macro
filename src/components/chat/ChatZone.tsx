@@ -13,6 +13,7 @@ import { MarkdownRenderer, estimateTokens, formatTokenCount } from './MarkdownRe
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
+import { PlanSelector } from '../architect/PlanSelector';
 
 /**
  * ChatZone - Main chat interface used across all modes
@@ -50,12 +51,13 @@ const ChatZone: React.FC = () => {
   // Ensure mode-scoped conversation is selected (or created when required)
   useEffect(() => {
     if (isLoading) return;
+    if (mode === 'Architect' && selectedConversationId) return;
     void ensureConversationForCurrentMode();
   }, [
     mode,
     selectedProjectId,
     selectedTaskId,
-    conversations,
+    selectedConversationId,
     isLoading,
     ensureConversationForCurrentMode,
   ]);
@@ -146,6 +148,35 @@ const ChatZone: React.FC = () => {
     isStreaming,
     [currentMessages],
   );
+
+  const previousConversationIdRef = useRef<string | null>(null);
+  const pendingConversationJumpRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (selectedConversationId && selectedConversationId !== previousConversationIdRef.current) {
+      pendingConversationJumpRef.current = selectedConversationId;
+    }
+    previousConversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
+
+  useEffect(() => {
+    const pendingConversationId = pendingConversationJumpRef.current;
+    if (!pendingConversationId || pendingConversationId !== selectedConversationId) return;
+
+    const jumpToBottom = () => {
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      container.scrollTo({ top: container.scrollHeight, behavior: 'auto' });
+    };
+
+    requestAnimationFrame(() => {
+      jumpToBottom();
+      requestAnimationFrame(() => {
+        jumpToBottom();
+        pendingConversationJumpRef.current = null;
+      });
+    });
+  }, [selectedConversationId, currentMessages.length, scrollContainerRef]);
 
 
   const ensureConversation = async () => {
@@ -426,6 +457,7 @@ const ChatZone: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            {mode === 'Architect' && <PlanSelector />}
             {mode === 'Debug' && (
               <button
                 onClick={() => void handleDebugRefresh()}
