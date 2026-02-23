@@ -7,6 +7,7 @@ import {
   savePreference,
   PREF_KEYS,
 } from '../services/preferences';
+import * as tauriIpc from '../services/tauriIpc';
 
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
 export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools' | 'shortcuts';
@@ -67,6 +68,15 @@ const insertProjectInGroups = (
 
 const normalizePath = (value: string): string => value.replace(/\\/g, '/').replace(/\/$/, '');
 
+const syncBackendWorkspaceRoot = async (projectPath?: string | null): Promise<void> => {
+  if (!projectPath || !tauriIpc.isTauriAvailable()) return;
+  try {
+    await tauriIpc.workspaceSetActiveRoot(projectPath);
+  } catch {
+    // Keep UI responsive even if backend root update fails.
+  }
+};
+
 const projectNameFromPath = (path: string): string => {
   const normalized = normalizePath(path);
   const parts = normalized.split('/').filter(Boolean);
@@ -78,18 +88,37 @@ const isLegacyWorkspaceMockPath = (path?: string): boolean => {
   return normalized.startsWith('/path/to/');
 };
 
+const isImplicitWorkspaceRootPath = (path?: string): boolean => {
+  const normalized = (path || '').trim().replace(/\\/g, '/');
+  return normalized === '.' || normalized === './';
+};
+
+const shouldPersistProjectPath = (path?: string | null): boolean => {
+  if (!path) return false;
+  return !isImplicitWorkspaceRootPath(path);
+};
+
 const pruneLegacyWorkspaceMocks = (groups: ProjectGroup[]): ProjectGroup[] => {
   return groups
     .map((group) => ({
       ...group,
-      projects: group.projects.filter((project) => !isLegacyWorkspaceMockPath(project.path)),
+      projects: group.projects.filter(
+        (project) =>
+          !isLegacyWorkspaceMockPath(project.path) &&
+          !isImplicitWorkspaceRootPath(project.path)
+      ),
     }))
     .filter((group) => group.projects.length > 0);
 };
 
 const pruneLegacyRememberedProjects = (
   projects: RememberedProject[]
-): RememberedProject[] => projects.filter((project) => !isLegacyWorkspaceMockPath(project.path));
+): RememberedProject[] =>
+  projects.filter(
+    (project) =>
+      !isLegacyWorkspaceMockPath(project.path) &&
+      !isImplicitWorkspaceRootPath(project.path)
+  );
 
 const mergeRememberedProjectsIntoGroups = (
   groups: ProjectGroup[],
@@ -276,7 +305,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   activeSettingsTab: 'general',
   accountOpen: false,
   projectModalOpen: false,
-  activeThemeId: localStorage.getItem('theme-id') || 'macro-dark',
+  activeThemeId:
+    (typeof window !== 'undefined' ? window.localStorage.getItem('theme-id') : null) || 'macro-dark',
   leftPanelWidth: 280,
   rightPanelWidth: 320,
   isLeftPanelOpen: true,
@@ -294,7 +324,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     void savePreference(PREF_KEYS.LAST_ACTIVE_MODE, mode);
   },
   setTheme: (themeId) => {
-    localStorage.setItem('theme-id', themeId);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('theme-id', themeId);
+    }
     set({ activeThemeId: themeId });
   },
 
@@ -303,8 +335,22 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setProjectGroups: (groups) => set({ projectGroups: groups }),
 
   setSelectedGroup: (groupId) => {
-    set({ selectedGroupId: groupId, selectedProjectId: null });
+    const state = get();
+    const selectedGroup = state.projectGroups.find((group) => group.id === groupId);
+    const nextProjectId = selectedGroup?.projects[0]?.id ?? null;
+    const nextProjectPath = selectedGroup?.projects[0]?.path ?? null;
+
+    set({ selectedGroupId: groupId, selectedProjectId: nextProjectId });
     void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, groupId);
+    void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, nextProjectId);
+    if (nextProjectPath) {
+      if (shouldPersistProjectPath(nextProjectPath)) {
+        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, nextProjectPath);
+        void syncBackendWorkspaceRoot(nextProjectPath);
+      } else {
+        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+      }
+    }
   },
 
   setSelectedProject: (projectId) => {
@@ -340,7 +386,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
           void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
           void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
-          void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, matchingProject.path);
+          if (shouldPersistProjectPath(matchingProject.path)) {
+            void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, matchingProject.path);
+            void syncBackendWorkspaceRoot(matchingProject.path);
+          } else {
+            void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+          }
         }
       }
     }
@@ -583,7 +634,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, targetGroupId);
       void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, newProject.id);
-      void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, newProject.path);
+      if (shouldPersistProjectPath(newProject.path)) {
+        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, newProject.path);
+      } else {
+        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+      }
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
       void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
 
@@ -682,24 +737,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
       }
 
-      if (!resolvedGroupId) {
-        const firstValidRecent = cleanedRecentProjects.find((recent) =>
-          resolvedProjectGroups.some((group) => group.projects.some((project) => project.path === recent.path))
-        );
+      const sanitizedLastOpenProjectPath = shouldPersistProjectPath(lastOpenProjectPath)
+        ? lastOpenProjectPath
+        : null;
 
-        if (firstValidRecent) {
-          const groupForRecent = resolvedProjectGroups.find((group) =>
-            group.projects.some((project) => project.path === firstValidRecent.path)
-          );
-          const projectForRecent = groupForRecent?.projects.find((project) => project.path === firstValidRecent.path);
-
-          resolvedGroupId = groupForRecent?.id ?? null;
-          resolvedProjectId = projectForRecent?.id ?? null;
-        }
+      if (!sanitizedLastOpenProjectPath && lastOpenProjectPath) {
+        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
       }
 
-      if (!resolvedProjectId && lastOpenProjectPath) {
-        const normalizedLastPath = normalizePath(lastOpenProjectPath);
+      if (!resolvedProjectId && sanitizedLastOpenProjectPath) {
+        const normalizedLastPath = normalizePath(sanitizedLastOpenProjectPath);
         const groupForPath = resolvedProjectGroups.find((group) =>
           group.projects.some((project) => normalizePath(project.path) === normalizedLastPath)
         );
@@ -744,6 +791,22 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
 
       if (!resolvedGroupId) {
+        const firstValidRecent = cleanedRecentProjects.find((recent) =>
+          resolvedProjectGroups.some((group) => group.projects.some((project) => project.path === recent.path))
+        );
+
+        if (firstValidRecent) {
+          const groupForRecent = resolvedProjectGroups.find((group) =>
+            group.projects.some((project) => project.path === firstValidRecent.path)
+          );
+          const projectForRecent = groupForRecent?.projects.find((project) => project.path === firstValidRecent.path);
+
+          resolvedGroupId = groupForRecent?.id ?? null;
+          resolvedProjectId = projectForRecent?.id ?? null;
+        }
+      }
+
+      if (!resolvedGroupId) {
         resolvedGroupId = resolvedProjectGroups[0]?.id ?? null;
       }
 
@@ -774,6 +837,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         uiZoomLevel: normalizedZoomLevel,
         isLoading: false,
       });
+
+      if (resolvedProjectId) {
+        const selectedGroup = resolvedProjectGroups.find((group) => group.id === resolvedGroupId);
+        const selectedProject = selectedGroup?.projects.find((project) => project.id === resolvedProjectId);
+        if (selectedProject?.path && shouldPersistProjectPath(selectedProject.path)) {
+          void syncBackendWorkspaceRoot(selectedProject.path);
+        }
+      }
 
       void savePreference(PREF_KEYS.RECENT_PROJECTS, cleanedRecentProjects);
       void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, cleanedMacroEnabledProjects);

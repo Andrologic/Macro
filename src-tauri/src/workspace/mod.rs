@@ -15,7 +15,7 @@ const WORKSPACE_META_DIR: &str = ".macro";
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
 
 pub async fn get_bootstrap(workspace_path: &PathBuf) -> Result<WorkspaceBootstrapDto> {
-	let state = load_or_create_state(workspace_path).await?;
+	let state = load_or_default_state(workspace_path).await?;
 	Ok(WorkspaceBootstrapDto {
 		plan: state.current_plan,
 		project_groups: state.project_groups,
@@ -25,12 +25,12 @@ pub async fn get_bootstrap(workspace_path: &PathBuf) -> Result<WorkspaceBootstra
 }
 
 pub async fn list_projects(workspace_path: &PathBuf) -> Result<Vec<ProjectGroupDto>> {
-	let state = load_or_create_state(workspace_path).await?;
+	let state = load_or_default_state(workspace_path).await?;
 	Ok(state.project_groups)
 }
 
 pub async fn list_tasks(workspace_path: &PathBuf) -> Result<Vec<Value>> {
-	let state = load_or_create_state(workspace_path).await?;
+	let state = load_or_default_state(workspace_path).await?;
 	Ok(state
 		.current_plan
 		.map(|plan| plan.tasks)
@@ -38,7 +38,7 @@ pub async fn list_tasks(workspace_path: &PathBuf) -> Result<Vec<Value>> {
 }
 
 pub async fn get_metadata(workspace_path: &PathBuf) -> Result<WorkspaceMetadataDto> {
-	let state = load_or_create_state(workspace_path).await?;
+	let state = load_or_default_state(workspace_path).await?;
 	let metadata_path = workspace_state_path(workspace_path);
 	let project_count = state
 		.project_groups
@@ -250,26 +250,42 @@ fn workspace_state_path(workspace_path: &Path) -> PathBuf {
 }
 
 async fn load_or_create_state(workspace_path: &PathBuf) -> Result<WorkspaceState> {
-	let path = workspace_state_path(workspace_path);
-
-	if path.exists() {
-		let content = fs::read_to_string(&path)
-			.await
-			.map_err(|error| BackendError::Filesystem {
-				message: format!("Failed to read workspace state: {}", error),
-			})?;
-
-		let state: WorkspaceState =
-			serde_json::from_str(&content).map_err(|error| BackendError::Validation(format!(
-				"Invalid workspace state format: {}",
-				error
-			)))?;
+	if let Some(state) = load_state(workspace_path).await? {
 		return Ok(state);
 	}
 
-	let state = default_state(workspace_path)?;
+	let state = WorkspaceState::default();
 	persist_state(workspace_path, &state).await?;
 	Ok(state)
+}
+
+async fn load_or_default_state(workspace_path: &PathBuf) -> Result<WorkspaceState> {
+	if let Some(state) = load_state(workspace_path).await? {
+		return Ok(state);
+	}
+
+	Ok(WorkspaceState::default())
+}
+
+async fn load_state(workspace_path: &PathBuf) -> Result<Option<WorkspaceState>> {
+	let path = workspace_state_path(workspace_path);
+
+	if !path.exists() {
+		return Ok(None);
+	}
+
+	let content = fs::read_to_string(&path)
+		.await
+		.map_err(|error| BackendError::Filesystem {
+			message: format!("Failed to read workspace state: {}", error),
+		})?;
+
+	let state: WorkspaceState =
+		serde_json::from_str(&content).map_err(|error| BackendError::Validation(format!(
+			"Invalid workspace state format: {}",
+			error
+		)))?;
+	Ok(Some(state))
 }
 
 async fn persist_state(workspace_path: &PathBuf, state: &WorkspaceState) -> Result<()> {
@@ -292,57 +308,6 @@ async fn persist_state(workspace_path: &PathBuf, state: &WorkspaceState) -> Resu
 		})?;
 
 	Ok(())
-}
-
-fn default_state(workspace_path: &PathBuf) -> Result<WorkspaceState> {
-	let now = Utc::now().to_rfc3339();
-	let workspace_name = workspace_path
-		.file_name()
-		.and_then(|part| part.to_str())
-		.unwrap_or("workspace")
-		.to_string();
-
-	let project_id = format!("project-{}", slugify(&workspace_name));
-	let group_id = "group-main".to_string();
-
-	let project = ProjectDto {
-		id: project_id.clone(),
-		name: workspace_name.clone(),
-		path: ".".to_string(),
-		created_at: now.clone(),
-		status: "active".to_string(),
-		metadata: ProjectMetadataDto {
-			description: format!("Primary workspace project for {}", workspace_name),
-			tags: Vec::new(),
-			team_members: Vec::new(),
-			api_contracts: Vec::new(),
-			dependencies: Vec::new(),
-		},
-	};
-
-	let group = ProjectGroupDto {
-		id: group_id,
-		name: "Workspace".to_string(),
-		is_open: true,
-		projects: vec![project.clone()],
-	};
-
-	let plan = PlanDto {
-		id: "plan-main".to_string(),
-		description: "Workspace execution plan".to_string(),
-		created_at: now.clone(),
-		updated_at: now,
-		status: "Draft".to_string(),
-		project_ids: vec![project_id],
-		tasks: Vec::new(),
-		predicted_git_trees: HashMap::new(),
-	};
-
-	Ok(WorkspaceState {
-		project_groups: vec![group],
-		current_plan: Some(plan),
-		..WorkspaceState::default()
-	})
 }
 
 fn build_project(name: &str, description: &str, path: Option<&str>, workspace_path: &PathBuf) -> ProjectDto {

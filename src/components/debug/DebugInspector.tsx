@@ -4,6 +4,7 @@ import { cn } from '../../utils/cn';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useProviderStore } from '../../stores/useProviderStore';
+import * as tauriIpc from '../../services/tauriIpc';
 
 type DebugEventType = 'tool' | 'tool_done' | 'error';
 
@@ -61,6 +62,7 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
   const isLoading = useChatStore((state) => state.isLoading);
   const chatLastError = useChatStore((state) => state.lastError);
   const eventsContainerRef = useRef<HTMLDivElement>(null);
+  const [backendWorkspaceRoot, setBackendWorkspaceRoot] = React.useState<string>('(unknown)');
 
   const selectedProviderId = useProviderStore((state) => state.selectedProviderId);
   const selectedModelId = useProviderStore((state) => state.selectedModelId);
@@ -145,6 +147,30 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
   );
 
   useEffect(() => {
+    let cancelled = false;
+
+    const loadActiveRoot = async () => {
+      if (!tauriIpc.isTauriAvailable()) {
+        if (!cancelled) setBackendWorkspaceRoot('(browser)');
+        return;
+      }
+
+      try {
+        const root = await tauriIpc.workspaceGetActiveRoot();
+        if (!cancelled) setBackendWorkspaceRoot(root || '(unknown)');
+      } catch {
+        if (!cancelled) setBackendWorkspaceRoot('(error)');
+      }
+    };
+
+    void loadActiveRoot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProject?.path, selectedConversationId, mode]);
+
+  useEffect(() => {
     if (!eventsContainerRef.current) return;
     eventsContainerRef.current.scrollTop = 0;
   }, [visibleDebugEvents.length]);
@@ -188,6 +214,11 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
           <div className="font-mono text-foreground truncate">
             {selectedProject?.path || '(none)'}
           </div>
+        </div>
+
+        <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
+          <div className="text-muted-foreground mb-0.5">Backend workspace root</div>
+          <div className="font-mono text-foreground truncate">{backendWorkspaceRoot}</div>
         </div>
 
         {chatLastError && (

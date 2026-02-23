@@ -4,7 +4,8 @@ import { isTauriAvailable } from './tauriIpc';
 
 export type DataProvider = 'mock' | 'ipc';
 
-const providerName = (import.meta.env.VITE_DATA_PROVIDER as DataProvider) ?? 'mock';
+const envProvider = import.meta.env.VITE_DATA_PROVIDER as DataProvider | undefined;
+const providerName: DataProvider = envProvider ?? (isTauriAvailable() ? 'ipc' : 'mock');
 
 const provider =
   providerName === 'ipc' && isTauriAvailable()
@@ -17,6 +18,8 @@ export const services = {
   listMessages: provider.listMessages,
   listTasks: provider.listTasks,
   getGitTreeForProject: provider.getGitTreeForProject,
+  gitWorktreeCreate: provider.gitWorktreeCreate,
+  gitWorktreeRemove: provider.gitWorktreeRemove,
   getFileContent: provider.getFileContent,
   listCommits: provider.listCommits,
   listProviders: provider.listProviders,

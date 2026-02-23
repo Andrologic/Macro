@@ -7,6 +7,7 @@ use crate::fs::dto::{DirEntryDto, FileContentDto, FileStatsDto, WriteResultDto};
 use crate::fs::{
     get_file_language, is_binary_file, normalize_path, validate_path, validate_path_for_write,
 };
+use crate::WorkspaceRoot;
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
@@ -104,10 +105,11 @@ pub async fn read_file_internal(
 
 #[tauri::command]
 pub async fn fs_read_file(
-    workspace: tauri::State<'_, PathBuf>,
+    workspace_root: tauri::State<'_, WorkspaceRoot>,
     path: String,
     allow_outside_workspace: Option<bool>,
 ) -> Result<FileContentDto, BackendError> {
+    let workspace = workspace_root.inner().read().await.clone();
     read_file_internal(&workspace, path, allow_outside_workspace).await
 }
 
@@ -199,12 +201,13 @@ pub async fn write_file_internal(
 
 #[tauri::command]
 pub async fn fs_write_file(
-    workspace: tauri::State<'_, PathBuf>,
+    workspace_root: tauri::State<'_, WorkspaceRoot>,
     path: String,
     content: String,
     create_dirs: Option<bool>,
     allow_outside_workspace: Option<bool>,
 ) -> Result<WriteResultDto, BackendError> {
+    let workspace = workspace_root.inner().read().await.clone();
     write_file_internal(&workspace, path, content, create_dirs, allow_outside_workspace).await
 }
 
@@ -397,13 +400,14 @@ async fn create_dir_entry_dto(
 
 #[tauri::command]
 pub async fn fs_list_dir(
-    workspace: tauri::State<'_, PathBuf>,
+    workspace_root: tauri::State<'_, WorkspaceRoot>,
     path: String,
     recursive: Option<bool>,
     include_hidden: Option<bool>,
     max_depth: Option<u32>,
     allow_outside_workspace: Option<bool>,
 ) -> Result<Vec<DirEntryDto>, BackendError> {
+    let workspace = workspace_root.inner().read().await.clone();
     list_dir_internal(
         &workspace,
         path,
@@ -530,17 +534,19 @@ fn format_permissions(metadata: &std::fs::Metadata) -> String {
 
 #[tauri::command]
 pub async fn fs_stat(
-    workspace: tauri::State<'_, PathBuf>,
+    workspace_root: tauri::State<'_, WorkspaceRoot>,
     path: String,
 ) -> Result<FileStatsDto, BackendError> {
+    let workspace = workspace_root.inner().read().await.clone();
     stat_internal(&workspace, path).await
 }
 
 #[tauri::command]
 pub async fn fs_exists(
-    workspace: tauri::State<'_, PathBuf>,
+    workspace_root: tauri::State<'_, WorkspaceRoot>,
     path: String,
 ) -> Result<bool, BackendError> {
+    let workspace = workspace_root.inner().read().await.clone();
     let path_buf = PathBuf::from(&path);
     
     // For exists, we validate the path format but allow non-existent files
@@ -560,10 +566,11 @@ pub async fn fs_exists(
 
 #[tauri::command]
 pub async fn fs_delete(
-    workspace: tauri::State<'_, PathBuf>,
+    workspace_root: tauri::State<'_, WorkspaceRoot>,
     path: String,
     recursive: Option<bool>,
 ) -> Result<(), BackendError> {
+    let workspace = workspace_root.inner().read().await.clone();
     let path_buf = PathBuf::from(&path);
     let validated_path = validate_path(&path_buf, &workspace)?;
 
@@ -602,10 +609,11 @@ pub async fn fs_delete(
 
 #[tauri::command]
 pub async fn fs_create_dir(
-    workspace: tauri::State<'_, PathBuf>,
+    workspace_root: tauri::State<'_, WorkspaceRoot>,
     path: String,
     recursive: Option<bool>,
 ) -> Result<(), BackendError> {
+    let workspace = workspace_root.inner().read().await.clone();
     let path_buf = PathBuf::from(&path);
     let validated_path = validate_path_for_write(&path_buf, &workspace)?;
 
@@ -625,10 +633,11 @@ pub async fn fs_create_dir(
 
 #[tauri::command]
 pub async fn fs_copy(
-    workspace: tauri::State<'_, PathBuf>,
+    workspace_root: tauri::State<'_, WorkspaceRoot>,
     src: String,
     dest: String,
 ) -> Result<u64, BackendError> {
+    let workspace = workspace_root.inner().read().await.clone();
     let src_path = PathBuf::from(&src);
     let dest_path = PathBuf::from(&dest);
 
@@ -662,10 +671,11 @@ pub async fn fs_copy(
 
 #[tauri::command]
 pub async fn fs_move(
-    workspace: tauri::State<'_, PathBuf>,
+    workspace_root: tauri::State<'_, WorkspaceRoot>,
     src: String,
     dest: String,
 ) -> Result<(), BackendError> {
+    let workspace = workspace_root.inner().read().await.clone();
     let src_path = PathBuf::from(&src);
     let dest_path = PathBuf::from(&dest);
 
@@ -791,7 +801,7 @@ mod tests {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = read_file_internal(&workspace_path, "sample.txt".to_string()).await;
+        let result = read_file_internal(&workspace_path, "sample.txt".to_string(), None).await;
 
         assert!(result.is_ok());
         let dto = result.unwrap();
@@ -807,7 +817,7 @@ mod tests {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = read_file_internal(&workspace_path, "main.rs".to_string()).await;
+        let result = read_file_internal(&workspace_path, "main.rs".to_string(), None).await;
 
         assert!(result.is_ok());
         let dto = result.unwrap();
@@ -821,7 +831,7 @@ mod tests {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = read_file_internal(&workspace_path, "script.js".to_string()).await;
+        let result = read_file_internal(&workspace_path, "script.js".to_string(), None).await;
 
         assert!(result.is_ok());
         let dto = result.unwrap();
@@ -835,7 +845,7 @@ mod tests {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = read_file_internal(&workspace_path, "subdir/nested.txt".to_string()).await;
+        let result = read_file_internal(&workspace_path, "subdir/nested.txt".to_string(), None).await;
 
         assert!(result.is_ok());
         let dto = result.unwrap();
@@ -848,7 +858,7 @@ mod tests {
         let workspace = setup_empty_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = read_file_internal(&workspace_path, "missing.txt".to_string()).await;
+        let result = read_file_internal(&workspace_path, "missing.txt".to_string(), None).await;
 
         assert!(matches!(result, Err(BackendError::FilesystemNotFound { .. })));
     }
@@ -868,6 +878,7 @@ mod tests {
         let result = read_file_internal(
             &workspace_path,
             outside_file.to_string_lossy().to_string(),
+            None,
         )
         .await;
 
@@ -882,7 +893,7 @@ mod tests {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = read_file_internal(&workspace_path, "subdir".to_string()).await;
+        let result = read_file_internal(&workspace_path, "subdir".to_string(), None).await;
 
         assert!(matches!(result, Err(BackendError::FilesystemIsDirectory { .. })));
     }
@@ -892,7 +903,7 @@ mod tests {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = read_file_internal(&workspace_path, "binary.bin".to_string()).await;
+        let result = read_file_internal(&workspace_path, "binary.bin".to_string(), None).await;
 
         assert!(result.is_ok());
         let dto = result.unwrap();
@@ -910,7 +921,7 @@ mod tests {
         let file = fs::File::create(&large_file).unwrap();
         file.set_len(MAX_FILE_SIZE_BYTES + 1).unwrap();
 
-        let result = read_file_internal(&workspace_path, "large.txt".to_string()).await;
+        let result = read_file_internal(&workspace_path, "large.txt".to_string(), None).await;
 
         assert!(matches!(result, Err(BackendError::FilesystemFileTooLarge { .. })));
     }
@@ -925,6 +936,7 @@ mod tests {
             "new.txt".to_string(),
             "hello".to_string(),
             Some(true),
+            None,
         )
         .await;
 
@@ -945,6 +957,7 @@ mod tests {
             "file.txt".to_string(),
             "first".to_string(),
             Some(true),
+            None,
         )
         .await
         .unwrap();
@@ -954,6 +967,7 @@ mod tests {
             "file.txt".to_string(),
             "second".to_string(),
             Some(true),
+            None,
         )
         .await;
 
@@ -974,6 +988,7 @@ mod tests {
             "a/b/c.txt".to_string(),
             "content".to_string(),
             Some(true),
+            None,
         )
         .await;
 
@@ -998,6 +1013,7 @@ mod tests {
             outside_path.to_string_lossy().to_string(),
             "content".to_string(),
             Some(true),
+            None,
         )
         .await;
 
@@ -1024,6 +1040,7 @@ mod tests {
             "readonly/file.txt".to_string(),
             "content".to_string(),
             Some(true),
+            None,
         )
         .await;
 
@@ -1041,7 +1058,7 @@ mod tests {
         let workspace = setup_empty_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = list_dir_internal(&workspace_path, ".".to_string(), None, None, None).await;
+        let result = list_dir_internal(&workspace_path, ".".to_string(), None, None, None, None).await;
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
@@ -1052,7 +1069,7 @@ mod tests {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = list_dir_internal(&workspace_path, ".".to_string(), None, None, None).await;
+        let result = list_dir_internal(&workspace_path, ".".to_string(), None, None, None, None).await;
 
         assert!(result.is_ok());
         let entries = result.unwrap();
@@ -1084,6 +1101,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
 
@@ -1110,6 +1128,7 @@ mod tests {
             Some(true),
             Some(false),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1122,6 +1141,7 @@ mod tests {
             ".".to_string(),
             Some(true),
             Some(true),
+            None,
             None,
         )
         .await
@@ -1138,7 +1158,7 @@ mod tests {
         fs::create_dir_all(workspace.path().join("node_modules")).unwrap();
         fs::write(workspace.path().join("node_modules/ignored.txt"), "x").unwrap();
 
-        let result = list_dir_internal(&workspace_path, ".".to_string(), Some(true), None, None)
+        let result = list_dir_internal(&workspace_path, ".".to_string(), Some(true), None, None, None)
             .await
             .unwrap();
 
@@ -1153,6 +1173,7 @@ mod tests {
         let result = list_dir_internal(
             &workspace_path,
             "sample.txt".to_string(),
+            None,
             None,
             None,
             None,

@@ -129,6 +129,42 @@ impl GitState {
 		self.register_worktree(task_id, worktree_path.clone());
 		Ok(worktree_path)
 	}
+
+	pub fn remove_task_worktree(
+		&self,
+		repo: &Repository,
+		task_id: &str,
+	) -> Result<()> {
+		let worktree_name = format!("task{}", task_id);
+		let worktree = match repo.find_worktree(&worktree_name) {
+			Ok(wt) => wt,
+			Err(_) => return Ok(()), // Already gone or never existed
+		};
+
+		// Remove the directory first if it exists
+		if let Ok(path) = self.get_worktree(task_id).unwrap_or_else(|| {
+			repo.workdir().unwrap().join(".macro").join("worktrees").join(&worktree_name)
+		}).canonicalize() {
+			let _ = std::fs::remove_dir_all(&path);
+		} else {
+			let fallback_path = repo.workdir().unwrap().join(".macro").join("worktrees").join(&worktree_name);
+			let _ = std::fs::remove_dir_all(&fallback_path);
+		}
+
+		// Prune from git
+		let mut opts = git2::WorktreePruneOptions::new();
+		opts.valid(true); // Prune even if valid
+		worktree.prune(Some(&mut opts)).map_err(|e| BackendError::Git {
+			message: format!("Failed to prune worktree: {}", e),
+		})?;
+
+		// Remove from cache
+		if let Ok(mut map) = self.inner.worktrees.lock() {
+			map.remove(task_id);
+		}
+
+		Ok(())
+	}
 }
 
 #[allow(dead_code)]
@@ -209,6 +245,24 @@ mod tests {
 
 		assert!(worktree_path.ends_with(Path::new(".macro/worktrees/task123")));
 		assert!(worktree_path.join(".git").exists());
+	}
+
+	#[test]
+	fn test_remove_task_worktree_cleans_up() {
+		let temp = TempDir::new().expect("temp dir");
+		let repo = init_repo(temp.path());
+		let state = GitState::new();
+
+		let worktree_path = state
+			.ensure_task_worktree(&repo, "456", "task-456")
+			.expect("worktree");
+
+		assert!(worktree_path.exists());
+		
+		state.remove_task_worktree(&repo, "456").expect("remove worktree");
+		
+		assert!(!worktree_path.exists());
+		assert!(repo.find_worktree("task456").is_err());
 	}
 
 	#[test]
