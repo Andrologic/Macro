@@ -18,6 +18,8 @@ export const services = {
   listMessages: provider.listMessages,
   listTasks: provider.listTasks,
   getGitTreeForProject: provider.getGitTreeForProject,
+  gitWorktreeCreate: provider.gitWorktreeCreate,
+  gitWorktreeRemove: provider.gitWorktreeRemove,
   getFileContent: provider.getFileContent,
   listCommits: provider.listCommits,
   listProviders: provider.listProviders,

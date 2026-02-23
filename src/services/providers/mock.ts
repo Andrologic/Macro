@@ -88,6 +88,25 @@ export const getGitTreeForProject = async (
   return simulate({ tree: getGitTree(projectId) ?? null });
 };
 
+export const gitWorktreeCreate = async (
+  _projectId: string,
+  _taskId: string,
+  _branchName: string
+): Promise<string> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+  return simulate(`/path/to/mock/worktree/${_projectId}/${_taskId}/${_branchName}`);
+};
+
+export const gitWorktreeRemove = async (
+  _projectId: string,
+  _taskId: string
+): Promise<void> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+  return simulate(undefined);
+};
+
 export const getFileContent = async (
   path: string
 ): Promise<FileContentDto> => {
@@ -107,13 +126,15 @@ export const listModels = async (providerId?: string): Promise<ModelsDto> => {
   const models = providerId
     ? mockModels.filter((model) => model.providerId === providerId)
     : mockModels;
-  return simulate({ models: models.map((model) => ({
-    id: model.id,
-    name: model.name,
-    provider_id: model.providerId,
-    description: model.description,
-    capabilities: model.capabilities,
-  })) });
+  return simulate({
+    models: models.map((model) => ({
+      id: model.id,
+      name: model.name,
+      provider_id: model.providerId,
+      description: model.description,
+      capabilities: model.capabilities,
+    }))
+  });
 };
 
 export const sendChat = async (
@@ -255,11 +276,11 @@ export const renameProjectGroup = async (data: {
   const projectGroup: ProjectGroup = found
     ? { ...found, name: data.name }
     : {
-        id: data.groupId,
-        name: data.name,
-        isOpen: true,
-        projects: [],
-      };
+      id: data.groupId,
+      name: data.name,
+      isOpen: true,
+      projects: [],
+    };
 
   return simulate({ projectGroup });
 };
@@ -278,19 +299,19 @@ export const renameProject = async (data: {
   const project: Project = existingProject
     ? { ...existingProject, name: data.name }
     : {
-        id: data.projectId,
-        name: data.name,
-        path: '.',
-        created_at: new Date().toISOString(),
-        status: 'active',
-        metadata: {
-          description: '',
-          tags: [],
-          team_members: [],
-          api_contracts: [],
-          dependencies: [],
-        },
-      };
+      id: data.projectId,
+      name: data.name,
+      path: '.',
+      created_at: new Date().toISOString(),
+      status: 'active',
+      metadata: {
+        description: '',
+        tags: [],
+        team_members: [],
+        api_contracts: [],
+        dependencies: [],
+      },
+    };
 
   return simulate({ project });
 };
@@ -304,18 +325,18 @@ export const archiveProjectGroup = async (data: {
   const found = mockProjects.find((group) => group.id === data.groupId);
   const projectGroup: ProjectGroup = found
     ? {
-        ...found,
-        projects: found.projects.map((project) => ({
-          ...project,
-          status: 'archived',
-        })),
-      }
+      ...found,
+      projects: found.projects.map((project) => ({
+        ...project,
+        status: 'archived',
+      })),
+    }
     : {
-        id: data.groupId,
-        name: 'Archived Group',
-        isOpen: true,
-        projects: [],
-      };
+      id: data.groupId,
+      name: 'Archived Group',
+      isOpen: true,
+      projects: [],
+    };
 
   return simulate({ projectGroup });
 };
@@ -333,19 +354,19 @@ export const archiveProject = async (data: {
   const project: Project = existingProject
     ? { ...existingProject, status: 'archived' }
     : {
-        id: data.projectId,
-        name: 'Archived Project',
-        path: '.',
-        created_at: new Date().toISOString(),
-        status: 'archived',
-        metadata: {
-          description: '',
-          tags: [],
-          team_members: [],
-          api_contracts: [],
-          dependencies: [],
-        },
-      };
+      id: data.projectId,
+      name: 'Archived Project',
+      path: '.',
+      created_at: new Date().toISOString(),
+      status: 'archived',
+      metadata: {
+        description: '',
+        tags: [],
+        team_members: [],
+        api_contracts: [],
+        dependencies: [],
+      },
+    };
 
   return simulate({ project });
 };
@@ -370,11 +391,11 @@ export const closeProject = async (data: {
 export const getToolSettings = async (): Promise<any> => {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
-  
+
   // Return mock tool settings from localStorage or defaults
   const savedTools = localStorage.getItem(TOOL_SETTINGS_STORAGE_KEY);
   let enabledTools: Record<string, boolean> = {};
-  
+
   try {
     if (savedTools && savedTools !== "undefined") {
       enabledTools = normalizeToolSettings(JSON.parse(savedTools));
@@ -399,14 +420,14 @@ export const getToolSettings = async (): Promise<any> => {
       }
     };
   });
-  
+
   return simulate({ tools });
 };
 
 export const updateToolSettings = async (settings: ToolSettingsDto): Promise<void> => {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
-  
+
   localStorage.setItem(
     TOOL_SETTINGS_STORAGE_KEY,
     JSON.stringify(normalizeToolSettings(settings.tools || {}))
@@ -417,10 +438,10 @@ export const updateToolSettings = async (settings: ToolSettingsDto): Promise<voi
 export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
-  
+
   const savedServers = localStorage.getItem('macro_mcp_server_settings');
   let enabledServers: Record<string, boolean> = {};
-  
+
   try {
     if (savedServers && savedServers !== "undefined") {
       enabledServers = JSON.parse(savedServers);
@@ -428,7 +449,7 @@ export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
   } catch (e) {
     console.error("Failed to parse MCP server settings", e);
   }
-  
+
   const servers = Object.fromEntries(
     mockMCPServers.map((server) => [
       server.id,
@@ -442,14 +463,14 @@ export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
       },
     ])
   );
-  
+
   return simulate({ servers });
 };
 
 export const updateMCPServerSettings = async (settings: any): Promise<void> => {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
-  
+
   const enabledMap: Record<string, boolean> = {};
   Object.entries(settings.servers).forEach(([id, value]) => {
     if (typeof value === 'boolean') {
@@ -458,7 +479,7 @@ export const updateMCPServerSettings = async (settings: any): Promise<void> => {
       enabledMap[id] = (value as any)?.config?.enabled ?? false;
     }
   });
-  
+
   localStorage.setItem('macro_mcp_server_settings', JSON.stringify(enabledMap));
   return simulate(undefined);
 };
