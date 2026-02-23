@@ -17,6 +17,23 @@ const BASE_SOURCE_TOOLS = [
 const WORKSPACE_READ_TOOLS = ['list', 'read', 'glob', 'grep'] as const;
 const WORKSPACE_WRITE_TOOLS = ['write', 'edit'] as const;
 const CHAT_SAFE_TOOLS = ['read_sources', 'read_file', 'web_search', 'web_fetch'] as const;
+const GIT_READ_TOOLS = [
+  'git_status',
+  'git_log',
+  'git_branch_list',
+  'git_diff',
+  'git_get_tree',
+] as const;
+
+const GIT_WRITE_TOOLS = [
+  'git_add',
+  'git_commit',
+  'git_checkout',
+  'git_reset',
+  'git_stash',
+] as const;
+
+const GIT_TOOLS = [...GIT_READ_TOOLS, ...GIT_WRITE_TOOLS] as const;
 
 const ALL_WORKSPACE_TOOLS = [
   ...BASE_SOURCE_TOOLS,
@@ -27,7 +44,7 @@ const ALL_WORKSPACE_TOOLS = [
 export const getToolModePolicy = (mode: AppMode): ToolModePolicy => {
   if (mode === 'Architect') {
     return {
-      allowedToolIds: [...ALL_WORKSPACE_TOOLS],
+      allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_READ_TOOLS],
       enforceMacroOnlyWrites: true,
     };
   }
@@ -41,13 +58,13 @@ export const getToolModePolicy = (mode: AppMode): ToolModePolicy => {
 
   if (mode === 'Debug') {
     return {
-      allowedToolIds: [...ALL_WORKSPACE_TOOLS],
+      allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_TOOLS],
       enforceMacroOnlyWrites: false,
     };
   }
 
   return {
-    allowedToolIds: [...ALL_WORKSPACE_TOOLS],
+    allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_TOOLS],
     enforceMacroOnlyWrites: false,
   };
 };
@@ -55,4 +72,8 @@ export const getToolModePolicy = (mode: AppMode): ToolModePolicy => {
 export const isMacroScopedPath = (rawPath: string): boolean => {
   const normalized = rawPath.replace(/\\/g, '/').replace(/^\.\//, '').trim();
   return normalized === '.macro' || normalized.startsWith('.macro/');
+};
+
+export const isGitToolId = (toolId: string): boolean => {
+  return (GIT_TOOLS as readonly string[]).includes(toolId);
 };

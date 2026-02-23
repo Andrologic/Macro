@@ -495,6 +495,28 @@ export async function gitGetTree(params: {
   });
 }
 
+export async function gitWorktreeCreate(params: {
+  repoPath: string;
+  taskId: string;
+  branchName: string;
+}): Promise<string> {
+  return invoke<string>('git_worktree_create', {
+    repoPath: params.repoPath,
+    taskId: params.taskId,
+    branchName: params.branchName,
+  });
+}
+
+export async function gitWorktreeRemove(params: {
+  repoPath: string;
+  taskId: string;
+}): Promise<void> {
+  return invoke('git_worktree_remove', {
+    repoPath: params.repoPath,
+    taskId: params.taskId,
+  });
+}
+
 // ============ Workspace ============
 
 export async function workspaceGetBootstrap(): Promise<WorkspaceBootstrapDto> {
@@ -511,6 +533,14 @@ export async function workspaceListTasks(): Promise<Task[]> {
 
 export async function workspaceGetMetadata(): Promise<WorkspaceMetadataDto> {
   return invoke<WorkspaceMetadataDto>('workspace_get_metadata');
+}
+
+export async function workspaceGetActiveRoot(): Promise<string> {
+  return invoke<string>('workspace_get_active_root');
+}
+
+export async function workspaceSetActiveRoot(path: string): Promise<string> {
+  return invoke<string>('workspace_set_active_root', { path });
 }
 
 export async function workspaceCreateProject(params: {

@@ -18,7 +18,9 @@ use fs::watcher::init_watcher;
 use git::GitState;
 use std::sync::Arc;
 use tauri::Manager;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
+
+pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
 
 // Command to show the main window explicitly from frontend
 #[tauri::command]
@@ -51,7 +53,8 @@ pub fn run() {
 
             // Store workspace path in app state
             let workspace_path = config.workspace_path.clone();
-            app.manage(workspace_path.clone());
+            let workspace_root: WorkspaceRoot = Arc::new(RwLock::new(workspace_path.clone()));
+            app.manage(workspace_root);
 
             // Initialize file system watcher
             if let Err(e) = init_watcher(app, workspace_path) {
@@ -102,6 +105,8 @@ pub fn run() {
             commands::workspace::workspace_list_projects,
             commands::workspace::workspace_list_tasks,
             commands::workspace::workspace_get_metadata,
+            commands::workspace::workspace_get_active_root,
+            commands::workspace::workspace_set_active_root,
             commands::workspace::workspace_create_project,
             commands::workspace::workspace_import_git_repo,
             commands::workspace::workspace_rename_project_group,
@@ -130,6 +135,8 @@ pub fn run() {
             commands::git::git_stash,
             commands::git::git_diff,
             commands::git::git_get_tree,
+            commands::git::git_worktree_create,
+            commands::git::git_worktree_remove,
             commands::db_list_provider_models,
             commands::db_upsert_provider_models,
             commands::db_set_provider_model_enabled,
