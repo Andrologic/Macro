@@ -76,11 +76,33 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
         <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
           <Icon name="list" size={16} className="text-primary" />
           {t('architect.needs', 'Identified Needs')}
-        </h1>
-        <div className="flex items-center gap-1">
-          <span className="text-xs text-muted-foreground px-2 py-0.5 bg-muted rounded-full">
+          <span className="text-xs text-muted-foreground px-2 py-0.5 bg-muted rounded-full ml-1">
             {scopedNeeds.length}
           </span>
+        </h1>
+        <div className="flex items-center gap-2">
+          {scopedNeeds.length > 0 && (
+            <button
+              onClick={() => {
+                // Send a message to the active Architect chat to generate the plan
+                const chatStore = (window as any)._useChatStore?.getState();
+                const appStore = useAppStore.getState();
+                if (chatStore && appStore.mode === 'Architect') {
+                  const conversationId = chatStore.selectedConversationIdsByMode['Architect'];
+                  if (conversationId) {
+                    chatStore.sendMessage({
+                      conversationId,
+                      content: "Based on the identified needs, please generate a structured project plan using the `generate_plan` tool.",
+                    });
+                  }
+                }
+              }}
+              className="px-3 py-1.5 rounded-md text-xs font-medium bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground transition-all duration-200 flex items-center gap-1.5"
+            >
+              <Icon name="git-merge" size={14} />
+              Generate Plan
+            </button>
+          )}
         </div>
       </div>
 
@@ -145,7 +167,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
                   <Icon name={CATEGORY_ICONS[need.category]} size={12} className={CATEGORY_COLORS[need.category]} />
                 </div>
               </div>
-              
+
               <p className="text-xs text-muted-foreground line-clamp-2 mb-2">
                 {need.description}
               </p>
@@ -154,19 +176,19 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
                 <span className={cn(
                   "text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded border",
                   need.priority === 'high' ? "border-red-500/20 text-red-500 bg-red-500/5" :
-                  need.priority === 'medium' ? "border-amber-500/20 text-amber-500 bg-amber-500/5" :
-                  "border-emerald-500/20 text-emerald-500 bg-emerald-500/5"
+                    need.priority === 'medium' ? "border-amber-500/20 text-amber-500 bg-amber-500/5" :
+                      "border-emerald-500/20 text-emerald-500 bg-emerald-500/5"
                 )}>
                   {need.priority}
                 </span>
                 {need.tags.slice(0, 2).map(tag => (
-                   <span key={tag} className="text-[10px] text-muted-foreground bg-secondary px-1.5 py-0.5 rounded">
-                     #{tag}
-                   </span>
+                  <span key={tag} className="text-[10px] text-muted-foreground bg-secondary px-1.5 py-0.5 rounded">
+                    #{tag}
+                  </span>
                 ))}
-                 {need.tags.length > 2 && (
-                   <span className="text-[10px] text-muted-foreground">+{need.tags.length - 2}</span>
-                 )}
+                {need.tags.length > 2 && (
+                  <span className="text-[10px] text-muted-foreground">+{need.tags.length - 2}</span>
+                )}
               </div>
             </div>
           ))
@@ -175,10 +197,10 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
 
       {/* Modal */}
       {isModalOpen && selectedNeedId && (
-        <NeedDetailsModal 
-           needId={selectedNeedId} 
-           isOpen={isModalOpen} 
-           onClose={handleCloseModal} 
+        <NeedDetailsModal
+          needId={selectedNeedId}
+          isOpen={isModalOpen}
+          onClose={handleCloseModal}
         />
       )}
     </aside>

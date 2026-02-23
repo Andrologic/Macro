@@ -316,6 +316,34 @@ export const mockInternalTools: Tool[] = [
       internal: true,
     },
   },
+  {
+    id: 'add_need',
+    name: 'Add Need',
+    category: 'productivity',
+    status: 'enabled',
+    description: 'Add a structured need to the project (Architect Mode)',
+    icon: 'plus',
+    config: {
+      enabled: true,
+      visible: true,
+      chatMode: true,
+      internal: true,
+    },
+  },
+  {
+    id: 'generate_plan',
+    name: 'Generate Plan',
+    category: 'productivity',
+    status: 'enabled',
+    description: 'Generate a project plan from needs (Architect Mode)',
+    icon: 'git-merge',
+    config: {
+      enabled: true,
+      visible: true,
+      chatMode: true,
+      internal: true,
+    },
+  },
 ];
 
 // MCP Servers - Empty by default (users can configure their own)
@@ -345,5 +373,7 @@ export const defaultToolSettings: Record<string, boolean> = {
   mark_source_passage: true,
   read_sources: true,
   edit_source_passage: true,
+  add_need: true,
+  generate_plan: true,
 };
 export const defaultMCPServerSettings: Record<string, boolean> = {};

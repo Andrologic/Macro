@@ -40,9 +40,9 @@ export interface StreamMessage {
 export type StreamMessageContent =
   | string
   | Array<
-      | { type: 'text'; text: string }
-      | { type: 'image_url'; image_url: { url: string } }
-    >;
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+  >;
 
 export interface ToolCall {
   id: string;
@@ -537,6 +537,53 @@ const GIT_STASH_TOOL = {
   },
 };
 
+const ADD_NEED_TOOL = {
+  type: 'function',
+  function: {
+    name: 'add_need',
+    description: 'Add a structured user or system need for the project. Use this during the Architect phase to gather requirements.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short title of the need.' },
+        description: { type: 'string', description: 'Detailed description of what is needed.' },
+        category: { type: 'string', enum: ['functional', 'technical', 'ux', 'security', 'other'], description: 'Category of the need.' },
+        priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Priority level.' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Keywords or tags.' },
+      },
+      required: ['title', 'description', 'category', 'priority'],
+    },
+  },
+};
+
+const GENERATE_PLAN_TOOL = {
+  type: 'function',
+  function: {
+    name: 'generate_plan',
+    description: 'Generate a structured implementation plan based on the collected needs. This creates a list of tasks/features.',
+    parameters: {
+      type: 'object',
+      properties: {
+        nodes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              description: { type: 'string' },
+              type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+              dependencies: { type: 'array', items: { type: 'string' }, description: 'Titles of nodes this one depends on.' },
+            },
+            required: ['title', 'type'],
+          },
+          description: 'List of plan nodes representing the tasks to be done.',
+        },
+      },
+      required: ['nodes'],
+    },
+  },
+};
+
 /**
  * Send a streaming chat completion request
  */
@@ -629,6 +676,15 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     if (toolName === 'grep') {
       const query = typeof args.query === 'string' ? args.query : '';
       return `\n\n[TOOL] grep${query ? ` ("${query}")` : ''}\n`;
+    }
+
+    if (toolName === 'add_need') {
+      const title = typeof args.title === 'string' ? args.title : '';
+      return `\n\n[TOOL] add_need${title ? ` ("${title}")` : ''}\n`;
+    }
+
+    if (toolName === 'generate_plan') {
+      return `\n\n[TOOL] generate_plan\n`;
     }
 
     return `\n\n[TOOL] ${toolName}\n`;
@@ -740,526 +796,554 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   if (allowedTools.has('web_fetch') && enableWebFetch) {
     tools.push(WEB_FETCH_TOOL);
   }
+  if (allowedTools.has('add_need')) {
+    tools.push(ADD_NEED_TOOL);
+  }
+  if (allowedTools.has('generate_plan')) {
+    tools.push(GENERATE_PLAN_TOOL);
+  }
   if (tools.length > 0) {
     requestBody.tools = tools;
   }
 
+  // Storage for the entire conversation (mutated across loop turns)
+  let currentMessages: StreamMessage[] = [...messages];
+  let fullContent = '';
+  const readEvidenceBySource = new Map<string, string>();
+  const MAX_TURNS = 10;
+  let turnCount = 0;
+
+  const normalizeSourceKey = (value?: string): string =>
+    (value || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\.\//, '')
+      .toLowerCase();
+
+  const rememberReadEvidence = (source: string, content: string) => {
+    const key = normalizeSourceKey(source);
+    if (!key || !content.trim()) return;
+    readEvidenceBySource.set(key, content);
+  };
+
+  const rememberReadEvidenceFromWorkspaceResult = (result: string) => {
+    const fileHeaderMatch = result.match(/^FILE:\s*(.+)$/m);
+    if (!fileHeaderMatch) return;
+
+    const filePath = fileHeaderMatch[1].trim();
+    const separatorIndex = result.indexOf('\n\n');
+    const content = separatorIndex >= 0 ? result.slice(separatorIndex + 2) : '';
+    rememberReadEvidence(filePath, content);
+  };
+
   try {
-    const response = await tauriFetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unknown error');
-      let errorMessage = `Request failed: ${response.status}`;
-      
-      try {
-        const errorJson = JSON.parse(errorText);
-        errorMessage = errorJson.error?.message || errorJson.message || errorMessage;
-      } catch {
-        if (errorText) {
-          errorMessage = errorText;
-        }
-      }
-      
-      throw new Error(errorMessage);
-    }
-
-    if (!response.body) {
-      throw new Error('No response body');
-    }
-
-    // Store references for cancellation
-    currentStream = response.body;
-    const reader = currentStream.getReader();
-    currentReader = reader;
-    const decoder = new TextDecoder();
-    let fullContent = '';
-    let buffer = '';
-    let isThinking = false;
-    let toolCalls: ToolCall[] = [];
-    const readEvidenceBySource = new Map<string, string>();
-
-    const normalizeSourceKey = (value?: string): string =>
-      (value || '')
-        .trim()
-        .replace(/\\/g, '/')
-        .replace(/^\.\//, '')
-        .toLowerCase();
-
-    const rememberReadEvidence = (source: string, content: string) => {
-      const key = normalizeSourceKey(source);
-      if (!key || !content.trim()) return;
-      readEvidenceBySource.set(key, content);
-    };
-
-    const rememberReadEvidenceFromWorkspaceResult = (result: string) => {
-      const fileHeaderMatch = result.match(/^FILE:\s*(.+)$/m);
-      if (!fileHeaderMatch) return;
-
-      const filePath = fileHeaderMatch[1].trim();
-      const separatorIndex = result.indexOf('\n\n');
-      const content = separatorIndex >= 0 ? result.slice(separatorIndex + 2) : '';
-      rememberReadEvidence(filePath, content);
-    };
-
-    const startThinking = () => {
-      if (!isThinking) {
-        fullContent += '<think>';
-        onToken('<think>');
-        isThinking = true;
-      }
-    };
-
-    const endThinking = () => {
-      if (isThinking) {
-        fullContent += '</think>';
-        onToken('</think>');
-        isThinking = false;
-      }
-    };
-
-    while (true) {
-      // Check if the stream was cancelled
+    while (turnCount < MAX_TURNS) {
       if (options.signal?.aborted) {
-        try {
-          await reader.cancel();
-        } catch (e) {
-          // Ignore cancel errors
-        }
         onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
         return;
       }
 
-      const { done, value } = await reader.read();
-      
-      if (done) {
-        break;
-      }
+      requestBody.messages = currentMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        ...(m.tool_calls && { tool_calls: m.tool_calls }),
+        ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
+      }));
 
-      buffer += decoder.decode(value, { stream: true });
-      
-      // Process complete SSE events
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+      const response = await tauriFetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
+      });
 
-      for (const line of lines) {
-        const trimmedLine = line.trim();
-        
-        if (!trimmedLine || trimmedLine === '') {
-          continue;
-        }
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        let errorMessage = `Request failed: ${response.status}`;
 
-        if (trimmedLine.startsWith('data: ')) {
-          const data = trimmedLine.slice(6);
-          
-          if (data === '[DONE]') {
-            continue;
-          }
-
-          try {
-            const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta;
-            const reasoning = delta?.reasoning ?? delta?.reasoning_content;
-
-            if (typeof reasoning === 'string' && reasoning.length > 0) {
-              startThinking();
-              fullContent += reasoning;
-              onToken(reasoning);
-            }
-
-            // Handle tool calls
-            if (delta?.tool_calls) {
-              for (const toolCallDelta of delta.tool_calls) {
-                const index = toolCallDelta.index ?? 0;
-                if (!toolCalls[index]) {
-                  toolCalls[index] = {
-                    id: toolCallDelta.id || '',
-                    type: 'function',
-                    function: { name: '', arguments: '' },
-                  };
-                }
-                if (toolCallDelta.id) {
-                  toolCalls[index].id = toolCallDelta.id;
-                }
-                if (toolCallDelta.function?.name) {
-                  toolCalls[index].function.name = toolCallDelta.function.name;
-                }
-                if (toolCallDelta.function?.arguments) {
-                  toolCalls[index].function.arguments += toolCallDelta.function.arguments;
-                }
-              }
-            }
-
-            if (delta?.content) {
-              endThinking();
-              const token = delta.content;
-              fullContent += token;
-              onToken(token);
-            }
-          } catch (e) {
-            // Skip malformed JSON - some providers send non-JSON lines
-            console.debug('Failed to parse SSE data:', data);
-          }
-        }
-      }
-    }
-
-    endThinking();
-    
-    // Handle tool calls if any
-    const validToolCalls = toolCalls.filter(tc => tc.id && tc.function.name);
-    if (validToolCalls.length > 0) {
-      const toolResults: ToolResult[] = [];
-      
-      for (const toolCall of validToolCalls) {
-        const toolName = toolCall.function.name;
-        let toolResult = '';
-        let customToolResult: string | undefined;
-        
         try {
-          const args = JSON.parse(toolCall.function.arguments);
-
-          if (!allowedTools.has(toolName)) {
-            toolResult = `Tool ${toolName} is disabled for the current mode.`;
-            toolResults.push({
-              tool_call_id: toolCall.id,
-              content: toolResult,
-            });
-            continue;
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.error?.message || errorJson.message || errorMessage;
+        } catch {
+          if (errorText) {
+            errorMessage = errorText;
           }
-
-          const customResult = await onToolCall?.(toolName, args);
-          customToolResult = typeof customResult === 'string' ? customResult : undefined;
-
-          if (showToolTraces) {
-            const toolUsageMsg = formatToolUsageLabel(toolName, args);
-            fullContent += toolUsageMsg;
-            onToken(toolUsageMsg);
-          }
-          
-          if (toolName === 'web_search') {
-            // Execute web search
-            const searchResults = await webSearch(args.query, webSearchOptions);
-            toolResult = formatSearchResultsAsContext(searchResults);
-            
-            // Show search indicator in chat
-            if (showToolTraces) {
-              const searchMsg = `\n\n🔍 **Recherche web:** "${args.query}"\n`;
-              fullContent += searchMsg;
-              onToken(searchMsg);
-            }
-          }
-
-          if (toolName === 'web_fetch') {
-            const url = typeof args.url === 'string' ? args.url : '';
-            if (!url.trim()) {
-              toolResult = 'Missing URL for web_fetch.';
-            } else {
-              const fetched = await fetchWebPage(url);
-              toolResult = `TITLE: ${fetched.title}\nURL: ${fetched.url}\n\n${fetched.content}`;
-            }
-          }
-
-          if (toolName === 'read_file') {
-            const normalizeMatch = (value?: string) =>
-              (value || '')
-                .trim()
-                .normalize('NFD')
-                .replace(/[\u0300-\u036f]/g, '')
-                .toLowerCase();
-
-            const requestedRaw = typeof args.file === 'string' ? args.file.trim() : '';
-            const requested = normalizeMatch(requestedRaw);
-            const extractText = args.extract_text === true;
-            const available = fileToolContext.map((f) => f.path || f.title || f.source).filter(Boolean);
-            let workspaceReadAttempted = false;
-            const workspaceMode = allowedTools.has('read') || allowedTools.has('list');
-
-            if (requestedRaw && allowedTools.has('read') && onToolCall) {
-              workspaceReadAttempted = true;
-              const workspaceResult = await onToolCall('read', {
-                path: requestedRaw,
-                start_line: typeof args.start_line === 'number' ? args.start_line : undefined,
-                end_line: typeof args.end_line === 'number' ? args.end_line : undefined,
-              });
-
-              if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
-                const isWorkspaceReadError =
-                  /^Error executing read:/i.test(workspaceResult) ||
-                  /^Missing\s+/i.test(workspaceResult) ||
-                  /^No match found/i.test(workspaceResult) ||
-                  /^File not found/i.test(workspaceResult) ||
-                  /^Cannot\s+/i.test(workspaceResult);
-
-                if (isWorkspaceReadError) {
-                  toolResult = `Error executing tool read_file: ${workspaceResult}`;
-                } else {
-                  toolResult = workspaceResult;
-                  rememberReadEvidenceFromWorkspaceResult(workspaceResult);
-                }
-              } else {
-                toolResult = 'Error executing tool read_file: workspace read returned no content.';
-              }
-            }
-
-            if (toolResult.trim()) {
-              // We already have authoritative workspace output; do not fall back to context snippets.
-            } else if (workspaceReadAttempted) {
-              toolResult = `Error executing tool read_file: unable to read "${requestedRaw}" from workspace.`;
-            } else if (workspaceMode) {
-              toolResult =
-                `Error executing tool read_file: workspace read tool is unavailable for "${requestedRaw}".` +
-                ` Use the read tool directly with an explicit path.`;
-            } else {
-              const match = fileToolContext.find((f) => {
-                const title = normalizeMatch(f.title);
-                const source = normalizeMatch(f.source);
-                const path = normalizeMatch(f.path);
-                return (
-                  requested === title ||
-                  requested === source ||
-                  requested === path ||
-                  title.includes(requested) ||
-                  source.includes(requested) ||
-                  path.includes(requested)
-                );
-              });
-
-              if (!requested) {
-                toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
-              } else if (!match) {
-                toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
-              } else {
-                const label = match.path || match.title || match.source;
-                const content = (match.snippet || '').trim();
-                const base = content
-                  ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
-                  : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
-
-                const isDocx = /\.docx$/i.test(label || '');
-                const extractNotice =
-                  extractText && isDocx
-                    ? '\n\nNote: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
-                    : '';
-
-                toolResult = `${base}${extractNotice}`;
-                if (label) {
-                  rememberReadEvidence(label, content);
-                }
-              }
-            }
-          }
-          
-          if (toolName === 'mark_source_passage') {
-            const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
-            const kind = rawKind === 'interesting' ? 'interesting' : 'used';
-            const source = typeof args.source === 'string' ? args.source : '';
-            const title = typeof args.title === 'string' ? args.title : '';
-            const passage = typeof args.passage === 'string' ? args.passage : '';
-            const normalizedPassage = passage.trim();
-
-            const sourceKey = normalizeSourceKey(source || title);
-            const sourceEvidence = sourceKey ? readEvidenceBySource.get(sourceKey) : undefined;
-            const anyEvidence = Array.from(readEvidenceBySource.values());
-            const hasMatchingEvidence = normalizedPassage
-              ? (
-                  (sourceEvidence && sourceEvidence.includes(normalizedPassage)) ||
-                  anyEvidence.some((evidence) => evidence.includes(normalizedPassage))
-                )
-              : false;
-
-            if (!hasMatchingEvidence) {
-              toolResult = 'Error executing tool mark_source_passage: passage is not present in previously read file content.';
-            } else {
-              toolResult = `Source passage marked successfully (kind=${kind}).`;
-            }
-          } else if (toolName === 'read_sources') {
-            toolResult = customToolResult || 'No source passages available.';
-          } else if (toolName === 'edit_source_passage') {
-            toolResult = customToolResult || 'Source passage edit request processed.';
-          } else if (customToolResult) {
-            toolResult = customToolResult;
-          } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
-            toolResult = `Unsupported tool: ${toolName}`;
-          }
-
-          onToolResult?.(toolName, toolResult);
-        } catch (e) {
-          toolResult = `Error executing tool ${toolName}: ${e instanceof Error ? e.message : String(e)}`;
-          onToolResult?.(toolName, toolResult);
         }
-        
-        toolResults.push({
-          tool_call_id: toolCall.id,
-          content: toolResult,
-        });
+
+        if (turnCount === 0) {
+          throw new Error(errorMessage);
+        } else {
+          const loopError = `\n\n[System: The agent loop stopped due to an API error: ${errorMessage}]`;
+          fullContent += loopError;
+          onToken(loopError);
+          break;
+        }
       }
-      
-      // If we have tool results, make a follow-up request to get the final response
-      if (toolResults.length > 0) {
-        const hasToolErrors = toolResults.some((result) => {
-          const content = result.content.trim();
-          return (
-            /^Error executing/i.test(content) ||
-            /^Missing\s+/i.test(content) ||
-            /^No match found/i.test(content) ||
-            /^File not found/i.test(content) ||
-            /^Cannot\s+/i.test(content)
-          );
-        });
-        const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
-        const hasWorkspaceFileReadResults = toolResults.some((result) =>
-          /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*WORKSPACE_FILE/m.test(result.content)
-        );
-        const hasContextSnippetReadResults = toolResults.some((result) =>
-          /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*CONTEXT_SNIPPET/m.test(result.content)
-        );
-        const hasWorkspaceReadCall = validToolCalls.some((call) =>
-          call.function.name === 'read' || call.function.name === 'read_file' || call.function.name === 'list'
-        );
-        if (hasWorkspaceFileReadResults) {
-          const readBlocks = toolResults
-            .filter((result) => /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*WORKSPACE_FILE/m.test(result.content))
-            .map((result) => {
-              const fileMatch = result.content.match(/^FILE:\s*(.+)$/m);
-              const filePath = fileMatch?.[1]?.trim() || 'unknown-file';
-              const separatorIndex = result.content.indexOf('\n\n');
-              const rawContent = separatorIndex >= 0
-                ? result.content.slice(separatorIndex + 2)
-                : result.content;
 
-              return `Contenu exact lu via l’outil pour ${filePath}:\n\n\`\`\`\n${rawContent}\n\`\`\``;
-            });
+      if (!response.body) {
+        throw new Error('No response body');
+      }
 
-          if (readBlocks.length > 0) {
-            const deterministicResponse = readBlocks.join('\n\n---\n\n');
-            fullContent += `\n\n${deterministicResponse}`;
-            onToken(`\n\n${deterministicResponse}`);
-            onComplete(fullContent);
-            return;
-          }
+      // Store references for cancellation
+      currentStream = response.body;
+      const reader = currentStream.getReader();
+      currentReader = reader;
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let isThinking = false;
+      let toolCalls: ToolCall[] = [];
+      let turnContent = ''; // The text generated *in this specific turn*
+
+      const startThinking = () => {
+        if (!isThinking) {
+          turnContent += '<think>';
+          fullContent += '<think>';
+          onToken('<think>');
+          isThinking = true;
         }
+      };
 
-        if (hasContextSnippetReadResults && !hasWorkspaceFileReadResults && hasWorkspaceReadCall) {
-          const deterministicError = [
-            'La lecture fichier ne provient pas du workspace actif (context snippet uniquement).',
-            'Je refuse de synthétiser ce contenu pour éviter les hallucinations.',
-            'Relance avec un chemin explicite (ex: README.md) ou vérifie le root Debug.',
-          ].join('\n');
+      const endThinking = () => {
+        if (isThinking) {
+          turnContent += '</think>';
+          fullContent += '</think>';
+          onToken('</think>');
+          isThinking = false;
+        }
+      };
 
-          fullContent += `\n\n${deterministicError}`;
-          onToken(`\n\n${deterministicError}`);
-          onComplete(fullContent);
+      while (true) {
+        // Check if the stream was cancelled
+        if (options.signal?.aborted) {
+          try {
+            await reader.cancel();
+          } catch (e) {
+            // Ignore cancel errors
+          }
+          onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
           return;
         }
 
-        if (hasToolErrors && hasWorkspaceReadCall) {
-          const errorLines = toolResults
-            .map((result) => result.content.trim())
-            .filter((content) => /^Error executing/i.test(content) || /^Missing\s+/i.test(content) || /^File not found/i.test(content));
+        const { done, value } = await reader.read();
 
-          if (errorLines.length > 0) {
-            const deterministicError = [
-              'La lecture workspace a échoué. Sortie brute des outils :',
-              ...errorLines.map((line) => `- ${line}`),
-              '',
-              'Je ne peux pas déduire le contenu du fichier sans sortie de lecture valide.',
-            ].join('\n');
+        if (done) {
+          break;
+        }
 
-            fullContent += `\n\n${deterministicError}`;
-            onToken(`\n\n${deterministicError}`);
-            onComplete(fullContent);
-            return;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE events
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+
+          if (!trimmedLine || trimmedLine === '') {
+            continue;
           }
-        }
 
-        const messagesWithToolResults: StreamMessage[] = [
-          ...messages,
-          { role: 'assistant', content: fullContent, tool_calls: validToolCalls },
-          ...toolResults.map(tr => ({ role: 'tool' as const, content: tr.content, tool_call_id: tr.tool_call_id })),
-        ];
+          if (trimmedLine.startsWith('data: ')) {
+            const data = trimmedLine.slice(6);
 
-        const guardSystemMessages: StreamMessage[] = [];
-        if (hasToolErrors) {
-          guardSystemMessages.push({
-            role: 'system',
-            content:
-              'One or more tool calls failed. Do not fabricate file contents or command outputs. ' +
-              'State the exact failure and ask for a corrected path/context when needed.',
-          });
-        }
-        if (hasFileReadResults) {
-          guardSystemMessages.push({
-            role: 'system',
-            content:
-              'For file analysis tasks, use ONLY the exact tool outputs provided in this conversation. ' +
-              'Do not invent code symbols, structs, handlers, routes, or data not present in tool output. ' +
-              'If uncertain, say that the information is not present in the file content you received.',
-          });
-        }
+            if (data === '[DONE]') {
+              continue;
+            }
 
-        const guardedMessages: StreamMessage[] = guardSystemMessages.length > 0
-          ? [...guardSystemMessages, ...messagesWithToolResults]
-          : messagesWithToolResults;
-        
-        // Make a follow-up request without tools to get the final response
-        const followUpResponse = await tauriFetch(`${baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            model: modelId,
-            messages: guardedMessages.map((m) => ({
-              role: m.role,
-              content: m.content,
-              ...(m.tool_calls && { tool_calls: m.tool_calls }),
-              ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
-            })),
-            stream: true,
-          }),
-        });
-        
-        if (followUpResponse.ok && followUpResponse.body) {
-          currentStream = followUpResponse.body;
-          const followUpReader = currentStream.getReader();
-          currentReader = followUpReader;
-          
-          buffer = '';
-          while (true) {
-            const { done, value } = await followUpReader.read();
-            if (done) break;
-            
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            
-            for (const line of lines) {
-              const trimmedLine = line.trim();
-              if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
-              
-              const data = trimmedLine.slice(6);
-              if (data === '[DONE]') continue;
-              
-              try {
-                const parsed = JSON.parse(data);
-                const delta = parsed.choices?.[0]?.delta;
-                
-                if (delta?.content) {
-                  const token = delta.content;
-                  fullContent += token;
-                  onToken(token);
-                }
-              } catch (e) {
-                console.debug('Failed to parse follow-up SSE data:', data);
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parsed.choices?.[0]?.delta;
+              const reasoning = delta?.reasoning ?? delta?.reasoning_content;
+
+              if (typeof reasoning === 'string' && reasoning.length > 0) {
+                startThinking();
+                turnContent += reasoning;
+                fullContent += reasoning;
+                onToken(reasoning);
               }
+
+              // Handle tool calls
+              if (delta?.tool_calls) {
+                for (const toolCallDelta of delta.tool_calls) {
+                  const index = toolCallDelta.index ?? 0;
+                  if (!toolCalls[index]) {
+                    toolCalls[index] = {
+                      id: toolCallDelta.id || '',
+                      type: 'function',
+                      function: { name: '', arguments: '' },
+                    };
+                  }
+                  if (toolCallDelta.id) {
+                    toolCalls[index].id = toolCallDelta.id;
+                  }
+                  if (toolCallDelta.function?.name) {
+                    toolCalls[index].function.name = toolCallDelta.function.name;
+                  }
+                  if (toolCallDelta.function?.arguments) {
+                    toolCalls[index].function.arguments += toolCallDelta.function.arguments;
+                  }
+                }
+              }
+
+              if (delta?.content) {
+                endThinking();
+                const token = delta.content;
+                turnContent += token;
+                fullContent += token;
+                onToken(token);
+              }
+            } catch (e) {
+              // Skip malformed JSON - some providers send non-JSON lines
+              console.debug('Failed to parse SSE data:', data);
             }
           }
         }
       }
+
+      endThinking();
+
+      // Parse inline JSON tool calls (e.g. from local models like Ollama)
+      // <tool_call> {"name": "list", "arguments": { "path": "src" }} </tool_call>
+      // Note: We use [\s\S]*? to handle multiline JSON strings
+      const inlineToolRegex = /<tool_call>\s*(?=\{)([\s\S]*?)\s*<\/tool_call>/gi;
+      let match;
+      const inlineReplacements: { original: string, parsedName: string }[] = [];
+
+      // We parse on a copy so we don't mess up exec indices if not replacing in place
+      let contentForParsing = fullContent;
+      while ((match = inlineToolRegex.exec(contentForParsing)) !== null) {
+        try {
+          const parsed = JSON.parse(match[1].trim());
+          if (parsed.name) {
+            toolCalls.push({
+              id: `call_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+              type: 'function',
+              function: {
+                name: parsed.name,
+                arguments: typeof parsed.arguments === 'string' ? parsed.arguments : JSON.stringify(parsed.arguments || {})
+              }
+            });
+            inlineReplacements.push({ original: match[0], parsedName: parsed.name });
+          }
+        } catch (e) {
+          console.warn('Failed to parse inline JSON tool call', match[1]);
+        }
+      }
+
+      for (const rep of inlineReplacements) {
+        fullContent = fullContent.replace(rep.original, '');
+      }
+
+      // Handle tool calls if any
+      const validToolCalls = toolCalls.filter(tc => tc.id && tc.function.name);
+      if (validToolCalls.length > 0) {
+        const toolResults: ToolResult[] = [];
+
+        for (const toolCall of validToolCalls) {
+          const toolName = toolCall.function.name;
+          let toolResult = '';
+          let customToolResult: string | undefined;
+
+          try {
+            const args = JSON.parse(toolCall.function.arguments);
+
+            if (!allowedTools.has(toolName)) {
+              toolResult = `Tool ${toolName} is disabled for the current mode.`;
+              toolResults.push({
+                tool_call_id: toolCall.id,
+                content: toolResult,
+              });
+              continue;
+            }
+
+            const customResult = await onToolCall?.(toolName, args);
+            customToolResult = typeof customResult === 'string' ? customResult : undefined;
+
+            if (showToolTraces) {
+              const toolUsageMsg = formatToolUsageLabel(toolName, args);
+              fullContent += toolUsageMsg;
+              onToken(toolUsageMsg);
+            }
+
+            if (toolName === 'web_search') {
+              // Execute web search
+              const searchResults = await webSearch(args.query, webSearchOptions);
+              toolResult = formatSearchResultsAsContext(searchResults);
+
+              // Show search indicator in chat
+              if (showToolTraces) {
+                const searchMsg = `\n\n🔍 **Recherche web:** "${args.query}"\n`;
+                fullContent += searchMsg;
+                onToken(searchMsg);
+              }
+            }
+
+            if (toolName === 'web_fetch') {
+              const url = typeof args.url === 'string' ? args.url : '';
+              if (!url.trim()) {
+                toolResult = 'Missing URL for web_fetch.';
+              } else {
+                const fetched = await fetchWebPage(url);
+                toolResult = `TITLE: ${fetched.title}\nURL: ${fetched.url}\n\n${fetched.content}`;
+              }
+            }
+
+            if (toolName === 'read_file') {
+              const normalizeMatch = (value?: string) =>
+                (value || '')
+                  .trim()
+                  .normalize('NFD')
+                  .replace(/[\u0300-\u036f]/g, '')
+                  .toLowerCase();
+
+              const requestedRaw = typeof args.file === 'string' ? args.file.trim() : '';
+              const requested = normalizeMatch(requestedRaw);
+              const extractText = args.extract_text === true;
+              const available = fileToolContext.map((f) => f.path || f.title || f.source).filter(Boolean);
+              let workspaceReadAttempted = false;
+              const workspaceMode = allowedTools.has('read') || allowedTools.has('list');
+
+              if (requestedRaw && allowedTools.has('read') && onToolCall) {
+                workspaceReadAttempted = true;
+                const workspaceResult = await onToolCall('read', {
+                  path: requestedRaw,
+                  start_line: typeof args.start_line === 'number' ? args.start_line : undefined,
+                  end_line: typeof args.end_line === 'number' ? args.end_line : undefined,
+                });
+
+                if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
+                  const isWorkspaceReadError =
+                    /^Error executing read:/i.test(workspaceResult) ||
+                    /^Missing\s+/i.test(workspaceResult) ||
+                    /^No match found/i.test(workspaceResult) ||
+                    /^File not found/i.test(workspaceResult) ||
+                    /^Cannot\s+/i.test(workspaceResult);
+
+                  if (isWorkspaceReadError) {
+                    toolResult = `Error executing tool read_file: ${workspaceResult}`;
+                  } else {
+                    toolResult = workspaceResult;
+                    rememberReadEvidenceFromWorkspaceResult(workspaceResult);
+                  }
+                } else {
+                  toolResult = 'Error executing tool read_file: workspace read returned no content.';
+                }
+              }
+
+              if (toolResult.trim()) {
+                // We already have authoritative workspace output; do not fall back to context snippets.
+              } else if (workspaceReadAttempted) {
+                toolResult = `Error executing tool read_file: unable to read "${requestedRaw}" from workspace.`;
+              } else if (workspaceMode) {
+                toolResult =
+                  `Error executing tool read_file: workspace read tool is unavailable for "${requestedRaw}".` +
+                  ` Use the read tool directly with an explicit path.`;
+              } else {
+                const match = fileToolContext.find((f) => {
+                  const title = normalizeMatch(f.title);
+                  const source = normalizeMatch(f.source);
+                  const path = normalizeMatch(f.path);
+                  return (
+                    requested === title ||
+                    requested === source ||
+                    requested === path ||
+                    title.includes(requested) ||
+                    source.includes(requested) ||
+                    path.includes(requested)
+                  );
+                });
+
+                if (!requested) {
+                  toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
+                } else if (!match) {
+                  toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+                } else {
+                  const label = match.path || match.title || match.source;
+                  const content = (match.snippet || '').trim();
+                  const base = content
+                    ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
+                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
+
+                  const isDocx = /\.docx$/i.test(label || '');
+                  const extractNotice =
+                    extractText && isDocx
+                      ? '\n\nNote: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
+                      : '';
+
+                  toolResult = `${base}${extractNotice}`;
+                  if (label) {
+                    rememberReadEvidence(label, content);
+                  }
+                }
+              }
+            }
+
+            if (toolName === 'mark_source_passage') {
+              const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
+              const kind = rawKind === 'interesting' ? 'interesting' : 'used';
+              const source = typeof args.source === 'string' ? args.source : '';
+              const title = typeof args.title === 'string' ? args.title : '';
+              const passage = typeof args.passage === 'string' ? args.passage : '';
+              const normalizedPassage = passage.trim();
+
+              const sourceKey = normalizeSourceKey(source || title);
+              const sourceEvidence = sourceKey ? readEvidenceBySource.get(sourceKey) : undefined;
+              const anyEvidence = Array.from(readEvidenceBySource.values());
+              const hasMatchingEvidence = normalizedPassage
+                ? (
+                  (sourceEvidence && sourceEvidence.includes(normalizedPassage)) ||
+                  anyEvidence.some((evidence) => evidence.includes(normalizedPassage))
+                )
+                : false;
+
+              if (!hasMatchingEvidence) {
+                toolResult = 'Error executing tool mark_source_passage: passage is not present in previously read file content.';
+              } else {
+                toolResult = `Source passage marked successfully (kind=${kind}).`;
+              }
+            } else if (toolName === 'read_sources') {
+              toolResult = customToolResult || 'No source passages available.';
+            } else if (toolName === 'edit_source_passage') {
+              toolResult = customToolResult || 'Source passage edit request processed.';
+            } else if (customToolResult) {
+              toolResult = customToolResult;
+            } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
+              toolResult = `Unsupported tool: ${toolName}`;
+            }
+
+            onToolResult?.(toolName, toolResult);
+          } catch (e) {
+            toolResult = `Error executing tool ${toolName}: ${e instanceof Error ? e.message : String(e)}`;
+            onToolResult?.(toolName, toolResult);
+          }
+
+          toolResults.push({
+            tool_call_id: toolCall.id,
+            content: toolResult,
+          });
+        }
+
+        // If we have tool results, make a follow-up request to get the final response
+        if (toolResults.length > 0) {
+          const hasToolErrors = toolResults.some((result) => {
+            const content = result.content.trim();
+            return (
+              /^Error executing/i.test(content) ||
+              /^Missing\s+/i.test(content) ||
+              /^No match found/i.test(content) ||
+              /^File not found/i.test(content) ||
+              /^Cannot\s+/i.test(content)
+            );
+          });
+          const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
+          const hasWorkspaceFileReadResults = toolResults.some((result) =>
+            /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*WORKSPACE_FILE/m.test(result.content)
+          );
+          const hasContextSnippetReadResults = toolResults.some((result) =>
+            /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*CONTEXT_SNIPPET/m.test(result.content)
+          );
+          const hasWorkspaceReadCall = validToolCalls.some((call) =>
+            call.function.name === 'read' || call.function.name === 'read_file' || call.function.name === 'list'
+          );
+          if (hasWorkspaceFileReadResults) {
+            const readBlocks = toolResults
+              .filter((result) => /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*WORKSPACE_FILE/m.test(result.content))
+              .map((result) => {
+                const fileMatch = result.content.match(/^FILE:\s*(.+)$/m);
+                const filePath = fileMatch?.[1]?.trim() || 'unknown-file';
+                const separatorIndex = result.content.indexOf('\n\n');
+                const rawContent = separatorIndex >= 0
+                  ? result.content.slice(separatorIndex + 2)
+                  : result.content;
+
+                return `Contenu exact lu via l'outil pour ${filePath}:\n\n\`\`\`\n${rawContent}\n\`\`\``;
+              });
+
+            if (readBlocks.length > 0) {
+              const deterministicResponse = readBlocks.join('\n\n---\n\n');
+              fullContent += `\n\n${deterministicResponse}\n`;
+              onToken(`\n\n${deterministicResponse}\n`);
+              // We do not return here! Let the loop continue to the next turn 
+              // so the AI can reason about what it just read.
+            }
+          }
+
+          if (hasContextSnippetReadResults && !hasWorkspaceFileReadResults && hasWorkspaceReadCall) {
+            const deterministicError = [
+              'La lecture fichier ne provient pas du workspace actif (context snippet uniquement).',
+              'Je refuse de synthétiser ce contenu pour éviter les hallucinations.',
+              'Relance avec un chemin explicite (ex: README.md) ou vérifie le root Debug.',
+            ].join('\n');
+
+            fullContent += `\n\n${deterministicError}\n`;
+            onToken(`\n\n${deterministicError}\n`);
+          }
+
+          if (hasToolErrors && hasWorkspaceReadCall) {
+            const errorLines = toolResults
+              .map((result) => result.content.trim())
+              .filter((content) => /^Error executing/i.test(content) || /^Missing\s+/i.test(content) || /^File not found/i.test(content));
+
+            if (errorLines.length > 0) {
+              const deterministicError = [
+                'La lecture workspace a échoué. Sortie brute des outils :',
+                ...errorLines.map((line) => `- ${line}`),
+                '',
+                'Je ne peux pas déduire le contenu du fichier sans sortie de lecture valide.',
+              ].join('\n');
+
+              fullContent += `\n\n${deterministicError}\n`;
+              onToken(`\n\n${deterministicError}\n`);
+            }
+          }
+
+          const usedInlineTools = inlineReplacements.length > 0;
+
+          if (usedInlineTools) {
+            const textResults = toolResults.map(tr =>
+              `[Tool Result for ${validToolCalls.find(tc => tc.id === tr.tool_call_id)?.function.name}]:\n${tr.content}`
+            ).join('\n\n');
+
+            currentMessages.push({
+              role: 'user',
+              content: `Here are the results of the tools you called:\n\n${textResults}\n\nPlease continue your task using these results.`
+            });
+          } else {
+            currentMessages.push(...toolResults.map(tr => ({ role: 'tool' as const, content: tr.content, tool_call_id: tr.tool_call_id })));
+          }
+
+          const guardSystemMessages: StreamMessage[] = [];
+          if (hasToolErrors) {
+            guardSystemMessages.push({
+              role: 'system',
+              content:
+                'One or more tool calls failed. Do not fabricate file contents or command outputs. ' +
+                'State the exact failure and ask for a corrected path/context when needed.',
+            });
+          }
+          if (hasFileReadResults) {
+            guardSystemMessages.push({
+              role: 'system',
+              content:
+                'For file analysis tasks, use ONLY the exact tool outputs provided in this conversation. ' +
+                'Do not invent code symbols, structs, handlers, routes, or data not present in tool output. ' +
+                'If uncertain, say that the information is not present in the file content you received.',
+            });
+          }
+
+          if (guardSystemMessages.length > 0) {
+            currentMessages.push(...guardSystemMessages);
+          }
+        }
+      }
+
+      // If no valid tool calls were made in this turn, we are done
+      if (validToolCalls.length === 0) {
+        break;
+      }
+
+      turnCount++;
     }
-    
+
     onComplete(fullContent);
   } catch (error) {
     // Cleanup on error
@@ -1273,17 +1357,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
       return;
     }
-    
+
     // Better error messages for local providers
     const err = error instanceof Error ? error : new Error(String(error));
     const isLocalProvider = options.providerType === 'lmstudio' || options.providerType === 'ollama';
-    
+
     if (isLocalProvider && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || err.message.includes('connection'))) {
       const providerName = options.providerType === 'lmstudio' ? 'LM Studio' : 'Ollama';
       onError(new Error(`Cannot connect to ${providerName}. Make sure the server is running and accessible at ${options.baseUrl}`));
       return;
     }
-    
+
     onError(err);
   } finally {
     // Always cleanup references to prevent memory leaks
@@ -1338,7 +1422,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unknown error');
       let errorMessage = `Request failed: ${response.status}`;
-      
+
       try {
         const errorJson = JSON.parse(errorText);
         errorMessage = errorJson.error?.message || errorJson.message || errorMessage;
@@ -1347,7 +1431,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
           errorMessage = errorText;
         }
       }
-      
+
       throw new Error(errorMessage);
     }
 

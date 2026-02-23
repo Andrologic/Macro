@@ -44,7 +44,7 @@ const ALL_WORKSPACE_TOOLS = [
 export const getToolModePolicy = (mode: AppMode): ToolModePolicy => {
   if (mode === 'Architect') {
     return {
-      allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_READ_TOOLS],
+      allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_READ_TOOLS, 'add_need', 'generate_plan'],
       enforceMacroOnlyWrites: true,
     };
   }
