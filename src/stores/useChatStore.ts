@@ -653,27 +653,76 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return 'No nodes provided for the plan.';
       }
 
-      const planNodes = nodes.map((n: any, i) => ({
-        id: `node-${Date.now()}-${i}`,
+      // Resolve projectId: explicit selection → first project in group → first project anywhere
+      const appState = useAppStore.getState();
+      let resolvedProjectId = appState.selectedProjectId;
+
+      if (!resolvedProjectId && appState.selectedGroupId) {
+        const group = appState.projectGroups.find(g => g.id === appState.selectedGroupId);
+        if (group && group.projects.length > 0) {
+          resolvedProjectId = group.projects[0].id;
+        }
+      }
+
+      if (!resolvedProjectId) {
+        const firstProject = appState.projectGroups.flatMap(g => g.projects)[0];
+        if (firstProject) {
+          resolvedProjectId = firstProject.id;
+        }
+      }
+
+      // Generate unique IDs using a base + counter
+      const idBase = `plan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+      const planNodes: PlanNode[] = nodes.map((n: any, i: number) => ({
+        id: `${idBase}-${i}`,
         title: n.title,
         description: n.description || '',
         type: n.type || 'task',
-        status: 'pending',
-        dependencies: Array.isArray(n.dependencies) ? n.dependencies : [], // These are titles right now, need to be generic
+        assignedBranch: n.assignedBranch || 'main',
+        status: 'pending' as const,
+        projectId: resolvedProjectId || undefined,
+        dependencies: Array.isArray(n.dependencies) ? n.dependencies : [],
       }));
 
-      // A simple heuristic to resolve dependencies by title
-      planNodes.forEach((node: any) => {
+      // Resolve dependencies by title → id
+      planNodes.forEach((node) => {
         if (node.dependencies.length > 0) {
           node.dependencies = node.dependencies.map((depTitle: string) => {
-            const depNode = planNodes.find((n: any) => n.title === depTitle);
+            const depNode = planNodes.find((n) => n.title === depTitle);
             return depNode ? depNode.id : depTitle;
           });
         }
       });
 
-      useAppStore.getState().setPlanNodes(planNodes);
-      return `Successfully generated a plan with ${nodes.length} nodes.`;
+      // Group tasks by branch to build predictedBranches
+      const branchMap = new Map<string, string[]>();
+      planNodes.forEach((node) => {
+        const branchName = node.assignedBranch || 'main';
+        if (!branchMap.has(branchName)) {
+          branchMap.set(branchName, []);
+        }
+        branchMap.get(branchName)!.push(node.id);
+      });
+
+      const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
+      const predictedBranches: PredictedBranch[] = Array.from(branchMap.entries()).map(([name, taskIds], index) => ({
+        id: `branch-${Date.now()}-${index}`,
+        name,
+        color: colors[index % colors.length],
+        parentBranch: name === 'main' ? null : 'main',
+        projectId: resolvedProjectId || '',
+        taskIds,
+        status: 'pending' as const,
+      }));
+
+      console.log('[generate_plan] Created', planNodes.length, 'nodes and', predictedBranches.length, 'branches for project', resolvedProjectId);
+
+      const appStore = useAppStore.getState();
+      appStore.setPlanNodes(planNodes);
+      appStore.setPredictedBranches(predictedBranches);
+
+      return `Successfully generated a plan with ${nodes.length} nodes across ${predictedBranches.length} branches (project: ${resolvedProjectId || 'none'}).`;
     }
 
     if (

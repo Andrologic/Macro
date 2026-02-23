@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
+import { useChatStore } from '../../stores/useChatStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import type { PlanNode, PlanNodeStatus } from '../../types';
@@ -32,8 +33,10 @@ const statusBgColors: Record<PlanNodeStatus, string> = {
 
 const NODE_RADIUS = 16;
 const PADDING_TOP = 60;
-const LEFT_MARGIN = 20;
-const ROW_HEIGHT = 80;
+const LEFT_MARGIN = 40;
+const ROW_HEIGHT = 70;
+const MIN_COL_WIDTH = 100;
+const MAX_COL_WIDTH = 250;
 
 // Utility hook for element size
 function useElementSize<T extends HTMLElement>() {
@@ -62,6 +65,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const { t } = useTranslation();
   const { selectedGroupId, selectedProjectId, projectGroups, planNodes, predictedBranches } = useAppStore();
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
   const [viewMode, setViewMode] = useState<'graph' | 'branches'>('graph');
   const { ref: containerRef, width: containerWidth } = useElementSize<HTMLDivElement>();
 
@@ -79,6 +83,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         nodes = planNodes.filter((n: PlanNode) => n.projectId && projectIds.includes(n.projectId));
       }
     } else {
+      nodes = planNodes;
+    }
+
+    // Fallback: if filtering yielded nothing but planNodes exist globally, show them all
+    if (nodes.length === 0 && planNodes.length > 0) {
+      console.warn('[StrategyGraph] No nodes matched current project filter, showing all', planNodes.length, 'nodes');
       nodes = planNodes;
     }
 
@@ -110,6 +120,31 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     };
 
     nodes.forEach(n => getRank(n.id));
+
+    // --- Disambiguate Overlaps ---
+    // If nodes share the same branch AND the same rank, they perfectly overlap.
+    // We sort them roughly by ID to be deterministic, then progressively bump ranks.
+    const nodesByBranch = new Map<string, PlanNode[]>();
+    nodes.forEach(n => {
+      const b = n.assignedBranch || 'main';
+      if (!nodesByBranch.has(b)) nodesByBranch.set(b, []);
+      nodesByBranch.get(b)!.push(n);
+    });
+
+    nodesByBranch.forEach(branchNodes => {
+      // Sort primarily by current computed rank, then by ID as stable fallback
+      branchNodes.sort((a, b) => (ranks.get(a.id)! - ranks.get(b.id)!) || a.id.localeCompare(b.id));
+
+      let lastRank = -1;
+      branchNodes.forEach(n => {
+        let r = ranks.get(n.id)!;
+        if (r <= lastRank) {
+          r = lastRank + 1; // force sequential
+          ranks.set(n.id, r);
+        }
+        lastRank = r;
+      });
+    });
 
     // --- Lane Packing Algorithm ---
     const uniqueBranchNames = Array.from(new Set(nodes.map(n => n.assignedBranch || 'main')));
@@ -147,14 +182,19 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
     const activeLanesCount = Math.max(1, lanes.length);
 
-    // Dynamic Column Width
-    const availableWidth = Math.max(200, containerWidth - (LEFT_MARGIN * 2));
-    const dynamicColWidth = availableWidth / activeLanesCount;
-    // Cap strictly to avoid overflow, but maintain minimum legibility if possible
-    const COL_WIDTH = dynamicColWidth; // Use full dynamic width
+    // Dynamic Column Width with Clamping
+    // Only force MIN_COL_WIDTH if we have so many lanes that they would be unreadable otherwise.
+    // If we have few lanes, let them take up comfortable space up to MAX_COL_WIDTH.
+    const availableWidth = Math.max(0, containerWidth - (LEFT_MARGIN * 2));
+    const dynamicColWidth = activeLanesCount > 0 ? availableWidth / activeLanesCount : availableWidth;
 
-    // const totalGraphWidth = COL_WIDTH * activeLanesCount; // Reserved for future sizing debug
-    const effectiveLeftPadding = LEFT_MARGIN;
+    // Allow COL_WIDTH to be smaller if the container is tiny, but enforce MIN_COL_WIDTH if we have many lanes
+    const COL_WIDTH = Math.min(MAX_COL_WIDTH, Math.max(MIN_COL_WIDTH, dynamicColWidth));
+
+    const totalGraphWidth = COL_WIDTH * activeLanesCount;
+    const finalWidth = Math.max(containerWidth, totalGraphWidth + LEFT_MARGIN * 2);
+    const extraSpace = Math.max(0, finalWidth - totalGraphWidth);
+    const effectiveLeftPadding = LEFT_MARGIN + (extraSpace / 2); // Center graph if smaller than container
 
     const positionedNodes = nodes.map(n => {
       const laneIndex = branchToLaneMap.get(n.assignedBranch || 'main') ?? 0;
@@ -199,7 +239,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     return {
       nodes: positionedNodes,
       edges,
-      width: containerWidth, // Use full width
+      width: finalWidth,
       height,
       laneHeaders,
       colWidth: COL_WIDTH,
@@ -207,7 +247,14 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     };
   }, [selectedGroupId, selectedProjectId, projectGroups, planNodes, containerWidth]);
 
-  const handledMouseMove = () => { };
+  console.log('[StrategyGraph Render]', {
+    containerWidth,
+    viewMode,
+    planNodesCount: planNodes.length,
+    layoutNodesCount: layoutData.nodes.length,
+    selectedProjectId,
+    selectedGroupId
+  });
 
   const getStatusIconName = (status: PlanNodeStatus) => {
     switch (status) {
@@ -241,18 +288,39 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
     return (
       <aside className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}>
-        <div className="flex-1 flex items-center justify-center text-muted-foreground">
-          <Icon name="search" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
-          <p>No plan items found for this selection.</p>
+        <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-6 text-center">
+          <Icon name="git-merge" size={48} className="text-muted-foreground/30 mb-4" />
+          <h3 className="text-sm font-semibold text-foreground mb-1">No plan generated yet</h3>
+          <p className="text-xs text-muted-foreground max-w-[250px] mb-6">
+            Generate a strategy graph based on your identified project needs.
+          </p>
+          <button
+            onClick={() => {
+              const chatStore = useChatStore.getState();
+              const appStore = useAppStore.getState();
+              if (chatStore && appStore.mode === 'Architect') {
+                const conversationId = chatStore.selectedConversationIdsByMode['Architect'];
+                if (conversationId) {
+                  chatStore.sendMessage({
+                    conversationId,
+                    content: "Please generate a structured project plan for the current project using the `generate_plan` tool.",
+                  });
+                }
+              }
+            }}
+            className="px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors rounded-lg flex items-center gap-2 text-sm font-medium shadow-sm hover:shadow"
+          >
+            <Icon name="wand-2" size={16} />
+            {t('architect.generatePlan', 'Generate Plan')}
+          </button>
         </div>
       </aside>
-    )
+    );
   }
 
   return (
     <aside
       className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
-      onMouseMove={handledMouseMove}
     >
       {/* Header */}
       <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
@@ -345,8 +413,14 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                     <g
                       key={node.id}
                       className={cn("transition-opacity duration-300", isDimmed ? "opacity-30" : "opacity-100")}
-                      onMouseEnter={() => setHoveredNodeId(node.id)}
-                      onMouseLeave={() => setHoveredNodeId(null)}
+                      onMouseEnter={(e) => {
+                        setHoveredNodeId(node.id);
+                        setHoveredNodeRect(e.currentTarget.getBoundingClientRect());
+                      }}
+                      onMouseLeave={() => {
+                        setHoveredNodeId(null);
+                        setHoveredNodeRect(null);
+                      }}
                       style={{ cursor: 'pointer' }}
                     >
                       {/* Hit area */}
@@ -385,30 +459,40 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                         </div>
                       </foreignObject>
 
-                      {/* Label */}
-                      {isHovered && (
-                        <text
-                          x={node.x + NODE_RADIUS + 10}
-                          y={node.y + 4}
-                          className="text-[11px] font-sans font-medium fill-foreground"
-                          style={{ textShadow: '0 1px 2px rgb(0 0 0 / 0.5)' }}
-                        >
-                          {node.title}
-                        </text>
-                      )}
                     </g>
                   );
                 })}
+
+                {/* Hovered Label (Rendered Last for Z-Index) */}
+                {hoveredNodeData && (
+                  <g className="pointer-events-none">
+                    <text
+                      x={hoveredNodeData.x > (layoutData.width / 2) ? hoveredNodeData.x - NODE_RADIUS - 12 : hoveredNodeData.x + NODE_RADIUS + 12}
+                      y={hoveredNodeData.y + 4}
+                      textAnchor={hoveredNodeData.x > (layoutData.width / 2) ? "end" : "start"}
+                      className="text-[11px] font-sans font-medium fill-foreground"
+                      style={{
+                        textShadow: '0 2px 4px rgb(var(--background)), 0 0 2px rgb(var(--background)), 0 0 2px rgb(var(--background))',
+                        paintOrder: 'stroke fill'
+                      }}
+                    >
+                      {hoveredNodeData.title}
+                    </text>
+                  </g>
+                )}
               </svg>
             </div>
 
             {/* Tooltip Overlay */}
-            {hoveredNodeData && (
+            {hoveredNodeData && hoveredNodeRect && (
               <div
-                className="absolute z-50 p-4 rounded-xl border border-border bg-popover/95 shadow-xl backdrop-blur-sm w-72 pointer-events-none animate-in fade-in zoom-in-95 duration-150"
+                className="fixed z-[100] p-4 rounded-xl border border-border bg-popover/95 shadow-xl backdrop-blur-sm w-72 pointer-events-none animate-in fade-in zoom-in-95 duration-150"
                 style={{
-                  top: 50,
-                  right: 20,
+                  top: Math.min(hoveredNodeRect.top + 10, window.innerHeight - 150), // Prevent off-screen bottom
+                  ...(hoveredNodeRect.left > window.innerWidth / 2
+                    ? { left: hoveredNodeRect.left - 280 - 15 } // Render to the left of the node
+                    : { left: hoveredNodeRect.right + 15 }      // Render to the right of the node
+                  )
                 }}
               >
                 <div className="flex items-start justify-between gap-4 mb-2">
