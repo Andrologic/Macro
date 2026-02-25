@@ -171,18 +171,8 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
                 <h3 className="text-sm font-medium text-foreground leading-tight line-clamp-2">
                   {need.title}
                 </h3>
-                <div className="shrink-0 flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={(e) => handleNeedEdit(e, need.id)}
-                    className="w-6 h-6 rounded-md flex items-center justify-center bg-muted border border-border/50 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-accent"
-                    title="Edit need"
-                  >
-                    <Icon name="pencil" size={12} className="text-muted-foreground" />
-                  </button>
-                  <div className="w-6 h-6 rounded-md flex items-center justify-center bg-muted border border-border/50">
-                    <Icon name={CATEGORY_ICONS[need.category]} size={12} className="text-muted-foreground" />
-                  </div>
+                <div className="w-6 h-6 rounded-md flex items-center justify-center bg-muted border border-border/50 shrink-0">
+                  <Icon name={CATEGORY_ICONS[need.category]} size={12} className="text-muted-foreground" />
                 </div>
               </div>
 

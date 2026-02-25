@@ -14,6 +14,7 @@ import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
 import { PlanSelector } from '../architect/PlanSelector';
+import { ComposerEditor, type ComposerEditorHandle } from './composer/ComposerEditor';
 
 /**
  * ChatZone - Main chat interface used across all modes
@@ -38,7 +39,6 @@ const ChatZone: React.FC = () => {
     getMessageImages,
     setMessageImages,
     composerContextRefs,
-    removeComposerContextRef,
   } = useChatStore();
 
   const { selectedProviderId, selectedModelId } = useProviderStore();
@@ -49,6 +49,9 @@ const ChatZone: React.FC = () => {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
+
+  // Lexical composer ref
+  const composerEditorRef = useRef<ComposerEditorHandle>(null);
 
   // Ensure mode-scoped conversation is selected when project/task context changes.
   // Mode switches are handled via a cross-store subscription in useChatStore.
@@ -307,12 +310,14 @@ const ChatZone: React.FC = () => {
   };
 
   const handleSend = async () => {
-    if ((!inputValue.trim() && composerImages.length === 0) || isLoading) return;
+    const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
+    if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isLoading) return;
     const conversationId = await ensureConversation();
-    const content = inputValue.trim();
+    const content = text;
     const imagesForMessage = composerImages;
-    setInputValue('');
+    composerEditorRef.current?.clear();
     setComposerImages([]);
+    setInputValue('');
     await sendMessage({ conversationId, content, images: imagesForMessage });
   };
 
@@ -356,6 +361,7 @@ const ChatZone: React.FC = () => {
       stopStreaming();
     }
     await createConversation('Debug Session', null, null);
+    composerEditorRef.current?.clear();
     setInputValue('');
     setComposerImages([]);
     setPromptHistoryIndex(null);
@@ -367,17 +373,17 @@ const ChatZone: React.FC = () => {
 
     if (direction === 'up') {
       if (promptHistoryIndex === null) {
-        setDraftBeforeHistory(inputValue);
+        setDraftBeforeHistory(composerEditorRef.current?.getTextContent() ?? '');
         const lastIndex = promptHistory.length - 1;
         setPromptHistoryIndex(lastIndex);
-        setInputValue(promptHistory[lastIndex]);
+        composerEditorRef.current?.setText(promptHistory[lastIndex]);
         return;
       }
 
       if (promptHistoryIndex > 0) {
         const nextIndex = promptHistoryIndex - 1;
         setPromptHistoryIndex(nextIndex);
-        setInputValue(promptHistory[nextIndex]);
+        composerEditorRef.current?.setText(promptHistory[nextIndex]);
       }
       return;
     }
@@ -387,12 +393,12 @@ const ChatZone: React.FC = () => {
     if (promptHistoryIndex < promptHistory.length - 1) {
       const nextIndex = promptHistoryIndex + 1;
       setPromptHistoryIndex(nextIndex);
-      setInputValue(promptHistory[nextIndex]);
+      composerEditorRef.current?.setText(promptHistory[nextIndex]);
       return;
     }
 
     setPromptHistoryIndex(null);
-    setInputValue(draftBeforeHistory);
+    composerEditorRef.current?.setText(draftBeforeHistory);
   };
 
   useEffect(() => {
@@ -731,32 +737,6 @@ const ChatZone: React.FC = () => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3">
           <div className="w-full max-w-3xl mx-auto space-y-3">
-            {composerContextRefs.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 rounded-lg border border-border bg-card/60 p-2">
-                {composerContextRefs.map((ref) => {
-                  const iconName = ref.kind === 'need' ? 'lightbulb' : ref.kind === 'plan-node' ? 'circle-dot' : 'git-branch';
-                  const accentClass = ref.kind === 'need' ? 'text-yellow-500' : ref.kind === 'plan-node' ? 'text-blue-400' : 'text-emerald-400';
-                  return (
-                    <span
-                      key={`${ref.kind}-${ref.id}`}
-                      className="inline-flex items-center gap-1 rounded-md bg-muted/60 border border-border px-2 py-0.5 text-xs text-foreground/80"
-                    >
-                      <Icon name={iconName} size={12} className={accentClass} />
-                      <span className="max-w-[150px] truncate">{ref.title}</span>
-                      <button
-                        type="button"
-                        onClick={() => removeComposerContextRef(ref.id, ref.kind)}
-                        className="ml-0.5 hover:text-foreground transition-colors"
-                        title="Remove"
-                      >
-                        <Icon name="x" size={10} />
-                      </button>
-                    </span>
-                  );
-                })}
-              </div>
-            )}
-
             {composerImages.length > 0 && (
               <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-card/60 p-2">
                 {composerImages.map((image) => (
@@ -804,56 +784,29 @@ const ChatZone: React.FC = () => {
             </div>
 
             <div
-              className="flex items-center gap-3 bg-card/80 border border-border rounded-xl p-2"
+              className="flex items-center gap-2 bg-card/80 border border-border rounded-xl px-2 py-1.5"
               onPasteCapture={handleComposerPaste}
             >
-              <input
-                type="text"
-                data-shortcut-chat-input="true"
+              <ComposerEditor
+                ref={composerEditorRef}
+                editable={!isLoading && !!selectedProviderId && !!selectedModelId}
                 placeholder={
                   !selectedProviderId || !selectedModelId
                     ? t('chat.selectProvider')
                     : t('chat.typeMessage')
                 }
-                className="flex-1 bg-transparent border-0 outline-none text-sm text-foreground placeholder:text-muted-foreground h-9 px-2"
-                value={inputValue}
-                onChange={(event) => {
-                  setInputValue(event.target.value);
+                onTextChange={(text) => {
+                  setInputValue(text);
                   if (promptHistoryIndex !== null) {
                     setPromptHistoryIndex(null);
                   }
                 }}
-                onKeyDown={(event) => {
-                  if (promptHistoryNavigationMode === 'contextual_arrows') {
-                    if (event.key === 'ArrowUp') {
-                      const input = event.currentTarget;
-                      const start = input.selectionStart ?? 0;
-                      const end = input.selectionEnd ?? 0;
-                      if (start === 0 && end === 0) {
-                        event.preventDefault();
-                        navigatePromptHistory('up');
-                        return;
-                      }
-                    }
-                    if (event.key === 'ArrowDown') {
-                      const input = event.currentTarget;
-                      const length = input.value.length;
-                      const start = input.selectionStart ?? length;
-                      const end = input.selectionEnd ?? length;
-                      if (start === length && end === length) {
-                        event.preventDefault();
-                        navigatePromptHistory('down');
-                        return;
-                      }
-                    }
-                  }
-
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault();
-                    handleSend();
-                  }
-                }}
-                disabled={isLoading || !selectedProviderId || !selectedModelId}
+                onSend={handleSend}
+                onPromptHistory={
+                  promptHistoryNavigationMode === 'contextual_arrows'
+                    ? navigatePromptHistory
+                    : undefined
+                }
               />
               {isStreaming ? (
                 <button
