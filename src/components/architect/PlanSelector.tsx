@@ -17,6 +17,7 @@ import { useNeedsStore } from '../../stores/useNeedsStore';
 import { Icon } from '../ui/Icon';
 import { toast } from '../ui/Toaster';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
+import { PlanFormModal } from './PlanFormModal';
 import { cn } from '../../utils/cn';
 
 interface PlanSelectorProps {
@@ -50,7 +51,16 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const conversationToastShownRef = useRef<Set<string>>(new Set());
   const autoCreatingRef = useRef(false);
+  const lastEffectIdRef = useRef<string | null | undefined>(undefined);
   const targetBranch = getGitFlowBaseBranch();
+
+  const [planFormModal, setPlanFormModal] = useState<{
+    open: boolean;
+    mode: 'create' | 'rename';
+    plan?: ArchitectPlanSummary;
+  } | null>(null);
+  const [formLoading, setFormLoading] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const activePlan = useMemo(() => {
     if (!activePlanId) return null;
@@ -230,60 +240,61 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
   };
 
-  const handleCreatePlan = async () => {
-    const title = window.prompt('Plan name');
-    if (!title || title.trim().length === 0) return;
-
-    setError(null);
-    setIsLoading(true);
-    try {
-      const appStoreForConversation = useAppStore.getState();
-      const fallbackProjectId =
-        selectedProjectId ||
-        appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
-        null;
-      const conversation = await useChatStore
-        .getState()
-        .createConversation(`Plan · ${title.trim()}`, null, fallbackProjectId);
-
-      const created = await createArchitectPlan({
-        branchName: targetBranch,
-        title: title.trim(),
-        slug: title.trim(),
-        projectId: selectedProjectId || undefined,
-        conversationId: conversation.id,
-        status: 'draft',
-        setActive: true,
-      });
-
-      await loadPlans(false);
-      await activatePlan(created.id);
-    } catch (creationError) {
-      const message = creationError instanceof Error ? creationError.message : 'Failed to create plan.';
-      setError(message);
-    } finally {
-      setIsLoading(false);
-    }
+  const handleCreatePlan = () => {
+    setFormError(null);
+    setPlanFormModal({ open: true, mode: 'create' });
   };
 
-  const handleRenamePlan = async (planId: string, currentTitle: string) => {
-    const nextTitle = window.prompt('Rename plan', currentTitle);
-    if (!nextTitle || nextTitle.trim().length === 0 || nextTitle.trim() === currentTitle) return;
+  const handleRenamePlan = (planId: string, _currentTitle: string) => {
+    const plan = plans.find((p) => p.id === planId);
+    setFormError(null);
+    setPlanFormModal({ open: true, mode: 'rename', plan });
+  };
 
-    setError(null);
-    setIsLoading(true);
+  const handleFormConfirm = async (title: string, description?: string) => {
+    if (!planFormModal) return;
+    setFormLoading(true);
+    setFormError(null);
     try {
-      await updateArchitectPlan({
-        branchName: targetBranch,
-        planId,
-        title: nextTitle.trim(),
-      });
-      await loadPlans(false);
-    } catch (renameError) {
-      const message = renameError instanceof Error ? renameError.message : 'Failed to rename plan.';
-      setError(message);
+      if (planFormModal.mode === 'create') {
+        const appStoreForConversation = useAppStore.getState();
+        const fallbackProjectId =
+          selectedProjectId ||
+          appStoreForConversation.projectGroups.flatMap((g) => g.projects)[0]?.id ||
+          null;
+        const conversation = await useChatStore
+          .getState()
+          .createConversation(`Plan · ${title}`, null, fallbackProjectId);
+        const created = await createArchitectPlan({
+          branchName: targetBranch,
+          title,
+          slug: title,
+          description,
+          projectId: selectedProjectId || undefined,
+          conversationId: conversation.id,
+          status: 'draft',
+          setActive: true,
+        });
+        setPlanFormModal(null);
+        await loadPlans(false);
+        await activatePlan(created.id);
+      } else if (planFormModal.mode === 'rename' && planFormModal.plan) {
+        if (title === planFormModal.plan.title) {
+          setPlanFormModal(null);
+          return;
+        }
+        await updateArchitectPlan({
+          branchName: targetBranch,
+          planId: planFormModal.plan.id,
+          title,
+        });
+        setPlanFormModal(null);
+        await loadPlans(false);
+      }
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Operation failed.');
     } finally {
-      setIsLoading(false);
+      setFormLoading(false);
     }
   };
 
@@ -358,6 +369,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   };
 
   useEffect(() => {
+    // Guard against re-runs when activeArchitectPlanId hasn't actually changed
+    // (e.g. when loadPlans itself calls setActiveArchitectPlanId during auto-creation)
+    if (lastEffectIdRef.current === activeArchitectPlanId) return;
+    lastEffectIdRef.current = activeArchitectPlanId;
     void loadPlans(true);
   }, [activeArchitectPlanId]);
 
@@ -393,7 +408,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               <div className="text-xs font-semibold text-foreground">Architect plans</div>
               <div className="flex items-center gap-1.5">
                 <button
-                  onClick={() => void handleCreatePlan()}
+                  onClick={handleCreatePlan}
                   className="h-7 px-2 rounded-md text-xs border border-border hover:bg-accent flex items-center gap-1.5"
                 >
                   <Icon name="plus" size={12} />
@@ -459,7 +474,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          void handleRenamePlan(plan.id, plan.title);
+                          handleRenamePlan(plan.id, plan.title);
                         }}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center"
                         title="Rename plan"
@@ -539,6 +554,19 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           }
         }}
       />
+
+      {planFormModal?.open && (
+        <PlanFormModal
+          mode={planFormModal.mode}
+          initialTitle={planFormModal.mode === 'rename' ? (planFormModal.plan?.title ?? '') : ''}
+          onConfirm={(title, description) => void handleFormConfirm(title, description)}
+          onClose={() => {
+            if (!formLoading) setPlanFormModal(null);
+          }}
+          isLoading={formLoading}
+          error={formError}
+        />
+      )}
     </div>
   );
 };

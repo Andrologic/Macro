@@ -66,7 +66,7 @@ export interface PlanBlockItem {
 
 // User Needs (Architect Mode)
 export type NeedStatus = 'identified' | 'refined' | 'validated';
-export type NeedCategory = 'functional' | 'technical' | 'ux' | 'security' | 'other';
+export type NeedCategory = 'functional' | 'technical' | 'ux' | 'performance' | 'security' | 'data' | 'business' | 'other';
 
 export interface Need {
   id: string;

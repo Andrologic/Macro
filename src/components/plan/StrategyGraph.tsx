@@ -2,6 +2,8 @@ import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
+import { updateArchitectPlan, getGitFlowBaseBranch } from '../../services/architectPlanService';
+import { toast } from '../ui/Toaster';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import type { PlanNode, PlanNodeStatus } from '../../types';
@@ -63,11 +65,32 @@ function useElementSize<T extends HTMLElement>() {
 // Base component - wrapped with React.memo below for performance
 const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const { t } = useTranslation();
-  const { selectedGroupId, selectedProjectId, projectGroups, planNodes, predictedBranches } = useAppStore();
+  const { selectedGroupId, selectedProjectId, projectGroups, planNodes, predictedBranches, activePlanContext, setActivePlanContext } = useAppStore();
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
   const [viewMode, setViewMode] = useState<'graph' | 'branches'>('graph');
+  const [isValidating, setIsValidating] = useState(false);
   const { ref: containerRef, width: containerWidth } = useElementSize<HTMLDivElement>();
+
+  const targetBranch = getGitFlowBaseBranch();
+
+  const handleValidatePlan = async () => {
+    if (!activePlanContext || isValidating) return;
+    setIsValidating(true);
+    try {
+      await updateArchitectPlan({
+        branchName: targetBranch,
+        planId: activePlanContext.id,
+        status: 'validated',
+      });
+      setActivePlanContext({ ...activePlanContext, status: 'validated' });
+      toast.success('Plan validated — ready for implementation.');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to validate plan.');
+    } finally {
+      setIsValidating(false);
+    }
+  };
 
   // 1. Calculate Layout
   const layoutData = useMemo(() => {
@@ -607,6 +630,46 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               </div>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* ── Validate Plan footer ── */}
+      <div className="h-14 shrink-0 border-t border-border flex items-center gap-3 px-4 bg-card">
+        {activePlanContext ? (
+          activePlanContext.status === 'validated' ? (
+            <div className="flex items-center gap-2.5 text-emerald-500 text-sm font-medium">
+              <div className="p-1.5 bg-emerald-500/10 rounded-md shrink-0">
+                <Icon name="check-circle" size={14} className="text-emerald-500" />
+              </div>
+              Plan Validated
+            </div>
+          ) : (
+            <>
+              <span
+                className={cn(
+                  'text-[10px] px-1.5 py-0.5 rounded border uppercase font-medium shrink-0',
+                  activePlanContext.status === 'in_progress'
+                    ? 'text-blue-500 bg-blue-500/10 border-blue-500/20'
+                    : 'text-amber-500 bg-amber-500/10 border-amber-500/20'
+                )}
+              >
+                {activePlanContext.status}
+              </span>
+              <button
+                onClick={() => void handleValidatePlan()}
+                disabled={planNodes.length === 0 || isValidating}
+                className="ml-auto flex items-center gap-2 px-4 h-8 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                {isValidating ? (
+                  <><Icon name="loader" size={13} className="animate-spin" />Validating...</>
+                ) : (
+                  <><Icon name="shield-check" size={13} />Validate Plan</>
+                )}
+              </button>
+            </>
+          )
+        ) : (
+          <span className="text-xs text-muted-foreground">No active plan</span>
         )}
       </div>
     </aside>

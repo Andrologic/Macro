@@ -13,18 +13,24 @@ interface NeedsPanelProps {
 }
 
 const CATEGORY_ICONS: Record<NeedCategory, IconName> = {
-  functional: 'zap',
+  functional: 'target',
   technical: 'code',
-  ux: 'layout-grid',
+  ux: 'palette',
+  performance: 'zap',
   security: 'shield',
-  other: 'circle',
+  data: 'database',
+  business: 'milestone',
+  other: 'more-horizontal',
 };
 
 const CATEGORY_COLORS: Record<NeedCategory, string> = {
-  functional: 'text-amber-500',
-  technical: 'text-blue-500',
+  functional: 'text-blue-500',
+  technical: 'text-slate-500',
   ux: 'text-purple-500',
+  performance: 'text-amber-500',
   security: 'text-red-500',
+  data: 'text-emerald-500',
+  business: 'text-indigo-500',
   other: 'text-muted-foreground',
 };
 
@@ -110,7 +116,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
         >
           All
         </button>
-        {(['functional', 'ux', 'technical', 'security'] as NeedCategory[]).map((cat) => (
+        {(['functional', 'technical', 'ux', 'performance', 'security', 'data', 'business', 'other'] as NeedCategory[]).map((cat) => (
           <button
             key={cat}
             onClick={() => setFilter(cat)}
@@ -151,11 +157,8 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
                 <h3 className="text-sm font-medium text-foreground leading-tight line-clamp-2">
                   {need.title}
                 </h3>
-                <div className={cn(
-                  "shrink-0 w-6 h-6 rounded-md flex items-center justify-center bg-background border border-border/50",
-                  CATEGORY_COLORS[need.category].replace('text-', 'bg-').replace('500', '500/10')
-                )}>
-                  <Icon name={CATEGORY_ICONS[need.category]} size={12} className={CATEGORY_COLORS[need.category]} />
+                <div className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center bg-muted border border-border/50">
+                  <Icon name={CATEGORY_ICONS[need.category]} size={12} className="text-muted-foreground" />
                 </div>
               </div>
 
