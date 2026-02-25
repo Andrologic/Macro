@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { AppMode, ChatMessage, Conversation, PlanNode, PlanNodeStatus, PlanNodeType, PredictedBranch } from '../types';
+import { AppMode, ChatMessage, ContextRefKind, ContextReference, Conversation, PlanNode, PlanNodeStatus, PlanNodeType, PredictedBranch } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 import { useProviderStore } from './useProviderStore';
 import { useCitationsStore } from './useCitationsStore';
@@ -291,6 +291,10 @@ interface ChatStore {
   editMessage: (messageId: string, newContent: string) => Promise<void>;
   setMessageImages: (messageId: string, images: MessageImageAttachment[]) => void;
   getMessageImages: (messageId: string) => MessageImageAttachment[];
+  composerContextRefs: ContextReference[];
+  addComposerContextRef: (ref: ContextReference) => void;
+  removeComposerContextRef: (id: string, kind: ContextRefKind) => void;
+  clearComposerContextRefs: () => void;
   initialize: () => Promise<void>;
 }
 
@@ -1424,15 +1428,52 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       // Inject context into the last user message
-      if (index === lastUserIndex && citations.length > 0) {
-        const contextBlock = citations
-          .map((c, i) => {
-            const kind = c.scope === 'source' ? 'Important Source' : 'Context';
-            return `[${kind} ${i + 1}: ${c.title}]\n${c.snippet || c.source || ''}`;
-          })
-          .join('\n\n---\n\n');
+      if (index === lastUserIndex) {
+        const blocks: string[] = [];
 
-        messageContent = `CONTEXT INFORMATION:\n\n${contextBlock}\n\nUSER REQUEST: ${message.content}`;
+        if (citations.length > 0) {
+          const contextBlock = citations
+            .map((c, i) => {
+              const kind = c.scope === 'source' ? 'Important Source' : 'Context';
+              return `[${kind} ${i + 1}: ${c.title}]\n${c.snippet || c.source || ''}`;
+            })
+            .join('\n\n---\n\n');
+          blocks.push(`CONTEXT INFORMATION:\n\n${contextBlock}`);
+        }
+
+        const contextRefs = get().composerContextRefs;
+        if (contextRefs.length > 0) {
+          const refsBlock = contextRefs
+            .map((ref) => {
+              const lines: string[] = [`[${ref.kind}: ${ref.title}]`];
+              if (ref.subtitle) lines.push(`Category: ${ref.subtitle}`);
+              if ('description' in ref.data && ref.data.description) {
+                lines.push(`Description: ${ref.data.description}`);
+              }
+              if ('status' in ref.data && ref.data.status) {
+                lines.push(`Status: ${ref.data.status}`);
+              }
+              if ('priority' in ref.data && ref.data.priority) {
+                lines.push(`Priority: ${ref.data.priority}`);
+              }
+              if ('tags' in ref.data && Array.isArray(ref.data.tags) && ref.data.tags.length > 0) {
+                lines.push(`Tags: ${ref.data.tags.join(', ')}`);
+              }
+              if ('type' in ref.data && ref.data.type) {
+                lines.push(`Type: ${ref.data.type}`);
+              }
+              if ('dependencies' in ref.data && Array.isArray(ref.data.dependencies) && ref.data.dependencies.length > 0) {
+                lines.push(`Dependencies: ${ref.data.dependencies.join(', ')}`);
+              }
+              return lines.join('\n');
+            })
+            .join('\n\n---\n\n');
+          blocks.push(`REFERENCED ITEMS:\n\n${refsBlock}`);
+        }
+
+        if (blocks.length > 0) {
+          messageContent = `${blocks.join('\n\n')}\n\nUSER REQUEST: ${message.content}`;
+        }
       }
 
       if (message.role === 'user' && messageWithImagesId && message.id === messageWithImagesId) {
@@ -1712,6 +1753,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     lastError: null,
     abortController: null,
     messageImagesByMessageId: {},
+    composerContextRefs: [],
 
     addMessage: (message) =>
       set((state) => {
@@ -1811,6 +1853,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const state = get();
       return state.messageImagesByMessageId[messageId] || [];
     },
+
+    addComposerContextRef: (ref) =>
+      set((state) => {
+        const exists = state.composerContextRefs.some(
+          (r) => r.id === ref.id && r.kind === ref.kind
+        );
+        if (exists) return state;
+        return { composerContextRefs: [...state.composerContextRefs, ref] };
+      }),
+
+    removeComposerContextRef: (id, kind) =>
+      set((state) => ({
+        composerContextRefs: state.composerContextRefs.filter(
+          (r) => !(r.id === id && r.kind === kind)
+        ),
+      })),
+
+    clearComposerContextRefs: () => set({ composerContextRefs: [] }),
 
     selectConversation: (conversationId) => {
       set((state) => {
@@ -2172,6 +2232,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (images && images.length > 0) {
         get().setMessageImages(userMessage.id, images);
       }
+      // Clear context refs after they've been captured for this message
+      get().clearComposerContextRefs();
 
       if (userMessageCountBeforeSend === 0) {
         void maybeGenerateConversationMetadata({
