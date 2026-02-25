@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
@@ -39,25 +39,56 @@ const LEFT_MARGIN = 40;
 const ROW_HEIGHT = 70;
 const MIN_COL_WIDTH = 100;
 const MAX_COL_WIDTH = 250;
+const INLINE_HORIZONTAL_PADDING = 20;
+const MIN_MODAL_ZOOM = 0.25;
+const MAX_MODAL_ZOOM = 3;
+const MODAL_PAN_PADDING = 96;
+
+type GraphTransform = {
+  x: number;
+  y: number;
+  scale: number;
+};
+
+const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 
 // Utility hook for element size
 function useElementSize<T extends HTMLElement>() {
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const ref = React.useRef<T>(null);
+  const [node, setNode] = useState<T | null>(null);
 
-  React.useLayoutEffect(() => {
-    if (!ref.current) return;
-    const observer = new ResizeObserver((entries) => {
-      if (entries.length > 0) {
-        setSize({
-          width: entries[0].contentRect.width,
-          height: entries[0].contentRect.height,
-        });
-      }
-    });
-    observer.observe(ref.current);
-    return () => observer.disconnect();
+  const ref = useCallback((element: T | null) => {
+    setNode(element);
   }, []);
+
+  useEffect(() => {
+    if (!node) {
+      setSize({ width: 0, height: 0 });
+      return;
+    }
+
+    const updateSize = () => {
+      setSize({
+        width: node.clientWidth,
+        height: node.clientHeight,
+      });
+    };
+
+    updateSize();
+
+    const observer = new ResizeObserver((entries) => {
+      if (entries.length === 0) return;
+
+      setSize({
+        width: entries[0].contentRect.width,
+        height: entries[0].contentRect.height,
+      });
+    });
+
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, [node]);
 
   return { ref, width: size.width, height: size.height };
 }
@@ -70,7 +101,20 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
   const [viewMode, setViewMode] = useState<'graph' | 'branches'>('graph');
   const [isValidating, setIsValidating] = useState(false);
-  const { ref: containerRef, width: containerWidth } = useElementSize<HTMLDivElement>();
+  const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
+  const [isModalPanning, setIsModalPanning] = useState(false);
+  const [hasInitializedModalView, setHasInitializedModalView] = useState(false);
+  const [modalTransform, setModalTransform] = useState<GraphTransform>({ x: 0, y: 0, scale: 1 });
+  const { ref: containerRef, width: containerWidth, height: containerHeight } = useElementSize<HTMLDivElement>();
+  const { ref: modalViewportRef, width: modalViewportWidth, height: modalViewportHeight } = useElementSize<HTMLDivElement>();
+  const modalOpenedAtRef = useRef(0);
+  const modalPanStateRef = useRef<{ pointerId: number | null; startX: number; startY: number; originX: number; originY: number }>({
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    originX: 0,
+    originY: 0,
+  });
 
   const targetBranch = getGitFlowBaseBranch();
 
@@ -275,6 +319,340 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
   const hoveredNodeData = layoutData.nodes.find(n => n.id === hoveredNodeId);
 
+  const inlineScale = useMemo(() => {
+    if (layoutData.width <= 0 || containerWidth <= 0) return 1;
+    const availableWidth = Math.max(120, containerWidth - INLINE_HORIZONTAL_PADDING);
+    return clamp(Math.min(1, availableWidth / layoutData.width), 0.2, 1);
+  }, [containerWidth, layoutData.width]);
+
+  const inlineScaledWidth = layoutData.width * inlineScale;
+  const inlineScaledHeight = layoutData.height * inlineScale;
+  const shouldCenterInlineVertically = containerHeight > 0 && inlineScaledHeight < containerHeight;
+
+  const getModalFitTransform = useCallback((): GraphTransform | null => {
+    if (layoutData.width <= 0 || layoutData.height <= 0 || modalViewportWidth <= 0 || modalViewportHeight <= 0) {
+      return null;
+    }
+
+    const viewportPadding = 24;
+    const availableWidth = Math.max(80, modalViewportWidth - viewportPadding * 2);
+    const availableHeight = Math.max(80, modalViewportHeight - viewportPadding * 2);
+    const scale = clamp(
+      Math.min(availableWidth / layoutData.width, availableHeight / layoutData.height),
+      MIN_MODAL_ZOOM,
+      MAX_MODAL_ZOOM
+    );
+
+    const scaledWidth = layoutData.width * scale;
+    const scaledHeight = layoutData.height * scale;
+
+    return {
+      scale,
+      x: (modalViewportWidth - scaledWidth) / 2,
+      y: (modalViewportHeight - scaledHeight) / 2,
+    };
+  }, [layoutData.height, layoutData.width, modalViewportHeight, modalViewportWidth]);
+
+  const clampModalTransform = useCallback((transform: GraphTransform): GraphTransform => {
+    if (modalViewportWidth <= 0 || modalViewportHeight <= 0 || layoutData.width <= 0 || layoutData.height <= 0) {
+      return transform;
+    }
+
+    const clampedScale = clamp(transform.scale, MIN_MODAL_ZOOM, MAX_MODAL_ZOOM);
+    const scaledWidth = layoutData.width * clampedScale;
+    const scaledHeight = layoutData.height * clampedScale;
+
+    let minX = modalViewportWidth - scaledWidth - MODAL_PAN_PADDING;
+    let maxX = MODAL_PAN_PADDING;
+    let minY = modalViewportHeight - scaledHeight - MODAL_PAN_PADDING;
+    let maxY = MODAL_PAN_PADDING;
+
+    if (scaledWidth <= modalViewportWidth) {
+      const centeredX = (modalViewportWidth - scaledWidth) / 2;
+      minX = centeredX - MODAL_PAN_PADDING * 0.25;
+      maxX = centeredX + MODAL_PAN_PADDING * 0.25;
+    }
+
+    if (scaledHeight <= modalViewportHeight) {
+      const centeredY = (modalViewportHeight - scaledHeight) / 2;
+      minY = centeredY - MODAL_PAN_PADDING * 0.25;
+      maxY = centeredY + MODAL_PAN_PADDING * 0.25;
+    }
+
+    return {
+      scale: clampedScale,
+      x: clamp(transform.x, minX, maxX),
+      y: clamp(transform.y, minY, maxY),
+    };
+  }, [layoutData.height, layoutData.width, modalViewportHeight, modalViewportWidth]);
+
+  const zoomModalAtPoint = useCallback((factor: number, anchorX: number, anchorY: number) => {
+    setModalTransform((prev) => {
+      const nextScale = clamp(prev.scale * factor, MIN_MODAL_ZOOM, MAX_MODAL_ZOOM);
+
+      if (Math.abs(nextScale - prev.scale) < 0.0001) return prev;
+
+      const graphX = (anchorX - prev.x) / prev.scale;
+      const graphY = (anchorY - prev.y) / prev.scale;
+
+      return clampModalTransform({
+        scale: nextScale,
+        x: anchorX - graphX * nextScale,
+        y: anchorY - graphY * nextScale,
+      });
+    });
+  }, [clampModalTransform]);
+
+  const closeGraphModal = useCallback(() => {
+    setIsGraphModalOpen(false);
+    setIsModalPanning(false);
+    setHasInitializedModalView(false);
+  }, []);
+
+  const openGraphModal = useCallback(() => {
+    modalOpenedAtRef.current = Date.now();
+    setHoveredNodeRect(null);
+    setHasInitializedModalView(false);
+    setIsGraphModalOpen(true);
+  }, []);
+
+  const fitGraphInModal = useCallback(() => {
+    const fitTransform = getModalFitTransform();
+    if (!fitTransform) return;
+    setModalTransform(clampModalTransform(fitTransform));
+  }, [clampModalTransform, getModalFitTransform]);
+
+  const zoomModalBy = useCallback((factor: number) => {
+    if (modalViewportWidth <= 0 || modalViewportHeight <= 0) return;
+
+    zoomModalAtPoint(factor, modalViewportWidth / 2, modalViewportHeight / 2);
+  }, [modalViewportHeight, modalViewportWidth, zoomModalAtPoint]);
+
+  const resetModalView = useCallback(() => {
+    if (modalViewportWidth <= 0 || modalViewportHeight <= 0) return;
+
+    setModalTransform(clampModalTransform({
+      scale: 1,
+      x: (modalViewportWidth - layoutData.width) / 2,
+      y: (modalViewportHeight - layoutData.height) / 2,
+    }));
+  }, [clampModalTransform, layoutData.height, layoutData.width, modalViewportHeight, modalViewportWidth]);
+
+  const handleModalWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (modalViewportWidth <= 0 || modalViewportHeight <= 0) return;
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const anchorX = event.clientX - rect.left;
+    const anchorY = event.clientY - rect.top;
+    const zoomFactor = event.deltaY < 0 ? 1.12 : 0.9;
+
+    zoomModalAtPoint(zoomFactor, anchorX, anchorY);
+  }, [modalViewportHeight, modalViewportWidth, zoomModalAtPoint]);
+
+  const handleModalPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    modalPanStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: modalTransform.x,
+      originY: modalTransform.y,
+    };
+
+    setHoveredNodeRect(null);
+    setIsModalPanning(true);
+  }, [modalTransform.x, modalTransform.y]);
+
+  const handleModalPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isModalPanning || modalPanStateRef.current.pointerId !== event.pointerId) return;
+
+    const dx = event.clientX - modalPanStateRef.current.startX;
+    const dy = event.clientY - modalPanStateRef.current.startY;
+
+    setModalTransform((prev) => clampModalTransform({
+      ...prev,
+      x: modalPanStateRef.current.originX + dx,
+      y: modalPanStateRef.current.originY + dy,
+    }));
+  }, [clampModalTransform, isModalPanning]);
+
+  const handleModalPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (modalPanStateRef.current.pointerId !== event.pointerId) return;
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    modalPanStateRef.current.pointerId = null;
+    setIsModalPanning(false);
+  }, []);
+
+  const handleModalBackdropClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    if (Date.now() - modalOpenedAtRef.current < 160) return;
+    closeGraphModal();
+  }, [closeGraphModal]);
+
+  useEffect(() => {
+    if (!isGraphModalOpen) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeGraphModal();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [closeGraphModal, isGraphModalOpen]);
+
+  useEffect(() => {
+    if (!isGraphModalOpen || hasInitializedModalView) return;
+    if (modalViewportWidth <= 0 || modalViewportHeight <= 0) return;
+    fitGraphInModal();
+    setHasInitializedModalView(true);
+  }, [fitGraphInModal, hasInitializedModalView, isGraphModalOpen, modalViewportHeight, modalViewportWidth]);
+
+  useEffect(() => {
+    if (!isGraphModalOpen || modalViewportWidth <= 0 || modalViewportHeight <= 0) return;
+    setModalTransform((prev) => clampModalTransform(prev));
+  }, [clampModalTransform, isGraphModalOpen, modalViewportHeight, modalViewportWidth]);
+
+  useEffect(() => {
+    if (viewMode !== 'graph' && isGraphModalOpen) {
+      closeGraphModal();
+    }
+  }, [closeGraphModal, isGraphModalOpen, viewMode]);
+
+  useEffect(() => {
+    if (!isGraphModalOpen) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === '+' || event.key === '=') {
+        event.preventDefault();
+        zoomModalBy(1.15);
+      } else if (event.key === '-') {
+        event.preventDefault();
+        zoomModalBy(1 / 1.15);
+      } else if (event.key === '0') {
+        event.preventDefault();
+        resetModalView();
+      } else if (event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        fitGraphInModal();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [fitGraphInModal, isGraphModalOpen, resetModalView, zoomModalBy]);
+
+  const isModalViewportReady = modalViewportWidth > 0 && modalViewportHeight > 0;
+  const canZoomIn = isModalViewportReady && modalTransform.scale < MAX_MODAL_ZOOM - 0.001;
+  const canZoomOut = isModalViewportReady && modalTransform.scale > MIN_MODAL_ZOOM + 0.001;
+
+  const renderGraphSvg = ({
+    captureNodeRect,
+  }: {
+    captureNodeRect: boolean;
+  }) => (
+    <svg
+      width={layoutData.width}
+      height={layoutData.height}
+      className="block select-none"
+    >
+      {layoutData.edges.map((edge) => {
+        const dy = edge.y2 - edge.y1;
+        const controlY1 = edge.y1 + dy * 0.5;
+        const controlY2 = edge.y2 - dy * 0.5;
+
+        const isRelated = hoveredNodeData && (
+          edge.source === hoveredNodeId || edge.target === hoveredNodeId
+        );
+
+        const strokeColor = isRelated ? 'stroke-primary' : 'stroke-border';
+        const opacity = isRelated || !hoveredNodeId ? 0.6 : 0.2;
+        const width = isRelated ? 2 : 1.5;
+
+        return (
+          <path
+            key={`${edge.source}-${edge.target}`}
+            d={`M ${edge.x1} ${edge.y1} C ${edge.x1} ${controlY1}, ${edge.x2} ${controlY2}, ${edge.x2} ${edge.y2}`}
+            fill="none"
+            className={cn('transition-all duration-300', strokeColor)}
+            strokeWidth={width}
+            strokeOpacity={opacity}
+          />
+        );
+      })}
+
+      {layoutData.nodes.map((node) => {
+        const isHovered = hoveredNodeId === node.id;
+        const isRelated = hoveredNodeData && (
+          hoveredNodeData.dependencies?.includes(node.id) ||
+          node.dependencies?.includes(hoveredNodeId!)
+        );
+
+        const isDimmed = hoveredNodeId && !isHovered && !isRelated;
+
+        return (
+          <g
+            key={node.id}
+            className={cn('transition-opacity duration-300', isDimmed ? 'opacity-30' : 'opacity-100')}
+            onMouseEnter={(event) => {
+              if (isModalPanning) return;
+              setHoveredNodeId(node.id);
+              setHoveredNodeRect(captureNodeRect ? event.currentTarget.getBoundingClientRect() : null);
+            }}
+            onMouseLeave={() => {
+              setHoveredNodeId(null);
+              if (captureNodeRect) setHoveredNodeRect(null);
+            }}
+            style={{ cursor: 'pointer' }}
+          >
+            <circle cx={node.x} cy={node.y} r={NODE_RADIUS + 8} fill="transparent" />
+
+            <circle
+              cx={node.x}
+              cy={node.y}
+              r={isHovered ? NODE_RADIUS + 2 : NODE_RADIUS}
+              className={cn(
+                'transition-all duration-300 stroke-2',
+                isHovered ? 'stroke-foreground' : 'stroke-background'
+              )}
+              fill={isHovered ? 'rgb(var(--background))' : 'rgb(var(--card))'}
+              stroke={isHovered ? undefined : 'rgb(var(--border))'}
+            />
+
+            <foreignObject
+              x={node.x - 10}
+              y={node.y - 10}
+              width="20"
+              height="20"
+              className="pointer-events-none"
+            >
+              <div className={cn(
+                'w-full h-full rounded-full flex items-center justify-center',
+                statusColors[node.status]
+              )}>
+                <Icon
+                  name={getStatusIconName(node.status)}
+                  size={14}
+                  className={node.status === 'in-progress' ? 'animate-spin' : ''}
+                />
+              </div>
+            </foreignObject>
+          </g>
+        );
+      })}
+
+    </svg>
+  );
+
   // If no mock data at all, show empty state (should only happen if filter removes everything and we don't want to show empty graph)
   // But we have a check inside layoutData.nodes.length === 0 returning empty objects
   // We need to handle that here
@@ -350,6 +728,17 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           <Icon name="git-branch" size={16} className="text-primary" />
           {t('architect.strategy', 'Strategy')}
         </h1>
+        {viewMode === 'graph' && (
+          <button
+            type="button"
+            onClick={openGraphModal}
+            className="w-8 h-8 flex items-center justify-center rounded-md border border-border bg-background/40 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+            title={t('architect.openGraphExplorer', 'Open graph explorer')}
+            aria-label={t('architect.openGraphExplorer', 'Open graph explorer')}
+          >
+            <Icon name="expand" size={14} />
+          </button>
+        )}
       </div>
 
       {/* View Toggle */}
@@ -384,144 +773,52 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         ref={containerRef}
         className="relative flex-1 overflow-hidden bg-background/30"
       >
-
         {viewMode === 'graph' ? (
           <>
-            <div className="h-full overflow-auto custom-scrollbar relative">
-              <svg
-                width={layoutData.width}
-                height={layoutData.height}
-                className="block"
-              >
-                {/* Edges */}
-                {layoutData.edges.map((edge) => {
-                  const dy = edge.y2 - edge.y1;
-                  const controlY1 = edge.y1 + dy * 0.5;
-                  const controlY2 = edge.y2 - dy * 0.5;
-
-                  // const isHovered = hoveredNodeId === edge.source || hoveredNodeId === edge.target;
-                  // Highlight incoming/outgoing edges of hovered node
-                  const isRelated = hoveredNodeData && (
-                    (edge.source === hoveredNodeId) || (edge.target === hoveredNodeId)
-                  );
-
-                  const strokeColor = isRelated ? "stroke-primary" : "stroke-border";
-                  const opacity = isRelated || !hoveredNodeId ? 0.6 : 0.2;
-                  const width = isRelated ? 2 : 1.5;
-
-                  return (
-                    <path
-                      key={`${edge.source}-${edge.target}`}
-                      d={`M ${edge.x1} ${edge.y1} C ${edge.x1} ${controlY1}, ${edge.x2} ${controlY2}, ${edge.x2} ${edge.y2}`}
-                      fill="none"
-                      className={cn("transition-all duration-300", strokeColor)}
-                      strokeWidth={width}
-                      strokeOpacity={opacity}
-                    />
-                  );
-                })}
-
-                {/* Nodes */}
-                {layoutData.nodes.map((node) => {
-                  const isHovered = hoveredNodeId === node.id;
-                  const isRelated = hoveredNodeData && (
-                    hoveredNodeData.dependencies?.includes(node.id) ||
-                    node.dependencies?.includes(hoveredNodeId!)
-                  );
-
-                  const isDimmed = hoveredNodeId && !isHovered && !isRelated;
-
-                  return (
-                    <g
-                      key={node.id}
-                      className={cn("transition-opacity duration-300", isDimmed ? "opacity-30" : "opacity-100")}
-                      onMouseEnter={(e) => {
-                        setHoveredNodeId(node.id);
-                        setHoveredNodeRect(e.currentTarget.getBoundingClientRect());
-                      }}
-                      onMouseLeave={() => {
-                        setHoveredNodeId(null);
-                        setHoveredNodeRect(null);
-                      }}
-                      style={{ cursor: 'pointer' }}
-                    >
-                      {/* Hit area */}
-                      <circle cx={node.x} cy={node.y} r={NODE_RADIUS + 8} fill="transparent" />
-
-                      {/* Main circle */}
-                      <circle
-                        cx={node.x}
-                        cy={node.y}
-                        r={isHovered ? NODE_RADIUS + 2 : NODE_RADIUS}
-                        className={cn(
-                          "transition-all duration-300 stroke-2",
-                          isHovered ? "stroke-foreground" : "stroke-background"
-                        )}
-                        fill={isHovered ? "rgb(var(--background))" : "rgb(var(--card))"}
-                        stroke={isHovered ? undefined : "rgb(var(--border))"}
-                      />
-
-                      {/* Inner Icon Container */}
-                      <foreignObject
-                        x={node.x - 10}
-                        y={node.y - 10}
-                        width="20"
-                        height="20"
-                        className="pointer-events-none"
-                      >
-                        <div className={cn(
-                          "w-full h-full rounded-full flex items-center justify-center",
-                          statusColors[node.status]
-                        )}>
-                          <Icon
-                            name={getStatusIconName(node.status)}
-                            size={14}
-                            className={node.status === 'in-progress' ? 'animate-spin' : ''}
-                          />
-                        </div>
-                      </foreignObject>
-
-                    </g>
-                  );
-                })}
-
-                {/* Hovered Label (Rendered Last for Z-Index) */}
-                {hoveredNodeData && (
-                  <g className="pointer-events-none">
-                    <text
-                      x={hoveredNodeData.x > (layoutData.width / 2) ? hoveredNodeData.x - NODE_RADIUS - 12 : hoveredNodeData.x + NODE_RADIUS + 12}
-                      y={hoveredNodeData.y + 4}
-                      textAnchor={hoveredNodeData.x > (layoutData.width / 2) ? "end" : "start"}
-                      className="text-[11px] font-sans font-medium fill-foreground"
-                      style={{
-                        textShadow: '0 2px 4px rgb(var(--background)), 0 0 2px rgb(var(--background)), 0 0 2px rgb(var(--background))',
-                        paintOrder: 'stroke fill'
-                      }}
-                    >
-                      {hoveredNodeData.title}
-                    </text>
-                  </g>
+            <div className="h-full overflow-y-auto overflow-x-hidden custom-scrollbar relative">
+              <div
+                className={cn(
+                  'w-full min-h-full flex justify-center px-2 py-3',
+                  shouldCenterInlineVertically ? 'items-center' : 'items-start'
                 )}
-              </svg>
+              >
+                <div
+                  className="relative shrink-0"
+                  style={{
+                    width: inlineScaledWidth,
+                    height: inlineScaledHeight,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: layoutData.width,
+                      height: layoutData.height,
+                      transform: `scale(${inlineScale})`,
+                      transformOrigin: 'top left',
+                    }}
+                  >
+                    {renderGraphSvg({ captureNodeRect: true })}
+                  </div>
+                </div>
+              </div>
             </div>
 
-            {/* Tooltip Overlay */}
-            {hoveredNodeData && hoveredNodeRect && (
+            {hoveredNodeData && hoveredNodeRect && !isModalPanning && (
               <div
-                className="fixed z-[100] p-4 rounded-xl border border-border bg-popover/95 shadow-xl backdrop-blur-sm w-72 pointer-events-none animate-in fade-in zoom-in-95 duration-150"
+                className="fixed z-[110] p-4 rounded-xl border border-border bg-popover/95 shadow-xl backdrop-blur-sm w-72 pointer-events-none animate-in fade-in zoom-in-95 duration-150"
                 style={{
-                  top: Math.min(hoveredNodeRect.top + 10, window.innerHeight - 150), // Prevent off-screen bottom
+                  top: Math.min(hoveredNodeRect.top + 10, window.innerHeight - 150),
                   ...(hoveredNodeRect.left > window.innerWidth / 2
-                    ? { left: hoveredNodeRect.left - 280 - 15 } // Render to the left of the node
-                    : { left: hoveredNodeRect.right + 15 }      // Render to the right of the node
-                  )
+                    ? { left: hoveredNodeRect.left - 295 }
+                    : { left: hoveredNodeRect.right + 15 }
+                  ),
                 }}
               >
                 <div className="flex items-start justify-between gap-4 mb-2">
                   <h3 className="font-semibold text-sm leading-tight text-popover-foreground">
                     {hoveredNodeData.title}
                   </h3>
-                  <div className={cn("shrink-0 w-2 h-2 rounded-full mt-1.5", statusBgColors[hoveredNodeData.status])} />
+                  <div className={cn('shrink-0 w-2 h-2 rounded-full mt-1.5', statusBgColors[hoveredNodeData.status])} />
                 </div>
 
                 <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
@@ -548,7 +845,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               </div>
             )}
 
-            {/* Legend */}
             <div className="absolute bottom-4 left-4 p-2 rounded-lg bg-background/50 backdrop-blur-sm border border-border/50 text-[10px] text-muted-foreground pointer-events-none">
               <div className="flex items-center gap-2 mb-1">
                 <Icon name="arrow-down-right" size={10} />
@@ -633,6 +929,112 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         )}
       </div>
 
+      {isGraphModalOpen && (
+        <div
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={handleModalBackdropClick}
+        >
+          <div
+            className="w-[96vw] h-[92vh] max-w-[1500px] bg-card border border-border shadow-2xl rounded-xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="h-12 shrink-0 border-b border-border px-4 bg-muted/20 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-7 h-7 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                  <Icon name="network" size={13} className="text-primary" />
+                </div>
+                <span className="text-sm font-medium text-foreground truncate">
+                  {t('architect.graphExplorer', 'Strategy graph explorer')}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => zoomModalBy(1.15)}
+                  disabled={!canZoomIn}
+                  className="w-8 h-8 rounded-md border border-border bg-card hover:bg-accent text-muted-foreground hover:text-foreground transition-colors flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-card"
+                  title={t('chat.zoomIn', 'Zoom in')}
+                  aria-label={t('chat.zoomIn', 'Zoom in')}
+                >
+                  <Icon name="plus" size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => zoomModalBy(1 / 1.15)}
+                  disabled={!canZoomOut}
+                  className="w-8 h-8 rounded-md border border-border bg-card hover:bg-accent text-muted-foreground hover:text-foreground transition-colors flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-card"
+                  title={t('chat.zoomOut', 'Zoom out')}
+                  aria-label={t('chat.zoomOut', 'Zoom out')}
+                >
+                  <Icon name="minus" size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={resetModalView}
+                  disabled={!isModalViewportReady}
+                  className="h-8 px-2 rounded-md border border-border bg-card hover:bg-accent text-muted-foreground hover:text-foreground transition-colors text-xs font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-card"
+                  title={t('chat.resetZoom', 'Reset zoom')}
+                  aria-label={t('chat.resetZoom', 'Reset zoom')}
+                >
+                  <Icon name="rotate-ccw" size={13} className="inline mr-1" />
+                  100%
+                </button>
+                <button
+                  type="button"
+                  onClick={fitGraphInModal}
+                  disabled={!isModalViewportReady}
+                  className="h-8 px-2 rounded-md border border-border bg-card hover:bg-accent text-muted-foreground hover:text-foreground transition-colors text-xs font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-card"
+                  title={t('architect.fitToScreen', 'Fit to screen')}
+                  aria-label={t('architect.fitToScreen', 'Fit to screen')}
+                >
+                  <Icon name="layout-grid" size={13} className="inline mr-1" />
+                  {t('architect.fitToScreen', 'Fit')}
+                </button>
+                <button
+                  type="button"
+                  onClick={closeGraphModal}
+                  className="w-8 h-8 rounded-md border border-border bg-card hover:bg-accent text-muted-foreground hover:text-foreground transition-colors flex items-center justify-center"
+                  title={t('common.close', 'Close')}
+                  aria-label={t('common.close', 'Close')}
+                >
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
+            </div>
+
+            <div
+              ref={modalViewportRef}
+              className={cn(
+                'relative flex-1 overflow-hidden bg-background/40 touch-none',
+                isModalPanning ? 'cursor-grabbing' : 'cursor-grab'
+              )}
+              onWheel={handleModalWheel}
+              onPointerDown={handleModalPointerDown}
+              onPointerMove={handleModalPointerMove}
+              onPointerUp={handleModalPointerUp}
+              onPointerCancel={handleModalPointerUp}
+            >
+              <div
+                className="absolute top-0 left-0 will-change-transform"
+                style={{
+                  width: layoutData.width,
+                  height: layoutData.height,
+                  transform: `translate3d(${modalTransform.x}px, ${modalTransform.y}px, 0) scale(${modalTransform.scale})`,
+                  transformOrigin: 'top left',
+                }}
+              >
+                {renderGraphSvg({ captureNodeRect: true })}
+              </div>
+
+              <div className="absolute bottom-4 right-4 px-2 py-1 rounded-md border border-border bg-card/90 text-xs text-muted-foreground pointer-events-none">
+                {Math.round(modalTransform.scale * 100)}%
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Validate Plan footer ── */}
       <div className="h-14 shrink-0 border-t border-border flex items-center gap-3 px-4 bg-card">
         {activePlanContext ? (
@@ -663,7 +1065,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                 {isValidating ? (
                   <><Icon name="loader" size={13} className="animate-spin" />Validating...</>
                 ) : (
-                  <><Icon name="shield-check" size={13} />Validate Plan</>
+                  <><Icon name="shield" size={13} />Validate Plan</>
                 )}
               </button>
             </>
