@@ -90,6 +90,7 @@ import {
   Globe,
   ExternalLink,
   BookOpen,
+  Expand,
 } from 'lucide-react';
 
 export type IconName =
@@ -183,7 +184,8 @@ export type IconName =
   | 'milestone'
   | 'globe'
   | 'external-link'
-  | 'book-open';
+  | 'book-open'
+  | 'expand';
 
 interface IconProps {
   name: IconName;
@@ -284,6 +286,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'globe': Globe,
   'external-link': ExternalLink,
   'book-open': BookOpen,
+  'expand': Expand,
 };
 
 export const Icon: React.FC<IconProps> = ({ name, size = 16, className, style }) => {
