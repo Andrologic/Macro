@@ -48,16 +48,14 @@ const ChatZone: React.FC = () => {
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
 
-  // Ensure mode-scoped conversation is selected (or created when required)
+  // Ensure mode-scoped conversation is selected when project/task context changes.
+  // Mode switches are handled via a cross-store subscription in useChatStore.
   useEffect(() => {
     if (isLoading) return;
-    if (mode === 'Architect' && selectedConversationId) return;
     void ensureConversationForCurrentMode();
   }, [
-    mode,
     selectedProjectId,
     selectedTaskId,
-    selectedConversationId,
     isLoading,
     ensureConversationForCurrentMode,
   ]);
