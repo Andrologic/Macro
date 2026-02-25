@@ -298,6 +298,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let aiSelections = { ...EMPTY_AI_CONTEXT_SELECTIONS };
   let aiSelectionsLoaded = false;
   let providerSelectionUnsubscribe: (() => void) | null = null;
+  let modeSelectionUnsubscribe: (() => void) | null = null;
 
   const persistAiSelections = () => {
     if (!aiSelectionsLoaded) return;
@@ -474,6 +475,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const appState = useAppStore.getState();
       const selectedConversationId = get().selectedConversationId;
       persistSelectionForContext(appState.mode, selectedConversationId);
+    });
+  };
+
+  const ensureModeSelectionSync = () => {
+    if (modeSelectionUnsubscribe) return;
+
+    modeSelectionUnsubscribe = useAppStore.subscribe((nextState, previousState) => {
+      if (nextState.mode === previousState.mode) return;
+      void get().ensureConversationForCurrentMode();
     });
   };
 
@@ -2473,6 +2483,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
         aiSelectionsLoaded = true;
         ensureProviderSelectionSync();
+        ensureModeSelectionSync();
 
         // Try to load from Tauri DB if available
         if (tauriIpc.isTauriAvailable()) {
@@ -2577,6 +2588,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         aiSelectionsLoaded = true;
         ensureProviderSelectionSync();
+        ensureModeSelectionSync();
       }
     },
   };
