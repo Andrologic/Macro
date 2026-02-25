@@ -1508,6 +1508,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.unshift(modePrompt);
     }
 
+    if (appMode === 'Architect') {
+      const activePlanContext = useAppStore.getState().activePlanContext;
+      if (activePlanContext) {
+        systemInstructions.push(
+          `[Active Plan] id="${activePlanContext.id}", title="${activePlanContext.title}", description="${activePlanContext.description || 'none'}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". When the user describes their project or requests changes, first write a message proposing updated title/description, then call update_plan to apply them.`
+        );
+      }
+    }
+
     return [
       {
         role: 'system' as const,
