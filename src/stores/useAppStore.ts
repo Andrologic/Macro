@@ -23,6 +23,14 @@ interface RememberedProject {
 
 const MAX_REMEMBERED_PROJECTS = 50;
 
+export interface ArchitectPlanContext {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  targetBranch: string;
+}
+
 const upsertRememberedProject = (
   projects: RememberedProject[],
   nextProject: RememberedProject
@@ -225,6 +233,7 @@ interface AppStore {
   macroEnabledProjects: RememberedProject[];
   // Architect mode state
   activeArchitectPlanId: string | null;
+  activePlanContext: ArchitectPlanContext | null;
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
   setMode: (mode: AppMode) => void;
@@ -248,6 +257,7 @@ interface AppStore {
   setPlanNodes: (nodes: PlanNode[]) => void;
   setPredictedBranches: (branches: PredictedBranch[]) => void;
   setActiveArchitectPlanId: (planId: string | null) => void;
+  setActivePlanContext: (plan: ArchitectPlanContext | null) => void;
   openSettings: (tab?: SettingsTab) => void;
   closeSettings: () => void;
   setSettingsTab: (tab: SettingsTab) => void;
@@ -319,6 +329,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   recentProjects: [],
   macroEnabledProjects: [],
   activeArchitectPlanId: null,
+  activePlanContext: null,
   planNodes: [],
   predictedBranches: [],
 
@@ -420,6 +431,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setPredictedBranches: (branches) => set({ predictedBranches: branches }),
 
   setActiveArchitectPlanId: (planId) => set({ activeArchitectPlanId: planId }),
+
+  setActivePlanContext: (plan) => set({ activePlanContext: plan }),
 
   setTaskSortOption: (option) => set({ taskSortOption: option }),
 

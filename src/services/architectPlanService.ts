@@ -367,14 +367,18 @@ const upsertSummary = (summaries: ArchitectPlanSummary[], summary: ArchitectPlan
   return summaries.map((item) => (item.id === summary.id ? summary : item));
 };
 
-export const listArchitectPlans = async (branchName: string, includeDeleted = false): Promise<{
+export const listArchitectPlans = async (branchName: string, includeDeleted = false, includeArchived = false): Promise<{
   activePlanId: string | null;
   plans: ArchitectPlanSummary[];
 }> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const index = await readIndex(normalizedBranch);
-  const plans = includeDeleted ? index.plans : index.plans.filter((plan) => plan.status !== 'deleted');
+  const plans = index.plans.filter((plan) => {
+    if (!includeDeleted && plan.status === 'deleted') return false;
+    if (!includeArchived && plan.status === 'archived') return false;
+    return true;
+  });
   return {
     activePlanId: index.activePlanId,
     plans,
@@ -403,7 +407,21 @@ export const createArchitectPlan = async (input: {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const now = new Date().toISOString();
-  const planId = sanitizeId(input.planId || `${input.title || 'plan'}-${Date.now()}`);
+
+  // Read index early for uniqueness checks
+  const index = await readIndex(normalizedBranch);
+
+  // Reject duplicate titles (case-insensitive, excluding deleted plans)
+  const normalizedTitle = (input.title || '').trim().toLowerCase();
+  const titleConflict = index.plans.find(
+    (p) => p.status !== 'deleted' && p.title.trim().toLowerCase() === normalizedTitle
+  );
+  if (titleConflict) {
+    throw new Error(`A plan named "${titleConflict.title}" already exists. Choose a different name.`);
+  }
+
+  // ID is always a random numeric sequence — independent of the title
+  const planId = input.planId ? sanitizeId(input.planId) : String(Date.now());
   const slug = slugifyPlanTitle(input.slug || input.title || planId);
 
   const plan: ArchitectPlanRecord = {
@@ -421,7 +439,6 @@ export const createArchitectPlan = async (input: {
     predictedBranches: input.predictedBranches || [],
   };
 
-  const index = await readIndex(normalizedBranch);
   const summary = toSummary(plan);
   const nextIndex: ArchitectPlanIndex = {
     ...index,
@@ -449,9 +466,22 @@ export const updateArchitectPlan = async (input: {
 }): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const existing = await readPlan(normalizedBranch, input.planId);
+  const safeId = sanitizeId(input.planId);
+  const existing = await readPlan(normalizedBranch, safeId);
   if (!existing) {
-    throw new Error(`Plan not found: ${input.planId}`);
+    throw new Error(`Plan not found: ${safeId}`);
+  }
+
+  // Reject duplicate titles when the title is being changed (case-insensitive, excluding self and deleted plans)
+  if (input.title && input.title.trim().toLowerCase() !== existing.title.trim().toLowerCase()) {
+    const idx = await readIndex(normalizedBranch);
+    const normalizedTitle = input.title.trim().toLowerCase();
+    const titleConflict = idx.plans.find(
+      (p) => p.id !== safeId && p.status !== 'deleted' && p.title.trim().toLowerCase() === normalizedTitle
+    );
+    if (titleConflict) {
+      throw new Error(`A plan named "${titleConflict.title}" already exists. Choose a different name.`);
+    }
   }
 
   const next: ArchitectPlanRecord = {
@@ -548,6 +578,27 @@ export const restoreArchitectPlan = async (branchName: string, planId: string): 
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   return updateArchitectPlan({ branchName: normalizedBranch, planId, status: 'draft' });
+};
+
+export const archiveArchitectPlan = async (branchName: string, planId: string): Promise<ArchitectPlanRecord> => {
+  const normalizedBranch = normalizeBranchName(branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const safeId = sanitizeId(planId);
+  const existing = await readPlan(normalizedBranch, safeId);
+  if (!existing) throw new Error(`Plan not found: ${safeId}`);
+  const now = new Date().toISOString();
+  const archived: ArchitectPlanRecord = { ...existing, status: 'archived', updatedAt: now };
+  await writePlan(normalizedBranch, archived);
+  const idx = await readIndex(normalizedBranch);
+  const nextPlans = idx.plans.map((p) =>
+    p.id === safeId ? { ...p, status: 'archived' as ArchitectPlanStatus, updatedAt: now } : p
+  );
+  const nextActivePlanId =
+    idx.activePlanId === safeId
+      ? nextPlans.find((p) => p.status !== 'deleted' && p.status !== 'archived')?.id || null
+      : idx.activePlanId;
+  await writeIndex(normalizedBranch, { ...idx, plans: nextPlans, activePlanId: nextActivePlanId });
+  return archived;
 };
 
 export const getArchitectPlanNeeds = async (branchName: string, planId: string): Promise<Need[]> => {

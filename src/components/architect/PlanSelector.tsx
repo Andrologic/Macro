@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  archiveArchitectPlan,
   createArchitectPlan,
   deleteArchitectPlan,
   getArchitectPlan,
@@ -37,7 +38,7 @@ const formatRelativeDate = (iso: string): string => {
 };
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
-  const { setPlanNodes, setPredictedBranches, setActiveArchitectPlanId, activeArchitectPlanId, selectedProjectId } = useAppStore();
+  const { setPlanNodes, setPredictedBranches, setActiveArchitectPlanId, setActivePlanContext, activeArchitectPlanId, selectedProjectId } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   const [plans, setPlans] = useState<ArchitectPlanSummary[]>([]);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
@@ -48,6 +49,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [isDeleting, setIsDeleting] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const conversationToastShownRef = useRef<Set<string>>(new Set());
+  const autoCreatingRef = useRef(false);
   const targetBranch = getGitFlowBaseBranch();
 
   const activePlan = useMemo(() => {
@@ -60,6 +62,34 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     try {
       const result = await listArchitectPlans(targetBranch, false);
+
+      // Auto-create a default plan when none exist
+      if (result.plans.length === 0 && !autoCreatingRef.current) {
+        autoCreatingRef.current = true;
+        try {
+          const appStoreForCreation = useAppStore.getState();
+          const fallbackProjectId =
+            selectedProjectId ||
+            appStoreForCreation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
+            null;
+          const conversation = await useChatStore
+            .getState()
+            .createConversation('Plan · New Plan', null, fallbackProjectId);
+          const created = await createArchitectPlan({
+            branchName: targetBranch,
+            title: 'New Plan',
+            projectId: selectedProjectId || undefined,
+            conversationId: conversation.id,
+            status: 'draft',
+            setActive: true,
+          });
+          await activatePlan(created.id);
+          return;
+        } finally {
+          autoCreatingRef.current = false;
+        }
+      }
+
       setPlans(result.plans);
       const nextActivePlanId = activeArchitectPlanId || result.activePlanId;
       setActivePlanId(nextActivePlanId);
@@ -75,6 +105,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
           setPlanNodes(plan.nodes || []);
           setPredictedBranches(plan.predictedBranches || []);
+          setActivePlanContext({
+            id: plan.id,
+            title: plan.title,
+            description: plan.description,
+            status: plan.status,
+            targetBranch: plan.targetBranch,
+          });
           const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
           useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
           let conversationId = plan.conversationId;
@@ -141,6 +178,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       setActiveArchitectPlanId(planId);
       setPlanNodes(plan.nodes || []);
       setPredictedBranches(plan.predictedBranches || []);
+      setActivePlanContext({
+        id: plan.id,
+        title: plan.title,
+        description: plan.description,
+        status: plan.status,
+        targetBranch: plan.targetBranch,
+      });
       const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
       useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
       let conversationId = plan.conversationId;
@@ -238,6 +282,36 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     } catch (renameError) {
       const message = renameError instanceof Error ? renameError.message : 'Failed to rename plan.';
       setError(message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleArchivePlan = async (plan: ArchitectPlanSummary) => {
+    setError(null);
+    setIsLoading(true);
+    try {
+      await archiveArchitectPlan(targetBranch, plan.id);
+      toast.success(`Plan "${plan.title}" archived`);
+      const wasActive = activePlanId === plan.id;
+      const refreshed = await listArchitectPlans(targetBranch, false);
+      setPlans(refreshed.plans);
+      if (wasActive) {
+        const nextPlanId = refreshed.activePlanId || refreshed.plans[0]?.id || null;
+        setActivePlanId(nextPlanId);
+        setActiveArchitectPlanId(nextPlanId);
+        if (nextPlanId) {
+          await activatePlan(nextPlanId);
+        } else {
+          setPlanNodes([]);
+          setPredictedBranches([]);
+          setActivePlanContext(null);
+        }
+      }
+    } catch (archiveError) {
+      const message = archiveError instanceof Error ? archiveError.message : 'Failed to archive plan.';
+      setError(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -391,6 +465,17 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         title="Rename plan"
                       >
                         <Icon name="edit" size={11} className="text-muted-foreground" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleArchivePlan(plan);
+                        }}
+                        className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center"
+                        title="Archive plan"
+                      >
+                        <Icon name="archive" size={11} className="text-muted-foreground" />
                       </button>
                       <button
                         type="button"

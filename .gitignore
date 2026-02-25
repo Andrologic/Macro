@@ -1,3 +1,5 @@
+.macro
+
 # Logs
 logs
 *.log
