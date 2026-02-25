@@ -83,6 +83,17 @@ export interface Need {
   updatedAt: string;
 }
 
+// Context references for chat composer (tag needs, nodes, branches)
+export type ContextRefKind = 'need' | 'plan-node' | 'predicted-branch';
+
+export interface ContextReference {
+  id: string;
+  kind: ContextRefKind;
+  title: string;
+  subtitle?: string;
+  data: Need | PlanNode | PredictedBranch;
+}
+
 // Activity indicator for projects
 export type ProjectActivity = 'idle' | 'ai-active' | 'completed' | 'error';
 export type AuthStatus = 'authenticated' | 'unauthenticated' | 'loading';

@@ -37,6 +37,8 @@ const ChatZone: React.FC = () => {
     editMessage,
     getMessageImages,
     setMessageImages,
+    composerContextRefs,
+    removeComposerContextRef,
   } = useChatStore();
 
   const { selectedProviderId, selectedModelId } = useProviderStore();
@@ -347,7 +349,7 @@ const ChatZone: React.FC = () => {
     await editMessage(messageId, content);
   };
 
-  const canSend = Boolean(inputValue.trim()) || composerImages.length > 0;
+  const canSend = Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0;
 
   const handleDebugRefresh = async () => {
     if (isStreaming) {
@@ -729,6 +731,32 @@ const ChatZone: React.FC = () => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3">
           <div className="w-full max-w-3xl mx-auto space-y-3">
+            {composerContextRefs.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 rounded-lg border border-border bg-card/60 p-2">
+                {composerContextRefs.map((ref) => {
+                  const iconName = ref.kind === 'need' ? 'lightbulb' : ref.kind === 'plan-node' ? 'circle-dot' : 'git-branch';
+                  const accentClass = ref.kind === 'need' ? 'text-yellow-500' : ref.kind === 'plan-node' ? 'text-blue-400' : 'text-emerald-400';
+                  return (
+                    <span
+                      key={`${ref.kind}-${ref.id}`}
+                      className="inline-flex items-center gap-1 rounded-md bg-muted/60 border border-border px-2 py-0.5 text-xs text-foreground/80"
+                    >
+                      <Icon name={iconName} size={12} className={accentClass} />
+                      <span className="max-w-[150px] truncate">{ref.title}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeComposerContextRef(ref.id, ref.kind)}
+                        className="ml-0.5 hover:text-foreground transition-colors"
+                        title="Remove"
+                      >
+                        <Icon name="x" size={10} />
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+
             {composerImages.length > 0 && (
               <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-card/60 p-2">
                 {composerImages.map((image) => (
