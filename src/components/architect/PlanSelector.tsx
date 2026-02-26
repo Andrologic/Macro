@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   archiveArchitectPlan,
   createArchitectPlan,
-  deleteArchitectPlan,
   getArchitectPlan,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
@@ -11,6 +10,7 @@ import {
   updateArchitectPlan,
   type ArchitectPlanSummary,
 } from '../../services/architectPlanService';
+import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useNeedsStore } from '../../stores/useNeedsStore';
@@ -82,17 +82,37 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             selectedProjectId ||
             appStoreForCreation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
             null;
-          const conversation = await useChatStore
-            .getState()
-            .createConversation('Plan · New Plan', null, fallbackProjectId);
-          const created = await createArchitectPlan({
-            branchName: targetBranch,
-            title: 'New Plan',
-            projectId: selectedProjectId || undefined,
-            conversationId: conversation.id,
-            status: 'draft',
-            setActive: true,
-          });
+          let createdTitle = 'New Plan';
+          let created = null as Awaited<ReturnType<typeof createArchitectPlan>> | null;
+          for (let index = 0; index < 50; index += 1) {
+            const candidateTitle = index === 0 ? 'New Plan' : `New Plan ${index + 1}`;
+            try {
+              const conversation = await useChatStore
+                .getState()
+                .createConversation(`Plan · ${candidateTitle}`, null, fallbackProjectId);
+              created = await createArchitectPlan({
+                branchName: targetBranch,
+                title: candidateTitle,
+                projectId: selectedProjectId || undefined,
+                conversationId: conversation.id,
+                status: 'draft',
+                setActive: true,
+              });
+              createdTitle = candidateTitle;
+              break;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              const isDuplicateNameError = /already exists or existed before/i.test(message);
+              if (!isDuplicateNameError || index === 49) {
+                throw error;
+              }
+            }
+          }
+
+          if (!created) {
+            throw new Error(`Unable to auto-create default plan from base title "${createdTitle}".`);
+          }
+
           await activatePlan(created.id);
           return;
         } finally {
@@ -334,7 +354,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     setIsDeleting(true);
     try {
-      await deleteArchitectPlan({
+      await deletePlanAndCleanupBranches({
         branchName: targetBranch,
         planId: planToDelete.id,
         hardDelete: true,

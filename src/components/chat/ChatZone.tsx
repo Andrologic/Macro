@@ -3,13 +3,14 @@ import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import type { MessageImageAttachment } from '../../stores/useChatStore';
+import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
-import { MarkdownRenderer, estimateTokens, formatTokenCount } from './MarkdownRenderer';
+import { MarkdownRenderer } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
@@ -24,7 +25,16 @@ import { ComposerEditor, type ComposerEditorHandle } from './composer/ComposerEd
  */
 const ChatZone: React.FC = () => {
   const { t } = useTranslation();
-  const { currentPlan, mode, selectedProjectId, selectedTaskId, getProjectById } = useAppStore();
+  const {
+    currentPlan,
+    mode,
+    selectedProjectId,
+    selectedTaskId,
+    getProjectById,
+    activeArchitectPlanId,
+    planNodes,
+    predictedBranches,
+  } = useAppStore();
   const {
     conversations,
     selectedConversationId,
@@ -42,6 +52,7 @@ const ChatZone: React.FC = () => {
   } = useChatStore();
 
   const { selectedProviderId, selectedModelId } = useProviderStore();
+  const { needs } = useNeedsStore();
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
 
   const [inputValue, setInputValue] = useState('');
@@ -130,21 +141,15 @@ const ChatZone: React.FC = () => {
     };
   }, [mode, selectedProjectName, selectedTask?.title, currentConversation?.title]);
 
-  // Estimate tokens for input
-  const inputTokens = estimateTokens(inputValue);
-  const rawContextTokens = useMemo(
-    () => currentMessages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0),
-    [currentMessages]
-  );
-  const stableContextTokensRef = useRef(rawContextTokens);
+  const activePlanNeedsCount = useMemo(() => {
+    if (!activeArchitectPlanId) return 0;
+    return needs.filter((need) => need.planId === activeArchitectPlanId).length;
+  }, [activeArchitectPlanId, needs]);
 
-  useEffect(() => {
-    if (!isStreaming) {
-      stableContextTokensRef.current = rawContextTokens;
-    }
-  }, [isStreaming, rawContextTokens]);
-
-  const contextTokens = isStreaming ? stableContextTokensRef.current : rawContextTokens;
+  const hasExistingStrategy = useMemo(() => {
+    if (!activeArchitectPlanId) return false;
+    return planNodes.length > 0 || predictedBranches.length > 0;
+  }, [activeArchitectPlanId, planNodes.length, predictedBranches.length]);
 
   // Scroll magnetism: auto-scroll during streaming, animated separator
   const { scrollContainerRef, separatorState } = useScrollMagnet(
@@ -319,6 +324,18 @@ const ChatZone: React.FC = () => {
     setComposerImages([]);
     setInputValue('');
     await sendMessage({ conversationId, content, images: imagesForMessage });
+  };
+
+  const handleGenerateStrategy = async () => {
+    if (mode !== 'Architect' || !activeArchitectPlanId || isLoading || isStreaming) return;
+    if (!hasExistingStrategy && activePlanNeedsCount === 0) return;
+
+    const conversationId = await ensureConversation();
+    const content = hasExistingStrategy
+      ? 'User requested to regenerate the strategy. Reassess all identified needs for the active plan and call `generate_plan` with a complete replacement strategy (full nodes and dependencies).'
+      : 'User requested to generate the strategy now. Based on all identified needs for the active plan, call `generate_plan` with a complete initial strategy (full nodes and dependencies).';
+
+    await sendMessage({ conversationId, content });
   };
 
   const handleEditStart = (messageId: string, content: string) => {
@@ -768,18 +785,40 @@ const ChatZone: React.FC = () => {
                 <ProviderDropdown />
                 <ModelDropdown />
               </div>
-
-              {(contextTokens > 0 || inputTokens > 0) && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground/60">
-                  <span title="Context tokens">{formatTokenCount(contextTokens)}</span>
-                  {inputTokens > 0 && (
-                    <>
-                      <span>+</span>
-                      <span title="Input tokens">{formatTokenCount(inputTokens)}</span>
-                    </>
+              {mode === 'Architect' && (
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateStrategy()}
+                  disabled={
+                    !activeArchitectPlanId ||
+                    isLoading ||
+                    isStreaming ||
+                    (!hasExistingStrategy && activePlanNeedsCount === 0)
+                  }
+                  className={cn(
+                    'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
+                    !activeArchitectPlanId ||
+                      isLoading ||
+                      isStreaming ||
+                      (!hasExistingStrategy && activePlanNeedsCount === 0)
+                      ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
+                      : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
                   )}
-                  <span>{t('chat.tokens')}</span>
-                </div>
+                  title={
+                    !activeArchitectPlanId
+                      ? 'Select an active plan first'
+                      : !hasExistingStrategy && activePlanNeedsCount === 0
+                        ? 'Add at least one need before generating a strategy'
+                        : hasExistingStrategy
+                          ? 'Regenerate strategy from current needs'
+                          : 'Generate strategy from identified needs'
+                  }
+                >
+                  <Icon name={hasExistingStrategy ? 'refresh-cw' : 'sparkles'} size={12} />
+                  {hasExistingStrategy
+                    ? t('common.regenerate', 'Regenerate') + ' Strategy'
+                    : 'Generate Strategy'}
+                </button>
               )}
             </div>
 

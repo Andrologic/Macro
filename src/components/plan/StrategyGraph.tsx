@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
-import { useChatStore } from '../../stores/useChatStore';
-import { updateArchitectPlan, getGitFlowBaseBranch } from '../../services/architectPlanService';
+import { getGitFlowBaseBranch } from '../../services/architectPlanService';
+import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { toast } from '../ui/Toaster';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
@@ -96,7 +96,17 @@ function useElementSize<T extends HTMLElement>() {
 // Base component - wrapped with React.memo below for performance
 const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const { t } = useTranslation();
-  const { selectedGroupId, selectedProjectId, projectGroups, planNodes, predictedBranches, activePlanContext, setActivePlanContext } = useAppStore();
+  const {
+    selectedGroupId,
+    selectedProjectId,
+    projectGroups,
+    planNodes,
+    predictedBranches,
+    activePlanContext,
+    setActivePlanContext,
+    setPlanNodes,
+    setPredictedBranches,
+  } = useAppStore();
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
   const [viewMode, setViewMode] = useState<'graph' | 'branches'>('graph');
@@ -122,13 +132,20 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     if (!activePlanContext || isValidating) return;
     setIsValidating(true);
     try {
-      await updateArchitectPlan({
+      const { plan, provision } = await validatePlanAndProvisionBranches({
         branchName: targetBranch,
         planId: activePlanContext.id,
-        status: 'validated',
       });
+      setPlanNodes(plan.nodes || []);
+      setPredictedBranches(plan.predictedBranches || []);
       setActivePlanContext({ ...activePlanContext, status: 'validated' });
-      toast.success('Plan validated — ready for implementation.');
+
+      const createdCount = (provision.createdPlanBranch ? 1 : 0) + provision.createdFeatureBranches.length;
+      toast.success(
+        createdCount > 0
+          ? `Plan validated — ${createdCount} branch${createdCount > 1 ? 'es' : ''} provisioned.`
+          : 'Plan validated — branches already up to date.'
+      );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to validate plan.');
     } finally {
@@ -692,27 +709,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           <Icon name="git-merge" size={48} className="text-muted-foreground/30 mb-4" />
           <h3 className="text-sm font-semibold text-foreground mb-1">No strategy generated yet</h3>
           <p className="text-xs text-muted-foreground max-w-[250px] mb-6">
-            Generate a strategy graph based on this plan's identified needs.
+            Discuss needs in Architect chat, then use Generate Strategy to create this graph.
           </p>
-          <button
-            onClick={() => {
-              const chatStore = useChatStore.getState();
-              const appStore = useAppStore.getState();
-              if (chatStore && appStore.mode === 'Architect') {
-                const conversationId = chatStore.selectedConversationIdsByMode['Architect'];
-                if (conversationId) {
-                  chatStore.sendMessage({
-                    conversationId,
-                    content: "Please generate a structured strategy for the active plan using the `generate_plan` tool.",
-                  });
-                }
-              }
-            }}
-            className="px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors rounded-lg flex items-center gap-2 text-sm font-medium shadow-sm hover:shadow"
-          >
-            <Icon name="sparkles" size={16} />
-            {t('architect.generatePlan', 'Generate Plan')}
-          </button>
         </div>
       </aside>
     );
