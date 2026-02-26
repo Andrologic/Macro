@@ -1035,6 +1035,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
           setActive: shouldSetActive,
         });
 
+        if (!shouldSetActive) {
+          const appStore = useAppStore.getState();
+          if (appStore.activeArchitectPlanId === validatedPlan.id && validatedPlan.status !== 'deleted') {
+            appStore.setActivePlanContext({
+              id: validatedPlan.id,
+              title: validatedPlan.title,
+              description: validatedPlan.description,
+              status: validatedPlan.status,
+              targetBranch: validatedPlan.targetBranch,
+            });
+          }
+        }
+
         if (shouldSetActive && validatedPlan.status !== 'deleted') {
           await hydratePlanContext(targetBranch, validatedPlan.id);
         }
@@ -1053,6 +1066,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
         status: status as any,
         setActive: shouldSetActive,
       });
+
+      if (!shouldSetActive) {
+        const appStore = useAppStore.getState();
+        if (appStore.activeArchitectPlanId === updatedPlan.id && updatedPlan.status !== 'deleted') {
+          appStore.setActivePlanContext({
+            id: updatedPlan.id,
+            title: updatedPlan.title,
+            description: updatedPlan.description,
+            status: updatedPlan.status,
+            targetBranch: updatedPlan.targetBranch,
+          });
+        }
+      }
 
       if (shouldSetActive && updatedPlan.status !== 'deleted') {
         await hydratePlanContext(targetBranch, updatedPlan.id);
