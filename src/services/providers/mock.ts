@@ -11,6 +11,7 @@ import { MOCK_CODE_FILES } from '../../mock-data/code-files';
 import { mockProviders, mockModels } from '../../mock-data/ai';
 import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
 import { getProviderConfig } from '../aiConfig';
+import { normalizeArchitectToolId } from '../architectToolNames';
 import type {
   AppBootstrapDto,
   ConversationsDto,
@@ -36,7 +37,7 @@ const LEGACY_TOOL_ID_MAP: Record<string, string> = {
   'file-read': 'read_file',
 };
 
-const normalizeToolId = (id: string): string => LEGACY_TOOL_ID_MAP[id] || id;
+const normalizeToolId = (id: string): string => normalizeArchitectToolId(LEGACY_TOOL_ID_MAP[id] || id);
 
 const normalizeToolSettings = (settings: Record<string, boolean>): Record<string, boolean> =>
   Object.fromEntries(Object.entries(settings).map(([id, enabled]) => [normalizeToolId(id), enabled]));

@@ -27,6 +27,7 @@ import {
   updateArchitectPlan,
 } from '../services/architectPlanService';
 import { deletePlanAndCleanupBranches, validatePlanAndProvisionBranches } from '../services/architectGitFlowService';
+import { normalizeArchitectToolId } from '../services/architectToolNames';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
@@ -533,8 +534,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     toolName: string,
     args: Record<string, unknown>
   ): Promise<string | void> => {
-    if (!isSourceToolEnabled(toolName)) {
-      return `Tool ${toolName} is disabled for the current mode.`;
+    const normalizedToolName = normalizeArchitectToolId(toolName);
+
+    if (!isSourceToolEnabled(normalizedToolName)) {
+      return `Tool ${normalizedToolName} is disabled for the current mode.`;
     }
 
     const resolveActivePlanId = (): string | null => {
@@ -916,7 +919,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Unsupported action for edit_source_passage: ${action}`;
     }
 
-    if (toolName === 'list_plans') {
+    if (normalizedToolName === 'plan_list') {
       const targetBranch = resolveTargetBranch(args.target_branch);
       const includeDeleted = args.include_deleted === true;
       const result = await listArchitectPlans(targetBranch, includeDeleted);
@@ -933,10 +936,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    if (toolName === 'create_plan') {
+    if (normalizedToolName === 'plan_create') {
       const title = typeof args.title === 'string' ? args.title.trim() : '';
       if (!title) {
-        return 'Missing title for create_plan.';
+        return 'Missing title for plan_create.';
       }
 
       const targetBranch = resolveTargetBranch(args.target_branch);
@@ -971,10 +974,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Created plan "${plan.title}" (id: ${plan.id}) with dedicated conversation ${plan.conversationId || 'none'} on ${targetBranch}.`;
     }
 
-    if (toolName === 'get_plan') {
+    if (normalizedToolName === 'plan_get') {
       const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
       if (!planId) {
-        return 'Missing plan_id for get_plan.';
+        return 'Missing plan_id for plan_get.';
       }
 
       const targetBranch = resolveTargetBranch(args.target_branch);
@@ -991,10 +994,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return JSON.stringify({ macro_branch: '.macro', plan, needs_count: needs.length }, null, 2);
     }
 
-    if (toolName === 'set_active_plan') {
+    if (normalizedToolName === 'plan_set_active') {
       const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
       if (!planId) {
-        return 'Missing plan_id for set_active_plan.';
+        return 'Missing plan_id for plan_set_active.';
       }
 
       const targetBranch = resolveTargetBranch(args.target_branch);
@@ -1004,16 +1007,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Active plan is now ${planId} for target branch ${targetBranch}.`;
     }
 
-    if (toolName === 'update_plan') {
+    if (normalizedToolName === 'plan_update') {
       const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
       if (!planId) {
-        return 'Missing plan_id for update_plan.';
+        return 'Missing plan_id for plan_update.';
       }
       const targetBranch = resolveTargetBranch(args.target_branch);
       const status = typeof args.status === 'string' ? args.status.trim().toLowerCase() : undefined;
       const allowedStatuses = new Set(['draft', 'validated', 'in_progress', 'archived', 'deleted']);
       if (status && !allowedStatuses.has(status)) {
-        return `Invalid status for update_plan: ${status}.`;
+        return `Invalid status for plan_update: ${status}.`;
       }
 
       const requestedTitle = typeof args.title === 'string' ? args.title : undefined;
@@ -1087,10 +1090,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Updated plan ${updatedPlan.id} (status: ${updatedPlan.status}).`;
     }
 
-    if (toolName === 'delete_plan') {
+    if (normalizedToolName === 'plan_delete') {
       const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
       if (!planId) {
-        return 'Missing plan_id for delete_plan.';
+        return 'Missing plan_id for plan_delete.';
       }
       const targetBranch = resolveTargetBranch(args.target_branch);
       const hardDelete = args.hard_delete === true;
@@ -1111,10 +1114,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `${action} plan ${planId} on target branch ${targetBranch}. Deleted ${deletedBranches.length} associated git branch${deletedBranches.length > 1 ? 'es' : ''}.`;
     }
 
-    if (toolName === 'restore_plan') {
+    if (normalizedToolName === 'plan_restore') {
       const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
       if (!planId) {
-        return 'Missing plan_id for restore_plan.';
+        return 'Missing plan_id for plan_restore.';
       }
       const targetBranch = resolveTargetBranch(args.target_branch);
       const plan = await restoreArchitectPlan(targetBranch, planId);
@@ -1122,11 +1125,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Restored plan ${plan.id} on target branch ${targetBranch}.`;
     }
 
-    if (toolName === 'add_need') {
+    if (normalizedToolName === 'need_add') {
       const targetBranch = getGitFlowBaseBranch();
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
-        return 'Cannot add_need without an active plan. Create or select a plan first.';
+        return 'Cannot need_add without an active plan. Create or select a plan first.';
       }
 
       const title = typeof args.title === 'string' ? args.title.trim() : '';
@@ -1134,16 +1137,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const category = typeof args.category === 'string' ? args.category.trim().toLowerCase() : '';
       const priority = typeof args.priority === 'string' ? args.priority.trim().toLowerCase() : '';
       if (!title || !description || !category || !priority) {
-        return 'Missing required fields for add_need (title, description, category, priority).';
+        return 'Missing required fields for need_add (title, description, category, priority).';
       }
 
       const allowedCategories = new Set(['functional', 'technical', 'ux', 'security', 'other']);
       const allowedPriorities = new Set(['low', 'medium', 'high']);
       if (!allowedCategories.has(category)) {
-        return `Invalid category for add_need: ${category}.`;
+        return `Invalid category for need_add: ${category}.`;
       }
       if (!allowedPriorities.has(priority)) {
-        return `Invalid priority for add_need: ${priority}.`;
+        return `Invalid priority for need_add: ${priority}.`;
       }
 
       const tags = Array.isArray(args.tags)
@@ -1174,7 +1177,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Successfully added need: "${title}" (ID: ${id}).`;
     }
 
-    if (toolName === 'generate_plan') {
+    if (normalizedToolName === 'strategy_generate') {
       const targetBranch = getGitFlowBaseBranch();
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
@@ -1184,7 +1187,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const rawNodes = Array.isArray(args.nodes) ? args.nodes : [];
       const inputPlanId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
       if (inputPlanId && inputPlanId !== activePlanId) {
-        return `generate_plan can only update the active plan (${activePlanId}).`;
+        return `strategy_generate can only update the active plan (${activePlanId}).`;
       }
 
       const strategy = await resolveStrategyForPlan({
@@ -1218,7 +1221,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Successfully generated strategy with ${strategy.planNodes.length} nodes across ${strategy.predictedBranches.length} branches for active plan ${activePlanId}.`;
     }
 
-    if (toolName === 'get_strategy') {
+    if (normalizedToolName === 'strategy_get') {
       const targetBranch = getGitFlowBaseBranch();
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
@@ -1252,7 +1255,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    if (toolName === 'update_strategy') {
+    if (normalizedToolName === 'strategy_update') {
       const targetBranch = getGitFlowBaseBranch();
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
@@ -1271,12 +1274,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       let nodesInput: unknown[] = [];
       if (replace || rawNodes.length > 0) {
         if (rawNodes.length === 0) {
-          return 'update_strategy with replace=true requires non-empty nodes.';
+          return 'strategy_update with replace=true requires non-empty nodes.';
         }
         nodesInput = rawNodes;
       } else {
         if (rawOperations.length === 0) {
-          return 'update_strategy requires either nodes or operations.';
+          return 'strategy_update requires either nodes or operations.';
         }
 
         const working = [...activePlan.nodes];
@@ -1294,7 +1297,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
           if (action === 'remove') {
             if (locateIndex < 0) {
-              return `update_strategy remove failed at operation ${index + 1}: node not found.`;
+              return `strategy_update remove failed at operation ${index + 1}: node not found.`;
             }
             const removedNode = working[locateIndex];
             working.splice(locateIndex, 1);
@@ -1306,7 +1309,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
           if (action === 'update') {
             if (locateIndex < 0) {
-              return `update_strategy update failed at operation ${index + 1}: node not found.`;
+              return `strategy_update update failed at operation ${index + 1}: node not found.`;
             }
             const target = working[locateIndex];
             const nextTitle = typeof operation.title === 'string' ? operation.title.trim() : target.title;
@@ -1319,10 +1322,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
               : target.dependencies;
 
             if (!allowedNodeTypes.has(nextTypeRaw as PlanNodeType)) {
-              return `update_strategy update failed at operation ${index + 1}: invalid type ${nextTypeRaw}.`;
+              return `strategy_update update failed at operation ${index + 1}: invalid type ${nextTypeRaw}.`;
             }
             if (!allowedNodeStatuses.has(nextStatusRaw as PlanNodeStatus)) {
-              return `update_strategy update failed at operation ${index + 1}: invalid status ${nextStatusRaw}.`;
+              return `strategy_update update failed at operation ${index + 1}: invalid status ${nextStatusRaw}.`;
             }
 
             working[locateIndex] = {
@@ -1353,7 +1356,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             continue;
           }
 
-          return `update_strategy failed at operation ${index + 1}: unsupported action "${action}".`;
+          return `strategy_update failed at operation ${index + 1}: unsupported action "${action}".`;
         }
 
         nodesInput = working.map((node) => ({
@@ -1391,7 +1394,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Updated strategy for plan ${activePlanId}: ${strategy.planNodes.length} nodes, ${strategy.predictedBranches.length} branches.`;
     }
 
-    if (toolName === 'delete_strategy') {
+    if (normalizedToolName === 'strategy_delete') {
       const targetBranch = getGitFlowBaseBranch();
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
@@ -1399,7 +1402,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       if (args.confirm !== true) {
-        return 'delete_strategy requires confirm=true to proceed.';
+        return 'strategy_delete requires confirm=true to proceed.';
       }
 
       const activePlan = await getArchitectPlan(targetBranch, activePlanId);
@@ -1424,16 +1427,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (
-      toolName === 'list' ||
-      toolName === 'read' ||
-      toolName === 'write' ||
-      toolName === 'edit' ||
-      toolName === 'glob' ||
-      toolName === 'grep' ||
-      toolName.startsWith('git_')
+      normalizedToolName === 'list' ||
+      normalizedToolName === 'read' ||
+      normalizedToolName === 'write' ||
+      normalizedToolName === 'edit' ||
+      normalizedToolName === 'glob' ||
+      normalizedToolName === 'grep' ||
+      normalizedToolName.startsWith('git_')
     ) {
       const mode = useAppStore.getState().mode;
-      return executeWorkspaceTool(toolName, args, mode);
+      return executeWorkspaceTool(normalizedToolName, args, mode);
     }
   };
 
@@ -1593,7 +1596,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (appMode === 'Architect') {
       systemInstructions.push(
-        'In Architect mode, do not call `generate_plan` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).'
+        'In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).'
       );
       systemInstructions.push(
         'Git workflow for plans is strict: integration branch is `plan/<plan-slug>` from `develop`; strategy branches must be `feature/<plan-slug>/<feature-slug>` and are intended to merge into the plan branch in dependency order.'
@@ -1601,7 +1604,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {
         systemInstructions.push(
-          `[Active Plan] id="${activePlanContext.id}", title="${activePlanContext.title}", description="${activePlanContext.description || 'none'}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". When the user describes their project or requests changes, first write a message proposing updated title/description, then call update_plan to apply them.`
+          `[Active Plan] id="${activePlanContext.id}", title="${activePlanContext.title}", description="${activePlanContext.description || 'none'}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". When the user describes their project or requests changes, first write a message proposing updated title/description, then call plan_update to apply them.`
         );
       }
     }

@@ -317,11 +317,11 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'add_need',
+    id: 'need_add',
     name: 'Add Need',
     category: 'productivity',
     status: 'enabled',
-    description: 'Add a structured need to the project (Architect Mode)',
+    description: 'Add a structured need to the active Architect plan',
     icon: 'plus',
     config: {
       enabled: true,
@@ -331,11 +331,11 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'generate_plan',
-    name: 'Generate Plan',
+    id: 'strategy_generate',
+    name: 'Generate Strategy',
     category: 'productivity',
     status: 'enabled',
-    description: 'Generate a project plan from needs (Architect Mode)',
+    description: 'Generate strategy from collected needs for the active plan',
     icon: 'git-merge',
     config: {
       enabled: true,
@@ -345,7 +345,7 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'create_plan',
+    id: 'plan_create',
     name: 'Create Plan',
     category: 'productivity',
     status: 'enabled',
@@ -359,7 +359,7 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'list_plans',
+    id: 'plan_list',
     name: 'List Plans',
     category: 'productivity',
     status: 'enabled',
@@ -373,7 +373,7 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'get_plan',
+    id: 'plan_get',
     name: 'Get Plan',
     category: 'productivity',
     status: 'enabled',
@@ -387,7 +387,7 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'update_plan',
+    id: 'plan_update',
     name: 'Update Plan',
     category: 'productivity',
     status: 'enabled',
@@ -401,7 +401,7 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'delete_plan',
+    id: 'plan_delete',
     name: 'Delete Plan',
     category: 'productivity',
     status: 'enabled',
@@ -415,7 +415,7 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'restore_plan',
+    id: 'plan_restore',
     name: 'Restore Plan',
     category: 'productivity',
     status: 'enabled',
@@ -429,7 +429,7 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'set_active_plan',
+    id: 'plan_set_active',
     name: 'Set Active Plan',
     category: 'productivity',
     status: 'enabled',
@@ -443,7 +443,7 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'get_strategy',
+    id: 'strategy_get',
     name: 'Get Strategy',
     category: 'productivity',
     status: 'enabled',
@@ -457,7 +457,7 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'update_strategy',
+    id: 'strategy_update',
     name: 'Update Strategy',
     category: 'productivity',
     status: 'enabled',
@@ -471,7 +471,7 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
-    id: 'delete_strategy',
+    id: 'strategy_delete',
     name: 'Delete Strategy',
     category: 'productivity',
     status: 'enabled',
@@ -513,17 +513,17 @@ export const defaultToolSettings: Record<string, boolean> = {
   mark_source_passage: true,
   read_sources: true,
   edit_source_passage: true,
-  add_need: true,
-  generate_plan: true,
-  create_plan: true,
-  list_plans: true,
-  get_plan: true,
-  update_plan: true,
-  delete_plan: true,
-  restore_plan: true,
-  set_active_plan: true,
-  get_strategy: true,
-  update_strategy: true,
-  delete_strategy: true,
+  need_add: true,
+  strategy_generate: true,
+  plan_create: true,
+  plan_list: true,
+  plan_get: true,
+  plan_update: true,
+  plan_delete: true,
+  plan_restore: true,
+  plan_set_active: true,
+  strategy_get: true,
+  strategy_update: true,
+  strategy_delete: true,
 };
 export const defaultMCPServerSettings: Record<string, boolean> = {};

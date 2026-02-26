@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { services } from '../services';
 import type { Tool, MCPServer } from '../types';
 import { toServiceError } from '../services/contracts/errors';
+import { normalizeArchitectToolId } from '../services/architectToolNames';
 
 const CHAT_MODE_TOOL_SETTINGS_KEY = 'macro_chat_mode_tool_settings';
 
@@ -25,7 +26,11 @@ const loadChatModeToolSettings = (): Record<string, boolean> => {
     if (!raw || raw === 'undefined') return {};
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return Object.fromEntries(
-      Object.entries(parsed).filter(([, value]) => typeof value === 'boolean') as Array<[string, boolean]>
+      (Object.entries(parsed)
+        .filter(([, value]) => typeof value === 'boolean') as Array<[string, boolean]>).map(([id, enabled]) => [
+        normalizeArchitectToolId(id),
+        enabled,
+      ])
     );
   } catch {
     return {};

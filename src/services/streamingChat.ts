@@ -540,7 +540,7 @@ const GIT_STASH_TOOL = {
 const ADD_NEED_TOOL = {
   type: 'function',
   function: {
-    name: 'add_need',
+    name: 'need_add',
     description: 'Add a structured user or system need for the project. Use this during the Architect phase to gather requirements.',
     parameters: {
       type: 'object',
@@ -559,7 +559,7 @@ const ADD_NEED_TOOL = {
 const GENERATE_PLAN_TOOL = {
   type: 'function',
   function: {
-    name: 'generate_plan',
+    name: 'strategy_generate',
     description: 'Generate a structured strategy for the active plan based on collected needs. Plan integration branch is plan/<plan-slug> (from develop); strategy branches must be feature/<plan-slug>/<feature-slug>.',
     parameters: {
       type: 'object',
@@ -592,7 +592,7 @@ const GENERATE_PLAN_TOOL = {
 const CREATE_PLAN_TOOL = {
   type: 'function',
   function: {
-    name: 'create_plan',
+    name: 'plan_create',
     description: 'Create a new Architect plan stored under the .macro branch metadata for a target code branch.',
     parameters: {
       type: 'object',
@@ -611,7 +611,7 @@ const CREATE_PLAN_TOOL = {
 const LIST_PLANS_TOOL = {
   type: 'function',
   function: {
-    name: 'list_plans',
+    name: 'plan_list',
     description: 'List plans for a code branch in the .macro branch metadata.',
     parameters: {
       type: 'object',
@@ -627,7 +627,7 @@ const LIST_PLANS_TOOL = {
 const GET_PLAN_TOOL = {
   type: 'function',
   function: {
-    name: 'get_plan',
+    name: 'plan_get',
     description: 'Read a specific plan and its nodes from .macro metadata.',
     parameters: {
       type: 'object',
@@ -643,7 +643,7 @@ const GET_PLAN_TOOL = {
 const UPDATE_PLAN_TOOL = {
   type: 'function',
   function: {
-    name: 'update_plan',
+    name: 'plan_update',
     description: 'Update title, description, status, or active flag for an existing plan.',
     parameters: {
       type: 'object',
@@ -663,7 +663,7 @@ const UPDATE_PLAN_TOOL = {
 const DELETE_PLAN_TOOL = {
   type: 'function',
   function: {
-    name: 'delete_plan',
+    name: 'plan_delete',
     description: 'Delete a plan. Soft delete by default; hard delete when hard_delete=true.',
     parameters: {
       type: 'object',
@@ -680,7 +680,7 @@ const DELETE_PLAN_TOOL = {
 const RESTORE_PLAN_TOOL = {
   type: 'function',
   function: {
-    name: 'restore_plan',
+    name: 'plan_restore',
     description: 'Restore a soft-deleted plan back to draft status.',
     parameters: {
       type: 'object',
@@ -696,7 +696,7 @@ const RESTORE_PLAN_TOOL = {
 const SET_ACTIVE_PLAN_TOOL = {
   type: 'function',
   function: {
-    name: 'set_active_plan',
+    name: 'plan_set_active',
     description: 'Set active plan for a target code branch in .macro metadata.',
     parameters: {
       type: 'object',
@@ -712,7 +712,7 @@ const SET_ACTIVE_PLAN_TOOL = {
 const GET_STRATEGY_TOOL = {
   type: 'function',
   function: {
-    name: 'get_strategy',
+    name: 'strategy_get',
     description: 'Read the current strategy (nodes and branches) for the active plan.',
     parameters: {
       type: 'object',
@@ -727,7 +727,7 @@ const GET_STRATEGY_TOOL = {
 const UPDATE_STRATEGY_TOOL = {
   type: 'function',
   function: {
-    name: 'update_strategy',
+    name: 'strategy_update',
     description: 'Modify strategy for the active plan. You can replace all nodes or apply operations (add, update, remove).',
     parameters: {
       type: 'object',
@@ -777,7 +777,7 @@ const UPDATE_STRATEGY_TOOL = {
 const DELETE_STRATEGY_TOOL = {
   type: 'function',
   function: {
-    name: 'delete_strategy',
+    name: 'strategy_delete',
     description: 'Delete all strategy nodes and predicted branches for the active plan. Requires confirm=true.',
     parameters: {
       type: 'object',
@@ -884,16 +884,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       return `\n\n[TOOL] grep${query ? ` ("${query}")` : ''}\n`;
     }
 
-    if (toolName === 'add_need') {
+    if (toolName === 'need_add') {
       const title = typeof args.title === 'string' ? args.title : '';
-      return `\n\n[TOOL] add_need${title ? ` ("${title}")` : ''}\n`;
+      return `\n\n[TOOL] need_add${title ? ` ("${title}")` : ''}\n`;
     }
 
-    if (toolName === 'generate_plan') {
-      return `\n\n[TOOL] generate_plan\n`;
+    if (toolName === 'strategy_generate') {
+      return `\n\n[TOOL] strategy_generate\n`;
     }
 
-    if (toolName === 'create_plan' || toolName === 'list_plans' || toolName === 'get_plan' || toolName === 'update_plan' || toolName === 'delete_plan' || toolName === 'restore_plan' || toolName === 'set_active_plan' || toolName === 'get_strategy' || toolName === 'update_strategy' || toolName === 'delete_strategy') {
+    if (toolName === 'plan_create' || toolName === 'plan_list' || toolName === 'plan_get' || toolName === 'plan_update' || toolName === 'plan_delete' || toolName === 'plan_restore' || toolName === 'plan_set_active' || toolName === 'strategy_get' || toolName === 'strategy_update' || toolName === 'strategy_delete') {
       return `\n\n[TOOL] ${toolName}\n`;
     }
 
@@ -1006,40 +1006,40 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   if (allowedTools.has('web_fetch') && enableWebFetch) {
     tools.push(WEB_FETCH_TOOL);
   }
-  if (allowedTools.has('add_need')) {
+  if (allowedTools.has('need_add')) {
     tools.push(ADD_NEED_TOOL);
   }
-  if (allowedTools.has('generate_plan')) {
+  if (allowedTools.has('strategy_generate')) {
     tools.push(GENERATE_PLAN_TOOL);
   }
-  if (allowedTools.has('create_plan')) {
+  if (allowedTools.has('plan_create')) {
     tools.push(CREATE_PLAN_TOOL);
   }
-  if (allowedTools.has('list_plans')) {
+  if (allowedTools.has('plan_list')) {
     tools.push(LIST_PLANS_TOOL);
   }
-  if (allowedTools.has('get_plan')) {
+  if (allowedTools.has('plan_get')) {
     tools.push(GET_PLAN_TOOL);
   }
-  if (allowedTools.has('update_plan')) {
+  if (allowedTools.has('plan_update')) {
     tools.push(UPDATE_PLAN_TOOL);
   }
-  if (allowedTools.has('delete_plan')) {
+  if (allowedTools.has('plan_delete')) {
     tools.push(DELETE_PLAN_TOOL);
   }
-  if (allowedTools.has('restore_plan')) {
+  if (allowedTools.has('plan_restore')) {
     tools.push(RESTORE_PLAN_TOOL);
   }
-  if (allowedTools.has('set_active_plan')) {
+  if (allowedTools.has('plan_set_active')) {
     tools.push(SET_ACTIVE_PLAN_TOOL);
   }
-  if (allowedTools.has('get_strategy')) {
+  if (allowedTools.has('strategy_get')) {
     tools.push(GET_STRATEGY_TOOL);
   }
-  if (allowedTools.has('update_strategy')) {
+  if (allowedTools.has('strategy_update')) {
     tools.push(UPDATE_STRATEGY_TOOL);
   }
-  if (allowedTools.has('delete_strategy')) {
+  if (allowedTools.has('strategy_delete')) {
     tools.push(DELETE_STRATEGY_TOOL);
   }
   if (tools.length > 0) {

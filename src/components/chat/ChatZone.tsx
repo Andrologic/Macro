@@ -332,8 +332,8 @@ const ChatZone: React.FC = () => {
 
     const conversationId = await ensureConversation();
     const content = hasExistingStrategy
-      ? 'User requested to regenerate the strategy. Reassess all identified needs for the active plan and call `generate_plan` with a complete replacement strategy (full nodes and dependencies).'
-      : 'User requested to generate the strategy now. Based on all identified needs for the active plan, call `generate_plan` with a complete initial strategy (full nodes and dependencies).';
+      ? 'User requested to regenerate the strategy. Reassess all identified needs for the active plan and call `strategy_generate` with a complete replacement strategy (full nodes and dependencies).'
+      : 'User requested to generate the strategy now. Based on all identified needs for the active plan, call `strategy_generate` with a complete initial strategy (full nodes and dependencies).';
 
     await sendMessage({ conversationId, content });
   };
