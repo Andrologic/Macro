@@ -42,22 +42,22 @@ const ALL_WORKSPACE_TOOLS = [
 ] as const;
 
 const ARCHITECT_PLAN_TOOLS = [
-  'create_plan',
-  'list_plans',
-  'get_plan',
-  'update_plan',
-  'delete_plan',
-  'restore_plan',
-  'set_active_plan',
-  'get_strategy',
-  'update_strategy',
-  'delete_strategy',
+  'plan_create',
+  'plan_list',
+  'plan_get',
+  'plan_update',
+  'plan_delete',
+  'plan_restore',
+  'plan_set_active',
+  'strategy_get',
+  'strategy_update',
+  'strategy_delete',
 ] as const;
 
 export const getToolModePolicy = (mode: AppMode): ToolModePolicy => {
   if (mode === 'Architect') {
     return {
-      allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_READ_TOOLS, ...ARCHITECT_PLAN_TOOLS, 'add_need', 'generate_plan'],
+      allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_READ_TOOLS, ...ARCHITECT_PLAN_TOOLS, 'need_add', 'strategy_generate'],
       enforceMacroOnlyWrites: true,
     };
   }
