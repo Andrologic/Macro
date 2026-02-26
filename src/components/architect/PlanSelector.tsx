@@ -39,7 +39,15 @@ const formatRelativeDate = (iso: string): string => {
 };
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
-  const { setPlanNodes, setPredictedBranches, setActiveArchitectPlanId, setActivePlanContext, activeArchitectPlanId, selectedProjectId } = useAppStore();
+  const {
+    setPlanNodes,
+    setPredictedBranches,
+    setActiveArchitectPlanId,
+    setActivePlanContext,
+    activeArchitectPlanId,
+    activePlanContext,
+    selectedProjectId,
+  } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   const [plans, setPlans] = useState<ArchitectPlanSummary[]>([]);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
@@ -66,6 +74,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     if (!activePlanId) return null;
     return plans.find((plan) => plan.id === activePlanId) || null;
   }, [plans, activePlanId]);
+
+  const displayedActivePlanTitle = useMemo(() => {
+    if (activePlanContext && activePlanContext.id === activePlanId && activePlanContext.title.trim().length > 0) {
+      return activePlanContext.title;
+    }
+    return activePlan?.title || 'Select plan';
+  }, [activePlan, activePlanContext, activePlanId]);
 
   const loadPlans = async (hydrateActive = false) => {
     setIsLoading(true);
@@ -397,6 +412,38 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   }, [activeArchitectPlanId]);
 
   useEffect(() => {
+    if (!activePlanContext) return;
+
+    setPlans((current) => {
+      let changed = false;
+      const next = current.map((plan) => {
+        if (plan.id !== activePlanContext.id) return plan;
+        const nextStatus = activePlanContext.status as ArchitectPlanSummary['status'];
+        if (
+          plan.title === activePlanContext.title &&
+          plan.description === activePlanContext.description &&
+          plan.status === nextStatus
+        ) {
+          return plan;
+        }
+        changed = true;
+        return {
+          ...plan,
+          title: activePlanContext.title,
+          description: activePlanContext.description,
+          status: nextStatus,
+          updatedAt: new Date().toISOString(),
+        };
+      });
+      return changed ? next : current;
+    });
+
+    if (activePlanId !== activePlanContext.id) {
+      setActivePlanId(activePlanContext.id);
+    }
+  }, [activePlanContext, activePlanId]);
+
+  useEffect(() => {
     if (!isOpen) return;
     const onDocumentMouseDown = (event: MouseEvent) => {
       if (!rootRef.current) return;
@@ -416,7 +463,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       >
         <Icon name="list" size={13} className="text-primary" />
         <span className="max-w-[140px] truncate text-foreground">
-          {activePlan?.title || 'Select plan'}
+          {displayedActivePlanTitle}
         </span>
         <Icon name="chevron-down" size={13} className="text-muted-foreground" />
       </button>
