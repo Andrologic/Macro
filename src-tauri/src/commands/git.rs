@@ -922,6 +922,68 @@ fn checkout_repo(repo: &Repository, branch_or_commit: &str, create: bool) -> Res
 	Ok(())
 }
 
+fn create_branch_from_ref(repo: &Repository, branch_name: &str, from_ref: &str) -> Result<()> {
+	validate_branch_name(branch_name)?;
+	validate_refspec(from_ref)?;
+
+	let ref_name = format!("refs/heads/{}", branch_name);
+	if repo.find_reference(&ref_name).is_ok() {
+		return Ok(());
+	}
+
+	let from_commit = resolve_commit(repo, from_ref).map_err(|_| BackendError::GitInvalidCommit {
+		message: format!("Reference not found: {}", from_ref),
+	})?;
+
+	repo.branch(branch_name, &from_commit, false).map_err(|e| BackendError::Git {
+		message: e.to_string(),
+	})?;
+
+	Ok(())
+}
+
+fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Result<()> {
+	let current = get_branch_name(repo)?;
+	if current.as_deref() == Some(branch_name) {
+		return Err(BackendError::Git {
+			message: format!("Cannot delete checked out branch: {}", branch_name),
+		});
+	}
+
+	let mut branch = repo
+		.find_branch(branch_name, BranchType::Local)
+		.map_err(|_| BackendError::GitBranchNotFound {
+			message: format!("Branch not found: {}", branch_name),
+		})?;
+
+	if !force {
+		if let Ok(head_commit) = repo.head().and_then(|head| head.peel_to_commit()) {
+			let branch_commit = branch.get().peel_to_commit().map_err(|e| BackendError::Git {
+				message: e.to_string(),
+			})?;
+			let is_merged = repo
+				.graph_descendant_of(head_commit.id(), branch_commit.id())
+				.map_err(|e| BackendError::Git {
+					message: e.to_string(),
+				})?;
+			if !is_merged {
+				return Err(BackendError::Git {
+					message: format!(
+						"Branch {} is not merged into current HEAD. Use force=true to delete it.",
+						branch_name
+					),
+				});
+			}
+		}
+	}
+
+	branch.delete().map_err(|e| BackendError::Git {
+		message: e.to_string(),
+	})?;
+
+	Ok(())
+}
+
 fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> Result<String> {
 	validate_commit_message(message)?;
 	ensure_safe_config(repo)?;
@@ -1141,6 +1203,56 @@ pub async fn git_branch_list(
 		})?;
 
 		build_git_branches(&repo)
+	})
+	.await
+	.map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Create a local branch from a specific source ref (branch/tag/commit).
+pub async fn git_branch_create(
+	workspace_root: State<'_, WorkspaceRoot>,
+	git_state: State<'_, GitState>,
+	repo_path: String,
+	branch_name: String,
+	from_ref: String,
+) -> Result<()> {
+	let workspace = workspace_root.inner().read().await.clone();
+	let git_state = git_state.inner().clone();
+
+	tokio::task::spawn_blocking(move || {
+		let validated = validate_repo_path(&repo_path, &workspace)?;
+		let repo = git_state.open_repo(&validated)?;
+		let repo = repo.lock().map_err(|_| BackendError::Internal {
+			message: "Failed to lock repository".to_string(),
+		})?;
+
+		create_branch_from_ref(&repo, &branch_name, &from_ref)
+	})
+	.await
+	.map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Delete a local branch. When force=false, branch must be merged into HEAD.
+pub async fn git_branch_delete(
+	workspace_root: State<'_, WorkspaceRoot>,
+	git_state: State<'_, GitState>,
+	repo_path: String,
+	branch_name: String,
+	force: Option<bool>,
+) -> Result<()> {
+	let workspace = workspace_root.inner().read().await.clone();
+	let git_state = git_state.inner().clone();
+
+	tokio::task::spawn_blocking(move || {
+		let validated = validate_repo_path(&repo_path, &workspace)?;
+		let repo = git_state.open_repo(&validated)?;
+		let repo = repo.lock().map_err(|_| BackendError::Internal {
+			message: "Failed to lock repository".to_string(),
+		})?;
+
+		delete_local_branch(&repo, &branch_name, force.unwrap_or(false))
 	})
 	.await
 	.map_err(to_join_error)?

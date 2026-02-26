@@ -14,7 +14,6 @@ import { useNeedsStore } from './useNeedsStore';
 import * as tauriIpc from '../services/tauriIpc';
 import {
   createArchitectPlan,
-  deleteArchitectPlan,
   getArchitectPlan,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
@@ -23,9 +22,11 @@ import {
   restoreArchitectPlan,
   saveArchitectPlanNeeds,
   setActiveArchitectPlan,
+  toPlanIntegrationBranch,
   toPlanScopedFeatureBranch,
   updateArchitectPlan,
 } from '../services/architectPlanService';
+import { deletePlanAndCleanupBranches, validatePlanAndProvisionBranches } from '../services/architectGitFlowService';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
@@ -637,11 +638,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const buildPredictedBranches = (
       nodes: PlanNode[],
-      resolvedProjectId: string | undefined
+      resolvedProjectId: string | undefined,
+      parentBranchName: string
     ): PredictedBranch[] => {
       const branchMap = new Map<string, string[]>();
       nodes.forEach((node) => {
-        const branchName = node.assignedBranch || 'develop';
+        const branchName = node.assignedBranch || parentBranchName;
         if (!branchMap.has(branchName)) {
           branchMap.set(branchName, []);
         }
@@ -653,7 +655,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         id: `branch-${Date.now()}-${index}`,
         name,
         color: colors[index % colors.length],
-        parentBranch: 'develop',
+        parentBranch: parentBranchName,
         projectId: resolvedProjectId || '',
         taskIds,
         status: 'pending' as const,
@@ -694,38 +696,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
         throw new Error(`Active plan ${activePlanId} is unavailable. Select another plan.`);
       }
 
-      const allPlanSummaries = await listArchitectPlans(targetBranch, true);
-      const otherPlans = allPlanSummaries.plans.filter((plan) => plan.id !== activePlanId);
-      const otherPlanRecords = await Promise.all(otherPlans.map((plan) => getArchitectPlan(targetBranch, plan.id)));
-      const usedBranchNames = new Set(
-        otherPlanRecords
-          .filter((plan): plan is NonNullable<typeof plan> => Boolean(plan))
-          .flatMap((plan) => plan.predictedBranches.map((branch) => branch.name))
-      );
-
       const scopedBranchBySource = new Map<string, string>();
-      const planSlug = activePlan.slug || activePlan.title;
+      const planSlug = activePlan.slug;
       const scopeBranchName = (sourceBranch: string): string => {
         const trimmed = sourceBranch.trim();
         const alreadyScopedPrefix = `feature/${planSlug}/`;
         if (trimmed.startsWith(alreadyScopedPrefix)) {
           scopedBranchBySource.set(sourceBranch, trimmed);
-          usedBranchNames.add(trimmed);
           return trimmed;
         }
         if (scopedBranchBySource.has(sourceBranch)) {
           return scopedBranchBySource.get(sourceBranch)!;
         }
         const baseName = toPlanScopedFeatureBranch(planSlug, sourceBranch || 'work');
-        let candidate = baseName;
-        let suffix = 2;
-        while (usedBranchNames.has(candidate)) {
-          candidate = `${baseName}-${suffix}`;
-          suffix += 1;
-        }
-        usedBranchNames.add(candidate);
-        scopedBranchBySource.set(sourceBranch, candidate);
-        return candidate;
+        scopedBranchBySource.set(sourceBranch, baseName);
+        return baseName;
       };
 
       const idBase = `plan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -797,7 +782,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       }
 
-      const predictedBranches = buildPredictedBranches(planNodes, resolvedProjectId || undefined);
+      const predictedBranches = buildPredictedBranches(
+        planNodes,
+        resolvedProjectId || undefined,
+        toPlanIntegrationBranch(planSlug)
+      );
       return {
         planNodes,
         predictedBranches,
@@ -1027,17 +1016,45 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return `Invalid status for update_plan: ${status}.`;
       }
 
+      const requestedTitle = typeof args.title === 'string' ? args.title : undefined;
+      const requestedDescription = typeof args.description === 'string' ? args.description : undefined;
+      const shouldSetActive = args.set_active === true;
+
+      if (status === 'validated') {
+        const updatedMetadata = await updateArchitectPlan({
+          branchName: targetBranch,
+          planId,
+          title: requestedTitle,
+          description: requestedDescription,
+          setActive: shouldSetActive,
+        });
+
+        const { plan: validatedPlan, provision } = await validatePlanAndProvisionBranches({
+          branchName: targetBranch,
+          planId: updatedMetadata.id,
+          setActive: shouldSetActive,
+        });
+
+        if (shouldSetActive && validatedPlan.status !== 'deleted') {
+          await hydratePlanContext(targetBranch, validatedPlan.id);
+        }
+
+        const createdCount = (provision.createdPlanBranch ? 1 : 0) + provision.createdFeatureBranches.length;
+        return createdCount > 0
+          ? `Validated plan ${validatedPlan.id} and provisioned ${createdCount} branch${createdCount > 1 ? 'es' : ''}.`
+          : `Validated plan ${validatedPlan.id}; branches were already provisioned.`;
+      }
+
       const updatedPlan = await updateArchitectPlan({
         branchName: targetBranch,
         planId,
-        title: typeof args.title === 'string' ? args.title : undefined,
-        slug: typeof args.title === 'string' ? args.title : undefined,
-        description: typeof args.description === 'string' ? args.description : undefined,
+        title: requestedTitle,
+        description: requestedDescription,
         status: status as any,
-        setActive: args.set_active === true,
+        setActive: shouldSetActive,
       });
 
-      if (args.set_active === true && updatedPlan.status !== 'deleted') {
+      if (shouldSetActive && updatedPlan.status !== 'deleted') {
         await hydratePlanContext(targetBranch, updatedPlan.id);
       }
 
@@ -1052,7 +1069,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const targetBranch = resolveTargetBranch(args.target_branch);
       const hardDelete = args.hard_delete === true;
 
-      await deleteArchitectPlan({
+      const { deletedBranches } = await deletePlanAndCleanupBranches({
         branchName: targetBranch,
         planId,
         hardDelete,
@@ -1064,9 +1081,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         useAppStore.getState().setPredictedBranches([]);
       }
 
-      return hardDelete
-        ? `Purged plan ${planId} from target branch ${targetBranch}.`
-        : `Soft-deleted plan ${planId} on target branch ${targetBranch}.`;
+      const action = hardDelete ? 'Purged' : 'Soft-deleted';
+      return `${action} plan ${planId} on target branch ${targetBranch}. Deleted ${deletedBranches.length} associated git branch${deletedBranches.length > 1 ? 'es' : ''}.`;
     }
 
     if (toolName === 'restore_plan') {
@@ -1550,6 +1566,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (appMode === 'Architect') {
+      systemInstructions.push(
+        'In Architect mode, do not call `generate_plan` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).'
+      );
+      systemInstructions.push(
+        'Git workflow for plans is strict: integration branch is `plan/<plan-slug>` from `develop`; strategy branches must be `feature/<plan-slug>/<feature-slug>` and are intended to merge into the plan branch in dependency order.'
+      );
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {
         systemInstructions.push(

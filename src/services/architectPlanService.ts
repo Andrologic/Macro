@@ -34,9 +34,10 @@ export interface ArchitectPlanSummary {
 }
 
 interface ArchitectPlanIndex {
-  version: 1;
+  version: 2;
   activePlanId: string | null;
   plans: ArchitectPlanSummary[];
+  reservedPlanSlugs: string[];
 }
 
 const LOCAL_INDEX_KEY_PREFIX = 'macro_architect_plan_index';
@@ -89,7 +90,7 @@ const getPlanJsonPath = (branchName: string, planId: string): string => `${getPl
 const getPlanMarkdownPath = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/plan.md`;
 const getPlanNeedsPath = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/needs.json`;
 
-const emptyIndex = (): ArchitectPlanIndex => ({ version: 1, activePlanId: null, plans: [] });
+const emptyIndex = (): ArchitectPlanIndex => ({ version: 2, activePlanId: null, plans: [], reservedPlanSlugs: [] });
 
 const localIndexKey = (branchName: string): string => `${LOCAL_INDEX_KEY_PREFIX}:${normalizeBranchName(branchName)}`;
 const localPlanKey = (branchName: string, planId: string): string =>
@@ -104,6 +105,7 @@ const buildPlanMarkdown = (plan: ArchitectPlanRecord): string => {
   lines.push('## Metadata');
   lines.push(`- Plan ID: ${plan.id}`);
   lines.push(`- Plan Slug: ${plan.slug}`);
+  lines.push(`- Plan Integration Branch: ${toPlanIntegrationBranch(plan.slug)}`);
   lines.push(`- Target Code Branch: ${plan.targetBranch}`);
   lines.push(`- Base Code Branch: ${GIT_FLOW_BASE_BRANCH}`);
   lines.push(`- Macro Branch: .macro`);
@@ -172,12 +174,21 @@ const readLocalIndex = (branchName: string): ArchitectPlanIndex => {
   try {
     const raw = window.localStorage.getItem(localIndexKey(branchName));
     if (!raw) return emptyIndex();
-    const parsed = JSON.parse(raw) as ArchitectPlanIndex;
+    const parsed = JSON.parse(raw) as Partial<ArchitectPlanIndex>;
+    const reservedPlanSlugs = Array.isArray(parsed.reservedPlanSlugs)
+      ? parsed.reservedPlanSlugs
+          .filter((slug): slug is string => typeof slug === 'string')
+          .map((slug) => slugifyPlanTitle(slug))
+      : [];
+    const planSlugsFromIndex = Array.isArray(parsed.plans)
+      ? parsed.plans.map((plan) => slugifyPlanTitle((plan as Partial<ArchitectPlanSummary>).slug || plan.title || plan.id))
+      : [];
     if (parsed && Array.isArray(parsed.plans)) {
       return {
-        version: 1,
+        version: 2,
         activePlanId: parsed.activePlanId || null,
         plans: parsed.plans,
+        reservedPlanSlugs: Array.from(new Set([...reservedPlanSlugs, ...planSlugsFromIndex])),
       };
     }
     return emptyIndex();
@@ -250,14 +261,24 @@ const readIndex = async (branchName: string): Promise<ArchitectPlanIndex> => {
     return {
       ...local,
       plans: normalizeSummaries(local.plans),
+      reservedPlanSlugs: Array.from(new Set(local.reservedPlanSlugs.map((slug) => slugifyPlanTitle(slug)))),
     };
   }
-  const parsed = await readJsonFile<ArchitectPlanIndex>(getIndexPath(normalized));
+  const parsed = await readJsonFile<Partial<ArchitectPlanIndex>>(getIndexPath(normalized));
   if (parsed && Array.isArray(parsed.plans)) {
+    const reservedPlanSlugs = Array.isArray(parsed.reservedPlanSlugs)
+      ? parsed.reservedPlanSlugs
+          .filter((slug): slug is string => typeof slug === 'string')
+          .map((slug) => slugifyPlanTitle(slug))
+      : [];
+    const planSlugsFromIndex = parsed.plans.map((plan) =>
+      slugifyPlanTitle((plan as Partial<ArchitectPlanSummary>).slug || plan.title || plan.id)
+    );
     return {
-      version: 1,
+      version: 2,
       activePlanId: parsed.activePlanId || null,
       plans: normalizeSummaries(parsed.plans),
+      reservedPlanSlugs: Array.from(new Set([...reservedPlanSlugs, ...planSlugsFromIndex])),
     };
   }
   return emptyIndex();
@@ -410,19 +431,16 @@ export const createArchitectPlan = async (input: {
 
   // Read index early for uniqueness checks
   const index = await readIndex(normalizedBranch);
+  const nextSlug = slugifyPlanTitle(input.slug || input.title || String(Date.now()));
 
-  // Reject duplicate titles (case-insensitive, excluding deleted plans)
-  const normalizedTitle = (input.title || '').trim().toLowerCase();
-  const titleConflict = index.plans.find(
-    (p) => p.status !== 'deleted' && p.title.trim().toLowerCase() === normalizedTitle
-  );
-  if (titleConflict) {
-    throw new Error(`A plan named "${titleConflict.title}" already exists. Choose a different name.`);
+  // Reject duplicate slugs across all historical plans, including deleted ones.
+  if (index.reservedPlanSlugs.includes(nextSlug)) {
+    throw new Error(`A plan named "${input.title}" already exists or existed before. Choose a different name.`);
   }
 
   // ID is always a random numeric sequence — independent of the title
   const planId = input.planId ? sanitizeId(input.planId) : String(Date.now());
-  const slug = slugifyPlanTitle(input.slug || input.title || planId);
+  const slug = nextSlug;
 
   const plan: ArchitectPlanRecord = {
     id: planId,
@@ -442,8 +460,10 @@ export const createArchitectPlan = async (input: {
   const summary = toSummary(plan);
   const nextIndex: ArchitectPlanIndex = {
     ...index,
+    version: 2,
     plans: upsertSummary(index.plans, summary),
     activePlanId: input.setActive === false ? index.activePlanId : plan.id,
+    reservedPlanSlugs: Array.from(new Set([...index.reservedPlanSlugs, slug])),
   };
 
   await writePlan(normalizedBranch, plan);
@@ -484,9 +504,14 @@ export const updateArchitectPlan = async (input: {
     }
   }
 
+  const requestedSlug = input.slug ? slugifyPlanTitle(input.slug) : existing.slug;
+  if (requestedSlug !== existing.slug) {
+    throw new Error('Plan slug is immutable and cannot be changed after creation.');
+  }
+
   const next: ArchitectPlanRecord = {
     ...existing,
-    slug: input.slug ? slugifyPlanTitle(input.slug) : existing.slug,
+    slug: existing.slug,
     title: input.title?.trim() || existing.title,
     description: input.description !== undefined ? input.description.trim() : existing.description,
     conversationId: input.conversationId !== undefined ? input.conversationId : existing.conversationId,
@@ -500,8 +525,10 @@ export const updateArchitectPlan = async (input: {
   const index = await readIndex(normalizedBranch);
   const nextIndex: ArchitectPlanIndex = {
     ...index,
+    version: 2,
     plans: upsertSummary(index.plans, toSummary(next)),
     activePlanId: input.setActive ? next.id : index.activePlanId,
+    reservedPlanSlugs: Array.from(new Set([...index.reservedPlanSlugs, existing.slug])),
   };
 
   await writePlan(normalizedBranch, next);
@@ -520,6 +547,7 @@ export const setActiveArchitectPlan = async (branchName: string, planId: string)
 
   await writeIndex(normalizedBranch, {
     ...index,
+    version: 2,
     activePlanId: sanitizeId(planId),
   });
 };
@@ -539,6 +567,7 @@ export const deleteArchitectPlan = async (input: {
     const nextPlans = index.plans.filter((plan) => plan.id !== safeId);
     await writeIndex(normalizedBranch, {
       ...index,
+      version: 2,
       plans: nextPlans,
       activePlanId: index.activePlanId === safeId ? nextPlans[0]?.id || null : index.activePlanId,
     });
@@ -569,6 +598,7 @@ export const deleteArchitectPlan = async (input: {
 
   await writeIndex(normalizedBranch, {
     ...index,
+    version: 2,
     plans: nextPlans,
     activePlanId: index.activePlanId === safeId ? nextPlans.find((plan) => plan.status !== 'deleted')?.id || null : index.activePlanId,
   });
@@ -615,12 +645,18 @@ export const saveArchitectPlanNeeds = async (branchName: string, planId: string,
 
 export const toPlanScopedFeatureBranch = (planSlug: string, rawBranchName: string): string => {
   const normalizedPlanSlug = slugifyPlanTitle(planSlug);
+  const normalizedInput = rawBranchName.trim().toLowerCase().replace(/\/+/g, '/');
+  const alreadyScopedPrefix = `feature/${normalizedPlanSlug}/`;
+  if (normalizedInput.startsWith(alreadyScopedPrefix)) {
+    return normalizedInput;
+  }
+
   const normalizedRaw = rawBranchName
     .trim()
     .toLowerCase()
     .replace(/^feature\//, '')
     .replace(/[^a-z0-9/_-]+/g, '-')
-    .replace(/\/+/, '/')
+    .replace(/\/+/g, '/')
     .replace(/^-+/, '')
     .replace(/-+$/, '');
 
@@ -631,6 +667,8 @@ export const toPlanScopedFeatureBranch = (planSlug: string, rawBranchName: strin
 
   return `feature/${normalizedPlanSlug}/${branchLeaf}`;
 };
+
+export const toPlanIntegrationBranch = (planSlug: string): string => `plan/${slugifyPlanTitle(planSlug)}`;
 
 export const resolveTargetBranch = (argsValue: unknown): string => {
   const normalized = normalizeBranchName(typeof argsValue === 'string' ? argsValue : GIT_FLOW_BASE_BRANCH);

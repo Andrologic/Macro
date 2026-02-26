@@ -69,12 +69,6 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
     });
   };
 
-  const handleNeedEdit = (e: React.MouseEvent, needId: string) => {
-    e.stopPropagation();
-    selectNeed(needId);
-    setIsModalOpen(true);
-  };
-
   const handleCloseModal = () => {
     setIsModalOpen(false);
     selectNeed(null);
@@ -91,30 +85,6 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
             {scopedNeeds.length}
           </span>
         </h1>
-        <div className="flex items-center gap-2">
-          {scopedNeeds.length > 0 && (
-            <button
-              onClick={() => {
-                // Send a message to the active Architect chat to generate the plan
-                const chatStore = useChatStore.getState();
-                const appStore = useAppStore.getState();
-                if (chatStore && appStore.mode === 'Architect') {
-                  const conversationId = chatStore.selectedConversationIdsByMode['Architect'];
-                  if (conversationId) {
-                    chatStore.sendMessage({
-                      conversationId,
-                      content: "Based on the identified needs for the active plan, generate a structured strategy using the `generate_plan` tool.",
-                    });
-                  }
-                }
-              }}
-              className="px-3 py-1.5 rounded-md text-xs font-medium bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground transition-all duration-200 flex items-center gap-1.5"
-            >
-              <Icon name="git-merge" size={14} />
-              Generate Plan
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Filter Tabs */}

@@ -412,6 +412,30 @@ export async function gitBranchList(repoPath: string): Promise<GitBranchesDto> {
   return invoke<GitBranchesDto>('git_branch_list', { repoPath });
 }
 
+export async function gitBranchCreate(params: {
+  repoPath: string;
+  branchName: string;
+  fromRef: string;
+}): Promise<void> {
+  return invoke('git_branch_create', {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    fromRef: params.fromRef,
+  });
+}
+
+export async function gitBranchDelete(params: {
+  repoPath: string;
+  branchName: string;
+  force?: boolean;
+}): Promise<void> {
+  return invoke('git_branch_delete', {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    force: params.force ?? null,
+  });
+}
+
 export async function gitCheckout(params: {
   repoPath: string;
   branchOrCommit: string;
