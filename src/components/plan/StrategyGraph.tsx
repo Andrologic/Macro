@@ -271,8 +271,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
     const totalGraphWidth = COL_WIDTH * activeLanesCount;
     const finalWidth = Math.max(containerWidth, totalGraphWidth + LEFT_MARGIN * 2);
-    const extraSpace = Math.max(0, finalWidth - totalGraphWidth);
-    const effectiveLeftPadding = LEFT_MARGIN + (extraSpace / 2); // Center graph if smaller than container
+    const effectiveLeftPadding = (finalWidth - totalGraphWidth) / 2; // Keep baseline margin and center remaining space
 
     const positionedNodes = nodes.map(n => {
       const laneIndex = branchToLaneMap.get(n.assignedBranch || 'main') ?? 0;
