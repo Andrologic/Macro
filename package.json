@@ -23,7 +23,7 @@
     "lint": "bunx eslint . --ext .ts,.tsx",
     "update": "bun update",
     "test": "bun test",
-    "ci": "bun install --frozen-lockfile && bun run typecheck && bun run build"
+    "ci": "bun install --frozen-lockfile && bun run typecheck && bun run lint && bun run build"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",
@@ -76,14 +76,19 @@
     "zustand": "^5.0.10"
   },
   "devDependencies": {
+    "@eslint/js": "^9.38.0",
     "@tauri-apps/cli": "2.10.0",
     "@types/react": "^19.2.9",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.2",
     "autoprefixer": "^10.4.23",
     "bun-types": "latest",
+    "eslint": "^9.38.0",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "globals": "^16.5.0",
     "postcss": "^8.5.6",
     "tailwindcss": "3.4.0",
+    "typescript-eslint": "^8.46.4",
     "typescript": "~5.9.3",
     "vite": "^7.3.1"
   },

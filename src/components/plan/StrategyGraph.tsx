@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
-import { getGitFlowBaseBranch } from '../../services/architectPlanService';
+import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/architectPlanService';
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { toast } from '../ui/Toaster';
 import { Icon } from '../ui/Icon';
@@ -126,7 +126,17 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     originY: 0,
   });
 
-  const targetBranch = getGitFlowBaseBranch();
+  const targetBranch = useMemo(() => {
+    if (activePlanContext?.targetBranch) {
+      try {
+        return resolveTargetBranch(activePlanContext.targetBranch);
+      } catch {
+        return getGitFlowBaseBranch();
+      }
+    }
+
+    return getGitFlowBaseBranch();
+  }, [activePlanContext?.targetBranch]);
 
   const handleValidatePlan = async () => {
     if (!activePlanContext || isValidating) return;

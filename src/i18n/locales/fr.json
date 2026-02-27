@@ -29,7 +29,8 @@
     "copy": "Copier",
     "regenerate": "Régénérer",
     "editMessage": "Modifier votre message...",
-    "doubleClickToEdit": "Double-cliquez pour modifier"
+    "doubleClickToEdit": "Double-cliquez pour modifier",
+    "optional": "optionnel"
   },
   "header": {
     "architect": "Architecte",
@@ -114,6 +115,57 @@
     "completed": "Terminé",
     "blocked": "Bloquées",
     "actionRequired": "Action requise"
+  },
+  "architect": {
+    "needs": "Besoins identifiés",
+    "status": {
+      "draft": "Brouillon",
+      "validated": "Validé",
+      "in_progress": "En cours",
+      "archived": "Archivé",
+      "deleted": "Supprimé"
+    },
+    "planForm": {
+      "createTitle": "Nouveau plan",
+      "renameTitle": "Renommer le plan",
+      "nameLabel": "Nom du plan",
+      "nameRequired": "Le nom du plan est requis.",
+      "namePlaceholder": "ex. Refonte Authentification",
+      "descriptionLabel": "Description",
+      "descriptionPlaceholder": "De quoi parle ce plan ?",
+      "createAction": "Créer le plan"
+    },
+    "planSelector": {
+      "title": "Plans Architect",
+      "selectPlan": "Sélectionner un plan",
+      "create": "Créer",
+      "refresh": "Rafraîchir",
+      "loading": "Chargement des plans...",
+      "loadingShort": "Chargement",
+      "empty": "Aucun plan pour le moment.",
+      "unknownDate": "Date inconnue",
+      "nodesCount": "{{count}} nœuds",
+      "active": "Actif",
+      "renamePlan": "Renommer le plan",
+      "archivePlan": "Archiver le plan",
+      "deletePlan": "Supprimer le plan",
+      "deleteDialogTitle": "Supprimer le plan",
+      "deleteDialogDescription": "Cela supprimera définitivement \"{{title}}\" et ses données de stratégie. Cette action est irréversible.",
+      "deleteDialogFallback": "Cette action est irréversible.",
+      "deleting": "Suppression...",
+      "deletePermanently": "Supprimer définitivement",
+      "toastConversationCreated": "Conversation créée pour ce plan",
+      "toastDedicatedConversation": "Conversation dédiée créée pour ce plan",
+      "toastPlanArchived": "Plan \"{{title}}\" archivé",
+      "toastPlanDeleted": "Plan supprimé",
+      "errorLoadPlans": "Échec du chargement des plans.",
+      "errorSelectedPlanUnavailable": "Le plan sélectionné est indisponible.",
+      "errorActivatePlan": "Impossible d'activer le plan.",
+      "errorOperationFailed": "L'opération a échoué.",
+      "errorArchivePlan": "Impossible d'archiver le plan.",
+      "errorDeletePlan": "Impossible de supprimer le plan.",
+      "autoCreateError": "Impossible de créer automatiquement un plan par défaut à partir du titre de base \"{{title}}\"."
+    }
   },
   "git": {
     "gitTree": "Arbre Git",

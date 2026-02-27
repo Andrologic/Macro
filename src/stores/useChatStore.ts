@@ -545,6 +545,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return appState.activeArchitectPlanId;
     };
 
+    const resolveArchitectTargetBranch = (rawTargetBranch: unknown): string => {
+      if (typeof rawTargetBranch === 'string' && rawTargetBranch.trim().length > 0) {
+        return resolveTargetBranch(rawTargetBranch);
+      }
+
+      const appState = useAppStore.getState();
+      const activeTargetBranch = appState.activePlanContext?.targetBranch;
+      if (activeTargetBranch && activeTargetBranch.trim().length > 0) {
+        try {
+          return resolveTargetBranch(activeTargetBranch);
+        } catch {
+          // Fall through to default base branch.
+        }
+      }
+
+      return getGitFlowBaseBranch();
+    };
+
     const hydratePlanContext = async (targetBranch: string, planId: string): Promise<void> => {
       const plan = await getArchitectPlan(targetBranch, planId);
       if (!plan || plan.status === 'deleted') return;
@@ -920,7 +938,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (normalizedToolName === 'plan_list') {
-      const targetBranch = resolveTargetBranch(args.target_branch);
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const includeDeleted = args.include_deleted === true;
       const result = await listArchitectPlans(targetBranch, includeDeleted);
       return JSON.stringify(
@@ -942,7 +960,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return 'Missing title for plan_create.';
       }
 
-      const targetBranch = resolveTargetBranch(args.target_branch);
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const status = typeof args.status === 'string' ? args.status.trim().toLowerCase() : undefined;
       const allowedStatuses = new Set(['draft', 'validated', 'in_progress', 'archived', 'deleted']);
       const normalizedStatus = status && allowedStatuses.has(status) ? (status as any) : undefined;
@@ -980,7 +998,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return 'Missing plan_id for plan_get.';
       }
 
-      const targetBranch = resolveTargetBranch(args.target_branch);
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const plan = await getArchitectPlan(targetBranch, planId);
       if (!plan) {
         return `Plan not found: ${planId} (target branch: ${targetBranch}).`;
@@ -1000,7 +1018,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return 'Missing plan_id for plan_set_active.';
       }
 
-      const targetBranch = resolveTargetBranch(args.target_branch);
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       await setActiveArchitectPlan(targetBranch, planId);
       await hydratePlanContext(targetBranch, planId);
 
@@ -1012,7 +1030,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!planId) {
         return 'Missing plan_id for plan_update.';
       }
-      const targetBranch = resolveTargetBranch(args.target_branch);
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const status = typeof args.status === 'string' ? args.status.trim().toLowerCase() : undefined;
       const allowedStatuses = new Set(['draft', 'validated', 'in_progress', 'archived', 'deleted']);
       if (status && !allowedStatuses.has(status)) {
@@ -1095,7 +1113,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!planId) {
         return 'Missing plan_id for plan_delete.';
       }
-      const targetBranch = resolveTargetBranch(args.target_branch);
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const hardDelete = args.hard_delete === true;
 
       const { deletedBranches } = await deletePlanAndCleanupBranches({
@@ -1119,14 +1137,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!planId) {
         return 'Missing plan_id for plan_restore.';
       }
-      const targetBranch = resolveTargetBranch(args.target_branch);
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const plan = await restoreArchitectPlan(targetBranch, planId);
       await hydratePlanContext(targetBranch, plan.id);
       return `Restored plan ${plan.id} on target branch ${targetBranch}.`;
     }
 
     if (normalizedToolName === 'need_add') {
-      const targetBranch = getGitFlowBaseBranch();
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
         return 'Cannot need_add without an active plan. Create or select a plan first.';
@@ -1178,7 +1196,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (normalizedToolName === 'strategy_generate') {
-      const targetBranch = getGitFlowBaseBranch();
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
         return 'Cannot generate strategy without an active plan. Create or select a plan first.';
@@ -1222,7 +1240,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (normalizedToolName === 'strategy_get') {
-      const targetBranch = getGitFlowBaseBranch();
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
         return 'Cannot get strategy without an active plan. Create or select a plan first.';
@@ -1256,7 +1274,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (normalizedToolName === 'strategy_update') {
-      const targetBranch = getGitFlowBaseBranch();
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
         return 'Cannot update strategy without an active plan. Create or select a plan first.';
@@ -1395,7 +1413,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (normalizedToolName === 'strategy_delete') {
-      const targetBranch = getGitFlowBaseBranch();
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
         return 'Cannot delete strategy without an active plan. Create or select a plan first.';
