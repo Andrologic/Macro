@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   archiveArchitectPlan,
   createArchitectPlan,
@@ -32,13 +33,14 @@ const statusClassName: Record<string, string> = {
   deleted: 'text-red-500 bg-red-500/10 border-red-500/20',
 };
 
-const formatRelativeDate = (iso: string): string => {
+const formatRelativeDate = (iso: string, unknownLabel: string): string => {
   const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return 'Unknown date';
+  if (Number.isNaN(date.getTime())) return unknownLabel;
   return date.toLocaleDateString();
 };
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
+  const { t } = useTranslation();
   const {
     setPlanNodes,
     setPredictedBranches,
@@ -79,8 +81,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     if (activePlanContext && activePlanContext.id === activePlanId && activePlanContext.title.trim().length > 0) {
       return activePlanContext.title;
     }
-    return activePlan?.title || 'Select plan';
-  }, [activePlan, activePlanContext, activePlanId]);
+    return activePlan?.title || t('architect.planSelector.selectPlan', 'Select plan');
+  }, [activePlan, activePlanContext, activePlanId, t]);
 
   const loadPlans = async (hydrateActive = false) => {
     setIsLoading(true);
@@ -97,10 +99,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             selectedProjectId ||
             appStoreForCreation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
             null;
-          let createdTitle = 'New Plan';
+          let createdTitle = t('architect.planForm.createTitle', 'New Plan');
           let created = null as Awaited<ReturnType<typeof createArchitectPlan>> | null;
           for (let index = 0; index < 50; index += 1) {
-            const candidateTitle = index === 0 ? 'New Plan' : `New Plan ${index + 1}`;
+            const baseTitle = t('architect.planForm.createTitle', 'New Plan');
+            const candidateTitle = index === 0 ? baseTitle : `${baseTitle} ${index + 1}`;
             try {
               const conversation = await useChatStore
                 .getState()
@@ -125,7 +128,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           }
 
           if (!created) {
-            throw new Error(`Unable to auto-create default plan from base title "${createdTitle}".`);
+            throw new Error(
+              t('architect.planSelector.autoCreateError', {
+                title: createdTitle,
+                defaultValue: `Unable to auto-create default plan from base title "${createdTitle}".`,
+              })
+            );
           }
 
           await activatePlan(created.id);
@@ -183,8 +191,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             if (!conversationToastShownRef.current.has(plan.id)) {
               toast.success(
                 hasSharedConversation
-                  ? 'Dedicated conversation created for this plan'
-                  : 'Conversation created for this plan'
+                  ? t('architect.planSelector.toastDedicatedConversation', 'Dedicated conversation created for this plan')
+                  : t('architect.planSelector.toastConversationCreated', 'Conversation created for this plan')
               );
               conversationToastShownRef.current.add(plan.id);
             }
@@ -195,7 +203,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         }
       }
     } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : 'Failed to load plans.';
+      const message = loadError instanceof Error
+        ? loadError.message
+        : t('architect.planSelector.errorLoadPlans', 'Failed to load plans.');
       setError(message);
       setPlans([]);
       setActivePlanId(null);
@@ -211,7 +221,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       await setActiveArchitectPlan(targetBranch, planId);
       const plan = await getArchitectPlan(targetBranch, planId);
       if (!plan || plan.status === 'deleted') {
-        throw new Error('The selected plan is unavailable.');
+        throw new Error(t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.'));
       }
 
       const appStore = useAppStore.getState();
@@ -257,8 +267,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         if (!conversationToastShownRef.current.has(plan.id)) {
           toast.success(
             hasSharedConversation
-              ? 'Dedicated conversation created for this plan'
-              : 'Conversation created for this plan'
+              ? t('architect.planSelector.toastDedicatedConversation', 'Dedicated conversation created for this plan')
+              : t('architect.planSelector.toastConversationCreated', 'Conversation created for this plan')
           );
           conversationToastShownRef.current.add(plan.id);
         }
@@ -268,7 +278,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       }
       setIsOpen(false);
     } catch (activationError) {
-      const message = activationError instanceof Error ? activationError.message : 'Failed to activate plan.';
+      const message = activationError instanceof Error
+        ? activationError.message
+        : t('architect.planSelector.errorActivatePlan', 'Failed to activate plan.');
       setError(message);
     } finally {
       setIsActivating(null);
@@ -327,7 +339,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         await loadPlans(false);
       }
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Operation failed.');
+      setFormError(err instanceof Error ? err.message : t('architect.planSelector.errorOperationFailed', 'Operation failed.'));
     } finally {
       setFormLoading(false);
     }
@@ -338,7 +350,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setIsLoading(true);
     try {
       await archiveArchitectPlan(targetBranch, plan.id);
-      toast.success(`Plan "${plan.title}" archived`);
+      toast.success(
+        t('architect.planSelector.toastPlanArchived', {
+          title: plan.title,
+          defaultValue: `Plan "${plan.title}" archived`,
+        })
+      );
       const wasActive = activePlanId === plan.id;
       const refreshed = await listArchitectPlans(targetBranch, false);
       setPlans(refreshed.plans);
@@ -355,7 +372,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         }
       }
     } catch (archiveError) {
-      const message = archiveError instanceof Error ? archiveError.message : 'Failed to archive plan.';
+      const message = archiveError instanceof Error
+        ? archiveError.message
+        : t('architect.planSelector.errorArchivePlan', 'Failed to archive plan.');
       setError(message);
       toast.error(message);
     } finally {
@@ -375,7 +394,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         hardDelete: true,
       });
 
-      toast.success('Plan deleted');
+      toast.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
 
       const refreshed = await listArchitectPlans(targetBranch, false);
       setPlans(refreshed.plans);
@@ -394,7 +413,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         }
       }
     } catch (deleteError) {
-      const message = deleteError instanceof Error ? deleteError.message : 'Failed to delete plan.';
+      const message = deleteError instanceof Error
+        ? deleteError.message
+        : t('architect.planSelector.errorDeletePlan', 'Failed to delete plan.');
       setError(message);
       toast.error(message);
     } finally {
@@ -472,21 +493,23 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         <div className="absolute right-0 mt-2 w-[360px] rounded-xl border border-border bg-popover shadow-2xl overflow-hidden z-30">
           <div className="px-3 py-2 border-b border-border bg-card/60">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-xs font-semibold text-foreground">Architect plans</div>
+              <div className="text-xs font-semibold text-foreground">
+                {t('architect.planSelector.title', 'Architect plans')}
+              </div>
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={handleCreatePlan}
                   className="h-7 px-2 rounded-md text-xs border border-border hover:bg-accent flex items-center gap-1.5"
                 >
                   <Icon name="plus" size={12} />
-                  Create
+                  {t('architect.planSelector.create', 'Create')}
                 </button>
                 <button
                   onClick={() => void loadPlans(false)}
                   className="h-7 px-2 rounded-md text-xs border border-border hover:bg-accent flex items-center gap-1.5"
                 >
                   <Icon name="rotate-ccw" size={12} className={cn(isLoading && 'animate-spin')} />
-                  Refresh
+                  {t('architect.planSelector.refresh', 'Refresh')}
                 </button>
               </div>
             </div>
@@ -501,13 +524,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
             {!error && isLoading && plans.length === 0 && (
               <div className="px-2 py-6 text-xs text-muted-foreground text-center">
-                Loading plans...
+                {t('architect.planSelector.loading', 'Loading plans...')}
               </div>
             )}
 
             {!error && !isLoading && plans.length === 0 && (
               <div className="px-2 py-6 text-xs text-muted-foreground text-center">
-                No plans yet.
+                {t('architect.planSelector.empty', 'No plans yet.')}
               </div>
             )}
 
@@ -535,7 +558,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                     </div>
                     <div className="flex items-center gap-1.5">
                       <span className={cn('text-[10px] px-1.5 py-0.5 rounded border uppercase', statusClass)}>
-                        {plan.status}
+                        {t(`architect.status.${plan.status}`, plan.status)}
                       </span>
                       <button
                         type="button"
@@ -544,7 +567,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                           handleRenamePlan(plan.id, plan.title);
                         }}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center"
-                        title="Rename plan"
+                        title={t('architect.planSelector.renamePlan', 'Rename plan')}
                       >
                         <Icon name="edit" size={11} className="text-muted-foreground" />
                       </button>
@@ -555,7 +578,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                           void handleArchivePlan(plan);
                         }}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center"
-                        title="Archive plan"
+                        title={t('architect.planSelector.archivePlan', 'Archive plan')}
                       >
                         <Icon name="archive" size={11} className="text-muted-foreground" />
                       </button>
@@ -566,29 +589,34 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                           setPlanToDelete(plan);
                         }}
                         className="w-6 h-6 rounded border border-red-500/30 hover:bg-red-500/10 flex items-center justify-center"
-                        title="Delete plan"
+                        title={t('architect.planSelector.deletePlan', 'Delete plan')}
                       >
                         <Icon name="trash" size={11} className="text-red-500" />
                       </button>
                     </div>
                   </div>
                   <div className="mt-1.5 text-[11px] text-muted-foreground flex items-center gap-2">
-                    <span>{plan.nodeCount} nodes</span>
+                    <span>
+                      {t('architect.planSelector.nodesCount', {
+                        count: plan.nodeCount,
+                        defaultValue: `${plan.nodeCount} nodes`,
+                      })}
+                    </span>
                     <span>•</span>
-                    <span>{formatRelativeDate(plan.updatedAt)}</span>
+                    <span>{formatRelativeDate(plan.updatedAt, t('architect.planSelector.unknownDate', 'Unknown date'))}</span>
                     {isActive && (
                       <>
                         <span>•</span>
                         <span className="text-primary inline-flex items-center gap-1">
                           <Icon name="check" size={11} />
-                          Active
+                          {t('architect.planSelector.active', 'Active')}
                         </span>
                       </>
                     )}
                     {isBusy && (
                       <span className="text-primary inline-flex items-center gap-1 ml-auto">
                         <Icon name="loader" size={11} className="animate-spin" />
-                        Loading
+                        {t('architect.planSelector.loadingShort', 'Loading')}
                       </span>
                     )}
                   </div>
@@ -601,14 +629,19 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
       <ConfirmPromptModal
         isOpen={Boolean(planToDelete)}
-        title="Delete Plan"
+        title={t('architect.planSelector.deleteDialogTitle', 'Delete Plan')}
         description={
           planToDelete
-            ? `This will permanently delete "${planToDelete.title}" and its strategy data. This action cannot be undone.`
-            : 'This action cannot be undone.'
+            ? t('architect.planSelector.deleteDialogDescription', {
+              title: planToDelete.title,
+              defaultValue: `This will permanently delete "${planToDelete.title}" and its strategy data. This action cannot be undone.`,
+            })
+            : t('architect.planSelector.deleteDialogFallback', 'This action cannot be undone.')
         }
-        confirmLabel={isDeleting ? 'Deleting...' : 'Delete permanently'}
-        cancelLabel="Cancel"
+        confirmLabel={isDeleting
+          ? t('architect.planSelector.deleting', 'Deleting...')
+          : t('architect.planSelector.deletePermanently', 'Delete permanently')}
+        cancelLabel={t('common.cancel', 'Cancel')}
         confirmVariant="error"
         onCancel={() => {
           if (!isDeleting) {

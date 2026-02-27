@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 
@@ -19,6 +20,7 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
   isLoading = false,
   error = null,
 }) => {
+  const { t } = useTranslation();
   const [title, setTitle] = useState(initialTitle);
   const [description, setDescription] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
@@ -41,7 +43,7 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) {
-      setLocalError('Plan name is required.');
+      setLocalError(t('architect.planForm.nameRequired', 'Plan name is required.'));
       return;
     }
     setLocalError(null);
@@ -64,7 +66,9 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
             <Icon name={mode === 'create' ? 'plus' : 'edit'} size={14} className="text-primary" />
           </div>
           <h2 className="text-sm font-semibold text-foreground flex-1">
-            {mode === 'create' ? 'New Plan' : 'Rename Plan'}
+            {mode === 'create'
+              ? t('architect.planForm.createTitle', 'New Plan')
+              : t('architect.planForm.renameTitle', 'Rename Plan')}
           </h2>
           <button
             type="button"
@@ -87,14 +91,14 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
 
             <div>
               <label className="block text-sm text-muted-foreground mb-2">
-                Plan name <span className="text-red-400">*</span>
+                {t('architect.planForm.nameLabel', 'Plan name')} <span className="text-red-400">*</span>
               </label>
               <input
                 ref={inputRef}
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g. Authentication Overhaul"
+                placeholder={t('architect.planForm.namePlaceholder', 'e.g. Authentication Overhaul')}
                 className={cn(
                   'w-full bg-muted border rounded-lg px-3 py-2 text-sm text-foreground',
                   'placeholder:text-muted-foreground focus:outline-none transition-colors',
@@ -108,13 +112,13 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
             {mode === 'create' && (
               <div>
                 <label className="block text-sm text-muted-foreground mb-2">
-                  Description{' '}
-                  <span className="text-xs opacity-60">(optional)</span>
+                  {t('architect.planForm.descriptionLabel', 'Description')}{' '}
+                  <span className="text-xs opacity-60">({t('common.optional', 'optional')})</span>
                 </label>
                 <textarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="What is this plan about?"
+                  placeholder={t('architect.planForm.descriptionPlaceholder', 'What is this plan about?')}
                   rows={3}
                   className={cn(
                     'w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground',
@@ -133,7 +137,7 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
             onClick={onClose}
             className="h-8 px-4 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
           >
-            Cancel
+            {t('common.cancel', 'Cancel')}
           </button>
           <button
             type="submit"
@@ -142,7 +146,9 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
             className="h-8 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors flex items-center gap-2"
           >
             {isLoading && <Icon name="loader" size={13} className="animate-spin" />}
-            {mode === 'create' ? 'Create Plan' : 'Rename'}
+            {mode === 'create'
+              ? t('architect.planForm.createAction', 'Create Plan')
+              : t('common.rename', 'Rename')}
           </button>
         </footer>
       </div>

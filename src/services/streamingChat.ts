@@ -547,6 +547,7 @@ const ADD_NEED_TOOL = {
       properties: {
         title: { type: 'string', description: 'Short title of the need.' },
         description: { type: 'string', description: 'Detailed description of what is needed.' },
+        target_branch: { type: 'string', description: 'Optional target code branch for the active plan context.' },
         category: { type: 'string', enum: ['functional', 'technical', 'ux', 'security', 'other'], description: 'Category of the need.' },
         priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Priority level.' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Keywords or tags.' },

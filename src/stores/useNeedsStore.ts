@@ -1,11 +1,29 @@
 import { create } from 'zustand';
 import type { Need } from '../types';
 import { useAppStore } from './useAppStore';
-import { getGitFlowBaseBranch, saveArchitectPlanNeeds } from '../services/architectPlanService';
+import {
+  getGitFlowBaseBranch,
+  resolveTargetBranch,
+  saveArchitectPlanNeeds,
+} from '../services/architectPlanService';
 
 const persistPlanNeeds = (planId: string | null | undefined, needs: Need[]): void => {
   if (!planId) return;
-  void saveArchitectPlanNeeds(getGitFlowBaseBranch(), planId, needs.filter((need) => need.planId === planId));
+
+  const appState = useAppStore.getState();
+  const activeContext = appState.activePlanContext;
+  const targetBranch = (() => {
+    if (activeContext && activeContext.id === planId) {
+      try {
+        return resolveTargetBranch(activeContext.targetBranch);
+      } catch {
+        return getGitFlowBaseBranch();
+      }
+    }
+    return getGitFlowBaseBranch();
+  })();
+
+  void saveArchitectPlanNeeds(targetBranch, planId, needs.filter((need) => need.planId === planId));
 };
 
 interface NeedsState {
