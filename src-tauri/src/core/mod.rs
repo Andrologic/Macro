@@ -1,6 +1,7 @@
 pub mod config;
 pub mod error;
 pub mod logging;
+pub mod tool_policy;
 
 #[cfg(test)]
 pub mod config_tests;

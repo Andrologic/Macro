@@ -96,7 +96,7 @@ export const PromptsView: React.FC = () => {
                         ) : saveSuccess ? (
                             <Icon name="check" size={14} />
                         ) : (
-                            <Icon name="download" size={14} />
+                            <Icon name="edit" size={14} />
                         )}
                         {saveSuccess ? 'Saved' : 'Save Changes'}
                     </button>

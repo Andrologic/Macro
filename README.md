@@ -121,6 +121,14 @@ Create a `.env` file in the project root:
 
 ```env
 VITE_DATA_PROVIDER=mock  # or 'ipc' for production
+VITE_BACKEND_TRANSPORT=desktop  # 'desktop' (default) or 'remote'
+
+# Remote backend (used when VITE_BACKEND_TRANSPORT=remote)
+VITE_REMOTE_API_BASE_URL=http://localhost:3000
+VITE_REMOTE_API_PREFIX=/api/v1
+VITE_REMOTE_WORKSPACE_ID=
+VITE_REMOTE_AUTH_TOKEN=
+VITE_REMOTE_TIMEOUT_MS=15000
 ```
 
 ### Local API Keys for Dev
@@ -189,6 +197,31 @@ bun run tauri:build
 ```
 
 Built applications will be in `src-tauri/target/release/bundle/`.
+
+### Headless Kernel (No GUI)
+
+You can run the backend kernel without the desktop interface:
+
+```bash
+cd src-tauri
+cargo run --bin macro-headless
+```
+
+Optional environment variables:
+
+- `MACRO_HEADLESS_HOST` (default: `127.0.0.1`)
+- `MACRO_HEADLESS_PORT` (default: `8787`)
+- `MACRO_HEADLESS_BEARER_TOKEN` (if set, required as `Authorization: Bearer <token>`)
+
+Available endpoints (initial implementation):
+
+- `GET /health`
+- `GET /v1/tools/mode-policy?mode=Architect|Chat|Implement|Debug`
+- `POST /v1/tools/validate`
+- `GET /api/v1/workspace/bootstrap`
+- `GET /api/v1/workspace/tasks`
+- `GET /api/v1/projects/:projectId/git/tree`
+- `GET /api/v1/projects/:projectId/git/commits`
 
 ## Contributing
 
