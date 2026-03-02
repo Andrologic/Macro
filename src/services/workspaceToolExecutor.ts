@@ -1,12 +1,42 @@
 import * as tauriIpc from './tauriIpc';
 import type { AppMode } from '../types';
 import { isMacroScopedPath } from './toolModePolicy';
+import {
+  canUseRemoteKernel,
+  executeRemoteWorkspaceTool,
+  validateRemoteToolExecution,
+} from './remoteKernelApi';
 import { useAppStore } from '../stores/useAppStore';
 
 type ToolArgs = Record<string, unknown>;
 const isGitTool = (toolName: string): boolean => toolName.startsWith('git_');
 
 export const isWriteTool = (toolName: string): boolean => toolName === 'write' || toolName === 'edit';
+
+const isUnknownCommandError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const maybe = error as Record<string, unknown>;
+  const message = typeof maybe.message === 'string' ? maybe.message.toLowerCase() : '';
+  return (
+    message.includes('unknown command') ||
+    message.includes('tool_validate_execution') ||
+    message.includes('tool_execute_workspace')
+  );
+};
+
+const extractCandidatePath = (toolName: string, args: ToolArgs): string | undefined => {
+  if (
+    toolName === 'write' ||
+    toolName === 'edit' ||
+    toolName === 'read' ||
+    toolName === 'list'
+  ) {
+    const rawPath = sanitizePathInput(toString(args.path) || '.');
+    return rawPath || undefined;
+  }
+
+  return undefined;
+};
 
 export const assertPathAllowed = (mode: AppMode, path: string): void => {
   if (mode !== 'Architect') return;
@@ -185,11 +215,124 @@ export const executeWorkspaceTool = async (
   args: ToolArgs,
   mode: AppMode
 ): Promise<string | undefined> => {
-  if (!tauriIpc.isTauriAvailable()) {
+  const useTauri = tauriIpc.isTauriAvailable();
+  const useRemoteKernel = !useTauri && canUseRemoteKernel();
+
+  if (!useTauri && !useRemoteKernel) {
     return 'Workspace tools require Tauri runtime.';
   }
 
+  const executeBackendTool = async (
+    backendToolName: string,
+    backendArgs: ToolArgs
+  ): Promise<string> => {
+    if (useTauri) {
+      return tauriIpc.executeWorkspaceTool({
+        mode,
+        toolId: backendToolName,
+        args: backendArgs,
+      });
+    }
+
+    return executeRemoteWorkspaceTool({
+      mode,
+      toolId: backendToolName,
+      args: backendArgs,
+    });
+  };
+
+  const validateBackendTool = async (
+    backendToolName: string,
+    path?: string
+  ): Promise<{ allowed: boolean; reason?: string | null }> => {
+    if (useTauri) {
+      return tauriIpc.validateToolExecution({
+        mode,
+        toolId: backendToolName,
+        path,
+      });
+    }
+
+    return validateRemoteToolExecution({
+      mode,
+      toolId: backendToolName,
+      path,
+    });
+  };
+
   try {
+    const workspaceToolIds = new Set(['list', 'read', 'write', 'edit', 'glob', 'grep']);
+    if (workspaceToolIds.has(toolName)) {
+      try {
+        const backendResult = await executeBackendTool(toolName, args);
+
+        if (backendResult && backendResult !== 'UNSUPPORTED_WORKSPACE_TOOL') {
+          return backendResult;
+        }
+      } catch (error) {
+        if (!isUnknownCommandError(error)) {
+          throw error;
+        }
+      }
+    }
+
+    const gitBackendToolIds = new Set([
+      'git_status',
+      'git_log',
+      'git_branch_list',
+      'git_diff',
+      'git_get_tree',
+      'git_add',
+      'git_commit',
+      'git_checkout',
+      'git_reset',
+      'git_stash',
+    ]);
+    if (gitBackendToolIds.has(toolName)) {
+      const explicitRepoPath = sanitizePathInput(toString(args.repo_path));
+      const shouldUseBackendFirst = !(mode === 'Debug' && !explicitRepoPath);
+
+      if (shouldUseBackendFirst) {
+        const backendArgs: ToolArgs = {
+          ...args,
+          repo_path: explicitRepoPath || resolvePathForMode('.', mode),
+        };
+
+        try {
+          const backendResult = await executeBackendTool(toolName, backendArgs);
+
+          if (backendResult && backendResult !== 'UNSUPPORTED_WORKSPACE_TOOL') {
+            return backendResult;
+          }
+        } catch (error) {
+          if (!isUnknownCommandError(error)) {
+            throw error;
+          }
+        }
+      }
+    }
+
+    const candidatePathInput = extractCandidatePath(toolName, args);
+    const resolvedCandidatePath = candidatePathInput
+      ? resolvePathForMode(candidatePathInput, mode)
+      : undefined;
+
+    try {
+      const validation = await validateBackendTool(toolName, resolvedCandidatePath);
+
+      if (!validation.allowed) {
+        return validation.reason || `Tool ${toolName} is not allowed in mode ${mode}.`;
+      }
+    } catch (validationError) {
+      if (!isUnknownCommandError(validationError)) {
+        throw validationError;
+      }
+
+      if ((toolName === 'write' || toolName === 'edit') && resolvedCandidatePath) {
+        assertPathAllowed(mode, resolvedCandidatePath);
+      }
+    }
+
     if (isGitTool(toolName)) {
       const allowRepoFallback = false;
       const repoPath = resolveGitRepoPath(args, mode);

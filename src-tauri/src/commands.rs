@@ -6,8 +6,19 @@ pub mod git;
 pub mod workspace;
 
 use crate::db::{models::*, repository, DbError};
+use crate::git::GitState;
+use crate::WorkspaceRoot;
+use crate::core::tool_policy::{
+    get_mode_policy,
+    validate_tool_execution,
+    ToolModePolicyResult,
+    ToolValidationResult,
+};
+use glob::Pattern;
+use regex::RegexBuilder;
 use crate::secrets;
 use serde::Serialize;
+use serde_json::Value;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tauri::State;
@@ -29,6 +40,762 @@ impl From<DbError> for CommandError {
 }
 
 type CommandResult<T> = Result<T, CommandError>;
+
+fn command_error(message: impl Into<String>) -> CommandError {
+    CommandError {
+        message: message.into(),
+    }
+}
+
+#[tauri::command]
+pub async fn tool_get_mode_policy(
+    mode: String,
+) -> CommandResult<ToolModePolicyResult> {
+    Ok(get_mode_policy(&mode))
+}
+
+#[tauri::command]
+pub async fn tool_validate_execution(
+    mode: String,
+    tool_id: String,
+    path: Option<String>,
+) -> CommandResult<ToolValidationResult> {
+    Ok(validate_tool_execution(&mode, &tool_id, path.as_deref()))
+}
+
+fn json_arg_string(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+}
+
+fn json_arg_bool(args: &Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(|value| value.as_bool())
+}
+
+fn json_arg_u32(args: &Value, key: &str) -> Option<u32> {
+    args.get(key)
+        .and_then(|value| value.as_u64())
+        .map(|value| value as u32)
+}
+
+fn json_arg_string_array(args: &Value, key: &str) -> Option<Vec<String>> {
+    args.get(key).and_then(|value| value.as_array()).map(|items| {
+        items
+            .iter()
+            .filter_map(|item| item.as_str().map(|value| value.to_string()))
+            .filter(|value| !value.trim().is_empty())
+            .collect::<Vec<_>>()
+    })
+}
+
+fn format_with_line_numbers(lines: &[&str], start_line: usize) -> String {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| format!("{:>4} | {}", start_line + index, line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub async fn execute_workspace_tool(
+    workspace: std::path::PathBuf,
+    git_state: GitState,
+    mode: String,
+    tool_id: String,
+    args: Value,
+) -> CommandResult<String> {
+    let mode_trimmed = mode.trim().to_string();
+    let tool_trimmed = tool_id.trim().to_string();
+
+    let candidate_path = json_arg_string(&args, "path")
+        .or_else(|| json_arg_string(&args, "repo_path"));
+
+    let validation = validate_tool_execution(
+        &mode_trimmed,
+        &tool_trimmed,
+        candidate_path.as_deref(),
+    );
+
+    if !validation.allowed {
+        return Ok(validation
+            .reason
+            .unwrap_or_else(|| format!("Tool {} is not allowed", tool_trimmed)));
+    }
+
+    match tool_trimmed.as_str() {
+        "list" => {
+            let path = json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string());
+            let recursive = json_arg_bool(&args, "recursive");
+            let include_hidden = json_arg_bool(&args, "include_hidden");
+            let max_depth = json_arg_u32(&args, "max_depth");
+            let entries = fs::list_dir_internal(
+                &workspace,
+                path.clone(),
+                recursive,
+                include_hidden,
+                max_depth,
+                Some(mode_trimmed == "Debug"),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "path": path,
+                "count": entries.len(),
+                "entries": entries
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "read" => {
+            let path = json_arg_string(&args, "path")
+                .ok_or_else(|| command_error("Missing path argument for read tool."))?;
+            let start_line = json_arg_u32(&args, "start_line").unwrap_or(1).max(1) as usize;
+            let end_line = json_arg_u32(&args, "end_line").map(|value| value as usize);
+
+            let result = fs::read_file_internal(
+                &workspace,
+                path.clone(),
+                Some(mode_trimmed == "Debug"),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+
+            if result.is_binary {
+                return Ok(format!(
+                    "File {} is binary ({} bytes, encoding={}).",
+                    path, result.size, result.encoding
+                ));
+            }
+
+            let lines: Vec<&str> = result.content.lines().collect();
+            let effective_start = start_line.min(lines.len().max(1));
+            let effective_end = end_line
+                .map(|value| value.max(effective_start))
+                .unwrap_or(lines.len().max(effective_start));
+
+            let selected: Vec<&str> = if lines.is_empty() {
+                vec![""]
+            } else {
+                lines
+                    .iter()
+                    .skip(effective_start.saturating_sub(1))
+                    .take(effective_end.saturating_sub(effective_start) + 1)
+                    .copied()
+                    .collect()
+            };
+
+            let numbered = format_with_line_numbers(&selected, effective_start);
+            Ok(format!(
+                "FILE: {}\nSOURCE: WORKSPACE_FILE\nLANGUAGE: {}\nSIZE: {}\nLINES: {}-{}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
+                path,
+                result.language,
+                result.size,
+                effective_start,
+                effective_start + selected.len().saturating_sub(1),
+                numbered
+            ))
+        }
+        "write" => {
+            let path = json_arg_string(&args, "path")
+                .ok_or_else(|| command_error("Missing path argument for write tool."))?;
+            let content = json_arg_string(&args, "content")
+                .ok_or_else(|| command_error("Missing content argument for write tool."))?;
+            let create_dirs = json_arg_bool(&args, "create_dirs");
+
+            let write_result = fs::write_file_internal(
+                &workspace,
+                path,
+                content,
+                create_dirs,
+                Some(mode_trimmed == "Debug"),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "path": write_result.path,
+                "bytes_written": write_result.bytes_written,
+                "created": write_result.created
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "edit" => {
+            let path = json_arg_string(&args, "path")
+                .ok_or_else(|| command_error("Missing path argument for edit tool."))?;
+            let old_text = json_arg_string(&args, "old_text")
+                .ok_or_else(|| command_error("Missing old_text argument for edit tool."))?;
+            let new_text = json_arg_string(&args, "new_text")
+                .ok_or_else(|| command_error("Missing new_text argument for edit tool."))?;
+            let replace_all = json_arg_bool(&args, "replace_all").unwrap_or(false);
+
+            let current = fs::read_file_internal(
+                &workspace,
+                path.clone(),
+                Some(mode_trimmed == "Debug"),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+
+            if current.is_binary {
+                return Ok(format!("Cannot edit binary file: {}", path));
+            }
+
+            let occurrences = current.content.matches(&old_text).count();
+            if occurrences == 0 {
+                return Ok(format!("No match found for old_text in {}.", path));
+            }
+
+            let updated = if replace_all {
+                current.content.replace(&old_text, &new_text)
+            } else {
+                current.content.replacen(&old_text, &new_text, 1)
+            };
+
+            let write_result = fs::write_file_internal(
+                &workspace,
+                path,
+                updated,
+                Some(true),
+                Some(mode_trimmed == "Debug"),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "replacements": if replace_all { occurrences } else { 1 },
+                "path": write_result.path,
+                "bytes_written": write_result.bytes_written,
+                "created": write_result.created
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "glob" => {
+            let pattern = json_arg_string(&args, "pattern").unwrap_or_else(|| "**/*".to_string());
+            let include_hidden = json_arg_bool(&args, "include_hidden").unwrap_or(false);
+            let mode_is_debug = mode_trimmed == "Debug";
+
+            let entries = fs::list_dir_internal(
+                &workspace,
+                if mode_is_debug {
+                    json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
+                } else {
+                    ".".to_string()
+                },
+                Some(true),
+                Some(include_hidden),
+                None,
+                Some(mode_is_debug),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+
+            let compiled = Pattern::new(&pattern)
+                .map_err(|error| command_error(format!("Invalid glob pattern: {}", error)))?;
+
+            let paths: Vec<String> = entries
+                .into_iter()
+                .filter(|entry| entry.kind == "file")
+                .filter_map(|entry| {
+                    let relative_path = entry.relative_path.replace('\\', "/");
+                    if compiled.matches(&relative_path) {
+                        Some(relative_path)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "pattern": pattern,
+                "count": paths.len(),
+                "paths": paths
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "grep" => {
+            let query = json_arg_string(&args, "query")
+                .ok_or_else(|| command_error("Missing query argument for grep tool."))?;
+            let include_hidden = json_arg_bool(&args, "include_hidden").unwrap_or(false);
+            let is_regexp = json_arg_bool(&args, "is_regexp").unwrap_or(false);
+            let include_pattern = json_arg_string(&args, "include_pattern");
+            let max_results = json_arg_u32(&args, "max_results").unwrap_or(50).max(1) as usize;
+            let mode_is_debug = mode_trimmed == "Debug";
+
+            let entries = fs::list_dir_internal(
+                &workspace,
+                if mode_is_debug {
+                    json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
+                } else {
+                    ".".to_string()
+                },
+                Some(true),
+                Some(include_hidden),
+                None,
+                Some(mode_is_debug),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+
+            let include_glob = if let Some(glob) = include_pattern.as_ref() {
+                Some(
+                    Pattern::new(glob)
+                        .map_err(|error| command_error(format!("Invalid include_pattern glob: {}", error)))?,
+                )
+            } else {
+                None
+            };
+
+            let regex = if is_regexp {
+                Some(
+                    RegexBuilder::new(&query)
+                        .case_insensitive(true)
+                        .build()
+                        .map_err(|error| command_error(format!("Invalid regex pattern for grep: {}", error)))?,
+                )
+            } else {
+                None
+            };
+            let query_lower = query.to_lowercase();
+            let mut results = Vec::new();
+
+            for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
+                let relative_path = entry.relative_path.replace('\\', "/");
+
+                if let Some(pattern) = include_glob.as_ref() {
+                    if !pattern.matches(&relative_path) {
+                        continue;
+                    }
+                }
+
+                let read_path = if mode_is_debug {
+                    entry.path
+                } else {
+                    relative_path.clone()
+                };
+
+                let content = fs::read_file_internal(
+                    &workspace,
+                    read_path,
+                    Some(mode_is_debug),
+                )
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
+
+                if content.is_binary {
+                    continue;
+                }
+
+                for (index, line) in content.content.lines().enumerate() {
+                    let is_match = if let Some(compiled) = regex.as_ref() {
+                        compiled.is_match(line)
+                    } else {
+                        line.to_lowercase().contains(&query_lower)
+                    };
+
+                    if is_match {
+                        results.push(serde_json::json!({
+                            "path": relative_path,
+                            "line": index + 1,
+                            "text": line.trim()
+                        }));
+
+                        if results.len() >= max_results {
+                            break;
+                        }
+                    }
+                }
+
+                if results.len() >= max_results {
+                    break;
+                }
+            }
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "query": query,
+                "total": results.len(),
+                "results": results
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "git_status" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let status = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                git::build_git_status(&repo).map_err(|error| command_error(error.to_string()))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "repo_path": repo_path,
+                "branch": status.branch,
+                "head_commit": status.head_commit,
+                "staged_files": status.staged_files,
+                "unstaged_files": status.unstaged_files,
+                "untracked_files": status.untracked_files,
+                "is_clean": status.is_clean
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "git_log" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let limit = json_arg_u32(&args, "limit").unwrap_or(50).max(1) as usize;
+            let branch = json_arg_string(&args, "branch");
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let commits = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                git::build_git_log(&repo, limit, branch.as_deref())
+                    .map_err(|error| command_error(error.to_string()))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "repo_path": repo_path,
+                "count": commits.len(),
+                "commits": commits
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "git_branch_list" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let branches = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                git::build_git_branches(&repo).map_err(|error| command_error(error.to_string()))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "repo_path": repo_path,
+                "local": branches.local,
+                "remote": branches.remote,
+                "current": branches.current
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "git_diff" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let base = json_arg_string(&args, "base");
+            let head = json_arg_string(&args, "head");
+            let context_lines = json_arg_u32(&args, "context_lines");
+            let ignore_whitespace = json_arg_bool(&args, "ignore_whitespace").unwrap_or(false);
+            let paths = json_arg_string_array(&args, "paths");
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let patch = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                git::diff_repo(
+                    &repo,
+                    base.as_deref(),
+                    head.as_deref(),
+                    git::DiffRequestOptions {
+                        context_lines,
+                        ignore_whitespace,
+                        paths,
+                    },
+                )
+                .map_err(|error| command_error(error.to_string()))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            Ok(patch)
+        }
+        "git_get_tree" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let branch = json_arg_string(&args, "branch");
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let tree = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                git::build_git_tree(&repo, branch.as_deref())
+                    .map_err(|error| command_error(error.to_string()))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "repo_path": repo_path,
+                "branch": tree.branch,
+                "structure": tree.structure,
+                "modified_files_count": tree.modified_files_count
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "git_add" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let paths = json_arg_string_array(&args, "paths")
+                .filter(|items| !items.is_empty())
+                .unwrap_or_else(|| vec![".".to_string()]);
+            let paths_for_task = paths.clone();
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let status = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                git::add_paths(&repo, &paths_for_task).map_err(|error| command_error(error.to_string()))?;
+                git::build_git_status(&repo).map_err(|error| command_error(error.to_string()))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "repo_path": repo_path,
+                "staged_paths": paths,
+                "staged_count": status.staged_files.len(),
+                "branch": status.branch
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "git_commit" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let message = json_arg_string(&args, "message")
+                .ok_or_else(|| command_error("Missing message argument for git_commit tool."))?;
+            let stage_all = json_arg_bool(&args, "stage_all").unwrap_or(true);
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let result = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                let before = git::build_git_log(&repo, 1, None)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let head_before = before.first().map(|entry| entry.id.clone());
+
+                let hash = git::commit_repo(&repo, &message, stage_all)
+                    .map_err(|error| command_error(error.to_string()))?;
+
+                let after = git::build_git_log(&repo, 1, None)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let head_after = after.first().map(|entry| entry.id.clone());
+
+                let status = git::build_git_status(&repo)
+                    .map_err(|error| command_error(error.to_string()))?;
+
+                Ok::<_, CommandError>((hash, head_before, head_after, status))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            let (hash, head_before, head_after, status) = result;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "repo_path": repo_path,
+                "branch": status.branch,
+                "hash": hash,
+                "head_before": head_before,
+                "head_after": head_after,
+                "head_changed": head_before != head_after
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "git_checkout" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let branch_or_commit = json_arg_string(&args, "branch_or_commit")
+                .or_else(|| json_arg_string(&args, "branch"))
+                .ok_or_else(|| command_error("Missing branch_or_commit argument for git_checkout tool."))?;
+            let branch_or_commit_for_task = branch_or_commit.clone();
+            let create = json_arg_bool(&args, "create").unwrap_or(false);
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let status = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                git::checkout_repo(&repo, &branch_or_commit_for_task, create)
+                    .map_err(|error| command_error(error.to_string()))?;
+                git::build_git_status(&repo).map_err(|error| command_error(error.to_string()))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "repo_path": repo_path,
+                "branch": status.branch,
+                "target": branch_or_commit
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "git_reset" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let mode = json_arg_string(&args, "mode").unwrap_or_default();
+            if !matches!(mode.as_str(), "soft" | "mixed" | "hard") {
+                return Ok("Missing or invalid mode for git_reset. Use one of: soft, mixed, hard.".to_string());
+            }
+            let commit = json_arg_string(&args, "commit");
+            let confirm = json_arg_bool(&args, "confirm");
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let status = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                if mode == "hard" && confirm.unwrap_or(false) != true {
+                    return Err(command_error("Hard reset is destructive; set confirm=true"));
+                }
+
+                git::reset_repo(&repo, &mode, commit)
+                    .map_err(|error| command_error(error.to_string()))?;
+                git::build_git_status(&repo).map_err(|error| command_error(error.to_string()))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "repo_path": repo_path,
+                "branch": status.branch
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "git_stash" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let message = json_arg_string(&args, "message");
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let result = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let mut repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                let stash = git::stash_repo(&mut repo, message)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let status = git::build_git_status(&repo)
+                    .map_err(|error| command_error(error.to_string()))?;
+
+                Ok::<_, CommandError>((stash, status))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            let (stash, status) = result;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "repo_path": repo_path,
+                "branch": status.branch,
+                "stash": stash
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
+        _ => Ok("UNSUPPORTED_WORKSPACE_TOOL".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn tool_execute_workspace(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    mode: String,
+    tool_id: String,
+    args: Value,
+) -> CommandResult<String> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    execute_workspace_tool(workspace, git_state, mode, tool_id, args).await
+}
 
 // ============ CONVERSATIONS ============
 
