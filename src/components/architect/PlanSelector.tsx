@@ -7,6 +7,7 @@ import {
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   listArchitectPlans,
+  restoreArchitectPlan,
   setActiveArchitectPlan,
   updateArchitectPlan,
   type ArchitectPlanSummary,
@@ -58,6 +59,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [error, setError] = useState<string | null>(null);
   const [planToDelete, setPlanToDelete] = useState<ArchitectPlanSummary | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const conversationToastShownRef = useRef<Set<string>>(new Set());
   const autoCreatingRef = useRef(false);
@@ -88,10 +90,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setIsLoading(true);
     setError(null);
     try {
-      const result = await listArchitectPlans(targetBranch, false);
+      const result = await listArchitectPlans(targetBranch, false, showArchived);
+      const fullResult = showArchived ? result : await listArchitectPlans(targetBranch, false, true);
 
       // Auto-create a default plan when none exist
-      if (result.plans.length === 0 && !autoCreatingRef.current) {
+      if (fullResult.plans.length === 0 && !autoCreatingRef.current) {
         autoCreatingRef.current = true;
         try {
           const appStoreForCreation = useAppStore.getState();
@@ -243,7 +246,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
       useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
       let conversationId = plan.conversationId;
-      const plansSnapshot = await listArchitectPlans(targetBranch, true);
+      const plansSnapshot = await listArchitectPlans(targetBranch, true, true);
       const hasSharedConversation = Boolean(
         conversationId &&
         plansSnapshot.plans.some((candidate) => candidate.id !== plan.id && candidate.conversationId === conversationId)
@@ -357,7 +360,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         })
       );
       const wasActive = activePlanId === plan.id;
-      const refreshed = await listArchitectPlans(targetBranch, false);
+      const refreshed = await listArchitectPlans(targetBranch, false, showArchived);
       setPlans(refreshed.plans);
       if (wasActive) {
         const nextPlanId = refreshed.activePlanId || refreshed.plans[0]?.id || null;
@@ -396,7 +399,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
       toast.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
 
-      const refreshed = await listArchitectPlans(targetBranch, false);
+      const refreshed = await listArchitectPlans(targetBranch, false, showArchived);
       setPlans(refreshed.plans);
 
       const deletedWasActive = activePlanId === planToDelete.id;
@@ -410,6 +413,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         } else {
           setPlanNodes([]);
           setPredictedBranches([]);
+          setActivePlanContext(null);
         }
       }
     } catch (deleteError) {
@@ -424,13 +428,37 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
   };
 
+  const handleRestorePlan = async (plan: ArchitectPlanSummary) => {
+    setError(null);
+    setIsLoading(true);
+    try {
+      await restoreArchitectPlan(targetBranch, plan.id);
+      toast.success(
+        t('architect.planSelector.toastPlanRestored', {
+          title: plan.title,
+          defaultValue: `Plan "${plan.title}" restored`,
+        })
+      );
+      await loadPlans(false);
+    } catch (restoreError) {
+      const message = restoreError instanceof Error
+        ? restoreError.message
+        : t('architect.planSelector.errorRestorePlan', 'Failed to restore plan.');
+      setError(message);
+      toast.error(message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   useEffect(() => {
     // Guard against re-runs when activeArchitectPlanId hasn't actually changed
     // (e.g. when loadPlans itself calls setActiveArchitectPlanId during auto-creation)
     if (lastEffectIdRef.current === activeArchitectPlanId) return;
     lastEffectIdRef.current = activeArchitectPlanId;
     void loadPlans(true);
-  }, [activeArchitectPlanId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeArchitectPlanId, showArchived]);
 
   useEffect(() => {
     if (!activePlanContext) return;
@@ -497,6 +525,20 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                 {t('architect.planSelector.title', 'Architect plans')}
               </div>
               <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setShowArchived((current) => !current)}
+                  className={cn(
+                    'h-7 px-2 rounded-md text-xs border flex items-center gap-1.5',
+                    showArchived
+                      ? 'border-primary/40 bg-primary/10 text-primary'
+                      : 'border-border hover:bg-accent text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  <Icon name="archive" size={12} />
+                  {showArchived
+                    ? t('architect.planSelector.hideArchived', 'Hide archived')
+                    : t('architect.planSelector.showArchived', 'Show archived')}
+                </button>
                 <button
                   onClick={handleCreatePlan}
                   className="h-7 px-2 rounded-md text-xs border border-border hover:bg-accent flex items-center gap-1.5"
@@ -575,12 +617,22 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
+                          if (plan.status === 'archived') {
+                            void handleRestorePlan(plan);
+                            return;
+                          }
                           void handleArchivePlan(plan);
                         }}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center"
-                        title={t('architect.planSelector.archivePlan', 'Archive plan')}
+                        title={plan.status === 'archived'
+                          ? t('architect.planSelector.restorePlan', 'Restore plan')
+                          : t('architect.planSelector.archivePlan', 'Archive plan')}
                       >
-                        <Icon name="archive" size={11} className="text-muted-foreground" />
+                        <Icon
+                          name={plan.status === 'archived' ? 'rotate-ccw' : 'archive'}
+                          size={11}
+                          className="text-muted-foreground"
+                        />
                       </button>
                       <button
                         type="button"

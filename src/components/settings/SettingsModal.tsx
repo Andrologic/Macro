@@ -9,6 +9,7 @@ import { AIView } from './views/AIView';
 import { ToolsView } from './views/ToolsView';
 import { ShortcutsView } from './views/ShortcutsView';
 import { PromptsView } from './views/PromptsView';
+import { ArchitectGitFlowView } from './views/ArchitectGitFlowView';
 
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
@@ -23,6 +24,7 @@ export const SettingsModal: React.FC = () => {
     { id: 'ai', icon: 'cpu', label: t('settings.ai') || 'AI & Models' },
     { id: 'tools', icon: 'tool', label: t('settings.tools') || 'Tools & MCP' },
     { id: 'prompts', icon: 'message-square', label: t('settings.prompts') || 'System Prompts' },
+    { id: 'architect', icon: 'git-branch', label: t('settings.architect') || 'Architect Git Flow' },
     { id: 'shortcuts', icon: 'zap', label: t('settings.shortcuts') || 'Shortcuts' },
   ];
 
@@ -95,6 +97,7 @@ export const SettingsModal: React.FC = () => {
               {activeSettingsTab === 'ai' && <AIView />}
               {activeSettingsTab === 'tools' && <ToolsView />}
               {activeSettingsTab === 'prompts' && <PromptsView />}
+              {activeSettingsTab === 'architect' && <ArchitectGitFlowView />}
               {activeSettingsTab === 'shortcuts' && <ShortcutsView />}
             </div>
           </div>

@@ -23,6 +23,7 @@
     "disable": "Disable",
     "resetDefaults": "Reset defaults",
     "changesAutoSave": "Changes auto-save",
+    "all": "All",
     "areYouSure": "Are you sure?",
     "local": "Local",
     "noKey": "No Key",
@@ -140,6 +141,8 @@
       "selectPlan": "Select plan",
       "create": "Create",
       "refresh": "Refresh",
+      "showArchived": "Show archived",
+      "hideArchived": "Hide archived",
       "loading": "Loading plans...",
       "loadingShort": "Loading",
       "empty": "No plans yet.",
@@ -148,6 +151,7 @@
       "active": "Active",
       "renamePlan": "Rename plan",
       "archivePlan": "Archive plan",
+      "restorePlan": "Restore plan",
       "deletePlan": "Delete plan",
       "deleteDialogTitle": "Delete Plan",
       "deleteDialogDescription": "This will permanently delete \"{{title}}\" and its strategy data. This action cannot be undone.",
@@ -157,14 +161,69 @@
       "toastConversationCreated": "Conversation created for this plan",
       "toastDedicatedConversation": "Dedicated conversation created for this plan",
       "toastPlanArchived": "Plan \"{{title}}\" archived",
+      "toastPlanRestored": "Plan \"{{title}}\" restored",
       "toastPlanDeleted": "Plan deleted",
       "errorLoadPlans": "Failed to load plans.",
       "errorSelectedPlanUnavailable": "The selected plan is unavailable.",
       "errorActivatePlan": "Failed to activate plan.",
       "errorOperationFailed": "Operation failed.",
       "errorArchivePlan": "Failed to archive plan.",
+      "errorRestorePlan": "Failed to restore plan.",
       "errorDeletePlan": "Failed to delete plan.",
       "autoCreateError": "Unable to auto-create default plan from base title \"{{title}}\"."
+    },
+    "needsEmptyTitle": "No needs identified for this project yet.",
+    "needsEmptyDescription": "Chat with the Architect to uncover project requirements.",
+    "graphView": "Graph",
+    "branchesView": "Branches",
+    "dependencyFlow": "Dependency Flow",
+    "itemsCount": "{{count}} items",
+    "noStrategyTitle": "No strategy generated yet",
+    "noStrategyDescription": "Discuss needs in Architect chat, then use Generate Strategy to create this graph.",
+    "noBranchesMatchingFilters": "No branches match the current filters.",
+    "planValidated": "Plan validated",
+    "validatingPlan": "Validating...",
+    "noActivePlan": "No active plan",
+    "generateStrategy": "Generate Strategy",
+    "regenerateStrategy": "Regenerate Strategy",
+    "generateStrategyHint": "Generate strategy from identified needs",
+    "regenerateStrategyHint": "Regenerate strategy from current needs",
+    "generateStrategySelectPlan": "Select an active plan first",
+    "generateStrategyNeedPrompt": "Add at least one need before generating a strategy",
+    "nodeStatus": {
+      "pending": "Pending",
+      "in-progress": "In Progress",
+      "completed": "Completed",
+      "blocked": "Blocked"
+    },
+    "nodeType": {
+      "spec": "Spec",
+      "feature": "Feature",
+      "task": "Task",
+      "milestone": "Milestone"
+    },
+    "branchStatus": {
+      "pending": "Pending",
+      "active": "Active",
+      "merged": "Merged"
+    },
+    "progress": "Progress",
+    "branchSearch": "Search tasks...",
+    "filterStatusAll": "All statuses",
+    "needCategory": {
+      "functional": "Functional",
+      "technical": "Technical",
+      "ux": "UX",
+      "performance": "Performance",
+      "security": "Security",
+      "data": "Data",
+      "business": "Business",
+      "other": "Other"
+    },
+    "needPriority": {
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
     }
   },
   "git": {
@@ -259,12 +318,14 @@
     "appearance": "Appearance",
     "ai": "AI & Models",
     "tools": "Tools & MCP",
+    "architect": "Architect Git Flow",
     "shortcuts": "Shortcuts",
     "desc": {
       "general": "Configure language and application preferences",
       "appearance": "Customize the look and feel of the application",
       "ai": "Manage AI models, providers and API keys",
       "tools": "Configure external tools and MCP servers",
+      "architect": "Configure Architect target and branch naming patterns",
       "shortcuts": "Configure keyboard shortcuts and key bindings"
     },
     "language_region": "Language & Region",
@@ -284,7 +345,21 @@
     "zoom_level": "Interface zoom",
     "zoom_reset": "Reset",
     "zoom_auto_desc": "Uses your system display scaling (Wayland/X11/macOS/Windows).",
-    "zoom_override_desc": "Manually set interface zoom from 75% to 200%."
+    "zoom_override_desc": "Manually set interface zoom from 75% to 200%.",
+    "architectGitFlow": {
+      "title": "Architect Git Flow",
+      "subtitle": "Control the target branch and automatic branch naming used when validating plans.",
+      "baseBranchLabel": "Default target branch",
+      "planTemplateLabel": "Plan branch template",
+      "featureTemplateLabel": "Feature branch template",
+      "previewTitle": "Preview",
+      "previewTarget": "Target",
+      "previewPlan": "Plan",
+      "previewFeature": "Feature",
+      "reset": "Reset defaults",
+      "save": "Save changes",
+      "saved": "Saved"
+    }
   },
   "providers": {
     "add": "Add Provider",

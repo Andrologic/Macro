@@ -10,7 +10,7 @@ import {
 import * as tauriIpc from '../services/tauriIpc';
 
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
-export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools' | 'shortcuts' | 'prompts';
+export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools' | 'shortcuts' | 'prompts' | 'architect';
 export type UiZoomMode = 'auto' | 'override';
 
 interface RememberedProject {

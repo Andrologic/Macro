@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
+import { useChatStore } from '../../stores/useChatStore';
 import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/architectPlanService';
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { toast } from '../ui/Toaster';
@@ -19,18 +20,27 @@ interface StrategyGraphProps {
  * Contains complex SVG rendering that benefits from code splitting
  */
 
-const statusColors: Record<PlanNodeStatus, string> = {
+type VisualNodeStatus = PlanNodeStatus | 'ai-running';
+
+const statusColors: Record<VisualNodeStatus, string> = {
   'pending': 'text-muted-foreground',
   'in-progress': 'text-amber-500',
+  'ai-running': 'text-blue-500',
   'completed': 'text-emerald-500',
   'blocked': 'text-red-500',
 };
 
-const statusBgColors: Record<PlanNodeStatus, string> = {
+const statusBgColors: Record<VisualNodeStatus, string> = {
   'pending': 'bg-muted',
   'in-progress': 'bg-amber-500',
+  'ai-running': 'bg-blue-500',
   'completed': 'bg-emerald-500',
   'blocked': 'bg-red-500',
+};
+
+const resolveVisualStatus = (status: PlanNodeStatus, isAiStreaming: boolean): VisualNodeStatus => {
+  if (status === 'in-progress' && isAiStreaming) return 'ai-running';
+  return status;
 };
 
 const NODE_RADIUS = 16;
@@ -49,6 +59,20 @@ type GraphTransform = {
   y: number;
   scale: number;
 };
+
+interface BranchTaskView extends PlanNode {
+  rank?: number;
+}
+
+interface BranchCardView {
+  id: string;
+  name: string;
+  color: string;
+  status: 'pending' | 'active' | 'merged';
+  progressDone: number;
+  progressTotal: number;
+  tasks: BranchTaskView[];
+}
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 
@@ -107,9 +131,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     setPlanNodes,
     setPredictedBranches,
   } = useAppStore();
+  const isAiStreaming = useChatStore((state) => state.isStreaming);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
   const [viewMode, setViewMode] = useState<'graph' | 'branches'>('graph');
+  const [branchSearch, setBranchSearch] = useState('');
+  const [branchStatusFilter, setBranchStatusFilter] = useState<'all' | PlanNodeStatus>('all');
   const [isValidating, setIsValidating] = useState(false);
   const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
   const [isModalPanning, setIsModalPanning] = useState(false);
@@ -334,16 +361,83 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     };
   }, [selectedGroupId, selectedProjectId, projectGroups, planNodes, containerWidth]);
 
-  const getStatusIconName = (status: PlanNodeStatus) => {
+  const getStatusIconName = (status: VisualNodeStatus) => {
     switch (status) {
       case 'completed': return 'check';
       case 'in-progress': return 'loader';
+      case 'ai-running': return 'loader';
       case 'blocked': return 'lock';
       default: return 'circle';
     }
   };
 
   const hoveredNodeData = layoutData.nodes.find(n => n.id === hoveredNodeId);
+  const hoveredVisualStatus = hoveredNodeData ? resolveVisualStatus(hoveredNodeData.status, isAiStreaming) : null;
+  const scopedNodeIdSet = useMemo(() => new Set(layoutData.nodes.map((node) => node.id)), [layoutData.nodes]);
+  const scopedNodeById = useMemo(
+    () => new Map(layoutData.nodes.map((node) => [node.id, node])),
+    [layoutData.nodes]
+  );
+  const filteredPredictedBranches = useMemo(
+    () => predictedBranches
+      .map((branch) => ({
+        ...branch,
+        taskIds: branch.taskIds.filter((taskId) => scopedNodeIdSet.has(taskId)),
+      }))
+      .filter((branch) => branch.taskIds.length > 0),
+    [predictedBranches, scopedNodeIdSet]
+  );
+  const branchCards = useMemo<BranchCardView[]>(() => {
+    const normalizedSearch = branchSearch.trim().toLowerCase();
+    const statusOrder: Record<PlanNodeStatus, number> = {
+      'in-progress': 0,
+      pending: 1,
+      blocked: 2,
+      completed: 3,
+    };
+
+    return filteredPredictedBranches
+      .map((branch) => {
+        const allTasks: BranchTaskView[] = branch.taskIds.reduce<BranchTaskView[]>((acc, taskId) => {
+          const task = scopedNodeById.get(taskId);
+          if (!task) return acc;
+          acc.push({ ...task });
+          return acc;
+        }, []);
+
+        const progressDone = allTasks.filter((task) => task.status === 'completed').length;
+        const progressTotal = allTasks.length;
+
+        const filteredTasks = allTasks
+          .filter((task) => {
+            if (branchStatusFilter !== 'all' && task.status !== branchStatusFilter) return false;
+            if (!normalizedSearch) return true;
+            const haystack = `${task.title} ${task.description || ''}`.toLowerCase();
+            return haystack.includes(normalizedSearch);
+          })
+          .sort((a, b) => {
+            if (statusOrder[a.status] !== statusOrder[b.status]) return statusOrder[a.status] - statusOrder[b.status];
+            if ((a.rank ?? 0) !== (b.rank ?? 0)) return (a.rank ?? 0) - (b.rank ?? 0);
+            return a.title.localeCompare(b.title);
+          });
+
+        return {
+          id: branch.id,
+          name: branch.name,
+          color: branch.color,
+          status: branch.status,
+          progressDone,
+          progressTotal,
+          tasks: filteredTasks,
+        };
+      })
+      .filter((branch) => branch.tasks.length > 0 || branchSearch.trim().length === 0);
+  }, [
+    branchSearch,
+    branchStatusFilter,
+    filteredPredictedBranches,
+    scopedNodeById,
+  ]);
 
   const inlineScale = useMemo(() => {
     if (layoutData.width <= 0 || containerWidth <= 0) return 1;
@@ -617,6 +711,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       })}
 
       {layoutData.nodes.map((node) => {
+        const visualStatus = resolveVisualStatus(node.status, isAiStreaming);
         const isHovered = hoveredNodeId === node.id;
         const isRelated = hoveredNodeData && (
           hoveredNodeData.dependencies?.includes(node.id) ||
@@ -663,12 +758,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
             >
               <div className={cn(
                 'w-full h-full rounded-full flex items-center justify-center',
-                statusColors[node.status]
+                statusColors[visualStatus]
               )}>
                 <Icon
-                  name={getStatusIconName(node.status)}
+                  name={getStatusIconName(visualStatus)}
                   size={14}
-                  className={node.status === 'in-progress' ? 'animate-spin' : ''}
+                  className={visualStatus === 'in-progress' || visualStatus === 'ai-running' ? 'animate-spin' : ''}
                 />
               </div>
             </foreignObject>
@@ -716,9 +811,11 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         </div>
         <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-6 text-center">
           <Icon name="git-merge" size={48} className="text-muted-foreground/30 mb-4" />
-          <h3 className="text-sm font-semibold text-foreground mb-1">No strategy generated yet</h3>
+          <h3 className="text-sm font-semibold text-foreground mb-1">
+            {t('architect.noStrategyTitle', 'No strategy generated yet')}
+          </h3>
           <p className="text-xs text-muted-foreground max-w-[250px] mb-6">
-            Discuss needs in Architect chat, then use Generate Strategy to create this graph.
+            {t('architect.noStrategyDescription', 'Discuss needs in Architect chat, then use Generate Strategy to create this graph.')}
           </p>
         </div>
       </aside>
@@ -760,7 +857,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           )}
         >
           <Icon name="network" size={12} className="inline mr-1.5" />
-          Graph
+          {t('architect.graphView', 'Graph')}
         </button>
         <button
           onClick={() => setViewMode('branches')}
@@ -772,7 +869,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           )}
         >
           <Icon name="git-branch" size={12} className="inline mr-1.5" />
-          Branches
+          {t('architect.branchesView', 'Branches')}
         </button>
       </div>
 
@@ -825,7 +922,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                   <h3 className="font-semibold text-sm leading-tight text-popover-foreground">
                     {hoveredNodeData.title}
                   </h3>
-                  <div className={cn('shrink-0 w-2 h-2 rounded-full mt-1.5', statusBgColors[hoveredNodeData.status])} />
+                  <div className={cn('shrink-0 w-2 h-2 rounded-full mt-1.5', hoveredVisualStatus ? statusBgColors[hoveredVisualStatus] : 'bg-muted')} />
                 </div>
 
                 <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
@@ -846,7 +943,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                   )}
 
                   <div className="flex items-center text-[10px] text-muted-foreground uppercase tracking-wider font-semibold opacity-70 mt-1">
-                    {t(`status.${hoveredNodeData.status}`, hoveredNodeData.status)}
+                    {t(`architect.nodeStatus.${hoveredNodeData.status}`, hoveredNodeData.status)}
                   </div>
                 </div>
               </div>
@@ -855,83 +952,127 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
             <div className="absolute bottom-4 left-4 p-2 rounded-lg bg-background/50 backdrop-blur-sm border border-border/50 text-[10px] text-muted-foreground pointer-events-none">
               <div className="flex items-center gap-2 mb-1">
                 <Icon name="arrow-down-right" size={10} />
-                <span>Dependency Flow</span>
+                <span>{t('architect.dependencyFlow', 'Dependency Flow')}</span>
               </div>
               <div className="flex items-center gap-2">
                 <Icon name="network" size={10} />
-                <span>{layoutData.nodes.length} Items</span>
+                <span>{t('architect.itemsCount', { count: layoutData.nodes.length, defaultValue: `${layoutData.nodes.length} items` })}</span>
               </div>
             </div>
           </>
         ) : (
           <div className="h-full overflow-y-auto p-4 space-y-3">
-            {predictedBranches.map((branch) => (
-              <div
-                key={branch.id}
-                className="rounded-lg border border-border overflow-hidden bg-card"
+            <div className="rounded-lg border border-border bg-card p-2.5 flex items-center gap-2">
+              <input
+                value={branchSearch}
+                onChange={(event) => setBranchSearch(event.target.value)}
+                placeholder={t('architect.branchSearch', 'Search tasks...')}
+                className="flex-1 h-8 px-2.5 rounded-md border border-border bg-background text-xs"
+              />
+              <select
+                value={branchStatusFilter}
+                onChange={(event) => setBranchStatusFilter(event.target.value as 'all' | PlanNodeStatus)}
+                className="h-8 px-2 rounded-md border border-border bg-background text-xs"
               >
+                <option value="all">{t('architect.filterStatusAll', 'All statuses')}</option>
+                <option value="pending">{t('architect.nodeStatus.pending', 'Pending')}</option>
+                <option value="in-progress">{t('architect.nodeStatus.in-progress', 'In Progress')}</option>
+                <option value="blocked">{t('architect.nodeStatus.blocked', 'Blocked')}</option>
+                <option value="completed">{t('architect.nodeStatus.completed', 'Completed')}</option>
+              </select>
+            </div>
+
+            {branchCards.map((branch) => {
+              const progressPercent = branch.progressTotal > 0
+                ? Math.round((branch.progressDone / branch.progressTotal) * 100)
+                : 0;
+
+              return (
                 <div
-                  className="flex items-center gap-2 px-3 py-2"
-                  style={{ borderLeftWidth: 4, borderLeftColor: branch.color }}
+                  key={branch.id}
+                  className="rounded-lg border border-border overflow-hidden bg-card"
                 >
-                  <Icon
-                    name={branch.status === 'merged' ? 'git-merge' : 'git-branch'}
-                    size={14}
-                    style={{ color: branch.color }}
-                  />
-                  <span className="text-sm font-medium text-foreground flex-1 truncate">
-                    {branch.name}
-                  </span>
-                  <span
-                    className={cn(
-                      'px-1.5 py-0.5 rounded text-xs',
-                      branch.status === 'merged'
-                        ? 'bg-emerald-500/10 text-emerald-500'
-                        : branch.status === 'active'
-                          ? 'bg-amber-500/10 text-amber-500'
-                          : 'bg-muted text-muted-foreground'
-                    )}
+                  <div
+                    className="px-3 py-2.5 space-y-2"
+                    style={{ borderLeftWidth: 4, borderLeftColor: branch.color }}
                   >
-                    {branch.status}
-                  </span>
-                </div>
-
-                {/* Branch Tasks List */}
-                <div className="bg-muted/10 border-t border-border/50 divide-y divide-border/50">
-                  {branch.taskIds.map(taskId => {
-                    const task = planNodes.find((n: PlanNode) => n.id === taskId);
-                    if (!task) return null;
-                    return (
-                      <div key={taskId} className="px-3 py-2 flex items-center justify-between group hover:bg-muted/20 transition-colors">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className={cn(
-                            "w-1.5 h-1.5 rounded-full shrink-0",
-                            statusColors[task.status].replace('text-', 'bg-')
-                          )} />
-                          <span className="text-xs text-muted-foreground group-hover:text-foreground truncate transition-colors">
-                            {task.title}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {task.estimatedTime && (
-                            <span className="text-[10px] text-muted-foreground bg-background border border-border px-1 rounded">
-                              {task.estimatedTime}
-                            </span>
-                          )}
-                          <Icon name={getStatusIconName(task.status)} size={12} className="text-muted-foreground" />
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {branch.taskIds.length === 0 && (
-                    <div className="px-3 py-2 text-xs text-muted-foreground italic">
-                      No tasks assigned
+                    <div className="flex items-center gap-2">
+                      <Icon
+                        name={branch.status === 'merged' ? 'git-merge' : 'git-branch'}
+                        size={14}
+                        style={{ color: branch.color }}
+                      />
+                      <span className="text-sm font-medium text-foreground flex-1 truncate">{branch.name}</span>
+                      <span
+                        className={cn(
+                          'px-1.5 py-0.5 rounded text-[10px] uppercase',
+                          branch.status === 'merged'
+                            ? 'bg-emerald-500/10 text-emerald-500'
+                            : branch.status === 'active'
+                              ? 'bg-amber-500/10 text-amber-500'
+                              : 'bg-muted text-muted-foreground'
+                        )}
+                      >
+                        {t(`architect.branchStatus.${branch.status}`, branch.status)}
+                      </span>
                     </div>
-                  )}
+
+                    <div className="space-y-1.5">
+                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                        <div className="h-full bg-primary" style={{ width: `${progressPercent}%` }} />
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {t('architect.progress', 'Progress')}: {branch.progressDone}/{branch.progressTotal}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-muted/10 border-t border-border/50 divide-y divide-border/50">
+                    {branch.tasks.map((task, taskIndex) => {
+                      const visualStatus = resolveVisualStatus(task.status, isAiStreaming);
+                      return (
+                        <div key={task.id} className="px-3 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 flex items-center gap-2">
+                              <span className="text-[11px] text-muted-foreground w-5 text-right shrink-0">
+                                {taskIndex + 1}.
+                              </span>
+                              <span className="text-xs text-foreground truncate">{task.title}</span>
+                            </div>
+
+                            <div className="shrink-0 flex items-center gap-2">
+                              {task.estimatedTime && (
+                                <div className="text-right text-[10px] text-muted-foreground">{task.estimatedTime}</div>
+                              )}
+                              <div className={cn(
+                                'w-4 h-4 rounded-full flex items-center justify-center',
+                                visualStatus === 'pending' && 'bg-muted/80 text-muted-foreground',
+                                visualStatus === 'in-progress' && 'bg-amber-500/20 text-amber-500',
+                                visualStatus === 'ai-running' && 'bg-blue-500/20 text-blue-500',
+                                visualStatus === 'completed' && 'bg-emerald-500 text-white',
+                                visualStatus === 'blocked' && 'bg-red-500/20 text-red-500'
+                              )}>
+                                <Icon
+                                  name={getStatusIconName(visualStatus)}
+                                  size={9}
+                                  className={visualStatus === 'in-progress' || visualStatus === 'ai-running' ? 'animate-spin' : ''}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
+              );
+            })}
+
+            {branchCards.length === 0 && (
+              <div className="h-full flex items-center justify-center text-center text-muted-foreground text-xs">
+                {t('architect.noBranchesMatchingFilters', 'No branches match the current filters.')}
               </div>
-            ))}
+            )}
           </div>
         )}
       </div>
@@ -1050,7 +1191,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               <div className="p-1.5 bg-emerald-500/10 rounded-md shrink-0">
                 <Icon name="check-circle" size={14} className="text-emerald-500" />
               </div>
-              Plan Validated
+              {t('architect.planValidated', 'Plan validated')}
             </div>
           ) : (
             <>
@@ -1068,17 +1209,17 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                 onClick={() => void handleValidatePlan()}
                 disabled={planNodes.length === 0 || isValidating}
                 className="ml-auto flex items-center gap-2 px-4 h-8 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                {isValidating ? (
-                  <><Icon name="loader" size={13} className="animate-spin" />Validating...</>
-                ) : (
-                  <><Icon name="shield" size={13} />Validate Plan</>
-                )}
-              </button>
-            </>
-          )
+                >
+                  {isValidating ? (
+                    <><Icon name="loader" size={13} className="animate-spin" />{t('architect.validatingPlan', 'Validating...')}</>
+                  ) : (
+                    <><Icon name="shield" size={13} />{t('architect.validate', 'Validate Plan')}</>
+                  )}
+                </button>
+              </>
+            )
         ) : (
-          <span className="text-xs text-muted-foreground">No active plan</span>
+          <span className="text-xs text-muted-foreground">{t('architect.noActivePlan', 'No active plan')}</span>
         )}
       </div>
     </aside>

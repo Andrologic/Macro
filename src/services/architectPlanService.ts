@@ -1,6 +1,12 @@
 import type { PlanNode, PredictedBranch } from '../types';
 import type { Need } from '../types';
 import * as tauriIpc from './tauriIpc';
+import {
+  getArchitectGitNamingSettings,
+  normalizeFeatureSlugInput,
+  toPlanFeatureBranchName,
+  toPlanIntegrationBranchName,
+} from './architectGitNaming';
 
 export type ArchitectPlanStatus = 'draft' | 'validated' | 'in_progress' | 'archived' | 'deleted';
 
@@ -43,26 +49,38 @@ interface ArchitectPlanIndex {
 const LOCAL_INDEX_KEY_PREFIX = 'macro_architect_plan_index';
 const LOCAL_PLAN_KEY_PREFIX = 'macro_architect_plan';
 const LOCAL_PLAN_NEEDS_KEY_PREFIX = 'macro_architect_plan_needs';
-const GIT_FLOW_BASE_BRANCH = 'develop';
-const GIT_FLOW_ALLOWED_TARGET_PATTERNS = [/^develop$/i, /^feature\/[a-z0-9._-]+$/i, /^release\/[a-z0-9._-]+$/i, /^hotfix\/[a-z0-9._-]+$/i, /^bugfix\/[a-z0-9._-]+$/i];
+const DEFAULT_GIT_FLOW_BASE_BRANCH = 'develop';
+const GIT_FLOW_ALLOWED_TARGET_PATTERNS = [
+  /^feature\/[a-z0-9._-]+$/i,
+  /^release\/[a-z0-9._-]+$/i,
+  /^hotfix\/[a-z0-9._-]+$/i,
+  /^bugfix\/[a-z0-9._-]+$/i,
+];
 
-const normalizeBranchName = (value?: string): string => {
-  const normalized = (value || GIT_FLOW_BASE_BRANCH)
+const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const getDynamicTargetPatterns = (): RegExp[] => {
+  const baseBranch = getGitFlowBaseBranch();
+  return [new RegExp(`^${escapeRegex(baseBranch)}$`, 'i'), ...GIT_FLOW_ALLOWED_TARGET_PATTERNS];
+};
+
+const normalizeBranchName = (value?: string, fallbackBranch = DEFAULT_GIT_FLOW_BASE_BRANCH): string => {
+  const normalized = (value || fallbackBranch)
     .trim()
     .replace(/\\/g, '/')
     .replace(/^refs\/heads\//, '')
     .replace(/^\/+/, '')
     .replace(/\/+$/, '');
-  return normalized || GIT_FLOW_BASE_BRANCH;
+  return normalized || fallbackBranch;
 };
 
 const isGitFlowTargetBranch = (branchName: string): boolean =>
-  GIT_FLOW_ALLOWED_TARGET_PATTERNS.some((pattern) => pattern.test(branchName));
+  getDynamicTargetPatterns().some((pattern) => pattern.test(branchName));
 
 const assertGitFlowTargetBranch = (branchName: string): void => {
   if (!isGitFlowTargetBranch(branchName)) {
     throw new Error(
-      `Invalid target branch "${branchName}". Use Git Flow naming: develop, feature/*, release/*, hotfix/*, bugfix/*.`
+      `Invalid target branch "${branchName}". Use configured base branch "${getGitFlowBaseBranch()}" or Git Flow naming: feature/*, release/*, hotfix/*, bugfix/*.`
     );
   }
 };
@@ -107,7 +125,7 @@ const buildPlanMarkdown = (plan: ArchitectPlanRecord): string => {
   lines.push(`- Plan Slug: ${plan.slug}`);
   lines.push(`- Plan Integration Branch: ${toPlanIntegrationBranch(plan.slug)}`);
   lines.push(`- Target Code Branch: ${plan.targetBranch}`);
-  lines.push(`- Base Code Branch: ${GIT_FLOW_BASE_BRANCH}`);
+  lines.push(`- Base Code Branch: ${getGitFlowBaseBranch()}`);
   lines.push(`- Macro Branch: .macro`);
   lines.push(`- Status: ${plan.status}`);
   if (plan.conversationId) {
@@ -645,35 +663,18 @@ export const saveArchitectPlanNeeds = async (branchName: string, planId: string,
 
 export const toPlanScopedFeatureBranch = (planSlug: string, rawBranchName: string): string => {
   const normalizedPlanSlug = slugifyPlanTitle(planSlug);
-  const normalizedInput = rawBranchName.trim().toLowerCase().replace(/\/+/g, '/');
-  const alreadyScopedPrefix = `feature/${normalizedPlanSlug}/`;
-  if (normalizedInput.startsWith(alreadyScopedPrefix)) {
-    return normalizedInput;
-  }
-
-  const normalizedRaw = rawBranchName
-    .trim()
-    .toLowerCase()
-    .replace(/^feature\//, '')
-    .replace(/[^a-z0-9/_-]+/g, '-')
-    .replace(/\/+/g, '/')
-    .replace(/^-+/, '')
-    .replace(/-+$/, '');
-
-  const branchLeaf = normalizedRaw
-    .split('/')
-    .filter(Boolean)
-    .join('-') || 'work';
-
-  return `feature/${normalizedPlanSlug}/${branchLeaf}`;
+  const featureSlug = normalizeFeatureSlugInput(rawBranchName);
+  return toPlanFeatureBranchName(normalizedPlanSlug, featureSlug);
 };
 
-export const toPlanIntegrationBranch = (planSlug: string): string => `plan/${slugifyPlanTitle(planSlug)}`;
+export const toPlanIntegrationBranch = (planSlug: string): string =>
+  toPlanIntegrationBranchName(slugifyPlanTitle(planSlug));
 
 export const resolveTargetBranch = (argsValue: unknown): string => {
-  const normalized = normalizeBranchName(typeof argsValue === 'string' ? argsValue : GIT_FLOW_BASE_BRANCH);
+  const normalized = normalizeBranchName(typeof argsValue === 'string' ? argsValue : getGitFlowBaseBranch(), getGitFlowBaseBranch());
   assertGitFlowTargetBranch(normalized);
   return normalized;
 };
 
-export const getGitFlowBaseBranch = (): string => GIT_FLOW_BASE_BRANCH;
+export const getGitFlowBaseBranch = (): string =>
+  normalizeBranchName(getArchitectGitNamingSettings().baseBranch, DEFAULT_GIT_FLOW_BASE_BRANCH);

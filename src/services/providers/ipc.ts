@@ -14,11 +14,12 @@ import type {
   ChatCompletionRequestDto,
   ChatCompletionResponseDto,
 } from '../contracts/dtos';
-import type { ProjectGroup, Task } from '../../types';
+import type { AIModel, AIProvider, ChatMessage, Conversation, ProjectGroup, Task } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
 import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
 import { normalizeArchitectToolId } from '../architectToolNames';
+import { sendChat as sendChatFallback } from './mock';
 
 const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
 const MCP_SERVER_SETTINGS_STORAGE_KEY = 'macro_mcp_server_settings';
@@ -55,12 +56,53 @@ const loadLocalMcpSettings = (): Record<string, boolean> => {
   }
 };
 
-const notReady = () => {
-  throw {
-    code: 'IPC_NOT_READY',
-    message: 'IPC provider not implemented yet',
-  };
-};
+const toConversationDto = (conversation: tauriIpc.DbConversation): Conversation => ({
+  id: conversation.id,
+  title: conversation.title,
+  description: conversation.description ?? undefined,
+  task_id: conversation.task_id,
+  project_id: conversation.project_id,
+  last_message: conversation.last_message ?? '',
+  message_count: conversation.message_count,
+  updated_at: conversation.updated_at,
+  is_unread: false,
+});
+
+const toMessageDto = (message: tauriIpc.DbMessage): ChatMessage => ({
+  id: message.id,
+  task_id: '',
+  conversation_id: message.conversation_id,
+  role: message.role === 'user' ? 'user' : 'assistant',
+  content: message.content,
+  timestamp: message.created_at,
+});
+
+const toProviderDto = (provider: tauriIpc.DbProviderConfig): AIProvider => ({
+  id: provider.id,
+  name: provider.name,
+  status: provider.is_enabled ? 'online' : 'offline',
+  baseUrl: provider.base_url,
+  isLocal: provider.is_local,
+  isEnabled: provider.is_enabled,
+});
+
+const toModelDto = (model: tauriIpc.DbAiModel): AIModel => ({
+  id: model.model_id,
+  name: model.name,
+  provider_id: model.provider_id,
+  description: model.description ?? undefined,
+  owned_by: model.owned_by ?? undefined,
+  pricing: {
+    prompt: model.pricing_prompt ?? undefined,
+    completion: model.pricing_completion ?? undefined,
+    request: model.pricing_request ?? undefined,
+  },
+  isEnabled: model.is_enabled,
+  isManual: model.is_manual,
+  first_seen_at: model.first_seen_at,
+  last_seen_at: model.last_seen_at,
+  db_id: model.id,
+});
 
 export const getAppBootstrap = async (): Promise<AppBootstrapDto> => {
   const bootstrap = await tauriIpc.workspaceGetBootstrap();
@@ -72,9 +114,21 @@ export const getAppBootstrap = async (): Promise<AppBootstrapDto> => {
   } as AppBootstrapDto;
 };
 
-export const listConversations = async (): Promise<ConversationsDto> => notReady();
+export const listConversations = async (): Promise<ConversationsDto> => {
+  const conversations = await tauriIpc.listConversations();
+  return { conversations: conversations.map(toConversationDto) };
+};
 
-export const listMessages = async (): Promise<MessagesDto> => notReady();
+export const listMessages = async (): Promise<MessagesDto> => {
+  const conversations = await tauriIpc.listConversations();
+  const byConversation = await Promise.all(
+    conversations.map(async (conversation) => tauriIpc.listMessages(conversation.id))
+  );
+  const messages = byConversation.flat().sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+  return { messages: messages.map(toMessageDto) };
+};
 
 export const listTasks = async (): Promise<TasksDto> => {
   const tasks = await tauriIpc.workspaceListTasks();
@@ -138,13 +192,24 @@ export const listCommits = async (projectId?: string): Promise<CommitsDto> => {
   return { commits };
 };
 
-export const listProviders = async (): Promise<ProvidersDto> => notReady();
+export const listProviders = async (): Promise<ProvidersDto> => {
+  const providers = await tauriIpc.listProviderConfigs();
+  return { providers: providers.map(toProviderDto) };
+};
 
-export const listModels = async (): Promise<ModelsDto> => notReady();
+export const listModels = async (providerId?: string): Promise<ModelsDto> => {
+  const providers = await tauriIpc.listProviderConfigs();
+  const resolvedProviderId = providerId || providers.find((provider) => provider.is_enabled)?.id || providers[0]?.id;
+  if (!resolvedProviderId) {
+    return { models: [] };
+  }
+  const models = await tauriIpc.listProviderModels(resolvedProviderId);
+  return { models: models.map(toModelDto) };
+};
 
 export const sendChat = async (
-  _request: ChatCompletionRequestDto
-): Promise<ChatCompletionResponseDto> => notReady();
+  request: ChatCompletionRequestDto
+): Promise<ChatCompletionResponseDto> => sendChatFallback(request);
 
 export const createProject = async (data: {
   name: string;
