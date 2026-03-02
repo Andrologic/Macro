@@ -23,6 +23,7 @@
     "disable": "Désactiver",
     "resetDefaults": "Réinitialiser",
     "changesAutoSave": "Sauvegarde automatique",
+    "all": "Tous",
     "areYouSure": "Êtes-vous sûr ?",
     "local": "Local",
     "noKey": "Pas de clé",
@@ -140,6 +141,8 @@
       "selectPlan": "Sélectionner un plan",
       "create": "Créer",
       "refresh": "Rafraîchir",
+      "showArchived": "Afficher archivés",
+      "hideArchived": "Masquer archivés",
       "loading": "Chargement des plans...",
       "loadingShort": "Chargement",
       "empty": "Aucun plan pour le moment.",
@@ -148,6 +151,7 @@
       "active": "Actif",
       "renamePlan": "Renommer le plan",
       "archivePlan": "Archiver le plan",
+      "restorePlan": "Restaurer le plan",
       "deletePlan": "Supprimer le plan",
       "deleteDialogTitle": "Supprimer le plan",
       "deleteDialogDescription": "Cela supprimera définitivement \"{{title}}\" et ses données de stratégie. Cette action est irréversible.",
@@ -157,14 +161,69 @@
       "toastConversationCreated": "Conversation créée pour ce plan",
       "toastDedicatedConversation": "Conversation dédiée créée pour ce plan",
       "toastPlanArchived": "Plan \"{{title}}\" archivé",
+      "toastPlanRestored": "Plan \"{{title}}\" restauré",
       "toastPlanDeleted": "Plan supprimé",
       "errorLoadPlans": "Échec du chargement des plans.",
       "errorSelectedPlanUnavailable": "Le plan sélectionné est indisponible.",
       "errorActivatePlan": "Impossible d'activer le plan.",
       "errorOperationFailed": "L'opération a échoué.",
       "errorArchivePlan": "Impossible d'archiver le plan.",
+      "errorRestorePlan": "Impossible de restaurer le plan.",
       "errorDeletePlan": "Impossible de supprimer le plan.",
       "autoCreateError": "Impossible de créer automatiquement un plan par défaut à partir du titre de base \"{{title}}\"."
+    },
+    "needsEmptyTitle": "Aucun besoin identifié pour ce projet pour le moment.",
+    "needsEmptyDescription": "Discutez avec l'Architecte pour faire émerger les besoins du projet.",
+    "graphView": "Graphe",
+    "branchesView": "Branches",
+    "dependencyFlow": "Flux de dépendances",
+    "itemsCount": "{{count}} éléments",
+    "noStrategyTitle": "Aucune stratégie générée pour le moment",
+    "noStrategyDescription": "Discutez des besoins dans le chat Architect, puis utilisez Générer la stratégie.",
+    "noBranchesMatchingFilters": "Aucune branche ne correspond aux filtres actuels.",
+    "planValidated": "Plan validé",
+    "validatingPlan": "Validation...",
+    "noActivePlan": "Aucun plan actif",
+    "generateStrategy": "Générer la stratégie",
+    "regenerateStrategy": "Régénérer la stratégie",
+    "generateStrategyHint": "Générer la stratégie à partir des besoins identifiés",
+    "regenerateStrategyHint": "Régénérer la stratégie depuis les besoins actuels",
+    "generateStrategySelectPlan": "Sélectionnez d'abord un plan actif",
+    "generateStrategyNeedPrompt": "Ajoutez au moins un besoin avant de générer une stratégie",
+    "nodeStatus": {
+      "pending": "En attente",
+      "in-progress": "En cours",
+      "completed": "Terminé",
+      "blocked": "Bloqué"
+    },
+    "nodeType": {
+      "spec": "Spécification",
+      "feature": "Feature",
+      "task": "Tâche",
+      "milestone": "Jalon"
+    },
+    "branchStatus": {
+      "pending": "En attente",
+      "active": "Active",
+      "merged": "Fusionnée"
+    },
+    "progress": "Progression",
+    "branchSearch": "Rechercher une tâche...",
+    "filterStatusAll": "Tous les statuts",
+    "needCategory": {
+      "functional": "Fonctionnel",
+      "technical": "Technique",
+      "ux": "UX",
+      "performance": "Performance",
+      "security": "Sécurité",
+      "data": "Données",
+      "business": "Business",
+      "other": "Autre"
+    },
+    "needPriority": {
+      "high": "Haute",
+      "medium": "Moyenne",
+      "low": "Basse"
     }
   },
   "git": {
@@ -259,12 +318,14 @@
     "appearance": "Apparence",
     "ai": "IA & Modèles",
     "tools": "Outils & MCP",
+    "architect": "Git Flow Architect",
     "shortcuts": "Raccourcis",
     "desc": {
       "general": "Configurer la langue et les préférences de l'application",
       "appearance": "Personnaliser l'apparence de l'application",
       "ai": "Gérer les modèles d'IA, les fournisseurs et les clés API",
       "tools": "Configurer les outils externes et les serveurs MCP",
+      "architect": "Configurer la branche cible et les règles de nommage des branches Architect",
       "shortcuts": "Configurer les raccourcis clavier et combinaisons"
     },
     "language_region": "Langue & Région",
@@ -284,7 +345,21 @@
     "zoom_level": "Zoom de l'interface",
     "zoom_reset": "Réinitialiser",
     "zoom_auto_desc": "Utilise le scaling système de l'écran (Wayland/X11/macOS/Windows).",
-    "zoom_override_desc": "Règle manuellement le zoom de l'interface entre 75% et 200%."
+    "zoom_override_desc": "Règle manuellement le zoom de l'interface entre 75% et 200%.",
+    "architectGitFlow": {
+      "title": "Git Flow Architect",
+      "subtitle": "Contrôlez la branche cible et les noms de branches générés automatiquement lors de la validation des plans.",
+      "baseBranchLabel": "Branche cible par défaut",
+      "planTemplateLabel": "Template de branche plan",
+      "featureTemplateLabel": "Template de branche feature",
+      "previewTitle": "Aperçu",
+      "previewTarget": "Cible",
+      "previewPlan": "Plan",
+      "previewFeature": "Feature",
+      "reset": "Réinitialiser",
+      "save": "Enregistrer",
+      "saved": "Enregistré"
+    }
   },
   "providers": {
     "add": "Ajouter un fournisseur",

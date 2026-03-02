@@ -1126,6 +1126,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         useAppStore.getState().setActiveArchitectPlanId(null);
         useAppStore.getState().setPlanNodes([]);
         useAppStore.getState().setPredictedBranches([]);
+        useAppStore.getState().setActivePlanContext(null);
       }
 
       const action = hardDelete ? 'Purged' : 'Soft-deleted';
@@ -1158,7 +1159,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return 'Missing required fields for need_add (title, description, category, priority).';
       }
 
-      const allowedCategories = new Set(['functional', 'technical', 'ux', 'security', 'other']);
+      const allowedCategories = new Set([
+        'functional',
+        'technical',
+        'ux',
+        'performance',
+        'security',
+        'data',
+        'business',
+        'other',
+      ]);
       const allowedPriorities = new Set(['low', 'medium', 'high']);
       if (!allowedCategories.has(category)) {
         return `Invalid category for need_add: ${category}.`;

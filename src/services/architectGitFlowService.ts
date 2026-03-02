@@ -3,6 +3,7 @@ import { useAppStore } from '../stores/useAppStore';
 import * as tauriIpc from './tauriIpc';
 import {
   deleteArchitectPlan,
+  getGitFlowBaseBranch,
   getArchitectPlan,
   toPlanIntegrationBranch,
   toPlanScopedFeatureBranch,
@@ -76,12 +77,15 @@ const buildPredictedBranchesForPlan = (
 };
 
 const resolveDevelopBaseRef = (branches: tauriIpc.GitBranchesDto): string => {
+  const baseBranch = getGitFlowBaseBranch();
   const local = new Set((branches.local || []).map((branch) => branch.name));
   const remote = new Set((branches.remote || []).map((branch) => branch.name));
 
-  if (local.has('develop')) return 'develop';
-  if (remote.has('origin/develop')) return 'origin/develop';
-  throw new Error('Missing base branch "develop". Create/fetch develop before validating this plan.');
+  if (local.has(baseBranch)) return baseBranch;
+  if (remote.has(`origin/${baseBranch}`)) return `origin/${baseBranch}`;
+  throw new Error(
+    `Missing base branch "${baseBranch}". Create/fetch ${baseBranch} before validating this plan.`
+  );
 };
 
 const ensureSafeCheckoutBeforeDeletion = async (
@@ -101,7 +105,12 @@ const ensureSafeCheckoutBeforeDeletion = async (
 
   const localNames = (branches.local || []).map((branch) => branch.name);
   const localSet = new Set(localNames);
-  const fallbackCandidates = ['develop', 'main', ...localNames.filter((name) => !branchesToDelete.has(name))];
+  const fallbackCandidates = [
+    getGitFlowBaseBranch(),
+    'main',
+    'develop',
+    ...localNames.filter((name) => !branchesToDelete.has(name)),
+  ];
   const fallback = fallbackCandidates.find(
     (name, index) =>
       name.trim().length > 0 &&
@@ -236,16 +245,13 @@ export const validatePlanAndProvisionBranches = async (params: {
 
 export const cleanupPlanBranches = async (plan: ArchitectPlanRecord, explicitRepoPath?: string): Promise<string[]> => {
   const planBranchName = toPlanIntegrationBranch(plan.slug || plan.title);
-  const planFeaturePrefix = `feature/${plan.slug}/`;
   const featureBranchNames = Array.from(
     new Set(
       [
         ...(plan.nodes || []).map((node) => node.assignedBranch || ''),
         ...(plan.predictedBranches || []).map((branch) => branch.name),
       ]
-        .filter((name) => name.trim().length > 0 && name.trim().startsWith('feature/'))
-        .map((name) => name.trim().toLowerCase().replace(/\/+/g, '/'))
-        .filter((name) => name.startsWith(planFeaturePrefix))
+        .filter((name) => name.trim().length > 0)
         .map((name) => toPlanScopedFeatureBranch(plan.slug || plan.title, name))
     )
   );

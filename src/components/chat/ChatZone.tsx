@@ -806,18 +806,18 @@ const ChatZone: React.FC = () => {
                   )}
                   title={
                     !activeArchitectPlanId
-                      ? 'Select an active plan first'
+                      ? t('architect.generateStrategySelectPlan', 'Select an active plan first')
                       : !hasExistingStrategy && activePlanNeedsCount === 0
-                        ? 'Add at least one need before generating a strategy'
+                        ? t('architect.generateStrategyNeedPrompt', 'Add at least one need before generating a strategy')
                         : hasExistingStrategy
-                          ? 'Regenerate strategy from current needs'
-                          : 'Generate strategy from identified needs'
+                          ? t('architect.regenerateStrategyHint', 'Regenerate strategy from current needs')
+                          : t('architect.generateStrategyHint', 'Generate strategy from identified needs')
                   }
                 >
                   <Icon name={hasExistingStrategy ? 'refresh-cw' : 'sparkles'} size={12} />
                   {hasExistingStrategy
-                    ? t('common.regenerate', 'Regenerate') + ' Strategy'
-                    : 'Generate Strategy'}
+                    ? t('architect.regenerateStrategy', 'Regenerate Strategy')
+                    : t('architect.generateStrategy', 'Generate Strategy')}
                 </button>
               )}
             </div>

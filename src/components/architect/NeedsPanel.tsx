@@ -6,7 +6,6 @@ import { useChatStore } from '../../stores/useChatStore';
 import type { NeedCategory } from '../../types';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
-import { NeedDetailsModal } from '../modals/NeedDetailsModal.tsx';
 
 interface NeedsPanelProps {
   className?: string;
@@ -44,7 +43,6 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
   const { needs, selectNeed, selectedNeedId } = useNeedsStore();
   const { activeArchitectPlanId } = useAppStore();
   const [filter, setFilter] = useState<'all' | NeedCategory>('all');
-  const [isModalOpen, setIsModalOpen] = useState(false);
 
   const scopedNeeds = useMemo(() => {
     if (!activeArchitectPlanId) return [];
@@ -59,6 +57,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
   const handleNeedClick = (needId: string) => {
     const need = needs.find((n) => n.id === needId);
     if (!need) return;
+    selectNeed(need.id);
     const { addComposerContextRef } = useChatStore.getState();
     addComposerContextRef({
       id: need.id,
@@ -67,11 +66,6 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
       subtitle: need.category,
       data: need,
     });
-  };
-
-  const handleCloseModal = () => {
-    setIsModalOpen(false);
-    selectNeed(null);
   };
 
   return (
@@ -98,7 +92,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
               : 'text-muted-foreground hover:bg-accent hover:text-foreground'
           )}
         >
-          All
+          {t('common.all', 'All')}
         </button>
         {(['functional', 'technical', 'ux', 'performance', 'security', 'data', 'business', 'other'] as NeedCategory[]).map((cat) => (
           <button
@@ -112,7 +106,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
             )}
           >
             <Icon name={CATEGORY_ICONS[cat]} size={12} className={CATEGORY_COLORS[cat]} />
-            <span className="capitalize">{cat}</span>
+            <span>{t(`architect.needCategory.${cat}`, cat)}</span>
           </button>
         ))}
       </div>
@@ -122,8 +116,8 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
         {filteredNeeds.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50 p-4 text-center">
             <Icon name="sparkles" size={32} className="mb-2" />
-            <p className="text-sm">No needs identified for this project yet.</p>
-            <p className="text-xs mt-1">Chat with the Architect to uncover project requirements.</p>
+            <p className="text-sm">{t('architect.needsEmptyTitle', 'No needs identified for this project yet.')}</p>
+            <p className="text-xs mt-1">{t('architect.needsEmptyDescription', 'Chat with the Architect to uncover project requirements.')}</p>
           </div>
         ) : (
           filteredNeeds.map((need) => (
@@ -157,7 +151,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
                     need.priority === 'medium' ? "border-amber-500/20 text-amber-500 bg-amber-500/5" :
                       "border-emerald-500/20 text-emerald-500 bg-emerald-500/5"
                 )}>
-                  {need.priority}
+                  {t(`architect.needPriority.${need.priority}`, need.priority)}
                 </span>
                 {need.tags.slice(0, 2).map(tag => (
                   <span key={tag} className="text-[10px] text-muted-foreground bg-secondary px-1.5 py-0.5 rounded">
@@ -173,14 +167,6 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
         )}
       </div>
 
-      {/* Modal */}
-      {isModalOpen && selectedNeedId && (
-        <NeedDetailsModal
-          needId={selectedNeedId}
-          isOpen={isModalOpen}
-          onClose={handleCloseModal}
-        />
-      )}
     </aside>
   );
 };
