@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { Icon, IconName } from '../ui/Icon';
@@ -102,22 +102,37 @@ const NodeItem: React.FC<NodeItemProps> = ({ node, isSelected, onSelect }) => {
 
 export const PlanBlueprint: React.FC<PlanBlueprintProps> = ({ className }) => {
   const { t } = useTranslation();
-  const { selectedGroupId, planNodes } = useAppStore();
+  const { selectedGroupId, selectedProjectId, projectGroups, planNodes } = useAppStore();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [filter, setFilter] = useState<PlanNodeStatus | 'all'>('all');
 
+  const scopedPlanNodes = useMemo(() => {
+    if (selectedProjectId) {
+      return planNodes.filter((node: PlanNode) => node.projectId === selectedProjectId);
+    }
+
+    if (selectedGroupId) {
+      const group = projectGroups.find((candidate) => candidate.id === selectedGroupId);
+      const groupProjectIds = new Set(group?.projects.map((project) => project.id) ?? []);
+      if (groupProjectIds.size === 0) return [];
+      return planNodes.filter((node: PlanNode) => node.projectId && groupProjectIds.has(node.projectId));
+    }
+
+    return [];
+  }, [selectedProjectId, selectedGroupId, projectGroups, planNodes]);
+
   // Group nodes by type
-  const specs = planNodes.filter((n: PlanNode) => n.type === 'spec');
-  const features = planNodes.filter((n: PlanNode) => n.type === 'feature');
-  const milestones = planNodes.filter((n: PlanNode) => n.type === 'milestone');
+  const specs = scopedPlanNodes.filter((n: PlanNode) => n.type === 'spec');
+  const features = scopedPlanNodes.filter((n: PlanNode) => n.type === 'feature');
+  const milestones = scopedPlanNodes.filter((n: PlanNode) => n.type === 'milestone');
 
   // Filter nodes
   const filterNodes = (nodes: PlanNode[]) =>
     filter === 'all' ? nodes : nodes.filter((n: PlanNode) => n.status === filter);
 
   // Stats
-  const completedCount = planNodes.filter((n: PlanNode) => n.status === 'completed').length;
-  const totalCount = planNodes.length;
+  const completedCount = scopedPlanNodes.filter((n: PlanNode) => n.status === 'completed').length;
+  const totalCount = scopedPlanNodes.length;
   const progress = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
   if (!selectedGroupId) {

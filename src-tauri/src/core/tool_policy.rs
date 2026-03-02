@@ -32,9 +32,37 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "git_branch_list",
         "git_diff",
         "git_get_tree",
-        "add_need",
-        "generate_plan",
+        "need_add",
+        "strategy_generate",
+        "plan_create",
+        "plan_list",
+        "plan_get",
+        "plan_update",
+        "plan_delete",
+        "plan_restore",
+        "plan_set_active",
+        "strategy_get",
+        "strategy_update",
+        "strategy_delete",
     ]
+}
+
+fn normalize_architect_tool_id(tool_id: &str) -> &str {
+    match tool_id {
+        "add_need" => "need_add",
+        "generate_plan" => "strategy_generate",
+        "create_plan" => "plan_create",
+        "list_plans" => "plan_list",
+        "get_plan" => "plan_get",
+        "update_plan" => "plan_update",
+        "delete_plan" => "plan_delete",
+        "restore_plan" => "plan_restore",
+        "set_active_plan" => "plan_set_active",
+        "get_strategy" => "strategy_get",
+        "update_strategy" => "strategy_update",
+        "delete_strategy" => "strategy_delete",
+        _ => tool_id,
+    }
 }
 
 fn chat_allowed_tool_ids() -> &'static [&'static str] {
@@ -106,7 +134,7 @@ pub fn get_mode_policy(mode: &str) -> ToolModePolicyResult {
 
 pub fn validate_tool_execution(mode: &str, tool_id: &str, path: Option<&str>) -> ToolValidationResult {
     let mode = mode.trim();
-    let tool_id = tool_id.trim();
+    let tool_id = normalize_architect_tool_id(tool_id.trim());
 
     let Some((allowed_tool_ids, enforce_macro_only_writes)) = resolve_mode_policy(mode) else {
         return ToolValidationResult {

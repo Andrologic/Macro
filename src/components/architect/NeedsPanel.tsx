@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useAppStore } from '../../stores/useAppStore';
+import { useChatStore } from '../../stores/useChatStore';
 import type { NeedCategory } from '../../types';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
@@ -12,18 +13,24 @@ interface NeedsPanelProps {
 }
 
 const CATEGORY_ICONS: Record<NeedCategory, IconName> = {
-  functional: 'zap',
+  functional: 'target',
   technical: 'code',
-  ux: 'layout-grid',
+  ux: 'palette',
+  performance: 'zap',
   security: 'shield',
-  other: 'circle',
+  data: 'database',
+  business: 'milestone',
+  other: 'more-horizontal',
 };
 
 const CATEGORY_COLORS: Record<NeedCategory, string> = {
-  functional: 'text-amber-500',
-  technical: 'text-blue-500',
+  functional: 'text-blue-500',
+  technical: 'text-slate-500',
   ux: 'text-purple-500',
+  performance: 'text-amber-500',
   security: 'text-red-500',
+  data: 'text-emerald-500',
+  business: 'text-indigo-500',
   other: 'text-muted-foreground',
 };
 
@@ -35,24 +42,14 @@ const CATEGORY_COLORS: Record<NeedCategory, string> = {
 const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
   const { t } = useTranslation();
   const { needs, selectNeed, selectedNeedId } = useNeedsStore();
-  const { selectedProjectId, selectedGroupId, projectGroups } = useAppStore();
+  const { activeArchitectPlanId } = useAppStore();
   const [filter, setFilter] = useState<'all' | NeedCategory>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const scopedNeeds = useMemo(() => {
-    if (selectedProjectId) {
-      return needs.filter((need) => need.projectId === selectedProjectId);
-    }
-
-    if (selectedGroupId) {
-      const group = projectGroups.find((candidate) => candidate.id === selectedGroupId);
-      const groupProjectIds = new Set(group?.projects.map((project) => project.id) ?? []);
-      if (groupProjectIds.size === 0) return [];
-      return needs.filter((need) => need.projectId && groupProjectIds.has(need.projectId));
-    }
-
-    return [];
-  }, [needs, selectedProjectId, selectedGroupId, projectGroups]);
+    if (!activeArchitectPlanId) return [];
+    return needs.filter((need) => need.planId === activeArchitectPlanId);
+  }, [needs, activeArchitectPlanId]);
 
   const filteredNeeds = useMemo(() => {
     if (filter === 'all') return scopedNeeds;
@@ -60,8 +57,16 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
   }, [scopedNeeds, filter]);
 
   const handleNeedClick = (needId: string) => {
-    selectNeed(needId);
-    setIsModalOpen(true);
+    const need = needs.find((n) => n.id === needId);
+    if (!need) return;
+    const { addComposerContextRef } = useChatStore.getState();
+    addComposerContextRef({
+      id: need.id,
+      kind: 'need',
+      title: need.title,
+      subtitle: need.category,
+      data: need,
+    });
   };
 
   const handleCloseModal = () => {
@@ -80,30 +85,6 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
             {scopedNeeds.length}
           </span>
         </h1>
-        <div className="flex items-center gap-2">
-          {scopedNeeds.length > 0 && (
-            <button
-              onClick={() => {
-                // Send a message to the active Architect chat to generate the plan
-                const chatStore = (window as any)._useChatStore?.getState();
-                const appStore = useAppStore.getState();
-                if (chatStore && appStore.mode === 'Architect') {
-                  const conversationId = chatStore.selectedConversationIdsByMode['Architect'];
-                  if (conversationId) {
-                    chatStore.sendMessage({
-                      conversationId,
-                      content: "Based on the identified needs, please generate a structured project plan using the `generate_plan` tool.",
-                    });
-                  }
-                }
-              }}
-              className="px-3 py-1.5 rounded-md text-xs font-medium bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground transition-all duration-200 flex items-center gap-1.5"
-            >
-              <Icon name="git-merge" size={14} />
-              Generate Plan
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Filter Tabs */}
@@ -119,7 +100,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
         >
           All
         </button>
-        {(['functional', 'ux', 'technical', 'security'] as NeedCategory[]).map((cat) => (
+        {(['functional', 'technical', 'ux', 'performance', 'security', 'data', 'business', 'other'] as NeedCategory[]).map((cat) => (
           <button
             key={cat}
             onClick={() => setFilter(cat)}
@@ -160,11 +141,8 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
                 <h3 className="text-sm font-medium text-foreground leading-tight line-clamp-2">
                   {need.title}
                 </h3>
-                <div className={cn(
-                  "shrink-0 w-6 h-6 rounded-md flex items-center justify-center bg-background border border-border/50",
-                  CATEGORY_COLORS[need.category].replace('text-', 'bg-').replace('500', '500/10')
-                )}>
-                  <Icon name={CATEGORY_ICONS[need.category]} size={12} className={CATEGORY_COLORS[need.category]} />
+                <div className="w-6 h-6 rounded-md flex items-center justify-center bg-muted border border-border/50 shrink-0">
+                  <Icon name={CATEGORY_ICONS[need.category]} size={12} className="text-muted-foreground" />
                 </div>
               </div>
 

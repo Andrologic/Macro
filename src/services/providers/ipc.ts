@@ -19,12 +19,21 @@ import type { ProjectGroup, Task } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
 import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
+import { normalizeArchitectToolId } from '../architectToolNames';
 
 const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
 const MCP_SERVER_SETTINGS_STORAGE_KEY = 'macro_mcp_server_settings';
+const LEGACY_TOOL_ID_MAP: Record<string, string> = {
+  'web-search': 'web_search',
+  'file-read': 'read_file',
+};
 
 const normalizeToolSettings = (settings: Record<string, boolean>): Record<string, boolean> => {
-  return Object.fromEntries(Object.entries(settings).filter(([, value]) => typeof value === 'boolean'));
+  return Object.fromEntries(
+    Object.entries(settings)
+      .filter(([, value]) => typeof value === 'boolean')
+      .map(([id, enabled]) => [normalizeArchitectToolId(LEGACY_TOOL_ID_MAP[id] || id), enabled])
+  );
 };
 
 const loadLocalToolSettings = (): Record<string, boolean> => {

@@ -41,10 +41,23 @@ const ALL_WORKSPACE_TOOLS = [
   ...WORKSPACE_WRITE_TOOLS,
 ] as const;
 
+const ARCHITECT_PLAN_TOOLS = [
+  'plan_create',
+  'plan_list',
+  'plan_get',
+  'plan_update',
+  'plan_delete',
+  'plan_restore',
+  'plan_set_active',
+  'strategy_get',
+  'strategy_update',
+  'strategy_delete',
+] as const;
+
 export const getToolModePolicy = (mode: AppMode): ToolModePolicy => {
   if (mode === 'Architect') {
     return {
-      allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_READ_TOOLS, 'add_need', 'generate_plan'],
+      allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_READ_TOOLS, ...ARCHITECT_PLAN_TOOLS, 'need_add', 'strategy_generate'],
       enforceMacroOnlyWrites: true,
     };
   }
@@ -70,8 +83,31 @@ export const getToolModePolicy = (mode: AppMode): ToolModePolicy => {
 };
 
 export const isMacroScopedPath = (rawPath: string): boolean => {
-  const normalized = rawPath.replace(/\\/g, '/').replace(/^\.\//, '').trim();
-  return normalized === '.macro' || normalized.startsWith('.macro/');
+  const normalized = rawPath.replace(/\\/g, '/').trim();
+  if (!normalized) return false;
+
+  const trimmedStart = normalized.replace(/^\.\//, '');
+  const isAbsolute = /^(?:[a-zA-Z]:\/|\/)/.test(trimmedStart);
+  if (isAbsolute) return false;
+
+  const parts = trimmedStart.split('/').filter((segment) => segment.length > 0);
+  if (parts.length === 0) return false;
+
+  const resolved: string[] = [];
+  for (const part of parts) {
+    if (part === '.') continue;
+    if (part === '..') {
+      if (resolved.length === 0) {
+        return false;
+      }
+      resolved.pop();
+      continue;
+    }
+    resolved.push(part);
+  }
+
+  if (resolved.length === 0) return false;
+  return resolved[0] === '.macro';
 };
 
 export const isGitToolId = (toolId: string): boolean => {

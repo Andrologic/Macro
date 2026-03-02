@@ -1,6 +1,30 @@
 import { create } from 'zustand';
 import type { Need } from '../types';
 import { useAppStore } from './useAppStore';
+import {
+  getGitFlowBaseBranch,
+  resolveTargetBranch,
+  saveArchitectPlanNeeds,
+} from '../services/architectPlanService';
+
+const persistPlanNeeds = (planId: string | null | undefined, needs: Need[]): void => {
+  if (!planId) return;
+
+  const appState = useAppStore.getState();
+  const activeContext = appState.activePlanContext;
+  const targetBranch = (() => {
+    if (activeContext && activeContext.id === planId) {
+      try {
+        return resolveTargetBranch(activeContext.targetBranch);
+      } catch {
+        return getGitFlowBaseBranch();
+      }
+    }
+    return getGitFlowBaseBranch();
+  })();
+
+  void saveArchitectPlanNeeds(targetBranch, planId, needs.filter((need) => need.planId === planId));
+};
 
 interface NeedsState {
   needs: Need[];
@@ -12,75 +36,67 @@ interface NeedsState {
   deleteNeed: (id: string) => void;
   selectNeed: (id: string | null) => void;
   clearNeeds: () => void;
+  replaceNeedsForPlan: (planId: string, needs: Need[]) => void;
+  getNeedsForPlan: (planId: string) => Need[];
+  getActivePlanNeeds: () => Need[];
   
   // Helpers
   getNeed: (id: string) => Need | undefined;
 }
 
-// Initial mock needs for testing
-const MOCK_NEEDS: Need[] = [
-  {
-    id: 'need-1',
-    title: 'User Authentication',
-    description: 'Users must be able to sign up and log in using email/password.',
-    category: 'functional',
-    status: 'identified',
-    priority: 'high',
-    tags: ['auth', 'security'],
-    projectId: 'proj-1',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    id: 'need-2',
-    title: 'Mobile Responsiveness',
-    description: 'The interface must work seamlessly on mobile devices.',
-    category: 'ux',
-    status: 'validated',
-    priority: 'medium',
-    tags: ['responsive', 'mobile'],
-    projectId: 'proj-2',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  }
-];
-
 export const useNeedsStore = create<NeedsState>((set, get) => ({
-  needs: MOCK_NEEDS,
+  needs: [],
   selectedNeedId: null,
 
   addNeed: (needData) => {
     const id = crypto.randomUUID();
-    const selectedProjectId = useAppStore.getState().selectedProjectId;
+    const appState = useAppStore.getState();
+    const selectedProjectId = appState.selectedProjectId;
+    const activePlanId = appState.activeArchitectPlanId;
     const newNeed: Need = {
       ...needData,
       id,
+      planId: needData.planId ?? activePlanId ?? undefined,
       projectId: needData.projectId ?? selectedProjectId ?? undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     
-    set((state) => ({
-      needs: [...state.needs, newNeed],
-      selectedNeedId: id // Auto-select new needs? Maybe.
-    }));
+    set((state) => {
+      const nextNeeds = [...state.needs, newNeed];
+      persistPlanNeeds(newNeed.planId, nextNeeds);
+      return {
+        needs: nextNeeds,
+        selectedNeedId: id,
+      };
+    });
     
     return id;
   },
 
   updateNeed: (id, updates) => {
     set((state) => ({
-      needs: state.needs.map((n) => 
-        n.id === id 
-          ? { ...n, ...updates, updatedAt: new Date().toISOString() } 
-          : n
-      ),
+      needs: (() => {
+        const nextNeeds = state.needs.map((n) =>
+          n.id === id
+            ? { ...n, ...updates, updatedAt: new Date().toISOString() }
+            : n
+        );
+        const updatedNeed = nextNeeds.find((need) => need.id === id);
+        persistPlanNeeds(updatedNeed?.planId, nextNeeds);
+        return nextNeeds;
+      })(),
     }));
   },
 
   deleteNeed: (id) => {
     set((state) => ({
-      needs: state.needs.filter((n) => n.id !== id),
+      needs: (() => {
+        const deletedNeed = state.needs.find((need) => need.id === id);
+        const nextNeeds = state.needs.filter((n) => n.id !== id);
+        persistPlanNeeds(deletedNeed?.planId, nextNeeds);
+        return nextNeeds;
+      })(),
       selectedNeedId: state.selectedNeedId === id ? null : state.selectedNeedId,
     }));
   },
@@ -91,6 +107,29 @@ export const useNeedsStore = create<NeedsState>((set, get) => ({
 
   clearNeeds: () => {
     set({ needs: [], selectedNeedId: null });
+  },
+
+  replaceNeedsForPlan: (planId, nextNeeds) => {
+    const normalizedNeeds = nextNeeds.map((need) => ({ ...need, planId }));
+    set((state) => {
+      const others = state.needs.filter((need) => need.planId !== planId);
+      const selectedStillExists = normalizedNeeds.some((need) => need.id === state.selectedNeedId);
+      return {
+        needs: [...others, ...normalizedNeeds],
+        selectedNeedId: selectedStillExists ? state.selectedNeedId : null,
+      };
+    });
+    persistPlanNeeds(planId, normalizedNeeds);
+  },
+
+  getNeedsForPlan: (planId) => {
+    return get().needs.filter((need) => need.planId === planId);
+  },
+
+  getActivePlanNeeds: () => {
+    const activePlanId = useAppStore.getState().activeArchitectPlanId;
+    if (!activePlanId) return [];
+    return get().needs.filter((need) => need.planId === activePlanId);
   },
 
   getNeed: (id) => {
