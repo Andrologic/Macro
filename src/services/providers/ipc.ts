@@ -14,6 +14,7 @@ import type {
   ChatCompletionRequestDto,
   ChatCompletionResponseDto,
 } from '../contracts/dtos';
+import type { ServiceProvider } from '../contracts/serviceProvider';
 import type { ProjectGroup, Task } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
@@ -285,4 +286,30 @@ export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): P
   });
 
   localStorage.setItem(MCP_SERVER_SETTINGS_STORAGE_KEY, JSON.stringify(enabledMap));
+};
+
+export const provider: ServiceProvider = {
+  getAppBootstrap,
+  listConversations,
+  listMessages,
+  listTasks,
+  getGitTreeForProject,
+  gitWorktreeCreate,
+  gitWorktreeRemove,
+  getFileContent,
+  listCommits,
+  listProviders,
+  listModels,
+  sendChat,
+  createProject,
+  importGitRepo,
+  renameProjectGroup,
+  renameProject,
+  archiveProjectGroup,
+  archiveProject,
+  closeProject,
+  getToolSettings,
+  updateToolSettings,
+  getMCPServerSettings,
+  updateMCPServerSettings,
 };

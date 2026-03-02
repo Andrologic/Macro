@@ -13,6 +13,7 @@ import type {
   PredictedBranch,
   Task,
   Project,
+  AppMode,
 } from '../types';
 
 // ============ Types ============
@@ -163,6 +164,17 @@ export interface WorkspaceMetadataDto {
   workspace_path: string;
   metadata_path: string;
   project_count: number;
+}
+
+export interface ToolValidationResultDto {
+  allowed: boolean;
+  reason?: string | null;
+  enforce_macro_only_writes: boolean;
+}
+
+export interface ToolModePolicyDto {
+  allowed_tool_ids: string[];
+  enforce_macro_only_writes: boolean;
 }
 
 // ============ Conversations ============
@@ -680,6 +692,34 @@ export async function updateProviderSettings(params: {
   return invoke('db_update_provider_settings', {
     providerId: params.providerId,
     filterFreeModels: params.filterFreeModels,
+  });
+}
+
+export async function validateToolExecution(params: {
+  mode: AppMode;
+  toolId: string;
+  path?: string;
+}): Promise<ToolValidationResultDto> {
+  return invoke<ToolValidationResultDto>('tool_validate_execution', {
+    mode: params.mode,
+    toolId: params.toolId,
+    path: params.path,
+  });
+}
+
+export async function getToolModePolicy(mode: AppMode): Promise<ToolModePolicyDto> {
+  return invoke<ToolModePolicyDto>('tool_get_mode_policy', { mode });
+}
+
+export async function executeWorkspaceTool(params: {
+  mode: AppMode;
+  toolId: string;
+  args: Record<string, unknown>;
+}): Promise<string> {
+  return invoke<string>('tool_execute_workspace', {
+    mode: params.mode,
+    toolId: params.toolId,
+    args: params.args,
   });
 }
 

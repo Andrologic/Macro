@@ -79,13 +79,13 @@ pub struct GitNode {
 	pub hash: Option<String>,
 }
 
-fn to_join_error(err: tokio::task::JoinError) -> BackendError {
+pub(crate) fn to_join_error(err: tokio::task::JoinError) -> BackendError {
 	BackendError::Internal {
 		message: format!("Git task join error: {}", err),
 	}
 }
 
-fn validate_repo_path(repo_path: &str, workspace: &PathBuf) -> Result<PathBuf> {
+pub fn validate_repo_path(repo_path: &str, workspace: &PathBuf) -> Result<PathBuf> {
 	let validated = validate_path(Path::new(repo_path), workspace)?;
 	for component in validated.components() {
 		if let std::path::Component::Normal(part) = component {
@@ -299,7 +299,7 @@ fn expand_paths(repo_root: &Path, input: &str) -> Result<Vec<PathBuf>> {
 	Ok(vec![absolute])
 }
 
-fn add_paths(repo: &Repository, paths: &[String]) -> Result<()> {
+pub(crate) fn add_paths(repo: &Repository, paths: &[String]) -> Result<()> {
 	let repo_root = repo_root(repo)?;
 	let mut index = repo.index()?;
 	let mut added = 0usize;
@@ -324,7 +324,7 @@ fn add_paths(repo: &Repository, paths: &[String]) -> Result<()> {
 	Ok(())
 }
 
-fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) -> Result<()> {
+pub(crate) fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) -> Result<()> {
 	let target = if let Some(spec) = commit {
 		resolve_commit(repo, &spec)?
 	} else {
@@ -357,7 +357,7 @@ fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) -> Result<(
 	Ok(())
 }
 
-fn stash_repo(repo: &mut Repository, message: Option<String>) -> Result<String> {
+pub(crate) fn stash_repo(repo: &mut Repository, message: Option<String>) -> Result<String> {
 	let statuses = repo.statuses(Some(&mut get_status_options()))?;
 	if statuses.is_empty() {
 		return Err(BackendError::Git {
@@ -685,13 +685,13 @@ fn ensure_clean(repo: &Repository) -> Result<()> {
 	Ok(())
 }
 
-struct DiffRequestOptions {
-	context_lines: Option<u32>,
-	ignore_whitespace: bool,
-	paths: Option<Vec<String>>,
+pub(crate) struct DiffRequestOptions {
+	pub context_lines: Option<u32>,
+	pub ignore_whitespace: bool,
+	pub paths: Option<Vec<String>>,
 }
 
-fn build_git_status(repo: &Repository) -> Result<GitStatusDto> {
+pub(crate) fn build_git_status(repo: &Repository) -> Result<GitStatusDto> {
 	let branch = get_branch_name(repo)?.unwrap_or_else(|| "DETACHED".to_string());
 	let head_commit = get_head_commit(repo)?.map(|c| commit_to_dto(&c));
 
@@ -757,7 +757,7 @@ fn build_git_status(repo: &Repository) -> Result<GitStatusDto> {
 	})
 }
 
-fn build_git_log(repo: &Repository, limit: usize, branch: Option<&str>) -> Result<Vec<GitCommitDto>> {
+pub fn build_git_log(repo: &Repository, limit: usize, branch: Option<&str>) -> Result<Vec<GitCommitDto>> {
 	let (has_staged, has_unstaged) = get_working_status_flags(repo)?;
 
 	if let Some(branch) = branch {
@@ -823,7 +823,7 @@ fn build_git_log(repo: &Repository, limit: usize, branch: Option<&str>) -> Resul
 	Ok(commits)
 }
 
-fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
+pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
 	let current = get_branch_name(repo)?;
 	let mut local = Vec::new();
 	let mut remote = Vec::new();
@@ -858,7 +858,7 @@ fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
 	Ok(GitBranchesDto { local, remote, current })
 }
 
-fn checkout_repo(repo: &Repository, branch_or_commit: &str, create: bool) -> Result<()> {
+pub(crate) fn checkout_repo(repo: &Repository, branch_or_commit: &str, create: bool) -> Result<()> {
 	ensure_clean(repo)?;
 	let current_tree_id = repo
 		.head()
@@ -922,7 +922,7 @@ fn checkout_repo(repo: &Repository, branch_or_commit: &str, create: bool) -> Res
 	Ok(())
 }
 
-fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> Result<String> {
+pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> Result<String> {
 	validate_commit_message(message)?;
 	ensure_safe_config(repo)?;
 
@@ -981,7 +981,7 @@ fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> Result<Stri
 	Ok(short_hash(oid))
 }
 
-fn diff_repo(
+pub(crate) fn diff_repo(
 	repo: &Repository,
 	base: Option<&str>,
 	head: Option<&str>,
@@ -1038,7 +1038,7 @@ fn diff_repo(
 	Ok(output)
 }
 
-fn build_git_tree(repo: &Repository, branch: Option<&str>) -> Result<PredictedGitTreeDto> {
+pub fn build_git_tree(repo: &Repository, branch: Option<&str>) -> Result<PredictedGitTreeDto> {
 	let branch_name = if let Some(branch) = branch {
 		validate_refspec(branch)?;
 		branch.to_string()

@@ -1,12 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { useTranslation } from 'react-i18next';
 import { loadPreference, savePreference, PREF_KEYS } from '../../../services/preferences';
 import { Icon } from '../../ui/Icon';
 import { cn } from '../../../utils/cn';
 
 export const PromptsView: React.FC = () => {
-    const { t } = useTranslation();
-
     const [architectPrompt, setArchitectPrompt] = useState('');
     const [implementPrompt, setImplementPrompt] = useState('');
     const [chatPrompt, setChatPrompt] = useState('');
@@ -99,7 +96,7 @@ export const PromptsView: React.FC = () => {
                         ) : saveSuccess ? (
                             <Icon name="check" size={14} />
                         ) : (
-                            <Icon name="save" size={14} />
+                            <Icon name="edit" size={14} />
                         )}
                         {saveSuccess ? 'Saved' : 'Save Changes'}
                     </button>

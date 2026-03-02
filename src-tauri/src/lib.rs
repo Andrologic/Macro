@@ -1,16 +1,16 @@
 #[path = "commands.rs"]
-mod commands;
-mod core;
+pub mod commands;
+pub mod core;
 mod db;
 mod secrets;
 
 // Placeholder modules for critical manual implementation
 mod fs;
-mod git;
+pub mod git;
 
 mod ai;
 mod index;
-mod workspace;
+pub mod workspace;
 
 use commands::DbPool;
 use core::{init_logging, load_config};
@@ -114,6 +114,10 @@ pub fn run() {
             commands::workspace::workspace_archive_project_group,
             commands::workspace::workspace_archive_project,
             commands::workspace::workspace_close_project,
+            // Tool policy validation command
+            commands::tool_get_mode_policy,
+            commands::tool_validate_execution,
+            commands::tool_execute_workspace,
             // File System commands
             commands::fs::fs_read_file,
             commands::fs::fs_write_file,
