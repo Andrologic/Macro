@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { useAppStore } from './useAppStore';
+import { useTaskStore } from './useTaskStore';
 import * as tauriIpc from '../services/tauriIpc';
 import { parseUnifiedDiff } from '../services/gitDiffParser';
 
@@ -76,6 +77,11 @@ const normalizeStatus = (status: string): FileChangeEntry['status'] => {
 };
 
 const resolveActiveProjectPath = (): string | null => {
+  const activeRepositoryPath = useTaskStore.getState().activeRepositoryPath;
+  if (activeRepositoryPath) {
+    return activeRepositoryPath;
+  }
+
   const appState = useAppStore.getState();
 
   if (appState.selectedProjectId) {

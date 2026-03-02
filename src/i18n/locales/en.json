@@ -117,6 +117,27 @@
     "blocked": "Blocked",
     "actionRequired": "Action required"
   },
+  "implement": {
+    "tasks": "Tasks",
+    "selectProject": "Select a project to view tasks",
+    "selectTask": "Select a task to review changes",
+    "activeCount": "{{count}} active",
+    "noTasks": "No tasks yet",
+    "readyTasks": "Ready tasks",
+    "noReadyTasks": "No task is currently runnable.",
+    "blockedTasks": "Blocked tasks",
+    "noBlockedTasks": "No dependency-blocked task.",
+    "blockedBy": "Blocked by: {{tasks}}",
+    "sequenceHint": "#{{step}}",
+    "sequenceHintHelp": "Execution order in branch",
+    "startTask": "Start task",
+    "completeTask": "Mark complete",
+    "awaitingResponse": "Awaiting response",
+    "failed": "Failed",
+    "taskCount": "{{count}} tasks",
+    "completedCount": "{{count}} completed",
+    "changesReview": "Changes Review"
+  },
   "architect": {
     "needs": "Identified Needs",
     "status": {

@@ -117,6 +117,27 @@
     "blocked": "Bloquées",
     "actionRequired": "Action requise"
   },
+  "implement": {
+    "tasks": "Tâches",
+    "selectProject": "Sélectionnez un projet pour voir les tâches",
+    "selectTask": "Sélectionnez une tâche pour revoir les changements",
+    "activeCount": "{{count}} active",
+    "noTasks": "Aucune tâche pour le moment",
+    "readyTasks": "Tâches prêtes",
+    "noReadyTasks": "Aucune tâche n'est exécutable actuellement.",
+    "blockedTasks": "Tâches bloquées",
+    "noBlockedTasks": "Aucune tâche bloquée par dépendance.",
+    "blockedBy": "Bloqué par : {{tasks}}",
+    "sequenceHint": "#{{step}}",
+    "sequenceHintHelp": "Ordre d'exécution dans la branche",
+    "startTask": "Démarrer la tâche",
+    "completeTask": "Marquer terminée",
+    "awaitingResponse": "Réponse attendue",
+    "failed": "Échoué",
+    "taskCount": "{{count}} tâches",
+    "completedCount": "{{count}} terminées",
+    "changesReview": "Revue des changements"
+  },
   "architect": {
     "needs": "Besoins identifiés",
     "status": {

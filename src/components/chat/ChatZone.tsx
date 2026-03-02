@@ -6,6 +6,7 @@ import type { MessageImageAttachment } from '../../stores/useChatStore';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
+import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
@@ -26,7 +27,6 @@ import { ComposerEditor, type ComposerEditorHandle } from './composer/ComposerEd
 const ChatZone: React.FC = () => {
   const { t } = useTranslation();
   const {
-    currentPlan,
     mode,
     selectedProjectId,
     selectedTaskId,
@@ -54,6 +54,7 @@ const ChatZone: React.FC = () => {
   const { selectedProviderId, selectedModelId } = useProviderStore();
   const { needs } = useNeedsStore();
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
+  const tasks = useTaskStore((state) => state.tasks);
 
   const [inputValue, setInputValue] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -100,9 +101,15 @@ const ChatZone: React.FC = () => {
     : null;
 
   const selectedTask = useMemo(
-    () => currentPlan?.tasks.find((task) => task.id === selectedTaskId) ?? null,
-    [currentPlan, selectedTaskId]
+    () => tasks.find((task) => task.id === selectedTaskId) ?? null,
+    [tasks, selectedTaskId]
   );
+
+  const implementProgress = useMemo(() => {
+    const total = tasks.length;
+    const completed = tasks.filter((task) => task.status === 'Completed').length;
+    return { completed, total };
+  }, [tasks]);
 
   const selectedProjectName = useMemo(
     () => (selectedProjectId ? getProjectById(selectedProjectId)?.name ?? null : null),
@@ -491,9 +498,9 @@ const ChatZone: React.FC = () => {
                 Reset
               </button>
             )}
-            {currentPlan && (
+            {mode === 'Implement' && implementProgress.total > 0 && (
               <span className="text-xs text-muted-foreground font-mono">
-                {currentPlan.tasks.filter((t) => t.status === 'Completed').length}/{currentPlan.tasks.length}
+                {implementProgress.completed}/{implementProgress.total}
               </span>
             )}
           </div>

@@ -1,136 +1,176 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
-import { useTaskStore } from '../../stores/useTaskStore';
+import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
-import type { Task, TaskStatus } from '../../types';
+import type { TaskStatus } from '../../types';
 
 interface TaskQueueProps {
   className?: string;
 }
 
-/**
- * TaskQueue - Displays and manages project tasks in Implement mode
- *
- * PERFORMANCE: Lazy loaded via ModeRouter, only rendered when Implement mode is active
- */
+const statusConfig: Record<TaskStatus, { icon: IconName; color: string; bgColor: string }> = {
+  Pending: { icon: 'circle', color: 'text-muted-foreground', bgColor: 'bg-muted' },
+  InProgress: { icon: 'loader', color: 'text-amber-500', bgColor: 'bg-amber-500/10' },
+  AwaitingResponse: { icon: 'message-circle', color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
+  Completed: { icon: 'check-circle', color: 'text-emerald-500', bgColor: 'bg-emerald-500/10' },
+  Failed: { icon: 'alert-circle', color: 'text-red-400', bgColor: 'bg-red-500/10' },
+  Blocked: { icon: 'lock', color: 'text-orange-400', bgColor: 'bg-orange-500/10' },
+};
 
-const statusConfig: Record<TaskStatus, { icon: IconName; color: string; bgColor: string; label: string }> = {
-  'Pending': { icon: 'circle', color: 'text-muted-foreground', bgColor: 'bg-muted', label: 'En attente' },
-  'InProgress': { icon: 'loader', color: 'text-amber-500', bgColor: 'bg-amber-500/10', label: 'En cours' },
-  'AwaitingResponse': { icon: 'message-circle', color: 'text-blue-400', bgColor: 'bg-blue-500/10', label: 'Réponse attendue' },
-  'Completed': { icon: 'check-circle', color: 'text-emerald-500', bgColor: 'bg-emerald-500/10', label: 'Terminé' },
-  'Failed': { icon: 'alert-circle', color: 'text-red-400', bgColor: 'bg-red-500/10', label: 'Échoué' },
-  'Blocked': { icon: 'lock', color: 'text-orange-400', bgColor: 'bg-orange-500/10', label: 'Bloqué' },
+const readyStatusOrder: Record<TaskStatus, number> = {
+  InProgress: 0,
+  AwaitingResponse: 1,
+  Pending: 2,
+  Blocked: 3,
+  Failed: 4,
+  Completed: 5,
 };
 
 interface TaskItemProps {
-  task: Task;
+  task: ImplementTask;
   isSelected: boolean;
+  statusLabel: string;
   onSelect: () => void;
-  blockedBy?: string[];
+  onStart: () => void;
+  onComplete: () => void;
 }
 
-const TaskItem: React.FC<TaskItemProps> = ({ task, isSelected, onSelect, blockedBy }) => {
-  const status = statusConfig[task.status] || statusConfig['Pending'];
-  const isBlocked = blockedBy && blockedBy.length > 0;
+const TaskItem: React.FC<TaskItemProps> = ({
+  task,
+  isSelected,
+  statusLabel,
+  onSelect,
+  onStart,
+  onComplete,
+}) => {
+  const { t } = useTranslation();
+  const status = statusConfig[task.status] || statusConfig.Pending;
+  const canStart = task.is_ready && (task.status === 'Pending' || task.status === 'Blocked');
+  const canComplete = task.status === 'InProgress' || task.status === 'AwaitingResponse';
+  const lockTooltip = task.is_blocked
+    ? t('implement.blockedBy', 'Blocked by: {{tasks}}', {
+      tasks: task.blocked_by.join(', '),
+    })
+    : '';
 
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
       className={cn(
-        'w-full text-left px-3 py-3 rounded-lg border transition-all duration-200 group',
-        isSelected
-          ? 'bg-primary/10 border-primary/30'
-          : 'border-transparent hover:bg-accent'
+        'w-full text-left px-3 py-3 rounded-lg border transition-all duration-200 group cursor-pointer',
+        isSelected ? 'bg-primary/10 border-primary/30' : 'border-transparent hover:bg-accent'
       )}
     >
       <div className="flex items-start gap-3">
-        {/* Status Icon */}
-        <div className={cn(
-          'w-7 h-7 rounded-lg flex items-center justify-center shrink-0',
-          status.bgColor
-        )}>
-          <Icon
-            name={status.icon}
-            size={14}
-            className={cn(status.color, task.status === 'InProgress' && 'animate-spin')}
-          />
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-medium text-foreground leading-tight">
-            {task.title}
-          </h3>
-
-          {/* Description preview */}
-          {task.description && (
-            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-              {task.description}
-            </p>
-          )}
-
-          {/* Meta info */}
-          <div className="flex items-center gap-3 mt-2">
-            <span className={cn('text-xs px-1.5 py-0.5 rounded', status.bgColor, status.color)}>
-              {status.label}
-            </span>
-
-            {task.estimated_changes.length > 0 && (
-              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                <Icon name="file" size={10} />
-                {task.estimated_changes.length} fichier{task.estimated_changes.length > 1 ? 's' : ''}
-              </span>
-            )}
-
-            {isBlocked && (
-              <span className="text-xs text-orange-400 flex items-center gap-1">
-                <Icon name="lock" size={10} />
-                Bloqué
-              </span>
-            )}
+        <div className="relative shrink-0 group/lock">
+          <div className={cn('w-7 h-7 rounded-lg flex items-center justify-center', status.bgColor)}>
+            <Icon
+              name={status.icon}
+              size={14}
+              className={cn(status.color, task.status === 'InProgress' && 'animate-spin')}
+            />
           </div>
-
-          {/* Blocked by */}
-          {isBlocked && (
-            <div className="mt-2 px-2 py-1.5 rounded bg-orange-500/5 border border-orange-500/20">
-              <p className="text-xs text-orange-400">
-                <Icon name="alert-circle" size={10} className="inline mr-1" />
-                En attente de: {blockedBy!.join(', ')}
-              </p>
+          {task.is_blocked && task.blocked_by.length > 0 && (
+            <div className="pointer-events-none absolute left-0 top-8 z-20 hidden min-w-56 max-w-72 rounded-md border border-orange-500/30 bg-popover px-2 py-1.5 text-xs text-orange-300 shadow-lg group-hover/lock:block">
+              {lockTooltip}
             </div>
           )}
         </div>
 
-        {/* Action button */}
-        {task.status === 'Pending' && !isBlocked && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              // Would trigger task execution
-            }}
-            className="p-1.5 rounded-lg bg-primary/10 text-primary opacity-0 group-hover:opacity-100 transition-opacity hover:bg-primary/20"
-            title="Démarrer la tâche"
-          >
-            <Icon name="play" size={12} />
-          </button>
-        )}
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-medium text-foreground leading-tight">{task.title}</h3>
+
+          {task.description && (
+            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{task.description}</p>
+          )}
+
+          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+            {task.status !== 'Blocked' && (
+              <span className={cn('text-xs px-1.5 py-0.5 rounded', status.bgColor, status.color)}>
+                {statusLabel}
+              </span>
+            )}
+
+            <span className="text-xs text-muted-foreground inline-flex items-center gap-1 leading-none">
+              <Icon name="git-branch" size={10} />
+              {task.branch_name}
+            </span>
+
+            {task.branch_task_index >= 0 && (
+              <span
+                className="text-xs text-muted-foreground font-mono inline-flex items-center leading-none"
+                title={t('implement.sequenceHintHelp', 'Execution order in branch')}
+              >
+                {t('implement.sequenceHint', '#{{step}}', {
+                  step: task.branch_task_index + 1,
+                })}
+              </span>
+            )}
+          </div>
+
+        </div>
+
+        <div className="shrink-0">
+          {canStart && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void onStart();
+              }}
+              className="p-1.5 rounded-lg bg-primary/10 text-primary opacity-0 group-hover:opacity-100 transition-opacity hover:bg-primary/20"
+              title={t('implement.startTask', 'Start task')}
+            >
+              <Icon name="play" size={12} />
+            </button>
+          )}
+          {canComplete && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void onComplete();
+              }}
+              className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-emerald-500/20"
+              title={t('implement.completeTask', 'Mark complete')}
+            >
+              <Icon name="check" size={12} />
+            </button>
+          )}
+        </div>
       </div>
-    </button>
+    </div>
   );
 };
 
-// Performance: Memoize TaskItem to prevent re-renders when other tasks change
 const MemoizedTaskItem = React.memo(TaskItem);
 
-// Use memoized version in the component
 const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const { t } = useTranslation();
-  const { selectedGroupId, selectedProjectId, selectedTaskId, setSelectedTask, projectGroups } = useAppStore();
+  const { selectedGroupId, selectedProjectId, selectedTaskId, projectGroups } = useAppStore();
   const tasks = useTaskStore((state) => state.tasks);
-  const [filter, setFilter] = useState<TaskStatus | 'all'>('all');
+  const activateTask = useTaskStore((state) => state.activateTask);
+  const startTask = useTaskStore((state) => state.startTask);
+  const completeTask = useTaskStore((state) => state.completeTask);
+
+  const statusLabels: Record<TaskStatus, string> = {
+    Pending: t('tasks.pending', 'Pending'),
+    InProgress: t('tasks.inProgress', 'In Progress'),
+    AwaitingResponse: t('implement.awaitingResponse', 'Awaiting response'),
+    Completed: t('tasks.completed', 'Completed'),
+    Failed: t('implement.failed', 'Failed'),
+    Blocked: t('tasks.blocked', 'Blocked'),
+  };
 
   const scopedTasks = useMemo(() => {
     if (selectedProjectId) {
@@ -147,56 +187,30 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     return [];
   }, [tasks, selectedProjectId, selectedGroupId, projectGroups]);
 
-  // Get dependency names for blocking info
-  const getBlockingTasks = (task: Task): string[] => {
-    if (task.dependencies.length === 0) return [];
+  const readyTasks = useMemo(() => {
+    return [...scopedTasks]
+      .filter((task) => !task.is_blocked && task.status !== 'Completed')
+      .sort((a, b) => {
+        const byStatus = readyStatusOrder[a.status] - readyStatusOrder[b.status];
+        if (byStatus !== 0) return byStatus;
+        return a.sequence_index - b.sequence_index;
+      });
+  }, [scopedTasks]);
 
-    const incompleteDepNames: string[] = [];
-    task.dependencies.forEach(depId => {
-      const depTask = tasks.find(t => t.id === depId);
-      if (depTask && depTask.status !== 'Completed') {
-        incompleteDepNames.push(depTask.title);
-      }
-    });
+  const blockedTasks = useMemo(() => {
+    return [...scopedTasks]
+      .filter((task) => task.is_blocked)
+      .sort((a, b) => a.sequence_index - b.sequence_index);
+  }, [scopedTasks]);
 
-    return incompleteDepNames;
-  };
-
-  // Filter and sort tasks
-  const filteredTasks = useMemo(() => {
-    let result = [...scopedTasks];
-
-    // Filter by status
-    if (filter !== 'all') {
-      result = result.filter(t => t.status === filter);
-    }
-
-    // Sort: InProgress first, then AwaitingResponse, Pending, Completed, Failed
-    const statusOrder: Record<TaskStatus, number> = {
-      'InProgress': 0,
-      'AwaitingResponse': 1,
-      'Pending': 2,
-      'Blocked': 3,
-      'Completed': 4,
-      'Failed': 5,
-    };
-
-    result.sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
-
-    return result;
-  }, [scopedTasks, filter]);
-
-  // Stats
-  const completedCount = scopedTasks.filter(t => t.status === 'Completed').length;
-  const inProgressCount = scopedTasks.filter(t => t.status === 'InProgress').length;
+  const completedCount = scopedTasks.filter((task) => task.status === 'Completed').length;
+  const inProgressCount = scopedTasks.filter((task) => task.status === 'InProgress').length;
   const totalCount = scopedTasks.length;
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
   if (!selectedGroupId) {
     return (
-      <aside
-        className={cn("h-full w-full bg-card border-r border-border flex items-center justify-center", className)}
-      >
+      <aside className={cn('h-full w-full bg-card border-r border-border flex items-center justify-center', className)}>
         <div className="text-center px-6">
           <Icon name="list-todo" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
           <p className="text-muted-foreground text-sm">
@@ -208,10 +222,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }
 
   return (
-    <aside
-      className={cn("h-full w-full bg-card border-r border-border flex flex-col", className)}
-    >
-      {/* Header */}
+    <aside className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}>
       <div className="h-12 border-b border-border flex items-center justify-between px-4">
         <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
           <Icon name="list-todo" size={16} className="text-primary" />
@@ -220,16 +231,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         <div className="flex items-center gap-1 text-xs text-muted-foreground">
           {inProgressCount > 0 && (
             <span className="px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-500">
-              {inProgressCount} actif{inProgressCount > 1 ? 's' : ''}
+              {t('implement.activeCount', '{{count}} active', { count: inProgressCount })}
             </span>
           )}
         </div>
       </div>
 
-      {/* Progress */}
       <div className="px-4 py-3 border-b border-border">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-muted-foreground">Progression</span>
+          <span className="text-xs text-muted-foreground">{t('architect.progress', 'Progress')}</span>
           <span className="text-xs font-medium text-foreground">
             {completedCount}/{totalCount}
           </span>
@@ -242,66 +252,87 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="px-3 py-2 border-b border-border overflow-x-auto">
-        <div className="flex gap-1">
-          {(['all', 'InProgress', 'Pending', 'Completed'] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={cn(
-                'px-2 py-1 rounded text-xs font-medium whitespace-nowrap transition-colors',
-                filter === f
-                  ? 'bg-primary/10 text-primary'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-              )}
-            >
-              {f === 'all' ? 'Tous' : statusConfig[f]?.label || f}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Task List */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-1">
-        {filteredTasks.length === 0 ? (
+      <div className="flex-1 overflow-y-auto p-2 space-y-3">
+        {scopedTasks.length === 0 && (
           <div className="flex flex-col items-center justify-center h-48 text-center">
             <Icon name="check-circle" size={32} className="text-muted-foreground/50 mb-3" />
             <p className="text-sm text-muted-foreground">
-              {filter === 'all'
-                ? t('implement.noTasks', 'No tasks yet')
-                : t('implement.noTasksFilter', 'No tasks with this status')}
+              {t('implement.noTasks', 'No tasks yet')}
             </p>
           </div>
-        ) : (
-          filteredTasks.map((task) => (
-            <MemoizedTaskItem
-              key={task.id}
-              task={task}
-              isSelected={selectedTaskId === task.id}
-              onSelect={() => setSelectedTask(task.id)}
-              blockedBy={getBlockingTasks(task)}
-            />
-          ))
+        )}
+
+        {scopedTasks.length > 0 && (
+          <>
+            <section className="space-y-1">
+              <div className="px-1 pb-1 flex items-center justify-between">
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-foreground/80">
+                  {t('implement.readyTasks', 'Ready tasks')}
+                </h2>
+                <span className="text-xs text-muted-foreground">{readyTasks.length}</span>
+              </div>
+
+              {readyTasks.length === 0 && (
+                <div className="px-2 py-3 text-xs text-muted-foreground rounded border border-dashed border-border">
+                  {t('implement.noReadyTasks', 'No task is currently runnable.')}
+                </div>
+              )}
+
+              {readyTasks.map((task) => (
+                <MemoizedTaskItem
+                  key={task.id}
+                  task={task}
+                  isSelected={selectedTaskId === task.id}
+                  statusLabel={statusLabels[task.status]}
+                  onSelect={() => void activateTask(task.id)}
+                  onStart={() => startTask(task.id)}
+                  onComplete={() => completeTask(task.id)}
+                />
+              ))}
+            </section>
+
+            <section className="space-y-1 pt-1 border-t border-border/60">
+              <div className="px-1 pb-1 flex items-center justify-between">
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-orange-400">
+                  {t('implement.blockedTasks', 'Blocked tasks')}
+                </h2>
+                <span className="text-xs text-muted-foreground">{blockedTasks.length}</span>
+              </div>
+
+              {blockedTasks.length === 0 && (
+                <div className="px-2 py-3 text-xs text-muted-foreground rounded border border-dashed border-border">
+                  {t('implement.noBlockedTasks', 'No dependency-blocked task.')}
+                </div>
+              )}
+
+              {blockedTasks.map((task) => (
+                <MemoizedTaskItem
+                  key={task.id}
+                  task={task}
+                  isSelected={selectedTaskId === task.id}
+                  statusLabel={statusLabels[task.status]}
+                  onSelect={() => void activateTask(task.id)}
+                  onStart={() => startTask(task.id)}
+                  onComplete={() => completeTask(task.id)}
+                />
+              ))}
+            </section>
+          </>
         )}
       </div>
 
-      {/* Footer */}
-      <div className="h-12 border-t border-border flex items-center justify-between px-4 bg-card">
+      <div className="h-10 border-t border-border flex items-center justify-between px-4 bg-card">
         <span className="text-xs text-muted-foreground">
-          {filteredTasks.length} tâche{filteredTasks.length > 1 ? 's' : ''}
+          {t('implement.taskCount', '{{count}} tasks', { count: scopedTasks.length })}
         </span>
-        <button className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-primary hover:bg-primary/10 transition-colors">
-          <Icon name="plus" size={12} />
-          Ajouter
-        </button>
+        <span className="text-xs text-muted-foreground">
+          {t('implement.completedCount', '{{count}} completed', { count: completedCount })}
+        </span>
       </div>
     </aside>
   );
 };
 
-// Performance: Memoize the entire component to prevent re-renders
 export const TaskQueue = React.memo(TaskQueueBase);
 
-// Export default for lazy loading compatibility
 export default TaskQueue;

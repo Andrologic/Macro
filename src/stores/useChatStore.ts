@@ -7,6 +7,7 @@ import { streamChat, cancelStream, sendChatNonStreaming } from '../services/stre
 import { getStreamingWebSearchConfig } from '../services/webSearchSettings';
 import { useToolsStore } from './useToolsStore';
 import { useAppStore } from './useAppStore';
+import { useTaskStore } from './useTaskStore';
 import { getToolModePolicy as getLocalToolModePolicy } from '../services/toolModePolicy';
 import { executeWorkspaceTool } from '../services/workspaceToolExecutor';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
@@ -29,6 +30,7 @@ import {
 } from '../services/architectPlanService';
 import { deletePlanAndCleanupBranches, validatePlanAndProvisionBranches } from '../services/architectGitFlowService';
 import { normalizeArchitectToolId } from '../services/architectToolNames';
+import { normalizeStrategyDependencies } from '../services/implementTaskDerivation';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
@@ -843,9 +845,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         resolvedProjectId || undefined,
         toPlanIntegrationBranch(planSlug)
       );
+
+      const normalizedStrategy = normalizeStrategyDependencies(planNodes, predictedBranches);
       return {
-        planNodes,
-        predictedBranches,
+        planNodes: normalizedStrategy.nodes,
+        predictedBranches: normalizedStrategy.predictedBranches,
         resolvedProjectId: resolvedProjectId || undefined,
         activePlanTitle: activePlan.title,
         activePlanDescription: activePlan.description,
@@ -2164,7 +2168,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       if (mode === 'Implement' && selectedTaskId) {
-        const task = appState.currentPlan?.tasks.find((candidate) => candidate.id === selectedTaskId);
+        const task = useTaskStore.getState().getTaskById(selectedTaskId);
         const title = task ? `Task · ${task.title}` : 'Task Session';
         const projectId = task?.project_id ?? selectedProjectId;
         const created = await get().createConversation(title, selectedTaskId, projectId ?? null);
@@ -2301,6 +2305,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const { selectedProviderId, selectedModelId, providerConfigs } = useProviderStore.getState();
       persistSelectionForContext(useAppStore.getState().mode, conversationId);
 
+      const conversationTaskId =
+        get().conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null;
+      const resolvedTaskId =
+        taskId ?? conversationTaskId ?? useAppStore.getState().selectedTaskId ?? '';
+
       if (!selectedProviderId || !selectedModelId) {
         set({ lastError: 'Select a provider and model before sending a message.' });
         return;
@@ -2318,7 +2327,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       let userMessage: ChatMessage = {
         id: `msg-${Date.now()}`,
-        task_id: taskId ?? '',
+        task_id: resolvedTaskId,
         conversation_id: conversationId,
         role: 'user',
         content,
@@ -2330,7 +2339,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           const dbMessage = await tauriIpc.createMessage(conversationId, 'user', content);
           userMessage = {
             id: dbMessage.id,
-            task_id: taskId ?? '',
+            task_id: resolvedTaskId,
             conversation_id: dbMessage.conversation_id,
             role: 'user',
             content: dbMessage.content,
@@ -2387,7 +2396,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-assistant`,
-        task_id: taskId ?? '',
+        task_id: resolvedTaskId,
         conversation_id: conversationId,
         role: 'assistant',
         content: '',
