@@ -10,6 +10,7 @@ import {
   updateArchitectPlan,
   type ArchitectPlanRecord,
 } from './architectPlanService';
+import { normalizeStrategyDependencies } from './implementTaskDerivation';
 
 const BRANCH_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
@@ -219,11 +220,15 @@ export const validatePlanAndProvisionBranches = async (params: {
     planBranchName,
     plan.projectId
   );
+  const normalizedStrategy = normalizeStrategyDependencies(
+    normalizedNodes,
+    normalizedPredictedBranches
+  );
 
   const normalizedPlan: ArchitectPlanRecord = {
     ...plan,
-    nodes: normalizedNodes,
-    predictedBranches: normalizedPredictedBranches,
+    nodes: normalizedStrategy.nodes,
+    predictedBranches: normalizedStrategy.predictedBranches,
   };
 
   const provision = await provisionPlanBranches(normalizedPlan, params.repoPath);
@@ -232,8 +237,8 @@ export const validatePlanAndProvisionBranches = async (params: {
     branchName: params.branchName,
     planId: plan.id,
     status: 'validated',
-    nodes: normalizedNodes,
-    predictedBranches: normalizedPredictedBranches,
+    nodes: normalizedPlan.nodes,
+    predictedBranches: normalizedPlan.predictedBranches,
     setActive: params.setActive !== false,
   });
 
