@@ -14,6 +14,7 @@ import type {
   ChatCompletionRequestDto,
   ChatCompletionResponseDto,
 } from '../contracts/dtos';
+import type { ServiceProvider } from '../contracts/serviceProvider';
 import type { AIModel, AIProvider, ChatMessage, Conversation, ProjectGroup, Task } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
@@ -119,15 +120,19 @@ export const listConversations = async (): Promise<ConversationsDto> => {
   return { conversations: conversations.map(toConversationDto) };
 };
 
-export const listMessages = async (): Promise<MessagesDto> => {
-  const conversations = await tauriIpc.listConversations();
-  const byConversation = await Promise.all(
-    conversations.map(async (conversation) => tauriIpc.listMessages(conversation.id))
-  );
-  const messages = byConversation.flat().sort(
+export const listMessages = async (conversationId?: string): Promise<MessagesDto> => {
+  const messages = conversationId
+    ? await tauriIpc.listMessages(conversationId)
+    : (
+      await Promise.all(
+        (await tauriIpc.listConversations()).map(async (conversation) => tauriIpc.listMessages(conversation.id))
+      )
+    ).flat();
+
+  const sortedMessages = messages.sort(
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
   );
-  return { messages: messages.map(toMessageDto) };
+  return { messages: sortedMessages.map(toMessageDto) };
 };
 
 export const listTasks = async (): Promise<TasksDto> => {
@@ -359,4 +364,30 @@ export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): P
   });
 
   localStorage.setItem(MCP_SERVER_SETTINGS_STORAGE_KEY, JSON.stringify(enabledMap));
+};
+
+export const provider: ServiceProvider = {
+  getAppBootstrap,
+  listConversations,
+  listMessages,
+  listTasks,
+  getGitTreeForProject,
+  gitWorktreeCreate,
+  gitWorktreeRemove,
+  getFileContent,
+  listCommits,
+  listProviders,
+  listModels,
+  sendChat,
+  createProject,
+  importGitRepo,
+  renameProjectGroup,
+  renameProject,
+  archiveProjectGroup,
+  archiveProject,
+  closeProject,
+  getToolSettings,
+  updateToolSettings,
+  getMCPServerSettings,
+  updateMCPServerSettings,
 };

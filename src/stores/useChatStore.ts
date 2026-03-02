@@ -7,10 +7,11 @@ import { streamChat, cancelStream, sendChatNonStreaming } from '../services/stre
 import { getStreamingWebSearchConfig } from '../services/webSearchSettings';
 import { useToolsStore } from './useToolsStore';
 import { useAppStore } from './useAppStore';
-import { getToolModePolicy } from '../services/toolModePolicy';
+import { getToolModePolicy as getLocalToolModePolicy } from '../services/toolModePolicy';
 import { executeWorkspaceTool } from '../services/workspaceToolExecutor';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
 import { useNeedsStore } from './useNeedsStore';
+import { canUseRemoteKernel, getRemoteToolModePolicy } from '../services/remoteKernelApi';
 import * as tauriIpc from '../services/tauriIpc';
 import {
   createArchitectPlan,
@@ -513,9 +514,43 @@ export const useChatStore = create<ChatStore>((set, get) => {
     await toolsState.loadSettings();
   };
 
-  const isSourceToolEnabled = (toolId: string): boolean => {
+  const getModePolicyForCurrentMode = async (): Promise<{ allowedToolIds: string[]; enforceMacroOnlyWrites: boolean }> => {
     const mode = useAppStore.getState().mode;
-    const modePolicy = getToolModePolicy(mode);
+
+    if (tauriIpc.isTauriAvailable()) {
+      try {
+        const backendPolicy = await tauriIpc.getToolModePolicy(mode);
+        return {
+          allowedToolIds: backendPolicy.allowed_tool_ids,
+          enforceMacroOnlyWrites: backendPolicy.enforce_macro_only_writes,
+        };
+      } catch (error) {
+        console.warn('Failed to load backend tool policy, using local fallback:', error);
+      }
+    }
+
+    if (canUseRemoteKernel()) {
+      try {
+        const backendPolicy = await getRemoteToolModePolicy(mode);
+        return {
+          allowedToolIds: backendPolicy.allowed_tool_ids,
+          enforceMacroOnlyWrites: backendPolicy.enforce_macro_only_writes,
+        };
+      } catch (error) {
+        console.warn('Failed to load remote backend tool policy, using local fallback:', error);
+      }
+    }
+
+    const fallback = getLocalToolModePolicy(mode);
+    return {
+      allowedToolIds: fallback.allowedToolIds,
+      enforceMacroOnlyWrites: fallback.enforceMacroOnlyWrites,
+    };
+  };
+
+  const isSourceToolEnabled = async (toolId: string): Promise<boolean> => {
+    const mode = useAppStore.getState().mode;
+    const modePolicy = await getModePolicyForCurrentMode();
     if (!modePolicy.allowedToolIds.includes(toolId)) {
       return false;
     }
@@ -536,7 +571,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   ): Promise<string | void> => {
     const normalizedToolName = normalizeArchitectToolId(toolName);
 
-    if (!isSourceToolEnabled(normalizedToolName)) {
+    if (!(await isSourceToolEnabled(normalizedToolName))) {
       return `Tool ${normalizedToolName} is disabled for the current mode.`;
     }
 
@@ -1700,9 +1735,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return scoped[0]?.id ?? null;
   };
 
-  const getAllowedToolIdsForCurrentMode = (): string[] => {
+  const getAllowedToolIdsForCurrentMode = async (): Promise<string[]> => {
     const mode = useAppStore.getState().mode;
-    const modePolicy = getToolModePolicy(mode);
+    const modePolicy = await getModePolicyForCurrentMode();
     const toolsState = useToolsStore.getState();
 
     if (mode === 'Chat') {
@@ -2331,7 +2366,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } catch {
         // Continue with currently available tool state (safe default is no tools)
       }
-      const allowedToolIds = getAllowedToolIdsForCurrentMode();
+      const allowedToolIds = await getAllowedToolIdsForCurrentMode();
       const showToolTraces = useAppStore.getState().mode === 'Debug';
       const messagesForRequest = await prepareMessagesForRequest(
         conversationId,
@@ -2530,7 +2565,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } catch {
         // Continue with currently available tool state (safe default is no tools)
       }
-      const allowedToolIds = getAllowedToolIdsForCurrentMode();
+      const allowedToolIds = await getAllowedToolIdsForCurrentMode();
       const showToolTraces = useAppStore.getState().mode === 'Debug';
       const messagesForRequest = await prepareMessagesForRequest(
         conversationId,

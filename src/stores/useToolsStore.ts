@@ -84,7 +84,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
         services.getMCPServerSettings(),
       ]);
 
-      const loadedTools = toolsDto.tools as Record<string, Tool>;
+      const loadedTools = toolsDto.tools as unknown as Record<string, Tool>;
       const persistedChatStates = loadChatModeToolSettings();
       const chatToolStates: Record<string, boolean> = {};
       Object.values(loadedTools).forEach((tool) => {

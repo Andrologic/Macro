@@ -1,16 +1,32 @@
 import * as mockProvider from './providers/mock';
 import * as ipcProvider from './providers/ipc';
+import * as remoteProvider from './providers/remote';
 import { isTauriAvailable } from './tauriIpc';
+import type { ServiceProvider } from './contracts/serviceProvider';
 
 export type DataProvider = 'mock' | 'ipc';
+export type ServiceTransport = 'desktop' | 'remote';
 
 const envProvider = import.meta.env.VITE_DATA_PROVIDER as DataProvider | undefined;
 const providerName: DataProvider = envProvider ?? (isTauriAvailable() ? 'ipc' : 'mock');
+const envTransport = import.meta.env.VITE_BACKEND_TRANSPORT as ServiceTransport | undefined;
+const transport: ServiceTransport = envTransport ?? 'desktop';
 
-const provider =
-  providerName === 'ipc' && isTauriAvailable()
-    ? ipcProvider
-    : mockProvider;
+const providerByTransport: Record<ServiceTransport, Record<DataProvider, ServiceProvider>> = {
+  desktop: {
+    mock: mockProvider.provider,
+    ipc: ipcProvider.provider,
+  },
+  remote: {
+    mock: mockProvider.provider,
+    ipc: remoteProvider.provider,
+  },
+};
+
+const provider: ServiceProvider =
+  transport === 'desktop' && providerName === 'ipc' && !isTauriAvailable()
+    ? providerByTransport.desktop.mock
+    : providerByTransport[transport][providerName];
 
 export const services = {
   getAppBootstrap: provider.getAppBootstrap,

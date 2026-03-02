@@ -28,6 +28,7 @@ import type {
   MCPServerSettingsDto,
   FileContentDto,
 } from '../contracts/dtos';
+import type { ServiceProvider } from '../contracts/serviceProvider';
 import type { Project, ProjectGroup } from '../../types';
 import { delay, maybeFail } from '../utils';
 
@@ -483,4 +484,30 @@ export const updateMCPServerSettings = async (settings: any): Promise<void> => {
 
   localStorage.setItem('macro_mcp_server_settings', JSON.stringify(enabledMap));
   return simulate(undefined);
+};
+
+export const provider: ServiceProvider = {
+  getAppBootstrap,
+  listConversations,
+  listMessages,
+  listTasks,
+  getGitTreeForProject,
+  gitWorktreeCreate,
+  gitWorktreeRemove,
+  getFileContent,
+  listCommits,
+  listProviders,
+  listModels,
+  sendChat,
+  createProject,
+  importGitRepo,
+  renameProjectGroup,
+  renameProject,
+  archiveProjectGroup,
+  archiveProject,
+  closeProject,
+  getToolSettings,
+  updateToolSettings,
+  getMCPServerSettings,
+  updateMCPServerSettings,
 };
