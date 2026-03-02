@@ -3,16 +3,19 @@ import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import type { MessageImageAttachment } from '../../stores/useChatStore';
+import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
-import { MarkdownRenderer, estimateTokens, formatTokenCount } from './MarkdownRenderer';
+import { MarkdownRenderer } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
+import { PlanSelector } from '../architect/PlanSelector';
+import { ComposerEditor, type ComposerEditorHandle } from './composer/ComposerEditor';
 
 /**
  * ChatZone - Main chat interface used across all modes
@@ -22,7 +25,16 @@ import { ImagePreviewModal } from '../modals/ImagePreviewModal';
  */
 const ChatZone: React.FC = () => {
   const { t } = useTranslation();
-  const { currentPlan, mode, selectedProjectId, selectedTaskId, getProjectById } = useAppStore();
+  const {
+    currentPlan,
+    mode,
+    selectedProjectId,
+    selectedTaskId,
+    getProjectById,
+    activeArchitectPlanId,
+    planNodes,
+    predictedBranches,
+  } = useAppStore();
   const {
     conversations,
     selectedConversationId,
@@ -36,9 +48,11 @@ const ChatZone: React.FC = () => {
     editMessage,
     getMessageImages,
     setMessageImages,
+    composerContextRefs,
   } = useChatStore();
 
   const { selectedProviderId, selectedModelId } = useProviderStore();
+  const { needs } = useNeedsStore();
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
 
   const [inputValue, setInputValue] = useState('');
@@ -47,15 +61,17 @@ const ChatZone: React.FC = () => {
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
 
-  // Ensure mode-scoped conversation is selected (or created when required)
+  // Lexical composer ref
+  const composerEditorRef = useRef<ComposerEditorHandle>(null);
+
+  // Ensure mode-scoped conversation is selected when project/task context changes.
+  // Mode switches are handled via a cross-store subscription in useChatStore.
   useEffect(() => {
     if (isLoading) return;
     void ensureConversationForCurrentMode();
   }, [
-    mode,
     selectedProjectId,
     selectedTaskId,
-    conversations,
     isLoading,
     ensureConversationForCurrentMode,
   ]);
@@ -125,27 +141,50 @@ const ChatZone: React.FC = () => {
     };
   }, [mode, selectedProjectName, selectedTask?.title, currentConversation?.title]);
 
-  // Estimate tokens for input
-  const inputTokens = estimateTokens(inputValue);
-  const rawContextTokens = useMemo(
-    () => currentMessages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0),
-    [currentMessages]
-  );
-  const stableContextTokensRef = useRef(rawContextTokens);
+  const activePlanNeedsCount = useMemo(() => {
+    if (!activeArchitectPlanId) return 0;
+    return needs.filter((need) => need.planId === activeArchitectPlanId).length;
+  }, [activeArchitectPlanId, needs]);
 
-  useEffect(() => {
-    if (!isStreaming) {
-      stableContextTokensRef.current = rawContextTokens;
-    }
-  }, [isStreaming, rawContextTokens]);
-
-  const contextTokens = isStreaming ? stableContextTokensRef.current : rawContextTokens;
+  const hasExistingStrategy = useMemo(() => {
+    if (!activeArchitectPlanId) return false;
+    return planNodes.length > 0 || predictedBranches.length > 0;
+  }, [activeArchitectPlanId, planNodes.length, predictedBranches.length]);
 
   // Scroll magnetism: auto-scroll during streaming, animated separator
   const { scrollContainerRef, separatorState } = useScrollMagnet(
     isStreaming,
     [currentMessages],
   );
+
+  const previousConversationIdRef = useRef<string | null>(null);
+  const pendingConversationJumpRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (selectedConversationId && selectedConversationId !== previousConversationIdRef.current) {
+      pendingConversationJumpRef.current = selectedConversationId;
+    }
+    previousConversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
+
+  useEffect(() => {
+    const pendingConversationId = pendingConversationJumpRef.current;
+    if (!pendingConversationId || pendingConversationId !== selectedConversationId) return;
+
+    const jumpToBottom = () => {
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      container.scrollTo({ top: container.scrollHeight, behavior: 'auto' });
+    };
+
+    requestAnimationFrame(() => {
+      jumpToBottom();
+      requestAnimationFrame(() => {
+        jumpToBottom();
+        pendingConversationJumpRef.current = null;
+      });
+    });
+  }, [selectedConversationId, currentMessages.length, scrollContainerRef]);
 
 
   const ensureConversation = async () => {
@@ -276,13 +315,27 @@ const ChatZone: React.FC = () => {
   };
 
   const handleSend = async () => {
-    if ((!inputValue.trim() && composerImages.length === 0) || isLoading) return;
+    const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
+    if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isLoading) return;
     const conversationId = await ensureConversation();
-    const content = inputValue.trim();
+    const content = text;
     const imagesForMessage = composerImages;
-    setInputValue('');
+    composerEditorRef.current?.clear();
     setComposerImages([]);
+    setInputValue('');
     await sendMessage({ conversationId, content, images: imagesForMessage });
+  };
+
+  const handleGenerateStrategy = async () => {
+    if (mode !== 'Architect' || !activeArchitectPlanId || isLoading || isStreaming) return;
+    if (!hasExistingStrategy && activePlanNeedsCount === 0) return;
+
+    const conversationId = await ensureConversation();
+    const content = hasExistingStrategy
+      ? 'User requested to regenerate the strategy. Reassess all identified needs for the active plan and call `strategy_generate` with a complete replacement strategy (full nodes and dependencies).'
+      : 'User requested to generate the strategy now. Based on all identified needs for the active plan, call `strategy_generate` with a complete initial strategy (full nodes and dependencies).';
+
+    await sendMessage({ conversationId, content });
   };
 
   const handleEditStart = (messageId: string, content: string) => {
@@ -318,13 +371,14 @@ const ChatZone: React.FC = () => {
     await editMessage(messageId, content);
   };
 
-  const canSend = Boolean(inputValue.trim()) || composerImages.length > 0;
+  const canSend = Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0;
 
   const handleDebugRefresh = async () => {
     if (isStreaming) {
       stopStreaming();
     }
     await createConversation('Debug Session', null, null);
+    composerEditorRef.current?.clear();
     setInputValue('');
     setComposerImages([]);
     setPromptHistoryIndex(null);
@@ -336,17 +390,17 @@ const ChatZone: React.FC = () => {
 
     if (direction === 'up') {
       if (promptHistoryIndex === null) {
-        setDraftBeforeHistory(inputValue);
+        setDraftBeforeHistory(composerEditorRef.current?.getTextContent() ?? '');
         const lastIndex = promptHistory.length - 1;
         setPromptHistoryIndex(lastIndex);
-        setInputValue(promptHistory[lastIndex]);
+        composerEditorRef.current?.setText(promptHistory[lastIndex]);
         return;
       }
 
       if (promptHistoryIndex > 0) {
         const nextIndex = promptHistoryIndex - 1;
         setPromptHistoryIndex(nextIndex);
-        setInputValue(promptHistory[nextIndex]);
+        composerEditorRef.current?.setText(promptHistory[nextIndex]);
       }
       return;
     }
@@ -356,12 +410,12 @@ const ChatZone: React.FC = () => {
     if (promptHistoryIndex < promptHistory.length - 1) {
       const nextIndex = promptHistoryIndex + 1;
       setPromptHistoryIndex(nextIndex);
-      setInputValue(promptHistory[nextIndex]);
+      composerEditorRef.current?.setText(promptHistory[nextIndex]);
       return;
     }
 
     setPromptHistoryIndex(null);
-    setInputValue(draftBeforeHistory);
+    composerEditorRef.current?.setText(draftBeforeHistory);
   };
 
   useEffect(() => {
@@ -426,6 +480,7 @@ const ChatZone: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            {mode === 'Architect' && <PlanSelector />}
             {mode === 'Debug' && (
               <button
                 onClick={() => void handleDebugRefresh()}
@@ -730,72 +785,67 @@ const ChatZone: React.FC = () => {
                 <ProviderDropdown />
                 <ModelDropdown />
               </div>
-
-              {(contextTokens > 0 || inputTokens > 0) && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground/60">
-                  <span title="Context tokens">{formatTokenCount(contextTokens)}</span>
-                  {inputTokens > 0 && (
-                    <>
-                      <span>+</span>
-                      <span title="Input tokens">{formatTokenCount(inputTokens)}</span>
-                    </>
+              {mode === 'Architect' && (
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateStrategy()}
+                  disabled={
+                    !activeArchitectPlanId ||
+                    isLoading ||
+                    isStreaming ||
+                    (!hasExistingStrategy && activePlanNeedsCount === 0)
+                  }
+                  className={cn(
+                    'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
+                    !activeArchitectPlanId ||
+                      isLoading ||
+                      isStreaming ||
+                      (!hasExistingStrategy && activePlanNeedsCount === 0)
+                      ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
+                      : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
                   )}
-                  <span>{t('chat.tokens')}</span>
-                </div>
+                  title={
+                    !activeArchitectPlanId
+                      ? 'Select an active plan first'
+                      : !hasExistingStrategy && activePlanNeedsCount === 0
+                        ? 'Add at least one need before generating a strategy'
+                        : hasExistingStrategy
+                          ? 'Regenerate strategy from current needs'
+                          : 'Generate strategy from identified needs'
+                  }
+                >
+                  <Icon name={hasExistingStrategy ? 'refresh-cw' : 'sparkles'} size={12} />
+                  {hasExistingStrategy
+                    ? t('common.regenerate', 'Regenerate') + ' Strategy'
+                    : 'Generate Strategy'}
+                </button>
               )}
             </div>
 
             <div
-              className="flex items-center gap-3 bg-card/80 border border-border rounded-xl p-2"
+              className="flex items-center gap-2 bg-card/80 border border-border rounded-xl px-2 py-1.5"
               onPasteCapture={handleComposerPaste}
             >
-              <input
-                type="text"
-                data-shortcut-chat-input="true"
+              <ComposerEditor
+                ref={composerEditorRef}
+                editable={!isLoading && !!selectedProviderId && !!selectedModelId}
                 placeholder={
                   !selectedProviderId || !selectedModelId
                     ? t('chat.selectProvider')
                     : t('chat.typeMessage')
                 }
-                className="flex-1 bg-transparent border-0 outline-none text-sm text-foreground placeholder:text-muted-foreground h-9 px-2"
-                value={inputValue}
-                onChange={(event) => {
-                  setInputValue(event.target.value);
+                onTextChange={(text) => {
+                  setInputValue(text);
                   if (promptHistoryIndex !== null) {
                     setPromptHistoryIndex(null);
                   }
                 }}
-                onKeyDown={(event) => {
-                  if (promptHistoryNavigationMode === 'contextual_arrows') {
-                    if (event.key === 'ArrowUp') {
-                      const input = event.currentTarget;
-                      const start = input.selectionStart ?? 0;
-                      const end = input.selectionEnd ?? 0;
-                      if (start === 0 && end === 0) {
-                        event.preventDefault();
-                        navigatePromptHistory('up');
-                        return;
-                      }
-                    }
-                    if (event.key === 'ArrowDown') {
-                      const input = event.currentTarget;
-                      const length = input.value.length;
-                      const start = input.selectionStart ?? length;
-                      const end = input.selectionEnd ?? length;
-                      if (start === length && end === length) {
-                        event.preventDefault();
-                        navigatePromptHistory('down');
-                        return;
-                      }
-                    }
-                  }
-
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault();
-                    handleSend();
-                  }
-                }}
-                disabled={isLoading || !selectedProviderId || !selectedModelId}
+                onSend={handleSend}
+                onPromptHistory={
+                  promptHistoryNavigationMode === 'contextual_arrows'
+                    ? navigatePromptHistory
+                    : undefined
+                }
               />
               {isStreaming ? (
                 <button

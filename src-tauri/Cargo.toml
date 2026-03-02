@@ -5,6 +5,7 @@ description = "A Tauri App"
 authors = ["you"]
 license = "AGPL-3.0-or-later"
 edition = "2021"
+default-run = "macro"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

@@ -66,10 +66,11 @@ export interface PlanBlockItem {
 
 // User Needs (Architect Mode)
 export type NeedStatus = 'identified' | 'refined' | 'validated';
-export type NeedCategory = 'functional' | 'technical' | 'ux' | 'security' | 'other';
+export type NeedCategory = 'functional' | 'technical' | 'ux' | 'performance' | 'security' | 'data' | 'business' | 'other';
 
 export interface Need {
   id: string;
+  planId?: string;
   title: string;
   description: string;
   category: NeedCategory;
@@ -80,6 +81,17 @@ export interface Need {
   sourceMessageId?: string; // Link to the chat message where this was identified
   createdAt: string;
   updatedAt: string;
+}
+
+// Context references for chat composer (tag needs, nodes, branches)
+export type ContextRefKind = 'need' | 'plan-node' | 'predicted-branch';
+
+export interface ContextReference {
+  id: string;
+  kind: ContextRefKind;
+  title: string;
+  subtitle?: string;
+  data: Need | PlanNode | PredictedBranch;
 }
 
 // Activity indicator for projects

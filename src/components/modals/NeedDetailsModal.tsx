@@ -56,19 +56,19 @@ export const NeedDetailsModal: React.FC<NeedDetailsModalProps> = ({ needId, isOp
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-muted/20">
           <div className="flex items-center gap-3">
-             <div className="p-2 bg-primary/10 rounded-lg">
-                <Icon name="search" size={18} className="text-primary" />
-             </div>
-             <div>
-                <h2 className="text-lg font-semibold leading-none mb-1">
-                   {t('need.details', 'Need Details')}
-                </h2>
-                <p className="text-xs text-muted-foreground">
-                   ID: <span className="font-mono opacity-70">{need.id.slice(0, 8)}</span>
-                </p>
-             </div>
+            <div className="p-2 bg-primary/10 rounded-lg">
+              <Icon name="search" size={18} className="text-primary" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold leading-none mb-1">
+                {t('need.details', 'Need Details')}
+              </h2>
+              <p className="text-xs text-muted-foreground">
+                ID: <span className="font-mono opacity-70">{need.id.slice(0, 8)}</span>
+              </p>
+            </div>
           </div>
-          <button 
+          <button
             onClick={onClose}
             className="p-2 hover:bg-accent rounded-full transition-colors"
           >
@@ -89,40 +89,43 @@ export const NeedDetailsModal: React.FC<NeedDetailsModalProps> = ({ needId, isOp
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-             <div className="space-y-2">
-               <label className="text-sm font-medium text-muted-foreground">Category</label>
-               <select
-                 value={category}
-                 onChange={(e) => setCategory(e.target.value as NeedCategory)}
-                 className="w-full px-3 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 text-sm"
-               >
-                 <option value="functional">Functional</option>
-                 <option value="technical">Technical</option>
-                 <option value="ux">UX / UI</option>
-                 <option value="security">Security</option>
-                 <option value="other">Other</option>
-               </select>
-             </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-muted-foreground">Category</label>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value as NeedCategory)}
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 text-sm"
+              >
+                <option value="functional">Functional</option>
+                <option value="technical">Technical</option>
+                <option value="ux">UX / UI</option>
+                <option value="performance">Performance</option>
+                <option value="security">Security</option>
+                <option value="data">Data</option>
+                <option value="business">Business</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
 
-             <div className="space-y-2">
-               <label className="text-sm font-medium text-muted-foreground">Priority</label>
-               <div className="flex bg-muted/30 p-1 rounded-lg border border-border">
-                  {(['low', 'medium', 'high'] as const).map(p => (
-                     <button
-                        key={p}
-                        onClick={() => setPriority(p)}
-                        className={cn(
-                           "flex-1 py-1 text-xs font-medium rounded-md transition-all capitalize",
-                           priority === p
-                              ? "bg-background text-foreground shadow-sm ring-1 ring-border"
-                              : "text-muted-foreground hover:text-foreground"
-                        )}
-                     >
-                        {p}
-                     </button>
-                  ))}
-               </div>
-             </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-muted-foreground">Priority</label>
+              <div className="flex bg-muted/30 p-1 rounded-lg border border-border">
+                {(['low', 'medium', 'high'] as const).map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setPriority(p)}
+                    className={cn(
+                      "flex-1 py-1 text-xs font-medium rounded-md transition-all capitalize",
+                      priority === p
+                        ? "bg-background text-foreground shadow-sm ring-1 ring-border"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           <div className="space-y-2">

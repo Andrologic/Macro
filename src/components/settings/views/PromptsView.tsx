@@ -44,7 +44,7 @@ export const PromptsView: React.FC = () => {
 
     const handleReset = async () => {
         // Basic defaults
-        setArchitectPrompt("You are the Architect. Your role is to explore the problem space, identify user needs, and generate a strategic plan. When you have enough needs, use the generate_plan tool.");
+        setArchitectPrompt("You are the Architect AI. Manage isolated plans in `.macro` metadata. Each plan has its own conversation, needs, and strategy. Follow strict Git Flow: each plan integrates on plan/<plan-slug> from develop, while execution branches are feature/<plan-slug>/<feature-slug> merged into plan/<plan-slug> in dependency order. Use need_add to capture requirements. Do not call strategy_generate automatically: discuss and refine needs first, then call strategy_generate only when the user explicitly asks to generate or regenerate strategy. Plan names/slugs are unique forever and cannot be reused. Use strategy_get/strategy_update/strategy_delete for strategy changes. Use plan_create/plan_list/plan_get/plan_update/plan_delete/plan_restore/plan_set_active for plan management.");
         setImplementPrompt("You are the Implementer. Follow the tasks to implement the specific feature.");
         setChatPrompt("You are a helpful AI assistant.");
         setDebugPrompt("You are the Debugger. Use workspace tools to investigate and fix issues.");

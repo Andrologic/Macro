@@ -29,7 +29,8 @@
     "copy": "Copy",
     "regenerate": "Regenerate",
     "editMessage": "Edit your message...",
-    "doubleClickToEdit": "Double-click to edit"
+    "doubleClickToEdit": "Double-click to edit",
+    "optional": "optional"
   },
   "header": {
     "architect": "Architect",
@@ -114,6 +115,57 @@
     "completed": "Completed",
     "blocked": "Blocked",
     "actionRequired": "Action required"
+  },
+  "architect": {
+    "needs": "Identified Needs",
+    "status": {
+      "draft": "Draft",
+      "validated": "Validated",
+      "in_progress": "In Progress",
+      "archived": "Archived",
+      "deleted": "Deleted"
+    },
+    "planForm": {
+      "createTitle": "New Plan",
+      "renameTitle": "Rename Plan",
+      "nameLabel": "Plan name",
+      "nameRequired": "Plan name is required.",
+      "namePlaceholder": "e.g. Authentication Overhaul",
+      "descriptionLabel": "Description",
+      "descriptionPlaceholder": "What is this plan about?",
+      "createAction": "Create Plan"
+    },
+    "planSelector": {
+      "title": "Architect plans",
+      "selectPlan": "Select plan",
+      "create": "Create",
+      "refresh": "Refresh",
+      "loading": "Loading plans...",
+      "loadingShort": "Loading",
+      "empty": "No plans yet.",
+      "unknownDate": "Unknown date",
+      "nodesCount": "{{count}} nodes",
+      "active": "Active",
+      "renamePlan": "Rename plan",
+      "archivePlan": "Archive plan",
+      "deletePlan": "Delete plan",
+      "deleteDialogTitle": "Delete Plan",
+      "deleteDialogDescription": "This will permanently delete \"{{title}}\" and its strategy data. This action cannot be undone.",
+      "deleteDialogFallback": "This action cannot be undone.",
+      "deleting": "Deleting...",
+      "deletePermanently": "Delete permanently",
+      "toastConversationCreated": "Conversation created for this plan",
+      "toastDedicatedConversation": "Dedicated conversation created for this plan",
+      "toastPlanArchived": "Plan \"{{title}}\" archived",
+      "toastPlanDeleted": "Plan deleted",
+      "errorLoadPlans": "Failed to load plans.",
+      "errorSelectedPlanUnavailable": "The selected plan is unavailable.",
+      "errorActivatePlan": "Failed to activate plan.",
+      "errorOperationFailed": "Operation failed.",
+      "errorArchivePlan": "Failed to archive plan.",
+      "errorDeletePlan": "Failed to delete plan.",
+      "autoCreateError": "Unable to auto-create default plan from base title \"{{title}}\"."
+    }
   },
   "git": {
     "gitTree": "Git Tree",

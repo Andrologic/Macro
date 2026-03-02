@@ -540,13 +540,14 @@ const GIT_STASH_TOOL = {
 const ADD_NEED_TOOL = {
   type: 'function',
   function: {
-    name: 'add_need',
+    name: 'need_add',
     description: 'Add a structured user or system need for the project. Use this during the Architect phase to gather requirements.',
     parameters: {
       type: 'object',
       properties: {
         title: { type: 'string', description: 'Short title of the need.' },
         description: { type: 'string', description: 'Detailed description of what is needed.' },
+        target_branch: { type: 'string', description: 'Optional target code branch for the active plan context.' },
         category: { type: 'string', enum: ['functional', 'technical', 'ux', 'security', 'other'], description: 'Category of the need.' },
         priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Priority level.' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Keywords or tags.' },
@@ -559,11 +560,15 @@ const ADD_NEED_TOOL = {
 const GENERATE_PLAN_TOOL = {
   type: 'function',
   function: {
-    name: 'generate_plan',
-    description: 'Generate a structured implementation plan based on the collected needs. This creates a list of tasks/features.',
+    name: 'strategy_generate',
+    description: 'Generate a structured strategy for the active plan based on collected needs. Plan integration branch is plan/<plan-slug> (from develop); strategy branches must be feature/<plan-slug>/<feature-slug>.',
     parameters: {
       type: 'object',
       properties: {
+        plan_id: { type: 'string', description: 'Optional existing plan ID to update.' },
+        plan_title: { type: 'string', description: 'Optional plan title for persistence in .macro metadata.' },
+        plan_description: { type: 'string', description: 'Optional plan description for persistence in .macro metadata.' },
+        target_branch: { type: 'string', description: 'Code branch this plan is associated with.' },
         nodes: {
           type: 'array',
           items: {
@@ -572,14 +577,216 @@ const GENERATE_PLAN_TOOL = {
               title: { type: 'string' },
               description: { type: 'string' },
               type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+              assignedBranch: { type: 'string', description: 'The git branch name this task belongs to, e.g., "feature/<plan-slug>/auth-api"' },
               dependencies: { type: 'array', items: { type: 'string' }, description: 'Titles of nodes this one depends on.' },
             },
-            required: ['title', 'type'],
+            required: ['title', 'type', 'assignedBranch'],
           },
           description: 'List of plan nodes representing the tasks to be done.',
         },
       },
       required: ['nodes'],
+    },
+  },
+};
+
+const CREATE_PLAN_TOOL = {
+  type: 'function',
+  function: {
+    name: 'plan_create',
+    description: 'Create a new Architect plan stored under the .macro branch metadata for a target code branch.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        description: { type: 'string' },
+        target_branch: { type: 'string', description: 'Code branch this plan belongs to (e.g. develop, feature/auth).' },
+        status: { type: 'string', enum: ['draft', 'validated', 'in_progress', 'archived', 'deleted'] },
+        set_active: { type: 'boolean' },
+      },
+      required: ['title'],
+    },
+  },
+};
+
+const LIST_PLANS_TOOL = {
+  type: 'function',
+  function: {
+    name: 'plan_list',
+    description: 'List plans for a code branch in the .macro branch metadata.',
+    parameters: {
+      type: 'object',
+      properties: {
+        target_branch: { type: 'string' },
+        include_deleted: { type: 'boolean' },
+      },
+      required: [],
+    },
+  },
+};
+
+const GET_PLAN_TOOL = {
+  type: 'function',
+  function: {
+    name: 'plan_get',
+    description: 'Read a specific plan and its nodes from .macro metadata.',
+    parameters: {
+      type: 'object',
+      properties: {
+        plan_id: { type: 'string' },
+        target_branch: { type: 'string' },
+      },
+      required: ['plan_id'],
+    },
+  },
+};
+
+const UPDATE_PLAN_TOOL = {
+  type: 'function',
+  function: {
+    name: 'plan_update',
+    description: 'Update title, description, status, or active flag for an existing plan.',
+    parameters: {
+      type: 'object',
+      properties: {
+        plan_id: { type: 'string' },
+        title: { type: 'string' },
+        description: { type: 'string' },
+        status: { type: 'string', enum: ['draft', 'validated', 'in_progress', 'archived', 'deleted'] },
+        target_branch: { type: 'string' },
+        set_active: { type: 'boolean' },
+      },
+      required: ['plan_id'],
+    },
+  },
+};
+
+const DELETE_PLAN_TOOL = {
+  type: 'function',
+  function: {
+    name: 'plan_delete',
+    description: 'Delete a plan. Soft delete by default; hard delete when hard_delete=true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        plan_id: { type: 'string' },
+        target_branch: { type: 'string' },
+        hard_delete: { type: 'boolean' },
+      },
+      required: ['plan_id'],
+    },
+  },
+};
+
+const RESTORE_PLAN_TOOL = {
+  type: 'function',
+  function: {
+    name: 'plan_restore',
+    description: 'Restore a soft-deleted plan back to draft status.',
+    parameters: {
+      type: 'object',
+      properties: {
+        plan_id: { type: 'string' },
+        target_branch: { type: 'string' },
+      },
+      required: ['plan_id'],
+    },
+  },
+};
+
+const SET_ACTIVE_PLAN_TOOL = {
+  type: 'function',
+  function: {
+    name: 'plan_set_active',
+    description: 'Set active plan for a target code branch in .macro metadata.',
+    parameters: {
+      type: 'object',
+      properties: {
+        plan_id: { type: 'string' },
+        target_branch: { type: 'string' },
+      },
+      required: ['plan_id'],
+    },
+  },
+};
+
+const GET_STRATEGY_TOOL = {
+  type: 'function',
+  function: {
+    name: 'strategy_get',
+    description: 'Read the current strategy (nodes and branches) for the active plan.',
+    parameters: {
+      type: 'object',
+      properties: {
+        target_branch: { type: 'string' },
+      },
+      required: [],
+    },
+  },
+};
+
+const UPDATE_STRATEGY_TOOL = {
+  type: 'function',
+  function: {
+    name: 'strategy_update',
+    description: 'Modify strategy for the active plan. You can replace all nodes or apply operations (add, update, remove).',
+    parameters: {
+      type: 'object',
+      properties: {
+        target_branch: { type: 'string' },
+        replace: { type: 'boolean', description: 'If true, replace strategy with provided nodes.' },
+        nodes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              title: { type: 'string' },
+              description: { type: 'string' },
+              type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+              assignedBranch: { type: 'string' },
+              status: { type: 'string', enum: ['pending', 'in-progress', 'completed', 'blocked'] },
+              dependencies: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['title', 'type'],
+          },
+        },
+        operations: {
+          type: 'array',
+          description: 'Patch operations applied in order.',
+          items: {
+            type: 'object',
+            properties: {
+              action: { type: 'string', enum: ['add', 'update', 'remove'] },
+              node_id: { type: 'string' },
+              title: { type: 'string' },
+              description: { type: 'string' },
+              type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+              assignedBranch: { type: 'string' },
+              status: { type: 'string', enum: ['pending', 'in-progress', 'completed', 'blocked'] },
+              dependencies: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['action'],
+          },
+        },
+      },
+      required: [],
+    },
+  },
+};
+
+const DELETE_STRATEGY_TOOL = {
+  type: 'function',
+  function: {
+    name: 'strategy_delete',
+    description: 'Delete all strategy nodes and predicted branches for the active plan. Requires confirm=true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        target_branch: { type: 'string' },
+        confirm: { type: 'boolean' },
+      },
+      required: ['confirm'],
     },
   },
 };
@@ -678,13 +885,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       return `\n\n[TOOL] grep${query ? ` ("${query}")` : ''}\n`;
     }
 
-    if (toolName === 'add_need') {
+    if (toolName === 'need_add') {
       const title = typeof args.title === 'string' ? args.title : '';
-      return `\n\n[TOOL] add_need${title ? ` ("${title}")` : ''}\n`;
+      return `\n\n[TOOL] need_add${title ? ` ("${title}")` : ''}\n`;
     }
 
-    if (toolName === 'generate_plan') {
-      return `\n\n[TOOL] generate_plan\n`;
+    if (toolName === 'strategy_generate') {
+      return `\n\n[TOOL] strategy_generate\n`;
+    }
+
+    if (toolName === 'plan_create' || toolName === 'plan_list' || toolName === 'plan_get' || toolName === 'plan_update' || toolName === 'plan_delete' || toolName === 'plan_restore' || toolName === 'plan_set_active' || toolName === 'strategy_get' || toolName === 'strategy_update' || toolName === 'strategy_delete') {
+      return `\n\n[TOOL] ${toolName}\n`;
     }
 
     return `\n\n[TOOL] ${toolName}\n`;
@@ -796,11 +1007,41 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   if (allowedTools.has('web_fetch') && enableWebFetch) {
     tools.push(WEB_FETCH_TOOL);
   }
-  if (allowedTools.has('add_need')) {
+  if (allowedTools.has('need_add')) {
     tools.push(ADD_NEED_TOOL);
   }
-  if (allowedTools.has('generate_plan')) {
+  if (allowedTools.has('strategy_generate')) {
     tools.push(GENERATE_PLAN_TOOL);
+  }
+  if (allowedTools.has('plan_create')) {
+    tools.push(CREATE_PLAN_TOOL);
+  }
+  if (allowedTools.has('plan_list')) {
+    tools.push(LIST_PLANS_TOOL);
+  }
+  if (allowedTools.has('plan_get')) {
+    tools.push(GET_PLAN_TOOL);
+  }
+  if (allowedTools.has('plan_update')) {
+    tools.push(UPDATE_PLAN_TOOL);
+  }
+  if (allowedTools.has('plan_delete')) {
+    tools.push(DELETE_PLAN_TOOL);
+  }
+  if (allowedTools.has('plan_restore')) {
+    tools.push(RESTORE_PLAN_TOOL);
+  }
+  if (allowedTools.has('plan_set_active')) {
+    tools.push(SET_ACTIVE_PLAN_TOOL);
+  }
+  if (allowedTools.has('strategy_get')) {
+    tools.push(GET_STRATEGY_TOOL);
+  }
+  if (allowedTools.has('strategy_update')) {
+    tools.push(UPDATE_STRATEGY_TOOL);
+  }
+  if (allowedTools.has('strategy_delete')) {
+    tools.push(DELETE_STRATEGY_TOOL);
   }
   if (tools.length > 0) {
     requestBody.tools = tools;
