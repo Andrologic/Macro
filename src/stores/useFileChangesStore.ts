@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import i18n from '../i18n';
 import { useAppStore } from './useAppStore';
 import { useTaskStore } from './useTaskStore';
 import type { ImplementTask } from './useTaskStore';
@@ -114,32 +115,50 @@ interface CommitContext {
   reviewedPaths: string[];
 }
 
+const tChanges = (key: string, fallback: string, options?: Record<string, unknown>): string =>
+  i18n.t(key, { defaultValue: fallback, ...(options || {}) });
+
 const resolveCommitContext = (changes: FileChangeEntry[]): CommitContext => {
   if (!tauriIpc.isTauriAvailable()) {
-    throw new Error('Git commit flow is only available in desktop mode.');
+    throw new Error(
+      tChanges('implement.errors.commitDesktopOnly', 'Git commit flow is only available in desktop mode.')
+    );
   }
 
   const repoPath = resolveActiveProjectPath();
   if (!repoPath) {
-    throw new Error('No active repository path found for this task.');
+    throw new Error(
+      tChanges('implement.errors.noActiveRepositoryPath', 'No active repository path found for this task.')
+    );
   }
 
   const appState = useAppStore.getState();
   if (!appState.selectedTaskId) {
-    throw new Error('Select a task before committing changes.');
+    throw new Error(
+      tChanges('implement.errors.selectTaskBeforeCommit', 'Select a task before committing changes.')
+    );
   }
 
   const task = useTaskStore.getState().getTaskById(appState.selectedTaskId);
   if (!task) {
-    throw new Error(`Unknown task: ${appState.selectedTaskId}`);
+    throw new Error(
+      tChanges('implement.errors.unknownTask', 'Unknown task: {{taskId}}', {
+        taskId: appState.selectedTaskId,
+      })
+    );
   }
 
   if (task.status !== 'InProgress' && task.status !== 'AwaitingResponse') {
-    throw new Error('Task must be In Progress or Awaiting Response before committing changes.');
+    throw new Error(
+      tChanges(
+        'implement.errors.commitRequiresActiveTaskStatus',
+        'Task must be In Progress or Awaiting Response before committing changes.'
+      )
+    );
   }
 
   if (changes.length === 0) {
-    throw new Error('No changes available to commit for this task.');
+    throw new Error(tChanges('implement.errors.commitNoChanges', 'No changes available to commit for this task.'));
   }
 
   const reviewedPaths = Array.from(
@@ -152,7 +171,9 @@ const resolveCommitContext = (changes: FileChangeEntry[]): CommitContext => {
   );
 
   if (reviewedPaths.length !== changes.length) {
-    throw new Error('Review all file changes before committing this task.');
+    throw new Error(
+      tChanges('implement.errors.commitNeedsReview', 'Review all file changes before committing this task.')
+    );
   }
 
   return {
@@ -171,8 +192,83 @@ const ensureNoForeignStagedFiles = async (repoPath: string, reviewedPaths: strin
 
   if (foreignStaged.length > 0) {
     throw new Error(
-      `Staged files outside this task were found: ${foreignStaged.join(', ')}. Unstage them before committing.`
+      tChanges(
+        'implement.errors.foreignStagedFiles',
+        'Staged files outside this task were found: {{paths}}. Unstage them before committing.',
+        { paths: foreignStaged.join(', ') }
+      )
     );
+  }
+};
+
+const loadCurrentChangesInternal = async (
+  previousChanges: FileChangeEntry[],
+  previousSelectedChangeId: string | null
+): Promise<{ entries: FileChangeEntry[]; selectedChangeId: string | null }> => {
+  const repoPath = resolveActiveProjectPath();
+  if (!repoPath) {
+    return { entries: [], selectedChangeId: null };
+  }
+
+  const status = await tauriIpc.gitStatus(repoPath);
+  const candidates = [
+    ...status.staged_files,
+    ...status.unstaged_files,
+    ...status.untracked_files,
+  ];
+
+  const uniqueByPath = new Map<string, { path: string; status: string }>();
+  candidates.forEach((file) => {
+    if (!file.path) return;
+    if (!uniqueByPath.has(file.path)) {
+      uniqueByPath.set(file.path, { path: file.path, status: file.status });
+    }
+  });
+
+  const reviewedById = new Map(previousChanges.map((change) => [change.id, change.reviewed]));
+  const entries: FileChangeEntry[] = [];
+
+  for (const file of uniqueByPath.values()) {
+    const patch = await tauriIpc.gitDiff({
+      repoPath,
+      paths: [file.path],
+      contextLines: 3,
+    });
+
+    const parsed = parseUnifiedDiff(patch || '');
+    const id = `change-${file.path}`;
+
+    entries.push({
+      id,
+      path: file.path,
+      status: normalizeStatus(file.status),
+      additions: parsed.additions,
+      deletions: parsed.deletions,
+      reviewed: reviewedById.get(id) ?? false,
+      originalContent: parsed.originalContent,
+      modifiedContent: parsed.modifiedContent,
+      language: deriveLanguage(file.path),
+    });
+  }
+
+  const hasPreviousSelection =
+    previousSelectedChangeId && entries.some((change) => change.id === previousSelectedChangeId);
+  const selectedChangeId = hasPreviousSelection
+    ? previousSelectedChangeId
+    : entries[0]?.id ?? null;
+
+  return { entries, selectedChangeId };
+};
+
+const loadCurrentChangesWithRetry = async (
+  previousChanges: FileChangeEntry[],
+  previousSelectedChangeId: string | null
+): Promise<{ entries: FileChangeEntry[]; selectedChangeId: string | null }> => {
+  try {
+    return await loadCurrentChangesInternal(previousChanges, previousSelectedChangeId);
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    return loadCurrentChangesInternal(previousChanges, previousSelectedChangeId);
   }
 };
 
@@ -218,59 +314,22 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
     }
 
     try {
-      const repoPath = resolveActiveProjectPath();
-      if (!repoPath) {
-        set({ isLoading: false, changes: [], lastError: null });
-        return;
-      }
+      const previousState = get();
+      const { entries, selectedChangeId } = await loadCurrentChangesWithRetry(
+        previousState.changes,
+        previousState.selectedChangeId
+      );
 
-      const status = await tauriIpc.gitStatus(repoPath);
-      const candidates = [
-        ...status.staged_files,
-        ...status.unstaged_files,
-        ...status.untracked_files,
-      ];
-
-      const uniqueByPath = new Map<string, { path: string; status: string }>();
-      candidates.forEach((file) => {
-        if (!file.path) return;
-        if (!uniqueByPath.has(file.path)) {
-          uniqueByPath.set(file.path, { path: file.path, status: file.status });
-        }
-      });
-
-      const reviewedById = new Map(get().changes.map((change) => [change.id, change.reviewed]));
-
-      const entries: FileChangeEntry[] = [];
-      for (const file of uniqueByPath.values()) {
-        const patch = await tauriIpc.gitDiff({
-          repoPath,
-          paths: [file.path],
-          contextLines: 3,
-        });
-
-        const parsed = parseUnifiedDiff(patch || '');
-        const id = `change-${file.path}`;
-
-        entries.push({
-          id,
-          path: file.path,
-          status: normalizeStatus(file.status),
-          additions: parsed.additions,
-          deletions: parsed.deletions,
-          reviewed: reviewedById.get(id) ?? false,
-          originalContent: parsed.originalContent,
-          modifiedContent: parsed.modifiedContent,
-          language: deriveLanguage(file.path),
-        });
-      }
-
-      set({ changes: entries, isLoading: false, lastError: null });
+      set({ changes: entries, selectedChangeId, isLoading: false, lastError: null });
     } catch (error) {
       set({
         isLoading: false,
         changes: [],
-        lastError: error instanceof Error ? error.message : String(error),
+        selectedChangeId: null,
+        lastError:
+          error instanceof Error
+            ? error.message
+            : tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.'),
       });
     }
   },
@@ -313,7 +372,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
   commitReviewedChanges: async (message) => {
     const commitMessage = message.trim();
     if (!commitMessage) {
-      throw new Error('Commit message is required.');
+      throw new Error(tChanges('implement.errors.commitMessageRequired', 'Commit message is required.'));
     }
 
     set({ isCommitting: true, lastError: null });
@@ -339,7 +398,10 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
         isCommitting: false,
         lastError: taskCompleted
           ? null
-          : 'Changes were committed, but the task could not be completed automatically.',
+          : tChanges(
+            'implement.errors.commitSucceededTaskNotCompleted',
+            'Changes were committed, but the task could not be completed automatically.'
+          ),
         lastCommitHash: hash,
       });
 
