@@ -2,9 +2,12 @@ import React, { useMemo, useState } from 'react';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
+import { useTaskStore } from '../../stores/useTaskStore';
 import { useFileChangesStore, buildFolderTree, FolderNode } from '../../stores/useFileChangesStore';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
+import { toast } from '../ui/Toaster';
+import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal.tsx';
 
 interface FileChangesPanelProps {
@@ -33,6 +36,15 @@ const STATUS_ICONS: Record<string, IconName> = {
   added: 'plus',
   modified: 'edit',
   deleted: 'trash',
+};
+
+const fallbackCommitMessage = 'chore: update task changes';
+
+const toDefaultCommitMessage = (title?: string | null): string => {
+  const trimmed = title?.trim();
+  if (!trimmed) return fallbackCommitMessage;
+  const normalized = trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
+  return `feat: ${normalized}`;
 };
 
 interface FolderTreeItemProps {
@@ -133,16 +145,22 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({ node, depth, onFileClic
 const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) => {
   const { t } = useTranslation();
   const { selectedGroupId, selectedTaskId } = useAppStore();
+  const currentTask = useTaskStore((state) =>
+    selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
+  );
+  const [isCommitPromptOpen, setIsCommitPromptOpen] = useState(false);
   const {
     changes,
     isDiffModalOpen,
     selectedChangeId,
     isLoading,
+    isCommitting,
     lastError,
     loadCurrentChanges,
     openDiffModal,
     closeDiffModal,
     markAllAsReviewed,
+    commitReviewedChanges,
     getStats,
   } = useFileChangesStore();
 
@@ -153,9 +171,68 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   const stats = getStats();
   const folderTree = useMemo(() => buildFolderTree(changes), [changes]);
+  const progressPercent = stats.total > 0 ? (stats.reviewed / stats.total) * 100 : 0;
+  const canCommitTaskStatus = currentTask?.status === 'InProgress' || currentTask?.status === 'AwaitingResponse';
+  const canCommit =
+    !isLoading &&
+    !isCommitting &&
+    canCommitTaskStatus &&
+    stats.total > 0 &&
+    stats.reviewed === stats.total;
+  const commitMessageDefault = useMemo(
+    () => toDefaultCommitMessage(currentTask?.title),
+    [currentTask?.title]
+  );
+
+  const commitDisabledReason = (() => {
+    if (isCommitting) {
+      return t('implement.commitInProgress', 'Committing changes...');
+    }
+    if (!canCommitTaskStatus) {
+      return t(
+        'implement.commitRequiresActiveTaskStatus',
+        'Task must be in progress or awaiting response before commit.'
+      );
+    }
+    if (stats.total === 0) {
+      return t('implement.commitNoChanges', 'No file changes available for this task.');
+    }
+    if (stats.reviewed < stats.total) {
+      return t(
+        'implement.commitNeedsReview',
+        'Review all file changes before committing this task.'
+      );
+    }
+    return '';
+  })();
 
   const handleFileClick = (id: string) => {
     openDiffModal(id);
+  };
+
+  const handleCommitConfirm = async (message?: string) => {
+    if (isCommitting) return;
+    const commitMessage = (message || '').trim() || commitMessageDefault;
+    try {
+      const result = await commitReviewedChanges(commitMessage);
+      if (result.taskCompleted) {
+        toast.success(
+          t('implement.commitSuccess', 'Committed {{hash}} and marked task complete', {
+            hash: result.hash,
+          })
+        );
+      } else {
+        toast.success(
+          t('implement.commitSuccessNoComplete', 'Committed {{hash}}. Complete the task manually.', {
+            hash: result.hash,
+          })
+        );
+      }
+      setIsCommitPromptOpen(false);
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      toast.error(messageText || t('implement.commitFailed', 'Failed to commit changes'));
+    }
   };
 
   if (!selectedGroupId) {
@@ -233,7 +310,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         <div className="h-1.5 bg-muted rounded-full overflow-hidden">
           <div
             className="h-full bg-primary rounded-full transition-all duration-300"
-            style={{ width: `${(stats.reviewed / stats.total) * 100}%` }}
+            style={{ width: `${progressPercent}%` }}
           />
         </div>
       </div>
@@ -265,30 +342,56 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         {stats.reviewed < stats.total && (
           <button
             onClick={markAllAsReviewed}
+            disabled={isCommitting}
             className="w-full py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center justify-center gap-2"
           >
             <Icon name="check-circle" size={14} />
-            Mark all as reviewed
+            {t('implement.markAllReviewed', 'Mark all as reviewed')}
           </button>
         )}
         <button
-          disabled={stats.reviewed < stats.total}
+          onClick={() => setIsCommitPromptOpen(true)}
+          disabled={!canCommit}
+          title={canCommit ? undefined : commitDisabledReason}
           className={cn(
             'w-full py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
-            stats.reviewed === stats.total
+            canCommit
               ? 'bg-primary text-primary-foreground hover:bg-primary/90'
               : 'bg-muted text-muted-foreground cursor-not-allowed'
           )}
         >
-          <Icon name="git-commit" size={14} />
-          Commit Changes
+          <Icon name={isCommitting ? 'loader' : 'git-commit'} size={14} className={isCommitting ? 'animate-spin' : undefined} />
+          {isCommitting
+            ? t('implement.commitInProgress', 'Committing changes...')
+            : t('implement.commitChanges', 'Commit Changes')}
         </button>
+        {!canCommit && commitDisabledReason && (
+          <p className="text-xs text-muted-foreground">{commitDisabledReason}</p>
+        )}
       </div>
 
       {/* Diff Modal */}
       {isDiffModalOpen && selectedChangeId && (
         <FileChangesDiffModal changeId={selectedChangeId} onClose={closeDiffModal} />
       )}
+
+      <ConfirmPromptModal
+        isOpen={isCommitPromptOpen}
+        title={t('implement.commitPromptTitle', 'Commit reviewed changes')}
+        description={t(
+          'implement.commitPromptDescription',
+          'Provide a concise commit message for this task.'
+        )}
+        confirmLabel={t('implement.commitConfirm', 'Commit')}
+        cancelLabel={t('common.cancel', 'Cancel')}
+        initialValue={commitMessageDefault}
+        inputPlaceholder={t('implement.commitPromptPlaceholder', 'feat: update task implementation')}
+        requireInput
+        onCancel={() => setIsCommitPromptOpen(false)}
+        onConfirm={(value) => {
+          void handleCommitConfirm(value);
+        }}
+      />
     </aside>
   );
 };
