@@ -61,6 +61,31 @@ pub struct ProviderSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSettingRecord {
+    pub key: String,
+    pub value_json: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectContextStateRecord {
+    pub project_id: String,
+    pub last_plan_id: Option<String>,
+    pub last_task_id: Option<String>,
+    pub architect_conversation_id: Option<String>,
+    pub implement_conversation_id: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionContextStateRecord {
+    pub selected_group_id: Option<String>,
+    pub selected_project_id: Option<String>,
+    pub mode: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateConversationInput {
     pub title: Option<String>,
     pub task_id: Option<String>,
@@ -142,4 +167,20 @@ pub struct ProviderModelInput {
     pub pricing_prompt: Option<String>,
     pub pricing_completion: Option<String>,
     pub pricing_request: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertProjectContextStateInput {
+    pub project_id: String,
+    pub last_plan_id: Option<String>,
+    pub last_task_id: Option<String>,
+    pub architect_conversation_id: Option<String>,
+    pub implement_conversation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertSessionContextStateInput {
+    pub selected_group_id: Option<String>,
+    pub selected_project_id: Option<String>,
+    pub mode: Option<String>,
 }

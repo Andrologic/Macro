@@ -1263,6 +1263,113 @@ pub async fn db_update_provider_settings(
         .map_err(Into::into)
 }
 
+// ============ APP STATE SETTINGS ============
+
+#[tauri::command]
+pub async fn db_get_app_setting(
+    pool: State<'_, DbPool>,
+    key: String,
+) -> CommandResult<Option<AppSettingRecord>> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::get_app_setting(pool, &key)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_set_app_setting(
+    pool: State<'_, DbPool>,
+    key: String,
+    value_json: String,
+) -> CommandResult<AppSettingRecord> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::set_app_setting(pool, &key, &value_json)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_get_project_context_state(
+    pool: State<'_, DbPool>,
+    project_id: String,
+) -> CommandResult<Option<ProjectContextStateRecord>> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::get_project_context_state(pool, &project_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_upsert_project_context_state(
+    pool: State<'_, DbPool>,
+    input: UpsertProjectContextStateInput,
+) -> CommandResult<ProjectContextStateRecord> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::upsert_project_context_state(pool, input)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_delete_project_context_state(
+    pool: State<'_, DbPool>,
+    project_id: String,
+) -> CommandResult<()> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::delete_project_context_state(pool, &project_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_get_session_context_state(
+    pool: State<'_, DbPool>,
+) -> CommandResult<Option<SessionContextStateRecord>> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::get_session_context_state(pool)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_upsert_session_context_state(
+    pool: State<'_, DbPool>,
+    input: UpsertSessionContextStateInput,
+) -> CommandResult<SessionContextStateRecord> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::upsert_session_context_state(pool, input)
+        .await
+        .map_err(Into::into)
+}
+
 // ============ GIT METADATA ============
 
 #[tauri::command]

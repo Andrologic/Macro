@@ -31,6 +31,7 @@ import {
 import { deletePlanAndCleanupBranches, validatePlanAndProvisionBranches } from '../services/architectGitFlowService';
 import { normalizeArchitectToolId } from '../services/architectToolNames';
 import { normalizeStrategyDependencies } from '../services/implementTaskDerivation';
+import { getLocalProjectContextState } from '../services/localProjectContext';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
@@ -606,7 +607,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const appStore = useAppStore.getState();
       if (plan.projectId && appStore.selectedProjectId !== plan.projectId) {
-        appStore.setSelectedProject(plan.projectId);
+        await appStore.switchProjectContext(plan.projectId);
       }
       appStore.setActiveArchitectPlanId(plan.id);
       appStore.setPlanNodes(plan.nodes || []);
@@ -2128,6 +2129,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
         void applySelectionForContext(mode, debugFallback);
 
         return debugFallback;
+      }
+
+      const localProjectContext = selectedProjectId
+        ? await getLocalProjectContextState(selectedProjectId)
+        : null;
+      const localContextConversationId =
+        mode === 'Architect'
+          ? localProjectContext?.architectConversationId
+          : mode === 'Implement'
+            ? localProjectContext?.implementConversationId
+            : null;
+      const localContextConversation = localContextConversationId
+        ? state.conversations.find((conversation) => conversation.id === localContextConversationId)
+        : null;
+
+      if (
+        localContextConversation &&
+        isConversationAllowedForMode(
+          localContextConversation,
+          mode,
+          selectedProjectId,
+          selectedTaskId
+        )
+      ) {
+        if (state.selectedConversationId !== localContextConversation.id) {
+          get().selectConversation(localContextConversation.id);
+        } else {
+          void applySelectionForContext(mode, localContextConversation.id);
+        }
+        return localContextConversation.id;
       }
 
       const rememberedId = state.selectedConversationIdsByMode[mode] ?? null;

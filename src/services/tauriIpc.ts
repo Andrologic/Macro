@@ -100,6 +100,28 @@ export interface DbProviderSettings {
   filter_free_models: boolean;
 }
 
+export interface DbAppSetting {
+  key: string;
+  value_json: string;
+  updated_at: string;
+}
+
+export interface DbProjectContextState {
+  project_id: string;
+  last_plan_id: string | null;
+  last_task_id: string | null;
+  architect_conversation_id: string | null;
+  implement_conversation_id: string | null;
+  updated_at: string;
+}
+
+export interface DbSessionContextState {
+  selected_group_id: string | null;
+  selected_project_id: string | null;
+  mode: string | null;
+  updated_at: string;
+}
+
 export interface DbProviderModelInput {
   model_id: string;
   name: string;
@@ -716,6 +738,70 @@ export async function updateProviderSettings(params: {
   return invoke('db_update_provider_settings', {
     providerId: params.providerId,
     filterFreeModels: params.filterFreeModels,
+  });
+}
+
+// ============ Local App State ============
+
+export async function dbGetAppSetting(key: string): Promise<DbAppSetting | null> {
+  return invoke<DbAppSetting | null>('db_get_app_setting', { key });
+}
+
+export async function dbSetAppSetting(params: {
+  key: string;
+  valueJson: string;
+}): Promise<DbAppSetting> {
+  return invoke<DbAppSetting>('db_set_app_setting', {
+    key: params.key,
+    value_json: params.valueJson,
+  });
+}
+
+export async function dbGetProjectContextState(projectId: string): Promise<DbProjectContextState | null> {
+  return invoke<DbProjectContextState | null>('db_get_project_context_state', {
+    project_id: projectId,
+  });
+}
+
+export async function dbUpsertProjectContextState(params: {
+  projectId: string;
+  lastPlanId?: string | null;
+  lastTaskId?: string | null;
+  architectConversationId?: string | null;
+  implementConversationId?: string | null;
+}): Promise<DbProjectContextState> {
+  return invoke<DbProjectContextState>('db_upsert_project_context_state', {
+    input: {
+      project_id: params.projectId,
+      last_plan_id: params.lastPlanId ?? null,
+      last_task_id: params.lastTaskId ?? null,
+      architect_conversation_id: params.architectConversationId ?? null,
+      implement_conversation_id: params.implementConversationId ?? null,
+    },
+  });
+}
+
+export async function dbDeleteProjectContextState(projectId: string): Promise<void> {
+  return invoke('db_delete_project_context_state', {
+    project_id: projectId,
+  });
+}
+
+export async function dbGetSessionContextState(): Promise<DbSessionContextState | null> {
+  return invoke<DbSessionContextState | null>('db_get_session_context_state');
+}
+
+export async function dbUpsertSessionContextState(params: {
+  selectedGroupId?: string | null;
+  selectedProjectId?: string | null;
+  mode?: AppMode | null;
+}): Promise<DbSessionContextState> {
+  return invoke<DbSessionContextState>('db_upsert_session_context_state', {
+    input: {
+      selected_group_id: params.selectedGroupId ?? null,
+      selected_project_id: params.selectedProjectId ?? null,
+      mode: params.mode ?? null,
+    },
   });
 }
 

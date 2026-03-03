@@ -15,8 +15,7 @@ export const ProjectModal: React.FC = () => {
 
   // Errors
   const [newProjectError, setNewProjectError] = useState('');
-
-  const isSubmitting = false;
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!projectModalOpen) return null;
 
@@ -33,6 +32,7 @@ export const ProjectModal: React.FC = () => {
   };
 
   const handleCreateProject = async () => {
+    if (isSubmitting) return;
     setNewProjectError('');
 
     // Validation
@@ -51,6 +51,7 @@ export const ProjectModal: React.FC = () => {
     }
 
     try {
+      setIsSubmitting(true);
       await createProject({
         name: newProjectName.trim(),
         description: '',
@@ -65,6 +66,8 @@ export const ProjectModal: React.FC = () => {
       closeProjectModal();
     } catch (error: any) {
       setNewProjectError(error.message || 'Failed to create project');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
