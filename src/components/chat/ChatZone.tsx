@@ -168,6 +168,7 @@ const ChatZone: React.FC = () => {
 
   const previousConversationIdRef = useRef<string | null>(null);
   const pendingConversationJumpRef = useRef<string | null>(null);
+  const bootstrapPlanByConversationRef = useRef<Record<string, boolean>>({});
 
   useEffect(() => {
     if (selectedConversationId && selectedConversationId !== previousConversationIdRef.current) {
@@ -194,6 +195,58 @@ const ChatZone: React.FC = () => {
       });
     });
   }, [selectedConversationId, currentMessages.length, scrollContainerRef]);
+
+  useEffect(() => {
+    if (mode !== 'Implement' || !selectedTask || !selectedConversationId) return;
+    if (currentMessages.length > 0) return;
+    if (isLoading || isStreaming) return;
+    if (!selectedProviderId || !selectedModelId) return;
+    if (bootstrapPlanByConversationRef.current[selectedConversationId]) return;
+
+    bootstrapPlanByConversationRef.current[selectedConversationId] = true;
+
+    const dependencyContext = selectedTask.dependencies.length > 0
+      ? selectedTask.dependencies.join(', ')
+      : 'none';
+    const estimatedChanges = selectedTask.estimated_changes.length > 0
+      ? selectedTask.estimated_changes
+        .map((change) => `${change.operation} ${change.path}`)
+        .join('\n')
+      : 'No estimated file changes provided.';
+
+    const kickoffPrompt = [
+      'Create an implementation kickoff for this task.',
+      'Start with a concise context summary so the developer immediately understands what needs to be done.',
+      'Then propose a first execution plan in ordered steps.',
+      'If critical information is missing, ask a short list of blocking questions before coding.',
+      'Do not implement anything yet. Wait for explicit user confirmation to start implementation.',
+      '',
+      'TASK CONTEXT',
+      `- Title: ${selectedTask.title}`,
+      `- Description: ${selectedTask.description || 'No description provided.'}`,
+      `- Project ID: ${selectedTask.project_id}`,
+      `- Branch: ${selectedTask.branch_name}`,
+      `- Dependencies: ${dependencyContext}`,
+      '- Estimated file changes:',
+      estimatedChanges,
+    ].join('\n');
+
+    void sendMessage({
+      conversationId: selectedConversationId,
+      content: kickoffPrompt,
+      taskId: selectedTask.id,
+    });
+  }, [
+    mode,
+    selectedTask,
+    selectedConversationId,
+    currentMessages.length,
+    isLoading,
+    isStreaming,
+    selectedProviderId,
+    selectedModelId,
+    sendMessage,
+  ]);
 
 
   const ensureConversation = async () => {
