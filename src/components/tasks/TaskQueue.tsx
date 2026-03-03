@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
@@ -32,6 +32,7 @@ const readyStatusOrder: Record<TaskStatus, number> = {
 interface TaskItemProps {
   task: ImplementTask;
   isSelected: boolean;
+  isBusy: boolean;
   statusLabel: string;
   onSelect: () => void;
   onStart: () => void;
@@ -44,6 +45,7 @@ interface TaskItemProps {
 const TaskItem: React.FC<TaskItemProps> = ({
   task,
   isSelected,
+  isBusy,
   statusLabel,
   onSelect,
   onStart,
@@ -54,11 +56,12 @@ const TaskItem: React.FC<TaskItemProps> = ({
 }) => {
   const { t } = useTranslation();
   const status = statusConfig[task.status] || statusConfig.Pending;
-  const canStart = task.is_ready && (task.status === 'Pending' || task.status === 'Blocked');
-  const canComplete = !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
-  const canAwaitingResponse = !task.is_blocked && task.status === 'InProgress';
-  const canFail = !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
-  const canRetry = !task.is_blocked && (task.status === 'Failed' || task.status === 'AwaitingResponse');
+  const canStart = !isBusy && task.is_ready && (task.status === 'Pending' || task.status === 'Blocked');
+  const canComplete =
+    !isBusy && !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
+  const canAwaitingResponse = !isBusy && !task.is_blocked && task.status === 'InProgress';
+  const canFail = !isBusy && !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
+  const canRetry = !isBusy && !task.is_blocked && (task.status === 'Failed' || task.status === 'AwaitingResponse');
   const lockTooltip = task.is_blocked
     ? t('implement.blockedBy', 'Blocked by: {{tasks}}', {
       tasks: task.blocked_by.join(', '),
@@ -131,6 +134,14 @@ const TaskItem: React.FC<TaskItemProps> = ({
         </div>
 
         <div className="shrink-0 flex items-center gap-1">
+          {isBusy && (
+            <span
+              className="p-1.5 rounded-lg bg-muted text-muted-foreground"
+              title={t('implement.taskActionInProgress', 'Updating task status...')}
+            >
+              <Icon name="loader" size={12} className="animate-spin" />
+            </span>
+          )}
           {canStart && (
             <button
               type="button"
@@ -138,7 +149,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 event.stopPropagation();
                 void onStart();
               }}
-              className="p-1.5 rounded-lg bg-primary/10 text-primary opacity-0 group-hover:opacity-100 transition-opacity hover:bg-primary/20"
+              className="p-1.5 rounded-lg bg-primary/10 text-primary opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-primary/20"
               title={t('implement.startTask', 'Start task')}
             >
               <Icon name="play" size={12} />
@@ -151,7 +162,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 event.stopPropagation();
                 void onAwaitingResponse();
               }}
-              className="p-1.5 rounded-lg bg-blue-500/10 text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-blue-500/20"
+              className="p-1.5 rounded-lg bg-blue-500/10 text-blue-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-blue-500/20"
               title={t('implement.markAwaitingResponse', 'Mark awaiting response')}
             >
               <Icon name="message-circle" size={12} />
@@ -164,7 +175,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 event.stopPropagation();
                 void onRetry();
               }}
-              className="p-1.5 rounded-lg bg-amber-500/10 text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-amber-500/20"
+              className="p-1.5 rounded-lg bg-amber-500/10 text-amber-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-amber-500/20"
               title={t('implement.retryTask', 'Retry task')}
             >
               <Icon name="refresh-cw" size={12} />
@@ -177,7 +188,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 event.stopPropagation();
                 void onFail();
               }}
-              className="p-1.5 rounded-lg bg-red-500/10 text-red-500 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/20"
+              className="p-1.5 rounded-lg bg-red-500/10 text-red-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-red-500/20"
               title={t('implement.markFailed', 'Mark failed')}
             >
               <Icon name="x" size={12} />
@@ -190,7 +201,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 event.stopPropagation();
                 void onComplete();
               }}
-              className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-emerald-500/20"
+              className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-emerald-500/20"
               title={t('implement.completeTask', 'Mark complete')}
             >
               <Icon name="check" size={12} />
@@ -216,12 +227,29 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const retryTask = useTaskStore((state) => state.retryTask);
   const taskError = useTaskStore((state) => state.lastError);
   const lastErrorToastRef = useRef<string | null>(null);
+  const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!taskError || taskError === lastErrorToastRef.current) return;
     lastErrorToastRef.current = taskError;
     toast.error(taskError);
   }, [taskError]);
+
+  const runTaskAction = async (taskId: string, action: () => Promise<void>) => {
+    if (pendingTaskId) return;
+    setPendingTaskId(taskId);
+    try {
+      await action();
+    } finally {
+      setPendingTaskId((current) => (current === taskId ? null : current));
+    }
+  };
+
+  const confirmFailTask = (task: ImplementTask): boolean => {
+    return window.confirm(
+      t('implement.confirmFailTask', 'Mark task "{{title}}" as failed?', { title: task.title })
+    );
+  };
 
   const statusLabels: Record<TaskStatus, string> = {
     Pending: t('tasks.pending', 'Pending'),
@@ -343,13 +371,19 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   key={task.id}
                   task={task}
                   isSelected={selectedTaskId === task.id}
+                  isBusy={pendingTaskId === task.id}
                   statusLabel={statusLabels[task.status]}
                   onSelect={() => void activateTask(task.id)}
-                  onStart={() => startTask(task.id)}
-                  onAwaitingResponse={() => markTaskAwaitingResponse(task.id)}
-                  onFail={() => markTaskFailed(task.id)}
-                  onRetry={() => retryTask(task.id)}
-                  onComplete={() => completeTask(task.id)}
+                  onStart={() => void runTaskAction(task.id, () => startTask(task.id))}
+                  onAwaitingResponse={() =>
+                    void runTaskAction(task.id, () => markTaskAwaitingResponse(task.id))
+                  }
+                  onFail={() => {
+                    if (!confirmFailTask(task)) return;
+                    void runTaskAction(task.id, () => markTaskFailed(task.id));
+                  }}
+                  onRetry={() => void runTaskAction(task.id, () => retryTask(task.id))}
+                  onComplete={() => void runTaskAction(task.id, () => completeTask(task.id))}
                 />
               ))}
             </section>
@@ -373,13 +407,19 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   key={task.id}
                   task={task}
                   isSelected={selectedTaskId === task.id}
+                  isBusy={pendingTaskId === task.id}
                   statusLabel={statusLabels[task.status]}
                   onSelect={() => void activateTask(task.id)}
-                  onStart={() => startTask(task.id)}
-                  onAwaitingResponse={() => markTaskAwaitingResponse(task.id)}
-                  onFail={() => markTaskFailed(task.id)}
-                  onRetry={() => retryTask(task.id)}
-                  onComplete={() => completeTask(task.id)}
+                  onStart={() => void runTaskAction(task.id, () => startTask(task.id))}
+                  onAwaitingResponse={() =>
+                    void runTaskAction(task.id, () => markTaskAwaitingResponse(task.id))
+                  }
+                  onFail={() => {
+                    if (!confirmFailTask(task)) return;
+                    void runTaskAction(task.id, () => markTaskFailed(task.id));
+                  }}
+                  onRetry={() => void runTaskAction(task.id, () => retryTask(task.id))}
+                  onComplete={() => void runTaskAction(task.id, () => completeTask(task.id))}
                 />
               ))}
             </section>

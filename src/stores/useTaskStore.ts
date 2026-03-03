@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Task, TaskStatus } from '../types';
+import i18n from '../i18n';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
 import { useAppStore } from './useAppStore';
@@ -34,6 +35,9 @@ const ALLOWED_STATUS_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 const canTransitionTaskStatus = (from: TaskStatus, to: TaskStatus): boolean => {
   return ALLOWED_STATUS_TRANSITIONS[from]?.includes(to) ?? false;
 };
+
+const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
+  i18n.t(key, { defaultValue: fallback, ...(options || {}) });
 
 const computeFallbackDerivedTasks = (tasks: Task[]): DerivedImplementTask[] => {
   const initial = tasks.map((task, index) => {
@@ -320,12 +324,12 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   startTask: async (taskId) => {
     const task = get().tasks.find((candidate) => candidate.id === taskId);
     if (!task) {
-      set({ lastError: `Unknown task: ${taskId}` });
+      set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
       return;
     }
 
     if (task.status === 'Completed') {
-      set({ lastError: 'Task is already completed.' });
+      set({ lastError: tTask('implement.errors.taskAlreadyCompleted', 'Task is already completed.') });
       return;
     }
 
@@ -340,7 +344,13 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
     if (task.is_blocked) {
       const reason = task.blocked_by.length > 0 ? task.blocked_by.join(', ') : 'dependency chain';
-      set({ lastError: `Task is blocked by unresolved dependencies: ${reason}` });
+      set({
+        lastError: tTask(
+          'implement.errors.taskBlockedByDependencies',
+          'Task is blocked by unresolved dependencies: {{reason}}',
+          { reason }
+        ),
+      });
       return;
     }
 
@@ -352,7 +362,13 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     const branchName = task.assigned_branch;
     const projectId = task.project_id || appState.selectedProjectId;
     if (!projectId) {
-      set({ lastError: `Cannot resolve project for task ${task.id}` });
+      set({
+        lastError: tTask(
+          'implement.errors.cannotResolveTaskProject',
+          'Cannot resolve project for task {{taskId}}',
+          { taskId: task.id }
+        ),
+      });
       return;
     }
 
@@ -361,7 +377,13 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       const technicalTaskId = toBranchWorktreeKey(branchName);
       worktreePath = await useGitStore.getState().createWorktree(projectId, technicalTaskId, branchName);
       if (!worktreePath) {
-        set({ lastError: `Failed to create or reuse worktree for branch ${branchName}` });
+        set({
+          lastError: tTask(
+            'implement.errors.worktreeCreateFailed',
+            'Failed to create or reuse worktree for branch {{branchName}}',
+            { branchName }
+          ),
+        });
         return;
       }
     }
@@ -383,12 +405,17 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   completeTask: async (taskId) => {
     const task = get().tasks.find((candidate) => candidate.id === taskId);
     if (!task) {
-      set({ lastError: `Unknown task: ${taskId}` });
+      set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
       return;
     }
 
     if (task.status !== 'InProgress' && task.status !== 'AwaitingResponse') {
-      set({ lastError: 'Task can only be completed from In Progress or Awaiting Response.' });
+      set({
+        lastError: tTask(
+          'implement.errors.completeRequiresActiveStatus',
+          'Task can only be completed from In Progress or Awaiting Response.'
+        ),
+      });
       return;
     }
 
@@ -403,8 +430,10 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           const status = await tauriIpc.gitStatus(repoPath);
           if (!status.is_clean) {
             set({
-              lastError:
-                'Cannot complete task while repository has uncommitted changes. Commit or stash changes first.',
+              lastError: tTask(
+                'implement.errors.repositoryNotCleanForComplete',
+                'Cannot complete task while repository has uncommitted changes. Commit or stash changes first.'
+              ),
             });
             return;
           }
@@ -430,7 +459,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   retryTask: async (taskId) => {
     const task = get().tasks.find((candidate) => candidate.id === taskId);
     if (!task) {
-      set({ lastError: `Unknown task: ${taskId}` });
+      set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
       return;
     }
 
@@ -444,7 +473,12 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
-    set({ lastError: 'Retry is only available for failed or awaiting-response tasks.' });
+    set({
+      lastError: tTask(
+        'implement.errors.retryRequiresFailedOrAwaiting',
+        'Retry is only available for failed or awaiting-response tasks.'
+      ),
+    });
   },
 
   setTaskStatus: async (taskId, status) => {
@@ -452,7 +486,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
     const currentTask = get().tasks.find((task) => task.id === taskId);
     if (!currentTask) {
-      set({ lastError: `Unknown task: ${taskId}` });
+      set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
       return;
     }
 
@@ -462,7 +496,11 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
     if (!canTransitionTaskStatus(currentTask.status, status)) {
       set({
-        lastError: `Invalid task status transition: ${currentTask.status} -> ${status}.`,
+        lastError: tTask(
+          'implement.errors.invalidTaskTransition',
+          'Invalid task status transition: {{from}} -> {{to}}.',
+          { from: currentTask.status, to: status }
+        ),
       });
       return;
     }
@@ -472,7 +510,13 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       currentTask.is_blocked
     ) {
       const reason = currentTask.blocked_by.join(', ');
-      set({ lastError: `Task is blocked by unresolved dependencies: ${reason}` });
+      set({
+        lastError: tTask(
+          'implement.errors.taskBlockedByDependencies',
+          'Task is blocked by unresolved dependencies: {{reason}}',
+          { reason }
+        ),
+      });
       return;
     }
 

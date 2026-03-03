@@ -47,6 +47,26 @@ const toDefaultCommitMessage = (title?: string | null): string => {
   return `feat: ${normalized}`;
 };
 
+const normalizeCommitErrorMessage = (raw: string, t: (key: string, fallback: string) => string): string => {
+  const value = raw.toLowerCase();
+  if (value.includes('staged files outside this task')) {
+    return t(
+      'implement.errors.foreignStagedFilesShort',
+      'Some staged files do not belong to this task. Unstage them first.'
+    );
+  }
+  if (value.includes('review all file changes')) {
+    return t('implement.commitNeedsReview', 'Review all file changes before committing this task.');
+  }
+  if (value.includes('in progress or awaiting response')) {
+    return t(
+      'implement.commitRequiresActiveTaskStatus',
+      'Task must be in progress or awaiting response before commit.'
+    );
+  }
+  return raw;
+};
+
 interface FolderTreeItemProps {
   node: FolderNode;
   depth: number;
@@ -183,6 +203,16 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     () => toDefaultCommitMessage(currentTask?.title),
     [currentTask?.title]
   );
+  const currentTaskStatusLabel = currentTask
+    ? {
+      Pending: t('tasks.pending', 'Pending'),
+      InProgress: t('tasks.inProgress', 'In Progress'),
+      AwaitingResponse: t('implement.awaitingResponse', 'Awaiting response'),
+      Completed: t('tasks.completed', 'Completed'),
+      Failed: t('implement.failed', 'Failed'),
+      Blocked: t('tasks.blocked', 'Blocked'),
+    }[currentTask.status]
+    : null;
 
   const commitDisabledReason = (() => {
     if (isCommitting) {
@@ -205,6 +235,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     }
     return '';
   })();
+
+  const displayError = lastError
+    ? normalizeCommitErrorMessage(lastError, (key, fallback) => t(key, fallback))
+    : null;
 
   const handleFileClick = (id: string) => {
     openDiffModal(id);
@@ -280,6 +314,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           {t('implement.changesReview', 'Changes Review')}
         </h1>
         <div className="flex items-center gap-2">
+          {currentTask && (
+            <span className="text-[11px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+              {t('implement.taskStatusLabel', 'Task: {{status}}', { status: currentTaskStatusLabel })}
+            </span>
+          )}
           <span className="text-xs text-muted-foreground">
             {stats.reviewed}/{stats.total} reviewed
           </span>
@@ -322,12 +361,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             Loading repository changes...
           </div>
         )}
-        {!isLoading && lastError && (
+        {!isLoading && displayError && (
           <div className="px-4 py-8 text-center text-sm text-red-500">
-            {lastError}
+            {displayError}
           </div>
         )}
-        {!isLoading && !lastError && folderTree.length === 0 && (
+        {!isLoading && !displayError && folderTree.length === 0 && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             No pending file changes for this task.
           </div>
