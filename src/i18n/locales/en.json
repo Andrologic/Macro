@@ -78,7 +78,9 @@
     "conversations": "Conversations",
     "messages": "messages",
     "selectProvider": "Select a provider",
-    "selectModel": "Select a model"
+    "selectModel": "Select a model",
+    "agentTypeBuild": "Build",
+    "agentTypePlan": "Plan"
   },
   "settings": {
     "title": "Settings",

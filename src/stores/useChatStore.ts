@@ -1639,7 +1639,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    const appMode = useAppStore.getState().mode;
+    const appState = useAppStore.getState();
+    const appMode = appState.mode;
+    const agentType = appState.agentType;
     let modePrompt = '';
 
     switch (appMode) {
@@ -1659,6 +1661,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (modePrompt) {
       systemInstructions.unshift(modePrompt);
+    }
+
+    if (agentType === 'plan') {
+      systemInstructions.push(
+        'Agent type is PLAN. Focus on planning before execution: clarify goals, propose a step-by-step implementation plan, identify risks/dependencies, and ask for confirmation before suggesting direct file edits. Do not claim code was changed unless a tool call actually performed the change.'
+      );
     }
 
     if (appMode === 'Architect') {

@@ -7,6 +7,7 @@ export type MessageRole = 'user' | 'assistant';
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement' | 'Chat' | 'Debug';
+export type AgentType = 'build' | 'plan';
 
 // Plan Node types for dependency graph
 export type PlanNodeStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
