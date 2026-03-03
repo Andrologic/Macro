@@ -5,6 +5,7 @@ import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
 import { useAppStore } from './useAppStore';
 import { useGitStore } from './useGitStore';
+import { getLocalProjectContextState } from '../services/localProjectContext';
 import * as tauriIpc from '../services/tauriIpc';
 import {
   deriveImplementTasksFromStrategy,
@@ -110,20 +111,38 @@ const ensureAppSync = () => {
       return;
     }
 
+    if (nextState.selectedProjectId !== previousState.selectedProjectId) {
+      const selectedTaskId = nextState.selectedTaskId;
+      if (selectedTaskId) {
+        const selectedTask = useTaskStore.getState().getTaskById(selectedTaskId);
+        if (!selectedTask || selectedTask.project_id !== nextState.selectedProjectId) {
+          useAppStore.getState().setSelectedTask(null);
+          useTaskStore.setState({
+            activeBranchName: null,
+            activeRepositoryPath: nextState.selectedProjectId
+              ? nextState.getProjectById(nextState.selectedProjectId)?.path ?? null
+              : null,
+          });
+        }
+      } else {
+        useTaskStore.setState({
+          activeBranchName: null,
+          activeRepositoryPath: nextState.selectedProjectId
+            ? nextState.getProjectById(nextState.selectedProjectId)?.path ?? null
+            : null,
+        });
+      }
+    }
+
     if (nextState.selectedTaskId !== previousState.selectedTaskId && nextState.selectedTaskId) {
       void useTaskStore.getState().activateTask(nextState.selectedTaskId);
     }
   });
 };
 
-const syncWorkspaceRoot = async (path: string | null): Promise<void> => {
-  if (!path || !tauriIpc.isTauriAvailable()) return;
-
-  try {
-    await tauriIpc.workspaceSetActiveRoot(path);
-  } catch {
-    // Keep UI responsive even if workspace root sync fails.
-  }
+const syncWorkspaceRoot = async (_path: string | null): Promise<void> => {
+  // Workspace root is intentionally no longer synchronized from task/project selection.
+  // Metadata and local project context are managed independently from runtime root.
 };
 
 interface TaskStore {
@@ -239,6 +258,23 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         lastError: null,
       });
 
+      const selectedProjectId = useAppStore.getState().selectedProjectId;
+      const selectedTaskIdFromApp = useAppStore.getState().selectedTaskId;
+      if (!selectedTaskIdFromApp && selectedProjectId) {
+        try {
+          const context = await getLocalProjectContextState(selectedProjectId);
+          const candidateTaskId = context?.lastTaskId;
+          if (candidateTaskId) {
+            const candidateTask = strategy.tasks.find((task) => task.id === candidateTaskId);
+            if (candidateTask && candidateTask.project_id === selectedProjectId) {
+              useAppStore.getState().setSelectedTask(candidateTaskId);
+            }
+          }
+        } catch {
+          // Ignore context restore failures here and keep fallback behavior.
+        }
+      }
+
       if (
         JSON.stringify(strategy.nodes) !== JSON.stringify(appState.planNodes) ||
         JSON.stringify(strategy.predictedBranches) !== JSON.stringify(appState.predictedBranches)
@@ -265,9 +301,9 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         }
       }
 
-      const selectedTaskId = useAppStore.getState().selectedTaskId;
-      if (selectedTaskId) {
-        void get().activateTask(selectedTaskId);
+      const selectedTaskAfterRestore = useAppStore.getState().selectedTaskId;
+      if (selectedTaskAfterRestore) {
+        void get().activateTask(selectedTaskAfterRestore);
       }
       return;
     }
@@ -281,6 +317,23 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         lastError: null,
         isLoading: false,
       });
+
+      const selectedProjectId = useAppStore.getState().selectedProjectId;
+      const selectedTaskIdFromApp = useAppStore.getState().selectedTaskId;
+      if (!selectedTaskIdFromApp && selectedProjectId) {
+        try {
+          const context = await getLocalProjectContextState(selectedProjectId);
+          const candidateTaskId = context?.lastTaskId;
+          if (candidateTaskId) {
+            const candidateTask = derived.find((task) => task.id === candidateTaskId);
+            if (candidateTask && candidateTask.project_id === selectedProjectId) {
+              useAppStore.getState().setSelectedTask(candidateTaskId);
+            }
+          }
+        } catch {
+          // Ignore context restore failures here and keep fallback behavior.
+        }
+      }
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });

@@ -225,6 +225,56 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_context_states (
+            project_id TEXT PRIMARY KEY,
+            last_plan_id TEXT,
+            last_task_id TEXT,
+            architect_conversation_id TEXT,
+            implement_conversation_id TEXT,
+            updated_at TEXT NOT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS session_context_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            selected_group_id TEXT,
+            selected_project_id TEXT,
+            mode TEXT,
+            updated_at TEXT NOT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_project_context_state_updated_at
+        ON project_context_states(updated_at DESC);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Insert default providers if they don't exist
     insert_default_providers(pool).await?;
 
