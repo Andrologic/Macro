@@ -28,6 +28,8 @@ const ChatZone: React.FC = () => {
   const { t } = useTranslation();
   const {
     mode,
+    agentType,
+    setAgentType,
     selectedProjectId,
     selectedTaskId,
     getProjectById,
@@ -789,6 +791,36 @@ const ChatZone: React.FC = () => {
 
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
+                <div className="inline-flex items-center rounded-lg border border-border bg-muted/60 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setAgentType('plan')}
+                    className={cn(
+                      'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                      agentType === 'plan'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                    title={t('chat.agentTypePlan', 'Plan')}
+                  >
+                    <Icon name="map" size={12} />
+                    {t('chat.agentTypePlan', 'Plan')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAgentType('build')}
+                    className={cn(
+                      'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                      agentType === 'build'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                    title={t('chat.agentTypeBuild', 'Build')}
+                  >
+                    <Icon name="code" size={12} />
+                    {t('chat.agentTypeBuild', 'Build')}
+                  </button>
+                </div>
                 <ProviderDropdown />
                 <ModelDropdown />
               </div>

@@ -33,6 +33,7 @@ export const PREF_KEYS = {
   LAST_SELECTED_PROJECT_ID: "lastSelectedProjectId",
   LAST_OPEN_PROJECT_PATH: "lastOpenProjectPath",
   LAST_ACTIVE_MODE: "lastActiveMode",
+  AGENT_TYPE: "agentType",
   RECENT_PROJECTS: "recentProjects",
   MACRO_ENABLED_PROJECTS: "macroEnabledProjects",
   AI_CONTEXT_SELECTIONS: "aiContextSelections",
@@ -68,6 +69,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.LAST_SELECTED_PROJECT_ID]: null,
   [PREF_KEYS.LAST_OPEN_PROJECT_PATH]: null,
   [PREF_KEYS.LAST_ACTIVE_MODE]: 'Implement',
+  [PREF_KEYS.AGENT_TYPE]: 'build',
   [PREF_KEYS.RECENT_PROJECTS]: [],
   [PREF_KEYS.MACRO_ENABLED_PROJECTS]: [],
   [PREF_KEYS.AI_CONTEXT_SELECTIONS]: {

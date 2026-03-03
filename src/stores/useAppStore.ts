@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { AppMode, Plan, ProjectGroup, Project, PlanNode, PredictedBranch } from '../types';
+import { AppMode, AgentType, Plan, ProjectGroup, Project, PlanNode, PredictedBranch } from '../types';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
 import {
@@ -209,6 +209,7 @@ const dedupeProjectGroupsByPath = (groups: ProjectGroup[]): ProjectGroup[] => {
 
 interface AppStore {
   mode: AppMode;
+  agentType: AgentType;
   currentPlan: Plan | null;
   projectGroups: ProjectGroup[];
   selectedGroupId: string | null;
@@ -237,6 +238,7 @@ interface AppStore {
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
   setMode: (mode: AppMode) => void;
+  setAgentType: (agentType: AgentType) => void;
   setTheme: (themeId: string) => void;
   setCurrentPlan: (plan: Plan | null) => void;
   setProjectGroups: (groups: ProjectGroup[]) => void;
@@ -305,6 +307,7 @@ const derivePlanNodesFromPlan = (plan: Plan | null): PlanNode[] => {
 
 export const useAppStore = create<AppStore>((set, get) => ({
   mode: 'Implement',
+  agentType: 'build',
   currentPlan: null,
   projectGroups: [],
   selectedGroupId: null,
@@ -336,6 +339,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setMode: (mode) => {
     set({ mode });
     void savePreference(PREF_KEYS.LAST_ACTIVE_MODE, mode);
+  },
+  setAgentType: (agentType) => {
+    set({ agentType });
+    void savePreference(PREF_KEYS.AGENT_TYPE, agentType);
   },
   setTheme: (themeId) => {
     if (typeof window !== 'undefined') {
@@ -705,7 +712,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     try {
       // Load persisted panel preferences
-      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId, lastOpenProjectPath, lastActiveMode, recentProjects, macroEnabledProjects] = await Promise.all([
+      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId, lastOpenProjectPath, lastActiveMode, lastAgentType, recentProjects, macroEnabledProjects] = await Promise.all([
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
         loadPreference<boolean>(PREF_KEYS.IS_LEFT_PANEL_OPEN),
@@ -716,6 +723,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         loadPreference<string | null>(PREF_KEYS.LAST_SELECTED_PROJECT_ID),
         loadPreference<string | null>(PREF_KEYS.LAST_OPEN_PROJECT_PATH),
         loadPreference<AppMode>(PREF_KEYS.LAST_ACTIVE_MODE),
+        loadPreference<AgentType>(PREF_KEYS.AGENT_TYPE),
         loadPreference<RememberedProject[]>(PREF_KEYS.RECENT_PROJECTS),
         loadPreference<RememberedProject[]>(PREF_KEYS.MACRO_ENABLED_PROJECTS),
       ]);
@@ -836,9 +844,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const resolvedMode: AppMode = ['Architect', 'Implement', 'Chat', 'Debug'].includes(lastActiveMode)
         ? lastActiveMode
         : 'Implement';
+      const resolvedAgentType: AgentType = ['build', 'plan'].includes(lastAgentType)
+        ? lastAgentType
+        : 'build';
 
       set({
         mode: resolvedMode,
+        agentType: resolvedAgentType,
         currentPlan: plan,
         projectGroups: resolvedProjectGroups,
         planNodes: planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan),
