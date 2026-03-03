@@ -1,9 +1,10 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
+import { toast } from '../ui/Toaster';
 import type { TaskStatus } from '../../types';
 
 interface TaskQueueProps {
@@ -34,6 +35,9 @@ interface TaskItemProps {
   statusLabel: string;
   onSelect: () => void;
   onStart: () => void;
+  onAwaitingResponse: () => void;
+  onFail: () => void;
+  onRetry: () => void;
   onComplete: () => void;
 }
 
@@ -43,12 +47,18 @@ const TaskItem: React.FC<TaskItemProps> = ({
   statusLabel,
   onSelect,
   onStart,
+  onAwaitingResponse,
+  onFail,
+  onRetry,
   onComplete,
 }) => {
   const { t } = useTranslation();
   const status = statusConfig[task.status] || statusConfig.Pending;
   const canStart = task.is_ready && (task.status === 'Pending' || task.status === 'Blocked');
-  const canComplete = task.status === 'InProgress' || task.status === 'AwaitingResponse';
+  const canComplete = !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
+  const canAwaitingResponse = !task.is_blocked && task.status === 'InProgress';
+  const canFail = !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
+  const canRetry = !task.is_blocked && (task.status === 'Failed' || task.status === 'AwaitingResponse');
   const lockTooltip = task.is_blocked
     ? t('implement.blockedBy', 'Blocked by: {{tasks}}', {
       tasks: task.blocked_by.join(', '),
@@ -120,7 +130,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
         </div>
 
-        <div className="shrink-0">
+        <div className="shrink-0 flex items-center gap-1">
           {canStart && (
             <button
               type="button"
@@ -132,6 +142,45 @@ const TaskItem: React.FC<TaskItemProps> = ({
               title={t('implement.startTask', 'Start task')}
             >
               <Icon name="play" size={12} />
+            </button>
+          )}
+          {canAwaitingResponse && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void onAwaitingResponse();
+              }}
+              className="p-1.5 rounded-lg bg-blue-500/10 text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-blue-500/20"
+              title={t('implement.markAwaitingResponse', 'Mark awaiting response')}
+            >
+              <Icon name="message-circle" size={12} />
+            </button>
+          )}
+          {canRetry && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void onRetry();
+              }}
+              className="p-1.5 rounded-lg bg-amber-500/10 text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-amber-500/20"
+              title={t('implement.retryTask', 'Retry task')}
+            >
+              <Icon name="refresh-cw" size={12} />
+            </button>
+          )}
+          {canFail && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void onFail();
+              }}
+              className="p-1.5 rounded-lg bg-red-500/10 text-red-500 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/20"
+              title={t('implement.markFailed', 'Mark failed')}
+            >
+              <Icon name="x" size={12} />
             </button>
           )}
           {canComplete && (
@@ -162,6 +211,17 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const activateTask = useTaskStore((state) => state.activateTask);
   const startTask = useTaskStore((state) => state.startTask);
   const completeTask = useTaskStore((state) => state.completeTask);
+  const markTaskAwaitingResponse = useTaskStore((state) => state.markTaskAwaitingResponse);
+  const markTaskFailed = useTaskStore((state) => state.markTaskFailed);
+  const retryTask = useTaskStore((state) => state.retryTask);
+  const taskError = useTaskStore((state) => state.lastError);
+  const lastErrorToastRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!taskError || taskError === lastErrorToastRef.current) return;
+    lastErrorToastRef.current = taskError;
+    toast.error(taskError);
+  }, [taskError]);
 
   const statusLabels: Record<TaskStatus, string> = {
     Pending: t('tasks.pending', 'Pending'),
@@ -286,6 +346,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   statusLabel={statusLabels[task.status]}
                   onSelect={() => void activateTask(task.id)}
                   onStart={() => startTask(task.id)}
+                  onAwaitingResponse={() => markTaskAwaitingResponse(task.id)}
+                  onFail={() => markTaskFailed(task.id)}
+                  onRetry={() => retryTask(task.id)}
                   onComplete={() => completeTask(task.id)}
                 />
               ))}
@@ -313,6 +376,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   statusLabel={statusLabels[task.status]}
                   onSelect={() => void activateTask(task.id)}
                   onStart={() => startTask(task.id)}
+                  onAwaitingResponse={() => markTaskAwaitingResponse(task.id)}
+                  onFail={() => markTaskFailed(task.id)}
+                  onRetry={() => retryTask(task.id)}
                   onComplete={() => completeTask(task.id)}
                 />
               ))}

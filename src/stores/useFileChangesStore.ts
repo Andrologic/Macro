@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { useAppStore } from './useAppStore';
 import { useTaskStore } from './useTaskStore';
+import type { ImplementTask } from './useTaskStore';
+import type { TaskStatus } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import { parseUnifiedDiff } from '../services/gitDiffParser';
 
@@ -22,6 +24,16 @@ export interface FolderNode {
   type: 'folder' | 'file';
   children?: FolderNode[];
   fileChange?: FileChangeEntry;
+}
+
+export interface CommitTaskChangesResult {
+  hash: string;
+  branch: string;
+  repoPath: string;
+  committedPaths: string[];
+  taskId: string;
+  taskCompleted: boolean;
+  taskStatus: TaskStatus | null;
 }
 
 export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
@@ -96,12 +108,82 @@ const resolveActiveProjectPath = (): string | null => {
   return appState.projectGroups[0]?.projects[0]?.path ?? null;
 };
 
+interface CommitContext {
+  repoPath: string;
+  task: ImplementTask;
+  reviewedPaths: string[];
+}
+
+const resolveCommitContext = (changes: FileChangeEntry[]): CommitContext => {
+  if (!tauriIpc.isTauriAvailable()) {
+    throw new Error('Git commit flow is only available in desktop mode.');
+  }
+
+  const repoPath = resolveActiveProjectPath();
+  if (!repoPath) {
+    throw new Error('No active repository path found for this task.');
+  }
+
+  const appState = useAppStore.getState();
+  if (!appState.selectedTaskId) {
+    throw new Error('Select a task before committing changes.');
+  }
+
+  const task = useTaskStore.getState().getTaskById(appState.selectedTaskId);
+  if (!task) {
+    throw new Error(`Unknown task: ${appState.selectedTaskId}`);
+  }
+
+  if (task.status !== 'InProgress' && task.status !== 'AwaitingResponse') {
+    throw new Error('Task must be In Progress or Awaiting Response before committing changes.');
+  }
+
+  if (changes.length === 0) {
+    throw new Error('No changes available to commit for this task.');
+  }
+
+  const reviewedPaths = Array.from(
+    new Set(
+      changes
+        .filter((change) => change.reviewed)
+        .map((change) => change.path)
+        .filter((path) => path.trim().length > 0)
+    )
+  );
+
+  if (reviewedPaths.length !== changes.length) {
+    throw new Error('Review all file changes before committing this task.');
+  }
+
+  return {
+    repoPath,
+    task,
+    reviewedPaths,
+  };
+};
+
+const ensureNoForeignStagedFiles = async (repoPath: string, reviewedPaths: string[]): Promise<void> => {
+  const status = await tauriIpc.gitStatus(repoPath);
+  const reviewedSet = new Set(reviewedPaths);
+  const foreignStaged = status.staged_files
+    .map((file) => file.path)
+    .filter((path) => !reviewedSet.has(path));
+
+  if (foreignStaged.length > 0) {
+    throw new Error(
+      `Staged files outside this task were found: ${foreignStaged.join(', ')}. Unstage them before committing.`
+    );
+  }
+};
+
 interface FileChangesState {
   changes: FileChangeEntry[];
   selectedChangeId: string | null;
   isDiffModalOpen: boolean;
   isLoading: boolean;
+  isCommitting: boolean;
   lastError: string | null;
+  lastCommitHash: string | null;
 
   // Actions
   loadCurrentChanges: () => Promise<void>;
@@ -110,6 +192,8 @@ interface FileChangesState {
   closeDiffModal: () => void;
   markAsReviewed: (id: string) => void;
   markAllAsReviewed: () => void;
+  stageReviewedChanges: () => Promise<string[]>;
+  commitReviewedChanges: (message: string) => Promise<CommitTaskChangesResult>;
   getChange: (id: string) => FileChangeEntry | undefined;
 
   // Stats
@@ -121,7 +205,9 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
   selectedChangeId: null,
   isDiffModalOpen: false,
   isLoading: false,
+  isCommitting: false,
   lastError: null,
+  lastCommitHash: null,
 
   loadCurrentChanges: async () => {
     set({ isLoading: true, lastError: null });
@@ -213,6 +299,67 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
     set((state) => ({
       changes: state.changes.map((c) => ({ ...c, reviewed: true })),
     }));
+  },
+
+  stageReviewedChanges: async () => {
+    set({ lastError: null });
+
+    const { repoPath, reviewedPaths } = resolveCommitContext(get().changes);
+    await ensureNoForeignStagedFiles(repoPath, reviewedPaths);
+    await tauriIpc.gitAdd({ repoPath, paths: reviewedPaths });
+    return reviewedPaths;
+  },
+
+  commitReviewedChanges: async (message) => {
+    const commitMessage = message.trim();
+    if (!commitMessage) {
+      throw new Error('Commit message is required.');
+    }
+
+    set({ isCommitting: true, lastError: null });
+
+    try {
+      const { repoPath, task, reviewedPaths } = resolveCommitContext(get().changes);
+      await ensureNoForeignStagedFiles(repoPath, reviewedPaths);
+      await tauriIpc.gitAdd({ repoPath, paths: reviewedPaths });
+
+      const hash = await tauriIpc.gitCommit({
+        repoPath,
+        message: commitMessage,
+        stageAll: false,
+      });
+
+      await get().loadCurrentChanges();
+      await useTaskStore.getState().completeTask(task.id);
+
+      const latestTask = useTaskStore.getState().getTaskById(task.id);
+      const taskCompleted = latestTask?.status === 'Completed';
+
+      set({
+        isCommitting: false,
+        lastError: taskCompleted
+          ? null
+          : 'Changes were committed, but the task could not be completed automatically.',
+        lastCommitHash: hash,
+      });
+
+      return {
+        hash,
+        branch: task.branch_name,
+        repoPath,
+        committedPaths: reviewedPaths,
+        taskId: task.id,
+        taskCompleted,
+        taskStatus: latestTask?.status ?? null,
+      };
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      set({
+        isCommitting: false,
+        lastError: messageText,
+      });
+      throw error;
+    }
   },
 
   getChange: (id) => {

@@ -22,6 +22,19 @@ const normalizeBranchName = (value?: string): string => {
   return trimmed || 'work';
 };
 
+const ALLOWED_STATUS_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
+  Pending: ['InProgress', 'Failed'],
+  InProgress: ['AwaitingResponse', 'Failed', 'Completed'],
+  AwaitingResponse: ['InProgress', 'Failed', 'Completed'],
+  Completed: [],
+  Failed: ['Pending', 'InProgress'],
+  Blocked: ['Pending'],
+};
+
+const canTransitionTaskStatus = (from: TaskStatus, to: TaskStatus): boolean => {
+  return ALLOWED_STATUS_TRANSITIONS[from]?.includes(to) ?? false;
+};
+
 const computeFallbackDerivedTasks = (tasks: Task[]): DerivedImplementTask[] => {
   const initial = tasks.map((task, index) => {
     const raw = task as Task & {
@@ -123,6 +136,9 @@ interface TaskStore {
   activateTask: (taskId: string) => Promise<void>;
   startTask: (taskId: string) => Promise<void>;
   completeTask: (taskId: string) => Promise<void>;
+  markTaskAwaitingResponse: (taskId: string) => Promise<void>;
+  markTaskFailed: (taskId: string) => Promise<void>;
+  retryTask: (taskId: string) => Promise<void>;
   setTaskStatus: (taskId: string, status: TaskStatus) => Promise<void>;
   getTaskById: (taskId: string) => DerivedImplementTask | undefined;
 }
@@ -308,6 +324,20 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
+    if (task.status === 'Completed') {
+      set({ lastError: 'Task is already completed.' });
+      return;
+    }
+
+    if (task.status === 'InProgress') {
+      return;
+    }
+
+    if (task.status === 'AwaitingResponse') {
+      await get().setTaskStatus(task.id, 'InProgress');
+      return;
+    }
+
     if (task.is_blocked) {
       const reason = task.blocked_by.length > 0 ? task.blocked_by.join(', ') : 'dependency chain';
       set({ lastError: `Task is blocked by unresolved dependencies: ${reason}` });
@@ -351,7 +381,70 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   },
 
   completeTask: async (taskId) => {
+    const task = get().tasks.find((candidate) => candidate.id === taskId);
+    if (!task) {
+      set({ lastError: `Unknown task: ${taskId}` });
+      return;
+    }
+
+    if (task.status !== 'InProgress' && task.status !== 'AwaitingResponse') {
+      set({ lastError: 'Task can only be completed from In Progress or Awaiting Response.' });
+      return;
+    }
+
+    if (tauriIpc.isTauriAvailable()) {
+      const repoPath =
+        get().branchWorktrees[task.assigned_branch] ||
+        get().activeRepositoryPath ||
+        (task.project_id ? useAppStore.getState().getProjectById(task.project_id)?.path ?? null : null);
+
+      if (repoPath) {
+        try {
+          const status = await tauriIpc.gitStatus(repoPath);
+          if (!status.is_clean) {
+            set({
+              lastError:
+                'Cannot complete task while repository has uncommitted changes. Commit or stash changes first.',
+            });
+            return;
+          }
+        } catch (error) {
+          const normalized = toServiceError(error);
+          set({ lastError: normalized.message });
+          return;
+        }
+      }
+    }
+
     await get().setTaskStatus(taskId, 'Completed');
+  },
+
+  markTaskAwaitingResponse: async (taskId) => {
+    await get().setTaskStatus(taskId, 'AwaitingResponse');
+  },
+
+  markTaskFailed: async (taskId) => {
+    await get().setTaskStatus(taskId, 'Failed');
+  },
+
+  retryTask: async (taskId) => {
+    const task = get().tasks.find((candidate) => candidate.id === taskId);
+    if (!task) {
+      set({ lastError: `Unknown task: ${taskId}` });
+      return;
+    }
+
+    if (task.status === 'Failed') {
+      await get().startTask(taskId);
+      return;
+    }
+
+    if (task.status === 'AwaitingResponse') {
+      await get().setTaskStatus(taskId, 'InProgress');
+      return;
+    }
+
+    set({ lastError: 'Retry is only available for failed or awaiting-response tasks.' });
   },
 
   setTaskStatus: async (taskId, status) => {
@@ -367,7 +460,17 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
-    if (status === 'InProgress' && currentTask.is_blocked) {
+    if (!canTransitionTaskStatus(currentTask.status, status)) {
+      set({
+        lastError: `Invalid task status transition: ${currentTask.status} -> ${status}.`,
+      });
+      return;
+    }
+
+    if (
+      (status === 'InProgress' || status === 'AwaitingResponse' || status === 'Completed') &&
+      currentTask.is_blocked
+    ) {
       const reason = currentTask.blocked_by.join(', ');
       set({ lastError: `Task is blocked by unresolved dependencies: ${reason}` });
       return;
