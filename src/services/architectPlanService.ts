@@ -126,7 +126,7 @@ const buildPlanMarkdown = (plan: ArchitectPlanRecord): string => {
   lines.push(`- Plan Integration Branch: ${toPlanIntegrationBranch(plan.slug)}`);
   lines.push(`- Target Code Branch: ${plan.targetBranch}`);
   lines.push(`- Base Code Branch: ${getGitFlowBaseBranch()}`);
-  lines.push(`- Macro Branch: .macro`);
+  lines.push(`- Macro Branch: @macro`);
   lines.push(`- Status: ${plan.status}`);
   if (plan.conversationId) {
     lines.push(`- Conversation ID: ${plan.conversationId}`);

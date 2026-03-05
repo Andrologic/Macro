@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use chrono::{DateTime, Utc};
 use git2::{BranchType, Commit, DiffFormat, Oid, Repository, ResetType, StashFlags, Status, StatusEntry};
@@ -11,10 +12,11 @@ use tauri::State;
 use crate::core::error::{BackendError, Result};
 use crate::fs::validate_path;
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
-use crate::git::GitState;
-use crate::WorkspaceRoot;
+use crate::git::{GitState, MACRO_BRANCH_NAME};
+use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 
 const DEFAULT_LOG_LIMIT: usize = 50;
+const DEFAULT_REMOTE_NAME: &str = "origin";
 
 #[derive(Serialize)]
 pub struct GitStatusDto {
@@ -79,10 +81,194 @@ pub struct GitNode {
 	pub hash: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct GitSyncDto {
+	pub branch: String,
+	pub remote: String,
+	pub output: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct MacroBranchSyncDto {
+	pub branch: String,
+	pub state: String,
+	pub worktree_path: String,
+	pub is_dirty: bool,
+	pub has_upstream: bool,
+	pub ahead: u32,
+	pub behind: u32,
+	pub conflicted_files: Vec<String>,
+	pub committed: bool,
+	pub commit_hash: Option<String>,
+	pub output: Option<String>,
+	pub error: Option<String>,
+}
+
 pub(crate) fn to_join_error(err: tokio::task::JoinError) -> BackendError {
 	BackendError::Internal {
 		message: format!("Git task join error: {}", err),
 	}
+}
+
+struct GitCommandOutput {
+	success: bool,
+	code: Option<i32>,
+	stdout: String,
+	stderr: String,
+}
+
+fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
+	let output = Command::new("git")
+		.current_dir(cwd)
+		.args(args)
+		.output()
+		.map_err(|e| BackendError::Git {
+			message: format!("Failed to run git command '{}': {}", args.join(" "), e),
+		})?;
+
+	Ok(GitCommandOutput {
+		success: output.status.success(),
+		code: output.status.code(),
+		stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+		stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+	})
+}
+
+fn command_output_text(output: &GitCommandOutput) -> String {
+	let stdout = output.stdout.trim();
+	let stderr = output.stderr.trim();
+	if stdout.is_empty() && stderr.is_empty() {
+		return String::new();
+	}
+	if stdout.is_empty() {
+		return stderr.to_string();
+	}
+	if stderr.is_empty() {
+		return stdout.to_string();
+	}
+	format!("{}\n{}", stdout, stderr)
+}
+
+fn validate_remote_name(remote: &str) -> Result<()> {
+	let candidate = remote.trim();
+	if candidate.is_empty() {
+		return Err(BackendError::Validation("Remote name cannot be empty".to_string()));
+	}
+	if candidate
+		.chars()
+		.any(|c| c.is_whitespace() || c == ':' || c == '/' || c == '\\')
+	{
+		return Err(BackendError::Validation(format!(
+			"Invalid remote name: {}",
+			remote
+		)));
+	}
+	Ok(())
+}
+
+fn resolve_target_branch(repo: &Repository, branch: Option<String>) -> Result<String> {
+	if let Some(branch) = branch {
+		let normalized = branch.trim().to_string();
+		if normalized.is_empty() {
+			return Err(BackendError::Validation("Branch cannot be empty".to_string()));
+		}
+		validate_branch_name(&normalized)?;
+		return Ok(normalized);
+	}
+
+	get_branch_name(repo)?.ok_or_else(|| BackendError::GitBranchNotFound {
+		message: "Cannot resolve branch while in detached HEAD".to_string(),
+	})
+}
+
+fn resolve_macro_worktree(
+	git_state: &GitState,
+	workspace_root: &Path,
+) -> Result<(PathBuf, Repository)> {
+	let repo = git_state.open_repo(workspace_root)?;
+	let repo = repo.lock().map_err(|_| BackendError::Internal {
+		message: "Failed to lock repository".to_string(),
+	})?;
+	let worktree_path = git_state.ensure_macro_metadata_worktree(&repo)?;
+	drop(repo);
+
+	let worktree_repo = Repository::open(&worktree_path).map_err(|e| BackendError::Git {
+		message: format!(
+			"Failed to open metadata worktree at {}: {}",
+			worktree_path.display(),
+			e
+		),
+	})?;
+
+	Ok((worktree_path, worktree_repo))
+}
+
+fn gather_macro_conflicted_files(repo: &Repository) -> Result<Vec<String>> {
+	let statuses = repo.statuses(Some(&mut get_status_options()))?;
+	let mut conflicted = Vec::new();
+	for entry in statuses.iter() {
+		if !entry.status().is_conflicted() {
+			continue;
+		}
+		let (_, path) = status_entry_paths(&entry);
+		if let Some(path) = path {
+			conflicted.push(path);
+		}
+	}
+	Ok(conflicted)
+}
+
+fn build_macro_sync_dto(
+	repo: &Repository,
+	worktree_path: &Path,
+	committed: bool,
+	commit_hash: Option<String>,
+	output: Option<String>,
+	error: Option<String>,
+) -> Result<MacroBranchSyncDto> {
+	let statuses = repo.statuses(Some(&mut get_status_options()))?;
+	let conflicted_files = gather_macro_conflicted_files(repo)?;
+	let is_dirty = !statuses.is_empty();
+
+	let mut has_upstream = false;
+	let mut ahead = 0u32;
+	let mut behind = 0u32;
+
+	if let Ok(branch) = repo.find_branch(MACRO_BRANCH_NAME, BranchType::Local) {
+		if let Ok(upstream) = branch.upstream() {
+			has_upstream = true;
+			if let (Some(local_oid), Some(upstream_oid)) = (branch.get().target(), upstream.get().target()) {
+				let (ahead_count, behind_count) = repo.graph_ahead_behind(local_oid, upstream_oid)?;
+				ahead = ahead_count as u32;
+				behind = behind_count as u32;
+			}
+		}
+	}
+
+	let state = if error.is_some() {
+		"failed"
+	} else if !conflicted_files.is_empty() {
+		"conflict"
+	} else if is_dirty || ahead > 0 || behind > 0 {
+		"pending"
+	} else {
+		"clean"
+	};
+
+	Ok(MacroBranchSyncDto {
+		branch: get_branch_name(repo)?.unwrap_or_else(|| MACRO_BRANCH_NAME.to_string()),
+		state: state.to_string(),
+		worktree_path: worktree_path.to_string_lossy().to_string(),
+		is_dirty,
+		has_upstream,
+		ahead,
+		behind,
+		conflicted_files,
+		committed,
+		commit_hash,
+		output,
+		error,
+	})
 }
 
 pub fn validate_repo_path(repo_path: &str, workspace: &PathBuf) -> Result<PathBuf> {
@@ -1493,6 +1679,403 @@ pub async fn git_worktree_remove(
 		})?;
 
 		git_state.remove_task_worktree(&repo, &task_id)
+	})
+	.await
+	.map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Push the current branch (or provided branch) to remote.
+pub async fn git_push(
+	workspace_root: State<'_, WorkspaceRoot>,
+	git_state: State<'_, GitState>,
+	repo_path: String,
+	remote: Option<String>,
+	branch: Option<String>,
+) -> Result<GitSyncDto> {
+	let workspace = workspace_root.inner().read().await.clone();
+	let git_state = git_state.inner().clone();
+
+	tokio::task::spawn_blocking(move || {
+		let validated = validate_repo_path(&repo_path, &workspace)?;
+		let repo = git_state.open_repo(&validated)?;
+		let repo = repo.lock().map_err(|_| BackendError::Internal {
+			message: "Failed to lock repository".to_string(),
+		})?;
+
+		let remote_name = remote
+			.unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
+			.trim()
+			.to_string();
+		validate_remote_name(&remote_name)?;
+		let branch_name = resolve_target_branch(&repo, branch)?;
+		let root = repo_root(&repo)?;
+		drop(repo);
+
+		let args = vec![
+			"push".to_string(),
+			"-u".to_string(),
+			remote_name.clone(),
+			branch_name.clone(),
+		];
+		let output = run_git_command(&root, &args)?;
+		if !output.success {
+			let details = command_output_text(&output);
+			let message = if details.is_empty() {
+				format!(
+					"git push failed (exit code: {:?})",
+					output.code
+				)
+			} else {
+				details
+			};
+			return Err(BackendError::Git { message });
+		}
+
+		Ok(GitSyncDto {
+			branch: branch_name,
+			remote: remote_name,
+			output: command_output_text(&output),
+		})
+	})
+	.await
+	.map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Pull updates for current branch (or provided branch) from remote.
+pub async fn git_pull(
+	workspace_root: State<'_, WorkspaceRoot>,
+	git_state: State<'_, GitState>,
+	repo_path: String,
+	remote: Option<String>,
+	branch: Option<String>,
+) -> Result<GitSyncDto> {
+	let workspace = workspace_root.inner().read().await.clone();
+	let git_state = git_state.inner().clone();
+
+	tokio::task::spawn_blocking(move || {
+		let validated = validate_repo_path(&repo_path, &workspace)?;
+		let repo = git_state.open_repo(&validated)?;
+		let repo = repo.lock().map_err(|_| BackendError::Internal {
+			message: "Failed to lock repository".to_string(),
+		})?;
+
+		let remote_name = remote
+			.unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
+			.trim()
+			.to_string();
+		validate_remote_name(&remote_name)?;
+		let branch_name = resolve_target_branch(&repo, branch)?;
+		let root = repo_root(&repo)?;
+		drop(repo);
+
+		let args = vec![
+			"pull".to_string(),
+			"--no-rebase".to_string(),
+			remote_name.clone(),
+			branch_name.clone(),
+		];
+		let output = run_git_command(&root, &args)?;
+		if !output.success {
+			let details = command_output_text(&output);
+			let message = if details.is_empty() {
+				format!(
+					"git pull failed (exit code: {:?})",
+					output.code
+				)
+			} else {
+				details
+			};
+			return Err(BackendError::GitConflict { message });
+		}
+
+		Ok(GitSyncDto {
+			branch: branch_name,
+			remote: remote_name,
+			output: command_output_text(&output),
+		})
+	})
+	.await
+	.map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Ensure @macro branch and metadata worktree exist.
+pub async fn macro_branch_ensure(
+	workspace_root: State<'_, WorkspaceMetadataRoot>,
+	git_state: State<'_, GitState>,
+) -> Result<MacroBranchSyncDto> {
+	let workspace = workspace_root.inner().0.read().await.clone();
+	let git_state = git_state.inner().clone();
+
+	tokio::task::spawn_blocking(move || {
+		let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+		build_macro_sync_dto(
+			&worktree_repo,
+			&worktree_path,
+			false,
+			None,
+			Some("Metadata branch ensured".to_string()),
+			None,
+		)
+	})
+	.await
+	.map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Read current sync status of @macro metadata branch.
+pub async fn macro_branch_status(
+	workspace_root: State<'_, WorkspaceMetadataRoot>,
+	git_state: State<'_, GitState>,
+) -> Result<MacroBranchSyncDto> {
+	let workspace = workspace_root.inner().0.read().await.clone();
+	let git_state = git_state.inner().clone();
+
+	tokio::task::spawn_blocking(move || {
+		let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+		build_macro_sync_dto(&worktree_repo, &worktree_path, false, None, None, None)
+	})
+	.await
+	.map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Commit metadata changes on the @macro branch if dirty.
+pub async fn macro_branch_commit_if_dirty(
+	workspace_root: State<'_, WorkspaceMetadataRoot>,
+	git_state: State<'_, GitState>,
+	message: Option<String>,
+) -> Result<MacroBranchSyncDto> {
+	let workspace = workspace_root.inner().0.read().await.clone();
+	let git_state = git_state.inner().clone();
+	let commit_message = message
+		.unwrap_or_else(|| "chore(metadata): persist metadata updates".to_string())
+		.trim()
+		.to_string();
+
+	tokio::task::spawn_blocking(move || {
+		let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+
+		let add_output = run_git_command(
+			&worktree_path,
+			&[
+				"add".to_string(),
+				"-A".to_string(),
+				".".to_string(),
+			],
+		)?;
+		if !add_output.success {
+			let details = command_output_text(&add_output);
+			return build_macro_sync_dto(
+				&worktree_repo,
+				&worktree_path,
+				false,
+				None,
+				Some(details.clone()),
+				Some(if details.is_empty() {
+					format!("Failed to stage metadata changes (exit code: {:?})", add_output.code)
+				} else {
+					details
+				}),
+			);
+		}
+
+		let staged_check = run_git_command(
+			&worktree_path,
+			&[
+				"diff".to_string(),
+				"--cached".to_string(),
+				"--quiet".to_string(),
+			],
+		)?;
+
+		if staged_check.success {
+			return build_macro_sync_dto(
+				&worktree_repo,
+				&worktree_path,
+				false,
+				None,
+				Some("Metadata branch is already up to date".to_string()),
+				None,
+			);
+		}
+
+		if staged_check.code != Some(1) {
+			let details = command_output_text(&staged_check);
+			return build_macro_sync_dto(
+				&worktree_repo,
+				&worktree_path,
+				false,
+				None,
+				Some(details.clone()),
+				Some(if details.is_empty() {
+					format!(
+						"Failed to inspect staged metadata changes (exit code: {:?})",
+						staged_check.code
+					)
+				} else {
+					details
+				}),
+			);
+		}
+
+		let commit_output = run_git_command(
+			&worktree_path,
+			&[
+				"-c".to_string(),
+				"user.name=Macro".to_string(),
+				"-c".to_string(),
+				"user.email=macro@local".to_string(),
+				"commit".to_string(),
+				"-m".to_string(),
+				commit_message,
+			],
+		)?;
+
+		if !commit_output.success {
+			let details = command_output_text(&commit_output);
+			return build_macro_sync_dto(
+				&worktree_repo,
+				&worktree_path,
+				false,
+				None,
+				Some(details.clone()),
+				Some(if details.is_empty() {
+					format!("Failed to commit metadata changes (exit code: {:?})", commit_output.code)
+				} else {
+					details
+				}),
+			);
+		}
+
+		let commit_hash = worktree_repo
+			.head()
+			.ok()
+			.and_then(|head| head.target())
+			.map(short_hash);
+
+		build_macro_sync_dto(
+			&worktree_repo,
+			&worktree_path,
+			true,
+			commit_hash,
+			Some(command_output_text(&commit_output)),
+			None,
+		)
+	})
+	.await
+	.map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Push metadata branch to remote origin.
+pub async fn macro_branch_push(
+	workspace_root: State<'_, WorkspaceMetadataRoot>,
+	git_state: State<'_, GitState>,
+) -> Result<MacroBranchSyncDto> {
+	let workspace = workspace_root.inner().0.read().await.clone();
+	let git_state = git_state.inner().clone();
+
+	tokio::task::spawn_blocking(move || {
+		let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+		let push_output = run_git_command(
+			&worktree_path,
+			&[
+				"push".to_string(),
+				"-u".to_string(),
+				DEFAULT_REMOTE_NAME.to_string(),
+				MACRO_BRANCH_NAME.to_string(),
+			],
+		)?;
+
+		let details = command_output_text(&push_output);
+		if !push_output.success {
+			return build_macro_sync_dto(
+				&worktree_repo,
+				&worktree_path,
+				false,
+				None,
+				Some(details.clone()),
+				Some(if details.is_empty() {
+					format!("Failed to push metadata branch (exit code: {:?})", push_output.code)
+				} else {
+					details
+				}),
+			);
+		}
+
+		build_macro_sync_dto(
+			&worktree_repo,
+			&worktree_path,
+			false,
+			None,
+			Some(details),
+			None,
+		)
+	})
+	.await
+	.map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Pull metadata branch from remote origin.
+pub async fn macro_branch_pull(
+	workspace_root: State<'_, WorkspaceMetadataRoot>,
+	git_state: State<'_, GitState>,
+) -> Result<MacroBranchSyncDto> {
+	let workspace = workspace_root.inner().0.read().await.clone();
+	let git_state = git_state.inner().clone();
+
+	tokio::task::spawn_blocking(move || {
+		let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+		let pull_output = run_git_command(
+			&worktree_path,
+			&[
+				"pull".to_string(),
+				"--no-rebase".to_string(),
+				DEFAULT_REMOTE_NAME.to_string(),
+				MACRO_BRANCH_NAME.to_string(),
+			],
+		)?;
+
+		let details = command_output_text(&pull_output);
+		if !pull_output.success {
+			let conflict_files = gather_macro_conflicted_files(&worktree_repo)?;
+			if !conflict_files.is_empty() {
+				return build_macro_sync_dto(
+					&worktree_repo,
+					&worktree_path,
+					false,
+					None,
+					Some(details),
+					None,
+				);
+			}
+
+			return build_macro_sync_dto(
+				&worktree_repo,
+				&worktree_path,
+				false,
+				None,
+				Some(details.clone()),
+				Some(if details.is_empty() {
+					format!("Failed to pull metadata branch (exit code: {:?})", pull_output.code)
+				} else {
+					details
+				}),
+			);
+		}
+
+		build_macro_sync_dto(
+			&worktree_repo,
+			&worktree_path,
+			false,
+			None,
+			Some(details),
+			None,
+		)
 	})
 	.await
 	.map_err(to_join_error)?

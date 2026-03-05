@@ -10,6 +10,7 @@ use crate::git::GitState;
 use crate::WorkspaceRoot;
 use crate::core::tool_policy::{
     get_mode_policy,
+    is_macro_scoped_path,
     validate_tool_execution,
     ToolModePolicyResult,
     ToolValidationResult,
@@ -98,6 +99,47 @@ fn format_with_line_numbers(lines: &[&str], start_line: usize) -> String {
         .join("\n")
 }
 
+async fn resolve_workspace_for_tool_path(
+    workspace: &std::path::PathBuf,
+    git_state: &GitState,
+    path: Option<&str>,
+) -> CommandResult<std::path::PathBuf> {
+    let Some(path) = path else {
+        return Ok(workspace.clone());
+    };
+
+    if !is_macro_scoped_path(path) {
+        return Ok(workspace.clone());
+    }
+
+    let workspace_for_task = workspace.clone();
+    let git_state_for_task = git_state.clone();
+    tokio::task::spawn_blocking(move || {
+        git_state_for_task
+            .resolve_macro_metadata_root(&workspace_for_task)
+            .map_err(|error| command_error(error.to_string()))
+    })
+    .await
+    .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?
+}
+
+fn remap_macro_tool_path(path: &str) -> String {
+    if is_macro_scoped_path(path) {
+        fs::map_macro_virtual_path(path)
+    } else {
+        path.to_string()
+    }
+}
+
+fn to_macro_virtual_relative(path: &str) -> String {
+    let normalized = path.trim().replace('\\', "/");
+    if normalized.is_empty() || normalized == "." {
+        ".macro".to_string()
+    } else {
+        format!(".macro/{}", normalized.trim_start_matches("./"))
+    }
+}
+
 pub async fn execute_workspace_tool(
     workspace: std::path::PathBuf,
     git_state: GitState,
@@ -126,12 +168,16 @@ pub async fn execute_workspace_tool(
     match tool_trimmed.as_str() {
         "list" => {
             let path = json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string());
+            let effective_path = remap_macro_tool_path(path.as_str());
+            let list_is_macro_scope = is_macro_scoped_path(path.as_str());
             let recursive = json_arg_bool(&args, "recursive");
             let include_hidden = json_arg_bool(&args, "include_hidden");
             let max_depth = json_arg_u32(&args, "max_depth");
-            let entries = fs::list_dir_internal(
-                &workspace,
-                path.clone(),
+            let effective_workspace =
+                resolve_workspace_for_tool_path(&workspace, &git_state, Some(path.as_str())).await?;
+            let mut entries = fs::list_dir_internal(
+                &effective_workspace,
+                effective_path,
                 recursive,
                 include_hidden,
                 max_depth,
@@ -139,6 +185,12 @@ pub async fn execute_workspace_tool(
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
+
+            if list_is_macro_scope {
+                for entry in entries.iter_mut() {
+                    entry.relative_path = to_macro_virtual_relative(&entry.relative_path);
+                }
+            }
 
             serde_json::to_string_pretty(&serde_json::json!({
                 "path": path,
@@ -150,12 +202,15 @@ pub async fn execute_workspace_tool(
         "read" => {
             let path = json_arg_string(&args, "path")
                 .ok_or_else(|| command_error("Missing path argument for read tool."))?;
+            let effective_path = remap_macro_tool_path(path.as_str());
             let start_line = json_arg_u32(&args, "start_line").unwrap_or(1).max(1) as usize;
             let end_line = json_arg_u32(&args, "end_line").map(|value| value as usize);
+            let effective_workspace =
+                resolve_workspace_for_tool_path(&workspace, &git_state, Some(path.as_str())).await?;
 
             let result = fs::read_file_internal(
-                &workspace,
-                path.clone(),
+                &effective_workspace,
+                effective_path,
                 Some(mode_trimmed == "Debug"),
             )
             .await
@@ -199,13 +254,16 @@ pub async fn execute_workspace_tool(
         "write" => {
             let path = json_arg_string(&args, "path")
                 .ok_or_else(|| command_error("Missing path argument for write tool."))?;
+            let effective_path = remap_macro_tool_path(path.as_str());
             let content = json_arg_string(&args, "content")
                 .ok_or_else(|| command_error("Missing content argument for write tool."))?;
             let create_dirs = json_arg_bool(&args, "create_dirs");
+            let effective_workspace =
+                resolve_workspace_for_tool_path(&workspace, &git_state, Some(path.as_str())).await?;
 
             let write_result = fs::write_file_internal(
-                &workspace,
-                path,
+                &effective_workspace,
+                effective_path,
                 content,
                 create_dirs,
                 Some(mode_trimmed == "Debug"),
@@ -224,15 +282,18 @@ pub async fn execute_workspace_tool(
         "edit" => {
             let path = json_arg_string(&args, "path")
                 .ok_or_else(|| command_error("Missing path argument for edit tool."))?;
+            let effective_path = remap_macro_tool_path(path.as_str());
             let old_text = json_arg_string(&args, "old_text")
                 .ok_or_else(|| command_error("Missing old_text argument for edit tool."))?;
             let new_text = json_arg_string(&args, "new_text")
                 .ok_or_else(|| command_error("Missing new_text argument for edit tool."))?;
             let replace_all = json_arg_bool(&args, "replace_all").unwrap_or(false);
+            let effective_workspace =
+                resolve_workspace_for_tool_path(&workspace, &git_state, Some(path.as_str())).await?;
 
             let current = fs::read_file_internal(
-                &workspace,
-                path.clone(),
+                &effective_workspace,
+                effective_path.clone(),
                 Some(mode_trimmed == "Debug"),
             )
             .await
@@ -254,8 +315,8 @@ pub async fn execute_workspace_tool(
             };
 
             let write_result = fs::write_file_internal(
-                &workspace,
-                path,
+                &effective_workspace,
+                effective_path,
                 updated,
                 Some(true),
                 Some(mode_trimmed == "Debug"),
@@ -276,14 +337,19 @@ pub async fn execute_workspace_tool(
             let pattern = json_arg_string(&args, "pattern").unwrap_or_else(|| "**/*".to_string());
             let include_hidden = json_arg_bool(&args, "include_hidden").unwrap_or(false);
             let mode_is_debug = mode_trimmed == "Debug";
+            let list_path = if mode_is_debug {
+                json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
+            } else {
+                ".".to_string()
+            };
+            let list_is_macro_scope = is_macro_scoped_path(list_path.as_str());
+            let effective_list_path = remap_macro_tool_path(list_path.as_str());
+            let effective_workspace =
+                resolve_workspace_for_tool_path(&workspace, &git_state, Some(list_path.as_str())).await?;
 
             let entries = fs::list_dir_internal(
-                &workspace,
-                if mode_is_debug {
-                    json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
-                } else {
-                    ".".to_string()
-                },
+                &effective_workspace,
+                effective_list_path,
                 Some(true),
                 Some(include_hidden),
                 None,
@@ -300,8 +366,14 @@ pub async fn execute_workspace_tool(
                 .filter(|entry| entry.kind == "file")
                 .filter_map(|entry| {
                     let relative_path = entry.relative_path.replace('\\', "/");
-                    if compiled.matches(&relative_path) {
-                        Some(relative_path)
+                    let virtual_path = if list_is_macro_scope {
+                        to_macro_virtual_relative(&relative_path)
+                    } else {
+                        relative_path.clone()
+                    };
+
+                    if compiled.matches(&relative_path) || compiled.matches(&virtual_path) {
+                        Some(virtual_path)
                     } else {
                         None
                     }
@@ -323,14 +395,19 @@ pub async fn execute_workspace_tool(
             let include_pattern = json_arg_string(&args, "include_pattern");
             let max_results = json_arg_u32(&args, "max_results").unwrap_or(50).max(1) as usize;
             let mode_is_debug = mode_trimmed == "Debug";
+            let list_path = if mode_is_debug {
+                json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
+            } else {
+                ".".to_string()
+            };
+            let list_is_macro_scope = is_macro_scoped_path(list_path.as_str());
+            let effective_list_path = remap_macro_tool_path(list_path.as_str());
+            let effective_workspace =
+                resolve_workspace_for_tool_path(&workspace, &git_state, Some(list_path.as_str())).await?;
 
             let entries = fs::list_dir_internal(
-                &workspace,
-                if mode_is_debug {
-                    json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
-                } else {
-                    ".".to_string()
-                },
+                &effective_workspace,
+                effective_list_path,
                 Some(true),
                 Some(include_hidden),
                 None,
@@ -363,9 +440,14 @@ pub async fn execute_workspace_tool(
 
             for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
                 let relative_path = entry.relative_path.replace('\\', "/");
+                let virtual_path = if list_is_macro_scope {
+                    to_macro_virtual_relative(&relative_path)
+                } else {
+                    relative_path.clone()
+                };
 
                 if let Some(pattern) = include_glob.as_ref() {
-                    if !pattern.matches(&relative_path) {
+                    if !pattern.matches(&relative_path) && !pattern.matches(&virtual_path) {
                         continue;
                     }
                 }
@@ -377,7 +459,7 @@ pub async fn execute_workspace_tool(
                 };
 
                 let content = fs::read_file_internal(
-                    &workspace,
+                    &effective_workspace,
                     read_path,
                     Some(mode_is_debug),
                 )
@@ -397,7 +479,7 @@ pub async fn execute_workspace_tool(
 
                     if is_match {
                         results.push(serde_json::json!({
-                            "path": relative_path,
+                            "path": virtual_path,
                             "line": index + 1,
                             "text": line.trim()
                         }));

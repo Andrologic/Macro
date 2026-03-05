@@ -11,11 +11,15 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
-const WORKSPACE_META_DIR: &str = ".macro";
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
+const LEGACY_WORKSPACE_META_DIR: &str = ".macro";
 
-pub async fn get_bootstrap(workspace_path: &PathBuf) -> Result<WorkspaceBootstrapDto> {
-	let state = load_or_default_state(workspace_path).await?;
+pub async fn get_bootstrap(
+	workspace_path: &PathBuf,
+	metadata_root: &PathBuf,
+) -> Result<WorkspaceBootstrapDto> {
+	let _ = workspace_path;
+	let state = load_or_default_state(metadata_root).await?;
 	Ok(WorkspaceBootstrapDto {
 		plan: state.current_plan,
 		project_groups: state.project_groups,
@@ -24,22 +28,33 @@ pub async fn get_bootstrap(workspace_path: &PathBuf) -> Result<WorkspaceBootstra
 	})
 }
 
-pub async fn list_projects(workspace_path: &PathBuf) -> Result<Vec<ProjectGroupDto>> {
-	let state = load_or_default_state(workspace_path).await?;
+pub async fn list_projects(
+	workspace_path: &PathBuf,
+	metadata_root: &PathBuf,
+) -> Result<Vec<ProjectGroupDto>> {
+	let _ = workspace_path;
+	let state = load_or_default_state(metadata_root).await?;
 	Ok(state.project_groups)
 }
 
-pub async fn list_tasks(workspace_path: &PathBuf) -> Result<Vec<Value>> {
-	let state = load_or_default_state(workspace_path).await?;
+pub async fn list_tasks(
+	workspace_path: &PathBuf,
+	metadata_root: &PathBuf,
+) -> Result<Vec<Value>> {
+	let _ = workspace_path;
+	let state = load_or_default_state(metadata_root).await?;
 	Ok(state
 		.current_plan
 		.map(|plan| plan.tasks)
 		.unwrap_or_default())
 }
 
-pub async fn get_metadata(workspace_path: &PathBuf) -> Result<WorkspaceMetadataDto> {
-	let state = load_or_default_state(workspace_path).await?;
-	let metadata_path = workspace_state_path(workspace_path);
+pub async fn get_metadata(
+	workspace_path: &PathBuf,
+	metadata_root: &PathBuf,
+) -> Result<WorkspaceMetadataDto> {
+	let state = load_or_default_state(metadata_root).await?;
+	let metadata_path = workspace_state_path(metadata_root);
 	let project_count = state
 		.project_groups
 		.iter()
@@ -55,9 +70,10 @@ pub async fn get_metadata(workspace_path: &PathBuf) -> Result<WorkspaceMetadataD
 
 pub async fn create_project(
 	workspace_path: &PathBuf,
+	metadata_root: &PathBuf,
 	request: CreateProjectRequest,
 ) -> Result<ProjectDto> {
-	let mut state = load_or_create_state(workspace_path).await?;
+	let mut state = load_or_create_state(metadata_root).await?;
 	let project = build_project(
 		&request.name,
 		&request.description,
@@ -75,15 +91,16 @@ pub async fn create_project(
 	upsert_project_group(&mut state.project_groups, request.group_id.as_deref(), project.clone());
 	ensure_plan_has_project(&mut state, &project.id);
 
-	persist_state(workspace_path, &state).await?;
+	persist_state(metadata_root, &state).await?;
 	Ok(project)
 }
 
 pub async fn import_git_repo(
 	workspace_path: &PathBuf,
+	metadata_root: &PathBuf,
 	request: ImportGitRepoRequest,
 ) -> Result<ProjectDto> {
-	let mut state = load_or_create_state(workspace_path).await?;
+	let mut state = load_or_create_state(metadata_root).await?;
 	let description = format!("Imported from {}", request.git_url);
 
 	let project = build_project(
@@ -105,15 +122,17 @@ pub async fn import_git_repo(
 	upsert_project_group(&mut state.project_groups, request.group_id.as_deref(), project.clone());
 	ensure_plan_has_project(&mut state, &project.id);
 
-	persist_state(workspace_path, &state).await?;
+	persist_state(metadata_root, &state).await?;
 	Ok(project)
 }
 
 pub async fn rename_project_group(
 	workspace_path: &PathBuf,
+	metadata_root: &PathBuf,
 	group_id: &str,
 	name: &str,
 ) -> Result<ProjectGroupDto> {
+	let _ = workspace_path;
 	let trimmed_name = name.trim();
 	if trimmed_name.is_empty() {
 		return Err(BackendError::Validation(
@@ -121,7 +140,7 @@ pub async fn rename_project_group(
 		));
 	}
 
-	let mut state = load_or_create_state(workspace_path).await?;
+	let mut state = load_or_create_state(metadata_root).await?;
 	let group = state
 		.project_groups
 		.iter_mut()
@@ -131,15 +150,17 @@ pub async fn rename_project_group(
 	group.name = trimmed_name.to_string();
 	let updated_group = group.clone();
 
-	persist_state(workspace_path, &state).await?;
+	persist_state(metadata_root, &state).await?;
 	Ok(updated_group)
 }
 
 pub async fn rename_project(
 	workspace_path: &PathBuf,
+	metadata_root: &PathBuf,
 	project_id: &str,
 	name: &str,
 ) -> Result<ProjectDto> {
+	let _ = workspace_path;
 	let trimmed_name = name.trim();
 	if trimmed_name.is_empty() {
 		return Err(BackendError::Validation(
@@ -147,7 +168,7 @@ pub async fn rename_project(
 		));
 	}
 
-	let mut state = load_or_create_state(workspace_path).await?;
+	let mut state = load_or_create_state(metadata_root).await?;
 	let mut updated_project: Option<ProjectDto> = None;
 
 	for group in state.project_groups.iter_mut() {
@@ -161,15 +182,17 @@ pub async fn rename_project(
 	let updated_project = updated_project
 		.ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
 
-	persist_state(workspace_path, &state).await?;
+	persist_state(metadata_root, &state).await?;
 	Ok(updated_project)
 }
 
 pub async fn archive_project_group(
 	workspace_path: &PathBuf,
+	metadata_root: &PathBuf,
 	group_id: &str,
 ) -> Result<ProjectGroupDto> {
-	let mut state = load_or_create_state(workspace_path).await?;
+	let _ = workspace_path;
+	let mut state = load_or_create_state(metadata_root).await?;
 	let group = state
 		.project_groups
 		.iter_mut()
@@ -181,15 +204,17 @@ pub async fn archive_project_group(
 	}
 
 	let updated_group = group.clone();
-	persist_state(workspace_path, &state).await?;
+	persist_state(metadata_root, &state).await?;
 	Ok(updated_group)
 }
 
 pub async fn archive_project(
 	workspace_path: &PathBuf,
+	metadata_root: &PathBuf,
 	project_id: &str,
 ) -> Result<ProjectDto> {
-	let mut state = load_or_create_state(workspace_path).await?;
+	let _ = workspace_path;
+	let mut state = load_or_create_state(metadata_root).await?;
 	let mut updated_project: Option<ProjectDto> = None;
 
 	for group in state.project_groups.iter_mut() {
@@ -203,15 +228,17 @@ pub async fn archive_project(
 	let updated_project = updated_project
 		.ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
 
-	persist_state(workspace_path, &state).await?;
+	persist_state(metadata_root, &state).await?;
 	Ok(updated_project)
 }
 
 pub async fn close_project(
 	workspace_path: &PathBuf,
+	metadata_root: &PathBuf,
 	project_id: &str,
 ) -> Result<Vec<ProjectGroupDto>> {
-	let mut state = load_or_create_state(workspace_path).await?;
+	let _ = workspace_path;
+	let mut state = load_or_create_state(metadata_root).await?;
 	let initial_project_count: usize = state
 		.project_groups
 		.iter()
@@ -239,40 +266,48 @@ pub async fn close_project(
 		plan.updated_at = Utc::now().to_rfc3339();
 	}
 
-	persist_state(workspace_path, &state).await?;
+	persist_state(metadata_root, &state).await?;
 	Ok(state.project_groups)
 }
 
-fn workspace_state_path(workspace_path: &Path) -> PathBuf {
-	workspace_path
-		.join(WORKSPACE_META_DIR)
+fn workspace_state_path(metadata_root: &Path) -> PathBuf {
+	metadata_root.join(WORKSPACE_STATE_FILE)
+}
+
+fn legacy_workspace_state_path(metadata_root: &Path) -> PathBuf {
+	metadata_root
+		.join(LEGACY_WORKSPACE_META_DIR)
 		.join(WORKSPACE_STATE_FILE)
 }
 
-async fn load_or_create_state(workspace_path: &PathBuf) -> Result<WorkspaceState> {
-	if let Some(state) = load_state(workspace_path).await? {
+async fn load_or_create_state(metadata_root: &PathBuf) -> Result<WorkspaceState> {
+	if let Some(state) = load_state(metadata_root).await? {
 		return Ok(state);
 	}
 
 	let state = WorkspaceState::default();
-	persist_state(workspace_path, &state).await?;
+	persist_state(metadata_root, &state).await?;
 	Ok(state)
 }
 
-async fn load_or_default_state(workspace_path: &PathBuf) -> Result<WorkspaceState> {
-	if let Some(state) = load_state(workspace_path).await? {
+async fn load_or_default_state(metadata_root: &PathBuf) -> Result<WorkspaceState> {
+	if let Some(state) = load_state(metadata_root).await? {
 		return Ok(state);
 	}
 
 	Ok(WorkspaceState::default())
 }
 
-async fn load_state(workspace_path: &PathBuf) -> Result<Option<WorkspaceState>> {
-	let path = workspace_state_path(workspace_path);
-
-	if !path.exists() {
+async fn load_state(metadata_root: &PathBuf) -> Result<Option<WorkspaceState>> {
+	let primary_path = workspace_state_path(metadata_root);
+	let legacy_path = legacy_workspace_state_path(metadata_root);
+	let path = if primary_path.exists() {
+		primary_path
+	} else if legacy_path.exists() {
+		legacy_path
+	} else {
 		return Ok(None);
-	}
+	};
 
 	let content = fs::read_to_string(&path)
 		.await
@@ -289,8 +324,7 @@ async fn load_state(workspace_path: &PathBuf) -> Result<Option<WorkspaceState>> 
 }
 
 async fn persist_state(workspace_path: &PathBuf, state: &WorkspaceState) -> Result<()> {
-	let metadata_dir = workspace_path.join(WORKSPACE_META_DIR);
-	fs::create_dir_all(&metadata_dir)
+	fs::create_dir_all(workspace_path)
 		.await
 		.map_err(|error| BackendError::Filesystem {
 			message: format!("Failed to create workspace metadata directory: {}", error),

@@ -79,6 +79,29 @@ export interface GitBranchesDto {
   current: string | null;
 }
 
+export interface GitSyncDto {
+  branch: string;
+  remote: string;
+  output: string;
+}
+
+export type MacroSyncState = 'clean' | 'pending' | 'failed' | 'conflict';
+
+export interface MacroBranchSyncDto {
+  branch: string;
+  state: MacroSyncState;
+  worktree_path: string;
+  is_dirty: boolean;
+  has_upstream: boolean;
+  ahead: number;
+  behind: number;
+  conflicted_files: string[];
+  committed: boolean;
+  commit_hash: string | null;
+  output: string | null;
+  error: string | null;
+}
+
 export interface DbAiModel {
   id: string;
   provider_id: string;
@@ -573,6 +596,54 @@ export async function gitWorktreeRemove(params: {
     repoPath: params.repoPath,
     taskId: params.taskId,
   });
+}
+
+export async function gitPush(params: {
+  repoPath: string;
+  remote?: string;
+  branch?: string;
+}): Promise<GitSyncDto> {
+  return invoke<GitSyncDto>('git_push', {
+    repoPath: params.repoPath,
+    remote: params.remote ?? null,
+    branch: params.branch ?? null,
+  });
+}
+
+export async function gitPull(params: {
+  repoPath: string;
+  remote?: string;
+  branch?: string;
+}): Promise<GitSyncDto> {
+  return invoke<GitSyncDto>('git_pull', {
+    repoPath: params.repoPath,
+    remote: params.remote ?? null,
+    branch: params.branch ?? null,
+  });
+}
+
+export async function macroBranchEnsure(): Promise<MacroBranchSyncDto> {
+  return invoke<MacroBranchSyncDto>('macro_branch_ensure');
+}
+
+export async function macroBranchStatus(): Promise<MacroBranchSyncDto> {
+  return invoke<MacroBranchSyncDto>('macro_branch_status');
+}
+
+export async function macroBranchCommitIfDirty(params?: {
+  message?: string;
+}): Promise<MacroBranchSyncDto> {
+  return invoke<MacroBranchSyncDto>('macro_branch_commit_if_dirty', {
+    message: params?.message ?? null,
+  });
+}
+
+export async function macroBranchPush(): Promise<MacroBranchSyncDto> {
+  return invoke<MacroBranchSyncDto>('macro_branch_push');
+}
+
+export async function macroBranchPull(): Promise<MacroBranchSyncDto> {
+  return invoke<MacroBranchSyncDto>('macro_branch_pull');
 }
 
 // ============ Workspace ============
