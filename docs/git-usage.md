@@ -42,6 +42,42 @@
 - Params: `{ repoPath: string, branch?: string }`
 - Returns: predicted git tree.
 
+### `git_push`
+- Params: `{ repoPath: string, remote?: string, branch?: string }`
+- Returns: `{ branch, remote, output }`.
+
+### `git_pull`
+- Params: `{ repoPath: string, remote?: string, branch?: string }`
+- Returns: `{ branch, remote, output }`.
+
+### `macro_branch_ensure`
+- Params: `{}`
+- Returns: `@macro` branch sync snapshot.
+
+### `macro_branch_status`
+- Params: `{}`
+- Returns: `@macro` branch sync snapshot.
+
+### `macro_branch_commit_if_dirty`
+- Params: `{ message?: string }`
+- Returns: `@macro` branch sync snapshot.
+
+### `macro_branch_push`
+- Params: `{}`
+- Returns: `@macro` branch sync snapshot.
+
+### `macro_branch_pull`
+- Params: `{}`
+- Returns: `@macro` branch sync snapshot.
+
+### `@macro` Sync Snapshot (`MacroBranchSyncDto`)
+- `state`: `clean | pending | failed | conflict`
+- `is_dirty`: local metadata changes pending commit
+- `ahead` / `behind`: divergence from upstream
+- `conflicted_files`: merge conflict list (if present)
+- `error`: normalized sync failure string
+- Internal git ref uses `@macro` (valid branch name) and is the metadata sync branch.
+
 ## Commit Message Convention
 
 Conventional Commits format (enforced):
@@ -73,6 +109,9 @@ Git-related errors come from `BackendError` and include:
 - Each task runs in its own worktree under `.macro/worktrees/`.
 - Worktree naming: `task<id>`.
 - Repository root remains the canonical source; worktrees isolate task changes.
+- Metadata sync uses a dedicated `@macro` branch worktree managed by backend git commands.
+- Metadata files are stored at the root of `@macro` (no nested `.macro/` directory in that branch).
+- Metadata remains eventually consistent: code stream completion does not rollback on `@macro` sync failure.
 
 ## Submodules (Simple Support)
 
@@ -94,3 +133,16 @@ Git-related errors come from `BackendError` and include:
 
 ### Safe reset
 1. `git_reset` with `mode='hard'` and `confirm=true`
+
+### Metadata sync (stream end + manual)
+1. Stream completion in Architect mode triggers:
+   - `macro_branch_ensure`
+   - `macro_branch_commit_if_dirty`
+   - optional `macro_branch_push` (if auto-push enabled)
+2. Manual footer controls expose:
+   - code branch `git_pull` / `git_push`
+   - metadata branch `macro_branch_pull` / `macro_branch_push`
+3. On metadata conflict (`state='conflict'`):
+   - resolve files in metadata worktree
+   - commit resolution on `@macro`
+   - re-run pull/push

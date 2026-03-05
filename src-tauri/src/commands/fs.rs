@@ -3,10 +3,12 @@
 // See docs/fs-todo.md for detailed tasks
 
 use crate::core::error::{io_error_to_backend_error, BackendError};
+use crate::core::tool_policy::is_macro_scoped_path;
 use crate::fs::dto::{DirEntryDto, FileContentDto, FileStatsDto, WriteResultDto};
 use crate::fs::{
     get_file_language, is_binary_file, normalize_path, validate_path, validate_path_for_write,
 };
+use crate::git::GitState;
 use crate::WorkspaceRoot;
 use std::path::{Path, PathBuf};
 
@@ -32,6 +34,47 @@ static DEFAULT_IGNORED: [&str; 12] = [
     "Thumbs.db",
     ".idea",
 ];
+
+fn to_join_error(err: tokio::task::JoinError) -> BackendError {
+    BackendError::Internal {
+        message: format!("File system task join error: {}", err),
+    }
+}
+
+async fn resolve_workspace_for_path(
+    workspace: PathBuf,
+    git_state: GitState,
+    path: &str,
+    allow_outside_workspace: Option<bool>,
+) -> Result<PathBuf, BackendError> {
+    if allow_outside_workspace.unwrap_or(false) || !is_macro_scoped_path(path) {
+        return Ok(workspace);
+    }
+
+    tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&workspace))
+        .await
+        .map_err(to_join_error)?
+}
+
+pub fn map_macro_virtual_path(path: &str) -> String {
+    let mut normalized = path.trim().replace('\\', "/");
+    while normalized.starts_with("./") {
+        normalized = normalized[2..].to_string();
+    }
+
+    if normalized == ".macro" || normalized == ".macro/" {
+        return ".".to_string();
+    }
+
+    if let Some(stripped) = normalized.strip_prefix(".macro/") {
+        if stripped.is_empty() {
+            return ".".to_string();
+        }
+        return stripped.to_string();
+    }
+
+    path.to_string()
+}
 
 /// Internal function that reads file content. This is separated for testability.
 pub async fn read_file_internal(
@@ -106,11 +149,24 @@ pub async fn read_file_internal(
 #[tauri::command]
 pub async fn fs_read_file(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
+    git_state: tauri::State<'_, GitState>,
     path: String,
     allow_outside_workspace: Option<bool>,
 ) -> Result<FileContentDto, BackendError> {
+    let effective_path = if is_macro_scoped_path(&path) {
+        map_macro_virtual_path(&path)
+    } else {
+        path.clone()
+    };
     let workspace = workspace_root.inner().read().await.clone();
-    read_file_internal(&workspace, path, allow_outside_workspace).await
+    let workspace = resolve_workspace_for_path(
+        workspace,
+        git_state.inner().clone(),
+        &path,
+        allow_outside_workspace,
+    )
+    .await?;
+    read_file_internal(&workspace, effective_path, allow_outside_workspace).await
 }
 
 /// Internal function for writing files with atomic write support
@@ -202,13 +258,33 @@ pub async fn write_file_internal(
 #[tauri::command]
 pub async fn fs_write_file(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
+    git_state: tauri::State<'_, GitState>,
     path: String,
     content: String,
     create_dirs: Option<bool>,
     allow_outside_workspace: Option<bool>,
 ) -> Result<WriteResultDto, BackendError> {
+    let effective_path = if is_macro_scoped_path(&path) {
+        map_macro_virtual_path(&path)
+    } else {
+        path.clone()
+    };
     let workspace = workspace_root.inner().read().await.clone();
-    write_file_internal(&workspace, path, content, create_dirs, allow_outside_workspace).await
+    let workspace = resolve_workspace_for_path(
+        workspace,
+        git_state.inner().clone(),
+        &path,
+        allow_outside_workspace,
+    )
+    .await?;
+    write_file_internal(
+        &workspace,
+        effective_path,
+        content,
+        create_dirs,
+        allow_outside_workspace,
+    )
+    .await
 }
 
 /// Internal function for listing directory contents
@@ -401,16 +477,29 @@ async fn create_dir_entry_dto(
 #[tauri::command]
 pub async fn fs_list_dir(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
+    git_state: tauri::State<'_, GitState>,
     path: String,
     recursive: Option<bool>,
     include_hidden: Option<bool>,
     max_depth: Option<u32>,
     allow_outside_workspace: Option<bool>,
 ) -> Result<Vec<DirEntryDto>, BackendError> {
+    let effective_path = if is_macro_scoped_path(&path) {
+        map_macro_virtual_path(&path)
+    } else {
+        path.clone()
+    };
     let workspace = workspace_root.inner().read().await.clone();
+    let workspace = resolve_workspace_for_path(
+        workspace,
+        git_state.inner().clone(),
+        &path,
+        allow_outside_workspace,
+    )
+    .await?;
     list_dir_internal(
         &workspace,
-        path,
+        effective_path,
         recursive,
         include_hidden,
         max_depth,
@@ -535,19 +624,45 @@ fn format_permissions(metadata: &std::fs::Metadata) -> String {
 #[tauri::command]
 pub async fn fs_stat(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
+    git_state: tauri::State<'_, GitState>,
     path: String,
 ) -> Result<FileStatsDto, BackendError> {
+    let effective_path = if is_macro_scoped_path(&path) {
+        map_macro_virtual_path(&path)
+    } else {
+        path.clone()
+    };
     let workspace = workspace_root.inner().read().await.clone();
-    stat_internal(&workspace, path).await
+    let workspace = resolve_workspace_for_path(
+        workspace,
+        git_state.inner().clone(),
+        &path,
+        None,
+    )
+    .await?;
+    stat_internal(&workspace, effective_path).await
 }
 
 #[tauri::command]
 pub async fn fs_exists(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
+    git_state: tauri::State<'_, GitState>,
     path: String,
 ) -> Result<bool, BackendError> {
+    let effective_path = if is_macro_scoped_path(&path) {
+        map_macro_virtual_path(&path)
+    } else {
+        path.clone()
+    };
     let workspace = workspace_root.inner().read().await.clone();
-    let path_buf = PathBuf::from(&path);
+    let workspace = resolve_workspace_for_path(
+        workspace,
+        git_state.inner().clone(),
+        &path,
+        None,
+    )
+    .await?;
+    let path_buf = PathBuf::from(&effective_path);
     
     // For exists, we validate the path format but allow non-existent files
     // as long as they would be within workspace if they existed
@@ -567,11 +682,24 @@ pub async fn fs_exists(
 #[tauri::command]
 pub async fn fs_delete(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
+    git_state: tauri::State<'_, GitState>,
     path: String,
     recursive: Option<bool>,
 ) -> Result<(), BackendError> {
+    let effective_path = if is_macro_scoped_path(&path) {
+        map_macro_virtual_path(&path)
+    } else {
+        path.clone()
+    };
     let workspace = workspace_root.inner().read().await.clone();
-    let path_buf = PathBuf::from(&path);
+    let workspace = resolve_workspace_for_path(
+        workspace,
+        git_state.inner().clone(),
+        &path,
+        None,
+    )
+    .await?;
+    let path_buf = PathBuf::from(&effective_path);
     let validated_path = validate_path(&path_buf, &workspace)?;
 
     let metadata = tokio::fs::metadata(&validated_path)
@@ -610,11 +738,24 @@ pub async fn fs_delete(
 #[tauri::command]
 pub async fn fs_create_dir(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
+    git_state: tauri::State<'_, GitState>,
     path: String,
     recursive: Option<bool>,
 ) -> Result<(), BackendError> {
+    let effective_path = if is_macro_scoped_path(&path) {
+        map_macro_virtual_path(&path)
+    } else {
+        path.clone()
+    };
     let workspace = workspace_root.inner().read().await.clone();
-    let path_buf = PathBuf::from(&path);
+    let workspace = resolve_workspace_for_path(
+        workspace,
+        git_state.inner().clone(),
+        &path,
+        None,
+    )
+    .await?;
+    let path_buf = PathBuf::from(&effective_path);
     let validated_path = validate_path_for_write(&path_buf, &workspace)?;
 
     let should_recurse = recursive.unwrap_or(true);
@@ -634,12 +775,35 @@ pub async fn fs_create_dir(
 #[tauri::command]
 pub async fn fs_copy(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
+    git_state: tauri::State<'_, GitState>,
     src: String,
     dest: String,
 ) -> Result<u64, BackendError> {
     let workspace = workspace_root.inner().read().await.clone();
-    let src_path = PathBuf::from(&src);
-    let dest_path = PathBuf::from(&dest);
+    let src_macro = is_macro_scoped_path(&src);
+    let dest_macro = is_macro_scoped_path(&dest);
+    if src_macro != dest_macro {
+        return Err(BackendError::Validation(
+            "Copy across workspace and metadata roots is not supported".to_string(),
+        ));
+    }
+    let workspace = if src_macro {
+        resolve_workspace_for_path(workspace, git_state.inner().clone(), &src, None).await?
+    } else {
+        workspace
+    };
+    let src_effective = if src_macro {
+        map_macro_virtual_path(&src)
+    } else {
+        src.clone()
+    };
+    let dest_effective = if dest_macro {
+        map_macro_virtual_path(&dest)
+    } else {
+        dest.clone()
+    };
+    let src_path = PathBuf::from(&src_effective);
+    let dest_path = PathBuf::from(&dest_effective);
 
     let validated_src = validate_path(&src_path, &workspace)?;
     let validated_dest = validate_path_for_write(&dest_path, &workspace)?;
@@ -672,12 +836,35 @@ pub async fn fs_copy(
 #[tauri::command]
 pub async fn fs_move(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
+    git_state: tauri::State<'_, GitState>,
     src: String,
     dest: String,
 ) -> Result<(), BackendError> {
     let workspace = workspace_root.inner().read().await.clone();
-    let src_path = PathBuf::from(&src);
-    let dest_path = PathBuf::from(&dest);
+    let src_macro = is_macro_scoped_path(&src);
+    let dest_macro = is_macro_scoped_path(&dest);
+    if src_macro != dest_macro {
+        return Err(BackendError::Validation(
+            "Move across workspace and metadata roots is not supported".to_string(),
+        ));
+    }
+    let workspace = if src_macro {
+        resolve_workspace_for_path(workspace, git_state.inner().clone(), &src, None).await?
+    } else {
+        workspace
+    };
+    let src_effective = if src_macro {
+        map_macro_virtual_path(&src)
+    } else {
+        src.clone()
+    };
+    let dest_effective = if dest_macro {
+        map_macro_virtual_path(&dest)
+    } else {
+        dest.clone()
+    };
+    let src_path = PathBuf::from(&src_effective);
+    let dest_path = PathBuf::from(&dest_effective);
 
     let validated_src = validate_path(&src_path, &workspace)?;
     let validated_dest = validate_path_for_write(&dest_path, &workspace)?;

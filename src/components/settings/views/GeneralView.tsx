@@ -10,6 +10,8 @@ export const GeneralView: React.FC = () => {
     const { t, i18n } = useTranslation();
     const projectSwitchPolicy = useAppStore((state) => state.projectSwitchPolicy);
     const setProjectSwitchPolicy = useAppStore((state) => state.setProjectSwitchPolicy);
+    const metadataAutoPush = useAppStore((state) => state.metadataAutoPush);
+    const setMetadataAutoPush = useAppStore((state) => state.setMetadataAutoPush);
     
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -97,6 +99,18 @@ export const GeneralView: React.FC = () => {
                                 </option>
                             </Select>
                         </div>
+                    </div>
+                    <div className="h-px bg-border/50" />
+                    <div className="flex items-center justify-between">
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium text-foreground">
+                                {t('settings.metadataAutoPush') || 'Auto-push @macro metadata'}
+                            </label>
+                            <p className="text-xs text-muted-foreground">
+                                {t('settings.metadataAutoPushDesc') || 'Automatically push @macro branch after metadata commits created at stream completion.'}
+                            </p>
+                        </div>
+                        <Switch checked={metadataAutoPush} onCheckedChange={setMetadataAutoPush} />
                     </div>
                 </div>
             </section>

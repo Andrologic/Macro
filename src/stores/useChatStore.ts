@@ -32,6 +32,7 @@ import { deletePlanAndCleanupBranches, validatePlanAndProvisionBranches } from '
 import { normalizeArchitectToolId } from '../services/architectToolNames';
 import { normalizeStrategyDependencies } from '../services/implementTaskDerivation';
 import { getLocalProjectContextState } from '../services/localProjectContext';
+import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from '../services/macroSyncService';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
@@ -983,7 +984,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const result = await listArchitectPlans(targetBranch, includeDeleted);
       return JSON.stringify(
         {
-          macro_branch: '.macro',
+          macro_branch: '@macro',
           target_branch: targetBranch,
           active_plan_id: result.activePlanId,
           count: result.plans.length,
@@ -1049,7 +1050,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
-      return JSON.stringify({ macro_branch: '.macro', plan, needs_count: needs.length }, null, 2);
+      return JSON.stringify({ macro_branch: '@macro', plan, needs_count: needs.length }, null, 2);
     }
 
     if (normalizedToolName === 'plan_set_active') {
@@ -1307,7 +1308,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       return JSON.stringify(
         {
-          macro_branch: '.macro',
+          macro_branch: '@macro',
           plan_id: plan.id,
           strategy: {
             node_count: nodeCount,
@@ -1642,7 +1643,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const appState = useAppStore.getState();
     const appMode = appState.mode;
-    const agentType = appState.agentType;
+    const agentType = appMode === 'Architect' ? 'plan' : appState.agentType;
     let modePrompt = '';
 
     switch (appMode) {
@@ -2342,7 +2343,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     sendMessage: async ({ conversationId, content, taskId, images }) => {
       const { selectedProviderId, selectedModelId, providerConfigs } = useProviderStore.getState();
-      persistSelectionForContext(useAppStore.getState().mode, conversationId);
+      const modeAtSend = useAppStore.getState().mode;
+      persistSelectionForContext(modeAtSend, conversationId);
 
       const conversationTaskId =
         get().conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null;
@@ -2490,6 +2492,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (tauriIpc.isTauriAvailable()) {
               tauriIpc.createMessage(conversationId, 'assistant', fullContent).catch(console.error);
             }
+            void syncMacroMetadataAfterStreamService({
+              mode: modeAtSend,
+              conversationId,
+              trigger: 'send',
+            });
             tokenBatcher.dispose();
           },
           onError: (error) => {
@@ -2527,6 +2534,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     editMessage: async (messageId, newContent) => {
       const { selectedProviderId, selectedModelId, providerConfigs } = useProviderStore.getState();
+      const modeAtEdit = useAppStore.getState().mode;
       if (!selectedProviderId || !selectedModelId) {
         set({ lastError: 'Select a provider and model before sending a message.' });
         return;
@@ -2682,6 +2690,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   : conv
               );
               return { conversations, isLoading: false, isStreaming: false, abortController: null };
+            });
+            void syncMacroMetadataAfterStreamService({
+              mode: modeAtEdit,
+              conversationId,
+              trigger: 'edit',
             });
             tokenBatcher.dispose();
           },

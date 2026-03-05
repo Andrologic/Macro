@@ -566,8 +566,8 @@ const GENERATE_PLAN_TOOL = {
       type: 'object',
       properties: {
         plan_id: { type: 'string', description: 'Optional existing plan ID to update.' },
-        plan_title: { type: 'string', description: 'Optional plan title for persistence in .macro metadata.' },
-        plan_description: { type: 'string', description: 'Optional plan description for persistence in .macro metadata.' },
+        plan_title: { type: 'string', description: 'Optional plan title for persistence in @macro metadata.' },
+        plan_description: { type: 'string', description: 'Optional plan description for persistence in @macro metadata.' },
         target_branch: { type: 'string', description: 'Code branch this plan is associated with.' },
         nodes: {
           type: 'array',
@@ -594,7 +594,7 @@ const CREATE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_create',
-    description: 'Create a new Architect plan stored under the .macro branch metadata for a target code branch.',
+    description: 'Create a new Architect plan stored under the @macro branch metadata for a target code branch.',
     parameters: {
       type: 'object',
       properties: {
@@ -613,7 +613,7 @@ const LIST_PLANS_TOOL = {
   type: 'function',
   function: {
     name: 'plan_list',
-    description: 'List plans for a code branch in the .macro branch metadata.',
+    description: 'List plans for a code branch in the @macro branch metadata.',
     parameters: {
       type: 'object',
       properties: {
@@ -629,7 +629,7 @@ const GET_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_get',
-    description: 'Read a specific plan and its nodes from .macro metadata.',
+    description: 'Read a specific plan and its nodes from @macro metadata.',
     parameters: {
       type: 'object',
       properties: {
@@ -698,7 +698,7 @@ const SET_ACTIVE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_set_active',
-    description: 'Set active plan for a target code branch in .macro metadata.',
+    description: 'Set active plan for a target code branch in @macro metadata.',
     parameters: {
       type: 'object',
       properties: {

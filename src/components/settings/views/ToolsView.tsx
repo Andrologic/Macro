@@ -257,7 +257,7 @@ export const ToolsView: React.FC = () => {
                                                                                     <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">Debug</span>
                                                                                 )}
                                                                                 {(tool.id === 'write' || tool.id === 'edit') && (
-                                                                                    <span className="text-xs bg-amber-500/10 px-2 py-0.5 rounded text-amber-600 dark:text-amber-400">Architect: .macro only</span>
+                                                                                    <span className="text-xs bg-amber-500/10 px-2 py-0.5 rounded text-amber-600 dark:text-amber-400">Architect: @macro only</span>
                                                                                 )}
                                     </div>
                                 </div>

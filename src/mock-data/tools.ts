@@ -349,7 +349,7 @@ export const mockInternalTools: Tool[] = [
     name: 'Create Plan',
     category: 'productivity',
     status: 'enabled',
-    description: 'Create a new Architect plan in .macro branch metadata',
+    description: 'Create a new Architect plan in @macro branch metadata',
     icon: 'plus-square',
     config: {
       enabled: true,

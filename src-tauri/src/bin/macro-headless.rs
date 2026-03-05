@@ -79,7 +79,10 @@ fn backend_error_response(error: BackendError) -> axum::response::Response {
 }
 
 async fn resolve_project_repo_path(state: &HeadlessState, project_id: &str) -> Result<String, BackendError> {
-    let groups = workspace::list_projects(&state.workspace_path).await?;
+    let metadata_root = state
+        .git_state
+        .resolve_macro_metadata_root(&state.workspace_path)?;
+    let groups = workspace::list_projects(&state.workspace_path, &metadata_root).await?;
 
     let project = groups
         .iter()
@@ -187,7 +190,12 @@ async fn workspace_bootstrap(
         return unauthorized_response().into_response();
     }
 
-    match workspace::get_bootstrap(&state.workspace_path).await {
+    let metadata_root = match state.git_state.resolve_macro_metadata_root(&state.workspace_path) {
+        Ok(path) => path,
+        Err(error) => return backend_error_response(error),
+    };
+
+    match workspace::get_bootstrap(&state.workspace_path, &metadata_root).await {
         Ok(bootstrap) => (StatusCode::OK, Json(bootstrap)).into_response(),
         Err(error) => backend_error_response(error),
     }
@@ -209,7 +217,12 @@ async fn workspace_tasks(
         return unauthorized_response().into_response();
     }
 
-    match workspace::list_tasks(&state.workspace_path).await {
+    let metadata_root = match state.git_state.resolve_macro_metadata_root(&state.workspace_path) {
+        Ok(path) => path,
+        Err(error) => return backend_error_response(error),
+    };
+
+    match workspace::list_tasks(&state.workspace_path, &metadata_root).await {
         Ok(tasks) => (StatusCode::OK, Json(json!({ "tasks": tasks }))).into_response(),
         Err(error) => backend_error_response(error),
     }

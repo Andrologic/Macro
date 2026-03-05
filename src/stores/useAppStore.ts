@@ -27,6 +27,7 @@ import {
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
 export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools' | 'shortcuts' | 'prompts' | 'architect';
 export type UiZoomMode = 'auto' | 'override';
+export type MetadataSyncState = 'clean' | 'pending' | 'failed' | 'conflict';
 
 interface RememberedProject {
   projectId: string;
@@ -442,6 +443,10 @@ interface AppStore {
   uiZoomLevel: number;
   projectSwitchPolicy: ProjectSwitchPolicy;
   isProjectSwitching: boolean;
+  metadataAutoPush: boolean;
+  metadataSyncState: MetadataSyncState;
+  metadataSyncError: string | null;
+  metadataConflictFiles: string[];
   recentProjects: RememberedProject[];
   macroEnabledProjects: RememberedProject[];
   // Architect mode state
@@ -469,6 +474,12 @@ interface AppStore {
   setUiZoomMode: (mode: UiZoomMode) => void;
   setUiZoomLevel: (level: number) => void;
   setProjectSwitchPolicy: (policy: ProjectSwitchPolicy) => Promise<void>;
+  setMetadataAutoPush: (enabled: boolean) => void;
+  setMetadataSyncStatus: (params: {
+    state: MetadataSyncState;
+    error?: string | null;
+    conflictFiles?: string[];
+  }) => void;
   switchProjectContext: (projectId: string | null) => Promise<void>;
   setPlanNodes: (nodes: PlanNode[]) => void;
   setPredictedBranches: (branches: PredictedBranch[]) => void;
@@ -545,6 +556,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   uiZoomLevel: 1,
   projectSwitchPolicy: 'resume_per_project',
   isProjectSwitching: false,
+  metadataAutoPush: false,
+  metadataSyncState: 'clean',
+  metadataSyncError: null,
+  metadataConflictFiles: [],
   recentProjects: [],
   macroEnabledProjects: [],
   activeArchitectPlanId: null,
@@ -603,6 +618,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const normalized = policy === 'reset_on_switch' ? 'reset_on_switch' : 'resume_per_project';
     set({ projectSwitchPolicy: normalized });
     await persistProjectSwitchPolicy(normalized);
+  },
+
+  setMetadataAutoPush: (enabled) => {
+    set({ metadataAutoPush: enabled });
+    void savePreference(PREF_KEYS.METADATA_AUTO_PUSH, enabled);
+  },
+
+  setMetadataSyncStatus: ({ state, error, conflictFiles }) => {
+    set({
+      metadataSyncState: state,
+      metadataSyncError: error ?? null,
+      metadataConflictFiles: state === 'conflict' ? (conflictFiles ?? []) : [],
+    });
   },
 
   switchProjectContext: async (projectId) => {
@@ -1034,7 +1062,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     try {
       // Load persisted panel preferences
-      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId, lastOpenProjectPath, lastActiveMode, lastAgentType, recentProjects, macroEnabledProjects, storedProjectSwitchPolicy, sessionContext] = await Promise.all([
+      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId, lastOpenProjectPath, lastActiveMode, lastAgentType, recentProjects, macroEnabledProjects, metadataAutoPush, storedProjectSwitchPolicy, sessionContext] = await Promise.all([
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
         loadPreference<boolean>(PREF_KEYS.IS_LEFT_PANEL_OPEN),
@@ -1048,6 +1076,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         loadPreference<AgentType>(PREF_KEYS.AGENT_TYPE),
         loadPreference<RememberedProject[]>(PREF_KEYS.RECENT_PROJECTS),
         loadPreference<RememberedProject[]>(PREF_KEYS.MACRO_ENABLED_PROJECTS),
+        loadPreference<boolean>(PREF_KEYS.METADATA_AUTO_PUSH),
         getProjectSwitchPolicy(),
         getLocalSessionContextState(),
       ]);
@@ -1197,6 +1226,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         isRightPanelOpen: rightOpen,
         uiZoomMode: normalizedZoomMode,
         uiZoomLevel: normalizedZoomLevel,
+        metadataAutoPush,
         projectSwitchPolicy: storedProjectSwitchPolicy,
         isProjectSwitching: false,
         isLoading: false,
