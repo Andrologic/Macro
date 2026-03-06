@@ -141,8 +141,8 @@ const ensureAppSync = () => {
 };
 
 const syncWorkspaceRoot = async (_path: string | null): Promise<void> => {
-  // Workspace root is intentionally no longer synchronized from task/project selection.
-  // Metadata and local project context are managed independently from runtime root.
+  // Runtime workspace is resolved per conversation/tool request.
+  // Do not mutate a global root from task/project selection; that causes cross-project drift.
 };
 
 interface TaskStore {

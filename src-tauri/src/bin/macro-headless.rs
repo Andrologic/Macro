@@ -47,6 +47,8 @@ struct ToolExecuteRequest {
     tool_id: String,
     #[serde(default)]
     args: Value,
+    #[serde(default)]
+    workspace_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,10 +166,12 @@ async fn tool_execute(
 
     match execute_workspace_tool(
         state.workspace_path.clone(),
+        state.workspace_path.clone(),
         state.git_state.clone(),
         payload.mode,
         payload.tool_id,
         payload.args,
+        payload.workspace_path,
     )
     .await
     {

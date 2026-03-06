@@ -7,7 +7,7 @@ pub mod workspace;
 
 use crate::db::{models::*, repository, DbError};
 use crate::git::GitState;
-use crate::WorkspaceRoot;
+use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 use crate::core::tool_policy::{
     get_mode_policy,
     is_macro_scoped_path,
@@ -123,6 +123,39 @@ async fn resolve_workspace_for_tool_path(
     .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?
 }
 
+fn resolve_requested_workspace(
+    default_workspace: &std::path::PathBuf,
+    metadata_workspace: &std::path::PathBuf,
+    requested_workspace: Option<&str>,
+) -> CommandResult<std::path::PathBuf> {
+    let Some(requested_workspace) = requested_workspace
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(default_workspace.clone());
+    };
+
+    let requested_path = std::path::PathBuf::from(requested_workspace);
+    let candidate = if requested_path.is_absolute() {
+        requested_path
+    } else {
+        metadata_workspace.join(requested_path)
+    };
+
+    let resolved = candidate.canonicalize().map_err(|_| {
+        command_error(format!("Workspace path not found: {}", requested_workspace))
+    })?;
+
+    if !resolved.is_dir() {
+        return Err(command_error(format!(
+            "Workspace path must be a directory: {}",
+            requested_workspace
+        )));
+    }
+
+    Ok(resolved)
+}
+
 fn remap_macro_tool_path(path: &str) -> String {
     if is_macro_scoped_path(path) {
         fs::map_macro_virtual_path(path)
@@ -141,12 +174,19 @@ fn to_macro_virtual_relative(path: &str) -> String {
 }
 
 pub async fn execute_workspace_tool(
-    workspace: std::path::PathBuf,
+    default_workspace: std::path::PathBuf,
+    metadata_workspace: std::path::PathBuf,
     git_state: GitState,
     mode: String,
     tool_id: String,
     args: Value,
+    workspace_path: Option<String>,
 ) -> CommandResult<String> {
+    let workspace = resolve_requested_workspace(
+        &default_workspace,
+        &metadata_workspace,
+        workspace_path.as_deref(),
+    )?;
     let mode_trimmed = mode.trim().to_string();
     let tool_trimmed = tool_id.trim().to_string();
 
@@ -869,14 +909,26 @@ pub async fn execute_workspace_tool(
 #[tauri::command]
 pub async fn tool_execute_workspace(
     workspace_root: State<'_, WorkspaceRoot>,
+    workspace_metadata_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
     mode: String,
     tool_id: String,
     args: Value,
+    workspace_path: Option<String>,
 ) -> CommandResult<String> {
     let workspace = workspace_root.inner().read().await.clone();
+    let metadata_workspace = workspace_metadata_root.inner().0.read().await.clone();
     let git_state = git_state.inner().clone();
-    execute_workspace_tool(workspace, git_state, mode, tool_id, args).await
+    execute_workspace_tool(
+        workspace,
+        metadata_workspace,
+        git_state,
+        mode,
+        tool_id,
+        args,
+        workspace_path,
+    )
+    .await
 }
 
 // ============ CONVERSATIONS ============
@@ -1343,6 +1395,33 @@ pub async fn db_update_provider_settings(
     repository::update_provider_settings(pool, &provider_id, filter_free_models)
         .await
         .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_requested_workspace;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn resolve_requested_workspace_uses_metadata_root_for_relative_paths() {
+        let default_workspace = TempDir::new().expect("default workspace");
+        let metadata_workspace = TempDir::new().expect("metadata workspace");
+        let project_dir = metadata_workspace.path().join("projects").join("smartcards");
+        fs::create_dir_all(&project_dir).expect("create project dir");
+
+        let resolved = resolve_requested_workspace(
+            &default_workspace.path().to_path_buf(),
+            &metadata_workspace.path().to_path_buf(),
+            Some("projects/smartcards"),
+        )
+        .expect("resolve requested workspace");
+
+        assert_eq!(
+            resolved,
+            project_dir.canonicalize().expect("canonical project dir")
+        );
+    }
 }
 
 // ============ APP STATE SETTINGS ============

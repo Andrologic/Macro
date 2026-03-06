@@ -3,8 +3,10 @@ import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
+import { useTaskStore } from '../../stores/useTaskStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import * as tauriIpc from '../../services/tauriIpc';
+import { resolveProjectExecutionContext } from '../../services/projectExecutionContext';
 
 type DebugEventType = 'tool' | 'tool_done' | 'error';
 
@@ -54,13 +56,18 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
   const mode = useAppStore((state) => state.mode);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
+  const selectedTaskId = useAppStore((state) => state.selectedTaskId);
   const projectGroups = useAppStore((state) => state.projectGroups);
 
   const selectedConversationId = useChatStore((state) => state.selectedConversationId);
+  const conversations = useChatStore((state) => state.conversations);
   const messages = useChatStore((state) => state.messages);
   const isStreaming = useChatStore((state) => state.isStreaming);
   const isLoading = useChatStore((state) => state.isLoading);
   const chatLastError = useChatStore((state) => state.lastError);
+  const tasks = useTaskStore((state) => state.tasks);
+  const activeRepositoryPath = useTaskStore((state) => state.activeRepositoryPath);
+  const branchWorktrees = useTaskStore((state) => state.branchWorktrees);
   const eventsContainerRef = useRef<HTMLDivElement>(null);
   const [backendWorkspaceRoot, setBackendWorkspaceRoot] = React.useState<string>('(unknown)');
 
@@ -78,6 +85,32 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
 
     return group.projects[0] ?? null;
   }, [projectGroups, selectedGroupId, selectedProjectId]);
+
+  const effectiveExecutionContext = useMemo(
+    () =>
+      resolveProjectExecutionContext({
+        mode,
+        projects: projectGroups.flatMap((group) => group.projects),
+        tasks,
+        conversations,
+        conversationId: selectedConversationId,
+        selectedProjectId,
+        selectedTaskId,
+        activeRepositoryPath,
+        branchWorktrees,
+      }),
+    [
+      activeRepositoryPath,
+      branchWorktrees,
+      conversations,
+      mode,
+      projectGroups,
+      selectedConversationId,
+      selectedProjectId,
+      selectedTaskId,
+      tasks,
+    ]
+  );
 
   const conversationMessages = useMemo(() => {
     if (!selectedConversationId) return [];
@@ -210,16 +243,40 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
         </div>
 
         <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
-          <div className="text-muted-foreground mb-0.5">Project root</div>
+          <div className="text-muted-foreground mb-0.5">Selected project root</div>
           <div className="font-mono text-foreground truncate">
             {selectedProject?.path || '(none)'}
           </div>
         </div>
 
         <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
-          <div className="text-muted-foreground mb-0.5">Backend workspace root</div>
+          <div className="text-muted-foreground mb-0.5">Effective project</div>
+          <div className="font-mono text-foreground truncate">
+            {effectiveExecutionContext.projectName || effectiveExecutionContext.projectId || '(none)'}
+          </div>
+        </div>
+
+        <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
+          <div className="text-muted-foreground mb-0.5">Effective execution root</div>
+          <div className="font-mono text-foreground truncate">
+            {effectiveExecutionContext.workspacePath || '(none)'}
+          </div>
+        </div>
+
+        <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
+          <div className="text-muted-foreground mb-0.5">Backend default root</div>
           <div className="font-mono text-foreground truncate">{backendWorkspaceRoot}</div>
         </div>
+
+        {effectiveExecutionContext.workspacePath &&
+          backendWorkspaceRoot !== '(unknown)' &&
+          backendWorkspaceRoot !== '(browser)' &&
+          backendWorkspaceRoot !== '(error)' &&
+          backendWorkspaceRoot !== effectiveExecutionContext.workspacePath && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200">
+              Tool execution is using the effective execution root above, not the backend default root.
+            </div>
+          )}
 
         {chatLastError && (
           <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-xs text-red-400 flex items-start gap-1.5">

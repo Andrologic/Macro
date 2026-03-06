@@ -279,7 +279,7 @@ export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ 
       </div>
 
       <div className="px-4 py-2 border-b border-border bg-muted/20">
-        <p className="text-[11px] text-muted-foreground">Root path</p>
+        <p className="text-[11px] text-muted-foreground">Explorer root (selected project)</p>
         <p className="text-xs font-mono text-foreground truncate">{activeRootPath}</p>
       </div>
 
