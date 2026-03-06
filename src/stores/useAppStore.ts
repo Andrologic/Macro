@@ -18,6 +18,7 @@ import {
   getGitFlowBaseBranch,
   resolveTargetBranch,
 } from '../services/architectPlanService';
+import { taskMatchesProjectId } from '../services/implementTaskCatalog';
 import {
   loadPreference,
   savePreference,
@@ -145,13 +146,13 @@ const persistCurrentProjectContext = async (projectId: string): Promise<void> =>
   const taskStore = useTaskStore.getState();
   const chatStore = useChatStore.getState();
 
-  const tasksForProject = taskStore.tasks.filter((task) => task.project_id === projectId);
+  const tasksForProject = taskStore.tasks.filter((task) => taskMatchesProjectId(task, projectId));
   const selectedTask = appState.selectedTaskId
     ? taskStore.getTaskById(appState.selectedTaskId)
     : undefined;
 
   let lastTaskId: string | null = null;
-  if (selectedTask && selectedTask.project_id === projectId) {
+  if (selectedTask && taskMatchesProjectId(selectedTask, projectId)) {
     lastTaskId = selectedTask.id;
   } else {
     const preferredTask = tasksForProject.find((task) => task.status === 'InProgress') ||
@@ -242,7 +243,7 @@ const restoreProjectContext = async (projectId: string): Promise<void> => {
   const contextTaskId = context?.lastTaskId;
   if (contextTaskId) {
     const task = taskStore.getTaskById(contextTaskId);
-    if (task && task.project_id === projectId) {
+    if (task && taskMatchesProjectId(task, projectId)) {
       restoredTaskId = contextTaskId;
     }
   }
