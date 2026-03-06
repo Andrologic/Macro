@@ -38,6 +38,8 @@ L'application dispose deja d'une base solide :
 - gestion de plans cote Architect deja avancee
 - pipeline Git et metadata deja bien amorce
 - taches, review et commit deja presents cote Implement
+- catalogue de taches `Implement` maintenant capable d'agreger plusieurs plans executables cote desktop
+- filtres par plan et prise en charge des taches hors plan maintenant presents dans la file de taches
 - couches de services, stores et IPC deja structurees
 - kernel headless deja present en premiere version
 
@@ -47,7 +49,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - automatisation et orchestration encore a fiabiliser
 - notifications et supervision distante non finalisees
 - articulation desktop / remote / mobile encore incomplete
-- experience multi-plan et multi-projet encore a consolider
+- experience multi-plan et multi-projet encore a consolider de bout en bout
 - documents de reference seulement en cours de reconstruction
 
 ---
@@ -88,12 +90,19 @@ Etat attendu :
 - review de fin de tache ergonomique
 - commits et integration bien verrouilles
 
+Etat deja consolide :
+- derivation et agregation de taches depuis plusieurs plans executables cote desktop
+- filtrage de la file par plan
+- support des taches hors plan dans la file et dans le cycle de completion
+- meilleur rattachement des taches multi-projets au projet courant
+
 Etat a consolider :
-- UX de la review
-- gestion des taches hors plan
-- orchestration de plusieurs plans en parallele
-- formalisation complete des transitions de statut
-- articulation claire entre review de tache et validation finale de plan
+- backend de listing des taches encore centre sur le plan courant
+- UX de la review et de l'edition ciblee
+- mode semi-auto vs full-auto
+- questions IA a reponses rapides reellement branchees
+- articulation claire entre review de tache, commit, validation finale de plan et merge
+- comportement global du mode quand plusieurs plans et plusieurs projets sont actifs en meme temps
 
 ### 4.4 Review et edition ciblee
 
@@ -131,9 +140,9 @@ Etat attendu :
 
 Etat a consolider :
 - lisibilite UX du multi-projet
-- gestion des taches qui touchent plusieurs projets
+- gestion de bout en bout des taches qui touchent plusieurs projets
 - duplication et consultation fiables des plans par projet
-- clarte des filtres et de la navigation
+- clarte globale des filtres, de la review et de la navigation
 
 ### 4.7 Mode Chat
 
@@ -201,7 +210,7 @@ Chantiers :
 - durcir le git flow de plan
 - fiabiliser les transitions de taches
 - finaliser l'UX de review et d'edition ciblee
-- rendre le multi-plan operable cote Implement
+- finaliser le multi-plan cote Implement jusqu'au backend et a la review
 
 ### 5.2 Priorite 2 - Rendre le multi-projet reellement premium
 
@@ -278,9 +287,10 @@ Critere de sortie :
 
 Livrables :
 - plans paralleles bien tenus
-- derivation de taches fiable
+- derivation de taches fiable, y compris sur plusieurs plans executables cote desktop
 - review de tache exploitable
-- commits et validation de plan robustes
+- commits robustes
+- validation finale de plan robuste
 
 Critere de sortie :
 - un utilisateur peut livrer un plan complet sur desktop sans bricolage majeur

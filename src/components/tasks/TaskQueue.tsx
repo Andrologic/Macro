@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
+import { taskMatchesProjectId } from '../../services/implementTaskCatalog';
 import { Icon, IconName } from '../ui/Icon';
+import { Select } from '../ui/Select';
 import { cn } from '../../utils/cn';
 import { toast } from '../ui/Toaster';
 import type { TaskStatus } from '../../types';
@@ -10,6 +12,9 @@ import type { TaskStatus } from '../../types';
 interface TaskQueueProps {
   className?: string;
 }
+
+const ALL_PLANS_FILTER = '__all__';
+const STANDALONE_FILTER = '__standalone__';
 
 const statusConfig: Record<TaskStatus, { icon: IconName; color: string; bgColor: string }> = {
   Pending: { icon: 'circle', color: 'text-muted-foreground', bgColor: 'bg-muted' },
@@ -114,6 +119,11 @@ const TaskItem: React.FC<TaskItemProps> = ({
               </span>
             )}
 
+            <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/60 px-1.5 py-0.5 text-xs text-muted-foreground">
+              <Icon name={task.task_source === 'architect' ? 'layers' : 'zap'} size={10} />
+              {task.plan_title || t('implement.standaloneTask', 'Standalone')}
+            </span>
+
             <span className="text-xs text-muted-foreground inline-flex items-center gap-1 leading-none">
               <Icon name="git-branch" size={10} />
               {task.branch_name}
@@ -126,6 +136,15 @@ const TaskItem: React.FC<TaskItemProps> = ({
               >
                 {t('implement.sequenceHint', '#{{step}}', {
                   step: task.branch_task_index + 1,
+                })}
+              </span>
+            )}
+
+            {(task.project_ids || []).length > 1 && (
+              <span className="text-xs text-muted-foreground inline-flex items-center gap-1 leading-none">
+                <Icon name="folder" size={10} />
+                {t('implement.multiProjectTask', '{{count}} projects', {
+                  count: (task.project_ids || []).length,
                 })}
               </span>
             )}
@@ -219,6 +238,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const { t } = useTranslation();
   const { selectedGroupId, selectedProjectId, selectedTaskId, projectGroups } = useAppStore();
   const tasks = useTaskStore((state) => state.tasks);
+  const planSummaries = useTaskStore((state) => state.planSummaries);
+  const hasStandaloneTasks = useTaskStore((state) => state.hasStandaloneTasks);
   const activateTask = useTaskStore((state) => state.activateTask);
   const startTask = useTaskStore((state) => state.startTask);
   const completeTask = useTaskStore((state) => state.completeTask);
@@ -228,6 +249,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const taskError = useTaskStore((state) => state.lastError);
   const lastErrorToastRef = useRef<string | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
+  const [planFilter, setPlanFilter] = useState<string>(ALL_PLANS_FILTER);
 
   useEffect(() => {
     if (!taskError || taskError === lastErrorToastRef.current) return;
@@ -262,38 +284,71 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const scopedTasks = useMemo(() => {
     if (selectedProjectId) {
-      return tasks.filter((task) => task.project_id === selectedProjectId);
+      return tasks.filter((task) => taskMatchesProjectId(task, selectedProjectId));
     }
 
     if (selectedGroupId) {
       const group = projectGroups.find((candidate) => candidate.id === selectedGroupId);
       const groupProjectIds = new Set(group?.projects.map((project) => project.id) ?? []);
       if (groupProjectIds.size === 0) return [];
-      return tasks.filter((task) => groupProjectIds.has(task.project_id));
+      return tasks.filter((task) =>
+        Array.from(groupProjectIds).some((projectId) => taskMatchesProjectId(task, projectId))
+      );
     }
 
     return [];
   }, [tasks, selectedProjectId, selectedGroupId, projectGroups]);
 
+  const availablePlanSummaries = useMemo(() => {
+    const scopedPlanIds = new Set(
+      scopedTasks
+        .filter((task) => task.task_source === 'architect')
+        .map((task) => task.plan_id)
+    );
+    return planSummaries.filter((plan) => scopedPlanIds.has(plan.id));
+  }, [planSummaries, scopedTasks]);
+
+  const hasScopedStandaloneTasks = useMemo(() => {
+    if (!hasStandaloneTasks) return false;
+    return scopedTasks.some((task) => task.task_source === 'standalone');
+  }, [hasStandaloneTasks, scopedTasks]);
+
+  useEffect(() => {
+    if (planFilter === ALL_PLANS_FILTER) return;
+    if (planFilter === STANDALONE_FILTER && hasScopedStandaloneTasks) return;
+    if (availablePlanSummaries.some((plan) => plan.id === planFilter)) return;
+    setPlanFilter(ALL_PLANS_FILTER);
+  }, [availablePlanSummaries, hasScopedStandaloneTasks, planFilter]);
+
+  const filteredTasks = useMemo(() => {
+    if (planFilter === ALL_PLANS_FILTER) {
+      return scopedTasks;
+    }
+    if (planFilter === STANDALONE_FILTER) {
+      return scopedTasks.filter((task) => task.task_source === 'standalone');
+    }
+    return scopedTasks.filter((task) => task.plan_id === planFilter);
+  }, [planFilter, scopedTasks]);
+
   const readyTasks = useMemo(() => {
-    return [...scopedTasks]
+    return [...filteredTasks]
       .filter((task) => !task.is_blocked && task.status !== 'Completed')
       .sort((a, b) => {
         const byStatus = readyStatusOrder[a.status] - readyStatusOrder[b.status];
         if (byStatus !== 0) return byStatus;
         return a.sequence_index - b.sequence_index;
       });
-  }, [scopedTasks]);
+  }, [filteredTasks]);
 
   const blockedTasks = useMemo(() => {
-    return [...scopedTasks]
+    return [...filteredTasks]
       .filter((task) => task.is_blocked)
       .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [scopedTasks]);
+  }, [filteredTasks]);
 
-  const completedCount = scopedTasks.filter((task) => task.status === 'Completed').length;
-  const inProgressCount = scopedTasks.filter((task) => task.status === 'InProgress').length;
-  const totalCount = scopedTasks.length;
+  const completedCount = filteredTasks.filter((task) => task.status === 'Completed').length;
+  const inProgressCount = filteredTasks.filter((task) => task.status === 'InProgress').length;
+  const totalCount = filteredTasks.length;
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
   if (!selectedGroupId) {
@@ -338,19 +393,42 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             style={{ width: `${progressPercent}%` }}
           />
         </div>
+        <div className="mt-3">
+          <Select
+            value={planFilter}
+            onChange={(event) => setPlanFilter(event.target.value)}
+            className="h-9 py-1.5 text-xs"
+          >
+            <option value={ALL_PLANS_FILTER}>
+              {t('implement.planFilterAll', 'All plans')}
+            </option>
+            {availablePlanSummaries.map((plan) => (
+              <option key={plan.id} value={plan.id}>
+                {plan.title}
+              </option>
+            ))}
+            {hasScopedStandaloneTasks && (
+              <option value={STANDALONE_FILTER}>
+                {t('implement.planFilterStandalone', 'No plan / standalone')}
+              </option>
+            )}
+          </Select>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-3">
-        {scopedTasks.length === 0 && (
+        {filteredTasks.length === 0 && (
           <div className="flex flex-col items-center justify-center h-48 text-center">
             <Icon name="check-circle" size={32} className="text-muted-foreground/50 mb-3" />
             <p className="text-sm text-muted-foreground">
-              {t('implement.noTasks', 'No tasks yet')}
+              {planFilter === ALL_PLANS_FILTER
+                ? t('implement.noTasks', 'No tasks yet')
+                : t('implement.noTasksForFilter', 'No task matches this filter.')}
             </p>
           </div>
         )}
 
-        {scopedTasks.length > 0 && (
+        {filteredTasks.length > 0 && (
           <>
             <section className="space-y-1">
               <div className="px-1 pb-1 flex items-center justify-between">
@@ -429,7 +507,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
       <div className="h-10 border-t border-border flex items-center justify-between px-4 bg-card">
         <span className="text-xs text-muted-foreground">
-          {t('implement.taskCount', '{{count}} tasks', { count: scopedTasks.length })}
+          {t('implement.taskCount', '{{count}} tasks', { count: filteredTasks.length })}
         </span>
         <span className="text-xs text-muted-foreground">
           {t('implement.completedCount', '{{count}} completed', { count: completedCount })}
