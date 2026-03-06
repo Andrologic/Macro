@@ -33,6 +33,7 @@ import { normalizeArchitectToolId } from '../services/architectToolNames';
 import { normalizeStrategyDependencies } from '../services/implementTaskDerivation';
 import { getLocalProjectContextState } from '../services/localProjectContext';
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from '../services/macroSyncService';
+import { resolveProjectExecutionContext } from '../services/projectExecutionContext';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
@@ -1505,7 +1506,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       normalizedToolName.startsWith('git_')
     ) {
       const mode = useAppStore.getState().mode;
-      return executeWorkspaceTool(normalizedToolName, args, mode);
+      const appState = useAppStore.getState();
+      const taskState = useTaskStore.getState();
+      const executionContext = resolveProjectExecutionContext({
+        mode,
+        projects: appState.projectGroups.flatMap((group) => group.projects),
+        tasks: taskState.tasks,
+        conversations: get().conversations,
+        conversationId,
+        selectedProjectId: appState.selectedProjectId,
+        selectedTaskId: appState.selectedTaskId,
+        activeRepositoryPath: taskState.activeRepositoryPath,
+        branchWorktrees: taskState.branchWorktrees,
+      });
+
+      return executeWorkspaceTool(normalizedToolName, args, mode, {
+        workspacePath: executionContext.workspacePath,
+      });
     }
   };
 
@@ -1521,6 +1538,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
     allowedToolIds: string[],
     messageWithImagesId?: string
   ) => {
+    const appState = useAppStore.getState();
+    const taskState = useTaskStore.getState();
+    const executionContext = resolveProjectExecutionContext({
+      mode: appState.mode,
+      projects: appState.projectGroups.flatMap((group) => group.projects),
+      tasks: taskState.tasks,
+      conversations: get().conversations,
+      conversationId,
+      selectedProjectId: appState.selectedProjectId,
+      selectedTaskId: appState.selectedTaskId,
+      activeRepositoryPath: taskState.activeRepositoryPath,
+      branchWorktrees: taskState.branchWorktrees,
+    });
     const contextCitations = useCitationsStore.getState().getConversationContextCitations(conversationId);
     const sourceCitations = useCitationsStore.getState().getConversationSourceCitations(conversationId);
     const citations = allowedToolIds.includes('mark_source_passage')
@@ -1641,7 +1671,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    const appState = useAppStore.getState();
     const appMode = appState.mode;
     const agentType = appMode === 'Architect' ? 'plan' : appState.agentType;
     let modePrompt = '';
@@ -1668,6 +1697,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (agentType === 'plan') {
       systemInstructions.push(
         'Agent type is PLAN. Focus on planning before execution: clarify goals, propose a step-by-step implementation plan, identify risks/dependencies, and ask for confirmation before suggesting direct file edits. Do not claim code was changed unless a tool call actually performed the change.'
+      );
+    }
+
+    if (
+      executionContext.projectName ||
+      executionContext.workspacePath ||
+      executionContext.taskId ||
+      executionContext.branchName
+    ) {
+      systemInstructions.push(
+        `[Execution Context] project="${executionContext.projectName || executionContext.projectId || 'none'}", task="${executionContext.taskId || 'none'}", branch="${executionContext.branchName || 'none'}", workspace_path="${executionContext.workspacePath || 'none'}". Treat this workspace as the default repository root for workspace and git operations unless the user explicitly targets another project or path.`
       );
     }
 

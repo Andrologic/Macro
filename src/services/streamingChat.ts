@@ -273,7 +273,7 @@ const LIST_TOOL = {
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Directory path to list. Defaults to current workspace root.' },
+        path: { type: 'string', description: 'Directory path to list. Defaults to the current execution workspace root for this conversation.' },
         recursive: { type: 'boolean', description: 'Whether to list recursively.' },
         include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
         max_depth: { type: 'number', description: 'Maximum recursion depth when recursive=true.' },
@@ -287,7 +287,7 @@ const READ_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'read',
-    description: 'Read a file from the local workspace by path.',
+    description: 'Read a file from the local execution workspace by path.',
     parameters: {
       type: 'object',
       properties: {
@@ -304,7 +304,7 @@ const WRITE_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'write',
-    description: 'Create or overwrite a workspace file with full content.',
+    description: 'Create or overwrite a file in the current execution workspace with full content.',
     parameters: {
       type: 'object',
       properties: {
@@ -321,7 +321,7 @@ const EDIT_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'edit',
-    description: 'Edit a workspace file by replacing exact text.',
+    description: 'Edit a file in the current execution workspace by replacing exact text.',
     parameters: {
       type: 'object',
       properties: {
@@ -339,7 +339,7 @@ const GLOB_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'glob',
-    description: 'Find workspace files matching a glob pattern (example: src/**/*.ts).',
+    description: 'Find files in the current execution workspace matching a glob pattern (example: src/**/*.ts).',
     parameters: {
       type: 'object',
       properties: {
@@ -355,7 +355,7 @@ const GREP_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'grep',
-    description: 'Search text in workspace files.',
+    description: 'Search text in files under the current execution workspace.',
     parameters: {
       type: 'object',
       properties: {
@@ -374,7 +374,7 @@ const GIT_STATUS_TOOL = {
   type: 'function',
   function: {
     name: 'git_status',
-    description: 'Get git status for current repository context.',
+    description: 'Get git status for the current execution repository context.',
     parameters: {
       type: 'object',
       properties: {

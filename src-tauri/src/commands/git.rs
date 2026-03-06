@@ -272,7 +272,26 @@ fn build_macro_sync_dto(
 }
 
 pub fn validate_repo_path(repo_path: &str, workspace: &PathBuf) -> Result<PathBuf> {
-	let validated = validate_path(Path::new(repo_path), workspace)?;
+	let repo_path = Path::new(repo_path);
+	let validated = if repo_path.is_absolute() {
+		let canonical = repo_path.canonicalize().map_err(|error| match error.kind() {
+			std::io::ErrorKind::NotFound => BackendError::FilesystemNotFound {
+				message: format!("Repository path {:?} does not exist", repo_path),
+			},
+			_ => BackendError::Io {
+				message: format!("Failed to canonicalize repository path {:?}: {}", repo_path, error),
+				source: error,
+			},
+		})?;
+		if !canonical.is_dir() {
+			return Err(BackendError::GitRepositoryNotFound {
+				message: format!("Repository path {:?} is not a directory", repo_path),
+			});
+		}
+		canonical
+	} else {
+		validate_path(repo_path, workspace)?
+	};
 	for component in validated.components() {
 		if let std::path::Component::Normal(part) = component {
 			if part == ".git" {
@@ -2105,6 +2124,19 @@ mod tests {
 		}
 
 		(temp, repo)
+	}
+
+	#[test]
+	fn test_validate_repo_path_allows_absolute_repo_outside_workspace() {
+		let workspace = TempDir::new().expect("workspace");
+		let repo_dir = TempDir::new().expect("repo dir");
+		Repository::init(repo_dir.path()).expect("init external repo");
+
+		let validated =
+			validate_repo_path(repo_dir.path().to_str().expect("repo path"), &workspace.path().to_path_buf())
+				.expect("validate repo path");
+
+		assert_eq!(validated, repo_dir.path().canonicalize().expect("canonical repo"));
 	}
 
 	#[test]

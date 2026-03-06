@@ -896,11 +896,13 @@ export async function executeWorkspaceTool(params: {
   mode: AppMode;
   toolId: string;
   args: Record<string, unknown>;
+  workspacePath?: string | null;
 }): Promise<string> {
   return invoke<string>('tool_execute_workspace', {
     mode: params.mode,
     toolId: params.toolId,
     args: params.args,
+    workspacePath: params.workspacePath ?? null,
   });
 }
 

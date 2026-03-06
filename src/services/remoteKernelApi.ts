@@ -83,6 +83,7 @@ export const executeRemoteWorkspaceTool = async (params: {
   mode: AppMode;
   toolId: string;
   args: Record<string, unknown>;
+  workspacePath?: string | null;
 }): Promise<string> => {
   const payload = await remoteKernelRequest<{ result: string }>('/api/v1/tools/execute', {
     method: 'POST',
@@ -90,6 +91,7 @@ export const executeRemoteWorkspaceTool = async (params: {
       mode: params.mode,
       tool_id: params.toolId,
       args: params.args,
+      workspace_path: params.workspacePath ?? null,
     }),
   });
 
