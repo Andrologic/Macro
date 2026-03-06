@@ -22,6 +22,7 @@ export interface PlanNode {
   dependencies: string[];
   assignedBranch?: string;
   projectId?: string;
+  projectIds?: string[];
   estimatedTime?: string;
 }
 
@@ -40,6 +41,15 @@ export interface PredictedBranch {
   projectId: string;
   taskIds: string[];
   status: 'pending' | 'active' | 'merged';
+}
+
+export interface TaskExecutionTarget {
+  projectId: string;
+  branchName: string;
+  worktreeKey: string;
+  repoPath?: string;
+  planBranchName?: string;
+  predictedBranchId?: string | null;
 }
 
 export interface PredictedCommit {
@@ -185,6 +195,7 @@ export interface Task {
   id: string;
   plan_id: string;
   project_id: string;
+  project_ids?: string[];
   title: string;
   description: string;
   status: TaskStatus;
@@ -354,3 +365,4 @@ export interface AuthCredentials {
   email: string;
   password: string;
 }
+

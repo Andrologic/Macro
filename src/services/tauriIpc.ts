@@ -222,6 +222,8 @@ export interface ToolModePolicyDto {
   enforce_macro_only_writes: boolean;
 }
 
+export type WorkspaceScope = 'default' | 'metadata';
+
 // ============ Conversations ============
 
 export async function listConversations(): Promise<DbConversation[]> {
@@ -316,10 +318,12 @@ export async function fsReadFile(path: string): Promise<FsFileContentDto> {
 export async function fsReadFileWithOptions(params: {
   path: string;
   allowOutsideWorkspace?: boolean;
+  workspaceScope?: WorkspaceScope;
 }): Promise<FsFileContentDto> {
   return invoke<FsFileContentDto>('fs_read_file', {
     path: params.path,
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
+    workspaceScope: params.workspaceScope ?? null,
   });
 }
 
@@ -328,12 +332,14 @@ export async function fsWriteFile(params: {
   content: string;
   createDirs?: boolean;
   allowOutsideWorkspace?: boolean;
+  workspaceScope?: WorkspaceScope;
 }): Promise<FsWriteResultDto> {
   return invoke<FsWriteResultDto>('fs_write_file', {
     path: params.path,
     content: params.content,
     createDirs: params.createDirs ?? null,
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
+    workspaceScope: params.workspaceScope ?? null,
   });
 }
 
@@ -364,10 +370,12 @@ export async function fsExists(path: string): Promise<boolean> {
 export async function fsDelete(params: {
   path: string;
   recursive?: boolean;
+  workspaceScope?: WorkspaceScope;
 }): Promise<void> {
   return invoke('fs_delete', {
     path: params.path,
     recursive: params.recursive ?? null,
+    workspaceScope: params.workspaceScope ?? null,
   });
 }
 
@@ -502,6 +510,18 @@ export async function gitCheckout(params: {
     repoPath: params.repoPath,
     branchOrCommit: params.branchOrCommit,
     create: params.create,
+  });
+}
+
+export async function gitMerge(params: {
+  repoPath: string;
+  branchName: string;
+  intoBranch: string;
+}): Promise<string> {
+  return invoke<string>('git_merge', {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    intoBranch: params.intoBranch,
   });
 }
 
@@ -897,12 +917,14 @@ export async function executeWorkspaceTool(params: {
   toolId: string;
   args: Record<string, unknown>;
   workspacePath?: string | null;
+  workspaceScope?: WorkspaceScope;
 }): Promise<string> {
   return invoke<string>('tool_execute_workspace', {
     mode: params.mode,
     toolId: params.toolId,
     args: params.args,
     workspacePath: params.workspacePath ?? null,
+    workspaceScope: params.workspaceScope ?? null,
   });
 }
 
@@ -937,3 +959,4 @@ export async function safeInvoke<T>(
     throw error;
   }
 }
+

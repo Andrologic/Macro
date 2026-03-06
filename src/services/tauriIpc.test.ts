@@ -34,6 +34,7 @@ describe('tauriIpc executeWorkspaceTool', () => {
           toolId: 'read',
           args: { path: 'src/App.tsx' },
           workspacePath: 'C:/dev/Smartcards',
+          workspaceScope: null,
         },
       },
     ]);

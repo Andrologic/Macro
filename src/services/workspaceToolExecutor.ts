@@ -1,6 +1,6 @@
 import * as tauriIpc from './tauriIpc';
 import type { AppMode } from '../types';
-import { isMacroScopedPath } from './toolModePolicy';
+import { isMacroScopedPath, isMetadataRelativePath } from './toolModePolicy';
 import {
   canUseRemoteKernel,
   executeRemoteWorkspaceTool,
@@ -44,8 +44,8 @@ const extractCandidatePath = (toolName: string, args: ToolArgs): string | undefi
 
 export const assertPathAllowed = (mode: AppMode, path: string): void => {
   if (mode !== 'Architect') return;
-  if (!isMacroScopedPath(path)) {
-    throw new Error('Architect mode can only edit files under .macro/.');
+  if (!isMetadataRelativePath(path)) {
+    throw new Error('Architect mode can only edit metadata files in the @macro root.');
   }
 };
 
@@ -295,6 +295,8 @@ export const executeWorkspaceTool = async (
     return 'Workspace tools require Tauri runtime.';
   }
 
+  const useMetadataWorkspace = mode === 'Architect' && (toolName === 'write' || toolName === 'edit');
+
   const executeBackendTool = async (
     backendToolName: string,
     backendArgs: ToolArgs
@@ -305,6 +307,7 @@ export const executeWorkspaceTool = async (
         toolId: backendToolName,
         args: backendArgs,
         workspacePath: effectiveWorkspacePath,
+        workspaceScope: useMetadataWorkspace ? 'metadata' : undefined,
       });
     }
 
@@ -313,6 +316,7 @@ export const executeWorkspaceTool = async (
       toolId: backendToolName,
       args: backendArgs,
       workspacePath: effectiveWorkspacePath,
+      workspaceScope: useMetadataWorkspace ? 'metadata' : undefined,
     });
   };
 
@@ -389,7 +393,7 @@ export const executeWorkspaceTool = async (
 
     const candidatePathInput = extractCandidatePath(toolName, args);
     const resolvedCandidatePath = candidatePathInput
-      ? resolveBackendPath(candidatePathInput, mode, effectiveWorkspacePath)
+      ? (useMetadataWorkspace ? candidatePathInput : resolveBackendPath(candidatePathInput, mode, effectiveWorkspacePath))
       : undefined;
 
     try {
@@ -717,14 +721,15 @@ export const executeWorkspaceTool = async (
       const inputPath = sanitizePathInput(toString(args.path));
       const content = toString(args.content);
       if (!inputPath) return 'Missing path argument for write tool.';
-      const path = resolveDirectPath(inputPath, mode, effectiveWorkspacePath);
-      assertPathAllowed(mode, resolveBackendPath(inputPath, mode, effectiveWorkspacePath));
+      const path = useMetadataWorkspace ? inputPath : resolveDirectPath(inputPath, mode, effectiveWorkspacePath);
+      assertPathAllowed(mode, useMetadataWorkspace ? inputPath : resolveBackendPath(inputPath, mode, effectiveWorkspacePath));
       const createDirs = args.create_dirs !== false;
       const writeResult = await tauriIpc.fsWriteFile({
         path,
         content,
         createDirs,
-        allowOutsideWorkspace: mode === 'Debug' || Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: mode === 'Debug' || (!useMetadataWorkspace && Boolean(effectiveWorkspacePath)),
+        workspaceScope: useMetadataWorkspace ? 'metadata' : undefined,
       });
       return JSON.stringify({ ok: true, ...writeResult }, null, 2);
     }
@@ -738,12 +743,13 @@ export const executeWorkspaceTool = async (
       if (!inputPath) return 'Missing path argument for edit tool.';
       if (!oldText) return 'Missing old_text argument for edit tool.';
 
-      const path = resolveDirectPath(inputPath, mode, effectiveWorkspacePath);
-      assertPathAllowed(mode, resolveBackendPath(inputPath, mode, effectiveWorkspacePath));
+      const path = useMetadataWorkspace ? inputPath : resolveDirectPath(inputPath, mode, effectiveWorkspacePath);
+      assertPathAllowed(mode, useMetadataWorkspace ? inputPath : resolveBackendPath(inputPath, mode, effectiveWorkspacePath));
 
       const current = await tauriIpc.fsReadFileWithOptions({
         path,
-        allowOutsideWorkspace: mode === 'Debug' || Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: mode === 'Debug' || (!useMetadataWorkspace && Boolean(effectiveWorkspacePath)),
+        workspaceScope: useMetadataWorkspace ? 'metadata' : undefined,
       });
       if (current.is_binary) {
         return `Cannot edit binary file: ${path}`;
@@ -763,7 +769,8 @@ export const executeWorkspaceTool = async (
         path,
         content: updated,
         createDirs: true,
-        allowOutsideWorkspace: mode === 'Debug' || Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: mode === 'Debug' || (!useMetadataWorkspace && Boolean(effectiveWorkspacePath)),
+        workspaceScope: useMetadataWorkspace ? 'metadata' : undefined,
       });
       return JSON.stringify({ ok: true, replacements: replaceAll ? occurrences : 1, ...writeResult }, null, 2);
     }

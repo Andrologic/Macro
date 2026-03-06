@@ -1,4 +1,11 @@
-import type { PlanNode, PlanNodeStatus, PredictedBranch, Task, TaskStatus } from '../types';
+import type {
+  PlanNode,
+  PlanNodeStatus,
+  PredictedBranch,
+  Task,
+  TaskExecutionTarget,
+  TaskStatus,
+} from '../types';
 
 const BRANCH_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
@@ -7,10 +14,10 @@ const normalizeBranchName = (value?: string): string => {
   return trimmed || 'work';
 };
 
-const unique = (items: string[]): string[] => Array.from(new Set(items));
+const unique = (items: string[]): string[] => Array.from(new Set(items.filter((item) => item.trim().length > 0)));
 
-const makeBranchId = (name: string): string => {
-  const normalized = name
+const makeBranchId = (name: string, projectId?: string): string => {
+  const normalized = `${projectId || 'shared'}-${name}`
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+/, '')
@@ -27,14 +34,40 @@ const stableHash = (value: string): string => {
   return (hash >>> 0).toString(16).padStart(8, '0');
 };
 
-export const toBranchWorktreeKey = (branchName: string): string => {
+const normalizeProjectId = (value?: string | null): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const normalizedProjectId = (projectId: string): string =>
+  projectId
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
+    .slice(0, 16) || 'project';
+
+export const normalizeNodeProjectIds = (node: Pick<PlanNode, 'projectId' | 'projectIds'>): string[] => {
+  const projectIds = Array.isArray(node.projectIds) ? node.projectIds : [];
+  return unique([
+    ...projectIds.filter((projectId): projectId is string => typeof projectId === 'string'),
+    ...(node.projectId ? [node.projectId] : []),
+  ]);
+};
+
+export const toBranchCacheKey = (projectId: string, branchName: string): string => {
+  return `${projectId}::${normalizeBranchName(branchName)}`;
+};
+
+export const toBranchWorktreeKey = (projectId: string, branchName: string): string => {
   const normalized = normalizeBranchName(branchName)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+/, '')
     .replace(/-+$/, '')
-    .slice(0, 42);
-  return `branch-${normalized || 'work'}-${stableHash(branchName)}`;
+    .slice(0, 32);
+  return `branch-${normalizedProjectId(projectId)}-${normalized || 'work'}-${stableHash(`${projectId}:${branchName}`)}`;
 };
 
 export const mapNodeStatusToTaskStatus = (status: PlanNodeStatus): TaskStatus => {
@@ -61,6 +94,7 @@ export interface DerivedImplementTask extends Task {
   is_blocked: boolean;
   is_ready: boolean;
   sequence_index: number;
+  execution_targets: TaskExecutionTarget[];
 }
 
 export interface NormalizedStrategyResult {
@@ -125,34 +159,57 @@ const normalizePredictedBranches = (
 ): PredictedBranch[] => {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const normalized: PredictedBranch[] = [];
-  const seenNames = new Set<string>();
+  const seenKeys = new Set<string>();
 
   for (const branch of predictedBranches) {
     const branchName = normalizeBranchName(branch.name);
+    const projectId = normalizeProjectId(branch.projectId);
+    if (!projectId) continue;
+
     const taskIds = branchTaskOrder.get(branchName) || [];
+    const cacheKey = toBranchCacheKey(projectId, branchName);
+    if (seenKeys.has(cacheKey)) {
+      const existing = normalized.find((candidate) => toBranchCacheKey(candidate.projectId, candidate.name) === cacheKey);
+      if (existing) {
+        existing.taskIds = unique([...existing.taskIds, ...taskIds]);
+      }
+      continue;
+    }
+
     normalized.push({
       ...branch,
       name: branchName,
+      projectId,
       taskIds,
     });
-    seenNames.add(branchName);
+    seenKeys.add(cacheKey);
   }
 
   let colorIndex = normalized.length;
   for (const [branchName, taskIds] of branchTaskOrder.entries()) {
-    if (seenNames.has(branchName)) continue;
+    const projectIds = unique(
+      taskIds.flatMap((taskId) => {
+        const node = nodeById.get(taskId);
+        return node ? normalizeNodeProjectIds(node) : [];
+      })
+    );
 
-    const firstNode = nodeById.get(taskIds[0]);
-    normalized.push({
-      id: makeBranchId(branchName),
-      name: branchName,
-      color: BRANCH_COLORS[colorIndex % BRANCH_COLORS.length],
-      parentBranch: null,
-      projectId: firstNode?.projectId || '',
-      taskIds,
-      status: 'pending',
-    });
-    colorIndex += 1;
+    for (const projectId of projectIds) {
+      const cacheKey = toBranchCacheKey(projectId, branchName);
+      if (seenKeys.has(cacheKey)) continue;
+
+      normalized.push({
+        id: makeBranchId(branchName, projectId),
+        name: branchName,
+        color: BRANCH_COLORS[colorIndex % BRANCH_COLORS.length],
+        parentBranch: null,
+        projectId,
+        taskIds,
+        status: 'pending',
+      });
+      colorIndex += 1;
+      seenKeys.add(cacheKey);
+    }
   }
 
   return normalized;
@@ -202,11 +259,16 @@ export const normalizeStrategyDependencies = (
   nodesInput: PlanNode[],
   predictedBranchesInput: PredictedBranch[]
 ): NormalizedStrategyResult => {
-  const clonedNodes: PlanNode[] = nodesInput.map((node) => ({
-    ...node,
-    assignedBranch: normalizeBranchName(node.assignedBranch),
-    dependencies: [...node.dependencies],
-  }));
+  const clonedNodes: PlanNode[] = nodesInput.map((node) => {
+    const projectIds = normalizeNodeProjectIds(node);
+    return {
+      ...node,
+      assignedBranch: normalizeBranchName(node.assignedBranch),
+      dependencies: [...node.dependencies],
+      projectId: projectIds[0],
+      projectIds,
+    };
+  });
   const nodeIds = new Set(clonedNodes.map((node) => node.id));
 
   for (const node of clonedNodes) {
@@ -215,11 +277,14 @@ export const normalizeStrategyDependencies = (
     );
   }
 
-  const predictedBranches = predictedBranchesInput.map((branch) => ({
-    ...branch,
-    name: normalizeBranchName(branch.name),
-    taskIds: [...branch.taskIds],
-  }));
+  const predictedBranches = predictedBranchesInput
+    .map((branch) => ({
+      ...branch,
+      name: normalizeBranchName(branch.name),
+      projectId: normalizeProjectId(branch.projectId) || '',
+      taskIds: [...branch.taskIds],
+    }))
+    .filter((branch) => branch.projectId.length > 0);
 
   const branchTaskOrder = toBranchTaskOrder(clonedNodes, predictedBranches);
   applySequentialBranchDependencies(clonedNodes, branchTaskOrder);
@@ -252,6 +317,29 @@ const finalizeTaskStatus = (status: TaskStatus, blockedByTaskIds: string[]): Tas
   return status;
 };
 
+const buildExecutionTargets = (
+  node: PlanNode,
+  predictedBranches: PredictedBranch[],
+  planBranchName: string | undefined
+): TaskExecutionTarget[] => {
+  const branchName = normalizeBranchName(node.assignedBranch);
+  const projectIds = normalizeNodeProjectIds(node);
+
+  return projectIds.map((projectId) => {
+    const predictedBranch = predictedBranches.find(
+      (branch) => branch.projectId === projectId && normalizeBranchName(branch.name) === branchName
+    );
+
+    return {
+      projectId,
+      branchName,
+      worktreeKey: toBranchWorktreeKey(projectId, branchName),
+      planBranchName: planBranchName || predictedBranch?.parentBranch || undefined,
+      predictedBranchId: predictedBranch?.id ?? null,
+    };
+  });
+};
+
 export const deriveImplementTasksFromStrategy = (params: {
   planId: string;
   nodes: PlanNode[];
@@ -263,7 +351,10 @@ export const deriveImplementTasksFromStrategy = (params: {
   branchTaskOrder: Record<string, string[]>;
 } => {
   const normalized = normalizeStrategyDependencies(params.nodes, params.predictedBranches);
-  const branchByName = new Map(normalized.predictedBranches.map((branch) => [branch.name, branch]));
+  const branchByProjectAndName = new Map(
+    normalized.predictedBranches.map((branch) => [toBranchCacheKey(branch.projectId, branch.name), branch])
+  );
+  const planBranchName = normalized.predictedBranches[0]?.parentBranch || undefined;
 
   const sequenceOrder = new Map<string, number>();
   let nextOrder = 0;
@@ -284,14 +375,20 @@ export const deriveImplementTasksFromStrategy = (params: {
 
   const initialTasks: DerivedImplementTask[] = normalized.nodes.map((node) => {
     const branchName = normalizeBranchName(node.assignedBranch);
-    const branch = branchByName.get(branchName) || null;
+    const executionTargets = buildExecutionTargets(node, normalized.predictedBranches, planBranchName);
+    const primaryTarget = executionTargets[0] || null;
+    const branch = primaryTarget
+      ? branchByProjectAndName.get(toBranchCacheKey(primaryTarget.projectId, branchName)) || null
+      : null;
     const branchTaskIndex = normalized.branchTaskOrder[branchName]?.indexOf(node.id) ?? -1;
     const status = mapNodeStatusToTaskStatus(node.status);
+    const projectIds = executionTargets.map((target) => target.projectId);
 
     return {
       id: node.id,
       plan_id: params.planId,
-      project_id: node.projectId || branch?.projectId || '',
+      project_id: projectIds[0] || node.projectId || '',
+      project_ids: projectIds,
       title: node.title,
       description: node.description || '',
       status,
@@ -306,6 +403,7 @@ export const deriveImplementTasksFromStrategy = (params: {
       is_blocked: false,
       is_ready: status !== 'Completed' && status !== 'Failed',
       sequence_index: sequenceOrder.get(node.id) ?? Number.MAX_SAFE_INTEGER,
+      execution_targets: executionTargets,
     };
   });
 

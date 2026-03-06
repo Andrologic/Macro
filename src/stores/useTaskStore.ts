@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Task, TaskStatus } from '../types';
+import type { Task, TaskExecutionTarget, TaskStatus } from '../types';
 import i18n from '../i18n';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
@@ -13,7 +13,12 @@ import {
   toBranchWorktreeKey,
   type DerivedImplementTask,
 } from '../services/implementTaskDerivation';
-import { resolveTargetBranch, updateArchitectPlan } from '../services/architectPlanService';
+import { mergeFeatureBranchIntoPlanBranch } from '../services/architectGitFlowService';
+import {
+  resolveTargetBranch,
+  updateArchitectPlan,
+  writeArchitectTaskExecution,
+} from '../services/architectPlanService';
 
 type TaskSource = 'architect' | 'fallback' | 'empty';
 
@@ -22,6 +27,35 @@ let appSyncUnsubscribe: (() => void) | null = null;
 const normalizeBranchName = (value?: string): string => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed || 'work';
+};
+
+const taskIncludesProjectId = (task: DerivedImplementTask, projectId: string | null | undefined): boolean => {
+  if (!projectId) return false;
+  return (
+    task.project_id === projectId ||
+    (task.project_ids || []).includes(projectId) ||
+    (task.execution_targets || []).some((target) => target.projectId === projectId)
+  );
+};
+
+const getExecutionTargets = (task: DerivedImplementTask): TaskExecutionTarget[] => {
+  if (task.execution_targets?.length) {
+    return task.execution_targets;
+  }
+
+  if (!task.project_id) {
+    return [];
+  }
+
+  return [{
+    projectId: task.project_id,
+    branchName: task.assigned_branch,
+    worktreeKey: toBranchWorktreeKey(task.project_id, task.assigned_branch),
+  }];
+};
+
+const getPrimaryExecutionTarget = (task: DerivedImplementTask): TaskExecutionTarget | null => {
+  return getExecutionTargets(task)[0] || null;
 };
 
 const ALLOWED_STATUS_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
@@ -48,11 +82,23 @@ const computeFallbackDerivedTasks = (tasks: Task[]): DerivedImplementTask[] => {
       branch_id?: string;
       branch_task_index?: number;
       sequence_index?: number;
+      execution_targets?: TaskExecutionTarget[];
     };
     const assignedBranch = normalizeBranchName(raw.assigned_branch || raw.branch_name);
+    const projectIds = Array.isArray(task.project_ids) && task.project_ids.length > 0
+      ? task.project_ids
+      : (task.project_id ? [task.project_id] : []);
+    const executionTargets = raw.execution_targets && raw.execution_targets.length > 0
+      ? raw.execution_targets
+      : projectIds.map((projectId) => ({
+          projectId,
+          branchName: assignedBranch,
+          worktreeKey: toBranchWorktreeKey(projectId, assignedBranch),
+        }));
 
     return {
       ...task,
+      project_ids: projectIds,
       assigned_branch: assignedBranch,
       branch_name: assignedBranch,
       branch_id: raw.branch_id || null,
@@ -63,6 +109,7 @@ const computeFallbackDerivedTasks = (tasks: Task[]): DerivedImplementTask[] => {
       is_blocked: false,
       is_ready: false,
       sequence_index: typeof raw.sequence_index === 'number' ? raw.sequence_index : index,
+      execution_targets: executionTargets,
     } satisfies DerivedImplementTask;
   });
 
@@ -115,7 +162,7 @@ const ensureAppSync = () => {
       const selectedTaskId = nextState.selectedTaskId;
       if (selectedTaskId) {
         const selectedTask = useTaskStore.getState().getTaskById(selectedTaskId);
-        if (!selectedTask || selectedTask.project_id !== nextState.selectedProjectId) {
+        if (!selectedTask || !taskIncludesProjectId(selectedTask, nextState.selectedProjectId)) {
           useAppStore.getState().setSelectedTask(null);
           useTaskStore.setState({
             activeBranchName: null,
@@ -142,7 +189,42 @@ const ensureAppSync = () => {
 
 const syncWorkspaceRoot = async (_path: string | null): Promise<void> => {
   // Runtime workspace is resolved per conversation/tool request.
-  // Do not mutate a global root from task/project selection; that causes cross-project drift.
+};
+
+const applyPredictedBranchLifecycle = (
+  tasks: DerivedImplementTask[],
+  predictedBranches: ReturnType<typeof useAppStore.getState>['predictedBranches'],
+  taskId: string,
+  nextStatus: TaskStatus
+) => {
+  const targetTask = tasks.find((task) => task.id === taskId);
+  if (!targetTask) return predictedBranches;
+
+  const taskStatuses = new Map(tasks.map((task) => [task.id, task.id === taskId ? nextStatus : task.status]));
+  const targetKeys = new Set(getExecutionTargets(targetTask).map((target) => `${target.projectId}::${normalizeBranchName(target.branchName)}`));
+
+  return predictedBranches.map((branch) => {
+    const branchKey = `${branch.projectId}::${normalizeBranchName(branch.name)}`;
+    if (!targetKeys.has(branchKey)) {
+      return branch;
+    }
+
+    if (nextStatus === 'InProgress' || nextStatus === 'AwaitingResponse') {
+      return { ...branch, status: 'active' as const };
+    }
+
+    if (nextStatus !== 'Completed') {
+      return branch;
+    }
+
+    const branchTasks = tasks.filter((task) =>
+      getExecutionTargets(task).some(
+        (target) => target.projectId === branch.projectId && normalizeBranchName(target.branchName) === normalizeBranchName(branch.name)
+      )
+    );
+    const allCompleted = branchTasks.every((task) => taskStatuses.get(task.id) === 'Completed');
+    return { ...branch, status: allCompleted ? 'merged' as const : 'active' as const };
+  });
 };
 
 interface TaskStore {
@@ -187,10 +269,11 @@ const persistTaskStatusToArchitectPlan = async (
     return;
   }
 
+  const nextPredictedBranches = applyPredictedBranchLifecycle(useTaskStore.getState().tasks, appState.predictedBranches, taskId, status);
   const strategy = deriveImplementTasksFromStrategy({
     planId,
     nodes: nextPlanNodes,
-    predictedBranches: appState.predictedBranches,
+    predictedBranches: nextPredictedBranches,
   });
 
   useAppStore.getState().setPlanNodes(strategy.nodes);
@@ -266,7 +349,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           const candidateTaskId = context?.lastTaskId;
           if (candidateTaskId) {
             const candidateTask = strategy.tasks.find((task) => task.id === candidateTaskId);
-            if (candidateTask && candidateTask.project_id === selectedProjectId) {
+            if (candidateTask && taskIncludesProjectId(candidateTask, selectedProjectId)) {
               useAppStore.getState().setSelectedTask(candidateTaskId);
             }
           }
@@ -326,7 +409,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           const candidateTaskId = context?.lastTaskId;
           if (candidateTaskId) {
             const candidateTask = derived.find((task) => task.id === candidateTaskId);
-            if (candidateTask && candidateTask.project_id === selectedProjectId) {
+            if (candidateTask && taskIncludesProjectId(candidateTask, selectedProjectId)) {
               useAppStore.getState().setSelectedTask(candidateTaskId);
             }
           }
@@ -353,7 +436,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
 
     const branchName = task.assigned_branch;
-    const knownWorktree = get().branchWorktrees[branchName];
+    const primaryTarget = getPrimaryExecutionTarget(task);
+    const knownWorktree = primaryTarget ? get().branchWorktrees[primaryTarget.worktreeKey] : null;
     if (knownWorktree) {
       set({
         activeBranchName: branchName,
@@ -363,8 +447,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
-    const projectPath = task.project_id
-      ? appState.getProjectById(task.project_id)?.path ?? null
+    const projectPath = primaryTarget?.projectId
+      ? appState.getProjectById(primaryTarget.projectId)?.path ?? null
       : null;
 
     set({
@@ -412,9 +496,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       appState.setSelectedTask(task.id);
     }
 
-    const branchName = task.assigned_branch;
-    const projectId = task.project_id || appState.selectedProjectId;
-    if (!projectId) {
+    const executionTargets = getExecutionTargets(task);
+    if (executionTargets.length === 0) {
       set({
         lastError: tTask(
           'implement.errors.cannotResolveTaskProject',
@@ -425,33 +508,39 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
-    let worktreePath = get().branchWorktrees[branchName] || null;
-    if (!worktreePath) {
-      const technicalTaskId = toBranchWorktreeKey(branchName);
-      worktreePath = await useGitStore.getState().createWorktree(projectId, technicalTaskId, branchName);
+    const createdWorktrees: Record<string, string> = {};
+    for (const target of executionTargets) {
+      let worktreePath = get().branchWorktrees[target.worktreeKey] || null;
       if (!worktreePath) {
-        set({
-          lastError: tTask(
-            'implement.errors.worktreeCreateFailed',
-            'Failed to create or reuse worktree for branch {{branchName}}',
-            { branchName }
-          ),
-        });
-        return;
+        worktreePath = await useGitStore.getState().createWorktree(target.projectId, target.worktreeKey, target.branchName);
+        if (!worktreePath) {
+          set({
+            lastError: tTask(
+              'implement.errors.worktreeCreateFailed',
+              'Failed to create or reuse worktree for branch {{branchName}}',
+              { branchName: target.branchName }
+            ),
+          });
+          return;
+        }
       }
+      createdWorktrees[target.worktreeKey] = worktreePath;
     }
+
+    const primaryTarget = executionTargets[0];
+    const primaryWorktree = createdWorktrees[primaryTarget.worktreeKey] || get().branchWorktrees[primaryTarget.worktreeKey] || null;
 
     set((state) => ({
       branchWorktrees: {
         ...state.branchWorktrees,
-        [branchName]: worktreePath!,
+        ...createdWorktrees,
       },
-      activeBranchName: branchName,
-      activeRepositoryPath: worktreePath,
+      activeBranchName: task.assigned_branch,
+      activeRepositoryPath: primaryWorktree,
       lastError: null,
     }));
 
-    await syncWorkspaceRoot(worktreePath);
+    await syncWorkspaceRoot(primaryWorktree);
     await get().setTaskStatus(task.id, 'InProgress');
   },
 
@@ -472,15 +561,50 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
-    if (tauriIpc.isTauriAvailable()) {
-      const repoPath =
-        get().branchWorktrees[task.assigned_branch] ||
-        get().activeRepositoryPath ||
-        (task.project_id ? useAppStore.getState().getProjectById(task.project_id)?.path ?? null : null);
+    const appState = useAppStore.getState();
+    const executionTargets = getExecutionTargets(task);
+    if (executionTargets.length === 0) {
+      set({ lastError: tTask('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', { taskId }) });
+      return;
+    }
 
-      if (repoPath) {
+    const repositories: Array<{
+      projectId: string;
+      repoPath: string;
+      branchName: string;
+      planBranchName: string;
+      mergeOutput?: string;
+    }> = [];
+
+    if (tauriIpc.isTauriAvailable()) {
+      for (const target of executionTargets) {
+        const worktreePath = get().branchWorktrees[target.worktreeKey];
+        if (!worktreePath) {
+          set({
+            lastError: tTask(
+              'implement.errors.worktreeCreateFailed',
+              'Missing worktree for branch {{branchName}}',
+              { branchName: target.branchName }
+            ),
+          });
+          return;
+        }
+
+        const project = appState.getProjectById(target.projectId);
+        const repoPath = project?.path ?? null;
+        if (!repoPath) {
+          set({
+            lastError: tTask(
+              'implement.errors.cannotResolveTaskProject',
+              'Cannot resolve project for task {{taskId}}',
+              { taskId: task.id }
+            ),
+          });
+          return;
+        }
+
         try {
-          const status = await tauriIpc.gitStatus(repoPath);
+          const status = await tauriIpc.gitStatus(worktreePath);
           if (!status.is_clean) {
             set({
               lastError: tTask(
@@ -490,6 +614,38 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
             });
             return;
           }
+
+          const planBranchName = target.planBranchName || 'plan';
+          const diff = await tauriIpc.gitDiff({
+            repoPath,
+            base: planBranchName,
+            head: target.branchName,
+            contextLines: 0,
+          });
+          if (!diff.trim()) {
+            set({
+              lastError: tTask(
+                'implement.errors.noIntegratedChanges',
+                'Cannot complete task because there are no branch changes to integrate into {{branchName}}.',
+                { branchName: planBranchName }
+              ),
+            });
+            return;
+          }
+
+          const mergeOutput = await mergeFeatureBranchIntoPlanBranch({
+            projectId: target.projectId,
+            branchName: target.branchName,
+            planBranchName,
+            repoPath,
+          });
+          repositories.push({
+            projectId: target.projectId,
+            repoPath,
+            branchName: target.branchName,
+            planBranchName,
+            mergeOutput,
+          });
         } catch (error) {
           const normalized = toServiceError(error);
           set({ lastError: normalized.message });
@@ -499,6 +655,26 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
 
     await get().setTaskStatus(taskId, 'Completed');
+
+    const activePlanContext = appState.activePlanContext;
+    const activePlanId = appState.activeArchitectPlanId || appState.currentPlan?.id;
+    if (activePlanContext?.targetBranch && activePlanId) {
+      try {
+        await writeArchitectTaskExecution({
+          branchName: resolveTargetBranch(activePlanContext.targetBranch),
+          planId: activePlanId,
+          execution: {
+            taskId: task.id,
+            title: task.title,
+            completedAt: new Date().toISOString(),
+            repositories,
+          },
+        });
+      } catch (error) {
+        const normalized = toServiceError(error);
+        set({ lastError: normalized.message });
+      }
+    }
   },
 
   markTaskAwaitingResponse: async (taskId) => {

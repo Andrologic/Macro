@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)] 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileContentDto {
     /// File content as UTF-8 string (empty for binary files if not base64 encoded)
     pub content: String,
