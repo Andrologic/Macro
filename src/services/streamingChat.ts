@@ -503,6 +503,23 @@ const GIT_CHECKOUT_TOOL = {
   },
 };
 
+const GIT_MERGE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_merge',
+    description: 'Merge a source branch into a target branch.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+        branch_name: { type: 'string' },
+        into_branch: { type: 'string' },
+      },
+      required: ['branch_name', 'into_branch'],
+    },
+  },
+};
+
 const GIT_RESET_TOOL = {
   type: 'function',
   function: {
@@ -990,6 +1007,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   }
   if (allowedTools.has('git_checkout')) {
     tools.push(GIT_CHECKOUT_TOOL);
+  }
+  if (allowedTools.has('git_merge')) {
+    tools.push(GIT_MERGE_TOOL);
   }
   if (allowedTools.has('git_reset')) {
     tools.push(GIT_RESET_TOOL);
@@ -1691,3 +1711,4 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     throw err;
   }
 }
+

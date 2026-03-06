@@ -26,33 +26,33 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
         .path()
         .app_data_dir()
         .map_err(|_| DbError::AppDataDir)?;
-    
+
     // Create the directory if it doesn't exist
     std::fs::create_dir_all(&app_dir).map_err(|e| DbError::Migration(e.to_string()))?;
-    
+
     let db_path = app_dir.join("macro.db");
-    
+
     create_pool(&db_path).await
 }
 
 /// Create a connection pool for the given database path
 async fn create_pool(db_path: &PathBuf) -> DbResult<SqlitePool> {
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    
+
     let options = SqliteConnectOptions::from_str(&db_url)?
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
         .busy_timeout(std::time::Duration::from_secs(30));
-    
+
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(options)
         .await?;
-    
+
     // Run migrations
     run_migrations(&pool).await?;
-    
+
     Ok(pool)
 }
 
@@ -283,12 +283,48 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
 
 async fn insert_default_providers(pool: &SqlitePool) -> DbResult<()> {
     let default_providers = vec![
-        ("openai", "OpenAI", "openai", "https://api.openai.com/v1", false),
-        ("zai", "z.ai", "openai", "https://api.z.ai/api/coding/paas/v4", false),
-        ("anthropic", "Anthropic", "anthropic", "https://api.anthropic.com/v1", false),
-        ("openrouter", "OpenRouter", "openrouter", "https://openrouter.ai/api/v1", false),
-        ("ollama", "Ollama", "ollama", "http://localhost:11434/v1", true),
-        ("lmstudio", "LM Studio", "lmstudio", "http://localhost:1234/v1", true),
+        (
+            "openai",
+            "OpenAI",
+            "openai",
+            "https://api.openai.com/v1",
+            false,
+        ),
+        (
+            "zai",
+            "z.ai",
+            "openai",
+            "https://api.z.ai/api/coding/paas/v4",
+            false,
+        ),
+        (
+            "anthropic",
+            "Anthropic",
+            "anthropic",
+            "https://api.anthropic.com/v1",
+            false,
+        ),
+        (
+            "openrouter",
+            "OpenRouter",
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            false,
+        ),
+        (
+            "ollama",
+            "Ollama",
+            "ollama",
+            "http://localhost:11434/v1",
+            true,
+        ),
+        (
+            "lmstudio",
+            "LM Studio",
+            "lmstudio",
+            "http://localhost:1234/v1",
+            true,
+        ),
     ];
 
     for (id, name, provider_type, base_url, is_local) in default_providers {

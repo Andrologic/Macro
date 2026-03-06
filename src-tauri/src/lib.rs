@@ -60,7 +60,8 @@ pub fn run() {
             let workspace_path = config.workspace_path.clone();
             let workspace_metadata_root =
                 WorkspaceMetadataRoot(Arc::new(RwLock::new(workspace_path.clone())));
-            let workspace_runtime_root: WorkspaceRoot = Arc::new(RwLock::new(workspace_path.clone()));
+            let workspace_runtime_root: WorkspaceRoot =
+                Arc::new(RwLock::new(workspace_path.clone()));
             app.manage(workspace_metadata_root);
             app.manage(workspace_runtime_root);
 

@@ -7,10 +7,12 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use macro_lib::commands::{git, execute_workspace_tool};
+use macro_lib::commands::{execute_workspace_tool, git};
 use macro_lib::core::error::BackendError;
-use macro_lib::core::tool_policy::{get_mode_policy, validate_tool_execution, ToolModePolicyResult, ToolValidationResult};
 use macro_lib::core::load_config;
+use macro_lib::core::tool_policy::{
+    get_mode_policy, validate_tool_execution, ToolModePolicyResult, ToolValidationResult,
+};
 use macro_lib::git::GitState;
 use macro_lib::workspace;
 use serde::{Deserialize, Serialize};
@@ -49,6 +51,8 @@ struct ToolExecuteRequest {
     args: Value,
     #[serde(default)]
     workspace_path: Option<String>,
+    #[serde(default)]
+    workspace_scope: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -80,7 +84,10 @@ fn backend_error_response(error: BackendError) -> axum::response::Response {
         .into_response()
 }
 
-async fn resolve_project_repo_path(state: &HeadlessState, project_id: &str) -> Result<String, BackendError> {
+async fn resolve_project_repo_path(
+    state: &HeadlessState,
+    project_id: &str,
+) -> Result<String, BackendError> {
     let metadata_root = state
         .git_state
         .resolve_macro_metadata_root(&state.workspace_path)?;
@@ -172,6 +179,7 @@ async fn tool_execute(
         payload.tool_id,
         payload.args,
         payload.workspace_path,
+        payload.workspace_scope,
     )
     .await
     {
@@ -194,7 +202,10 @@ async fn workspace_bootstrap(
         return unauthorized_response().into_response();
     }
 
-    let metadata_root = match state.git_state.resolve_macro_metadata_root(&state.workspace_path) {
+    let metadata_root = match state
+        .git_state
+        .resolve_macro_metadata_root(&state.workspace_path)
+    {
         Ok(path) => path,
         Err(error) => return backend_error_response(error),
     };
@@ -221,7 +232,10 @@ async fn workspace_tasks(
         return unauthorized_response().into_response();
     }
 
-    let metadata_root = match state.git_state.resolve_macro_metadata_root(&state.workspace_path) {
+    let metadata_root = match state
+        .git_state
+        .resolve_macro_metadata_root(&state.workspace_path)
+    {
         Ok(path) => path,
         Err(error) => return backend_error_response(error),
     };
@@ -345,11 +359,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/tools/validate", post(tool_validate))
         .route("/api/v1/tools/execute", post(tool_execute))
         .route("/api/v1/workspace/bootstrap", get(workspace_bootstrap))
-        .route("/api/v1/workspaces/{workspace_id}/bootstrap", get(workspace_bootstrap_scoped))
+        .route(
+            "/api/v1/workspaces/{workspace_id}/bootstrap",
+            get(workspace_bootstrap_scoped),
+        )
         .route("/api/v1/workspace/tasks", get(workspace_tasks))
-        .route("/api/v1/workspaces/{workspace_id}/tasks", get(workspace_tasks_scoped))
-        .route("/api/v1/projects/{project_id}/git/tree", get(project_git_tree))
-        .route("/api/v1/projects/{project_id}/git/commits", get(project_git_commits))
+        .route(
+            "/api/v1/workspaces/{workspace_id}/tasks",
+            get(workspace_tasks_scoped),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/git/tree",
+            get(project_git_tree),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/git/commits",
+            get(project_git_commits),
+        )
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;

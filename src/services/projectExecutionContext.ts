@@ -1,9 +1,11 @@
-import type { AppMode, Conversation, Project } from '../types';
+import type { AppMode, Conversation, Project, TaskExecutionTarget } from '../types';
 
 export interface ExecutionTaskLike {
   id: string;
   project_id: string;
+  project_ids?: string[];
   assigned_branch?: string | null;
+  execution_targets?: TaskExecutionTarget[];
 }
 
 export interface ResolveProjectExecutionContextInput {
@@ -44,23 +46,29 @@ export const resolveProjectExecutionContext = (
 
   const selectedTaskId = cleanString(input.selectedTaskId);
   const conversationTaskId = cleanString(conversation?.task_id);
-  const taskId =
-    conversationTaskId ||
-    (input.mode === 'Implement' ? selectedTaskId : null);
+  const taskId = conversationTaskId || (input.mode === 'Implement' ? selectedTaskId : null);
   const task = taskId ? taskById.get(taskId) || null : null;
 
+  const selectedProjectId = cleanString(input.selectedProjectId);
+  const executionTarget = task?.execution_targets?.find((target) => target.projectId === selectedProjectId)
+    || task?.execution_targets?.[0]
+    || null;
+
   const projectId =
+    cleanString(executionTarget?.projectId) ||
     cleanString(task?.project_id) ||
     cleanString(conversation?.project_id) ||
-    cleanString(input.selectedProjectId) ||
+    selectedProjectId ||
     null;
   const project = projectId ? projectById.get(projectId) || null : null;
-  const branchName = cleanString(task?.assigned_branch);
+  const branchName = cleanString(executionTarget?.branchName || task?.assigned_branch);
 
-  const branchWorktree =
-    branchName && input.branchWorktrees
-      ? cleanString(input.branchWorktrees[branchName])
-      : null;
+  const branchWorktree = input.branchWorktrees
+    ? cleanString(
+        (executionTarget?.worktreeKey ? input.branchWorktrees[executionTarget.worktreeKey] : null)
+          || (branchName ? input.branchWorktrees[branchName] : null)
+      )
+    : null;
   const canReuseActiveRepository =
     input.mode === 'Implement' &&
     (!taskId || !selectedTaskId || taskId === selectedTaskId);

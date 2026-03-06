@@ -10,68 +10,99 @@ import {
   updateArchitectPlan,
   type ArchitectPlanRecord,
 } from './architectPlanService';
-import { normalizeStrategyDependencies } from './implementTaskDerivation';
+import { normalizeNodeProjectIds, normalizeStrategyDependencies } from './implementTaskDerivation';
 
 const BRANCH_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
-export interface ProvisionPlanBranchesResult {
+export interface ProvisionedPlanRepositoryResult {
+  projectId: string;
+  repoPath: string;
   planBranchName: string;
   createdPlanBranch: boolean;
   createdFeatureBranches: string[];
   existingFeatureBranches: string[];
 }
 
-const resolveRepoPathForPlan = (projectId?: string): string | null => {
-  const appState = useAppStore.getState();
-  const candidateIds = [
-    projectId,
-    appState.selectedProjectId,
-    appState.projectGroups.flatMap((group) => group.projects)[0]?.id,
-  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+export interface ProvisionPlanBranchesResult {
+  planBranchName: string;
+  repositories: ProvisionedPlanRepositoryResult[];
+  createdPlanBranch: boolean;
+  createdFeatureBranches: string[];
+  existingFeatureBranches: string[];
+}
 
-  for (const id of candidateIds) {
-    const project = appState.getProjectById(id);
+export interface CleanupPlanRepositoryResult {
+  projectId: string;
+  repoPath: string;
+  deletedBranches: string[];
+}
+
+const resolveProjectRepoPaths = (projectIds: string[], explicitRepoPath?: string): Array<{ projectId: string; repoPath: string }> => {
+  const appState = useAppStore.getState();
+  const resolved: Array<{ projectId: string; repoPath: string }> = [];
+
+  for (const projectId of projectIds) {
+    const project = appState.getProjectById(projectId);
     if (project?.path?.trim()) {
-      return project.path;
+      resolved.push({ projectId, repoPath: project.path });
     }
   }
 
-  return null;
+  if (resolved.length === 0 && explicitRepoPath) {
+    const fallbackProjectId = projectIds[0] || appState.selectedProjectId || 'default-project';
+    resolved.push({ projectId: fallbackProjectId, repoPath: explicitRepoPath });
+  }
+
+  return resolved;
+};
+
+const getPlanProjectIds = (plan: ArchitectPlanRecord): string[] => {
+  const nodeProjectIds = (plan.nodes || []).flatMap((node) => normalizeNodeProjectIds(node));
+  const branchProjectIds = (plan.predictedBranches || []).map((branch) => branch.projectId).filter(Boolean);
+  return Array.from(new Set([...(plan.projectIds || []), ...(plan.projectId ? [plan.projectId] : []), ...nodeProjectIds, ...branchProjectIds]));
 };
 
 const normalizePlanNodesForGitFlow = (plan: ArchitectPlanRecord): PlanNode[] => {
   const planSlug = plan.slug || plan.title;
-  return (plan.nodes || []).map((node) => ({
-    ...node,
-    assignedBranch: toPlanScopedFeatureBranch(planSlug, node.assignedBranch || node.title || 'work'),
-  }));
+  return (plan.nodes || []).map((node) => {
+    const projectIds = normalizeNodeProjectIds(node);
+    return {
+      ...node,
+      assignedBranch: toPlanScopedFeatureBranch(planSlug, node.assignedBranch || node.title || 'work'),
+      projectId: projectIds[0],
+      projectIds,
+    };
+  });
 };
 
 const buildPredictedBranchesForPlan = (
   nodes: PlanNode[],
   existingBranches: PredictedBranch[],
-  planBranchName: string,
-  projectId?: string
+  planBranchName: string
 ): PredictedBranch[] => {
-  const branchTaskMap = new Map<string, string[]>();
+  const branchTaskMap = new Map<string, { projectId: string; taskIds: string[] }>();
   nodes.forEach((node) => {
     const branchName = node.assignedBranch || 'work';
-    if (!branchTaskMap.has(branchName)) {
-      branchTaskMap.set(branchName, []);
+    for (const projectId of normalizeNodeProjectIds(node)) {
+      const key = `${projectId}::${branchName}`;
+      if (!branchTaskMap.has(key)) {
+        branchTaskMap.set(key, { projectId, taskIds: [] });
+      }
+      branchTaskMap.get(key)!.taskIds.push(node.id);
     }
-    branchTaskMap.get(branchName)!.push(node.id);
   });
 
-  const existingByName = new Map((existingBranches || []).map((branch) => [branch.name, branch]));
-  return Array.from(branchTaskMap.entries()).map(([name, taskIds], index) => {
-    const existing = existingByName.get(name);
+  const existingByKey = new Map((existingBranches || []).map((branch) => [`${branch.projectId}::${branch.name}`, branch]));
+  return Array.from(branchTaskMap.entries()).map(([key, value], index) => {
+    const branchName = key.split('::')[1] || 'work';
+    const existing = existingByKey.get(key);
     return {
-      id: existing?.id || `branch-${Date.now()}-${index}`,
-      name,
+      id: existing?.id || `branch-${value.projectId}-${Date.now()}-${index}`,
+      name: branchName,
       color: existing?.color || BRANCH_COLORS[index % BRANCH_COLORS.length],
       parentBranch: planBranchName,
-      projectId: existing?.projectId || projectId || '',
-      taskIds,
+      projectId: value.projectId,
+      taskIds: Array.from(new Set(value.taskIds)),
       status: existing?.status || 'pending',
     };
   });
@@ -84,9 +115,7 @@ const resolveDevelopBaseRef = (branches: tauriIpc.GitBranchesDto): string => {
 
   if (local.has(baseBranch)) return baseBranch;
   if (remote.has(`origin/${baseBranch}`)) return `origin/${baseBranch}`;
-  throw new Error(
-    `Missing base branch "${baseBranch}". Create/fetch ${baseBranch} before validating this plan.`
-  );
+  throw new Error(`Missing base branch "${baseBranch}". Create/fetch ${baseBranch} before validating this plan.`);
 };
 
 const ensureSafeCheckoutBeforeDeletion = async (
@@ -99,9 +128,7 @@ const ensureSafeCheckoutBeforeDeletion = async (
   if (!branchesToDelete.has(current)) return;
 
   if (!status.is_clean) {
-    throw new Error(
-      `Cannot delete plan branches while currently on "${current}" with local changes. Commit or stash changes first.`
-    );
+    throw new Error(`Cannot delete plan branches while currently on "${current}" with local changes. Commit or stash changes first.`);
   }
 
   const localNames = (branches.local || []).map((branch) => branch.name);
@@ -135,65 +162,85 @@ export const provisionPlanBranches = async (
   explicitRepoPath?: string
 ): Promise<ProvisionPlanBranchesResult> => {
   const planBranchName = toPlanIntegrationBranch(plan.slug || plan.title);
-  const featureBranches = Array.from(
-    new Set(
-      (plan.nodes || [])
-        .map((node) => node.assignedBranch || '')
-        .filter((name) => typeof name === 'string' && name.trim().length > 0)
-    )
-  );
+  const featureBranchesByProject = new Map<string, string[]>();
+
+  for (const node of plan.nodes || []) {
+    const branchName = node.assignedBranch || 'work';
+    for (const projectId of normalizeNodeProjectIds(node)) {
+      const existing = featureBranchesByProject.get(projectId) || [];
+      if (!existing.includes(branchName)) {
+        existing.push(branchName);
+      }
+      featureBranchesByProject.set(projectId, existing);
+    }
+  }
 
   if (!tauriIpc.isTauriAvailable()) {
+    const existingFeatureBranches = Array.from(featureBranchesByProject.values()).flat();
     return {
       planBranchName,
+      repositories: [],
       createdPlanBranch: false,
       createdFeatureBranches: [],
-      existingFeatureBranches: featureBranches,
+      existingFeatureBranches,
     };
   }
 
-  const repoPath = explicitRepoPath || resolveRepoPathForPlan(plan.projectId);
-  if (!repoPath) {
-    throw new Error('Unable to resolve repository path for this plan. Select a project before validating the plan.');
+  const repositories = resolveProjectRepoPaths(getPlanProjectIds(plan), explicitRepoPath);
+  if (repositories.length === 0) {
+    throw new Error('Unable to resolve repository path for this plan. Select at least one project before validating the plan.');
   }
 
-  const branches = await tauriIpc.gitBranchList(repoPath);
-  const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
-  const createdFeatureBranches: string[] = [];
-  const existingFeatureBranches: string[] = [];
+  const results: ProvisionedPlanRepositoryResult[] = [];
+  for (const repository of repositories) {
+    const branches = await tauriIpc.gitBranchList(repository.repoPath);
+    const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
+    const createdFeatureBranches: string[] = [];
+    const existingFeatureBranches: string[] = [];
 
-  let createdPlanBranch = false;
-  if (!localBranchNames.has(planBranchName)) {
-    const fromRef = resolveDevelopBaseRef(branches);
-    await tauriIpc.gitBranchCreate({
-      repoPath,
-      branchName: planBranchName,
-      fromRef,
-    });
-    localBranchNames.add(planBranchName);
-    createdPlanBranch = true;
-  }
-
-  for (const featureBranch of featureBranches) {
-    if (localBranchNames.has(featureBranch)) {
-      existingFeatureBranches.push(featureBranch);
-      continue;
+    let createdPlanBranch = false;
+    if (!localBranchNames.has(planBranchName)) {
+      const fromRef = resolveDevelopBaseRef(branches);
+      await tauriIpc.gitBranchCreate({
+        repoPath: repository.repoPath,
+        branchName: planBranchName,
+        fromRef,
+      });
+      localBranchNames.add(planBranchName);
+      createdPlanBranch = true;
     }
 
-    await tauriIpc.gitBranchCreate({
-      repoPath,
-      branchName: featureBranch,
-      fromRef: planBranchName,
+    for (const featureBranch of featureBranchesByProject.get(repository.projectId) || []) {
+      if (localBranchNames.has(featureBranch)) {
+        existingFeatureBranches.push(featureBranch);
+        continue;
+      }
+
+      await tauriIpc.gitBranchCreate({
+        repoPath: repository.repoPath,
+        branchName: featureBranch,
+        fromRef: planBranchName,
+      });
+      localBranchNames.add(featureBranch);
+      createdFeatureBranches.push(featureBranch);
+    }
+
+    results.push({
+      projectId: repository.projectId,
+      repoPath: repository.repoPath,
+      planBranchName,
+      createdPlanBranch,
+      createdFeatureBranches,
+      existingFeatureBranches,
     });
-    localBranchNames.add(featureBranch);
-    createdFeatureBranches.push(featureBranch);
   }
 
   return {
     planBranchName,
-    createdPlanBranch,
-    createdFeatureBranches,
-    existingFeatureBranches,
+    repositories: results,
+    createdPlanBranch: results.some((result) => result.createdPlanBranch),
+    createdFeatureBranches: results.flatMap((result) => result.createdFeatureBranches),
+    existingFeatureBranches: results.flatMap((result) => result.existingFeatureBranches),
   };
 };
 
@@ -217,16 +264,19 @@ export const validatePlanAndProvisionBranches = async (params: {
   const normalizedPredictedBranches = buildPredictedBranchesForPlan(
     normalizedNodes,
     plan.predictedBranches || [],
-    planBranchName,
-    plan.projectId
+    planBranchName
   );
-  const normalizedStrategy = normalizeStrategyDependencies(
-    normalizedNodes,
-    normalizedPredictedBranches
-  );
+  const normalizedStrategy = normalizeStrategyDependencies(normalizedNodes, normalizedPredictedBranches);
+  const projectIds = getPlanProjectIds({
+    ...plan,
+    nodes: normalizedStrategy.nodes,
+    predictedBranches: normalizedStrategy.predictedBranches,
+  });
 
   const normalizedPlan: ArchitectPlanRecord = {
     ...plan,
+    projectId: projectIds[0],
+    projectIds,
     nodes: normalizedStrategy.nodes,
     predictedBranches: normalizedStrategy.predictedBranches,
   };
@@ -239,56 +289,99 @@ export const validatePlanAndProvisionBranches = async (params: {
     status: 'validated',
     nodes: normalizedPlan.nodes,
     predictedBranches: normalizedPlan.predictedBranches,
+    projectId: normalizedPlan.projectId,
     setActive: params.setActive !== false,
   });
 
   return {
-    plan: validatedPlan,
+    plan: {
+      ...validatedPlan,
+      projectId: normalizedPlan.projectId,
+      projectIds,
+      nodes: normalizedPlan.nodes,
+      predictedBranches: normalizedPlan.predictedBranches,
+    },
     provision,
   };
 };
 
-export const cleanupPlanBranches = async (plan: ArchitectPlanRecord, explicitRepoPath?: string): Promise<string[]> => {
+export const mergeFeatureBranchIntoPlanBranch = async (params: {
+  projectId: string;
+  branchName: string;
+  planBranchName: string;
+  repoPath?: string;
+}): Promise<string> => {
+  const repository = resolveProjectRepoPaths([params.projectId], params.repoPath)[0];
+  if (!repository?.repoPath) {
+    throw new Error(`Unable to resolve repository path for project ${params.projectId}.`);
+  }
+
+  return tauriIpc.gitMerge({
+    repoPath: repository.repoPath,
+    branchName: params.branchName,
+    intoBranch: params.planBranchName,
+  });
+};
+
+export const cleanupPlanBranches = async (
+  plan: ArchitectPlanRecord,
+  explicitRepoPath?: string
+): Promise<CleanupPlanRepositoryResult[]> => {
   const planBranchName = toPlanIntegrationBranch(plan.slug || plan.title);
-  const featureBranchNames = Array.from(
-    new Set(
-      [
-        ...(plan.nodes || []).map((node) => node.assignedBranch || ''),
-        ...(plan.predictedBranches || []).map((branch) => branch.name),
-      ]
-        .filter((name) => name.trim().length > 0)
-        .map((name) => toPlanScopedFeatureBranch(plan.slug || plan.title, name))
-    )
-  );
+  const repositories = resolveProjectRepoPaths(getPlanProjectIds(plan), explicitRepoPath);
 
   if (!tauriIpc.isTauriAvailable()) {
-    return [...featureBranchNames, planBranchName];
+    return repositories.map((repository) => ({
+      projectId: repository.projectId,
+      repoPath: repository.repoPath,
+      deletedBranches: [],
+    }));
   }
 
-  const repoPath = explicitRepoPath || resolveRepoPathForPlan(plan.projectId);
-  if (!repoPath) {
-    throw new Error('Unable to resolve repository path for this plan. Select a project before deleting the plan.');
-  }
+  const results: CleanupPlanRepositoryResult[] = [];
+  for (const repository of repositories) {
+    const featureBranchNames = Array.from(
+      new Set(
+        [
+          ...(plan.nodes || [])
+            .filter((node) => normalizeNodeProjectIds(node).includes(repository.projectId))
+            .map((node) => node.assignedBranch || ''),
+          ...(plan.predictedBranches || [])
+            .filter((branch) => branch.projectId === repository.projectId)
+            .map((branch) => branch.name),
+        ]
+          .filter((name) => name.trim().length > 0)
+          .map((name) => toPlanScopedFeatureBranch(plan.slug || plan.title, name))
+      )
+    );
 
-  const branches = await tauriIpc.gitBranchList(repoPath);
-  const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
-  const candidates = [...featureBranchNames, planBranchName].filter((name) => localBranchNames.has(name));
-  if (candidates.length === 0) {
-    return [];
-  }
+    const branches = await tauriIpc.gitBranchList(repository.repoPath);
+    const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
+    const candidates = [...featureBranchNames, planBranchName].filter((name) => localBranchNames.has(name));
+    if (candidates.length === 0) {
+      results.push({ projectId: repository.projectId, repoPath: repository.repoPath, deletedBranches: [] });
+      continue;
+    }
 
-  const toDelete = new Set(candidates);
-  await ensureSafeCheckoutBeforeDeletion(repoPath, toDelete, branches);
+    const toDelete = new Set(candidates);
+    await ensureSafeCheckoutBeforeDeletion(repository.repoPath, toDelete, branches);
 
-  for (const branchName of candidates) {
-    await tauriIpc.gitBranchDelete({
-      repoPath,
-      branchName,
-      force: true,
+    for (const branchName of candidates) {
+      await tauriIpc.gitBranchDelete({
+        repoPath: repository.repoPath,
+        branchName,
+        force: false,
+      });
+    }
+
+    results.push({
+      projectId: repository.projectId,
+      repoPath: repository.repoPath,
+      deletedBranches: candidates,
     });
   }
 
-  return candidates;
+  return results;
 };
 
 export const deletePlanAndCleanupBranches = async (params: {
@@ -296,9 +389,9 @@ export const deletePlanAndCleanupBranches = async (params: {
   planId: string;
   hardDelete?: boolean;
   repoPath?: string;
-}): Promise<{ deletedBranches: string[] }> => {
+}): Promise<{ deletedBranches: string[]; repositories: CleanupPlanRepositoryResult[] }> => {
   const plan = await getArchitectPlan(params.branchName, params.planId);
-  const deletedBranches = plan ? await cleanupPlanBranches(plan, params.repoPath) : [];
+  const repositories = plan ? await cleanupPlanBranches(plan, params.repoPath) : [];
 
   await deleteArchitectPlan({
     branchName: params.branchName,
@@ -306,5 +399,8 @@ export const deletePlanAndCleanupBranches = async (params: {
     hardDelete: params.hardDelete,
   });
 
-  return { deletedBranches };
+  return {
+    deletedBranches: repositories.flatMap((repository) => repository.deletedBranches),
+    repositories,
+  };
 };

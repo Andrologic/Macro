@@ -39,7 +39,7 @@ describe('workspaceToolExecutor helpers', () => {
   it('enforces architect write path scope', async () => {
     const { assertPathAllowed } = await loadWorkspaceToolExecutor();
 
-    expect(() => assertPathAllowed('Architect', '.macro/branches/main/plan.md')).not.toThrow();
+    expect(() => assertPathAllowed('Architect', 'branches/main/plans/plan-1/plan.md')).not.toThrow();
     expect(() => assertPathAllowed('Architect', 'src/App.tsx')).toThrow();
     expect(() => assertPathAllowed('Chat', 'src/App.tsx')).not.toThrow();
   });

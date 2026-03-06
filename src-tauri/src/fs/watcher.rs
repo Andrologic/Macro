@@ -2,7 +2,10 @@
 // Provides real-time file system event monitoring for the workspace
 
 use crate::fs::dto::FsEventDto;
-use notify::{event::{EventKind, ModifyKind, RenameMode}, Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{
+    event::{EventKind, ModifyKind, RenameMode},
+    Config, Event, RecommendedWatcher, RecursiveMode, Watcher,
+};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,11 +30,11 @@ pub struct FsWatcher {
 
 impl FsWatcher {
     /// Create a new file system watcher for the given workspace
-    /// 
+    ///
     /// # Arguments
     /// * `workspace` - The workspace directory to watch
     /// * `app_handle` - Tauri app handle for emitting events
-    /// 
+    ///
     /// # Returns
     /// * `Result<Self, Box<dyn std::error::Error>>` - The watcher instance or error
     pub fn new(
@@ -250,11 +253,11 @@ fn convert_event_to_dtos(event: &Event, workspace: &Path) -> Vec<FsEventDto> {
 }
 
 /// Initialize the file system watcher and store it in app state
-/// 
+///
 /// # Arguments
 /// * `app` - The Tauri app handle
 /// * `workspace` - The workspace path to watch
-/// 
+///
 /// # Returns
 /// * `Result<(), Box<dyn std::error::Error>>` - Success or error
 pub fn init_watcher(

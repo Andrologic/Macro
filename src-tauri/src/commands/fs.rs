@@ -46,8 +46,11 @@ async fn resolve_workspace_for_path(
     git_state: GitState,
     path: &str,
     allow_outside_workspace: Option<bool>,
+    workspace_scope: Option<&str>,
 ) -> Result<PathBuf, BackendError> {
-    if allow_outside_workspace.unwrap_or(false) || !is_macro_scoped_path(path) {
+    let metadata_scope = matches!(workspace_scope.map(str::trim), Some("metadata"));
+    if allow_outside_workspace.unwrap_or(false) || (!metadata_scope && !is_macro_scoped_path(path))
+    {
         return Ok(workspace);
     }
 
@@ -152,6 +155,7 @@ pub async fn fs_read_file(
     git_state: tauri::State<'_, GitState>,
     path: String,
     allow_outside_workspace: Option<bool>,
+    workspace_scope: Option<String>,
 ) -> Result<FileContentDto, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -164,6 +168,7 @@ pub async fn fs_read_file(
         git_state.inner().clone(),
         &path,
         allow_outside_workspace,
+        workspace_scope.as_deref(),
     )
     .await?;
     read_file_internal(&workspace, effective_path, allow_outside_workspace).await
@@ -178,7 +183,7 @@ pub async fn write_file_internal(
     allow_outside_workspace: Option<bool>,
 ) -> Result<WriteResultDto, BackendError> {
     let path_buf = PathBuf::from(&path);
-    
+
     // Check write size limit
     let content_bytes = content.as_bytes();
     if content_bytes.len() as u64 > MAX_WRITE_SIZE_BYTES {
@@ -263,6 +268,7 @@ pub async fn fs_write_file(
     content: String,
     create_dirs: Option<bool>,
     allow_outside_workspace: Option<bool>,
+    workspace_scope: Option<String>,
 ) -> Result<WriteResultDto, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -275,6 +281,7 @@ pub async fn fs_write_file(
         git_state.inner().clone(),
         &path,
         allow_outside_workspace,
+        workspace_scope.as_deref(),
     )
     .await?;
     write_file_internal(
@@ -387,10 +394,7 @@ pub async fn list_dir_internal(
 
 /// Check if a path should be ignored based on default patterns
 fn should_ignore_path(path: &Path, include_hidden: bool) -> bool {
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     // Check hidden files
     if !include_hidden && file_name.starts_with('.') {
@@ -483,6 +487,7 @@ pub async fn fs_list_dir(
     include_hidden: Option<bool>,
     max_depth: Option<u32>,
     allow_outside_workspace: Option<bool>,
+    workspace_scope: Option<String>,
 ) -> Result<Vec<DirEntryDto>, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -495,6 +500,7 @@ pub async fn fs_list_dir(
         git_state.inner().clone(),
         &path,
         allow_outside_workspace,
+        workspace_scope.as_deref(),
     )
     .await?;
     list_dir_internal(
@@ -626,6 +632,7 @@ pub async fn fs_stat(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
     git_state: tauri::State<'_, GitState>,
     path: String,
+    workspace_scope: Option<String>,
 ) -> Result<FileStatsDto, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -638,6 +645,7 @@ pub async fn fs_stat(
         git_state.inner().clone(),
         &path,
         None,
+        workspace_scope.as_deref(),
     )
     .await?;
     stat_internal(&workspace, effective_path).await
@@ -648,6 +656,7 @@ pub async fn fs_exists(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
     git_state: tauri::State<'_, GitState>,
     path: String,
+    workspace_scope: Option<String>,
 ) -> Result<bool, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -660,10 +669,11 @@ pub async fn fs_exists(
         git_state.inner().clone(),
         &path,
         None,
+        workspace_scope.as_deref(),
     )
     .await?;
     let path_buf = PathBuf::from(&effective_path);
-    
+
     // For exists, we validate the path format but allow non-existent files
     // as long as they would be within workspace if they existed
     match validate_path(&path_buf, &workspace) {
@@ -685,6 +695,7 @@ pub async fn fs_delete(
     git_state: tauri::State<'_, GitState>,
     path: String,
     recursive: Option<bool>,
+    workspace_scope: Option<String>,
 ) -> Result<(), BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -697,6 +708,7 @@ pub async fn fs_delete(
         git_state.inner().clone(),
         &path,
         None,
+        workspace_scope.as_deref(),
     )
     .await?;
     let path_buf = PathBuf::from(&effective_path);
@@ -741,6 +753,7 @@ pub async fn fs_create_dir(
     git_state: tauri::State<'_, GitState>,
     path: String,
     recursive: Option<bool>,
+    workspace_scope: Option<String>,
 ) -> Result<(), BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -753,6 +766,7 @@ pub async fn fs_create_dir(
         git_state.inner().clone(),
         &path,
         None,
+        workspace_scope.as_deref(),
     )
     .await?;
     let path_buf = PathBuf::from(&effective_path);
@@ -788,7 +802,7 @@ pub async fn fs_copy(
         ));
     }
     let workspace = if src_macro {
-        resolve_workspace_for_path(workspace, git_state.inner().clone(), &src, None).await?
+        resolve_workspace_for_path(workspace, git_state.inner().clone(), &src, None, None).await?
     } else {
         workspace
     };
@@ -849,7 +863,7 @@ pub async fn fs_move(
         ));
     }
     let workspace = if src_macro {
-        resolve_workspace_for_path(workspace, git_state.inner().clone(), &src, None).await?
+        resolve_workspace_for_path(workspace, git_state.inner().clone(), &src, None, None).await?
     } else {
         workspace
     };
@@ -883,10 +897,7 @@ pub async fn fs_move(
         }
         Err(rename_err) => {
             // Rename failed (likely cross-filesystem), fallback to copy + delete
-            tracing::debug!(
-                "Rename failed, falling back to copy+delete: {}",
-                rename_err
-            );
+            tracing::debug!("Rename failed, falling back to copy+delete: {}", rename_err);
 
             // Ensure parent of destination exists
             if let Some(parent) = validated_dest.parent() {
@@ -1032,7 +1043,8 @@ mod tests {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = read_file_internal(&workspace_path, "subdir/nested.txt".to_string(), None).await;
+        let result =
+            read_file_internal(&workspace_path, "subdir/nested.txt".to_string(), None).await;
 
         assert!(result.is_ok());
         let dto = result.unwrap();
@@ -1047,7 +1059,10 @@ mod tests {
 
         let result = read_file_internal(&workspace_path, "missing.txt".to_string(), None).await;
 
-        assert!(matches!(result, Err(BackendError::FilesystemNotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemNotFound { .. })
+        ));
     }
 
     #[tokio::test]
@@ -1055,11 +1070,7 @@ mod tests {
         let workspace = setup_empty_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let outside_file = workspace
-            .path()
-            .parent()
-            .unwrap()
-            .join("outside.txt");
+        let outside_file = workspace.path().parent().unwrap().join("outside.txt");
         fs::write(&outside_file, "outside").unwrap();
 
         let result = read_file_internal(
@@ -1082,7 +1093,10 @@ mod tests {
 
         let result = read_file_internal(&workspace_path, "subdir".to_string(), None).await;
 
-        assert!(matches!(result, Err(BackendError::FilesystemIsDirectory { .. })));
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemIsDirectory { .. })
+        ));
     }
 
     #[tokio::test]
@@ -1110,7 +1124,10 @@ mod tests {
 
         let result = read_file_internal(&workspace_path, "large.txt".to_string(), None).await;
 
-        assert!(matches!(result, Err(BackendError::FilesystemFileTooLarge { .. })));
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemFileTooLarge { .. })
+        ));
     }
 
     #[tokio::test]
@@ -1189,11 +1206,7 @@ mod tests {
         let workspace = setup_empty_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let outside_path = workspace
-            .path()
-            .parent()
-            .unwrap()
-            .join("outside.txt");
+        let outside_path = workspace.path().parent().unwrap().join("outside.txt");
 
         let result = write_file_internal(
             &workspace_path,
@@ -1233,8 +1246,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(BackendError::FilesystemPermissionDenied { .. })
-                | Err(BackendError::Io { .. })
+            Err(BackendError::FilesystemPermissionDenied { .. }) | Err(BackendError::Io { .. })
         ));
 
         fs::set_permissions(&readonly_dir, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1245,7 +1257,8 @@ mod tests {
         let workspace = setup_empty_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = list_dir_internal(&workspace_path, ".".to_string(), None, None, None, None).await;
+        let result =
+            list_dir_internal(&workspace_path, ".".to_string(), None, None, None, None).await;
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
@@ -1256,7 +1269,8 @@ mod tests {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = list_dir_internal(&workspace_path, ".".to_string(), None, None, None, None).await;
+        let result =
+            list_dir_internal(&workspace_path, ".".to_string(), None, None, None, None).await;
 
         assert!(result.is_ok());
         let entries = result.unwrap();
@@ -1345,11 +1359,20 @@ mod tests {
         fs::create_dir_all(workspace.path().join("node_modules")).unwrap();
         fs::write(workspace.path().join("node_modules/ignored.txt"), "x").unwrap();
 
-        let result = list_dir_internal(&workspace_path, ".".to_string(), Some(true), None, None, None)
-            .await
-            .unwrap();
+        let result = list_dir_internal(
+            &workspace_path,
+            ".".to_string(),
+            Some(true),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
-        assert!(!result.iter().any(|e| e.relative_path.contains("node_modules")));
+        assert!(!result
+            .iter()
+            .any(|e| e.relative_path.contains("node_modules")));
     }
 
     #[tokio::test]
@@ -1375,10 +1398,14 @@ mod tests {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let file_stat = stat_internal(&workspace_path, "sample.txt".to_string()).await.unwrap();
+        let file_stat = stat_internal(&workspace_path, "sample.txt".to_string())
+            .await
+            .unwrap();
         assert_eq!(file_stat.kind, "file");
 
-        let dir_stat = stat_internal(&workspace_path, "subdir".to_string()).await.unwrap();
+        let dir_stat = stat_internal(&workspace_path, "subdir".to_string())
+            .await
+            .unwrap();
         assert_eq!(dir_stat.kind, "directory");
     }
 
@@ -1395,7 +1422,9 @@ mod tests {
         let link = workspace.path().join("link.txt");
         symlink(&target, &link).unwrap();
 
-        let stat = stat_internal(&workspace_path, "link.txt".to_string()).await.unwrap();
+        let stat = stat_internal(&workspace_path, "link.txt".to_string())
+            .await
+            .unwrap();
         assert!(stat.is_symlink);
         assert_eq!(stat.kind, "symlink");
     }
@@ -1407,6 +1436,9 @@ mod tests {
 
         let result = stat_internal(&workspace_path, "missing.txt".to_string()).await;
 
-        assert!(matches!(result, Err(BackendError::FilesystemNotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemNotFound { .. })
+        ));
     }
 }

@@ -451,7 +451,7 @@ Les tâches sont visibles dans chaque graphe git des dépôts affectés.
 
 Les commits sont color-codés :
 - 🟢 **Vert** : Commits effectués
-- 🔵 **Bleu** : Commits planifiés (dans `.macro`)
+- 🔵 **Bleu** : Commits planifiés (dans `@macro`)
 - 🟠 **Orange** : Commits en cours
 
 Le graphe git de chaque projet montre :
@@ -491,8 +491,8 @@ main (production)                    branches/
 
 **Correspondance entre branches :**
 
-- Chaque branche de code (`feature/auth`, `release/1.0.0`, `hotfix/critical-bug`) a son dossier correspondant dans `.macro/branches/`
-- Chaque commit de code a son dossier avec `planned.md` et `executed.md` dans `.macro/branches/<nom_branche>/commits/`
+- Chaque branche de code (`feature/auth`, `release/1.0.0`, `hotfix/critical-bug`) a son dossier correspondant dans `branches/`
+- Chaque t?che de strat?gie a son dossier avec `planned.md` et `executed.md` dans `branches/<target>/plans/<planId>/tasks/<taskId>/`
 - Les ID de commits de code sont référencés dans les fichiers `executed.md` pour la traçabilité
 
 **Indépendance :**
@@ -596,7 +596,7 @@ Implémentation complète du système de panier avec gestion des articles, calcu
 2026-01-15T10:00:00Z
 ```
 
-**planned.md** (dans chaque dossier de commit) :
+**planned.md** (dans chaque dossier de t?che) :
 ```markdown
 # Commit : feat(frontend): add cart store
 

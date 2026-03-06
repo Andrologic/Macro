@@ -91,13 +91,7 @@ fn ensure_metadata_gitignore_override(worktree_path: &Path) -> Result<()> {
     })?;
 
     const MARKER: &str = "# macro metadata branch overrides";
-    const REQUIRED_LINES: &[&str] = &[
-        "!.macro",
-        "!.macro/**",
-        "!workspace.json",
-        "!branches",
-        "!branches/**",
-    ];
+    const REQUIRED_LINES: &[&str] = &["!workspace.json", "!branches", "!branches/**"];
 
     if !content.ends_with('\n') {
         content.push('\n');

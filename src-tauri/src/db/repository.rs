@@ -67,7 +67,9 @@ pub async fn create_conversation(
 ) -> DbResult<Conversation> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let title = input.title.unwrap_or_else(|| "New Conversation".to_string());
+    let title = input
+        .title
+        .unwrap_or_else(|| "New Conversation".to_string());
 
     sqlx::query(
         r#"
@@ -417,8 +419,13 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         input.content.clone()
     };
 
-    update_conversation_metadata(pool, &input.conversation_id, Some(&truncated_content), count)
-        .await?;
+    update_conversation_metadata(
+        pool,
+        &input.conversation_id,
+        Some(&truncated_content),
+        count,
+    )
+    .await?;
 
     Ok(Message {
         id,
@@ -1002,7 +1009,9 @@ pub async fn delete_project_context_state(pool: &SqlitePool, project_id: &str) -
 
 // ============ SESSION CONTEXT STATE ============
 
-pub async fn get_session_context_state(pool: &SqlitePool) -> DbResult<Option<SessionContextStateRecord>> {
+pub async fn get_session_context_state(
+    pool: &SqlitePool,
+) -> DbResult<Option<SessionContextStateRecord>> {
     let row = sqlx::query(
         r#"
         SELECT selected_group_id, selected_project_id, mode, updated_at
