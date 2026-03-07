@@ -106,9 +106,16 @@ describe('remoteKernelApi', () => {
       mode: 'Implement',
       toolId: 'read',
       args: { path: 'src/App.tsx' },
+      workspacePath: 'C:/dev/Smartcards',
     });
     expect(result).toBe('{"ok":true}');
     expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/api/v1/tools/validate');
     expect(fetchCalls[1].url).toBe('http://127.0.0.1:8787/api/v1/tools/execute');
+    expect(JSON.parse(String(fetchCalls[1].init?.body))).toEqual({
+      mode: 'Implement',
+      tool_id: 'read',
+      args: { path: 'src/App.tsx' },
+      workspace_path: 'C:/dev/Smartcards',
+    });
   });
 });

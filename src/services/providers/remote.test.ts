@@ -108,11 +108,15 @@ describe('remote provider', () => {
             estimated_changes: [],
           },
         ],
+        plans: [],
+        hasStandaloneTasks: true,
+        source: 'fallback',
       });
     }) as unknown as typeof fetch;
 
     const result = await listTasks();
     expect(result.tasks.length).toBe(1);
+    expect(result.source).toBe('fallback');
     expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/api/v1/workspace/tasks');
   });
 

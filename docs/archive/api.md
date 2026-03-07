@@ -67,7 +67,7 @@ Créer une API robuste et sécurisée permettant à l'application Macro de se co
 3. L'IA crée des branches feature/* dans les dépôts concernés
 4. L'IA prédit les graphes git pour chaque projet
 5. L'utilisateur valide/modifie le plan
-6. Le plan est sauvegardé dans la branche `.macro`
+6. Le plan est sauvegardé dans la branche `@macro`
 
 **Besoins API Mobile**:
 - Création de plans via chat mobile
@@ -611,7 +611,7 @@ enum BranchType {
   FEATURE = 2;
   RELEASE = 3;
   HOTFIX = 4;
-  MACRO = 5;  // Branche .macro spéciale
+  MACRO = 5;  // Branche @macro spéciale
 }
 
 message GitTree {
@@ -2483,4 +2483,3 @@ Post-déploiement:
 **Date**: 16 Février 2026  
 **Auteur**: Assistant IA  
 **Statut**: Spécifications complètes - Prêt pour implémentation
-

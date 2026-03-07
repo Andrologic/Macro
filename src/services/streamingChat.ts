@@ -273,7 +273,7 @@ const LIST_TOOL = {
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Directory path to list. Defaults to current workspace root.' },
+        path: { type: 'string', description: 'Directory path to list. Defaults to the current execution workspace root for this conversation.' },
         recursive: { type: 'boolean', description: 'Whether to list recursively.' },
         include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
         max_depth: { type: 'number', description: 'Maximum recursion depth when recursive=true.' },
@@ -287,7 +287,7 @@ const READ_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'read',
-    description: 'Read a file from the local workspace by path.',
+    description: 'Read a file from the local execution workspace by path.',
     parameters: {
       type: 'object',
       properties: {
@@ -304,7 +304,7 @@ const WRITE_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'write',
-    description: 'Create or overwrite a workspace file with full content.',
+    description: 'Create or overwrite a file in the current execution workspace with full content.',
     parameters: {
       type: 'object',
       properties: {
@@ -321,7 +321,7 @@ const EDIT_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'edit',
-    description: 'Edit a workspace file by replacing exact text.',
+    description: 'Edit a file in the current execution workspace by replacing exact text.',
     parameters: {
       type: 'object',
       properties: {
@@ -339,7 +339,7 @@ const GLOB_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'glob',
-    description: 'Find workspace files matching a glob pattern (example: src/**/*.ts).',
+    description: 'Find files in the current execution workspace matching a glob pattern (example: src/**/*.ts).',
     parameters: {
       type: 'object',
       properties: {
@@ -355,7 +355,7 @@ const GREP_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'grep',
-    description: 'Search text in workspace files.',
+    description: 'Search text in files under the current execution workspace.',
     parameters: {
       type: 'object',
       properties: {
@@ -374,7 +374,7 @@ const GIT_STATUS_TOOL = {
   type: 'function',
   function: {
     name: 'git_status',
-    description: 'Get git status for current repository context.',
+    description: 'Get git status for the current execution repository context.',
     parameters: {
       type: 'object',
       properties: {
@@ -503,6 +503,23 @@ const GIT_CHECKOUT_TOOL = {
   },
 };
 
+const GIT_MERGE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'git_merge',
+    description: 'Merge a source branch into a target branch.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+        branch_name: { type: 'string' },
+        into_branch: { type: 'string' },
+      },
+      required: ['branch_name', 'into_branch'],
+    },
+  },
+};
+
 const GIT_RESET_TOOL = {
   type: 'function',
   function: {
@@ -566,8 +583,8 @@ const GENERATE_PLAN_TOOL = {
       type: 'object',
       properties: {
         plan_id: { type: 'string', description: 'Optional existing plan ID to update.' },
-        plan_title: { type: 'string', description: 'Optional plan title for persistence in .macro metadata.' },
-        plan_description: { type: 'string', description: 'Optional plan description for persistence in .macro metadata.' },
+        plan_title: { type: 'string', description: 'Optional plan title for persistence in @macro metadata.' },
+        plan_description: { type: 'string', description: 'Optional plan description for persistence in @macro metadata.' },
         target_branch: { type: 'string', description: 'Code branch this plan is associated with.' },
         nodes: {
           type: 'array',
@@ -594,7 +611,7 @@ const CREATE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_create',
-    description: 'Create a new Architect plan stored under the .macro branch metadata for a target code branch.',
+    description: 'Create a new Architect plan stored under the @macro branch metadata for a target code branch.',
     parameters: {
       type: 'object',
       properties: {
@@ -613,7 +630,7 @@ const LIST_PLANS_TOOL = {
   type: 'function',
   function: {
     name: 'plan_list',
-    description: 'List plans for a code branch in the .macro branch metadata.',
+    description: 'List plans for a code branch in the @macro branch metadata.',
     parameters: {
       type: 'object',
       properties: {
@@ -629,7 +646,7 @@ const GET_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_get',
-    description: 'Read a specific plan and its nodes from .macro metadata.',
+    description: 'Read a specific plan and its nodes from @macro metadata.',
     parameters: {
       type: 'object',
       properties: {
@@ -698,7 +715,7 @@ const SET_ACTIVE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_set_active',
-    description: 'Set active plan for a target code branch in .macro metadata.',
+    description: 'Set active plan for a target code branch in @macro metadata.',
     parameters: {
       type: 'object',
       properties: {
@@ -990,6 +1007,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   }
   if (allowedTools.has('git_checkout')) {
     tools.push(GIT_CHECKOUT_TOOL);
+  }
+  if (allowedTools.has('git_merge')) {
+    tools.push(GIT_MERGE_TOOL);
   }
   if (allowedTools.has('git_reset')) {
     tools.push(GIT_RESET_TOOL);
@@ -1691,3 +1711,4 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     throw err;
   }
 }
+

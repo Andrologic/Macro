@@ -16,10 +16,12 @@ import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowSer
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useNeedsStore } from '../../stores/useNeedsStore';
+import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
 import { toast } from '../ui/Toaster';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { PlanFormModal } from './PlanFormModal';
+import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { cn } from '../../utils/cn';
 
 interface PlanSelectorProps {
@@ -30,6 +32,7 @@ const statusClassName: Record<string, string> = {
   draft: 'text-amber-500 bg-amber-500/10 border-amber-500/20',
   validated: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20',
   in_progress: 'text-blue-500 bg-blue-500/10 border-blue-500/20',
+  completed: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20',
   archived: 'text-muted-foreground bg-muted/50 border-border/70',
   deleted: 'text-red-500 bg-red-500/10 border-red-500/20',
 };
@@ -38,6 +41,15 @@ const formatRelativeDate = (iso: string, unknownLabel: string): string => {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return unknownLabel;
   return date.toLocaleDateString();
+};
+
+const isPlanVisibleForProject = (
+  plan: ArchitectPlanSummary,
+  selectedProjectId: string | null
+): boolean => {
+  if (!selectedProjectId) return true;
+  if (!plan.projectId) return true;
+  return plan.projectId === selectedProjectId;
 };
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
@@ -60,6 +72,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [planToDelete, setPlanToDelete] = useState<ArchitectPlanSummary | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [planReviewTarget, setPlanReviewTarget] = useState<{ planId: string; branchName: string } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const conversationToastShownRef = useRef<Set<string>>(new Set());
   const autoCreatingRef = useRef(false);
@@ -78,6 +91,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     if (!activePlanId) return null;
     return plans.find((plan) => plan.id === activePlanId) || null;
   }, [plans, activePlanId]);
+  const readyPlanSummaries = useTaskStore((state) => state.planSummaries);
 
   const displayedActivePlanTitle = useMemo(() => {
     if (activePlanContext && activePlanContext.id === activePlanId && activePlanContext.title.trim().length > 0) {
@@ -92,9 +106,15 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     try {
       const result = await listArchitectPlans(targetBranch, false, showArchived);
       const fullResult = showArchived ? result : await listArchitectPlans(targetBranch, false, true);
+      const scopedPlans = result.plans.filter((plan) =>
+        isPlanVisibleForProject(plan, selectedProjectId)
+      );
+      const scopedFullPlans = fullResult.plans.filter((plan) =>
+        isPlanVisibleForProject(plan, selectedProjectId)
+      );
 
       // Auto-create a default plan when none exist
-      if (fullResult.plans.length === 0 && !autoCreatingRef.current) {
+      if (scopedFullPlans.length === 0 && !autoCreatingRef.current) {
         autoCreatingRef.current = true;
         try {
           const appStoreForCreation = useAppStore.getState();
@@ -146,8 +166,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         }
       }
 
-      setPlans(result.plans);
-      const nextActivePlanId = activeArchitectPlanId || result.activePlanId;
+      setPlans(scopedPlans);
+      const preferredActivePlanId = activeArchitectPlanId || result.activePlanId;
+      const nextActivePlanId =
+        preferredActivePlanId && scopedPlans.some((plan) => plan.id === preferredActivePlanId)
+          ? preferredActivePlanId
+          : scopedPlans[0]?.id ?? null;
       setActivePlanId(nextActivePlanId);
       setActiveArchitectPlanId(nextActivePlanId);
 
@@ -156,7 +180,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         if (plan && plan.status !== 'deleted') {
           const appStore = useAppStore.getState();
           if (plan.projectId && appStore.selectedProjectId !== plan.projectId) {
-            appStore.setSelectedProject(plan.projectId);
+            await appStore.switchProjectContext(plan.projectId);
           }
 
           setPlanNodes(plan.nodes || []);
@@ -173,7 +197,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           let conversationId = plan.conversationId;
           const hasSharedConversation = Boolean(
             conversationId &&
-            result.plans.some((candidate) => candidate.id !== plan.id && candidate.conversationId === conversationId)
+            scopedFullPlans.some((candidate) => candidate.id !== plan.id && candidate.conversationId === conversationId)
           );
           if (!conversationId || hasSharedConversation) {
             const appStoreForConversation = useAppStore.getState();
@@ -229,7 +253,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
       const appStore = useAppStore.getState();
       if (plan.projectId && appStore.selectedProjectId !== plan.projectId) {
-        appStore.setSelectedProject(plan.projectId);
+        await appStore.switchProjectContext(plan.projectId);
       }
 
       setActivePlanId(planId);
@@ -361,9 +385,15 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       );
       const wasActive = activePlanId === plan.id;
       const refreshed = await listArchitectPlans(targetBranch, false, showArchived);
-      setPlans(refreshed.plans);
+      const refreshedScopedPlans = refreshed.plans.filter((candidate) =>
+        isPlanVisibleForProject(candidate, selectedProjectId)
+      );
+      setPlans(refreshedScopedPlans);
       if (wasActive) {
-        const nextPlanId = refreshed.activePlanId || refreshed.plans[0]?.id || null;
+        const nextPlanId =
+          refreshed.activePlanId && refreshedScopedPlans.some((candidate) => candidate.id === refreshed.activePlanId)
+            ? refreshed.activePlanId
+            : refreshedScopedPlans[0]?.id || null;
         setActivePlanId(nextPlanId);
         setActiveArchitectPlanId(nextPlanId);
         if (nextPlanId) {
@@ -400,11 +430,17 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       toast.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
 
       const refreshed = await listArchitectPlans(targetBranch, false, showArchived);
-      setPlans(refreshed.plans);
+      const refreshedScopedPlans = refreshed.plans.filter((candidate) =>
+        isPlanVisibleForProject(candidate, selectedProjectId)
+      );
+      setPlans(refreshedScopedPlans);
 
       const deletedWasActive = activePlanId === planToDelete.id;
       if (deletedWasActive) {
-        const nextPlanId = refreshed.activePlanId || refreshed.plans[0]?.id || null;
+        const nextPlanId =
+          refreshed.activePlanId && refreshedScopedPlans.some((candidate) => candidate.id === refreshed.activePlanId)
+            ? refreshed.activePlanId
+            : refreshedScopedPlans[0]?.id || null;
         setActivePlanId(nextPlanId);
         setActiveArchitectPlanId(nextPlanId);
 
@@ -452,13 +488,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   };
 
   useEffect(() => {
-    // Guard against re-runs when activeArchitectPlanId hasn't actually changed
-    // (e.g. when loadPlans itself calls setActiveArchitectPlanId during auto-creation)
-    if (lastEffectIdRef.current === activeArchitectPlanId) return;
-    lastEffectIdRef.current = activeArchitectPlanId;
+    const effectKey = `${activeArchitectPlanId || 'none'}::${selectedProjectId || 'none'}::${showArchived ? '1' : '0'}`;
+    if (lastEffectIdRef.current === effectKey) return;
+    lastEffectIdRef.current = effectKey;
     void loadPlans(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeArchitectPlanId, showArchived]);
+  }, [activeArchitectPlanId, selectedProjectId, showArchived]);
 
   useEffect(() => {
     if (!activePlanContext) return;
@@ -580,6 +615,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const isActive = plan.id === activePlanId;
               const statusClass = statusClassName[plan.status] || statusClassName.draft;
               const isBusy = isActivating === plan.id;
+              const readyPlan = readyPlanSummaries.find((candidate) => candidate.id === plan.id && candidate.readyForValidation);
 
               return (
                 <button
@@ -602,6 +638,29 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                       <span className={cn('text-[10px] px-1.5 py-0.5 rounded border uppercase', statusClass)}>
                         {t(`architect.status.${plan.status}`, plan.status)}
                       </span>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (!readyPlan) return;
+                          setPlanReviewTarget({
+                            planId: readyPlan.id,
+                            branchName: readyPlan.targetBranch,
+                          });
+                        }}
+                        disabled={!readyPlan}
+                        className={cn(
+                          'w-6 h-6 rounded border flex items-center justify-center',
+                          readyPlan
+                            ? 'border-emerald-500/30 hover:bg-emerald-500/10'
+                            : 'border-border/50 opacity-40 cursor-not-allowed'
+                        )}
+                        title={readyPlan
+                          ? t('implement.planReadyForValidation', 'Plan ready for validation')
+                          : t('implement.finalizePlanUnavailable', 'Complete all tasks to review this plan')}
+                      >
+                        <Icon name="git-merge" size={11} className={readyPlan ? 'text-emerald-500' : 'text-muted-foreground'} />
+                      </button>
                       <button
                         type="button"
                         onClick={(event) => {
@@ -717,6 +776,18 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           }}
           isLoading={formLoading}
           error={formError}
+        />
+      )}
+
+      {planReviewTarget && (
+        <PlanReviewModal
+          isOpen
+          branchName={planReviewTarget.branchName}
+          planId={planReviewTarget.planId}
+          onClose={() => setPlanReviewTarget(null)}
+          onFinalized={() => {
+            void loadPlans(false);
+          }}
         />
       )}
     </div>

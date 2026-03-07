@@ -7,12 +7,16 @@ import type {
   ChatMessage,
   PredictedGitTree,
   GitCommit,
-  Task,
   AIProvider,
   AIModel,
   Project,
   MCPServer,
 } from '../../types';
+import type {
+  CatalogedImplementTask,
+  ImplementTaskCatalogSource,
+  ImplementTaskPlanSummary,
+} from '../implementTaskCatalog';
 
 export interface AppBootstrapDto {
   plan: Plan | null;
@@ -29,9 +33,14 @@ export interface MessagesDto {
   messages: ChatMessage[];
 }
 
-export interface TasksDto {
-  tasks: Task[];
+export interface TaskCatalogDto {
+  tasks: CatalogedImplementTask[];
+  plans: ImplementTaskPlanSummary[];
+  hasStandaloneTasks: boolean;
+  source: ImplementTaskCatalogSource;
 }
+
+export type TasksDto = TaskCatalogDto;
 
 export interface GitTreeDto {
   tree: PredictedGitTree | null;

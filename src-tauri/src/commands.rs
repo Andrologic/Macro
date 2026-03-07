@@ -5,18 +5,16 @@ pub mod git;
 #[path = "commands/workspace.rs"]
 pub mod workspace;
 
-use crate::db::{models::*, repository, DbError};
-use crate::git::GitState;
-use crate::WorkspaceRoot;
 use crate::core::tool_policy::{
-    get_mode_policy,
-    validate_tool_execution,
-    ToolModePolicyResult,
+    get_mode_policy, is_macro_scoped_path, validate_tool_execution, ToolModePolicyResult,
     ToolValidationResult,
 };
+use crate::db::{models::*, repository, DbError};
+use crate::git::GitState;
+use crate::secrets;
+use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 use glob::Pattern;
 use regex::RegexBuilder;
-use crate::secrets;
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -48,9 +46,7 @@ fn command_error(message: impl Into<String>) -> CommandError {
 }
 
 #[tauri::command]
-pub async fn tool_get_mode_policy(
-    mode: String,
-) -> CommandResult<ToolModePolicyResult> {
+pub async fn tool_get_mode_policy(mode: String) -> CommandResult<ToolModePolicyResult> {
     Ok(get_mode_policy(&mode))
 }
 
@@ -80,13 +76,15 @@ fn json_arg_u32(args: &Value, key: &str) -> Option<u32> {
 }
 
 fn json_arg_string_array(args: &Value, key: &str) -> Option<Vec<String>> {
-    args.get(key).and_then(|value| value.as_array()).map(|items| {
-        items
-            .iter()
-            .filter_map(|item| item.as_str().map(|value| value.to_string()))
-            .filter(|value| !value.trim().is_empty())
-            .collect::<Vec<_>>()
-    })
+    args.get(key)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(|value| value.to_string()))
+                .filter(|value| !value.trim().is_empty())
+                .collect::<Vec<_>>()
+        })
 }
 
 fn format_with_line_numbers(lines: &[&str], start_line: usize) -> String {
@@ -98,24 +96,116 @@ fn format_with_line_numbers(lines: &[&str], start_line: usize) -> String {
         .join("\n")
 }
 
+async fn resolve_workspace_for_tool_path(
+    workspace: &std::path::PathBuf,
+    git_state: &GitState,
+    path: Option<&str>,
+    workspace_scope: Option<&str>,
+) -> CommandResult<std::path::PathBuf> {
+    let metadata_scope = matches!(workspace_scope.map(str::trim), Some("metadata"));
+    let Some(path) = path else {
+        if metadata_scope {
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+            return tokio::task::spawn_blocking(move || {
+                git_state_for_task
+                    .resolve_macro_metadata_root(&workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))
+            })
+            .await
+            .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?;
+        }
+        return Ok(workspace.clone());
+    };
+
+    if !metadata_scope && !is_macro_scoped_path(path) {
+        return Ok(workspace.clone());
+    }
+
+    let workspace_for_task = workspace.clone();
+    let git_state_for_task = git_state.clone();
+    tokio::task::spawn_blocking(move || {
+        git_state_for_task
+            .resolve_macro_metadata_root(&workspace_for_task)
+            .map_err(|error| command_error(error.to_string()))
+    })
+    .await
+    .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?
+}
+
+fn resolve_requested_workspace(
+    default_workspace: &std::path::PathBuf,
+    metadata_workspace: &std::path::PathBuf,
+    requested_workspace: Option<&str>,
+) -> CommandResult<std::path::PathBuf> {
+    let Some(requested_workspace) = requested_workspace
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(default_workspace.clone());
+    };
+
+    let requested_path = std::path::PathBuf::from(requested_workspace);
+    let candidate = if requested_path.is_absolute() {
+        requested_path
+    } else {
+        metadata_workspace.join(requested_path)
+    };
+
+    let resolved = candidate
+        .canonicalize()
+        .map_err(|_| command_error(format!("Workspace path not found: {}", requested_workspace)))?;
+
+    if !resolved.is_dir() {
+        return Err(command_error(format!(
+            "Workspace path must be a directory: {}",
+            requested_workspace
+        )));
+    }
+
+    Ok(resolved)
+}
+
+fn remap_macro_tool_path(path: &str) -> String {
+    if is_macro_scoped_path(path) {
+        fs::map_macro_virtual_path(path)
+    } else {
+        path.to_string()
+    }
+}
+
+fn to_macro_virtual_relative(path: &str) -> String {
+    let normalized = path.trim().replace('\\', "/");
+    if normalized.is_empty() || normalized == "." {
+        ".macro".to_string()
+    } else {
+        format!(".macro/{}", normalized.trim_start_matches("./"))
+    }
+}
+
 pub async fn execute_workspace_tool(
-    workspace: std::path::PathBuf,
+    default_workspace: std::path::PathBuf,
+    metadata_workspace: std::path::PathBuf,
     git_state: GitState,
     mode: String,
     tool_id: String,
     args: Value,
+    workspace_path: Option<String>,
+    workspace_scope: Option<String>,
 ) -> CommandResult<String> {
+    let workspace = resolve_requested_workspace(
+        &default_workspace,
+        &metadata_workspace,
+        workspace_path.as_deref(),
+    )?;
     let mode_trimmed = mode.trim().to_string();
     let tool_trimmed = tool_id.trim().to_string();
 
-    let candidate_path = json_arg_string(&args, "path")
-        .or_else(|| json_arg_string(&args, "repo_path"));
+    let candidate_path =
+        json_arg_string(&args, "path").or_else(|| json_arg_string(&args, "repo_path"));
 
-    let validation = validate_tool_execution(
-        &mode_trimmed,
-        &tool_trimmed,
-        candidate_path.as_deref(),
-    );
+    let validation =
+        validate_tool_execution(&mode_trimmed, &tool_trimmed, candidate_path.as_deref());
 
     if !validation.allowed {
         return Ok(validation
@@ -126,12 +216,21 @@ pub async fn execute_workspace_tool(
     match tool_trimmed.as_str() {
         "list" => {
             let path = json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string());
+            let effective_path = remap_macro_tool_path(path.as_str());
+            let list_is_macro_scope = is_macro_scoped_path(path.as_str());
             let recursive = json_arg_bool(&args, "recursive");
             let include_hidden = json_arg_bool(&args, "include_hidden");
             let max_depth = json_arg_u32(&args, "max_depth");
-            let entries = fs::list_dir_internal(
+            let effective_workspace = resolve_workspace_for_tool_path(
                 &workspace,
-                path.clone(),
+                &git_state,
+                Some(path.as_str()),
+                workspace_scope.as_deref(),
+            )
+            .await?;
+            let mut entries = fs::list_dir_internal(
+                &effective_workspace,
+                effective_path,
                 recursive,
                 include_hidden,
                 max_depth,
@@ -139,6 +238,12 @@ pub async fn execute_workspace_tool(
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
+
+            if list_is_macro_scope {
+                for entry in entries.iter_mut() {
+                    entry.relative_path = to_macro_virtual_relative(&entry.relative_path);
+                }
+            }
 
             serde_json::to_string_pretty(&serde_json::json!({
                 "path": path,
@@ -150,12 +255,20 @@ pub async fn execute_workspace_tool(
         "read" => {
             let path = json_arg_string(&args, "path")
                 .ok_or_else(|| command_error("Missing path argument for read tool."))?;
+            let effective_path = remap_macro_tool_path(path.as_str());
             let start_line = json_arg_u32(&args, "start_line").unwrap_or(1).max(1) as usize;
             let end_line = json_arg_u32(&args, "end_line").map(|value| value as usize);
+            let effective_workspace = resolve_workspace_for_tool_path(
+                &workspace,
+                &git_state,
+                Some(path.as_str()),
+                workspace_scope.as_deref(),
+            )
+            .await?;
 
             let result = fs::read_file_internal(
-                &workspace,
-                path.clone(),
+                &effective_workspace,
+                effective_path,
                 Some(mode_trimmed == "Debug"),
             )
             .await
@@ -199,13 +312,21 @@ pub async fn execute_workspace_tool(
         "write" => {
             let path = json_arg_string(&args, "path")
                 .ok_or_else(|| command_error("Missing path argument for write tool."))?;
+            let effective_path = remap_macro_tool_path(path.as_str());
             let content = json_arg_string(&args, "content")
                 .ok_or_else(|| command_error("Missing content argument for write tool."))?;
             let create_dirs = json_arg_bool(&args, "create_dirs");
+            let effective_workspace = resolve_workspace_for_tool_path(
+                &workspace,
+                &git_state,
+                Some(path.as_str()),
+                workspace_scope.as_deref(),
+            )
+            .await?;
 
             let write_result = fs::write_file_internal(
-                &workspace,
-                path,
+                &effective_workspace,
+                effective_path,
                 content,
                 create_dirs,
                 Some(mode_trimmed == "Debug"),
@@ -224,15 +345,23 @@ pub async fn execute_workspace_tool(
         "edit" => {
             let path = json_arg_string(&args, "path")
                 .ok_or_else(|| command_error("Missing path argument for edit tool."))?;
+            let effective_path = remap_macro_tool_path(path.as_str());
             let old_text = json_arg_string(&args, "old_text")
                 .ok_or_else(|| command_error("Missing old_text argument for edit tool."))?;
             let new_text = json_arg_string(&args, "new_text")
                 .ok_or_else(|| command_error("Missing new_text argument for edit tool."))?;
             let replace_all = json_arg_bool(&args, "replace_all").unwrap_or(false);
+            let effective_workspace = resolve_workspace_for_tool_path(
+                &workspace,
+                &git_state,
+                Some(path.as_str()),
+                workspace_scope.as_deref(),
+            )
+            .await?;
 
             let current = fs::read_file_internal(
-                &workspace,
-                path.clone(),
+                &effective_workspace,
+                effective_path.clone(),
                 Some(mode_trimmed == "Debug"),
             )
             .await
@@ -254,8 +383,8 @@ pub async fn execute_workspace_tool(
             };
 
             let write_result = fs::write_file_internal(
-                &workspace,
-                path,
+                &effective_workspace,
+                effective_path,
                 updated,
                 Some(true),
                 Some(mode_trimmed == "Debug"),
@@ -276,14 +405,24 @@ pub async fn execute_workspace_tool(
             let pattern = json_arg_string(&args, "pattern").unwrap_or_else(|| "**/*".to_string());
             let include_hidden = json_arg_bool(&args, "include_hidden").unwrap_or(false);
             let mode_is_debug = mode_trimmed == "Debug";
+            let list_path = if mode_is_debug {
+                json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
+            } else {
+                ".".to_string()
+            };
+            let list_is_macro_scope = is_macro_scoped_path(list_path.as_str());
+            let effective_list_path = remap_macro_tool_path(list_path.as_str());
+            let effective_workspace = resolve_workspace_for_tool_path(
+                &workspace,
+                &git_state,
+                Some(list_path.as_str()),
+                workspace_scope.as_deref(),
+            )
+            .await?;
 
             let entries = fs::list_dir_internal(
-                &workspace,
-                if mode_is_debug {
-                    json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
-                } else {
-                    ".".to_string()
-                },
+                &effective_workspace,
+                effective_list_path,
                 Some(true),
                 Some(include_hidden),
                 None,
@@ -300,8 +439,14 @@ pub async fn execute_workspace_tool(
                 .filter(|entry| entry.kind == "file")
                 .filter_map(|entry| {
                     let relative_path = entry.relative_path.replace('\\', "/");
-                    if compiled.matches(&relative_path) {
-                        Some(relative_path)
+                    let virtual_path = if list_is_macro_scope {
+                        to_macro_virtual_relative(&relative_path)
+                    } else {
+                        relative_path.clone()
+                    };
+
+                    if compiled.matches(&relative_path) || compiled.matches(&virtual_path) {
+                        Some(virtual_path)
                     } else {
                         None
                     }
@@ -323,14 +468,24 @@ pub async fn execute_workspace_tool(
             let include_pattern = json_arg_string(&args, "include_pattern");
             let max_results = json_arg_u32(&args, "max_results").unwrap_or(50).max(1) as usize;
             let mode_is_debug = mode_trimmed == "Debug";
+            let list_path = if mode_is_debug {
+                json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
+            } else {
+                ".".to_string()
+            };
+            let list_is_macro_scope = is_macro_scoped_path(list_path.as_str());
+            let effective_list_path = remap_macro_tool_path(list_path.as_str());
+            let effective_workspace = resolve_workspace_for_tool_path(
+                &workspace,
+                &git_state,
+                Some(list_path.as_str()),
+                workspace_scope.as_deref(),
+            )
+            .await?;
 
             let entries = fs::list_dir_internal(
-                &workspace,
-                if mode_is_debug {
-                    json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
-                } else {
-                    ".".to_string()
-                },
+                &effective_workspace,
+                effective_list_path,
                 Some(true),
                 Some(include_hidden),
                 None,
@@ -340,10 +495,9 @@ pub async fn execute_workspace_tool(
             .map_err(|error| command_error(error.to_string()))?;
 
             let include_glob = if let Some(glob) = include_pattern.as_ref() {
-                Some(
-                    Pattern::new(glob)
-                        .map_err(|error| command_error(format!("Invalid include_pattern glob: {}", error)))?,
-                )
+                Some(Pattern::new(glob).map_err(|error| {
+                    command_error(format!("Invalid include_pattern glob: {}", error))
+                })?)
             } else {
                 None
             };
@@ -353,7 +507,9 @@ pub async fn execute_workspace_tool(
                     RegexBuilder::new(&query)
                         .case_insensitive(true)
                         .build()
-                        .map_err(|error| command_error(format!("Invalid regex pattern for grep: {}", error)))?,
+                        .map_err(|error| {
+                            command_error(format!("Invalid regex pattern for grep: {}", error))
+                        })?,
                 )
             } else {
                 None
@@ -363,9 +519,14 @@ pub async fn execute_workspace_tool(
 
             for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
                 let relative_path = entry.relative_path.replace('\\', "/");
+                let virtual_path = if list_is_macro_scope {
+                    to_macro_virtual_relative(&relative_path)
+                } else {
+                    relative_path.clone()
+                };
 
                 if let Some(pattern) = include_glob.as_ref() {
-                    if !pattern.matches(&relative_path) {
+                    if !pattern.matches(&relative_path) && !pattern.matches(&virtual_path) {
                         continue;
                     }
                 }
@@ -376,13 +537,10 @@ pub async fn execute_workspace_tool(
                     relative_path.clone()
                 };
 
-                let content = fs::read_file_internal(
-                    &workspace,
-                    read_path,
-                    Some(mode_is_debug),
-                )
-                .await
-                .map_err(|error| command_error(error.to_string()))?;
+                let content =
+                    fs::read_file_internal(&effective_workspace, read_path, Some(mode_is_debug))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
 
                 if content.is_binary {
                     continue;
@@ -397,7 +555,7 @@ pub async fn execute_workspace_tool(
 
                     if is_match {
                         results.push(serde_json::json!({
-                            "path": relative_path,
+                            "path": virtual_path,
                             "line": index + 1,
                             "text": line.trim()
                         }));
@@ -601,7 +759,8 @@ pub async fn execute_workspace_tool(
                     .lock()
                     .map_err(|_| command_error("Failed to lock repository"))?;
 
-                git::add_paths(&repo, &paths_for_task).map_err(|error| command_error(error.to_string()))?;
+                git::add_paths(&repo, &paths_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
                 git::build_git_status(&repo).map_err(|error| command_error(error.to_string()))
             })
             .await
@@ -671,7 +830,9 @@ pub async fn execute_workspace_tool(
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let branch_or_commit = json_arg_string(&args, "branch_or_commit")
                 .or_else(|| json_arg_string(&args, "branch"))
-                .ok_or_else(|| command_error("Missing branch_or_commit argument for git_checkout tool."))?;
+                .ok_or_else(|| {
+                    command_error("Missing branch_or_commit argument for git_checkout tool.")
+                })?;
             let branch_or_commit_for_task = branch_or_commit.clone();
             let create = json_arg_bool(&args, "create").unwrap_or(false);
             let repo_path_for_task = repo_path.clone();
@@ -707,7 +868,10 @@ pub async fn execute_workspace_tool(
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let mode = json_arg_string(&args, "mode").unwrap_or_default();
             if !matches!(mode.as_str(), "soft" | "mixed" | "hard") {
-                return Ok("Missing or invalid mode for git_reset. Use one of: soft, mixed, hard.".to_string());
+                return Ok(
+                    "Missing or invalid mode for git_reset. Use one of: soft, mixed, hard."
+                        .to_string(),
+                );
             }
             let commit = json_arg_string(&args, "commit");
             let confirm = json_arg_bool(&args, "confirm");
@@ -787,28 +951,38 @@ pub async fn execute_workspace_tool(
 #[tauri::command]
 pub async fn tool_execute_workspace(
     workspace_root: State<'_, WorkspaceRoot>,
+    workspace_metadata_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
     mode: String,
     tool_id: String,
     args: Value,
+    workspace_path: Option<String>,
+    workspace_scope: Option<String>,
 ) -> CommandResult<String> {
     let workspace = workspace_root.inner().read().await.clone();
+    let metadata_workspace = workspace_metadata_root.inner().0.read().await.clone();
     let git_state = git_state.inner().clone();
-    execute_workspace_tool(workspace, git_state, mode, tool_id, args).await
+    execute_workspace_tool(
+        workspace,
+        metadata_workspace,
+        git_state,
+        mode,
+        tool_id,
+        args,
+        workspace_path,
+        workspace_scope,
+    )
+    .await
 }
 
 // ============ CONVERSATIONS ============
 
 #[tauri::command]
-pub async fn db_list_conversations(
-    pool: State<'_, DbPool>,
-) -> CommandResult<Vec<Conversation>> {
+pub async fn db_list_conversations(pool: State<'_, DbPool>) -> CommandResult<Vec<Conversation>> {
     let pool_guard = pool.lock().await;
-    let pool = pool_guard
-        .as_ref()
-        .ok_or_else(|| CommandError {
-            message: "Database not initialized".to_string(),
-        })?;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
 
     repository::list_conversations(pool)
         .await
@@ -850,8 +1024,8 @@ pub async fn db_create_conversation(
             project_id,
         },
     )
-        .await
-        .map_err(Into::into)
+    .await
+    .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -882,14 +1056,9 @@ pub async fn db_update_conversation_details(
         message: "Database not initialized".to_string(),
     })?;
 
-    repository::update_conversation_details(
-        pool,
-        &id,
-        title.as_deref(),
-        description.as_deref(),
-    )
-    .await
-    .map_err(Into::into)
+    repository::update_conversation_details(pool, &id, title.as_deref(), description.as_deref())
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -1081,8 +1250,9 @@ pub async fn db_update_provider_config(
         if key.trim().is_empty() {
             secrets::delete_api_key(&provider_id).ok();
         } else {
-            secrets::set_api_key(&provider_id, &key)
-                .map_err(|e| CommandError { message: e.to_string() })?;
+            secrets::set_api_key(&provider_id, &key).map_err(|e| CommandError {
+                message: e.to_string(),
+            })?;
         }
     }
 
@@ -1116,8 +1286,9 @@ pub async fn db_create_provider_config(
 
     if let Some(key) = api_key {
         if !key.trim().is_empty() {
-            secrets::set_api_key(&created.id, &key)
-                .map_err(|e| CommandError { message: e.to_string() })?;
+            secrets::set_api_key(&created.id, &key).map_err(|e| CommandError {
+                message: e.to_string(),
+            })?;
         }
     }
 
@@ -1125,10 +1296,7 @@ pub async fn db_create_provider_config(
 }
 
 #[tauri::command]
-pub async fn db_delete_provider_config(
-    pool: State<'_, DbPool>,
-    id: String,
-) -> CommandResult<()> {
+pub async fn db_delete_provider_config(pool: State<'_, DbPool>, id: String) -> CommandResult<()> {
     let pool_guard = pool.lock().await;
     let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
         message: "Database not initialized".to_string(),
@@ -1259,6 +1427,143 @@ pub async fn db_update_provider_settings(
     })?;
 
     repository::update_provider_settings(pool, &provider_id, filter_free_models)
+        .await
+        .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_requested_workspace;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn resolve_requested_workspace_uses_metadata_root_for_relative_paths() {
+        let default_workspace = TempDir::new().expect("default workspace");
+        let metadata_workspace = TempDir::new().expect("metadata workspace");
+        let project_dir = metadata_workspace
+            .path()
+            .join("projects")
+            .join("smartcards");
+        fs::create_dir_all(&project_dir).expect("create project dir");
+
+        let resolved = resolve_requested_workspace(
+            &default_workspace.path().to_path_buf(),
+            &metadata_workspace.path().to_path_buf(),
+            Some("projects/smartcards"),
+        )
+        .expect("resolve requested workspace");
+
+        assert_eq!(
+            resolved,
+            project_dir.canonicalize().expect("canonical project dir")
+        );
+    }
+}
+
+// ============ APP STATE SETTINGS ============
+
+#[tauri::command]
+pub async fn db_get_app_setting(
+    pool: State<'_, DbPool>,
+    key: String,
+) -> CommandResult<Option<AppSettingRecord>> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::get_app_setting(pool, &key)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_set_app_setting(
+    pool: State<'_, DbPool>,
+    key: String,
+    value_json: String,
+) -> CommandResult<AppSettingRecord> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::set_app_setting(pool, &key, &value_json)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_get_project_context_state(
+    pool: State<'_, DbPool>,
+    project_id: String,
+) -> CommandResult<Option<ProjectContextStateRecord>> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::get_project_context_state(pool, &project_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_upsert_project_context_state(
+    pool: State<'_, DbPool>,
+    input: UpsertProjectContextStateInput,
+) -> CommandResult<ProjectContextStateRecord> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::upsert_project_context_state(pool, input)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_delete_project_context_state(
+    pool: State<'_, DbPool>,
+    project_id: String,
+) -> CommandResult<()> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::delete_project_context_state(pool, &project_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_get_session_context_state(
+    pool: State<'_, DbPool>,
+) -> CommandResult<Option<SessionContextStateRecord>> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::get_session_context_state(pool)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_upsert_session_context_state(
+    pool: State<'_, DbPool>,
+    input: UpsertSessionContextStateInput,
+) -> CommandResult<SessionContextStateRecord> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::upsert_session_context_state(pool, input)
         .await
         .map_err(Into::into)
 }

@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, Suspense, lazy } from 'react';
 import { Header } from './components/layout/Header';
+import { Footer } from './components/layout/Footer';
 import { Toaster } from './components/ui/Toaster';
 import { useWindowRestoration } from './hooks/useWindowRestoration';
 import { useUiZoom } from './hooks/useUiZoom';
@@ -302,7 +303,7 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr] overflow-hidden">
+    <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr_32px] overflow-hidden">
       {/* Header */}
       <Header
         isLeftOpen={isLeftOpen}
@@ -350,6 +351,8 @@ const App: React.FC = () => {
           </>
         )}
       </div>
+
+      <Footer />
 
       {/* Modals - Lazy Loaded with Suspense */}
       <Suspense fallback={null}>

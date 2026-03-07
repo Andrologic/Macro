@@ -11,7 +11,7 @@ import type {
   ModelsDto,
   ProjectDto,
   ProvidersDto,
-  TasksDto,
+  TaskCatalogDto,
   ToolSettingsDto,
 } from '../contracts/dtos';
 import type { ProjectGroup } from '../../types';
@@ -214,13 +214,13 @@ export const getAppBootstrap = async (): Promise<AppBootstrapDto> => {
 };
 export const listConversations = async (): Promise<ConversationsDto> => notReady();
 export const listMessages = async (_conversationId?: string): Promise<MessagesDto> => notReady();
-export const listTasks = async (): Promise<TasksDto> => {
+export const listTasks = async (): Promise<TaskCatalogDto> => {
   const config = resolveRemoteConfig();
   if (!config) {
     return notConfigured();
   }
 
-  return remoteRequest<TasksDto>(`${getWorkspaceBasePath(config)}/tasks`);
+  return remoteRequest<TaskCatalogDto>(`${getWorkspaceBasePath(config)}/tasks`);
 };
 export const getGitTreeForProject = async (projectId: string): Promise<GitTreeDto> => {
   return remoteRequest<GitTreeDto>(`/projects/${encodeURIComponent(projectId)}/git/tree`);

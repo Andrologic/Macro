@@ -2,11 +2,20 @@
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
 export type PlanStatus = 'Draft' | 'Validated' | 'InProgress' | 'Completed' | 'Cancelled';
-export type TaskStatus = 'Pending' | 'InProgress' | 'AwaitingResponse' | 'Completed' | 'Failed' | 'Blocked';
+export type TaskStatus =
+  | 'Pending'
+  | 'InProgress'
+  | 'AwaitingResponse'
+  | 'InReview'
+  | 'Completed'
+  | 'Failed'
+  | 'Blocked';
 export type MessageRole = 'user' | 'assistant';
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement' | 'Chat' | 'Debug';
+export type AgentType = 'build' | 'plan';
+export type ImplementExecutionMode = 'semi_auto' | 'full_auto';
 
 // Plan Node types for dependency graph
 export type PlanNodeStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
@@ -21,6 +30,7 @@ export interface PlanNode {
   dependencies: string[];
   assignedBranch?: string;
   projectId?: string;
+  projectIds?: string[];
   estimatedTime?: string;
 }
 
@@ -39,6 +49,15 @@ export interface PredictedBranch {
   projectId: string;
   taskIds: string[];
   status: 'pending' | 'active' | 'merged';
+}
+
+export interface TaskExecutionTarget {
+  projectId: string;
+  branchName: string;
+  worktreeKey: string;
+  repoPath?: string;
+  planBranchName?: string;
+  predictedBranchId?: string | null;
 }
 
 export interface PredictedCommit {
@@ -184,6 +203,7 @@ export interface Task {
   id: string;
   plan_id: string;
   project_id: string;
+  project_ids?: string[];
   title: string;
   description: string;
   status: TaskStatus;
@@ -233,6 +253,7 @@ export interface ChatMessage {
   timestamp: string;
   code_diff?: CodeDiff;
   choices?: AIChoice[];
+  allow_free_response?: boolean;
 }
 
 export interface Conversation {
@@ -353,3 +374,4 @@ export interface AuthCredentials {
   email: string;
   password: string;
 }
+

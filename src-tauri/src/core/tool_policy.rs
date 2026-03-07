@@ -100,12 +100,62 @@ fn is_write_tool(tool_id: &str) -> bool {
     matches!(tool_id, "write" | "edit")
 }
 
-pub fn is_macro_scoped_path(raw_path: &str) -> bool {
+fn normalize_relative_path_parts(raw_path: &str) -> Option<Vec<String>> {
     let mut normalized = raw_path.trim().replace('\\', "/");
     while normalized.starts_with("./") {
         normalized = normalized[2..].to_string();
     }
-    normalized == ".macro" || normalized.starts_with(".macro/")
+
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if normalized.starts_with('/') || normalized.get(1..3) == Some(":/") {
+        return None;
+    }
+
+    let mut resolved = Vec::new();
+    for part in normalized.split('/').filter(|part| !part.is_empty()) {
+        match part {
+            "." => {}
+            ".." => {
+                if resolved.is_empty() {
+                    return None;
+                }
+                resolved.pop();
+            }
+            _ => resolved.push(part.to_string()),
+        }
+    }
+
+    if resolved.is_empty() {
+        None
+    } else {
+        Some(resolved)
+    }
+}
+
+pub fn is_macro_scoped_path(raw_path: &str) -> bool {
+    normalize_relative_path_parts(raw_path)
+        .map(|resolved| {
+            resolved
+                .first()
+                .map(|part| part == ".macro")
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+fn is_metadata_relative_path(raw_path: &str) -> bool {
+    normalize_relative_path_parts(raw_path)
+        .map(
+            |resolved| match resolved.first().map(|part| part.as_str()) {
+                Some("workspace.json") => resolved.len() == 1,
+                Some("branches") => true,
+                _ => false,
+            },
+        )
+        .unwrap_or(false)
 }
 
 fn resolve_mode_policy(mode: &str) -> Option<(&'static [&'static str], bool)> {
@@ -132,7 +182,11 @@ pub fn get_mode_policy(mode: &str) -> ToolModePolicyResult {
     }
 }
 
-pub fn validate_tool_execution(mode: &str, tool_id: &str, path: Option<&str>) -> ToolValidationResult {
+pub fn validate_tool_execution(
+    mode: &str,
+    tool_id: &str,
+    path: Option<&str>,
+) -> ToolValidationResult {
     let mode = mode.trim();
     let tool_id = normalize_architect_tool_id(tool_id.trim());
 
@@ -147,28 +201,33 @@ pub fn validate_tool_execution(mode: &str, tool_id: &str, path: Option<&str>) ->
     if !allowed_tool_ids.contains(&tool_id) {
         return ToolValidationResult {
             allowed: false,
-            reason: Some(format!("Tool '{}' is not allowed in mode '{}'", tool_id, mode)),
+            reason: Some(format!(
+                "Tool '{}' is not allowed in mode '{}'",
+                tool_id, mode
+            )),
             enforce_macro_only_writes,
         };
     }
 
     if enforce_macro_only_writes && is_write_tool(tool_id) {
         match path {
-            Some(candidate_path) if is_macro_scoped_path(candidate_path) => {}
+            Some(candidate_path) if is_metadata_relative_path(candidate_path) => {}
             Some(candidate_path) => {
                 return ToolValidationResult {
                     allowed: false,
                     reason: Some(format!(
-                        "Architect mode can only edit files under .macro/. Received: {}",
-                        candidate_path
-                    )),
+                    "Architect mode can only edit metadata files in the @macro root. Received: {}",
+                    candidate_path
+                )),
                     enforce_macro_only_writes,
                 }
             }
             None => {
                 return ToolValidationResult {
                     allowed: false,
-                    reason: Some("Architect mode requires a target path for write/edit tools".to_string()),
+                    reason: Some(
+                        "Architect mode requires a target path for write/edit tools".to_string(),
+                    ),
                     enforce_macro_only_writes,
                 }
             }

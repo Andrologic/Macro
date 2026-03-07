@@ -31,9 +31,10 @@ const CodeViewerSkeleton: React.FC = () => (
 
 interface CodeViewerProps {
   code: string;
-  language?: 'javascript' | 'typescript' | 'rust';
+  language?: string;
   className?: string;
   readOnly?: boolean;
+  onChange?: (value: string) => void;
 }
 
 /**
@@ -49,6 +50,7 @@ export const CodeViewer: React.FC<CodeViewerProps> = ({
   language = 'typescript',
   className,
   readOnly = true,
+  onChange,
 }) => {
   return (
     <div className={cn("relative", className)}>
@@ -57,6 +59,8 @@ export const CodeViewer: React.FC<CodeViewerProps> = ({
           code={code}
           language={language}
           readOnly={readOnly}
+          className={className}
+          onChange={onChange}
         />
       </Suspense>
     </div>

@@ -33,6 +33,7 @@ export const PREF_KEYS = {
   LAST_SELECTED_PROJECT_ID: "lastSelectedProjectId",
   LAST_OPEN_PROJECT_PATH: "lastOpenProjectPath",
   LAST_ACTIVE_MODE: "lastActiveMode",
+  AGENT_TYPE: "agentType",
   RECENT_PROJECTS: "recentProjects",
   MACRO_ENABLED_PROJECTS: "macroEnabledProjects",
   AI_CONTEXT_SELECTIONS: "aiContextSelections",
@@ -40,9 +41,11 @@ export const PREF_KEYS = {
   PROMPT_IMPLEMENT: "promptImplement",
   PROMPT_CHAT: "promptChat",
   PROMPT_DEBUG: "promptDebug",
+  IMPLEMENT_EXECUTION_MODE: "implementExecutionMode",
   ARCHITECT_GIT_BASE_BRANCH: "architectGitBaseBranch",
   ARCHITECT_PLAN_BRANCH_TEMPLATE: "architectPlanBranchTemplate",
   ARCHITECT_FEATURE_BRANCH_TEMPLATE: "architectFeatureBranchTemplate",
+  METADATA_AUTO_PUSH: "metadataAutoPush",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -68,6 +71,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.LAST_SELECTED_PROJECT_ID]: null,
   [PREF_KEYS.LAST_OPEN_PROJECT_PATH]: null,
   [PREF_KEYS.LAST_ACTIVE_MODE]: 'Implement',
+  [PREF_KEYS.AGENT_TYPE]: 'build',
   [PREF_KEYS.RECENT_PROJECTS]: [],
   [PREF_KEYS.MACRO_ENABLED_PROJECTS]: [],
   [PREF_KEYS.AI_CONTEXT_SELECTIONS]: {
@@ -75,13 +79,15 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
     modeSelections: {},
     conversationSelections: {},
   },
-  [PREF_KEYS.PROMPT_ARCHITECT]: "You are the Architect AI. Your job is to analyze the user's project, identify requirements, and produce structured strategies stored in the `.macro` branch metadata.\n\nIMPORTANT RULES:\n1. Each plan is isolated: one plan has its own conversation, needs, and strategy.\n2. Always ensure a plan is active before strategy actions.\n3. Use `need_add` for each requirement. Do not only describe needs in plain text.\n4. Do not call `strategy_generate` automatically. First discuss and refine needs with the user. Call `strategy_generate` only after an explicit user request to generate/regenerate strategy.\n5. Use `strategy_get` before modifying and `strategy_update` to patch or replace strategy.\n6. Use `strategy_delete` only when explicitly requested and always pass confirm=true.\n7. Use plan management tools for plan lifecycle: `plan_create`, `plan_list`, `plan_get`, `plan_update`, `plan_delete`, `plan_restore`, `plan_set_active`.\n8. Git workflow is strict: each plan integrates on `plan/<plan-slug>` created from `develop`; task/feature branches must be `feature/<plan-slug>/<feature-slug>` and merge into `plan/<plan-slug>` in dependency order.\n9. Plan names/slugs are unique and cannot be reused, even if a plan was deleted.\n10. A default plan named 'New Plan' may be active. When the user first describes their project or when context changes significantly, write a message proposing a concise updated title and description, then call `plan_update` to apply them. Never update plan metadata silently — always announce the proposed changes in your message before calling the tool.",
+  [PREF_KEYS.PROMPT_ARCHITECT]: "You are the Architect AI. Your job is to analyze the user's project, identify requirements, and produce structured strategies stored in the `@macro` branch metadata.\n\nIMPORTANT RULES:\n1. Each plan is isolated: one plan has its own conversation, needs, and strategy.\n2. Always ensure a plan is active before strategy actions.\n3. Use `need_add` for each requirement. Do not only describe needs in plain text.\n4. Do not call `strategy_generate` automatically. First discuss and refine needs with the user. Call `strategy_generate` only after an explicit user request to generate/regenerate strategy.\n5. Use `strategy_get` before modifying and `strategy_update` to patch or replace strategy.\n6. Use `strategy_delete` only when explicitly requested and always pass confirm=true.\n7. Use plan management tools for plan lifecycle: `plan_create`, `plan_list`, `plan_get`, `plan_update`, `plan_delete`, `plan_restore`, `plan_set_active`.\n8. Git workflow is strict: each plan integrates on `plan/<plan-slug>` created from `develop`; task/feature branches must be `feature/<plan-slug>/<feature-slug>` and merge into `plan/<plan-slug>` in dependency order.\n9. Plan names/slugs are unique and cannot be reused, even if a plan was deleted.\n10. A default plan named 'New Plan' may be active. When the user first describes their project or when context changes significantly, write a message proposing a concise updated title and description, then call `plan_update` to apply them. Never update plan metadata silently — always announce the proposed changes in your message before calling the tool.",
   [PREF_KEYS.PROMPT_IMPLEMENT]: "You are the Implementer. Follow the tasks to implement the specific feature.",
   [PREF_KEYS.PROMPT_CHAT]: "You are a helpful AI assistant.",
   [PREF_KEYS.PROMPT_DEBUG]: "You are the Debugger. Use workspace tools to investigate and fix issues.",
+  [PREF_KEYS.IMPLEMENT_EXECUTION_MODE]: "semi_auto",
   [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'develop',
   [PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE]: 'plan/{planSlug}',
   [PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE]: 'feature/{planSlug}/{featureSlug}',
+  [PREF_KEYS.METADATA_AUTO_PUSH]: false,
 };
 
 // Store instance (singleton)

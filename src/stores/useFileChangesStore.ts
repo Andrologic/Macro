@@ -1,7 +1,25 @@
 import { create } from 'zustand';
-import { useAppStore } from './useAppStore';
+import i18n from '../i18n';
+import { getGitFlowBaseBranch } from '../services/architectPlanService';
+import { mergeFeatureBranchIntoPlanBranch } from '../services/architectGitFlowService';
+import { parseUnifiedDiff, type ParsedDiffHunk } from '../services/gitDiffParser';
 import * as tauriIpc from '../services/tauriIpc';
-import { parseUnifiedDiff } from '../services/gitDiffParser';
+import { useAppStore } from './useAppStore';
+import {
+  useTaskStore,
+  type ImplementTask,
+  type TaskCompletionRepositoryRecord,
+} from './useTaskStore';
+import type { TaskExecutionTarget, TaskStatus } from '../types';
+
+export type FileChangeContextMode = 'default' | 'expanded' | 'full';
+export type ReviewRepositoryCommitState = 'idle' | 'committing' | 'committed' | 'no_changes';
+
+const FILE_CHANGE_CONTEXT_LINES: Record<FileChangeContextMode, number> = {
+  default: 3,
+  expanded: 12,
+  full: 100000,
+};
 
 export interface FileChangeEntry {
   id: string;
@@ -13,6 +31,36 @@ export interface FileChangeEntry {
   originalContent: string;
   modifiedContent: string;
   language: string;
+  hunks: ParsedDiffHunk[];
+  contextMode: FileChangeContextMode;
+  isEditing: boolean;
+  editingContent: string | null;
+  canEdit: boolean;
+}
+
+export interface ReviewRepositoryStats {
+  total: number;
+  reviewed: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface ReviewRepositoryState {
+  id: string;
+  projectId: string;
+  repoPath: string;
+  worktreePath: string;
+  branchName: string;
+  planBranchName: string | null;
+  changes: FileChangeEntry[];
+  selectedChangeId: string | null;
+  stats: ReviewRepositoryStats;
+  commitMessageDraft: string;
+  commitState: ReviewRepositoryCommitState;
+  loadingChangeId: string | null;
+  savingChangeId: string | null;
+  lastError: string | null;
+  lastCommitHash: string | null;
 }
 
 export interface FolderNode {
@@ -22,6 +70,27 @@ export interface FolderNode {
   children?: FolderNode[];
   fileChange?: FileChangeEntry;
 }
+
+export interface CommitTaskChangesResult {
+  hash: string;
+  taskId: string;
+  taskCompleted: boolean;
+  taskStatus: TaskStatus | null;
+  committedRepositoryId: string;
+  repositories: TaskCompletionRepositoryRecord[];
+}
+
+interface SelectedDiffTarget {
+  repositoryId: string;
+  changeId: string;
+}
+
+const EMPTY_STATS: ReviewRepositoryStats = {
+  total: 0,
+  reviewed: 0,
+  additions: 0,
+  deletions: 0,
+};
 
 export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
   const root: FolderNode[] = [];
@@ -35,7 +104,7 @@ export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
       const isFile = i === parts.length - 1;
       const currentPath = parts.slice(0, i + 1).join('/');
 
-      let existing = current.find((n) => n.name === part);
+      let existing = current.find((node) => node.name === part);
 
       if (!existing) {
         existing = {
@@ -70,156 +139,871 @@ const deriveLanguage = (path: string): string => {
 
 const normalizeStatus = (status: string): FileChangeEntry['status'] => {
   const value = status.toLowerCase();
-  if (value.includes('added') || value === 'a' || value === 'new') return 'added';
+  if (value.includes('added') || value === 'a' || value === 'new' || value === 'untracked') return 'added';
   if (value.includes('deleted') || value === 'd' || value === 'removed') return 'deleted';
   return 'modified';
 };
 
-const resolveActiveProjectPath = (): string | null => {
-  const appState = useAppStore.getState();
+const normalizePortablePath = (value: string): string =>
+  value.replace(/\\/g, '/').replace(/\/+$/, '');
 
-  if (appState.selectedProjectId) {
-    return appState.getProjectById(appState.selectedProjectId)?.path ?? null;
-  }
-
-  if (appState.selectedGroupId) {
-    const group = appState.projectGroups.find((g) => g.id === appState.selectedGroupId);
-    return group?.projects[0]?.path ?? null;
-  }
-
-  return appState.projectGroups[0]?.projects[0]?.path ?? null;
+export const resolveChangeFilePath = (repoPath: string, relativePath: string): string => {
+  const base = normalizePortablePath(repoPath);
+  const relative = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+  return `${base}/${relative}`;
 };
 
+const tChanges = (key: string, fallback: string, options?: Record<string, unknown>): string =>
+  i18n.t(key, { defaultValue: fallback, ...(options || {}) });
+
+const buildRepositoryId = (target: TaskExecutionTarget): string =>
+  `${target.projectId}::${target.worktreeKey}`;
+
+const normalizeBranchName = (value?: string | null): string => {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed || 'work';
+};
+
+const toDefaultCommitMessage = (title?: string | null): string => {
+  const trimmed = title?.trim();
+  if (!trimmed) return 'chore: update task changes';
+  const normalized = trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
+  return `feat: ${normalized}`;
+};
+
+const computeStats = (changes: FileChangeEntry[]): ReviewRepositoryStats => ({
+  total: changes.length,
+  reviewed: changes.filter((change) => change.reviewed).length,
+  additions: changes.reduce((sum, change) => sum + change.additions, 0),
+  deletions: changes.reduce((sum, change) => sum + change.deletions, 0),
+});
+
+const updateChangeEntry = (
+  changes: FileChangeEntry[],
+  changeId: string,
+  updater: (change: FileChangeEntry) => FileChangeEntry
+): FileChangeEntry[] =>
+  changes.map((change) => (change.id === changeId ? updater(change) : change));
+
+const updateRepositoryState = (
+  repositories: ReviewRepositoryState[],
+  repositoryId: string,
+  updater: (repository: ReviewRepositoryState) => ReviewRepositoryState
+): ReviewRepositoryState[] =>
+  repositories.map((repository) => (
+    repository.id === repositoryId ? updater(repository) : repository
+  ));
+
+const syncActiveReviewRepository = (repository: ReviewRepositoryState | null | undefined): void => {
+  if (!repository) return;
+  useTaskStore.setState({
+    activeBranchName: repository.branchName,
+    activeRepositoryPath: repository.worktreePath,
+  });
+};
+
+const getExecutionTargets = (task: ImplementTask): TaskExecutionTarget[] => {
+  if (task.execution_targets?.length) {
+    return task.execution_targets;
+  }
+
+  if (!task.project_id) {
+    return [];
+  }
+
+  return [{
+    projectId: task.project_id,
+    branchName: task.assigned_branch,
+    worktreeKey: `${task.project_id}::${normalizeBranchName(task.assigned_branch)}`,
+    planBranchName: task.task_source === 'standalone' ? getGitFlowBaseBranch() : undefined,
+  }];
+};
+
+const resolveSelectedTask = (): ImplementTask | null => {
+  const selectedTaskId = useAppStore.getState().selectedTaskId;
+  if (!selectedTaskId) return null;
+  return useTaskStore.getState().getTaskById(selectedTaskId) ?? null;
+};
+
+const ensureReviewTask = (): ImplementTask => {
+  const task = resolveSelectedTask();
+  if (!task) {
+    throw new Error(
+      tChanges('implement.errors.selectTaskBeforeCommit', 'Select a task before reviewing changes.')
+    );
+  }
+  return task;
+};
+
+const resolveRepositoryWorktreePath = (target: TaskExecutionTarget, task: ImplementTask): string | null => {
+  const taskState = useTaskStore.getState();
+  const worktreePath = taskState.branchWorktrees[target.worktreeKey];
+  if (worktreePath) {
+    return worktreePath;
+  }
+
+  if (taskState.activeBranchName === task.assigned_branch && taskState.activeRepositoryPath) {
+    return taskState.activeRepositoryPath;
+  }
+
+  const appState = useAppStore.getState();
+  return appState.getProjectById(target.projectId)?.path ?? null;
+};
+
+const loadFileChangeEntry = async (
+  repositoryId: string,
+  worktreePath: string,
+  file: { path: string; status: string },
+  previousChange?: FileChangeEntry,
+  contextModeOverride?: FileChangeContextMode
+): Promise<FileChangeEntry> => {
+  const id = `${repositoryId}::${file.path}`;
+  const status = normalizeStatus(file.status);
+  const contextMode = contextModeOverride ?? previousChange?.contextMode ?? 'default';
+  const patch = await tauriIpc.gitDiff({
+    repoPath: worktreePath,
+    paths: [file.path],
+    contextLines: FILE_CHANGE_CONTEXT_LINES[contextMode],
+  });
+  const parsed = parseUnifiedDiff(patch || '');
+
+  return {
+    id,
+    path: file.path,
+    status,
+    additions: parsed.additions,
+    deletions: parsed.deletions,
+    reviewed: previousChange?.reviewed ?? false,
+    originalContent: parsed.originalContent,
+    modifiedContent: parsed.modifiedContent,
+    language: deriveLanguage(file.path),
+    hunks: parsed.hunks,
+    contextMode,
+    isEditing: false,
+    editingContent: null,
+    canEdit: status !== 'deleted',
+  };
+};
+
+const loadRepositoryState = async (params: {
+  task: ImplementTask;
+  target: TaskExecutionTarget;
+  previousRepository?: ReviewRepositoryState;
+  committedRecord?: TaskCompletionRepositoryRecord;
+}): Promise<ReviewRepositoryState> => {
+  const { task, target, previousRepository, committedRecord } = params;
+  const appState = useAppStore.getState();
+  const project = appState.getProjectById(target.projectId);
+  const repoPath = project?.path ?? target.repoPath ?? null;
+  const worktreePath = resolveRepositoryWorktreePath(target, task);
+
+  if (!repoPath || !worktreePath) {
+    throw new Error(
+      tChanges('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', {
+        taskId: task.id,
+      })
+    );
+  }
+
+  const repositoryId = buildRepositoryId(target);
+  const status = await tauriIpc.gitStatus(worktreePath);
+  const candidates = [
+    ...status.staged_files,
+    ...status.unstaged_files,
+    ...status.untracked_files,
+  ];
+
+  const uniqueByPath = new Map<string, { path: string; status: string }>();
+  candidates.forEach((file) => {
+    if (!file.path) return;
+    if (!uniqueByPath.has(file.path)) {
+      uniqueByPath.set(file.path, { path: file.path, status: file.status });
+    }
+  });
+
+  const previousById = new Map((previousRepository?.changes || []).map((change) => [change.id, change]));
+  const changes: FileChangeEntry[] = [];
+  for (const file of uniqueByPath.values()) {
+    const changeId = `${repositoryId}::${file.path}`;
+    const previousChange = previousById.get(changeId);
+    changes.push(await loadFileChangeEntry(repositoryId, worktreePath, file, previousChange));
+  }
+
+  const selectedChangeId = previousRepository?.selectedChangeId &&
+    changes.some((change) => change.id === previousRepository.selectedChangeId)
+    ? previousRepository.selectedChangeId
+    : changes[0]?.id ?? null;
+  const commitState: ReviewRepositoryCommitState = committedRecord || previousRepository?.commitState === 'committed'
+    ? 'committed'
+    : changes.length === 0
+      ? 'no_changes'
+      : 'idle';
+
+  return {
+    id: repositoryId,
+    projectId: target.projectId,
+    repoPath,
+    worktreePath,
+    branchName: normalizeBranchName(target.branchName),
+    planBranchName: target.planBranchName || (task.task_source === 'standalone' ? getGitFlowBaseBranch() : null),
+    changes,
+    selectedChangeId,
+    stats: computeStats(changes),
+    commitMessageDraft: previousRepository?.commitMessageDraft || toDefaultCommitMessage(task.title),
+    commitState,
+    loadingChangeId: null,
+    savingChangeId: null,
+    lastError: previousRepository?.lastError ?? null,
+    lastCommitHash: previousRepository?.lastCommitHash ?? null,
+  };
+};
+
+const ensureNoForeignStagedFiles = async (worktreePath: string, reviewedPaths: string[]): Promise<void> => {
+  const status = await tauriIpc.gitStatus(worktreePath);
+  const reviewedSet = new Set(reviewedPaths);
+  const foreignStaged = status.staged_files
+    .map((file) => file.path)
+    .filter((path) => !reviewedSet.has(path));
+
+  if (foreignStaged.length > 0) {
+    throw new Error(
+      tChanges(
+        'implement.errors.foreignStagedFiles',
+        'Staged files outside this task were found: {{paths}}. Unstage them before committing.',
+        { paths: foreignStaged.join(', ') }
+      )
+    );
+  }
+};
+
+const buildCompletionRepositoryRecord = (
+  repository: ReviewRepositoryState,
+  existingRecord?: TaskCompletionRepositoryRecord
+): TaskCompletionRepositoryRecord => ({
+  projectId: repository.projectId,
+  repoPath: repository.repoPath,
+  branchName: repository.branchName,
+  planBranchName: repository.planBranchName || getGitFlowBaseBranch(),
+  mergeOutput: existingRecord?.mergeOutput,
+});
+
 interface FileChangesState {
-  changes: FileChangeEntry[];
-  selectedChangeId: string | null;
+  currentTaskId: string | null;
+  repositories: ReviewRepositoryState[];
+  selectedRepositoryId: string | null;
+  selectedDiffTarget: SelectedDiffTarget | null;
   isDiffModalOpen: boolean;
   isLoading: boolean;
+  isCommitting: boolean;
   lastError: string | null;
+  lastCommitHash: string | null;
+  executionRecords: Record<string, TaskCompletionRepositoryRecord>;
 
-  // Actions
   loadCurrentChanges: () => Promise<void>;
-  selectChange: (id: string | null) => void;
-  openDiffModal: (id: string) => void;
+  resetReviewState: () => void;
+  selectRepository: (repositoryId: string | null) => void;
+  loadChangeContext: (repositoryId: string, changeId: string, contextMode: FileChangeContextMode) => Promise<void>;
+  openDiffModal: (repositoryId: string, changeId: string) => void;
   closeDiffModal: () => void;
-  markAsReviewed: (id: string) => void;
-  markAllAsReviewed: () => void;
-  getChange: (id: string) => FileChangeEntry | undefined;
-
-  // Stats
-  getStats: () => { total: number; reviewed: number; additions: number; deletions: number };
+  markAsReviewed: (repositoryId: string, changeId: string) => void;
+  markAllAsReviewed: (repositoryId?: string) => void;
+  startEditingChange: (repositoryId: string, changeId: string) => Promise<void>;
+  updateEditingBuffer: (repositoryId: string, changeId: string, content: string) => void;
+  cancelEditingChange: (repositoryId: string, changeId: string) => void;
+  saveEditedChange: (repositoryId: string, changeId: string) => Promise<void>;
+  commitReviewedChanges: (repositoryId: string, message: string) => Promise<CommitTaskChangesResult>;
+  setCommitMessageDraft: (repositoryId: string, message: string) => void;
+  getRepository: (repositoryId: string) => ReviewRepositoryState | undefined;
+  getSelectedRepository: () => ReviewRepositoryState | undefined;
+  getChange: (repositoryId: string, changeId: string) => FileChangeEntry | undefined;
+  getSelectedDiffTarget: () => SelectedDiffTarget | null;
+  getStats: (repositoryId?: string | null) => ReviewRepositoryStats;
+  getOverallStats: () => ReviewRepositoryStats;
 }
 
 export const useFileChangesStore = create<FileChangesState>((set, get) => ({
-  changes: [],
-  selectedChangeId: null,
+  currentTaskId: null,
+  repositories: [],
+  selectedRepositoryId: null,
+  selectedDiffTarget: null,
   isDiffModalOpen: false,
   isLoading: false,
+  isCommitting: false,
   lastError: null,
+  lastCommitHash: null,
+  executionRecords: {},
 
   loadCurrentChanges: async () => {
     set({ isLoading: true, lastError: null });
 
     if (!tauriIpc.isTauriAvailable()) {
-      set({ isLoading: false, changes: [], lastError: null });
+      set({
+        currentTaskId: null,
+        repositories: [],
+        selectedRepositoryId: null,
+        selectedDiffTarget: null,
+        isDiffModalOpen: false,
+        isLoading: false,
+        executionRecords: {},
+      });
+      return;
+    }
+
+    const task = resolveSelectedTask();
+    if (!task) {
+      set({
+        currentTaskId: null,
+        repositories: [],
+        selectedRepositoryId: null,
+        selectedDiffTarget: null,
+        isDiffModalOpen: false,
+        isLoading: false,
+        executionRecords: {},
+      });
       return;
     }
 
     try {
-      const repoPath = resolveActiveProjectPath();
-      if (!repoPath) {
-        set({ isLoading: false, changes: [], lastError: null });
-        return;
-      }
+      const previousState = get();
+      const sameTask = previousState.currentTaskId === task.id;
+      const previousRepositories = new Map(
+        (sameTask ? previousState.repositories : []).map((repository) => [repository.id, repository])
+      );
+      const executionRecords = sameTask ? previousState.executionRecords : {};
+      const repositories = await Promise.all(
+        getExecutionTargets(task).map((target) => {
+          const repositoryId = buildRepositoryId(target);
+          return loadRepositoryState({
+            task,
+            target,
+            previousRepository: previousRepositories.get(repositoryId),
+            committedRecord: executionRecords[repositoryId],
+          });
+        })
+      );
 
-      const status = await tauriIpc.gitStatus(repoPath);
-      const candidates = [
-        ...status.staged_files,
-        ...status.unstaged_files,
-        ...status.untracked_files,
-      ];
+      const selectedRepositoryId = repositories.some((repository) => repository.id === previousState.selectedRepositoryId)
+        ? previousState.selectedRepositoryId
+        : repositories[0]?.id ?? null;
+      const selectedDiffTarget =
+        previousState.selectedDiffTarget &&
+          repositories.some((repository) =>
+            repository.id === previousState.selectedDiffTarget?.repositoryId &&
+            repository.changes.some((change) => change.id === previousState.selectedDiffTarget?.changeId)
+          )
+          ? previousState.selectedDiffTarget
+          : null;
 
-      const uniqueByPath = new Map<string, { path: string; status: string }>();
-      candidates.forEach((file) => {
-        if (!file.path) return;
-        if (!uniqueByPath.has(file.path)) {
-          uniqueByPath.set(file.path, { path: file.path, status: file.status });
-        }
+      set({
+        currentTaskId: task.id,
+        repositories,
+        selectedRepositoryId,
+        selectedDiffTarget,
+        isDiffModalOpen: Boolean(selectedDiffTarget) && previousState.isDiffModalOpen,
+        isLoading: false,
+        lastError: null,
+        executionRecords,
       });
 
-      const reviewedById = new Map(get().changes.map((change) => [change.id, change.reviewed]));
-
-      const entries: FileChangeEntry[] = [];
-      for (const file of uniqueByPath.values()) {
-        const patch = await tauriIpc.gitDiff({
-          repoPath,
-          paths: [file.path],
-          contextLines: 3,
-        });
-
-        const parsed = parseUnifiedDiff(patch || '');
-        const id = `change-${file.path}`;
-
-        entries.push({
-          id,
-          path: file.path,
-          status: normalizeStatus(file.status),
-          additions: parsed.additions,
-          deletions: parsed.deletions,
-          reviewed: reviewedById.get(id) ?? false,
-          originalContent: parsed.originalContent,
-          modifiedContent: parsed.modifiedContent,
-          language: deriveLanguage(file.path),
-        });
-      }
-
-      set({ changes: entries, isLoading: false, lastError: null });
+      syncActiveReviewRepository(
+        repositories.find((repository) => repository.id === selectedRepositoryId) || repositories[0]
+      );
     } catch (error) {
       set({
         isLoading: false,
-        changes: [],
-        lastError: error instanceof Error ? error.message : String(error),
+        repositories: [],
+        selectedRepositoryId: null,
+        selectedDiffTarget: null,
+        isDiffModalOpen: false,
+        executionRecords: {},
+        lastError:
+          error instanceof Error
+            ? error.message
+            : tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.'),
       });
     }
   },
 
-  selectChange: (id) => {
-    set({ selectedChangeId: id });
+  resetReviewState: () => {
+    set({
+      currentTaskId: null,
+      repositories: [],
+      selectedRepositoryId: null,
+      selectedDiffTarget: null,
+      isDiffModalOpen: false,
+      isLoading: false,
+      isCommitting: false,
+      lastError: null,
+      lastCommitHash: null,
+      executionRecords: {},
+    });
   },
 
-  openDiffModal: (id) => {
-    set({ selectedChangeId: id, isDiffModalOpen: true });
+  selectRepository: (repositoryId) => {
+    const repository = repositoryId
+      ? get().repositories.find((candidate) => candidate.id === repositoryId)
+      : null;
+    set({ selectedRepositoryId: repositoryId });
+    syncActiveReviewRepository(repository);
+  },
+
+  loadChangeContext: async (repositoryId, changeId, contextMode) => {
+    const repository = get().getRepository(repositoryId);
+    const currentChange = repository?.changes.find((change) => change.id === changeId);
+    if (!repository || !currentChange || currentChange.contextMode === contextMode || currentChange.isEditing) {
+      return;
+    }
+
+    set((state) => ({
+      repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+        ...currentRepository,
+        loadingChangeId: changeId,
+        lastError: null,
+      })),
+      lastError: null,
+    }));
+
+    try {
+      const reloaded = await loadFileChangeEntry(
+        repositoryId,
+        repository.worktreePath,
+        { path: currentChange.path, status: currentChange.status },
+        currentChange,
+        contextMode
+      );
+
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => {
+          const changes = updateChangeEntry(currentRepository.changes, changeId, () => reloaded);
+          return {
+            ...currentRepository,
+            changes,
+            loadingChangeId: null,
+            stats: computeStats(changes),
+            lastError: null,
+          };
+        }),
+      }));
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          loadingChangeId: null,
+          lastError: message,
+        })),
+        lastError: message,
+      }));
+    }
+  },
+
+  openDiffModal: (repositoryId, changeId) => {
+    const repository = get().repositories.find((candidate) => candidate.id === repositoryId) ?? null;
+    set({
+      selectedRepositoryId: repositoryId,
+      selectedDiffTarget: { repositoryId, changeId },
+      isDiffModalOpen: true,
+    });
+    syncActiveReviewRepository(repository);
   },
 
   closeDiffModal: () => {
-    set({ isDiffModalOpen: false });
-  },
-
-  markAsReviewed: (id) => {
+    const selectedDiffTarget = get().selectedDiffTarget;
     set((state) => ({
-      changes: state.changes.map((c) =>
-        c.id === id ? { ...c, reviewed: true } : c
-      ),
+      isDiffModalOpen: false,
+      repositories: !selectedDiffTarget
+        ? state.repositories
+        : updateRepositoryState(state.repositories, selectedDiffTarget.repositoryId, (repository) => ({
+          ...repository,
+          changes: updateChangeEntry(repository.changes, selectedDiffTarget.changeId, (change) => ({
+            ...change,
+            isEditing: false,
+            editingContent: null,
+          })),
+        })),
     }));
   },
 
-  markAllAsReviewed: () => {
+  markAsReviewed: (repositoryId, changeId) => {
     set((state) => ({
-      changes: state.changes.map((c) => ({ ...c, reviewed: true })),
+      repositories: updateRepositoryState(state.repositories, repositoryId, (repository) => {
+        const changes = updateChangeEntry(repository.changes, changeId, (change) => ({
+          ...change,
+          reviewed: true,
+        }));
+        return {
+          ...repository,
+          changes,
+          stats: computeStats(changes),
+        };
+      }),
     }));
   },
 
-  getChange: (id) => {
-    return get().changes.find((c) => c.id === id);
+  markAllAsReviewed: (repositoryId) => {
+    const targetRepositoryId = repositoryId || get().selectedRepositoryId;
+    if (!targetRepositoryId) return;
+
+    set((state) => ({
+      repositories: updateRepositoryState(state.repositories, targetRepositoryId, (repository) => {
+        const changes = repository.changes.map((change) => ({ ...change, reviewed: true }));
+        return {
+          ...repository,
+          changes,
+          stats: computeStats(changes),
+        };
+      }),
+    }));
   },
 
-  getStats: () => {
-    const changes = get().changes;
-    return {
-      total: changes.length,
-      reviewed: changes.filter((c) => c.reviewed).length,
-      additions: changes.reduce((sum, c) => sum + c.additions, 0),
-      deletions: changes.reduce((sum, c) => sum + c.deletions, 0),
-    };
+  startEditingChange: async (repositoryId, changeId) => {
+    const repository = get().getRepository(repositoryId);
+    const currentChange = repository?.changes.find((change) => change.id === changeId);
+    if (!repository || !currentChange) return;
+
+    if (!currentChange.canEdit) {
+      const message = tChanges(
+        'implement.errors.deletedChangeReadOnly',
+        'Deleted files are read-only during review. Restore them from the task flow instead.'
+      );
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          lastError: message,
+        })),
+        lastError: message,
+      }));
+      return;
+    }
+
+    if (currentChange.contextMode !== 'full') {
+      await get().loadChangeContext(repositoryId, changeId, 'full');
+    }
+
+    const latest = get().getChange(repositoryId, changeId);
+    if (!latest) return;
+
+    set((state) => ({
+      repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+        ...currentRepository,
+        changes: updateChangeEntry(currentRepository.changes, changeId, (change) => ({
+          ...change,
+          isEditing: true,
+          editingContent: latest.modifiedContent,
+        })),
+        lastError: null,
+      })),
+      lastError: null,
+    }));
+  },
+
+  updateEditingBuffer: (repositoryId, changeId, content) => {
+    set((state) => ({
+      repositories: updateRepositoryState(state.repositories, repositoryId, (repository) => ({
+        ...repository,
+        changes: updateChangeEntry(repository.changes, changeId, (change) => ({
+          ...change,
+          editingContent: content,
+        })),
+      })),
+    }));
+  },
+
+  cancelEditingChange: (repositoryId, changeId) => {
+    set((state) => ({
+      repositories: updateRepositoryState(state.repositories, repositoryId, (repository) => ({
+        ...repository,
+        changes: updateChangeEntry(repository.changes, changeId, (change) => ({
+          ...change,
+          isEditing: false,
+          editingContent: null,
+        })),
+      })),
+    }));
+  },
+
+  saveEditedChange: async (repositoryId, changeId) => {
+    const repository = get().getRepository(repositoryId);
+    const change = get().getChange(repositoryId, changeId);
+    if (!repository || !change || !change.canEdit) return;
+
+    if (!tauriIpc.isTauriAvailable()) {
+      throw new Error(
+        tChanges('implement.errors.commitDesktopOnly', 'Git commit flow is only available in desktop mode.')
+      );
+    }
+
+    const nextContent = change.editingContent ?? change.modifiedContent;
+
+    set((state) => ({
+      repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+        ...currentRepository,
+        savingChangeId: changeId,
+        lastError: null,
+      })),
+      lastError: null,
+    }));
+
+    try {
+      await tauriIpc.fsWriteFile({
+        path: resolveChangeFilePath(repository.worktreePath, change.path),
+        content: nextContent,
+        createDirs: true,
+        allowOutsideWorkspace: true,
+      });
+
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          changes: updateChangeEntry(currentRepository.changes, changeId, (entry) => ({
+            ...entry,
+            reviewed: false,
+            isEditing: false,
+            editingContent: null,
+          })),
+          savingChangeId: null,
+          lastError: null,
+        })),
+      }));
+
+      await get().loadCurrentChanges();
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: null,
+          lastError: message,
+        })),
+        lastError: message,
+      }));
+      throw error;
+    }
+  },
+
+  commitReviewedChanges: async (repositoryId, message) => {
+    const commitMessage = message.trim();
+    if (!commitMessage) {
+      throw new Error(tChanges('implement.errors.commitMessageRequired', 'Commit message is required.'));
+    }
+
+    const task = ensureReviewTask();
+    if (task.status !== 'InReview') {
+      throw new Error(
+        tChanges('implement.errors.commitRequiresActiveTaskStatus', 'Task must be in review before commit.')
+      );
+    }
+
+    const repository = get().getRepository(repositoryId);
+    if (!repository) {
+      throw new Error(
+        tChanges('implement.errors.noActiveRepositoryPath', 'No active repository path found for this task.')
+      );
+    }
+
+    if (repository.commitState === 'committed') {
+      throw new Error(
+        tChanges('implement.errors.repositoryAlreadyCommitted', 'This repository has already been committed.')
+      );
+    }
+
+    if (repository.changes.length === 0) {
+      throw new Error(tChanges('implement.errors.commitNoChanges', 'No file changes available for this task.'));
+    }
+
+    const reviewedPaths = Array.from(
+      new Set(
+        repository.changes
+          .filter((change) => change.reviewed)
+          .map((change) => change.path)
+          .filter((path) => path.trim().length > 0)
+      )
+    );
+
+    if (reviewedPaths.length !== repository.changes.length) {
+      throw new Error(
+        tChanges('implement.errors.commitNeedsReview', 'Review all file changes before committing this task.')
+      );
+    }
+
+    const integrationBranchName = repository.planBranchName || (
+      task.task_source === 'standalone' ? getGitFlowBaseBranch() : null
+    );
+    if (!integrationBranchName) {
+      throw new Error(
+        tChanges(
+          'implement.errors.missingIntegrationBranch',
+          'Cannot determine the integration branch for task {{taskId}}.',
+          { taskId: task.id }
+        )
+      );
+    }
+
+    set((state) => ({
+      isCommitting: true,
+      lastError: null,
+      repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+        ...currentRepository,
+        commitState: 'committing',
+        commitMessageDraft: commitMessage,
+        lastError: null,
+      })),
+    }));
+
+    try {
+      await ensureNoForeignStagedFiles(repository.worktreePath, reviewedPaths);
+      await tauriIpc.gitAdd({
+        repoPath: repository.worktreePath,
+        paths: reviewedPaths,
+      });
+
+      const hash = await tauriIpc.gitCommit({
+        repoPath: repository.worktreePath,
+        message: commitMessage,
+        stageAll: false,
+      });
+
+      const mergeOutput = await mergeFeatureBranchIntoPlanBranch({
+        projectId: repository.projectId,
+        branchName: repository.branchName,
+        planBranchName: integrationBranchName,
+        repoPath: repository.repoPath,
+      });
+
+      const executionRecord: TaskCompletionRepositoryRecord = {
+        projectId: repository.projectId,
+        repoPath: repository.repoPath,
+        branchName: repository.branchName,
+        planBranchName: integrationBranchName,
+        mergeOutput,
+      };
+
+      const currentState = get();
+      const nextExecutionRecords = {
+        ...currentState.executionRecords,
+        [repositoryId]: executionRecord,
+      };
+      const nextRepositories = currentState.repositories.map((currentRepository) => {
+        if (currentRepository.id !== repositoryId) {
+          return currentRepository;
+        }
+        return {
+          ...currentRepository,
+          changes: [],
+          selectedChangeId: null,
+          stats: EMPTY_STATS,
+          commitMessageDraft: commitMessage,
+          commitState: 'committed' as const,
+          loadingChangeId: null,
+          savingChangeId: null,
+          lastError: null,
+          lastCommitHash: hash,
+        };
+      });
+
+      const nextSelectedRepository = nextRepositories.find((candidate) => candidate.commitState === 'idle') ||
+        nextRepositories.find((candidate) => candidate.commitState === 'no_changes') ||
+        nextRepositories.find((candidate) => candidate.id === repositoryId) ||
+        null;
+
+      set({
+        repositories: nextRepositories,
+        selectedRepositoryId: nextSelectedRepository?.id ?? null,
+        executionRecords: nextExecutionRecords,
+        isCommitting: false,
+        lastCommitHash: hash,
+        lastError: null,
+      });
+      syncActiveReviewRepository(nextSelectedRepository);
+
+      const completionRecords = nextRepositories.map((currentRepository) =>
+        nextExecutionRecords[currentRepository.id] ||
+        buildCompletionRepositoryRecord(currentRepository)
+      );
+      const allRepositoriesResolved = nextRepositories.every((currentRepository) =>
+        currentRepository.commitState === 'committed' || currentRepository.commitState === 'no_changes'
+      );
+
+      let taskCompleted = false;
+      let taskStatus: TaskStatus | null = useTaskStore.getState().getTaskById(task.id)?.status ?? null;
+      if (allRepositoriesResolved && completionRecords.some((record) => Boolean(record.mergeOutput))) {
+        await useTaskStore.getState().completeTask(task.id, {
+          skipIntegration: true,
+          repositories: completionRecords,
+        });
+        taskStatus = useTaskStore.getState().getTaskById(task.id)?.status ?? null;
+        taskCompleted = taskStatus === 'Completed';
+      }
+
+      return {
+        hash,
+        taskId: task.id,
+        taskCompleted,
+        taskStatus,
+        committedRepositoryId: repositoryId,
+        repositories: completionRecords,
+      };
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        isCommitting: false,
+        lastError: messageText,
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          commitState: currentRepository.changes.length === 0 ? 'no_changes' : 'idle',
+          lastError: messageText,
+        })),
+      }));
+      throw error;
+    }
+  },
+
+  setCommitMessageDraft: (repositoryId, message) => {
+    set((state) => ({
+      repositories: updateRepositoryState(state.repositories, repositoryId, (repository) => ({
+        ...repository,
+        commitMessageDraft: message,
+      })),
+    }));
+  },
+
+  getRepository: (repositoryId) => {
+    return get().repositories.find((repository) => repository.id === repositoryId);
+  },
+
+  getSelectedRepository: () => {
+    const selectedRepositoryId = get().selectedRepositoryId;
+    if (!selectedRepositoryId) return undefined;
+    return get().repositories.find((repository) => repository.id === selectedRepositoryId);
+  },
+
+  getChange: (repositoryId, changeId) => {
+    return get().repositories
+      .find((repository) => repository.id === repositoryId)
+      ?.changes.find((change) => change.id === changeId);
+  },
+
+  getSelectedDiffTarget: () => get().selectedDiffTarget,
+
+  getStats: (repositoryId) => {
+    const targetRepositoryId = repositoryId || get().selectedRepositoryId;
+    if (!targetRepositoryId) return EMPTY_STATS;
+    return get().repositories.find((repository) => repository.id === targetRepositoryId)?.stats || EMPTY_STATS;
+  },
+
+  getOverallStats: () => {
+    const repositories = get().repositories;
+    return repositories.reduce<ReviewRepositoryStats>((aggregate, repository) => ({
+      total: aggregate.total + repository.stats.total,
+      reviewed: aggregate.reviewed + repository.stats.reviewed,
+      additions: aggregate.additions + repository.stats.additions,
+      deletions: aggregate.deletions + repository.stats.deletions,
+    }), { ...EMPTY_STATS });
   },
 }));

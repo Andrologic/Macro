@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { getToolModePolicy, isMacroScopedPath } from './toolModePolicy';
+import { getToolModePolicy, isMacroScopedPath, isMetadataRelativePath } from './toolModePolicy';
 
 describe('toolModePolicy', () => {
   it('disallows mutating and workspace tools in chat mode', () => {
@@ -68,7 +68,7 @@ describe('toolModePolicy', () => {
     expect(policy.enforceMacroOnlyWrites).toBe(false);
   });
 
-  it('detects .macro scoped paths', () => {
+  it('detects legacy .macro scoped paths', () => {
     expect(isMacroScopedPath('.macro')).toBe(true);
     expect(isMacroScopedPath('.macro/branches/main/plan.md')).toBe(true);
     expect(isMacroScopedPath('./.macro/branches/main/plan.md')).toBe(true);
@@ -77,5 +77,16 @@ describe('toolModePolicy', () => {
     expect(isMacroScopedPath('/.macro/branches/main/plan.md')).toBe(false);
     expect(isMacroScopedPath('C:/repo/.macro/branches/main/plan.md')).toBe(false);
     expect(isMacroScopedPath('src/App.tsx')).toBe(false);
+  });
+
+  it('accepts metadata-root relative paths for architect writes', () => {
+    expect(isMetadataRelativePath('branches/main/plans/index.json')).toBe(true);
+    expect(isMetadataRelativePath('./branches/main/plans/plan-1/plan.md')).toBe(true);
+    expect(isMetadataRelativePath('workspace.json')).toBe(true);
+    expect(isMetadataRelativePath('src/App.tsx')).toBe(false);
+    expect(isMetadataRelativePath('.macro/branches/main/plan.md')).toBe(false);
+    expect(isMetadataRelativePath('.git/config')).toBe(false);
+    expect(isMetadataRelativePath('../src/App.tsx')).toBe(false);
+    expect(isMetadataRelativePath('C:/repo/branches/main/plan.md')).toBe(false);
   });
 });

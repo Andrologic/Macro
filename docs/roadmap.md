@@ -1,0 +1,396 @@
+# Macro - Roadmap
+
+## 1. Objet du document
+
+Ce document decrit la trajectoire de livraison de Macro.
+
+Il sert a :
+- identifier les ecarts entre la cible produit et l'etat actuel
+- prioriser les chantiers
+- definir un ordre de livraison coherent
+- servir de support de pilotage produit et technique
+
+La cible fonctionnelle est definie dans `docs/functional-spec.md`.
+L'architecture technique de reference est definie dans `docs/technical-architecture.md`.
+
+---
+
+## 2. Regle de lecture
+
+Cette roadmap est organisee en trois niveaux :
+
+- ecarts constates ou probables entre la cible et l'etat actuel
+- chantiers prioritaires
+- sequence de livraison recommandee
+
+Elle doit rester vivante.
+Un chantier livre doit etre retire ou marque comme termine.
+Un ecart devenu obsolete doit etre supprime.
+
+---
+
+## 3. Etat actuel synthetique
+
+L'application dispose deja d'une base solide :
+
+- shell desktop React + Tauri fonctionnel
+- modes `Architect`, `Implement`, `Chat`, `Debug` deja presents
+- gestion de plans cote Architect deja avancee
+- pipeline Git et metadata deja bien amorce
+- taches, review et commit deja presents cote Implement
+- catalogue de taches `Implement` maintenant capable d'agreger plusieurs plans executables cote desktop
+- filtres par plan et prise en charge des taches hors plan maintenant presents dans la file de taches
+- couches de services, stores et IPC deja structurees
+- kernel headless deja present en premiere version
+
+En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiques :
+
+- experience Implement encore partiellement inachevee
+- automatisation et orchestration encore a fiabiliser
+- notifications et supervision distante non finalisees
+- articulation desktop / remote / mobile encore incomplete
+- experience multi-plan et multi-projet encore a consolider de bout en bout
+- documents de reference seulement en cours de reconstruction
+
+---
+
+## 4. Ecarts principaux par domaine
+
+### 4.1 Cadrage produit et documentation
+
+Etat attendu :
+- un socle documentaire court, propre et non redondant
+- une specification fonctionnelle de reference
+- une architecture technique de reference
+- une roadmap exploitable
+
+Etat a consolider :
+- plusieurs anciens documents restent encore a archiver ou a remplacer
+- les nouveaux documents doivent devenir l'unique source de verite
+
+### 4.2 Mode Architect
+
+Etat attendu :
+- creation et gestion fluide de plusieurs plans
+- conversation, besoins et strategie bien lies a chaque plan
+- structuration predictive fiable
+- validation automatique propre vers branches et worktrees
+
+Etat a consolider :
+- cleanup complet des structures lorsque des plans sont supprimes ou abandonnes
+- robustesse multi-plans paralleles
+- lisibilite du mode Architect quand plusieurs plans coexistent
+
+### 4.3 Mode Implement
+
+Etat attendu :
+- file de taches claire, filtrable et fiable
+- execution semi-auto et full-auto bien definies
+- questions IA rapides a traiter
+- review de fin de tache ergonomique
+- commits et integration bien verrouilles
+
+Etat deja consolide :
+- derivation et agregation de taches depuis plusieurs plans executables cote desktop
+- filtrage de la file par plan
+- support des taches hors plan dans la file et dans le cycle de completion
+- meilleur rattachement des taches multi-projets au projet courant
+
+Etat a consolider :
+- backend de listing des taches encore centre sur le plan courant
+- UX de la review et de l'edition ciblee
+- mode semi-auto vs full-auto
+- questions IA a reponses rapides reellement branchees
+- articulation claire entre review de tache, commit, validation finale de plan et merge
+- comportement global du mode quand plusieurs plans et plusieurs projets sont actifs en meme temps
+
+### 4.4 Review et edition ciblee
+
+Etat attendu :
+- review principalement en lecture
+- possibilite d'ajuster rapidement les modifications de l'IA
+- chargement progressif de contexte puis du fichier complet si besoin
+
+Etat a consolider :
+- surface d'edition exacte
+- experience de correction manuelle dans les diffs
+- ergonomie de validation du code apres retouche
+
+### 4.5 Git, plans et metadata
+
+Etat attendu :
+- git flow stable autour des plans, branches de feature, branche de base et `@macro`
+- worktrees fiables
+- metadata auditables et synchronisables
+- conflicts metadata et merge conflicts techniques traites proprement
+
+Etat a consolider :
+- nettoyage des branches parasites
+- automatisation complete du cycle de vie des branches de plan
+- resolution assistee des merge conflicts issus des merges pilotes par Macro
+- robustesse de la sync `@macro`
+
+### 4.6 Multi-projet
+
+Etat attendu :
+- groupes de projets natifs
+- execution coherente sur plusieurs depots
+- vision partagee du contexte
+- commits distincts par projet mais validation fonctionnelle unifiee
+
+Etat a consolider :
+- lisibilite UX du multi-projet
+- gestion de bout en bout des taches qui touchent plusieurs projets
+- duplication et consultation fiables des plans par projet
+- clarte globale des filtres, de la review et de la navigation
+
+### 4.7 Mode Chat
+
+Etat attendu :
+- mode simple, leger, local
+- historique conversationnel local
+- pieces jointes par conversation
+- outils web et MCP configurables
+
+Etat a consolider :
+- simplification assumee du mode
+- separation nette avec le mode Implement
+- politique d'outils clairement exposee a l'utilisateur
+
+### 4.8 Notifications et supervision distante
+
+Etat attendu :
+- notifications desktop
+- notifications mobiles
+- demandes d'attention claires
+- reponses rapides depuis mobile
+
+Etat a consolider :
+- systeme de notification encore absent ou incomplet
+- protocole d'echange entre execution et client mobile
+- definition de la supervision distante comme experience produit complete
+
+### 4.9 Kernel distant
+
+Etat attendu :
+- execution continue sans GUI
+- reprise entre desktop, laptop et mobile
+- acces distant stable au workspace et aux outils
+- base pour les offres serveur dedie ou heberge
+
+Etat a consolider :
+- enrichissement de l'API headless
+- securisation et session utilisateur
+- orchestration d'execution longue duree
+- articulation produit entre machine locale, serveur personnel et infrastructure hebergee
+
+### 4.10 Comptes et abonnement
+
+Etat attendu :
+- authentification utilisateur
+- liaison avec mobile
+- synchronisation de certaines preferences
+- eventuels modes d'abonnement
+
+Etat a consolider :
+- fonctionnalite encore a introduire reellement dans le produit
+- frontieres entre coeur local-first et services comptes a formaliser
+
+---
+
+## 5. Chantiers prioritaires
+
+### 5.1 Priorite 1 - Stabiliser le coeur desktop
+
+Objectif :
+- rendre l'experience desktop suffisamment robuste pour servir de base produit
+
+Chantiers :
+- finir la boucle Architect -> Implement -> Review -> Commit -> Validation de plan
+- durcir le git flow de plan
+- fiabiliser les transitions de taches
+- finaliser l'UX de review et d'edition ciblee
+- finaliser le multi-plan cote Implement jusqu'au backend et a la review
+
+### 5.2 Priorite 2 - Rendre le multi-projet reellement premium
+
+Objectif :
+- faire du multi-projet une vraie force du produit plutot qu'une capacite partielle
+
+Chantiers :
+- clarifier la structure groupe / projet / plan / tache
+- fiabiliser les taches multi-projets
+- garantir la qualite des commits par projet
+- ameliorer navigation, filtres et lisibilite de contexte
+
+### 5.3 Priorite 3 - Fiabiliser l'autonomie assistee
+
+Objectif :
+- rendre l'IA capable d'avancer longtemps sans degrader la qualite de supervision
+
+Chantiers :
+- mode semi-auto bien borne
+- mode full-auto bien borne
+- questions IA a choix rapides
+- gestion claire des points de blocage
+- execution test/build observable et interpretable
+
+### 5.4 Priorite 4 - Introduire la supervision distante
+
+Objectif :
+- permettre la poursuite du travail hors du poste principal
+
+Chantiers :
+- notifications desktop d'abord
+- socle de supervision mobile ensuite
+- protocoles de questions/reponses a distance
+- review et validation a distance
+
+### 5.5 Priorite 5 - Industrialiser le kernel distant
+
+Objectif :
+- transformer le kernel headless en brique produit stable
+
+Chantiers :
+- enrichir l'API headless
+- fiabiliser l'execution distante
+- gerer l'authentification et la securisation
+- preparer les scenarios serveur personnel et heberge
+
+### 5.6 Priorite 6 - Introduire le compte utilisateur et la monetisation
+
+Objectif :
+- ouvrir la voie au produit connecte sans casser le coeur local-first
+
+Chantiers :
+- authentification
+- synchronisation selective de preferences
+- liaison mobile
+- modeles d'abonnement
+
+---
+
+## 6. Sequence de livraison recommandee
+
+### Phase 0 - Assainissement documentaire
+
+Livrables :
+- `functional-spec.md`
+- `technical-architecture.md`
+- `roadmap.md`
+- archivage des anciens documents non references
+
+Critere de sortie :
+- la documentation de reference devient claire et non superposee
+
+### Phase 1 - Coeur Architect / Implement stable
+
+Livrables :
+- plans paralleles bien tenus
+- derivation de taches fiable, y compris sur plusieurs plans executables cote desktop
+- review de tache exploitable
+- commits robustes
+- validation finale de plan robuste
+
+Critere de sortie :
+- un utilisateur peut livrer un plan complet sur desktop sans bricolage majeur
+
+### Phase 2 - Git flow et metadata robustes
+
+Livrables :
+- nettoyage des branches et worktrees
+- sync `@macro` fiable
+- lifecycle complet des plans
+- resolution assistee des merge conflicts pilotes par Macro
+
+Critere de sortie :
+- l'infrastructure Git de Macro est suffisamment fiable pour du travail long cours
+
+### Phase 3 - Experience multi-projet premium
+
+Livrables :
+- UX multi-projet lisible
+- taches multi-projets bien gerees
+- filtres par plan et par projet complets
+- integration coherente des commits par depot
+
+Critere de sortie :
+- le multi-projet devient un vrai avantage produit visible
+
+### Phase 4 - Automatisation et supervision
+
+Livrables :
+- mode semi-auto abouti
+- mode full-auto borne
+- notifications desktop
+- systeme de questions/reponses rapides
+
+Critere de sortie :
+- l'utilisateur peut laisser Macro avancer puis reprendre la main efficacement
+
+### Phase 5 - Remote kernel et mobile supervision
+
+Livrables :
+- API headless elargie
+- supervision distante fiable
+- premiere integration mobile utile pour Implement
+- execution continue entre plusieurs machines
+
+Critere de sortie :
+- Macro n'est plus lie a un unique poste allume en permanence
+
+### Phase 6 - Comptes, sync et offres connectees
+
+Livrables :
+- authentification
+- liaison compte / mobile / serveur
+- synchronisation selective
+- base des offres abonnement
+
+Critere de sortie :
+- le produit connecte existe sans fragiliser le coeur desktop local-first
+
+---
+
+## 7. Decisions produit encore a verrouiller
+
+Les sujets suivants doivent rester visibles tant qu'ils ne sont pas totalement figes :
+
+- niveau exact d'autonomie acceptable en mode full-auto
+- UX precise de la review et de l'edition manuelle
+- politique exacte de merge automatique
+- modelisation definitive des taches hors plan
+- profondeur fonctionnelle du mobile a la V1
+- frontiere entre execution locale, serveur personnel et hebergement Macro
+- niveau de synchronisation associe au compte utilisateur
+
+---
+
+## 8. Anti-objectifs de la roadmap
+
+La roadmap ne doit pas devenir :
+
+- une copie de la specification fonctionnelle
+- un inventaire de tickets trop fins
+- un changelog
+- un document purement technique de bas niveau
+
+Elle doit rester un outil de pilotage.
+
+---
+
+## 9. Regles de maintenance du document
+
+Cette roadmap doit etre mise a jour lorsque :
+
+- une phase est terminee
+- une priorite change
+- un nouveau chantier majeur apparait
+- une decision produit ferme un sujet ouvert
+
+Chaque entree importante de roadmap doit pouvoir etre reliee a :
+
+- une exigence de `docs/functional-spec.md`
+- un impact sur `docs/technical-architecture.md`
+
+Lorsqu'un chantier est livre, son etat doit etre mis a jour plutot que laisse implicite.

@@ -26,6 +26,7 @@ interface ProjectNavigatorProps {
 
 interface ProjectItemProps {
   project: Project;
+  isSelected: boolean;
   badges: { label: string; variant: 'default' | 'success' | 'warning' | 'attention' }[];
   onSelect: () => void;
   onMenuOpen: (e: React.MouseEvent) => void;
@@ -33,6 +34,7 @@ interface ProjectItemProps {
 
 const ProjectItem: React.FC<ProjectItemProps> = ({
   project,
+  isSelected,
   badges,
   onSelect,
   onMenuOpen,
@@ -42,7 +44,9 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
       onClick={onSelect}
       className={cn(
         'flex items-center justify-between px-3 py-2 rounded-lg transition-all duration-200 group cursor-pointer',
-        'border border-transparent'
+        isSelected
+          ? 'border-primary/30 bg-primary/10'
+          : 'border border-transparent hover:bg-accent/40'
       )}
     >
       <div className="flex items-center gap-3 min-w-0">
@@ -102,8 +106,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     projectGroups,
     selectedGroupId,
     selectedProjectId,
-    setSelectedGroup,
-    setSelectedProject,
+    switchProjectContext,
     toggleProjectGroup,
     renameProjectGroup,
     renameProject,
@@ -173,15 +176,14 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   const handleSelectGroup = (groupId: string) => {
     const group = projectGroups.find((candidate) => candidate.id === groupId);
     const fallbackProjectId = group?.projects[0]?.id ?? null;
-
-    setSelectedGroup(groupId);
-    setSelectedProject(fallbackProjectId);
+    void switchProjectContext(fallbackProjectId);
     onClose();
   };
 
   const handleSelectProject = (groupId: string, projectId: string) => {
-    setSelectedGroup(groupId);
-    setSelectedProject(projectId);
+    if (selectedGroupId !== groupId || selectedProjectId !== projectId) {
+      void switchProjectContext(projectId);
+    }
     onClose();
   };
 
@@ -257,6 +259,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       Pending: 0,
       InProgress: 0,
       AwaitingResponse: 0,
+      InReview: 0,
       Completed: 0,
       Failed: 0,
       Blocked: 0,
@@ -266,7 +269,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       counts[task.status] += 1;
     });
 
-    const needsAttention = counts.AwaitingResponse + counts.Blocked + counts.Failed;
+    const needsAttention = counts.AwaitingResponse + counts.InReview + counts.Blocked + counts.Failed;
 
     return {
       counts,
@@ -284,6 +287,13 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     if (counts.InProgress > 0) {
       badges.push({
         label: `${counts.InProgress} ${t('tasks.inProgress', 'In Progress')}`,
+        variant: 'warning',
+      });
+    }
+
+    if (counts.InReview > 0) {
+      badges.push({
+        label: `${counts.InReview} ${t('implement.inReview', 'In Review')}`,
         variant: 'warning',
       });
     }
@@ -487,11 +497,14 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                       <div className="px-2 py-2 space-y-1 bg-muted/30">
                         {group.projects.map((project) => {
                           const isProjectMenuOpen = menuOpenFor === project.id;
+                          const isProjectSelected =
+                            selectedGroupId === group.id && selectedProjectId === project.id;
 
                           return (
                             <div key={project.id} className="relative">
                               <ProjectItem
                                 project={project}
+                                isSelected={isProjectSelected}
                                 badges={getProjectBadges(project.id)}
                                 onSelect={() => handleSelectProject(group.id, project.id)}
                                 onMenuOpen={(e) => {

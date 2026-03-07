@@ -196,16 +196,34 @@ export const LiveCodePreview: React.FC<LiveCodePreviewProps> = ({ className }) =
 
       {/* Actions */}
       <div className="h-14 border-t border-border flex items-center justify-between px-4 bg-card gap-2">
-        <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+        <p className="text-xs text-muted-foreground">
+          {t(
+            'implement.actionsInChangesReview',
+            'Use Changes Review panel for stage, revert, and commit actions.'
+          )}
+        </p>
+        <button
+          disabled
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground/60 cursor-not-allowed"
+          title={t('implement.actionsInChangesReview', 'Use Changes Review panel for stage, revert, and commit actions.')}
+        >
           <Icon name="rotate-ccw" size={12} />
           Revert
         </button>
         <div className="flex items-center gap-2">
-          <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-foreground hover:bg-accent transition-colors border border-border">
+          <button
+            disabled
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground/60 cursor-not-allowed border border-border"
+            title={t('implement.actionsInChangesReview', 'Use Changes Review panel for stage, revert, and commit actions.')}
+          >
             <Icon name="plus-square" size={12} />
             Stage
           </button>
-          <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
+          <button
+            disabled
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-muted text-muted-foreground cursor-not-allowed"
+            title={t('implement.actionsInChangesReview', 'Use Changes Review panel for stage, revert, and commit actions.')}
+          >
             <Icon name="git-commit" size={12} />
             Commit
           </button>

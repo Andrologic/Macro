@@ -16,6 +16,7 @@ const statusColors: Record<TaskStatus, string> = {
   Pending: 'bg-muted/50 text-muted-foreground border-border',
   InProgress: 'bg-primary/10 text-primary border-primary/20',
   AwaitingResponse: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
+  InReview: 'bg-sky-500/10 text-sky-500 border-sky-500/20',
   Completed: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
   Failed: 'bg-red-500/10 text-red-500 border-red-500/20',
   Blocked: 'bg-orange-500/10 text-orange-500 border-orange-500/20',
@@ -25,6 +26,7 @@ const statusLabels: Record<TaskStatus, string> = {
   Pending: 'To Do',
   InProgress: 'In Progress',
   AwaitingResponse: 'Waiting',
+  InReview: 'In Review',
   Completed: 'Done',
   Failed: 'Failed',
   Blocked: 'Blocked',
@@ -60,9 +62,11 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
         const statusOrder: TaskStatus[] = [
           'InProgress',
           'AwaitingResponse',
+          'InReview',
           'Pending',
           'Completed',
           'Failed',
+          'Blocked',
         ];
         return tasks.sort((a, b) => {
           const indexA = statusOrder.indexOf(a.status);

@@ -8,7 +8,13 @@ import {
   toPlanIntegrationBranchName,
 } from './architectGitNaming';
 
-export type ArchitectPlanStatus = 'draft' | 'validated' | 'in_progress' | 'archived' | 'deleted';
+export type ArchitectPlanStatus =
+  | 'draft'
+  | 'validated'
+  | 'in_progress'
+  | 'completed'
+  | 'archived'
+  | 'deleted';
 
 export interface ArchitectPlanRecord {
   id: string;
@@ -19,6 +25,7 @@ export interface ArchitectPlanRecord {
   targetBranch: string;
   conversationId?: string;
   projectId?: string;
+  projectIds?: string[];
   createdAt: string;
   updatedAt: string;
   nodes: PlanNode[];
@@ -34,6 +41,7 @@ export interface ArchitectPlanSummary {
   targetBranch: string;
   conversationId?: string;
   projectId?: string;
+  projectIds?: string[];
   createdAt: string;
   updatedAt: string;
   nodeCount: number;
@@ -49,6 +57,7 @@ interface ArchitectPlanIndex {
 const LOCAL_INDEX_KEY_PREFIX = 'macro_architect_plan_index';
 const LOCAL_PLAN_KEY_PREFIX = 'macro_architect_plan';
 const LOCAL_PLAN_NEEDS_KEY_PREFIX = 'macro_architect_plan_needs';
+const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 const DEFAULT_GIT_FLOW_BASE_BRANCH = 'develop';
 const GIT_FLOW_ALLOWED_TARGET_PATTERNS = [
   /^feature\/[a-z0-9._-]+$/i,
@@ -101,12 +110,51 @@ const slugifyPlanTitle = (value: string): string =>
     .replace(/^-+/, '')
     .replace(/-+$/, '') || `plan-${Date.now()}`;
 
-const getPlanRoot = (branchName: string): string => `.macro/branches/${normalizeBranchName(branchName)}/plans`;
+const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[] => Array.from(
+  new Set(
+    [ ...(Array.isArray(projectIds) ? projectIds : []), ...(projectId ? [projectId] : []) ]
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+  )
+);
+
+const normalizePlanNodes = (nodes: PlanNode[]): PlanNode[] =>
+  (Array.isArray(nodes) ? nodes : []).map((node) => {
+    const projectIds = normalizeProjectIds(node.projectIds, node.projectId);
+    return {
+      ...node,
+      projectId: projectIds[0],
+      projectIds,
+    };
+  });
+
+const normalizePlanPredictedBranches = (predictedBranches: PredictedBranch[]): PredictedBranch[] =>
+  (Array.isArray(predictedBranches) ? predictedBranches : []).filter(
+    (branch) => typeof branch?.projectId === 'string' && branch.projectId.trim().length > 0
+  );
+
+const resolvePlanProjectIds = (params: {
+  projectIds?: string[];
+  projectId?: string;
+  nodes?: PlanNode[];
+  predictedBranches?: PredictedBranch[];
+}): string[] => {
+  const fromNodes = normalizePlanNodes(params.nodes || []).flatMap((node) => normalizeProjectIds(node.projectIds, node.projectId));
+  const fromBranches = normalizePlanPredictedBranches(params.predictedBranches || []).map((branch) => branch.projectId);
+  return normalizeProjectIds([...(params.projectIds || []), ...fromNodes, ...fromBranches], params.projectId);
+};
+
+const getPlanRoot = (branchName: string): string => `branches/${normalizeBranchName(branchName)}/plans`;
 const getIndexPath = (branchName: string): string => `${getPlanRoot(branchName)}/index.json`;
 const getPlanDir = (branchName: string, planId: string): string => `${getPlanRoot(branchName)}/${sanitizeId(planId)}`;
 const getPlanJsonPath = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/plan.json`;
 const getPlanMarkdownPath = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/plan.md`;
 const getPlanNeedsPath = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/needs.json`;
+const getPlanTasksRoot = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/tasks`;
+const getPlanTaskDir = (branchName: string, planId: string, taskId: string): string => `${getPlanTasksRoot(branchName, planId)}/${sanitizeId(taskId)}`;
+const getTaskPlannedPath = (branchName: string, planId: string, taskId: string): string => `${getPlanTaskDir(branchName, planId, taskId)}/planned.md`;
+const getTaskExecutedPath = (branchName: string, planId: string, taskId: string): string => `${getPlanTaskDir(branchName, planId, taskId)}/executed.md`;
 
 const emptyIndex = (): ArchitectPlanIndex => ({ version: 2, activePlanId: null, plans: [], reservedPlanSlugs: [] });
 
@@ -126,7 +174,7 @@ const buildPlanMarkdown = (plan: ArchitectPlanRecord): string => {
   lines.push(`- Plan Integration Branch: ${toPlanIntegrationBranch(plan.slug)}`);
   lines.push(`- Target Code Branch: ${plan.targetBranch}`);
   lines.push(`- Base Code Branch: ${getGitFlowBaseBranch()}`);
-  lines.push(`- Macro Branch: .macro`);
+  lines.push(`- Macro Branch: @macro`);
   lines.push(`- Status: ${plan.status}`);
   if (plan.conversationId) {
     lines.push(`- Conversation ID: ${plan.conversationId}`);
@@ -167,10 +215,92 @@ const buildPlanMarkdown = (plan: ArchitectPlanRecord): string => {
   return lines.join('\n');
 };
 
+const buildTaskPlannedMarkdown = (plan: ArchitectPlanRecord, node: PlanNode): string => {
+  const lines: string[] = [];
+  const projectIds = normalizeProjectIds(node.projectIds, node.projectId);
+  lines.push(`# Planned Task: ${node.title}`);
+  lines.push('');
+  lines.push(`- Plan ID: ${plan.id}`);
+  lines.push(`- Plan Title: ${plan.title}`);
+  lines.push(`- Task ID: ${node.id}`);
+  lines.push(`- Branch: ${node.assignedBranch || 'work'}`);
+  lines.push(`- Projects: ${projectIds.join(', ') || 'none'}`);
+  lines.push(`- Status: ${node.status}`);
+  if (node.dependencies.length > 0) {
+    lines.push(`- Depends On: ${node.dependencies.join(', ')}`);
+  }
+  lines.push('');
+  lines.push(node.description || 'No task description provided.');
+  return lines.join('\n');
+};
+
+export interface ArchitectTaskExecutionRecord {
+  taskId: string;
+  title: string;
+  completedAt: string;
+  summary?: string;
+  repositories: Array<{
+    projectId: string;
+    repoPath: string;
+    branchName: string;
+    planBranchName: string;
+    mergeOutput?: string;
+  }>;
+}
+
+const buildTaskExecutedMarkdown = (plan: ArchitectPlanRecord, record: ArchitectTaskExecutionRecord): string => {
+  const lines: string[] = [];
+  lines.push(`# Executed Task: ${record.title}`);
+  lines.push('');
+  lines.push(`- Plan ID: ${plan.id}`);
+  lines.push(`- Plan Title: ${plan.title}`);
+  lines.push(`- Task ID: ${record.taskId}`);
+  lines.push(`- Completed At: ${record.completedAt}`);
+  if (record.summary) {
+    lines.push(`- Summary: ${record.summary}`);
+  }
+  lines.push('');
+  lines.push('## Repository Integrations');
+  for (const repo of record.repositories) {
+    lines.push(`- ${repo.projectId}: ${repo.branchName} -> ${repo.planBranchName}`);
+    lines.push(`  - repo: ${repo.repoPath}`);
+    if (repo.mergeOutput) {
+      lines.push(`  - merge: ${repo.mergeOutput}`);
+    }
+  }
+  return lines.join('\n');
+};
+
+const syncPlanTaskMetadata = async (branchName: string, plan: ArchitectPlanRecord): Promise<void> => {
+  if (!tauriIpc.isTauriAvailable()) return;
+  const normalizedBranch = normalizeBranchName(branchName);
+  const normalizedPlan = {
+    ...plan,
+    nodes: normalizePlanNodes(plan.nodes),
+    predictedBranches: normalizePlanPredictedBranches(plan.predictedBranches),
+  };
+
+  await Promise.all(
+    normalizedPlan.nodes.map((node) =>
+      tauriIpc.fsWriteFile({
+        path: getTaskPlannedPath(normalizedBranch, normalizedPlan.id, node.id),
+        content: buildTaskPlannedMarkdown(normalizedPlan, node),
+        createDirs: true,
+        allowOutsideWorkspace: false,
+        workspaceScope: METADATA_WORKSPACE_SCOPE,
+      })
+    )
+  );
+};
+
 const readJsonFile = async <T>(path: string): Promise<T | null> => {
   if (!tauriIpc.isTauriAvailable()) return null;
   try {
-    const file = await tauriIpc.fsReadFileWithOptions({ path, allowOutsideWorkspace: false });
+    const file = await tauriIpc.fsReadFileWithOptions({
+      path,
+      allowOutsideWorkspace: false,
+      workspaceScope: METADATA_WORKSPACE_SCOPE,
+    });
     return JSON.parse(file.content) as T;
   } catch {
     return null;
@@ -184,6 +314,7 @@ const writeJsonFile = async (path: string, value: unknown): Promise<void> => {
     content: JSON.stringify(value, null, 2),
     createDirs: true,
     allowOutsideWorkspace: false,
+    workspaceScope: METADATA_WORKSPACE_SCOPE,
   });
 };
 
@@ -316,13 +447,24 @@ const readPlan = async (branchName: string, planId: string): Promise<ArchitectPl
   const safeId = sanitizeId(planId);
   const normalizePlanRecord = (plan: ArchitectPlanRecord | null): ArchitectPlanRecord | null => {
     if (!plan) return null;
+    const nodes = normalizePlanNodes(Array.isArray(plan.nodes) ? plan.nodes : []);
+    const predictedBranches = normalizePlanPredictedBranches(Array.isArray(plan.predictedBranches) ? plan.predictedBranches : []);
+    const projectIds = resolvePlanProjectIds({
+      projectIds: plan.projectIds,
+      projectId: plan.projectId,
+      nodes,
+      predictedBranches,
+    });
+
     return {
       ...plan,
       id: sanitizeId(plan.id || safeId),
       slug: slugifyPlanTitle((plan as Partial<ArchitectPlanRecord>).slug || plan.title || safeId),
       targetBranch: normalizeBranchName(plan.targetBranch || normalized),
-      nodes: Array.isArray(plan.nodes) ? plan.nodes : [],
-      predictedBranches: Array.isArray(plan.predictedBranches) ? plan.predictedBranches : [],
+      projectId: projectIds[0],
+      projectIds,
+      nodes,
+      predictedBranches,
     };
   };
 
@@ -344,19 +486,37 @@ const readPlanNeeds = async (branchName: string, planId: string): Promise<Need[]
 
 const writePlan = async (branchName: string, plan: ArchitectPlanRecord): Promise<void> => {
   const normalized = normalizeBranchName(branchName);
+  const normalizedNodes = normalizePlanNodes(plan.nodes || []);
+  const normalizedPredictedBranches = normalizePlanPredictedBranches(plan.predictedBranches || []);
+  const projectIds = resolvePlanProjectIds({
+    projectIds: plan.projectIds,
+    projectId: plan.projectId,
+    nodes: normalizedNodes,
+    predictedBranches: normalizedPredictedBranches,
+  });
+  const normalizedPlan: ArchitectPlanRecord = {
+    ...plan,
+    projectId: projectIds[0],
+    projectIds,
+    nodes: normalizedNodes,
+    predictedBranches: normalizedPredictedBranches,
+  };
+
   if (!tauriIpc.isTauriAvailable()) {
-    writeLocalPlan(normalized, plan);
+    writeLocalPlan(normalized, normalizedPlan);
     return;
   }
 
-  const safeId = sanitizeId(plan.id);
-  await writeJsonFile(getPlanJsonPath(normalized, safeId), plan);
+  const safeId = sanitizeId(normalizedPlan.id);
+  await writeJsonFile(getPlanJsonPath(normalized, safeId), normalizedPlan);
   await tauriIpc.fsWriteFile({
     path: getPlanMarkdownPath(normalized, safeId),
-    content: buildPlanMarkdown(plan),
+    content: buildPlanMarkdown(normalizedPlan),
     createDirs: true,
     allowOutsideWorkspace: false,
+    workspaceScope: METADATA_WORKSPACE_SCOPE,
   });
+  await syncPlanTaskMetadata(normalized, normalizedPlan);
 };
 
 const writePlanNeeds = async (branchName: string, planId: string, needs: Need[]): Promise<void> => {
@@ -380,7 +540,11 @@ const removePlan = async (branchName: string, planId: string): Promise<void> => 
   }
 
   try {
-    await tauriIpc.fsDelete({ path: getPlanDir(normalized, safeId), recursive: true });
+    await tauriIpc.fsDelete({
+      path: getPlanDir(normalized, safeId),
+      recursive: true,
+      workspaceScope: METADATA_WORKSPACE_SCOPE,
+    });
   } catch {
     // Ignore missing path errors.
   }
@@ -395,6 +559,7 @@ const toSummary = (plan: ArchitectPlanRecord): ArchitectPlanSummary => ({
   targetBranch: plan.targetBranch,
   conversationId: plan.conversationId,
   projectId: plan.projectId,
+  projectIds: resolvePlanProjectIds(plan),
   createdAt: plan.createdAt,
   updatedAt: plan.updatedAt,
   nodeCount: plan.nodes.length,
@@ -437,6 +602,7 @@ export const createArchitectPlan = async (input: {
   description?: string;
   conversationId?: string;
   projectId?: string;
+  projectIds?: string[];
   status?: ArchitectPlanStatus;
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
@@ -661,6 +827,27 @@ export const saveArchitectPlanNeeds = async (branchName: string, planId: string,
   await writePlanNeeds(normalizedBranch, planId, needs);
 };
 
+export const writeArchitectTaskExecution = async (params: {
+  branchName: string;
+  planId: string;
+  execution: ArchitectTaskExecutionRecord;
+}): Promise<void> => {
+  if (!tauriIpc.isTauriAvailable()) return;
+  const normalizedBranch = normalizeBranchName(params.branchName);
+  const plan = await readPlan(normalizedBranch, params.planId);
+  if (!plan) {
+    throw new Error(`Plan not found: ${params.planId}`);
+  }
+
+  await tauriIpc.fsWriteFile({
+    path: getTaskExecutedPath(normalizedBranch, plan.id, params.execution.taskId),
+    content: buildTaskExecutedMarkdown(plan, params.execution),
+    createDirs: true,
+    allowOutsideWorkspace: false,
+    workspaceScope: METADATA_WORKSPACE_SCOPE,
+  });
+};
+
 export const toPlanScopedFeatureBranch = (planSlug: string, rawBranchName: string): string => {
   const normalizedPlanSlug = slugifyPlanTitle(planSlug);
   const featureSlug = normalizeFeatureSlugInput(rawBranchName);
@@ -678,3 +865,5 @@ export const resolveTargetBranch = (argsValue: unknown): string => {
 
 export const getGitFlowBaseBranch = (): string =>
   normalizeBranchName(getArchitectGitNamingSettings().baseBranch, DEFAULT_GIT_FLOW_BASE_BRANCH);
+
+
