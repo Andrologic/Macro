@@ -259,6 +259,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       Pending: 0,
       InProgress: 0,
       AwaitingResponse: 0,
+      InReview: 0,
       Completed: 0,
       Failed: 0,
       Blocked: 0,
@@ -268,7 +269,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       counts[task.status] += 1;
     });
 
-    const needsAttention = counts.AwaitingResponse + counts.Blocked + counts.Failed;
+    const needsAttention = counts.AwaitingResponse + counts.InReview + counts.Blocked + counts.Failed;
 
     return {
       counts,
@@ -286,6 +287,13 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     if (counts.InProgress > 0) {
       badges.push({
         label: `${counts.InProgress} ${t('tasks.inProgress', 'In Progress')}`,
+        variant: 'warning',
+      });
+    }
+
+    if (counts.InReview > 0) {
+      badges.push({
+        label: `${counts.InReview} ${t('implement.inReview', 'In Review')}`,
         variant: 'warning',
       });
     }

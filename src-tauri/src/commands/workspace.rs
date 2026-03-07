@@ -3,11 +3,10 @@ use crate::git::GitState;
 use crate::workspace;
 use crate::workspace::metadata::{
     CreateProjectRequest, ImportGitRepoRequest, ProjectDto, ProjectGroupDto, WorkspaceBootstrapDto,
-    WorkspaceMetadataDto,
+    WorkspaceMetadataDto, WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
-use serde_json::Value;
 use std::path::PathBuf;
 use tauri::State;
 
@@ -49,7 +48,7 @@ pub async fn workspace_list_projects(
 pub async fn workspace_list_tasks(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
-) -> Result<Vec<Value>> {
+) -> Result<WorkspaceTaskCatalogDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;

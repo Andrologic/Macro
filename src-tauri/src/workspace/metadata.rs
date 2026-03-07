@@ -51,6 +51,36 @@ pub struct WorkspaceMetadataDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceTaskPlanSummaryDto {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    #[serde(rename = "targetBranch")]
+    pub target_branch: String,
+    #[serde(rename = "projectIds")]
+    pub project_ids: Vec<String>,
+    #[serde(rename = "taskCount")]
+    pub task_count: usize,
+    #[serde(rename = "completedTaskCount")]
+    pub completed_task_count: usize,
+    #[serde(rename = "activeTaskCount")]
+    pub active_task_count: usize,
+    #[serde(rename = "inReviewTaskCount")]
+    pub in_review_task_count: usize,
+    #[serde(rename = "readyForValidation")]
+    pub ready_for_validation: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceTaskCatalogDto {
+    pub tasks: Vec<Value>,
+    pub plans: Vec<WorkspaceTaskPlanSummaryDto>,
+    #[serde(rename = "hasStandaloneTasks")]
+    pub has_standalone_tasks: bool,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectGroupDto {
     pub id: String,
     pub name: String,

@@ -30,6 +30,7 @@ import { normalizeStrategyDependencies } from '../services/implementTaskDerivati
 import { getLocalProjectContextState } from '../services/localProjectContext';
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from '../services/macroSyncService';
 import { resolveProjectExecutionContext } from '../services/projectExecutionContext';
+import { parseMessageQuickReplies } from '../services/chatQuickReplies';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
@@ -1631,11 +1632,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     updateMessageContent: (messageId, content) =>
       set((state) => {
+        const updatedMessage = state.messages.find((message) => message.id === messageId);
+        const parsedContent =
+          updatedMessage?.role === 'assistant'
+            ? parseMessageQuickReplies(content)
+            : { content };
         const updatedMessages = state.messages.map((message) =>
-          message.id === messageId ? { ...message, content } : message
+          message.id === messageId
+            ? {
+              ...message,
+              content: parsedContent.content,
+              choices: parsedContent.choices,
+              allow_free_response: parsedContent.allowFreeResponse,
+            }
+            : message
         );
 
-        const updatedMessage = state.messages.find((message) => message.id === messageId);
         if (!updatedMessage) {
           return { messages: updatedMessages };
         }
@@ -2499,12 +2511,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const dbMessages = await tauriIpc.listMessages(conv.id);
             allMessages.push(
               ...dbMessages.map((m) => ({
-                id: m.id,
-                task_id: conversationById.get(m.conversation_id)?.task_id ?? '',
-                conversation_id: m.conversation_id,
-                role: m.role as 'user' | 'assistant',
-                content: m.content,
-                timestamp: m.created_at,
+                ...(m.role === 'assistant'
+                  ? (() => {
+                    const parsed = parseMessageQuickReplies(m.content);
+                    return {
+                      id: m.id,
+                      task_id: conversationById.get(m.conversation_id)?.task_id ?? '',
+                      conversation_id: m.conversation_id,
+                      role: m.role as 'user' | 'assistant',
+                      content: parsed.content,
+                      timestamp: m.created_at,
+                      choices: parsed.choices,
+                      allow_free_response: parsed.allowFreeResponse,
+                    };
+                  })()
+                  : {
+                    id: m.id,
+                    task_id: conversationById.get(m.conversation_id)?.task_id ?? '',
+                    conversation_id: m.conversation_id,
+                    role: m.role as 'user' | 'assistant',
+                    content: m.content,
+                    timestamp: m.created_at,
+                  }),
               }))
             );
           }

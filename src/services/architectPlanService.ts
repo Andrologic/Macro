@@ -8,7 +8,13 @@ import {
   toPlanIntegrationBranchName,
 } from './architectGitNaming';
 
-export type ArchitectPlanStatus = 'draft' | 'validated' | 'in_progress' | 'archived' | 'deleted';
+export type ArchitectPlanStatus =
+  | 'draft'
+  | 'validated'
+  | 'in_progress'
+  | 'completed'
+  | 'archived'
+  | 'deleted';
 
 export interface ArchitectPlanRecord {
   id: string;

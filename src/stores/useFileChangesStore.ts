@@ -177,11 +177,11 @@ const resolveCommitContext = (changes: FileChangeEntry[]): CommitContext => {
     );
   }
 
-  if (task.status !== 'InProgress' && task.status !== 'AwaitingResponse') {
+  if (task.status !== 'InReview') {
     throw new Error(
       tChanges(
         'implement.errors.commitRequiresActiveTaskStatus',
-        'Task must be In Progress or Awaiting Response before committing changes.'
+        'Task must be In Review before committing changes.'
       )
     );
   }

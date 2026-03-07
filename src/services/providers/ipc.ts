@@ -2,7 +2,7 @@ import type {
   AppBootstrapDto,
   ConversationsDto,
   MessagesDto,
-  TasksDto,
+  TaskCatalogDto,
   GitTreeDto,
   CommitsDto,
   ProvidersDto,
@@ -21,6 +21,7 @@ import * as tauriIpc from '../tauriIpc';
 import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
 import { normalizeArchitectToolId } from '../architectToolNames';
 import { sendChat as sendChatFallback } from './mock';
+import { loadImplementTaskCatalog } from '../loadImplementTaskCatalog';
 
 const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
 const MCP_SERVER_SETTINGS_STORAGE_KEY = 'macro_mcp_server_settings';
@@ -135,9 +136,10 @@ export const listMessages = async (conversationId?: string): Promise<MessagesDto
   return { messages: sortedMessages.map(toMessageDto) };
 };
 
-export const listTasks = async (): Promise<TasksDto> => {
-  const tasks = await tauriIpc.workspaceListTasks();
-  return { tasks: tasks as Task[] };
+export const listTasks = async (): Promise<TaskCatalogDto> => {
+  const taskCatalog = await tauriIpc.workspaceListTasks();
+
+  return loadImplementTaskCatalog(taskCatalog.tasks as Task[]);
 };
 
 export const getGitTreeForProject = async (projectId: string): Promise<GitTreeDto> => {

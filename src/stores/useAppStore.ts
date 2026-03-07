@@ -1,5 +1,14 @@
 import { create } from 'zustand';
-import { AppMode, AgentType, Plan, ProjectGroup, Project, PlanNode, PredictedBranch } from '../types';
+import {
+  AppMode,
+  AgentType,
+  ImplementExecutionMode,
+  Plan,
+  ProjectGroup,
+  Project,
+  PlanNode,
+  PredictedBranch,
+} from '../types';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
 import {
@@ -445,6 +454,7 @@ interface AppStore {
   projectSwitchPolicy: ProjectSwitchPolicy;
   isProjectSwitching: boolean;
   metadataAutoPush: boolean;
+  implementExecutionMode: ImplementExecutionMode;
   metadataSyncState: MetadataSyncState;
   metadataSyncError: string | null;
   metadataConflictFiles: string[];
@@ -476,6 +486,7 @@ interface AppStore {
   setUiZoomLevel: (level: number) => void;
   setProjectSwitchPolicy: (policy: ProjectSwitchPolicy) => Promise<void>;
   setMetadataAutoPush: (enabled: boolean) => void;
+  setImplementExecutionMode: (mode: ImplementExecutionMode) => void;
   setMetadataSyncStatus: (params: {
     state: MetadataSyncState;
     error?: string | null;
@@ -558,6 +569,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   projectSwitchPolicy: 'resume_per_project',
   isProjectSwitching: false,
   metadataAutoPush: false,
+  implementExecutionMode: 'semi_auto',
   metadataSyncState: 'clean',
   metadataSyncError: null,
   metadataConflictFiles: [],
@@ -624,6 +636,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setMetadataAutoPush: (enabled) => {
     set({ metadataAutoPush: enabled });
     void savePreference(PREF_KEYS.METADATA_AUTO_PUSH, enabled);
+  },
+
+  setImplementExecutionMode: (mode) => {
+    const normalized: ImplementExecutionMode = mode === 'full_auto' ? 'full_auto' : 'semi_auto';
+    set({ implementExecutionMode: normalized });
+    void savePreference(PREF_KEYS.IMPLEMENT_EXECUTION_MODE, normalized);
   },
 
   setMetadataSyncStatus: ({ state, error, conflictFiles }) => {
@@ -1063,7 +1081,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     try {
       // Load persisted panel preferences
-      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId, lastOpenProjectPath, lastActiveMode, lastAgentType, recentProjects, macroEnabledProjects, metadataAutoPush, storedProjectSwitchPolicy, sessionContext] = await Promise.all([
+      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId, lastOpenProjectPath, lastActiveMode, lastAgentType, recentProjects, macroEnabledProjects, metadataAutoPush, implementExecutionMode, storedProjectSwitchPolicy, sessionContext] = await Promise.all([
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
         loadPreference<boolean>(PREF_KEYS.IS_LEFT_PANEL_OPEN),
@@ -1078,12 +1096,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
         loadPreference<RememberedProject[]>(PREF_KEYS.RECENT_PROJECTS),
         loadPreference<RememberedProject[]>(PREF_KEYS.MACRO_ENABLED_PROJECTS),
         loadPreference<boolean>(PREF_KEYS.METADATA_AUTO_PUSH),
+        loadPreference<ImplementExecutionMode>(PREF_KEYS.IMPLEMENT_EXECUTION_MODE),
         getProjectSwitchPolicy(),
         getLocalSessionContextState(),
       ]);
 
       const normalizedZoomMode: UiZoomMode = uiZoomMode === 'override' ? 'override' : 'auto';
       const normalizedZoomLevel = Math.max(0.75, Math.min(2, uiZoomLevel));
+      const normalizedImplementExecutionMode: ImplementExecutionMode =
+        implementExecutionMode === 'full_auto' ? 'full_auto' : 'semi_auto';
 
       const { plan, projectGroups, planNodes, predictedBranches } = await services.getAppBootstrap();
       const cleanedProjectGroups = pruneLegacyWorkspaceMocks(projectGroups);
@@ -1228,6 +1249,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         uiZoomMode: normalizedZoomMode,
         uiZoomLevel: normalizedZoomLevel,
         metadataAutoPush,
+        implementExecutionMode: normalizedImplementExecutionMode,
         projectSwitchPolicy: storedProjectSwitchPolicy,
         isProjectSwitching: false,
         isLoading: false,

@@ -20,6 +20,7 @@ const statusConfig: Record<TaskStatus, { icon: IconName; color: string; bgColor:
   Pending: { icon: 'circle', color: 'text-muted-foreground', bgColor: 'bg-muted' },
   InProgress: { icon: 'loader', color: 'text-amber-500', bgColor: 'bg-amber-500/10' },
   AwaitingResponse: { icon: 'message-circle', color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
+  InReview: { icon: 'search', color: 'text-sky-400', bgColor: 'bg-sky-500/10' },
   Completed: { icon: 'check-circle', color: 'text-emerald-500', bgColor: 'bg-emerald-500/10' },
   Failed: { icon: 'alert-circle', color: 'text-red-400', bgColor: 'bg-red-500/10' },
   Blocked: { icon: 'lock', color: 'text-orange-400', bgColor: 'bg-orange-500/10' },
@@ -28,10 +29,11 @@ const statusConfig: Record<TaskStatus, { icon: IconName; color: string; bgColor:
 const readyStatusOrder: Record<TaskStatus, number> = {
   InProgress: 0,
   AwaitingResponse: 1,
-  Pending: 2,
-  Blocked: 3,
-  Failed: 4,
-  Completed: 5,
+  InReview: 2,
+  Pending: 3,
+  Blocked: 4,
+  Failed: 5,
+  Completed: 6,
 };
 
 interface TaskItemProps {
@@ -41,10 +43,10 @@ interface TaskItemProps {
   statusLabel: string;
   onSelect: () => void;
   onStart: () => void;
+  onReview: () => void;
   onAwaitingResponse: () => void;
   onFail: () => void;
   onRetry: () => void;
-  onComplete: () => void;
 }
 
 const TaskItem: React.FC<TaskItemProps> = ({
@@ -54,15 +56,15 @@ const TaskItem: React.FC<TaskItemProps> = ({
   statusLabel,
   onSelect,
   onStart,
+  onReview,
   onAwaitingResponse,
   onFail,
   onRetry,
-  onComplete,
 }) => {
   const { t } = useTranslation();
   const status = statusConfig[task.status] || statusConfig.Pending;
   const canStart = !isBusy && task.is_ready && (task.status === 'Pending' || task.status === 'Blocked');
-  const canComplete =
+  const canReview =
     !isBusy && !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
   const canAwaitingResponse = !isBusy && !task.is_blocked && task.status === 'InProgress';
   const canFail = !isBusy && !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
@@ -213,17 +215,17 @@ const TaskItem: React.FC<TaskItemProps> = ({
               <Icon name="x" size={12} />
             </button>
           )}
-          {canComplete && (
+          {canReview && (
             <button
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
-                void onComplete();
+                void onReview();
               }}
               className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-emerald-500/20"
-              title={t('implement.completeTask', 'Mark complete')}
+              title={t('implement.startReview', 'Send to review')}
             >
-              <Icon name="check" size={12} />
+              <Icon name="git-compare" size={12} />
             </button>
           )}
         </div>
@@ -240,9 +242,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const tasks = useTaskStore((state) => state.tasks);
   const planSummaries = useTaskStore((state) => state.planSummaries);
   const hasStandaloneTasks = useTaskStore((state) => state.hasStandaloneTasks);
+  const finalizingPlanId = useTaskStore((state) => state.finalizingPlanId);
   const activateTask = useTaskStore((state) => state.activateTask);
   const startTask = useTaskStore((state) => state.startTask);
-  const completeTask = useTaskStore((state) => state.completeTask);
+  const startReview = useTaskStore((state) => state.startReview);
+  const finalizePlan = useTaskStore((state) => state.finalizePlan);
   const markTaskAwaitingResponse = useTaskStore((state) => state.markTaskAwaitingResponse);
   const markTaskFailed = useTaskStore((state) => state.markTaskFailed);
   const retryTask = useTaskStore((state) => state.retryTask);
@@ -277,6 +281,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     Pending: t('tasks.pending', 'Pending'),
     InProgress: t('tasks.inProgress', 'In Progress'),
     AwaitingResponse: t('implement.awaitingResponse', 'Awaiting response'),
+    InReview: t('implement.inReview', 'In Review'),
     Completed: t('tasks.completed', 'Completed'),
     Failed: t('implement.failed', 'Failed'),
     Blocked: t('tasks.blocked', 'Blocked'),
@@ -312,6 +317,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     if (!hasStandaloneTasks) return false;
     return scopedTasks.some((task) => task.task_source === 'standalone');
   }, [hasStandaloneTasks, scopedTasks]);
+  const readyPlanSummaries = useMemo(
+    () => availablePlanSummaries.filter((plan) => plan.readyForValidation),
+    [availablePlanSummaries]
+  );
+  const visibleReadyPlans = useMemo(() => {
+    if (planFilter !== ALL_PLANS_FILTER && planFilter !== STANDALONE_FILTER) {
+      return readyPlanSummaries.filter((plan) => plan.id === planFilter);
+    }
+    return readyPlanSummaries;
+  }, [planFilter, readyPlanSummaries]);
 
   useEffect(() => {
     if (planFilter === ALL_PLANS_FILTER) return;
@@ -347,7 +362,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }, [filteredTasks]);
 
   const completedCount = filteredTasks.filter((task) => task.status === 'Completed').length;
-  const inProgressCount = filteredTasks.filter((task) => task.status === 'InProgress').length;
+  const inProgressCount = filteredTasks.filter((task) =>
+    task.status === 'InProgress' || task.status === 'AwaitingResponse' || task.status === 'InReview'
+  ).length;
   const totalCount = filteredTasks.length;
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
@@ -414,6 +431,43 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             )}
           </Select>
         </div>
+        {visibleReadyPlans.length > 0 && (
+          <div className="mt-3 space-y-2">
+            {visibleReadyPlans.map((plan) => (
+              <div
+                key={plan.id}
+                className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium text-emerald-500">
+                      {t('implement.planReadyForValidation', 'Plan ready for validation')}
+                    </div>
+                    <div className="text-xs text-muted-foreground truncate">
+                      {plan.title}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void finalizePlan(plan.id)}
+                    disabled={Boolean(finalizingPlanId)}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                      finalizingPlanId
+                        ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                        : 'bg-emerald-500 text-white hover:bg-emerald-600'
+                    )}
+                  >
+                    <Icon name={finalizingPlanId === plan.id ? 'loader' : 'git-merge'} size={12} className={finalizingPlanId === plan.id ? 'animate-spin' : undefined} />
+                    {finalizingPlanId === plan.id
+                      ? t('implement.finalizingPlan', 'Finalizing...')
+                      : t('implement.finalizePlan', 'Finalize plan')}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-3">
@@ -453,6 +507,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   statusLabel={statusLabels[task.status]}
                   onSelect={() => void activateTask(task.id)}
                   onStart={() => void runTaskAction(task.id, () => startTask(task.id))}
+                  onReview={() => void runTaskAction(task.id, () => startReview(task.id))}
                   onAwaitingResponse={() =>
                     void runTaskAction(task.id, () => markTaskAwaitingResponse(task.id))
                   }
@@ -461,7 +516,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     void runTaskAction(task.id, () => markTaskFailed(task.id));
                   }}
                   onRetry={() => void runTaskAction(task.id, () => retryTask(task.id))}
-                  onComplete={() => void runTaskAction(task.id, () => completeTask(task.id))}
                 />
               ))}
             </section>
@@ -489,6 +543,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   statusLabel={statusLabels[task.status]}
                   onSelect={() => void activateTask(task.id)}
                   onStart={() => void runTaskAction(task.id, () => startTask(task.id))}
+                  onReview={() => void runTaskAction(task.id, () => startReview(task.id))}
                   onAwaitingResponse={() =>
                     void runTaskAction(task.id, () => markTaskAwaitingResponse(task.id))
                   }
@@ -497,7 +552,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     void runTaskAction(task.id, () => markTaskFailed(task.id));
                   }}
                   onRetry={() => void runTaskAction(task.id, () => retryTask(task.id))}
-                  onComplete={() => void runTaskAction(task.id, () => completeTask(task.id))}
                 />
               ))}
             </section>
