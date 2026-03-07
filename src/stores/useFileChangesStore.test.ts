@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const repoAPath = 'C:/repos/project-a';
 const repoBPath = 'C:/repos/project-b';
@@ -116,19 +116,6 @@ const mergeFeatureBranchIntoPlanBranchMock = mock(async ({ projectId }: { projec
   `merged-${projectId}`
 );
 
-mock.module('../services/tauriIpc', () => ({
-  isTauriAvailable: () => true,
-  gitStatus: gitStatusMock,
-  gitDiff: gitDiffMock,
-  fsWriteFile: fsWriteFileMock,
-  gitAdd: gitAddMock,
-  gitCommit: gitCommitMock,
-}));
-
-mock.module('../services/architectGitFlowService', () => ({
-  mergeFeatureBranchIntoPlanBranch: mergeFeatureBranchIntoPlanBranchMock,
-}));
-
 const task = {
   id: 'task-1',
   title: 'Implement multi repo flow',
@@ -169,13 +156,6 @@ const taskStoreState = {
   completeTask: completeTaskMock,
 };
 
-mock.module('./useTaskStore', () => ({
-  useTaskStore: {
-    getState: () => taskStoreState,
-    setState: mock(() => undefined),
-  },
-}));
-
 const appStoreState = {
   selectedProjectId: null,
   selectedGroupId: 'group-1',
@@ -188,16 +168,49 @@ const appStoreState = {
   },
 };
 
-mock.module('./useAppStore', () => ({
-  useAppStore: {
-    getState: () => appStoreState,
-  },
-}));
+const registerFileChangesStoreMocks = () => {
+  mock.restore();
+  mock.module('../services/tauriIpc', () => ({
+    isTauriAvailable: () => true,
+    gitStatus: gitStatusMock,
+    gitDiff: gitDiffMock,
+    fsWriteFile: fsWriteFileMock,
+    gitAdd: gitAddMock,
+    gitCommit: gitCommitMock,
+  }));
 
-const { resolveChangeFilePath, useFileChangesStore } = await import('./useFileChangesStore');
+  mock.module('../services/architectGitFlowService', () => ({
+    mergeFeatureBranchIntoPlanBranch: mergeFeatureBranchIntoPlanBranchMock,
+  }));
+
+  mock.module('./useTaskStore', () => ({
+    useTaskStore: {
+      getState: () => taskStoreState,
+      setState: mock(() => undefined),
+    },
+  }));
+
+  mock.module('./useAppStore', () => ({
+    useAppStore: {
+      getState: () => appStoreState,
+    },
+  }));
+};
+
+let fileChangesStoreImportCounter = 0;
+
+const loadFileChangesStore = async () => {
+  registerFileChangesStoreMocks();
+  fileChangesStoreImportCounter += 1;
+  return import(`./useFileChangesStore.ts?test=${fileChangesStoreImportCounter}`);
+};
+
+let resolveChangeFilePath: (repoPath: string, filePath: string) => string;
+let useFileChangesStore: Awaited<ReturnType<typeof loadFileChangesStore>>['useFileChangesStore'];
 
 describe('useFileChangesStore', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    ({ resolveChangeFilePath, useFileChangesStore } = await loadFileChangesStore());
     currentFiles = {
       [worktreeAPath]: {
         'src/main.ts': 'const value = 2;\nconsole.log(value);',
@@ -228,8 +241,8 @@ describe('useFileChangesStore', () => {
 
     const repositories = useFileChangesStore.getState().repositories;
     expect(repositories).toHaveLength(2);
-    expect(repositories.map((repository) => repository.projectId)).toEqual(['project-a', 'project-b']);
-    expect(repositories.map((repository) => repository.stats.total)).toEqual([1, 1]);
+    expect(repositories.map((repository: { projectId: string }) => repository.projectId)).toEqual(['project-a', 'project-b']);
+    expect(repositories.map((repository: { stats: { total: number } }) => repository.stats.total)).toEqual([1, 1]);
   });
 
   it('completes the task only after the last repository commit', async () => {
@@ -253,5 +266,9 @@ describe('useFileChangesStore', () => {
     expect(secondCommit.taskCompleted).toBe(true);
     expect(completeTaskMock).toHaveBeenCalledTimes(1);
     expect(mergeFeatureBranchIntoPlanBranchMock).toHaveBeenCalledTimes(2);
+  });
+
+  afterAll(() => {
+    mock.restore();
   });
 });
