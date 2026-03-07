@@ -67,7 +67,9 @@ pub async fn create_conversation(
 ) -> DbResult<Conversation> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let title = input.title.unwrap_or_else(|| "New Conversation".to_string());
+    let title = input
+        .title
+        .unwrap_or_else(|| "New Conversation".to_string());
 
     sqlx::query(
         r#"
@@ -417,8 +419,13 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         input.content.clone()
     };
 
-    update_conversation_metadata(pool, &input.conversation_id, Some(&truncated_content), count)
-        .await?;
+    update_conversation_metadata(
+        pool,
+        &input.conversation_id,
+        Some(&truncated_content),
+        count,
+    )
+    .await?;
 
     Ok(Message {
         id,
@@ -868,4 +875,195 @@ pub async fn update_provider_settings(
     .await?;
 
     Ok(())
+}
+
+// ============ APP SETTINGS ============
+
+pub async fn get_app_setting(pool: &SqlitePool, key: &str) -> DbResult<Option<AppSettingRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT key, value_json, updated_at
+        FROM app_settings
+        WHERE key = ?
+        "#,
+    )
+    .bind(key)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| AppSettingRecord {
+        key: row.get("key"),
+        value_json: row.get("value_json"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+pub async fn set_app_setting(
+    pool: &SqlitePool,
+    key: &str,
+    value_json: &str,
+) -> DbResult<AppSettingRecord> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        INSERT INTO app_settings (key, value_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            value_json = excluded.value_json,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(key)
+    .bind(value_json)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    Ok(AppSettingRecord {
+        key: key.to_string(),
+        value_json: value_json.to_string(),
+        updated_at: now,
+    })
+}
+
+// ============ PROJECT CONTEXT STATE ============
+
+pub async fn get_project_context_state(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> DbResult<Option<ProjectContextStateRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT project_id, last_plan_id, last_task_id, architect_conversation_id, implement_conversation_id, updated_at
+        FROM project_context_states
+        WHERE project_id = ?
+        "#,
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| ProjectContextStateRecord {
+        project_id: row.get("project_id"),
+        last_plan_id: row.get("last_plan_id"),
+        last_task_id: row.get("last_task_id"),
+        architect_conversation_id: row.get("architect_conversation_id"),
+        implement_conversation_id: row.get("implement_conversation_id"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+pub async fn upsert_project_context_state(
+    pool: &SqlitePool,
+    input: UpsertProjectContextStateInput,
+) -> DbResult<ProjectContextStateRecord> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        INSERT INTO project_context_states (
+            project_id,
+            last_plan_id,
+            last_task_id,
+            architect_conversation_id,
+            implement_conversation_id,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(project_id) DO UPDATE SET
+            last_plan_id = excluded.last_plan_id,
+            last_task_id = excluded.last_task_id,
+            architect_conversation_id = excluded.architect_conversation_id,
+            implement_conversation_id = excluded.implement_conversation_id,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(&input.project_id)
+    .bind(&input.last_plan_id)
+    .bind(&input.last_task_id)
+    .bind(&input.architect_conversation_id)
+    .bind(&input.implement_conversation_id)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    Ok(ProjectContextStateRecord {
+        project_id: input.project_id,
+        last_plan_id: input.last_plan_id,
+        last_task_id: input.last_task_id,
+        architect_conversation_id: input.architect_conversation_id,
+        implement_conversation_id: input.implement_conversation_id,
+        updated_at: now,
+    })
+}
+
+pub async fn delete_project_context_state(pool: &SqlitePool, project_id: &str) -> DbResult<()> {
+    sqlx::query("DELETE FROM project_context_states WHERE project_id = ?")
+        .bind(project_id)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
+// ============ SESSION CONTEXT STATE ============
+
+pub async fn get_session_context_state(
+    pool: &SqlitePool,
+) -> DbResult<Option<SessionContextStateRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT selected_group_id, selected_project_id, mode, updated_at
+        FROM session_context_state
+        WHERE id = 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| SessionContextStateRecord {
+        selected_group_id: row.get("selected_group_id"),
+        selected_project_id: row.get("selected_project_id"),
+        mode: row.get("mode"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+pub async fn upsert_session_context_state(
+    pool: &SqlitePool,
+    input: UpsertSessionContextStateInput,
+) -> DbResult<SessionContextStateRecord> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        INSERT INTO session_context_state (
+            id,
+            selected_group_id,
+            selected_project_id,
+            mode,
+            updated_at
+        )
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            selected_group_id = excluded.selected_group_id,
+            selected_project_id = excluded.selected_project_id,
+            mode = excluded.mode,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(&input.selected_group_id)
+    .bind(&input.selected_project_id)
+    .bind(&input.mode)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    Ok(SessionContextStateRecord {
+        selected_group_id: input.selected_group_id,
+        selected_project_id: input.selected_project_id,
+        mode: input.mode,
+        updated_at: now,
+    })
 }

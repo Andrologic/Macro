@@ -81,7 +81,12 @@ export const listMessages = async (
 };
 
 export const listTasks = async (): Promise<TasksDto> => {
-  return simulate({ tasks: mockAuthPlan.tasks });
+  return simulate({
+    tasks: mockAuthPlan.tasks as TasksDto['tasks'],
+    plans: [],
+    hasStandaloneTasks: true,
+    source: mockAuthPlan.tasks.length > 0 ? 'fallback' : 'empty',
+  });
 };
 
 export const getGitTreeForProject = async (

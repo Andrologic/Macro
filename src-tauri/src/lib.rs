@@ -22,6 +22,9 @@ use tokio::sync::{Mutex, RwLock};
 
 pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
 
+#[derive(Clone)]
+pub struct WorkspaceMetadataRoot(pub Arc<RwLock<std::path::PathBuf>>);
+
 // Command to show the main window explicitly from frontend
 #[tauri::command]
 async fn show_main_window(window: tauri::WebviewWindow) {
@@ -51,10 +54,16 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
 
-            // Store workspace path in app state
+            // Store workspace paths in app state
+            // - WorkspaceMetadataRoot: stable root used for workspace metadata CRUD
+            // - WorkspaceRoot: runtime root used by file tools/debug execution context
             let workspace_path = config.workspace_path.clone();
-            let workspace_root: WorkspaceRoot = Arc::new(RwLock::new(workspace_path.clone()));
-            app.manage(workspace_root);
+            let workspace_metadata_root =
+                WorkspaceMetadataRoot(Arc::new(RwLock::new(workspace_path.clone())));
+            let workspace_runtime_root: WorkspaceRoot =
+                Arc::new(RwLock::new(workspace_path.clone()));
+            app.manage(workspace_metadata_root);
+            app.manage(workspace_runtime_root);
 
             // Initialize file system watcher
             if let Err(e) = init_watcher(app, workspace_path) {
@@ -135,6 +144,8 @@ pub fn run() {
             commands::git::git_branch_create,
             commands::git::git_branch_delete,
             commands::git::git_checkout,
+            commands::git::git_merge_check,
+            commands::git::git_merge,
             commands::git::git_commit,
             commands::git::git_add,
             commands::git::git_reset,
@@ -143,6 +154,13 @@ pub fn run() {
             commands::git::git_get_tree,
             commands::git::git_worktree_create,
             commands::git::git_worktree_remove,
+            commands::git::git_push,
+            commands::git::git_pull,
+            commands::git::macro_branch_ensure,
+            commands::git::macro_branch_status,
+            commands::git::macro_branch_commit_if_dirty,
+            commands::git::macro_branch_push,
+            commands::git::macro_branch_pull,
             commands::db_list_provider_models,
             commands::db_upsert_provider_models,
             commands::db_set_provider_model_enabled,
@@ -150,6 +168,13 @@ pub fn run() {
             commands::db_register_manual_model,
             commands::db_get_provider_settings,
             commands::db_update_provider_settings,
+            commands::db_get_app_setting,
+            commands::db_set_app_setting,
+            commands::db_get_project_context_state,
+            commands::db_upsert_project_context_state,
+            commands::db_delete_project_context_state,
+            commands::db_get_session_context_state,
+            commands::db_upsert_session_context_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

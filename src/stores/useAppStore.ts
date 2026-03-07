@@ -1,17 +1,43 @@
 import { create } from 'zustand';
-import { AppMode, Plan, ProjectGroup, Project, PlanNode, PredictedBranch } from '../types';
+import {
+  AppMode,
+  AgentType,
+  ImplementExecutionMode,
+  Plan,
+  ProjectGroup,
+  Project,
+  PlanNode,
+  PredictedBranch,
+} from '../types';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
+import {
+  type ProjectSwitchPolicy,
+  deleteLocalProjectContextState,
+  getLocalProjectContextState,
+  getLocalSessionContextState,
+  getProjectSwitchPolicy,
+  setProjectSwitchPolicy as persistProjectSwitchPolicy,
+  upsertLocalProjectContextState,
+  upsertLocalSessionContextState,
+} from '../services/localProjectContext';
+import {
+  getArchitectPlan,
+  getArchitectPlanNeeds,
+  getGitFlowBaseBranch,
+  resolveTargetBranch,
+} from '../services/architectPlanService';
+import { taskMatchesProjectId } from '../services/implementTaskCatalog';
 import {
   loadPreference,
   savePreference,
   PREF_KEYS,
 } from '../services/preferences';
-import * as tauriIpc from '../services/tauriIpc';
 
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
 export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools' | 'shortcuts' | 'prompts' | 'architect';
 export type UiZoomMode = 'auto' | 'override';
+export type MetadataSyncState = 'clean' | 'pending' | 'failed' | 'conflict';
 
 interface RememberedProject {
   projectId: string;
@@ -22,6 +48,7 @@ interface RememberedProject {
 }
 
 const MAX_REMEMBERED_PROJECTS = 50;
+let projectSwitchRequestId = 0;
 
 export interface ArchitectPlanContext {
   id: string;
@@ -76,14 +103,8 @@ const insertProjectInGroups = (
 
 const normalizePath = (value: string): string => value.replace(/\\/g, '/').replace(/\/$/, '');
 
-const syncBackendWorkspaceRoot = async (projectPath?: string | null): Promise<void> => {
-  if (!projectPath || !tauriIpc.isTauriAvailable()) return;
-  try {
-    await tauriIpc.workspaceSetActiveRoot(projectPath);
-  } catch {
-    // Keep UI responsive even if backend root update fails.
-  }
-};
+const isAppMode = (value: unknown): value is AppMode =>
+  value === 'Architect' || value === 'Implement' || value === 'Chat' || value === 'Debug';
 
 const projectNameFromPath = (path: string): string => {
   const normalized = normalizePath(path);
@@ -104,6 +125,206 @@ const isImplicitWorkspaceRootPath = (path?: string): boolean => {
 const shouldPersistProjectPath = (path?: string | null): boolean => {
   if (!path) return false;
   return !isImplicitWorkspaceRootPath(path);
+};
+
+const persistSessionContext = async (input: {
+  selectedGroupId: string | null;
+  selectedProjectId: string | null;
+  mode: AppMode;
+}): Promise<void> => {
+  await upsertLocalSessionContextState(input);
+  void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, input.selectedGroupId);
+  void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, input.selectedProjectId);
+  void savePreference(PREF_KEYS.LAST_ACTIVE_MODE, input.mode);
+};
+
+const sortByUpdatedAtDesc = <T extends { updated_at?: string }>(items: T[]): T[] =>
+  [...items].sort((left, right) => {
+    const leftTime = left.updated_at ? new Date(left.updated_at).getTime() : 0;
+    const rightTime = right.updated_at ? new Date(right.updated_at).getTime() : 0;
+    return rightTime - leftTime;
+  });
+
+const persistCurrentProjectContext = async (projectId: string): Promise<void> => {
+  const appState = useAppStore.getState();
+  if (!projectId || !appState.getProjectById(projectId)) return;
+
+  const { useTaskStore } = await import('./useTaskStore');
+  const { useChatStore } = await import('./useChatStore');
+
+  const taskStore = useTaskStore.getState();
+  const chatStore = useChatStore.getState();
+
+  const tasksForProject = taskStore.tasks.filter((task) => taskMatchesProjectId(task, projectId));
+  const selectedTask = appState.selectedTaskId
+    ? taskStore.getTaskById(appState.selectedTaskId)
+    : undefined;
+
+  let lastTaskId: string | null = null;
+  if (selectedTask && taskMatchesProjectId(selectedTask, projectId)) {
+    lastTaskId = selectedTask.id;
+  } else {
+    const preferredTask = tasksForProject.find((task) => task.status === 'InProgress') ||
+      tasksForProject.find((task) => task.status === 'AwaitingResponse') ||
+      tasksForProject.find((task) => task.status === 'Pending') ||
+      tasksForProject[0];
+    lastTaskId = preferredTask?.id ?? null;
+  }
+
+  let lastPlanId: string | null = null;
+  const activePlanId = appState.activeArchitectPlanId;
+  if (activePlanId) {
+    try {
+      const targetBranch = resolveTargetBranch(appState.activePlanContext?.targetBranch || getGitFlowBaseBranch());
+      const plan = await getArchitectPlan(targetBranch, activePlanId);
+      if (plan && plan.status !== 'deleted' && (!plan.projectId || plan.projectId === projectId)) {
+        lastPlanId = plan.id;
+      }
+    } catch {
+      // Ignore plan lookup failures while persisting local context.
+    }
+  }
+
+  const architectConversations = sortByUpdatedAtDesc(
+    chatStore.conversations.filter(
+      (conversation) => conversation.project_id === projectId && !conversation.task_id
+    )
+  );
+  const selectedConversation = chatStore.selectedConversationId
+    ? chatStore.conversations.find((conversation) => conversation.id === chatStore.selectedConversationId)
+    : null;
+
+  const selectedArchitectConversation =
+    selectedConversation &&
+      selectedConversation.project_id === projectId &&
+      !selectedConversation.task_id
+      ? selectedConversation.id
+      : null;
+  const architectConversationId = selectedArchitectConversation || architectConversations[0]?.id || null;
+
+  const taskIdSet = new Set(tasksForProject.map((task) => task.id));
+  const implementByTask = lastTaskId
+    ? sortByUpdatedAtDesc(
+      chatStore.conversations.filter((conversation) => conversation.task_id === lastTaskId)
+    )
+    : [];
+  const implementByProject = sortByUpdatedAtDesc(
+    chatStore.conversations.filter(
+      (conversation) => Boolean(conversation.task_id && taskIdSet.has(conversation.task_id))
+    )
+  );
+
+  const selectedImplementConversation =
+    selectedConversation &&
+      selectedConversation.task_id &&
+      taskIdSet.has(selectedConversation.task_id)
+      ? selectedConversation.id
+      : null;
+  const implementConversationId =
+    selectedImplementConversation ||
+    implementByTask[0]?.id ||
+    implementByProject[0]?.id ||
+    null;
+
+  await upsertLocalProjectContextState({
+    projectId,
+    lastPlanId,
+    lastTaskId,
+    architectConversationId,
+    implementConversationId,
+  });
+};
+
+const restoreProjectContext = async (projectId: string): Promise<void> => {
+  const appState = useAppStore.getState();
+  const projectExists = Boolean(appState.getProjectById(projectId));
+  if (!projectExists) return;
+
+  const context = await getLocalProjectContextState(projectId);
+  const { useTaskStore } = await import('./useTaskStore');
+  const { useChatStore } = await import('./useChatStore');
+  const { useNeedsStore } = await import('./useNeedsStore');
+
+  const taskStore = useTaskStore.getState();
+  const chatStore = useChatStore.getState();
+
+  let restoredTaskId: string | null = null;
+  const contextTaskId = context?.lastTaskId;
+  if (contextTaskId) {
+    const task = taskStore.getTaskById(contextTaskId);
+    if (task && taskMatchesProjectId(task, projectId)) {
+      restoredTaskId = contextTaskId;
+    }
+  }
+
+  if (restoredTaskId) {
+    useAppStore.setState({ selectedTaskId: restoredTaskId });
+    await taskStore.activateTask(restoredTaskId);
+  } else {
+    useAppStore.setState({ selectedTaskId: null });
+  }
+
+  let restoredPlanId: string | null = null;
+  const contextPlanId = context?.lastPlanId;
+  if (contextPlanId) {
+    try {
+      const targetBranch = resolveTargetBranch(appState.activePlanContext?.targetBranch || getGitFlowBaseBranch());
+      const plan = await getArchitectPlan(targetBranch, contextPlanId);
+      if (plan && plan.status !== 'deleted' && (!plan.projectId || plan.projectId === projectId)) {
+        restoredPlanId = plan.id;
+        useAppStore.setState({
+          activeArchitectPlanId: plan.id,
+          activePlanContext: {
+            id: plan.id,
+            title: plan.title,
+            description: plan.description,
+            status: plan.status,
+            targetBranch: plan.targetBranch,
+          },
+          planNodes: plan.nodes || [],
+          predictedBranches: plan.predictedBranches || [],
+        });
+
+        const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
+        useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
+      }
+    } catch {
+      restoredPlanId = null;
+    }
+  }
+
+  if (!restoredPlanId) {
+    useAppStore.setState({
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+      planNodes: [],
+      predictedBranches: [],
+    });
+  }
+
+  const mode = useAppStore.getState().mode;
+  const hasConversationsLoaded = chatStore.conversations.length > 0;
+
+  if (
+    hasConversationsLoaded &&
+    mode === 'Architect' &&
+    context?.architectConversationId &&
+    chatStore.conversations.some((conversation) => conversation.id === context.architectConversationId)
+  ) {
+    chatStore.selectConversation(context.architectConversationId);
+  }
+  if (
+    hasConversationsLoaded &&
+    mode === 'Implement' &&
+    context?.implementConversationId &&
+    chatStore.conversations.some((conversation) => conversation.id === context.implementConversationId)
+  ) {
+    chatStore.selectConversation(context.implementConversationId);
+  }
+
+  if (hasConversationsLoaded) {
+    await chatStore.ensureConversationForCurrentMode();
+  }
 };
 
 const pruneLegacyWorkspaceMocks = (groups: ProjectGroup[]): ProjectGroup[] => {
@@ -209,6 +430,7 @@ const dedupeProjectGroupsByPath = (groups: ProjectGroup[]): ProjectGroup[] => {
 
 interface AppStore {
   mode: AppMode;
+  agentType: AgentType;
   currentPlan: Plan | null;
   projectGroups: ProjectGroup[];
   selectedGroupId: string | null;
@@ -229,6 +451,13 @@ interface AppStore {
   enabledModes: AppMode[];
   uiZoomMode: UiZoomMode;
   uiZoomLevel: number;
+  projectSwitchPolicy: ProjectSwitchPolicy;
+  isProjectSwitching: boolean;
+  metadataAutoPush: boolean;
+  implementExecutionMode: ImplementExecutionMode;
+  metadataSyncState: MetadataSyncState;
+  metadataSyncError: string | null;
+  metadataConflictFiles: string[];
   recentProjects: RememberedProject[];
   macroEnabledProjects: RememberedProject[];
   // Architect mode state
@@ -237,6 +466,7 @@ interface AppStore {
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
   setMode: (mode: AppMode) => void;
+  setAgentType: (agentType: AgentType) => void;
   setTheme: (themeId: string) => void;
   setCurrentPlan: (plan: Plan | null) => void;
   setProjectGroups: (groups: ProjectGroup[]) => void;
@@ -254,6 +484,15 @@ interface AppStore {
   setEnabledModes: (modes: AppMode[]) => void;
   setUiZoomMode: (mode: UiZoomMode) => void;
   setUiZoomLevel: (level: number) => void;
+  setProjectSwitchPolicy: (policy: ProjectSwitchPolicy) => Promise<void>;
+  setMetadataAutoPush: (enabled: boolean) => void;
+  setImplementExecutionMode: (mode: ImplementExecutionMode) => void;
+  setMetadataSyncStatus: (params: {
+    state: MetadataSyncState;
+    error?: string | null;
+    conflictFiles?: string[];
+  }) => void;
+  switchProjectContext: (projectId: string | null) => Promise<void>;
   setPlanNodes: (nodes: PlanNode[]) => void;
   setPredictedBranches: (branches: PredictedBranch[]) => void;
   setActiveArchitectPlanId: (planId: string | null) => void;
@@ -305,6 +544,7 @@ const derivePlanNodesFromPlan = (plan: Plan | null): PlanNode[] => {
 
 export const useAppStore = create<AppStore>((set, get) => ({
   mode: 'Implement',
+  agentType: 'build',
   currentPlan: null,
   projectGroups: [],
   selectedGroupId: null,
@@ -326,6 +566,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
   enabledModes: ['Architect', 'Implement', 'Chat', 'Debug'],
   uiZoomMode: 'auto',
   uiZoomLevel: 1,
+  projectSwitchPolicy: 'resume_per_project',
+  isProjectSwitching: false,
+  metadataAutoPush: false,
+  implementExecutionMode: 'semi_auto',
+  metadataSyncState: 'clean',
+  metadataSyncError: null,
+  metadataConflictFiles: [],
   recentProjects: [],
   macroEnabledProjects: [],
   activeArchitectPlanId: null,
@@ -336,6 +583,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setMode: (mode) => {
     set({ mode });
     void savePreference(PREF_KEYS.LAST_ACTIVE_MODE, mode);
+    const { selectedGroupId, selectedProjectId } = get();
+    void persistSessionContext({
+      selectedGroupId,
+      selectedProjectId,
+      mode,
+    });
+  },
+  setAgentType: (agentType) => {
+    set({ agentType });
+    void savePreference(PREF_KEYS.AGENT_TYPE, agentType);
   },
   setTheme: (themeId) => {
     if (typeof window !== 'undefined') {
@@ -352,61 +609,143 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const state = get();
     const selectedGroup = state.projectGroups.find((group) => group.id === groupId);
     const nextProjectId = selectedGroup?.projects[0]?.id ?? null;
-    const nextProjectPath = selectedGroup?.projects[0]?.path ?? null;
 
-    set({ selectedGroupId: groupId, selectedProjectId: nextProjectId });
-    void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, groupId);
-    void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, nextProjectId);
-    if (nextProjectPath) {
-      if (shouldPersistProjectPath(nextProjectPath)) {
-        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, nextProjectPath);
-        void syncBackendWorkspaceRoot(nextProjectPath);
-      } else {
-        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
-      }
+    if (nextProjectId) {
+      void get().switchProjectContext(nextProjectId);
+      return;
     }
+
+    set({ selectedGroupId: groupId, selectedProjectId: null, selectedTaskId: null });
+    void persistSessionContext({
+      selectedGroupId: groupId,
+      selectedProjectId: null,
+      mode: state.mode,
+    });
   },
 
   setSelectedProject: (projectId) => {
-    set({ selectedProjectId: projectId });
-    void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, projectId);
+    void get().switchProjectContext(projectId);
+  },
 
-    if (projectId) {
-      const state = get();
-      const matchingGroup = state.projectGroups.find((group) =>
-        group.projects.some((project) => project.id === projectId)
-      );
-      if (matchingGroup) {
-        const matchingProject = matchingGroup.projects.find((project) => project.id === projectId);
-        set({ selectedGroupId: matchingGroup.id });
-        void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, matchingGroup.id);
+  setProjectSwitchPolicy: async (policy) => {
+    const normalized = policy === 'reset_on_switch' ? 'reset_on_switch' : 'resume_per_project';
+    set({ projectSwitchPolicy: normalized });
+    await persistProjectSwitchPolicy(normalized);
+  },
 
-        if (matchingProject) {
-          const rememberedProject: RememberedProject = {
-            projectId: matchingProject.id,
-            groupId: matchingGroup.id,
-            name: matchingProject.name,
-            path: matchingProject.path,
+  setMetadataAutoPush: (enabled) => {
+    set({ metadataAutoPush: enabled });
+    void savePreference(PREF_KEYS.METADATA_AUTO_PUSH, enabled);
+  },
+
+  setImplementExecutionMode: (mode) => {
+    const normalized: ImplementExecutionMode = mode === 'full_auto' ? 'full_auto' : 'semi_auto';
+    set({ implementExecutionMode: normalized });
+    void savePreference(PREF_KEYS.IMPLEMENT_EXECUTION_MODE, normalized);
+  },
+
+  setMetadataSyncStatus: ({ state, error, conflictFiles }) => {
+    set({
+      metadataSyncState: state,
+      metadataSyncError: error ?? null,
+      metadataConflictFiles: state === 'conflict' ? (conflictFiles ?? []) : [],
+    });
+  },
+
+  switchProjectContext: async (projectId) => {
+    const requestId = ++projectSwitchRequestId;
+    const previous = get();
+    const nextProjectId =
+      projectId && previous.getProjectById(projectId)
+        ? projectId
+        : null;
+    const nextGroupId = nextProjectId
+      ? previous.projectGroups.find((group) =>
+        group.projects.some((project) => project.id === nextProjectId)
+      )?.id ?? null
+      : previous.selectedGroupId;
+
+    const hasSelectionChanged =
+      previous.selectedProjectId !== nextProjectId ||
+      previous.selectedGroupId !== nextGroupId;
+
+    if (!hasSelectionChanged) {
+      await persistSessionContext({
+        selectedGroupId: previous.selectedGroupId,
+        selectedProjectId: previous.selectedProjectId,
+        mode: previous.mode,
+      });
+      return;
+    }
+
+    set({ isProjectSwitching: true, lastError: null });
+
+    try {
+      if (previous.selectedProjectId) {
+        await persistCurrentProjectContext(previous.selectedProjectId);
+      }
+
+      if (requestId !== projectSwitchRequestId) return;
+
+      const selectedProject = nextProjectId ? previous.getProjectById(nextProjectId) : null;
+      const rememberedProject =
+        selectedProject && nextGroupId
+          ? {
+            projectId: selectedProject.id,
+            groupId: nextGroupId,
+            name: selectedProject.name,
+            path: selectedProject.path,
             lastOpenedAt: new Date().toISOString(),
-          };
-
-          const nextRecentProjects = upsertRememberedProject(state.recentProjects, rememberedProject);
-          const nextMacroEnabledProjects = upsertRememberedProject(state.macroEnabledProjects, rememberedProject);
-
-          set({
-            recentProjects: nextRecentProjects,
-            macroEnabledProjects: nextMacroEnabledProjects,
-          });
-
-          void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-          void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
-          if (shouldPersistProjectPath(matchingProject.path)) {
-            void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, matchingProject.path);
-            void syncBackendWorkspaceRoot(matchingProject.path);
-          } else {
-            void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
           }
-        }
+          : null;
+
+      const nextRecentProjects = rememberedProject
+        ? upsertRememberedProject(previous.recentProjects, rememberedProject)
+        : previous.recentProjects;
+      const nextMacroEnabledProjects = rememberedProject
+        ? upsertRememberedProject(previous.macroEnabledProjects, rememberedProject)
+        : previous.macroEnabledProjects;
+
+      set({
+        selectedGroupId: nextGroupId,
+        selectedProjectId: nextProjectId,
+        selectedTaskId: null,
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        recentProjects: nextRecentProjects,
+        macroEnabledProjects: nextMacroEnabledProjects,
+      });
+
+      void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
+      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      if (selectedProject?.path && shouldPersistProjectPath(selectedProject.path)) {
+        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, selectedProject.path);
+      } else {
+        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+      }
+
+      await persistSessionContext({
+        selectedGroupId: nextGroupId,
+        selectedProjectId: nextProjectId,
+        mode: get().mode,
+      });
+
+      if (requestId !== projectSwitchRequestId) return;
+
+      if (nextProjectId && get().projectSwitchPolicy === 'resume_per_project') {
+        await restoreProjectContext(nextProjectId);
+      } else {
+        const { useChatStore } = await import('./useChatStore');
+        await useChatStore.getState().ensureConversationForCurrentMode();
+      }
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+    } finally {
+      if (requestId === projectSwitchRequestId) {
+        set({ isProjectSwitching: false });
       }
     }
   },
@@ -544,14 +883,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const { projectGroups } = await services.closeProject({ projectId });
       const previousState = get();
+      await deleteLocalProjectContextState(projectId);
 
-      const nextSelectedProjectId = previousState.selectedProjectId === projectId
-        ? null
-        : previousState.selectedProjectId;
+      let nextSelectedProjectId =
+        previousState.selectedProjectId === projectId
+          ? null
+          : previousState.selectedProjectId;
 
       let nextSelectedGroupId = previousState.selectedGroupId;
       if (!projectGroups.some((group) => group.id === nextSelectedGroupId)) {
         nextSelectedGroupId = projectGroups[0]?.id ?? null;
+      }
+
+      if (nextSelectedGroupId && !nextSelectedProjectId) {
+        const nextGroup = projectGroups.find((group) => group.id === nextSelectedGroupId);
+        nextSelectedProjectId = nextGroup?.projects[0]?.id ?? null;
       }
 
       const nextRecentProjects = previousState.recentProjects.filter((project) => project.projectId !== projectId);
@@ -561,6 +907,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         projectGroups,
         selectedGroupId: nextSelectedGroupId,
         selectedProjectId: nextSelectedProjectId,
+        selectedTaskId: previousState.selectedProjectId === projectId ? null : previousState.selectedTaskId,
+        activeArchitectPlanId: previousState.selectedProjectId === projectId ? null : previousState.activeArchitectPlanId,
+        activePlanContext: previousState.selectedProjectId === projectId ? null : previousState.activePlanContext,
+        planNodes: previousState.selectedProjectId === projectId ? [] : previousState.planNodes,
+        predictedBranches: previousState.selectedProjectId === projectId ? [] : previousState.predictedBranches,
         recentProjects: nextRecentProjects,
         macroEnabledProjects: nextMacroEnabledProjects,
         isLoading: false,
@@ -571,6 +922,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, nextSelectedProjectId);
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
       void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      await persistSessionContext({
+        selectedGroupId: nextSelectedGroupId,
+        selectedProjectId: nextSelectedProjectId,
+        mode: previousState.mode,
+      });
+
+      if (nextSelectedProjectId && get().projectSwitchPolicy === 'resume_per_project') {
+        await restoreProjectContext(nextSelectedProjectId);
+      }
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
@@ -596,6 +956,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const { project: newProject } = await services.createProject(data);
       const state = get();
+      if (state.selectedProjectId) {
+        await persistCurrentProjectContext(state.selectedProjectId);
+      }
       const { projectGroups: syncedGroups, plan, planNodes, predictedBranches } = await services.getAppBootstrap();
       const groupForProject = syncedGroups.find((group) =>
         group.projects.some((project) => project.id === newProject.id)
@@ -643,10 +1006,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({
         currentPlan: nextPlan,
         projectGroups: nextProjectGroups,
-        planNodes: hasSyncedProject ? (planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan)) : state.planNodes,
-        predictedBranches: hasSyncedProject ? (predictedBranches ?? []) : state.predictedBranches,
+        planNodes: hasSyncedProject ? (planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan)) : [],
+        predictedBranches: hasSyncedProject ? (predictedBranches ?? []) : [],
         selectedGroupId: targetGroupId,
         selectedProjectId: newProject.id,
+        selectedTaskId: null,
+        activeArchitectPlanId: null,
+        activePlanContext: null,
         recentProjects: nextRecentProjects,
         macroEnabledProjects: nextMacroEnabledProjects,
       });
@@ -659,6 +1025,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
       void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+
+      await persistSessionContext({
+        selectedGroupId: targetGroupId,
+        selectedProjectId: newProject.id,
+        mode: state.mode,
+      });
+
+      if (get().projectSwitchPolicy === 'resume_per_project') {
+        await restoreProjectContext(newProject.id);
+      }
 
       set({ isLoading: false, lastError: null });
     } catch (error) {
@@ -705,7 +1081,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     try {
       // Load persisted panel preferences
-      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId, lastOpenProjectPath, lastActiveMode, recentProjects, macroEnabledProjects] = await Promise.all([
+      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId, lastOpenProjectPath, lastActiveMode, lastAgentType, recentProjects, macroEnabledProjects, metadataAutoPush, implementExecutionMode, storedProjectSwitchPolicy, sessionContext] = await Promise.all([
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
         loadPreference<boolean>(PREF_KEYS.IS_LEFT_PANEL_OPEN),
@@ -716,12 +1092,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
         loadPreference<string | null>(PREF_KEYS.LAST_SELECTED_PROJECT_ID),
         loadPreference<string | null>(PREF_KEYS.LAST_OPEN_PROJECT_PATH),
         loadPreference<AppMode>(PREF_KEYS.LAST_ACTIVE_MODE),
+        loadPreference<AgentType>(PREF_KEYS.AGENT_TYPE),
         loadPreference<RememberedProject[]>(PREF_KEYS.RECENT_PROJECTS),
         loadPreference<RememberedProject[]>(PREF_KEYS.MACRO_ENABLED_PROJECTS),
+        loadPreference<boolean>(PREF_KEYS.METADATA_AUTO_PUSH),
+        loadPreference<ImplementExecutionMode>(PREF_KEYS.IMPLEMENT_EXECUTION_MODE),
+        getProjectSwitchPolicy(),
+        getLocalSessionContextState(),
       ]);
 
       const normalizedZoomMode: UiZoomMode = uiZoomMode === 'override' ? 'override' : 'auto';
       const normalizedZoomLevel = Math.max(0.75, Math.min(2, uiZoomLevel));
+      const normalizedImplementExecutionMode: ImplementExecutionMode =
+        implementExecutionMode === 'full_auto' ? 'full_auto' : 'semi_auto';
 
       const { plan, projectGroups, planNodes, predictedBranches } = await services.getAppBootstrap();
       const cleanedProjectGroups = pruneLegacyWorkspaceMocks(projectGroups);
@@ -735,21 +1118,27 @@ export const useAppStore = create<AppStore>((set, get) => ({
       let resolvedProjectGroups = mergeRememberedProjectsIntoGroups(cleanedProjectGroups, rememberedCandidates);
       resolvedProjectGroups = dedupeProjectGroupsByPath(resolvedProjectGroups);
 
+      const sessionSelectedProjectId = sessionContext?.selectedProjectId ?? null;
+      const sessionSelectedGroupId = sessionContext?.selectedGroupId ?? null;
+      const sessionMode = isAppMode(sessionContext?.mode) ? sessionContext.mode : null;
+      const effectiveLastSelectedProjectId = sessionSelectedProjectId || lastSelectedProjectId;
+      const effectiveLastSelectedGroupId = sessionSelectedGroupId || lastSelectedGroupId;
+
       let resolvedGroupId: string | null = null;
       let resolvedProjectId: string | null = null;
 
-      if (lastSelectedProjectId) {
+      if (effectiveLastSelectedProjectId) {
         const groupForProject = resolvedProjectGroups.find((group) =>
-          group.projects.some((project) => project.id === lastSelectedProjectId)
+          group.projects.some((project) => project.id === effectiveLastSelectedProjectId)
         );
         if (groupForProject) {
           resolvedGroupId = groupForProject.id;
-          resolvedProjectId = lastSelectedProjectId;
+          resolvedProjectId = effectiveLastSelectedProjectId;
         }
       }
 
-      if (!resolvedGroupId && lastSelectedGroupId) {
-        const existingGroup = resolvedProjectGroups.find((group) => group.id === lastSelectedGroupId);
+      if (!resolvedGroupId && effectiveLastSelectedGroupId) {
+        const existingGroup = resolvedProjectGroups.find((group) => group.id === effectiveLastSelectedGroupId);
         if (existingGroup) {
           resolvedGroupId = existingGroup.id;
         }
@@ -833,12 +1222,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
         resolvedProjectId = selectedGroup?.projects[0]?.id ?? null;
       }
 
-      const resolvedMode: AppMode = ['Architect', 'Implement', 'Chat', 'Debug'].includes(lastActiveMode)
-        ? lastActiveMode
+      const resolvedMode: AppMode = isAppMode(sessionMode)
+        ? sessionMode
+        : ['Architect', 'Implement', 'Chat', 'Debug'].includes(lastActiveMode)
+          ? lastActiveMode
         : 'Implement';
+      const resolvedAgentType: AgentType = ['build', 'plan'].includes(lastAgentType)
+        ? lastAgentType
+        : 'build';
 
       set({
         mode: resolvedMode,
+        agentType: resolvedAgentType,
         currentPlan: plan,
         projectGroups: resolvedProjectGroups,
         planNodes: planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan),
@@ -853,19 +1248,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
         isRightPanelOpen: rightOpen,
         uiZoomMode: normalizedZoomMode,
         uiZoomLevel: normalizedZoomLevel,
+        metadataAutoPush,
+        implementExecutionMode: normalizedImplementExecutionMode,
+        projectSwitchPolicy: storedProjectSwitchPolicy,
+        isProjectSwitching: false,
         isLoading: false,
       });
 
-      if (resolvedProjectId) {
-        const selectedGroup = resolvedProjectGroups.find((group) => group.id === resolvedGroupId);
-        const selectedProject = selectedGroup?.projects.find((project) => project.id === resolvedProjectId);
-        if (selectedProject?.path && shouldPersistProjectPath(selectedProject.path)) {
-          void syncBackendWorkspaceRoot(selectedProject.path);
-        }
-      }
-
       void savePreference(PREF_KEYS.RECENT_PROJECTS, cleanedRecentProjects);
       void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, cleanedMacroEnabledProjects);
+      await persistSessionContext({
+        selectedGroupId: resolvedGroupId,
+        selectedProjectId: resolvedProjectId,
+        mode: resolvedMode,
+      });
+
+      if (resolvedProjectId && storedProjectSwitchPolicy === 'resume_per_project') {
+        await restoreProjectContext(resolvedProjectId);
+      }
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });

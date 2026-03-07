@@ -10,7 +10,7 @@ interface LeftPanelProps {
 }
 
 export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
-  const { projectGroups, toggleProjectGroup, selectedGroupId, setSelectedGroup, openProjectModal } =
+  const { projectGroups, toggleProjectGroup, selectedGroupId, switchProjectContext, openProjectModal } =
     useAppStore();
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -84,7 +84,10 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
           >
             {/* Group Header - Click to select group */}
             <div
-              onClick={() => setSelectedGroup(group.id)}
+              onClick={() => {
+                const fallbackProjectId = group.projects[0]?.id ?? null;
+                void switchProjectContext(fallbackProjectId);
+              }}
               className={cn(
                 'w-full h-10 px-4 flex items-center justify-between',
                 'transition-colors cursor-pointer',

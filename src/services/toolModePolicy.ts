@@ -29,6 +29,7 @@ const GIT_WRITE_TOOLS = [
   'git_add',
   'git_commit',
   'git_checkout',
+  'git_merge',
   'git_reset',
   'git_stash',
 ] as const;
@@ -82,23 +83,23 @@ export const getToolModePolicy = (mode: AppMode): ToolModePolicy => {
   };
 };
 
-export const isMacroScopedPath = (rawPath: string): boolean => {
+const normalizeRelativePathParts = (rawPath: string): string[] | null => {
   const normalized = rawPath.replace(/\\/g, '/').trim();
-  if (!normalized) return false;
+  if (!normalized) return null;
 
   const trimmedStart = normalized.replace(/^\.\//, '');
   const isAbsolute = /^(?:[a-zA-Z]:\/|\/)/.test(trimmedStart);
-  if (isAbsolute) return false;
+  if (isAbsolute) return null;
 
   const parts = trimmedStart.split('/').filter((segment) => segment.length > 0);
-  if (parts.length === 0) return false;
+  if (parts.length === 0) return null;
 
   const resolved: string[] = [];
   for (const part of parts) {
     if (part === '.') continue;
     if (part === '..') {
       if (resolved.length === 0) {
-        return false;
+        return null;
       }
       resolved.pop();
       continue;
@@ -106,10 +107,25 @@ export const isMacroScopedPath = (rawPath: string): boolean => {
     resolved.push(part);
   }
 
-  if (resolved.length === 0) return false;
+  return resolved.length > 0 ? resolved : null;
+};
+
+export const isMacroScopedPath = (rawPath: string): boolean => {
+  const resolved = normalizeRelativePathParts(rawPath);
+  if (!resolved) return false;
   return resolved[0] === '.macro';
+};
+
+export const isMetadataRelativePath = (rawPath: string): boolean => {
+  const resolved = normalizeRelativePathParts(rawPath);
+  if (!resolved) return false;
+  if (resolved[0] === 'workspace.json') {
+    return resolved.length === 1;
+  }
+  return resolved[0] === 'branches';
 };
 
 export const isGitToolId = (toolId: string): boolean => {
   return (GIT_TOOLS as readonly string[]).includes(toolId);
 };
+

@@ -1193,6 +1193,13 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               </div>
               {t('architect.planValidated', 'Plan validated')}
             </div>
+          ) : activePlanContext.status === 'completed' ? (
+            <div className="flex items-center gap-2.5 text-emerald-500 text-sm font-medium">
+              <div className="p-1.5 bg-emerald-500/10 rounded-md shrink-0">
+                <Icon name="check-circle" size={14} className="text-emerald-500" />
+              </div>
+              {t('architect.planCompleted', 'Plan completed')}
+            </div>
           ) : (
             <>
               <span
