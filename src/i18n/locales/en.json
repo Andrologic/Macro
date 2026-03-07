@@ -159,6 +159,22 @@
     "commitFailed": "Failed to commit changes",
     "actionsInChangesReview": "Use Changes Review panel for stage, revert, and commit actions.",
     "taskStatusLabel": "Task: {{status}}",
+    "reviewed": "Reviewed",
+    "hunks": "hunks",
+    "markReviewed": "Mark as reviewed",
+    "editChange": "Edit change",
+    "saveEdit": "Save edit",
+    "savingEdit": "Saving changes...",
+    "loadMoreContext": "Load more context",
+    "loadFullFile": "Load full file",
+    "noTextualDiff": "No textual diff is available for this file. Use a broader review context if needed.",
+    "manualEditNotice": "Manual edits are allowed here, but the file will need to be reviewed again before commit.",
+    "deletedChangeReadOnly": "Deleted files are read-only in this review flow.",
+    "context": {
+      "default": "Focused diff",
+      "expanded": "Expanded context",
+      "full": "Full file context"
+    },
     "errors": {
       "unknownTask": "Unknown task: {{taskId}}",
       "taskAlreadyCompleted": "Task is already completed.",
@@ -179,7 +195,8 @@
       "foreignStagedFilesShort": "Some staged files do not belong to this task. Unstage them first.",
       "loadChangesFailed": "Failed to load repository changes.",
       "commitMessageRequired": "Commit message is required.",
-      "commitSucceededTaskNotCompleted": "Changes were committed, but the task could not be completed automatically."
+      "commitSucceededTaskNotCompleted": "Changes were committed, but the task could not be completed automatically.",
+      "deletedChangeReadOnly": "Deleted files are read-only during review. Restore them from the task flow instead."
     }
   },
   "architect": {
