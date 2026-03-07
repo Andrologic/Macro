@@ -11,7 +11,7 @@ import type {
   ModelsDto,
   ProjectDto,
   ProvidersDto,
-  TasksDto,
+  TaskCatalogDto,
   ToolSettingsDto,
 } from './dtos';
 import type { ProjectGroup } from '../../types';
@@ -20,7 +20,7 @@ export interface ServiceProvider {
   getAppBootstrap: () => Promise<AppBootstrapDto>;
   listConversations: () => Promise<ConversationsDto>;
   listMessages: (conversationId?: string) => Promise<MessagesDto>;
-  listTasks: () => Promise<TasksDto>;
+  listTasks: () => Promise<TaskCatalogDto>;
   getGitTreeForProject: (projectId: string) => Promise<GitTreeDto>;
   gitWorktreeCreate: (projectId: string, taskId: string, branchName: string) => Promise<string>;
   gitWorktreeRemove: (projectId: string, taskId: string) => Promise<void>;

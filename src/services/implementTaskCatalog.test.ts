@@ -156,6 +156,10 @@ describe('buildImplementTaskCatalog', () => {
       ['plan-a', 1],
       ['plan-b', 1],
     ]);
+    expect(catalog.plans.map((plan) => [plan.id, plan.readyForValidation])).toEqual([
+      ['plan-a', false],
+      ['plan-b', false],
+    ]);
     expect(catalog.tasks.map((task) => task.id)).toEqual([
       'task-a1',
       'task-b1',

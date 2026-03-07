@@ -37,6 +37,14 @@ export interface CleanupPlanRepositoryResult {
   deletedBranches: string[];
 }
 
+export interface FinalizedPlanRepositoryResult {
+  projectId: string;
+  repoPath: string;
+  planBranchName: string;
+  baseBranchName: string;
+  mergeOutput?: string;
+}
+
 const resolveProjectRepoPaths = (projectIds: string[], explicitRepoPath?: string): Array<{ projectId: string; repoPath: string }> => {
   const appState = useAppStore.getState();
   const resolved: Array<{ projectId: string; repoPath: string }> = [];
@@ -321,6 +329,72 @@ export const mergeFeatureBranchIntoPlanBranch = async (params: {
     branchName: params.branchName,
     intoBranch: params.planBranchName,
   });
+};
+
+export const finalizePlanIntoBaseBranch = async (params: {
+  branchName: string;
+  planId: string;
+  repoPath?: string;
+}): Promise<{
+  plan: ArchitectPlanRecord;
+  repositories: FinalizedPlanRepositoryResult[];
+  cleanup: CleanupPlanRepositoryResult[];
+}> => {
+  const plan = await getArchitectPlan(params.branchName, params.planId);
+  if (!plan || plan.status === 'deleted') {
+    throw new Error(`Plan ${params.planId} is unavailable.`);
+  }
+
+  const planBranchName = toPlanIntegrationBranch(plan.slug || plan.title);
+  const baseBranchName = plan.targetBranch || getGitFlowBaseBranch();
+  const repositories = resolveProjectRepoPaths(getPlanProjectIds(plan), params.repoPath);
+
+  const finalizedRepositories: FinalizedPlanRepositoryResult[] = [];
+  for (const repository of repositories) {
+    const status = await tauriIpc.gitStatus(repository.repoPath);
+    if (!status.is_clean) {
+      throw new Error(
+        `Cannot finalize plan while repository ${repository.repoPath} has uncommitted changes.`
+      );
+    }
+
+    const diff = await tauriIpc.gitDiff({
+      repoPath: repository.repoPath,
+      base: baseBranchName,
+      head: planBranchName,
+      contextLines: 0,
+    });
+
+    const mergeOutput = diff.trim().length > 0
+      ? await tauriIpc.gitMerge({
+        repoPath: repository.repoPath,
+        branchName: planBranchName,
+        intoBranch: baseBranchName,
+      })
+      : undefined;
+
+    finalizedRepositories.push({
+      projectId: repository.projectId,
+      repoPath: repository.repoPath,
+      planBranchName,
+      baseBranchName,
+      mergeOutput,
+    });
+  }
+
+  const completedPlan = await updateArchitectPlan({
+    branchName: params.branchName,
+    planId: plan.id,
+    status: 'completed',
+    setActive: false,
+  });
+  const cleanup = await cleanupPlanBranches(completedPlan, params.repoPath);
+
+  return {
+    plan: completedPlan,
+    repositories: finalizedRepositories,
+    cleanup,
+  };
 };
 
 export const cleanupPlanBranches = async (

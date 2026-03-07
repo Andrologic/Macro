@@ -16,6 +16,10 @@ export interface ImplementTaskPlanSummary {
   targetBranch: string;
   projectIds: string[];
   taskCount: number;
+  completedTaskCount: number;
+  activeTaskCount: number;
+  inReviewTaskCount: number;
+  readyForValidation: boolean;
 }
 
 export interface CatalogedImplementTask extends DerivedImplementTask {
@@ -206,19 +210,33 @@ export const buildImplementTaskCatalog = (params: {
   });
 
   const plans = executablePlans
-    .map((plan) => ({
-      id: plan.id,
-      title: plan.title,
-      status: plan.status,
-      targetBranch: plan.targetBranch,
-      projectIds: unique(
-        [
-          ...(Array.isArray(plan.projectIds) ? plan.projectIds : []),
-          ...(plan.projectId ? [plan.projectId] : []),
-        ].filter((value): value is string => typeof value === 'string')
-      ),
-      taskCount: planTaskCounts.get(plan.id) || 0,
-    }))
+    .map((plan) => {
+      const planTasks = architectTasks.filter((task) => task.plan_id === plan.id);
+      const taskCount = planTaskCounts.get(plan.id) || 0;
+      const completedTaskCount = planTasks.filter((task) => task.status === 'Completed').length;
+      const activeTaskCount = planTasks.filter(
+        (task) => task.status === 'InProgress' || task.status === 'AwaitingResponse'
+      ).length;
+      const inReviewTaskCount = planTasks.filter((task) => task.status === 'InReview').length;
+
+      return {
+        id: plan.id,
+        title: plan.title,
+        status: plan.status,
+        targetBranch: plan.targetBranch,
+        projectIds: unique(
+          [
+            ...(Array.isArray(plan.projectIds) ? plan.projectIds : []),
+            ...(plan.projectId ? [plan.projectId] : []),
+          ].filter((value): value is string => typeof value === 'string')
+        ),
+        taskCount,
+        completedTaskCount,
+        activeTaskCount,
+        inReviewTaskCount,
+        readyForValidation: taskCount > 0 && completedTaskCount === taskCount,
+      };
+    })
     .filter((plan) => plan.taskCount > 0)
     .sort((left, right) => left.title.localeCompare(right.title));
 

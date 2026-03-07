@@ -24,12 +24,64 @@ import { ComposerEditor, type ComposerEditorHandle } from './composer/ComposerEd
  * PERFORMANCE: Lazy loaded via ModeRouter, though shared across all modes
  * Critical component that should load quickly once needed
  */
+const buildImplementKickoffPrompt = (params: {
+  title: string;
+  description?: string;
+  projectId: string;
+  branchName: string;
+  dependencies: string[];
+  estimatedChanges: Array<{ operation: string; path: string }>;
+  notes?: string;
+}): string => {
+  const dependencyContext = params.dependencies.length > 0
+    ? params.dependencies.join(', ')
+    : 'none';
+  const estimatedChanges = params.estimatedChanges.length > 0
+    ? params.estimatedChanges
+      .map((change) => `${change.operation} ${change.path}`)
+      .join('\n')
+    : 'No estimated file changes provided.';
+  const executionNotes = params.notes?.trim();
+
+  return [
+    'You are starting implementation for this task.',
+    'Start with a concise context summary so the developer immediately understands what needs to be done.',
+    'Then propose an ordered execution plan.',
+    'If critical information is missing, stop and ask blocking questions before coding.',
+    'When you ask a blocking question, append a quick-reply block in this exact format with exactly 3 options:',
+    '[quick-replies]',
+    '- First option',
+    '- Second option',
+    '- Third option',
+    '[/quick-replies]',
+    'Allow free-form answers outside those quick replies when useful.',
+    '',
+    'TASK CONTEXT',
+    `- Title: ${params.title}`,
+    `- Description: ${params.description || 'No description provided.'}`,
+    `- Project ID: ${params.projectId}`,
+    `- Branch: ${params.branchName}`,
+    `- Dependencies: ${dependencyContext}`,
+    '- Estimated file changes:',
+    estimatedChanges,
+    ...(executionNotes
+      ? [
+        '',
+        'DEVELOPER NOTES',
+        executionNotes,
+      ]
+      : []),
+  ].join('\n');
+};
+
 const ChatZone: React.FC = () => {
   const { t } = useTranslation();
   const {
     mode,
     agentType,
     setAgentType,
+    implementExecutionMode,
+    setImplementExecutionMode,
     selectedProjectId,
     selectedTaskId,
     getProjectById,
@@ -57,8 +109,11 @@ const ChatZone: React.FC = () => {
   const { needs } = useNeedsStore();
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const tasks = useTaskStore((state) => state.tasks);
+  const startTask = useTaskStore((state) => state.startTask);
+  const retryTask = useTaskStore((state) => state.retryTask);
 
   const [inputValue, setInputValue] = useState('');
+  const [kickoffNotes, setKickoffNotes] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
@@ -106,6 +161,19 @@ const ChatZone: React.FC = () => {
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId]
   );
+  const canStartImplementExecution = Boolean(
+    mode === 'Implement' &&
+      selectedTask &&
+      !selectedTask.is_blocked &&
+      selectedTask.status !== 'Completed' &&
+      selectedTask.status !== 'InReview' &&
+      currentMessages.length === 0
+  );
+  const isImplementComposerLocked =
+    mode === 'Implement' &&
+    implementExecutionMode === 'semi_auto' &&
+    Boolean(selectedTask) &&
+    currentMessages.length === 0;
 
   const implementProgress = useMemo(() => {
     const total = tasks.length;
@@ -168,7 +236,8 @@ const ChatZone: React.FC = () => {
 
   const previousConversationIdRef = useRef<string | null>(null);
   const pendingConversationJumpRef = useRef<string | null>(null);
-  const bootstrapPlanByConversationRef = useRef<Record<string, boolean>>({});
+  const executionKickoffByConversationRef = useRef<Record<string, boolean>>({});
+  const startingExecutionRef = useRef(false);
 
   useEffect(() => {
     if (selectedConversationId && selectedConversationId !== previousConversationIdRef.current) {
@@ -196,59 +265,6 @@ const ChatZone: React.FC = () => {
     });
   }, [selectedConversationId, currentMessages.length, scrollContainerRef]);
 
-  useEffect(() => {
-    if (mode !== 'Implement' || !selectedTask || !selectedConversationId) return;
-    if (currentMessages.length > 0) return;
-    if (isLoading || isStreaming) return;
-    if (!selectedProviderId || !selectedModelId) return;
-    if (bootstrapPlanByConversationRef.current[selectedConversationId]) return;
-
-    bootstrapPlanByConversationRef.current[selectedConversationId] = true;
-
-    const dependencyContext = selectedTask.dependencies.length > 0
-      ? selectedTask.dependencies.join(', ')
-      : 'none';
-    const estimatedChanges = selectedTask.estimated_changes.length > 0
-      ? selectedTask.estimated_changes
-        .map((change) => `${change.operation} ${change.path}`)
-        .join('\n')
-      : 'No estimated file changes provided.';
-
-    const kickoffPrompt = [
-      'Create an implementation kickoff for this task.',
-      'Start with a concise context summary so the developer immediately understands what needs to be done.',
-      'Then propose a first execution plan in ordered steps.',
-      'If critical information is missing, ask a short list of blocking questions before coding.',
-      'Do not implement anything yet. Wait for explicit user confirmation to start implementation.',
-      '',
-      'TASK CONTEXT',
-      `- Title: ${selectedTask.title}`,
-      `- Description: ${selectedTask.description || 'No description provided.'}`,
-      `- Project ID: ${selectedTask.project_id}`,
-      `- Branch: ${selectedTask.branch_name}`,
-      `- Dependencies: ${dependencyContext}`,
-      '- Estimated file changes:',
-      estimatedChanges,
-    ].join('\n');
-
-    void sendMessage({
-      conversationId: selectedConversationId,
-      content: kickoffPrompt,
-      taskId: selectedTask.id,
-    });
-  }, [
-    mode,
-    selectedTask,
-    selectedConversationId,
-    currentMessages.length,
-    isLoading,
-    isStreaming,
-    selectedProviderId,
-    selectedModelId,
-    sendMessage,
-  ]);
-
-
   const ensureConversation = async () => {
     if (selectedConversationId) return selectedConversationId;
     const ensured = await ensureConversationForCurrentMode();
@@ -256,6 +272,72 @@ const ChatZone: React.FC = () => {
     const conversation = await createConversation('New Conversation', null, null);
     return conversation.id;
   };
+
+  const handleStartExecution = async (notesOverride?: string) => {
+    if (mode !== 'Implement' || !selectedTask || isLoading || isStreaming) return;
+    if (!selectedProviderId || !selectedModelId) return;
+    if (startingExecutionRef.current) return;
+
+    startingExecutionRef.current = true;
+    let conversationId: string | null = null;
+
+    try {
+      conversationId = await ensureConversation();
+      if (executionKickoffByConversationRef.current[conversationId]) return;
+
+      executionKickoffByConversationRef.current[conversationId] = true;
+
+      if (selectedTask.status === 'Pending' || selectedTask.status === 'Failed' || selectedTask.status === 'AwaitingResponse') {
+        await startTask(selectedTask.id);
+        const latestTask = useTaskStore.getState().getTaskById(selectedTask.id);
+        if (!latestTask || latestTask.is_blocked || latestTask.status === 'Failed') {
+          delete executionKickoffByConversationRef.current[conversationId];
+          return;
+        }
+      }
+
+      const content = buildImplementKickoffPrompt({
+        title: selectedTask.title,
+        description: selectedTask.description,
+        projectId: selectedTask.project_id,
+        branchName: selectedTask.branch_name,
+        dependencies: selectedTask.dependencies,
+        estimatedChanges: selectedTask.estimated_changes,
+        notes: notesOverride ?? kickoffNotes,
+      });
+
+      setKickoffNotes('');
+      await sendMessage({
+        conversationId,
+        content,
+        taskId: selectedTask.id,
+      });
+    } catch (error) {
+      if (conversationId) {
+        delete executionKickoffByConversationRef.current[conversationId];
+      }
+      throw error;
+    } finally {
+      startingExecutionRef.current = false;
+    }
+  };
+
+  useEffect(() => {
+    if (implementExecutionMode !== 'full_auto') return;
+    if (!canStartImplementExecution) return;
+    if (isLoading || isStreaming) return;
+    if (!selectedProviderId || !selectedModelId) return;
+    void handleStartExecution();
+  }, [
+    canStartImplementExecution,
+    implementExecutionMode,
+    isLoading,
+    isStreaming,
+    selectedConversationId,
+    selectedProviderId,
+    selectedModelId,
+    selectedTask?.id,
+  ]);
 
   const readClipboardImage = (file: File): Promise<{ dataUrl: string; width?: number; height?: number }> => {
     return new Promise((resolve, reject) => {
@@ -377,6 +459,7 @@ const ChatZone: React.FC = () => {
   };
 
   const handleSend = async () => {
+    if (isImplementComposerLocked) return;
     const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isLoading) return;
     const conversationId = await ensureConversation();
@@ -386,6 +469,19 @@ const ChatZone: React.FC = () => {
     setComposerImages([]);
     setInputValue('');
     await sendMessage({ conversationId, content, images: imagesForMessage });
+  };
+
+  const handleChoiceClick = async (choiceText: string, taskId?: string) => {
+    if (isLoading || isStreaming) return;
+    const conversationId = await ensureConversation();
+    if (selectedTask?.status === 'AwaitingResponse') {
+      await retryTask(selectedTask.id);
+    }
+    await sendMessage({
+      conversationId,
+      content: choiceText,
+      taskId: taskId ?? selectedTask?.id ?? null,
+    });
   };
 
   const handleGenerateStrategy = async () => {
@@ -770,6 +866,8 @@ const ChatZone: React.FC = () => {
                             {message.choices.map((choice) => (
                               <button
                                 key={choice.id}
+                                type="button"
+                                onClick={() => void handleChoiceClick(choice.text, message.task_id)}
                                 className="w-full text-left px-4 py-3 rounded-lg bg-card/50 border border-border hover:border-primary/50 hover:bg-card transition-all duration-200"
                               >
                                 <span className="text-sm text-muted-foreground font-mono">
@@ -878,6 +976,36 @@ const ChatZone: React.FC = () => {
                 )}
                 <ProviderDropdown />
                 <ModelDropdown />
+                {mode === 'Implement' && (
+                  <div className="inline-flex items-center rounded-lg border border-border bg-muted/60 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setImplementExecutionMode('semi_auto')}
+                      className={cn(
+                        'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                        implementExecutionMode === 'semi_auto'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      <Icon name="pause" size={12} />
+                      {t('implement.executionModeSemiAuto', 'Semi-auto')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setImplementExecutionMode('full_auto')}
+                      className={cn(
+                        'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                        implementExecutionMode === 'full_auto'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      <Icon name="play" size={12} />
+                      {t('implement.executionModeFullAuto', 'Full-auto')}
+                    </button>
+                  </div>
+                )}
               </div>
               {mode === 'Architect' && (
                 <button
@@ -916,15 +1044,66 @@ const ChatZone: React.FC = () => {
               )}
             </div>
 
+            {mode === 'Implement' && selectedTask && currentMessages.length === 0 && (
+              <div className="rounded-xl border border-border bg-card/70 p-3 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="text-sm font-medium text-foreground">
+                      {t('implement.executionBrief', 'Task briefing')}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {selectedTask.description || t('implement.noTaskDescription', 'No task description provided.')}
+                    </p>
+                    <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                      <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/60 px-2 py-1">
+                        <Icon name="git-branch" size={10} />
+                        {selectedTask.branch_name}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/60 px-2 py-1">
+                        <Icon name="folder" size={10} />
+                        {selectedTask.project_id}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleStartExecution()}
+                    disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId}
+                    className={cn(
+                      'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors shrink-0',
+                      canStartImplementExecution && selectedProviderId && selectedModelId
+                        ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                        : 'bg-muted text-muted-foreground cursor-not-allowed'
+                    )}
+                  >
+                    <Icon name="play" size={14} />
+                    {implementExecutionMode === 'full_auto'
+                      ? t('implement.executionStartingAuto', 'Auto-start armed')
+                      : t('implement.startExecution', 'Start execution')}
+                  </button>
+                </div>
+                <textarea
+                  value={kickoffNotes}
+                  onChange={(event) => setKickoffNotes(event.target.value)}
+                  rows={3}
+                  placeholder={t('implement.executionNotesPlaceholder', 'Optional guidance for this task kickoff')}
+                  className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary/50"
+                  disabled={implementExecutionMode === 'full_auto'}
+                />
+              </div>
+            )}
+
             <div
               className="flex items-center gap-2 bg-card/80 border border-border rounded-xl px-2 py-1.5"
               onPasteCapture={handleComposerPaste}
             >
               <ComposerEditor
                 ref={composerEditorRef}
-                editable={!isLoading && !!selectedProviderId && !!selectedModelId}
+                editable={!isLoading && !!selectedProviderId && !!selectedModelId && !isImplementComposerLocked}
                 placeholder={
-                  !selectedProviderId || !selectedModelId
+                  isImplementComposerLocked
+                    ? t('implement.startExecutionFirst', 'Start execution to begin the task conversation')
+                    : !selectedProviderId || !selectedModelId
                     ? t('chat.selectProvider')
                     : t('chat.typeMessage')
                 }
@@ -952,10 +1131,10 @@ const ChatZone: React.FC = () => {
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={isLoading || !canSend || !selectedProviderId || !selectedModelId}
+                  disabled={isLoading || !canSend || !selectedProviderId || !selectedModelId || isImplementComposerLocked}
                   className={cn(
                     'rounded-lg px-3 h-9 flex items-center transition-colors',
-                    isLoading || !canSend || !selectedProviderId || !selectedModelId
+                    isLoading || !canSend || !selectedProviderId || !selectedModelId || isImplementComposerLocked
                       ? 'bg-muted text-muted-foreground cursor-not-allowed'
                       : 'bg-primary hover:bg-primary/90 text-primary-foreground'
                   )}

@@ -245,14 +245,25 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ chan
               </button>
             )}
 
-            {!change.isEditing && change.canEdit && (
+            {!change.isEditing && change.canEdit && change.contextMode === 'full' && (
               <button
                 onClick={() => void handleEditStart()}
                 disabled={isBusy}
                 className="px-4 py-2 text-sm font-medium rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 <Icon name={isLoadingContext ? 'loader' : 'edit'} size={14} className={isLoadingContext ? 'animate-spin' : undefined} />
-                {t('implement.editChange', 'Edit change')}
+                {t('implement.editFullFile', 'Edit full file')}
+              </button>
+            )}
+
+            {!change.isEditing && change.canEdit && change.contextMode !== 'full' && (
+              <button
+                onClick={() => void loadChangeContext(changeId, 'full')}
+                disabled={isBusy}
+                className="px-4 py-2 text-sm font-medium rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                <Icon name={isLoadingContext ? 'loader' : 'maximize'} size={14} className={isLoadingContext ? 'animate-spin' : undefined} />
+                {t('implement.loadFullFileToEdit', 'Load full file to edit')}
               </button>
             )}
 

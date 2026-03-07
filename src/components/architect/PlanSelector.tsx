@@ -30,6 +30,7 @@ const statusClassName: Record<string, string> = {
   draft: 'text-amber-500 bg-amber-500/10 border-amber-500/20',
   validated: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20',
   in_progress: 'text-blue-500 bg-blue-500/10 border-blue-500/20',
+  completed: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20',
   archived: 'text-muted-foreground bg-muted/50 border-border/70',
   deleted: 'text-red-500 bg-red-500/10 border-red-500/20',
 };

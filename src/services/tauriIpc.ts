@@ -4,6 +4,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import type { TaskCatalogDto } from './contracts/dtos';
 import type {
   PredictedGitTree,
   GitCommit,
@@ -11,7 +12,6 @@ import type {
   ProjectGroup,
   PlanNode,
   PredictedBranch,
-  Task,
   Project,
   AppMode,
 } from '../types';
@@ -676,8 +676,8 @@ export async function workspaceListProjects(): Promise<ProjectGroup[]> {
   return invoke<ProjectGroup[]>('workspace_list_projects');
 }
 
-export async function workspaceListTasks(): Promise<Task[]> {
-  return invoke<Task[]>('workspace_list_tasks');
+export async function workspaceListTasks(): Promise<TaskCatalogDto> {
+  return invoke<TaskCatalogDto>('workspace_list_tasks');
 }
 
 export async function workspaceGetMetadata(): Promise<WorkspaceMetadataDto> {

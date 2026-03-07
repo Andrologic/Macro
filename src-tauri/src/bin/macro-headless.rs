@@ -241,7 +241,7 @@ async fn workspace_tasks(
     };
 
     match workspace::list_tasks(&state.workspace_path, &metadata_root).await {
-        Ok(tasks) => (StatusCode::OK, Json(json!({ "tasks": tasks }))).into_response(),
+        Ok(task_catalog) => (StatusCode::OK, Json(task_catalog)).into_response(),
         Err(error) => backend_error_response(error),
     }
 }

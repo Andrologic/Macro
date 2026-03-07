@@ -79,7 +79,7 @@ export const mapNodeStatusToTaskStatus = (status: PlanNodeStatus): TaskStatus =>
 
 export const mapTaskStatusToNodeStatus = (status: TaskStatus): PlanNodeStatus => {
   if (status === 'Completed') return 'completed';
-  if (status === 'InProgress' || status === 'AwaitingResponse') return 'in-progress';
+  if (status === 'InProgress' || status === 'AwaitingResponse' || status === 'InReview') return 'in-progress';
   if (status === 'Blocked' || status === 'Failed') return 'blocked';
   return 'pending';
 };
@@ -304,7 +304,12 @@ export const normalizeStrategyDependencies = (
 
 const finalizeTaskStatus = (status: TaskStatus, blockedByTaskIds: string[]): TaskStatus => {
   if (blockedByTaskIds.length > 0) {
-    if (status === 'Completed' || status === 'InProgress' || status === 'AwaitingResponse') {
+    if (
+      status === 'Completed' ||
+      status === 'InProgress' ||
+      status === 'AwaitingResponse' ||
+      status === 'InReview'
+    ) {
       return status;
     }
     return 'Blocked';
@@ -401,7 +406,7 @@ export const deriveImplementTasksFromStrategy = (params: {
       blocked_by_task_ids: [],
       blocked_by: [],
       is_blocked: false,
-      is_ready: status !== 'Completed' && status !== 'Failed',
+      is_ready: status !== 'Completed' && status !== 'Failed' && status !== 'InReview',
       sequence_index: sequenceOrder.get(node.id) ?? Number.MAX_SAFE_INTEGER,
       execution_targets: executionTargets,
     };
@@ -419,7 +424,7 @@ export const deriveImplementTasksFromStrategy = (params: {
 
     const status = finalizeTaskStatus(task.status, blockedByTaskIds);
     const isBlocked = blockedByTaskIds.length > 0;
-    const isReady = !isBlocked && status !== 'Completed' && status !== 'Failed';
+    const isReady = !isBlocked && status !== 'Completed' && status !== 'Failed' && status !== 'InReview';
 
     return {
       ...task,

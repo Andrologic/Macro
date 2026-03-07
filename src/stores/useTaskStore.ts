@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Task, TaskExecutionTarget, TaskStatus } from '../types';
+import type { TaskExecutionTarget, TaskStatus } from '../types';
 import i18n from '../i18n';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
@@ -12,20 +12,19 @@ import {
   mapTaskStatusToNodeStatus,
   toBranchWorktreeKey,
 } from '../services/implementTaskDerivation';
-import { mergeFeatureBranchIntoPlanBranch } from '../services/architectGitFlowService';
+import {
+  finalizePlanIntoBaseBranch,
+  mergeFeatureBranchIntoPlanBranch,
+} from '../services/architectGitFlowService';
 import {
   getArchitectPlan,
   getGitFlowBaseBranch,
-  listArchitectPlans,
   resolveTargetBranch,
   updateArchitectPlan,
   writeArchitectTaskExecution,
-  type ArchitectPlanRecord,
 } from '../services/architectPlanService';
 import {
-  buildImplementTaskCatalog,
   deriveFallbackImplementTasks,
-  isExecutableImplementPlanStatus,
   taskMatchesProjectId,
   type CatalogedImplementTask,
   type ImplementTaskPlanSummary,
@@ -62,8 +61,9 @@ const getPrimaryExecutionTarget = (task: CatalogedImplementTask): TaskExecutionT
 
 const ALLOWED_STATUS_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   Pending: ['InProgress', 'Failed'],
-  InProgress: ['AwaitingResponse', 'Failed', 'Completed'],
-  AwaitingResponse: ['InProgress', 'Failed', 'Completed'],
+  InProgress: ['AwaitingResponse', 'InReview', 'Failed'],
+  AwaitingResponse: ['InProgress', 'InReview', 'Failed'],
+  InReview: ['InProgress', 'Completed', 'Failed'],
   Completed: [],
   Failed: ['Pending', 'InProgress'],
   Blocked: ['Pending'],
@@ -123,82 +123,6 @@ const syncWorkspaceRoot = async (_path: string | null): Promise<void> => {
   // Runtime workspace is resolved per conversation/tool request.
 };
 
-const buildExecutableActivePlanRecord = (): ArchitectPlanRecord | null => {
-  const appState = useAppStore.getState();
-  const activePlanId = appState.activeArchitectPlanId;
-  const activePlanContext = appState.activePlanContext;
-  if (
-    !activePlanId ||
-    !activePlanContext ||
-    !isExecutableImplementPlanStatus(activePlanContext.status) ||
-    appState.planNodes.length === 0
-  ) {
-    return null;
-  }
-
-  const projectIds = Array.from(
-    new Set(
-      [
-        ...appState.planNodes.flatMap((node) => node.projectIds || (node.projectId ? [node.projectId] : [])),
-        ...appState.predictedBranches.map((branch) => branch.projectId),
-      ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    )
-  );
-
-  return {
-    id: activePlanId,
-    slug: activePlanContext.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || activePlanId,
-    title: activePlanContext.title,
-    description: activePlanContext.description,
-    status: activePlanContext.status as ArchitectPlanRecord['status'],
-    targetBranch: activePlanContext.targetBranch,
-    projectId: projectIds[0],
-    projectIds,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    nodes: appState.planNodes,
-    predictedBranches: appState.predictedBranches,
-  };
-};
-
-const loadImplementCatalog = async () => {
-  const appState = useAppStore.getState();
-  const targetBranch = resolveTargetBranch(appState.activePlanContext?.targetBranch || getGitFlowBaseBranch());
-  let plans: ArchitectPlanRecord[] = [];
-
-  try {
-    const planIndex = await listArchitectPlans(targetBranch);
-    const executablePlanIds = planIndex.plans
-      .filter((plan) => isExecutableImplementPlanStatus(plan.status))
-      .map((plan) => plan.id);
-    const loadedPlans = await Promise.all(
-      executablePlanIds.map((planId) => getArchitectPlan(targetBranch, planId))
-    );
-    plans = loadedPlans.filter((plan): plan is ArchitectPlanRecord => Boolean(plan && plan.status !== 'deleted'));
-  } catch {
-    plans = [];
-  }
-
-  const activePlan = buildExecutableActivePlanRecord();
-  if (activePlan && !plans.some((plan) => plan.id === activePlan.id)) {
-    plans.unshift(activePlan);
-  }
-
-  let fallbackTasks: Task[] = [];
-  try {
-    fallbackTasks = (await services.listTasks()).tasks;
-  } catch (error) {
-    if (plans.length === 0) {
-      throw error;
-    }
-  }
-
-  return buildImplementTaskCatalog({
-    plans,
-    fallbackTasks,
-  });
-};
-
 const updateStandaloneTaskStatuses = (
   tasks: CatalogedImplementTask[],
   taskId: string,
@@ -236,7 +160,7 @@ const applyPredictedBranchLifecycle = (
       return branch;
     }
 
-    if (nextStatus === 'InProgress' || nextStatus === 'AwaitingResponse') {
+    if (nextStatus === 'InProgress' || nextStatus === 'AwaitingResponse' || nextStatus === 'InReview') {
       return { ...branch, status: 'active' as const };
     }
 
@@ -259,6 +183,7 @@ interface TaskStore {
   planSummaries: ImplementTaskPlanSummary[];
   hasStandaloneTasks: boolean;
   isLoading: boolean;
+  finalizingPlanId: string | null;
   lastError: string | null;
   source: TaskSource;
   branchWorktrees: Record<string, string>;
@@ -269,7 +194,10 @@ interface TaskStore {
   refreshFromPlan: () => Promise<void>;
   activateTask: (taskId: string) => Promise<void>;
   startTask: (taskId: string) => Promise<void>;
-  completeTask: (taskId: string) => Promise<void>;
+  startReview: (taskId: string) => Promise<void>;
+  requestTaskChanges: (taskId: string) => Promise<void>;
+  completeTask: (taskId: string, options?: { allowWithoutCodeChanges?: boolean }) => Promise<void>;
+  finalizePlan: (planId: string) => Promise<void>;
   markTaskAwaitingResponse: (taskId: string) => Promise<void>;
   markTaskFailed: (taskId: string) => Promise<void>;
   retryTask: (taskId: string) => Promise<void>;
@@ -359,6 +287,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   planSummaries: [],
   hasStandaloneTasks: false,
   isLoading: false,
+  finalizingPlanId: null,
   lastError: null,
   source: 'empty',
   branchWorktrees: {},
@@ -376,7 +305,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   refreshFromPlan: async () => {
     try {
-      const catalog = await loadImplementCatalog();
+      const catalog = await services.listTasks();
       set({
         tasks: catalog.tasks,
         planSummaries: catalog.plans,
@@ -539,18 +468,28 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     await get().setTaskStatus(task.id, 'InProgress');
   },
 
-  completeTask: async (taskId) => {
+  startReview: async (taskId) => {
+    await get().setTaskStatus(taskId, 'InReview');
+  },
+
+  requestTaskChanges: async (taskId) => {
+    await get().setTaskStatus(taskId, 'InProgress');
+  },
+
+  completeTask: async (taskId, options) => {
     const task = get().tasks.find((candidate) => candidate.id === taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
       return;
     }
 
-    if (task.status !== 'InProgress' && task.status !== 'AwaitingResponse') {
+    const allowWithoutCodeChanges = options?.allowWithoutCodeChanges === true;
+
+    if (task.status !== 'InReview') {
       set({
         lastError: tTask(
           'implement.errors.completeRequiresActiveStatus',
-          'Task can only be completed from In Progress or Awaiting Response.'
+          'Task can only be completed from In Review.'
         ),
       });
       return;
@@ -573,6 +512,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     const mergeTargetBranch = task.task_source === 'architect'
       ? null
       : getGitFlowBaseBranch();
+
+    let mergedRepositoryCount = 0;
 
     if (tauriIpc.isTauriAvailable()) {
       for (const target of executionTargets) {
@@ -631,23 +572,38 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
             head: target.branchName,
             contextLines: 0,
           });
-          if (!diff.trim()) {
+          if (allowWithoutCodeChanges && diff.trim()) {
             set({
               lastError: tTask(
-                'implement.errors.noIntegratedChanges',
-                'Cannot complete task because there are no branch changes to integrate into {{branchName}}.',
+                'implement.errors.completeWithoutCodeChangesHasDiff',
+                'Cannot complete without code changes because {{branchName}} still contains branch changes.',
                 { branchName: integrationBranchName }
               ),
             });
             return;
           }
 
-          const mergeOutput = await mergeFeatureBranchIntoPlanBranch({
-            projectId: target.projectId,
-            branchName: target.branchName,
-            planBranchName: integrationBranchName,
-            repoPath,
-          });
+          if (!allowWithoutCodeChanges && !diff.trim()) {
+            repositories.push({
+              projectId: target.projectId,
+              repoPath,
+              branchName: target.branchName,
+              planBranchName: integrationBranchName,
+            });
+            continue;
+          }
+
+          const mergeOutput = allowWithoutCodeChanges || !diff.trim()
+            ? undefined
+            : await mergeFeatureBranchIntoPlanBranch({
+              projectId: target.projectId,
+              branchName: target.branchName,
+              planBranchName: integrationBranchName,
+              repoPath,
+            });
+          if (mergeOutput) {
+            mergedRepositoryCount += 1;
+          }
           repositories.push({
             projectId: target.projectId,
             repoPath,
@@ -660,6 +616,16 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           set({ lastError: normalized.message });
           return;
         }
+      }
+
+      if (!allowWithoutCodeChanges && mergedRepositoryCount === 0) {
+        set({
+          lastError: tTask(
+            'implement.errors.noIntegratedChanges',
+            'Cannot complete task because there are no branch changes to integrate.'
+          ),
+        });
+        return;
       }
     }
 
@@ -674,6 +640,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
             taskId: task.id,
             title: task.title,
             completedAt: new Date().toISOString(),
+            summary: allowWithoutCodeChanges ? 'Completed without code changes.' : undefined,
             repositories,
           },
         });
@@ -681,6 +648,41 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         const normalized = toServiceError(error);
         set({ lastError: normalized.message });
       }
+    }
+  },
+
+  finalizePlan: async (planId) => {
+    const summary = get().planSummaries.find((plan) => plan.id === planId);
+    if (!summary) {
+      set({
+        lastError: tTask(
+          'implement.errors.unknownTaskPlan',
+          'Cannot update plan metadata for task {{taskId}}.',
+          { taskId: planId }
+        ),
+      });
+      return;
+    }
+
+    set({ finalizingPlanId: planId, lastError: null });
+
+    try {
+      const result = await finalizePlanIntoBaseBranch({
+        branchName: resolveTargetBranch(summary.targetBranch),
+        planId,
+      });
+      const appState = useAppStore.getState();
+      if (appState.activeArchitectPlanId === result.plan.id && appState.activePlanContext) {
+        appState.setActivePlanContext({
+          ...appState.activePlanContext,
+          status: 'completed',
+        });
+      }
+      await get().refreshFromPlan();
+      set({ finalizingPlanId: null, lastError: null });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ finalizingPlanId: null, lastError: normalized.message });
     }
   },
 
@@ -741,10 +743,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
-    if (
-      (status === 'InProgress' || status === 'AwaitingResponse' || status === 'Completed') &&
-      currentTask.is_blocked
-    ) {
+    if ((status === 'InProgress' || status === 'AwaitingResponse' || status === 'InReview' || status === 'Completed') && currentTask.is_blocked) {
       const reason = currentTask.blocked_by.join(', ');
       set({
         lastError: tTask(

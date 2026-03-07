@@ -168,6 +168,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
   );
+  const startReview = useTaskStore((state) => state.startReview);
+  const requestTaskChanges = useTaskStore((state) => state.requestTaskChanges);
+  const completeTask = useTaskStore((state) => state.completeTask);
   const [isCommitPromptOpen, setIsCommitPromptOpen] = useState(false);
   const {
     changes,
@@ -192,7 +195,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const stats = getStats();
   const folderTree = useMemo(() => buildFolderTree(changes), [changes]);
   const progressPercent = stats.total > 0 ? (stats.reviewed / stats.total) * 100 : 0;
-  const canCommitTaskStatus = currentTask?.status === 'InProgress' || currentTask?.status === 'AwaitingResponse';
+  const canCommitTaskStatus = currentTask?.status === 'InReview';
+  const canStartReview = currentTask?.status === 'InProgress' || currentTask?.status === 'AwaitingResponse';
+  const canRequestChanges = currentTask?.status === 'InReview';
+  const canCompleteWithoutCodeChanges = currentTask?.status === 'InReview' && stats.total === 0 && !isCommitting;
   const canCommit =
     !isLoading &&
     !isCommitting &&
@@ -208,6 +214,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       Pending: t('tasks.pending', 'Pending'),
       InProgress: t('tasks.inProgress', 'In Progress'),
       AwaitingResponse: t('implement.awaitingResponse', 'Awaiting response'),
+      InReview: t('implement.inReview', 'In Review'),
       Completed: t('tasks.completed', 'Completed'),
       Failed: t('implement.failed', 'Failed'),
       Blocked: t('tasks.blocked', 'Blocked'),
@@ -221,7 +228,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (!canCommitTaskStatus) {
       return t(
         'implement.commitRequiresActiveTaskStatus',
-        'Task must be in progress or awaiting response before commit.'
+        'Task must be in review before commit.'
       );
     }
     if (stats.total === 0) {
@@ -266,6 +273,48 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
       toast.error(messageText || t('implement.commitFailed', 'Failed to commit changes'));
+    }
+  };
+
+  const handleStartReview = async () => {
+    if (!currentTask || isCommitting) return;
+    try {
+      await startReview(currentTask.id);
+      toast.success(t('implement.reviewStarted', 'Task moved to review'));
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      toast.error(messageText || t('implement.reviewStartFailed', 'Failed to start review'));
+    }
+  };
+
+  const handleRequestChanges = async () => {
+    if (!currentTask || isCommitting) return;
+    try {
+      await requestTaskChanges(currentTask.id);
+      toast.success(t('implement.requestChangesSuccess', 'Task moved back to implementation'));
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      toast.error(messageText || t('implement.requestChangesFailed', 'Failed to request changes'));
+    }
+  };
+
+  const handleCompleteWithoutCodeChanges = async () => {
+    if (!currentTask || isCommitting) return;
+    const confirmed = window.confirm(
+      t(
+        'implement.completeWithoutCodeChangesConfirm',
+        'Complete "{{title}}" without code changes?',
+        { title: currentTask.title }
+      )
+    );
+    if (!confirmed) return;
+
+    try {
+      await completeTask(currentTask.id, { allowWithoutCodeChanges: true });
+      toast.success(t('implement.completeWithoutCodeChangesSuccess', 'Task completed without code changes'));
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      toast.error(messageText || t('implement.completeWithoutCodeChangesFailed', 'Failed to complete task'));
     }
   };
 
@@ -388,6 +437,26 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             {t('implement.markAllReviewed', 'Mark all as reviewed')}
           </button>
         )}
+        {canStartReview && (
+          <button
+            onClick={() => void handleStartReview()}
+            disabled={isCommitting}
+            className="w-full py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center justify-center gap-2"
+          >
+            <Icon name="git-compare" size={14} />
+            {t('implement.startReview', 'Send to review')}
+          </button>
+        )}
+        {canRequestChanges && (
+          <button
+            onClick={() => void handleRequestChanges()}
+            disabled={isCommitting}
+            className="w-full py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center justify-center gap-2"
+          >
+            <Icon name="rotate-ccw" size={14} />
+            {t('implement.requestChanges', 'Request changes')}
+          </button>
+        )}
         <button
           onClick={() => setIsCommitPromptOpen(true)}
           disabled={!canCommit}
@@ -404,6 +473,15 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             ? t('implement.commitInProgress', 'Committing changes...')
             : t('implement.commitChanges', 'Commit Changes')}
         </button>
+        {canCompleteWithoutCodeChanges && (
+          <button
+            onClick={() => void handleCompleteWithoutCodeChanges()}
+            className="w-full py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center justify-center gap-2"
+          >
+            <Icon name="check" size={14} />
+            {t('implement.completeWithoutCodeChanges', 'Complete without code changes')}
+          </button>
+        )}
         {!canCommit && commitDisabledReason && (
           <p className="text-xs text-muted-foreground">{commitDisabledReason}</p>
         )}

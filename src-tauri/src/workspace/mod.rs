@@ -5,6 +5,7 @@ use chrono::Utc;
 use metadata::{
     CreateProjectRequest, ImportGitRepoRequest, PlanDto, ProjectDto, ProjectGroupDto,
     ProjectMetadataDto, WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceState,
+    WorkspaceTaskCatalogDto, WorkspaceTaskPlanSummaryDto,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -37,13 +38,71 @@ pub async fn list_projects(
     Ok(state.project_groups)
 }
 
-pub async fn list_tasks(workspace_path: &PathBuf, metadata_root: &PathBuf) -> Result<Vec<Value>> {
+pub async fn list_tasks(
+    workspace_path: &PathBuf,
+    metadata_root: &PathBuf,
+) -> Result<WorkspaceTaskCatalogDto> {
     let _ = workspace_path;
     let state = load_or_default_state(metadata_root).await?;
-    Ok(state
-        .current_plan
-        .map(|plan| plan.tasks)
-        .unwrap_or_default())
+    let Some(plan) = state.current_plan else {
+        return Ok(WorkspaceTaskCatalogDto {
+            tasks: Vec::new(),
+            plans: Vec::new(),
+            has_standalone_tasks: false,
+            source: "empty".to_string(),
+        });
+    };
+
+    let task_count = plan.tasks.len();
+    let completed_task_count = plan
+        .tasks
+        .iter()
+        .filter(|task| task_status_matches(task, &["Completed"]))
+        .count();
+    let active_task_count = plan
+        .tasks
+        .iter()
+        .filter(|task| task_status_matches(task, &["InProgress", "AwaitingResponse"]))
+        .count();
+    let in_review_task_count = plan
+        .tasks
+        .iter()
+        .filter(|task| task_status_matches(task, &["InReview"]))
+        .count();
+    let is_executable_plan = matches!(plan.status.as_str(), "Validated" | "InProgress");
+
+    let plans = if is_executable_plan {
+        vec![WorkspaceTaskPlanSummaryDto {
+            id: plan.id.clone(),
+            title: plan.description.clone(),
+            status: plan.status.clone(),
+            target_branch: get_git_flow_target_branch(&plan),
+            project_ids: plan.project_ids.clone(),
+            task_count,
+            completed_task_count,
+            active_task_count,
+            in_review_task_count,
+            ready_for_validation: task_count > 0 && completed_task_count == task_count,
+        }]
+    } else {
+        Vec::new()
+    };
+
+    let has_standalone_tasks = !is_executable_plan && task_count > 0;
+    let source = if is_executable_plan {
+        "architect".to_string()
+    } else if has_standalone_tasks {
+        "fallback".to_string()
+    } else {
+        "empty".to_string()
+    };
+
+    Ok(WorkspaceTaskCatalogDto {
+        tasks: plan.tasks,
+        plans,
+        has_standalone_tasks,
+        source,
+    })
 }
 
 pub async fn get_metadata(
@@ -475,4 +534,19 @@ fn slugify(input: &str) -> String {
         .collect();
 
     slug.trim_matches('-').to_string()
+}
+
+fn task_status_matches(task: &Value, expected: &[&str]) -> bool {
+    task.get("status")
+        .and_then(|value| value.as_str())
+        .map(|status| expected.iter().any(|candidate| candidate == &status))
+        .unwrap_or(false)
+}
+
+fn get_git_flow_target_branch(plan: &PlanDto) -> String {
+    plan.predicted_git_trees
+        .get("targetBranch")
+        .and_then(|value| value.as_str())
+        .unwrap_or("develop")
+        .to_string()
 }
