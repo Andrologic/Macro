@@ -25,6 +25,7 @@ import {
   getArchitectPlan,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
+  planMatchesProjectId,
   resolveTargetBranch,
 } from '../services/architectPlanService';
 import { taskMatchesProjectId } from '../services/implementTaskCatalog';
@@ -33,6 +34,10 @@ import {
   savePreference,
   PREF_KEYS,
 } from '../services/preferences';
+import type {
+  MacroSyncNextAction,
+  MacroSyncReason,
+} from '../services/tauriIpc';
 
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
 export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools' | 'shortcuts' | 'prompts' | 'architect';
@@ -177,7 +182,7 @@ const persistCurrentProjectContext = async (projectId: string): Promise<void> =>
     try {
       const targetBranch = resolveTargetBranch(appState.activePlanContext?.targetBranch || getGitFlowBaseBranch());
       const plan = await getArchitectPlan(targetBranch, activePlanId);
-      if (plan && plan.status !== 'deleted' && (!plan.projectId || plan.projectId === projectId)) {
+      if (plan && plan.status !== 'deleted' && planMatchesProjectId(plan, projectId)) {
         lastPlanId = plan.id;
       }
     } catch {
@@ -270,7 +275,7 @@ const restoreProjectContext = async (projectId: string): Promise<void> => {
     try {
       const targetBranch = resolveTargetBranch(appState.activePlanContext?.targetBranch || getGitFlowBaseBranch());
       const plan = await getArchitectPlan(targetBranch, contextPlanId);
-      if (plan && plan.status !== 'deleted' && (!plan.projectId || plan.projectId === projectId)) {
+      if (plan && plan.status !== 'deleted' && planMatchesProjectId(plan, projectId)) {
         restoredPlanId = plan.id;
         useAppStore.setState({
           activeArchitectPlanId: plan.id,
@@ -457,6 +462,8 @@ interface AppStore {
   implementExecutionMode: ImplementExecutionMode;
   metadataSyncState: MetadataSyncState;
   metadataSyncError: string | null;
+  metadataSyncReason: MacroSyncReason | null;
+  metadataSyncNextAction: MacroSyncNextAction | null;
   metadataConflictFiles: string[];
   recentProjects: RememberedProject[];
   macroEnabledProjects: RememberedProject[];
@@ -490,6 +497,8 @@ interface AppStore {
   setMetadataSyncStatus: (params: {
     state: MetadataSyncState;
     error?: string | null;
+    reason?: MacroSyncReason | null;
+    nextAction?: MacroSyncNextAction | null;
     conflictFiles?: string[];
   }) => void;
   switchProjectContext: (projectId: string | null) => Promise<void>;
@@ -572,6 +581,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   implementExecutionMode: 'semi_auto',
   metadataSyncState: 'clean',
   metadataSyncError: null,
+  metadataSyncReason: null,
+  metadataSyncNextAction: null,
   metadataConflictFiles: [],
   recentProjects: [],
   macroEnabledProjects: [],
@@ -644,10 +655,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     void savePreference(PREF_KEYS.IMPLEMENT_EXECUTION_MODE, normalized);
   },
 
-  setMetadataSyncStatus: ({ state, error, conflictFiles }) => {
+  setMetadataSyncStatus: ({ state, error, reason, nextAction, conflictFiles }) => {
     set({
       metadataSyncState: state,
       metadataSyncError: error ?? null,
+      metadataSyncReason: reason ?? null,
+      metadataSyncNextAction: nextAction ?? null,
       metadataConflictFiles: state === 'conflict' ? (conflictFiles ?? []) : [],
     });
   },

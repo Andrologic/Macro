@@ -47,6 +47,8 @@ export interface ArchitectPlanSummary {
   nodeCount: number;
 }
 
+type ArchitectPlanProjectRef = Pick<ArchitectPlanSummary, 'projectId' | 'projectIds'>;
+
 interface ArchitectPlanIndex {
   version: 2;
   activePlanId: string | null;
@@ -118,6 +120,29 @@ const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[
       .filter((value) => value.length > 0)
   )
 );
+
+export const getArchitectPlanProjectIds = (plan: ArchitectPlanProjectRef): string[] =>
+  normalizeProjectIds(plan.projectIds, plan.projectId);
+
+export const planMatchesProjectId = (
+  plan: ArchitectPlanProjectRef,
+  selectedProjectId: string | null
+): boolean => {
+  if (!selectedProjectId) return true;
+  const projectIds = getArchitectPlanProjectIds(plan);
+  return projectIds.length === 0 || projectIds.includes(selectedProjectId);
+};
+
+export const resolvePlanProjectContextId = (
+  plan: ArchitectPlanProjectRef,
+  preferredProjectId?: string | null
+): string | null => {
+  const projectIds = getArchitectPlanProjectIds(plan);
+  if (preferredProjectId && projectIds.includes(preferredProjectId)) {
+    return preferredProjectId;
+  }
+  return projectIds[0] || null;
+};
 
 const normalizePlanNodes = (nodes: PlanNode[]): PlanNode[] =>
   (Array.isArray(nodes) ? nodes : []).map((node) => {
@@ -625,6 +650,14 @@ export const createArchitectPlan = async (input: {
   // ID is always a random numeric sequence — independent of the title
   const planId = input.planId ? sanitizeId(input.planId) : String(Date.now());
   const slug = nextSlug;
+  const normalizedNodes = normalizePlanNodes(input.nodes || []);
+  const normalizedPredictedBranches = normalizePlanPredictedBranches(input.predictedBranches || []);
+  const projectIds = resolvePlanProjectIds({
+    projectIds: input.projectIds,
+    projectId: input.projectId,
+    nodes: normalizedNodes,
+    predictedBranches: normalizedPredictedBranches,
+  });
 
   const plan: ArchitectPlanRecord = {
     id: planId,
@@ -634,11 +667,12 @@ export const createArchitectPlan = async (input: {
     status: input.status || 'draft',
     targetBranch: normalizedBranch,
     conversationId: input.conversationId,
-    projectId: input.projectId,
+    projectId: projectIds[0],
+    projectIds,
     createdAt: now,
     updatedAt: now,
-    nodes: input.nodes || [],
-    predictedBranches: input.predictedBranches || [],
+    nodes: normalizedNodes,
+    predictedBranches: normalizedPredictedBranches,
   };
 
   const summary = toSummary(plan);
@@ -664,6 +698,7 @@ export const updateArchitectPlan = async (input: {
   conversationId?: string;
   status?: ArchitectPlanStatus;
   projectId?: string;
+  projectIds?: string[];
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
   setActive?: boolean;
@@ -693,6 +728,18 @@ export const updateArchitectPlan = async (input: {
     throw new Error('Plan slug is immutable and cannot be changed after creation.');
   }
 
+  const nextNodes = input.nodes !== undefined ? normalizePlanNodes(input.nodes) : existing.nodes;
+  const nextPredictedBranches =
+    input.predictedBranches !== undefined
+      ? normalizePlanPredictedBranches(input.predictedBranches)
+      : existing.predictedBranches;
+  const projectIds = resolvePlanProjectIds({
+    projectIds: input.projectIds ?? existing.projectIds,
+    projectId: input.projectId !== undefined ? input.projectId : existing.projectId,
+    nodes: nextNodes,
+    predictedBranches: nextPredictedBranches,
+  });
+
   const next: ArchitectPlanRecord = {
     ...existing,
     slug: existing.slug,
@@ -700,9 +747,10 @@ export const updateArchitectPlan = async (input: {
     description: input.description !== undefined ? input.description.trim() : existing.description,
     conversationId: input.conversationId !== undefined ? input.conversationId : existing.conversationId,
     status: input.status || existing.status,
-    projectId: input.projectId !== undefined ? input.projectId : existing.projectId,
-    nodes: input.nodes || existing.nodes,
-    predictedBranches: input.predictedBranches || existing.predictedBranches,
+    projectId: projectIds[0],
+    projectIds,
+    nodes: nextNodes,
+    predictedBranches: nextPredictedBranches,
     updatedAt: new Date().toISOString(),
   };
 

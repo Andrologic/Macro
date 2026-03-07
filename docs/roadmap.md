@@ -38,8 +38,11 @@ L'application dispose deja d'une base solide :
 - gestion de plans cote Architect deja avancee
 - pipeline Git et metadata deja bien amorce
 - taches, review et commit deja presents cote Implement
+- socle desktop `Architect -> Implement -> Review -> Commit -> validation finale de plan` maintenant stabilise
 - catalogue de taches `Implement` maintenant capable d'agreger plusieurs plans executables cote desktop
 - filtres par plan et prise en charge des taches hors plan maintenant presents dans la file de taches
+- lifecycle des plans maintenant robuste sur le socle desktop local-first
+- sync `@macro` maintenant structuree avec etats exploitables, actions explicites et erreurs remontees proprement
 - couches de services, stores et IPC deja structurees
 - kernel headless deja present en premiere version
 
@@ -124,11 +127,17 @@ Etat attendu :
 - metadata auditables et synchronisables
 - conflicts metadata et merge conflicts techniques traites proprement
 
+Etat deja consolide :
+- finalisation, suppression logique et cleanup des plans maintenant preflightes et rejouables
+- cleanup fiable des branches et worktrees de plan et de tache
+- sync `@macro` maintenant exposee comme `clean / pending / failed / conflict` avec diagnostics structures
+- actions explicites `commit / pull / push` pour `@macro` maintenant disponibles cote UI/store
+- erreurs de divergence, remote manquant, upstream manquant, auth absente, reseau et conflit maintenant mieux remontees
+
 Etat a consolider :
-- nettoyage des branches parasites
-- automatisation complete du cycle de vie des branches de plan
 - resolution assistee des merge conflicts issus des merges pilotes par Macro
-- robustesse de la sync `@macro`
+- duplication et consultation fiables des metadata de plan par projet quand un plan touche plusieurs depots
+- fermeture complete de la phase Git/metadata sur des cas reels de conflits assistes
 
 ### 4.6 Multi-projet
 
@@ -295,16 +304,24 @@ Livrables :
 Critere de sortie :
 - un utilisateur peut livrer un plan complet sur desktop sans bricolage majeur
 
+Etat :
+- socle desktop local-first considere comme stabilise
+- les prochaines evolutions doivent preserver les contrats deja poses du flow Implement
+
 ### Phase 2 - Git flow et metadata robustes
 
 Livrables :
-- nettoyage des branches et worktrees
-- sync `@macro` fiable
-- lifecycle complet des plans
+- nettoyage robuste des branches et worktrees
+- sync `@macro` fiable avec diagnostics et actions explicites
+- lifecycle complet des plans sur le socle desktop local-first
 - resolution assistee des merge conflicts pilotes par Macro
 
 Critere de sortie :
 - l'infrastructure Git de Macro est suffisamment fiable pour du travail long cours
+
+Etat :
+- tranche prioritaire livree sur finalisation, suppression logique, cleanup, preflights et sync `@macro`
+- il reste a finir la resolution assistee des merge conflicts et la coherence metadata par projet pour cloturer totalement la phase
 
 ### Phase 3 - Experience multi-projet premium
 
@@ -316,6 +333,11 @@ Livrables :
 
 Critere de sortie :
 - le multi-projet devient un vrai avantage produit visible
+
+Prochaine tranche recommandee apres merge :
+- duplication des plans et de leur historique metadata par projet
+- lecture et restauration coherentes de ces metadata depuis chaque depot implique
+- verification de bout en bout des filtres et de la navigation quand un plan touche plusieurs projets
 
 ### Phase 4 - Automatisation et supervision
 

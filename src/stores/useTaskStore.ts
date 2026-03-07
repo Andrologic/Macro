@@ -5,6 +5,10 @@ import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
 import { useAppStore } from './useAppStore';
 import { useGitStore } from './useGitStore';
+import {
+  clearPlanRuntimeStateSnapshot,
+  type ClearPlanRuntimeStateParams,
+} from './planRuntimeState';
 import { getLocalProjectContextState } from '../services/localProjectContext';
 import * as tauriIpc from '../services/tauriIpc';
 import {
@@ -216,6 +220,7 @@ interface TaskStore {
   markTaskFailed: (taskId: string) => Promise<void>;
   retryTask: (taskId: string) => Promise<void>;
   setTaskStatus: (taskId: string, status: TaskStatus) => Promise<void>;
+  clearPlanRuntimeState: (params: ClearPlanRuntimeStateParams) => void;
   getTaskById: (taskId: string) => CatalogedImplementTask | undefined;
 }
 
@@ -680,13 +685,12 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         branchName: resolveTargetBranch(summary.targetBranch),
         planId,
       });
-      const appState = useAppStore.getState();
-      if (appState.activeArchitectPlanId === result.plan.id && appState.activePlanContext) {
-        appState.setActivePlanContext({
-          ...appState.activePlanContext,
-          status: 'completed',
-        });
-      }
+      get().clearPlanRuntimeState({
+        planId: result.plan.id,
+        deletedWorktreeKeys: result.cleanup.flatMap((repository) =>
+          repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
+        ),
+      });
       await get().refreshFromPlan();
       set({ finalizingPlanId: null, lastError: null });
     } catch (error) {
@@ -775,6 +779,34 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     await persistTaskStatusToArchitectPlan(currentTask, status, (message) => {
       set({ lastError: message });
     });
+  },
+
+  clearPlanRuntimeState: ({ planId, deletedWorktreeKeys }) => {
+    const appState = useAppStore.getState();
+    const nextRuntimeState = clearPlanRuntimeStateSnapshot({
+      currentState: get(),
+      activePlanId: appState.activeArchitectPlanId,
+      planId,
+      deletedWorktreeKeys,
+    });
+
+    set({
+      branchWorktrees: nextRuntimeState.branchWorktrees,
+      activeBranchName: nextRuntimeState.activeBranchName,
+      activeRepositoryPath: nextRuntimeState.activeRepositoryPath,
+    });
+
+    if (nextRuntimeState.shouldClearActivePlan) {
+      const appState = useAppStore.getState();
+      appState.setActiveArchitectPlanId(null);
+      appState.setActivePlanContext(null);
+      appState.setPlanNodes([]);
+      appState.setPredictedBranches([]);
+    }
+
+    if (nextRuntimeState.shouldSyncWorkspaceRoot) {
+      void syncWorkspaceRoot(null);
+    }
   },
 
   getTaskById: (taskId) => get().tasks.find((task) => task.id === taskId),
