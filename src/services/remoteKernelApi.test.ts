@@ -116,6 +116,7 @@ describe('remoteKernelApi', () => {
       tool_id: 'read',
       args: { path: 'src/App.tsx' },
       workspace_path: 'C:/dev/Smartcards',
+      workspace_scope: null,
     });
   });
 });

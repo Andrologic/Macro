@@ -1,29 +1,38 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { afterAll, describe, expect, it, mock } from 'bun:test';
 
-mock.module('./tauriIpc', () => ({
-  isTauriAvailable: () => false,
-}));
+const registerWorkspaceToolExecutorMocks = () => {
+  mock.restore();
+  mock.module('./tauriIpc', () => ({
+    isTauriAvailable: () => false,
+  }));
 
-mock.module('./remoteKernelApi', () => ({
-  canUseRemoteKernel: () => false,
-  executeRemoteWorkspaceTool: async () => '',
-  validateRemoteToolExecution: async () => ({
-    allowed: true,
-    enforce_macro_only_writes: false,
-  }),
-}));
-
-mock.module('../stores/useAppStore', () => ({
-  useAppStore: {
-    getState: () => ({
-      selectedProjectId: null,
-      selectedGroupId: null,
-      projectGroups: [],
+  mock.module('./remoteKernelApi', () => ({
+    canUseRemoteKernel: () => false,
+    executeRemoteWorkspaceTool: async () => '',
+    validateRemoteToolExecution: async () => ({
+      allowed: true,
+      enforce_macro_only_writes: false,
     }),
-  },
-}));
+  }));
 
-const loadWorkspaceToolExecutor = () => import('./workspaceToolExecutor');
+  mock.module('../stores/useAppStore', () => ({
+    useAppStore: {
+      getState: () => ({
+        selectedProjectId: null,
+        selectedGroupId: null,
+        projectGroups: [],
+      }),
+    },
+  }));
+};
+
+let workspaceToolExecutorImportCounter = 0;
+
+const loadWorkspaceToolExecutor = async () => {
+  registerWorkspaceToolExecutorMocks();
+  workspaceToolExecutorImportCounter += 1;
+  return import(`./workspaceToolExecutor.ts?test=${workspaceToolExecutorImportCounter}`);
+};
 
 describe('workspaceToolExecutor helpers', () => {
   it('flags write tools correctly', async () => {
@@ -51,5 +60,9 @@ describe('workspaceToolExecutor helpers', () => {
     expect(regex.test('src/services/toolModePolicy.ts')).toBe(true);
     expect(pathMatchesGlob('src/services/toolModePolicy.ts', 'src/**/*.ts')).toBe(true);
     expect(pathMatchesGlob('src/components/App.tsx', 'src/**/*.ts')).toBe(false);
+  });
+
+  afterAll(() => {
+    mock.restore();
   });
 });

@@ -19,6 +19,7 @@ import {
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   listArchitectPlans,
+  resolvePlanProjectContextId,
   resolveTargetBranch,
   saveArchitectPlanNeeds,
   toPlanIntegrationBranch,
@@ -605,8 +606,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!plan || plan.status === 'deleted') return;
 
       const appStore = useAppStore.getState();
-      if (plan.projectId && appStore.selectedProjectId !== plan.projectId) {
-        await appStore.switchProjectContext(plan.projectId);
+      const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
+      if (planProjectId && appStore.selectedProjectId !== planProjectId) {
+        await appStore.switchProjectContext(planProjectId);
       }
       appStore.setActiveArchitectPlanId(plan.id);
       appStore.setPlanNodes(plan.nodes || []);
@@ -626,7 +628,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       if (!conversationId || hasSharedConversation) {
         const fallbackProjectId =
-          plan.projectId ||
+          resolvePlanProjectContextId(plan, appStore.selectedProjectId) ||
           appStore.selectedProjectId ||
           appStore.projectGroups.flatMap((group) => group.projects)[0]?.id ||
           null;

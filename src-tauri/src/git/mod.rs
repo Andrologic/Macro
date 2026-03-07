@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use git2::{BranchType, Repository, RepositoryInitOptions, Signature, WorktreeAddOptions};
 
 use crate::core::error::{BackendError, Result};
+use crate::git::repo::get_status_options;
 
 pub mod repo;
 
@@ -306,6 +307,27 @@ impl GitState {
             Ok(wt) => wt,
             Err(_) => return Ok(()), // Already gone or never existed
         };
+        let worktree_path = worktree.path().to_path_buf();
+
+        if worktree_path.join(".git").exists() {
+            let worktree_repo =
+                Repository::open(&worktree_path).map_err(|e| BackendError::Git {
+                    message: format!(
+                        "Failed to open task worktree {}: {}",
+                        worktree_path.display(),
+                        e
+                    ),
+                })?;
+            let statuses = worktree_repo.statuses(Some(&mut get_status_options()))?;
+            if !statuses.is_empty() {
+                return Err(BackendError::GitRepositoryNotClean {
+                    message: format!(
+                        "Worktree {} has uncommitted changes",
+                        worktree_path.display()
+                    ),
+                });
+            }
+        }
 
         // Remove the directory first if it exists
         if let Ok(path) = self
@@ -446,6 +468,31 @@ mod tests {
 
         assert!(!worktree_path.exists());
         assert!(repo.find_worktree("task456").is_err());
+    }
+
+    #[test]
+    fn test_remove_task_worktree_rejects_dirty_worktree() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+
+        let worktree_path = state
+            .ensure_task_worktree(&repo, "789", "task-789")
+            .expect("worktree");
+
+        fs::write(worktree_path.join("README.md"), "dirty").expect("write dirty file");
+
+        let err = state
+            .remove_task_worktree(&repo, "789")
+            .expect_err("dirty worktree should fail");
+
+        match err {
+            BackendError::GitRepositoryNotClean { .. } => {}
+            other => panic!("expected GitRepositoryNotClean, got {other:?}"),
+        }
+
+        assert!(worktree_path.exists());
+        assert!(repo.find_worktree("task789").is_ok());
     }
 
     #[test]
