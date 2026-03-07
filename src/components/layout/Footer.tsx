@@ -7,6 +7,8 @@ import { useChatStore } from '../../stores/useChatStore';
 import { toServiceError } from '../../services/contracts/errors';
 import * as tauriIpc from '../../services/tauriIpc';
 import {
+  commitMacroMetadata,
+  getMacroSyncDescription,
   pullMacroMetadata,
   pushMacroMetadata,
   refreshMacroSyncStatus,
@@ -48,6 +50,37 @@ const macroStateClass: Record<tauriIpc.MacroSyncState, string> = {
   conflict: 'text-red-400',
 };
 
+const formatMacroHint = (snapshot: tauriIpc.MacroBranchSyncDto | null): string => {
+  if (!snapshot) {
+    return '';
+  }
+
+  switch (snapshot.reason) {
+    case 'dirty':
+      return 'commit required';
+    case 'ahead':
+      return snapshot.ahead > 0 ? `ahead ${snapshot.ahead}` : 'push required';
+    case 'behind':
+      return snapshot.behind > 0 ? `behind ${snapshot.behind}` : 'pull required';
+    case 'diverged':
+      return [snapshot.ahead > 0 ? `ahead ${snapshot.ahead}` : '', snapshot.behind > 0 ? `behind ${snapshot.behind}` : '']
+        .filter(Boolean)
+        .join(', ') || 'diverged';
+    case 'missing_origin':
+      return 'origin missing';
+    case 'missing_upstream':
+      return 'upstream missing';
+    case 'auth_required':
+      return 'auth required';
+    case 'network_error':
+      return 'network issue';
+    case 'merge_conflict':
+      return 'resolve conflicts';
+    default:
+      return '';
+  }
+};
+
 const toCodeStatusSnapshot = (status: tauriIpc.GitStatusDto): CodeStatusSnapshot => {
   const changedCount =
     status.staged_files.length +
@@ -68,11 +101,13 @@ export const Footer: React.FC = () => {
   const setMode = useAppStore((state) => state.setMode);
   const metadataSyncState = useAppStore((state) => state.metadataSyncState);
   const metadataSyncError = useAppStore((state) => state.metadataSyncError);
+  const metadataSyncReason = useAppStore((state) => state.metadataSyncReason);
+  const metadataSyncNextAction = useAppStore((state) => state.metadataSyncNextAction);
   const metadataConflictFiles = useAppStore((state) => state.metadataConflictFiles);
 
   const [codeStatus, setCodeStatus] = useState<CodeStatusSnapshot>(DEFAULT_CODE_STATUS);
   const [codeAction, setCodeAction] = useState<'pull' | 'push' | null>(null);
-  const [macroAction, setMacroAction] = useState<'pull' | 'push' | null>(null);
+  const [macroAction, setMacroAction] = useState<'commit' | 'pull' | 'push' | null>(null);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [showConflictModal, setShowConflictModal] = useState<boolean>(false);
   const [macroSnapshot, setMacroSnapshot] = useState<tauriIpc.MacroBranchSyncDto | null>(null);
@@ -260,11 +295,50 @@ export const Footer: React.FC = () => {
         presentConflictIfNeeded(result, 'pull');
       } else if (result.state === 'failed') {
         toast.error('@macro pull failed', {
-          description: result.error || 'Unknown metadata sync error.',
+          description: getMacroSyncDescription(result) || 'Unknown metadata sync error.',
+        });
+      } else if (result.state === 'pending') {
+        toast.info('@macro pull blocked', {
+          description: getMacroSyncDescription(result) || 'Metadata sync still requires another action first.',
         });
       } else {
         toast.success('@macro pull complete', {
           description: formatGitOutput(result.output),
+        });
+      }
+    } finally {
+      setMacroAction(null);
+    }
+  };
+
+  const handleMacroCommit = async () => {
+    if (!isTauriRuntime || macroAction) {
+      return;
+    }
+
+    setMacroAction('commit');
+    try {
+      const result = await commitMacroMetadata({
+        commitMessage: 'chore(metadata): manual commit from footer controls',
+      });
+      if (!result) {
+        return;
+      }
+
+      setMacroSnapshot(result);
+      if (result.state === 'conflict') {
+        presentConflictIfNeeded(result, 'refresh');
+      } else if (result.committed) {
+        toast.success('@macro commit complete', {
+          description: formatGitOutput(result.output),
+        });
+      } else if (result.state === 'failed') {
+        toast.error('@macro commit failed', {
+          description: getMacroSyncDescription(result) || 'Metadata commit failed.',
+        });
+      } else {
+        toast.info('@macro commit not needed', {
+          description: formatGitOutput(result.output) || 'Metadata branch is already up to date.',
         });
       }
     } finally {
@@ -279,9 +353,7 @@ export const Footer: React.FC = () => {
 
     setMacroAction('push');
     try {
-      const result = await pushMacroMetadata({
-        commitMessage: 'chore(metadata): manual sync from footer controls',
-      });
+      const result = await pushMacroMetadata();
       if (!result) {
         return;
       }
@@ -291,13 +363,13 @@ export const Footer: React.FC = () => {
         presentConflictIfNeeded(result, 'push');
       } else if (result.state === 'failed') {
         toast.error('@macro push failed', {
-          description: result.error || 'Unknown metadata sync error.',
+          description: getMacroSyncDescription(result) || 'Unknown metadata sync error.',
         });
       } else if (result.state === 'pending') {
         toast.info('@macro push partially complete', {
           description:
-            result.error ||
-            result.output ||
+            getMacroSyncDescription(result) ||
+            formatGitOutput(result.output) ||
             'Metadata sync still has pending local or remote differences.',
         });
       } else {
@@ -356,26 +428,17 @@ export const Footer: React.FC = () => {
     macroStateClass[metadataSyncState as tauriIpc.MacroSyncState] || 'text-muted-foreground';
   const codeStateClass = codeStatus.isClean ? 'text-emerald-400' : 'text-amber-400';
   const codeStateLabel = codeStatus.isClean ? 'clean' : `${codeStatus.changedCount} changes`;
-  const macroDivergenceLabel = useMemo(() => {
-    if (!macroSnapshot) {
-      return '';
-    }
-    if (!macroSnapshot.has_upstream) {
-      return 'no upstream';
-    }
-    if (macroSnapshot.ahead === 0 && macroSnapshot.behind === 0) {
-      return 'up to date';
-    }
-
-    const parts: string[] = [];
-    if (macroSnapshot.ahead > 0) {
-      parts.push(`ahead ${macroSnapshot.ahead}`);
-    }
-    if (macroSnapshot.behind > 0) {
-      parts.push(`behind ${macroSnapshot.behind}`);
-    }
-    return parts.join(', ');
-  }, [macroSnapshot]);
+  const macroHint = useMemo(() => formatMacroHint(macroSnapshot), [macroSnapshot]);
+  const macroTooltip = useMemo(() => {
+    const description = getMacroSyncDescription(macroSnapshot ?? {
+      error: metadataSyncError,
+      reason: metadataSyncReason,
+    });
+    const nextAction = metadataSyncNextAction
+      ? `Next action: ${metadataSyncNextAction.replace(/_/g, ' ')}.`
+      : null;
+    return [description, nextAction].filter(Boolean).join(' ');
+  }, [macroSnapshot, metadataSyncError, metadataSyncNextAction, metadataSyncReason]);
 
   const controlsDisabled = !isTauriRuntime;
 
@@ -429,13 +492,25 @@ export const Footer: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-1 min-w-0 flex-1 justify-end">
-            <span className={`flex items-center gap-1 min-w-0 ${metadataLabelClass}`}>
+            <span className={`flex items-center gap-1 min-w-0 ${metadataLabelClass}`} title={macroTooltip || undefined}>
               <Icon name="folder-git-2" size={12} className="shrink-0" />
               <span className="truncate">{metadataLabel}</span>
             </span>
-            {macroDivergenceLabel && (
-              <span className="truncate text-muted-foreground/80">{macroDivergenceLabel}</span>
+            {macroHint && (
+              <span className="truncate text-muted-foreground/80" title={macroTooltip || undefined}>
+                {macroHint}
+              </span>
             )}
+
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-[11px]"
+              disabled={controlsDisabled || !!macroAction}
+              onClick={() => void handleMacroCommit()}
+            >
+              {macroAction === 'commit' ? '@macro committing...' : '@macro commit'}
+            </Button>
 
             <Button
               size="sm"

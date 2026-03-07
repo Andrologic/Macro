@@ -104,12 +104,15 @@ pub struct MacroBranchSyncDto {
     pub state: String,
     pub worktree_path: String,
     pub is_dirty: bool,
+    pub has_origin: bool,
     pub has_upstream: bool,
     pub ahead: u32,
     pub behind: u32,
     pub conflicted_files: Vec<String>,
     pub committed: bool,
     pub commit_hash: Option<String>,
+    pub reason: Option<String>,
+    pub next_action: Option<String>,
     pub output: Option<String>,
     pub error: Option<String>,
 }
@@ -232,6 +235,176 @@ fn gather_macro_conflicted_files(repo: &Repository) -> Result<Vec<String>> {
     Ok(conflicted)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacroSyncSignals {
+    has_origin: bool,
+    has_upstream: bool,
+    is_dirty: bool,
+    ahead: u32,
+    behind: u32,
+    has_conflicts: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacroSyncDiagnostic {
+    state: &'static str,
+    reason: Option<&'static str>,
+    next_action: Option<&'static str>,
+}
+
+fn classify_macro_sync_failure(error: &str) -> MacroSyncDiagnostic {
+    let lower = error.trim().to_lowercase();
+
+    if lower.contains("authentication failed")
+        || lower.contains("permission denied")
+        || lower.contains("could not read from remote repository")
+        || lower.contains("repository not found")
+        || lower.contains("fatal: could not") && lower.contains("credential")
+    {
+        return MacroSyncDiagnostic {
+            state: "failed",
+            reason: Some("auth_required"),
+            next_action: Some("configure_auth"),
+        };
+    }
+
+    if lower.contains("could not resolve host")
+        || lower.contains("failed to connect")
+        || lower.contains("network is unreachable")
+        || lower.contains("connection timed out")
+        || lower.contains("operation timed out")
+    {
+        return MacroSyncDiagnostic {
+            state: "failed",
+            reason: Some("network_error"),
+            next_action: Some("retry"),
+        };
+    }
+
+    if lower.contains("no such remote")
+        || lower.contains("does not appear to be a git repository")
+        || lower.contains("couldn't find remote ref")
+        || lower.contains("remote origin") && lower.contains("not found")
+    {
+        return MacroSyncDiagnostic {
+            state: "failed",
+            reason: Some("missing_origin"),
+            next_action: Some("configure_remote"),
+        };
+    }
+
+    if lower.contains("set upstream")
+        || lower.contains("has no upstream branch")
+        || lower.contains("no upstream configured")
+    {
+        return MacroSyncDiagnostic {
+            state: "pending",
+            reason: Some("missing_upstream"),
+            next_action: Some("push"),
+        };
+    }
+
+    if lower.contains("merge conflict") || lower.contains("automatic merge failed") {
+        return MacroSyncDiagnostic {
+            state: "conflict",
+            reason: Some("merge_conflict"),
+            next_action: Some("resolve_conflict"),
+        };
+    }
+
+    if lower.contains("non-fast-forward")
+        || lower.contains("fetch first")
+        || lower.contains("rejected")
+        || lower.contains("would be overwritten")
+    {
+        return MacroSyncDiagnostic {
+            state: "pending",
+            reason: Some("diverged"),
+            next_action: Some("pull"),
+        };
+    }
+
+    MacroSyncDiagnostic {
+        state: "failed",
+        reason: Some("unknown_error"),
+        next_action: Some("retry"),
+    }
+}
+
+fn derive_macro_sync_diagnostic(
+    signals: &MacroSyncSignals,
+    error: Option<&str>,
+) -> MacroSyncDiagnostic {
+    if signals.has_conflicts {
+        return MacroSyncDiagnostic {
+            state: "conflict",
+            reason: Some("merge_conflict"),
+            next_action: Some("resolve_conflict"),
+        };
+    }
+
+    if let Some(error_message) = error {
+        let trimmed = error_message.trim();
+        if !trimmed.is_empty() {
+            return classify_macro_sync_failure(trimmed);
+        }
+    }
+
+    if !signals.has_origin {
+        return MacroSyncDiagnostic {
+            state: "failed",
+            reason: Some("missing_origin"),
+            next_action: Some("configure_remote"),
+        };
+    }
+
+    if signals.is_dirty {
+        return MacroSyncDiagnostic {
+            state: "pending",
+            reason: Some("dirty"),
+            next_action: Some("commit"),
+        };
+    }
+
+    if signals.ahead > 0 && signals.behind > 0 {
+        return MacroSyncDiagnostic {
+            state: "pending",
+            reason: Some("diverged"),
+            next_action: Some("pull"),
+        };
+    }
+
+    if signals.behind > 0 {
+        return MacroSyncDiagnostic {
+            state: "pending",
+            reason: Some("behind"),
+            next_action: Some("pull"),
+        };
+    }
+
+    if signals.ahead > 0 {
+        return MacroSyncDiagnostic {
+            state: "pending",
+            reason: Some("ahead"),
+            next_action: Some("push"),
+        };
+    }
+
+    if !signals.has_upstream {
+        return MacroSyncDiagnostic {
+            state: "pending",
+            reason: Some("missing_upstream"),
+            next_action: Some("push"),
+        };
+    }
+
+    MacroSyncDiagnostic {
+        state: "clean",
+        reason: Some("clean"),
+        next_action: None,
+    }
+}
+
 fn build_macro_sync_dto(
     repo: &Repository,
     worktree_path: &Path,
@@ -243,6 +416,7 @@ fn build_macro_sync_dto(
     let statuses = repo.statuses(Some(&mut get_status_options()))?;
     let conflicted_files = gather_macro_conflicted_files(repo)?;
     let is_dirty = !statuses.is_empty();
+    let has_origin = repo.find_remote(DEFAULT_REMOTE_NAME).is_ok();
 
     let mut has_upstream = false;
     let mut ahead = 0u32;
@@ -262,27 +436,32 @@ fn build_macro_sync_dto(
         }
     }
 
-    let state = if error.is_some() {
-        "failed"
-    } else if !conflicted_files.is_empty() {
-        "conflict"
-    } else if is_dirty || ahead > 0 || behind > 0 {
-        "pending"
-    } else {
-        "clean"
-    };
+    let diagnostic = derive_macro_sync_diagnostic(
+        &MacroSyncSignals {
+            has_origin,
+            has_upstream,
+            is_dirty,
+            ahead,
+            behind,
+            has_conflicts: !conflicted_files.is_empty(),
+        },
+        error.as_deref(),
+    );
 
     Ok(MacroBranchSyncDto {
         branch: get_branch_name(repo)?.unwrap_or_else(|| MACRO_BRANCH_NAME.to_string()),
-        state: state.to_string(),
+        state: diagnostic.state.to_string(),
         worktree_path: worktree_path.to_string_lossy().to_string(),
         is_dirty,
+        has_origin,
         has_upstream,
         ahead,
         behind,
         conflicted_files,
         committed,
         commit_hash,
+        reason: diagnostic.reason.map(str::to_string),
+        next_action: diagnostic.next_action.map(str::to_string),
         output,
         error,
     })
@@ -1305,12 +1484,19 @@ pub(crate) fn build_git_merge_check(
     })
 }
 
-pub(crate) fn merge_repo(repo: &Repository, branch_name: &str, into_branch: &str) -> Result<String> {
+pub(crate) fn merge_repo(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+) -> Result<String> {
     ensure_clean(repo)?;
 
     let merge_check = build_git_merge_check(repo, branch_name, into_branch)?;
     if !merge_check.has_changes {
-        return Ok(format!("Branch {} is already integrated into {}", branch_name, into_branch));
+        return Ok(format!(
+            "Branch {} is already integrated into {}",
+            branch_name, into_branch
+        ));
     }
     if !merge_check.mergeable {
         let detail = if merge_check.conflict_files.is_empty() {
@@ -2386,6 +2572,26 @@ mod tests {
         (temp, repo)
     }
 
+    fn init_macro_repo() -> (TempDir, Repository) {
+        let (temp, repo) = init_repo();
+        let head_oid = repo.head().unwrap().target().unwrap();
+        {
+            let head = repo.find_commit(head_oid).unwrap();
+            repo.branch(MACRO_BRANCH_NAME, &head, false)
+                .expect("create @macro branch");
+        }
+        let branch_ref = format!("refs/heads/{}", MACRO_BRANCH_NAME);
+        {
+            let object = repo
+                .revparse_single(&branch_ref)
+                .expect("resolve @macro branch");
+            repo.checkout_tree(&object, Some(git2::build::CheckoutBuilder::new().force()))
+                .expect("checkout @macro branch");
+        }
+        repo.set_head(&branch_ref).expect("set HEAD to @macro");
+        (temp, repo)
+    }
+
     #[test]
     fn test_validate_repo_path_allows_absolute_repo_outside_workspace() {
         let workspace = TempDir::new().expect("workspace");
@@ -2474,9 +2680,7 @@ mod tests {
     #[test]
     fn test_git_merge_check_detects_mergeable_branch() {
         let (temp, repo) = init_repo();
-        let base_branch = get_branch_name(&repo)
-            .unwrap()
-            .expect("base branch");
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
 
         checkout_repo(&repo, "feature", true).unwrap();
         fs::write(temp.path().join("README.md"), "hello\nfeature change").unwrap();
@@ -2493,9 +2697,7 @@ mod tests {
     #[test]
     fn test_git_merge_check_detects_conflicts() {
         let (temp, repo) = init_repo();
-        let base_branch = get_branch_name(&repo)
-            .unwrap()
-            .expect("base branch");
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
 
         checkout_repo(&repo, "feature", true).unwrap();
         fs::write(temp.path().join("README.md"), "feature branch change").unwrap();
@@ -2639,5 +2841,143 @@ mod tests {
         assert!(!stash_id.is_empty());
         let statuses = repo.statuses(Some(&mut get_status_options())).unwrap();
         assert!(statuses.is_empty());
+    }
+
+    #[test]
+    fn test_classify_macro_sync_failure_auth_required() {
+        let diagnostic =
+            classify_macro_sync_failure("fatal: could not read from remote repository");
+
+        assert_eq!(diagnostic.state, "failed");
+        assert_eq!(diagnostic.reason, Some("auth_required"));
+        assert_eq!(diagnostic.next_action, Some("configure_auth"));
+    }
+
+    #[test]
+    fn test_derive_macro_sync_diagnostic_dirty_requires_commit() {
+        let diagnostic = derive_macro_sync_diagnostic(
+            &MacroSyncSignals {
+                has_origin: true,
+                has_upstream: true,
+                is_dirty: true,
+                ahead: 0,
+                behind: 0,
+                has_conflicts: false,
+            },
+            None,
+        );
+
+        assert_eq!(diagnostic.state, "pending");
+        assert_eq!(diagnostic.reason, Some("dirty"));
+        assert_eq!(diagnostic.next_action, Some("commit"));
+    }
+
+    #[test]
+    fn test_derive_macro_sync_diagnostic_diverged_requires_pull() {
+        let diagnostic = derive_macro_sync_diagnostic(
+            &MacroSyncSignals {
+                has_origin: true,
+                has_upstream: true,
+                is_dirty: false,
+                ahead: 2,
+                behind: 3,
+                has_conflicts: false,
+            },
+            None,
+        );
+
+        assert_eq!(diagnostic.state, "pending");
+        assert_eq!(diagnostic.reason, Some("diverged"));
+        assert_eq!(diagnostic.next_action, Some("pull"));
+    }
+
+    #[test]
+    fn test_derive_macro_sync_diagnostic_missing_origin_is_failed() {
+        let diagnostic = derive_macro_sync_diagnostic(
+            &MacroSyncSignals {
+                has_origin: false,
+                has_upstream: false,
+                is_dirty: false,
+                ahead: 0,
+                behind: 0,
+                has_conflicts: false,
+            },
+            None,
+        );
+
+        assert_eq!(diagnostic.state, "failed");
+        assert_eq!(diagnostic.reason, Some("missing_origin"));
+        assert_eq!(diagnostic.next_action, Some("configure_remote"));
+    }
+
+    #[test]
+    fn test_build_macro_sync_dto_detects_missing_origin_from_repo_state() {
+        let (temp, repo) = init_macro_repo();
+
+        let dto = build_macro_sync_dto(&repo, temp.path(), false, None, None, None).unwrap();
+
+        assert_eq!(dto.branch, MACRO_BRANCH_NAME);
+        assert!(!dto.has_origin);
+        assert!(!dto.has_upstream);
+        assert_eq!(dto.reason.as_deref(), Some("missing_origin"));
+        assert_eq!(dto.next_action.as_deref(), Some("configure_remote"));
+    }
+
+    #[test]
+    fn test_derive_macro_sync_diagnostic_missing_upstream_requires_push() {
+        let diagnostic = derive_macro_sync_diagnostic(
+            &MacroSyncSignals {
+                has_origin: true,
+                has_upstream: false,
+                is_dirty: false,
+                ahead: 0,
+                behind: 0,
+                has_conflicts: false,
+            },
+            None,
+        );
+
+        assert_eq!(diagnostic.state, "pending");
+        assert_eq!(diagnostic.reason, Some("missing_upstream"));
+        assert_eq!(diagnostic.next_action, Some("push"));
+    }
+
+    #[test]
+    fn test_build_macro_sync_dto_detects_missing_upstream_from_repo_state() {
+        let (temp, repo) = init_macro_repo();
+        let remote_dir = TempDir::new().expect("remote dir");
+        Repository::init_bare(remote_dir.path()).expect("init bare remote");
+        repo.remote(
+            DEFAULT_REMOTE_NAME,
+            remote_dir.path().to_str().expect("remote path"),
+        )
+        .expect("configure origin");
+
+        let dto = build_macro_sync_dto(&repo, temp.path(), false, None, None, None).unwrap();
+
+        assert_eq!(dto.branch, MACRO_BRANCH_NAME);
+        assert!(dto.has_origin);
+        assert!(!dto.has_upstream);
+        assert_eq!(dto.reason.as_deref(), Some("missing_upstream"));
+        assert_eq!(dto.next_action.as_deref(), Some("push"));
+    }
+
+    #[test]
+    fn test_derive_macro_sync_diagnostic_conflict_has_conflict_state() {
+        let diagnostic = derive_macro_sync_diagnostic(
+            &MacroSyncSignals {
+                has_origin: true,
+                has_upstream: true,
+                is_dirty: false,
+                ahead: 0,
+                behind: 0,
+                has_conflicts: true,
+            },
+            None,
+        );
+
+        assert_eq!(diagnostic.state, "conflict");
+        assert_eq!(diagnostic.reason, Some("merge_conflict"));
+        assert_eq!(diagnostic.next_action, Some("resolve_conflict"));
     }
 }

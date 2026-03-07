@@ -75,21 +75,15 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
   const hasBlockingIssues = review?.repositories.some((repository) => Boolean(repository.blockingReason)) ?? false;
 
   const handleFinalize = async () => {
+    setError(null);
     await finalizePlan(planId);
     const storeError = useTaskStore.getState().lastError;
     if (storeError) {
       setError(storeError);
+      return;
     }
-    try {
-      const refreshed = await loadPlanReview({ branchName, planId });
-      setReview(refreshed);
-      if (refreshed.plan.status === 'completed') {
-        onFinalized?.();
-        onClose();
-      }
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
-    }
+    onFinalized?.();
+    onClose();
   };
 
   if (!isOpen) return null;

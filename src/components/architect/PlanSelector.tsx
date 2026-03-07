@@ -7,6 +7,8 @@ import {
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   listArchitectPlans,
+  planMatchesProjectId,
+  resolvePlanProjectContextId,
   restoreArchitectPlan,
   setActiveArchitectPlan,
   updateArchitectPlan,
@@ -46,11 +48,7 @@ const formatRelativeDate = (iso: string, unknownLabel: string): string => {
 const isPlanVisibleForProject = (
   plan: ArchitectPlanSummary,
   selectedProjectId: string | null
-): boolean => {
-  if (!selectedProjectId) return true;
-  if (!plan.projectId) return true;
-  return plan.projectId === selectedProjectId;
-};
+): boolean => planMatchesProjectId(plan, selectedProjectId);
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const { t } = useTranslation();
@@ -104,8 +102,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setIsLoading(true);
     setError(null);
     try {
-      const result = await listArchitectPlans(targetBranch, false, showArchived);
-      const fullResult = showArchived ? result : await listArchitectPlans(targetBranch, false, true);
+      const result = await listArchitectPlans(targetBranch, showArchived, showArchived);
+      const fullResult = showArchived ? result : await listArchitectPlans(targetBranch, true, true);
       const scopedPlans = result.plans.filter((plan) =>
         isPlanVisibleForProject(plan, selectedProjectId)
       );
@@ -179,8 +177,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         const plan = await getArchitectPlan(targetBranch, nextActivePlanId);
         if (plan && plan.status !== 'deleted') {
           const appStore = useAppStore.getState();
-          if (plan.projectId && appStore.selectedProjectId !== plan.projectId) {
-            await appStore.switchProjectContext(plan.projectId);
+          const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
+          if (planProjectId && appStore.selectedProjectId !== planProjectId) {
+            await appStore.switchProjectContext(planProjectId);
           }
 
           setPlanNodes(plan.nodes || []);
@@ -202,7 +201,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           if (!conversationId || hasSharedConversation) {
             const appStoreForConversation = useAppStore.getState();
             const fallbackProjectId =
-              plan.projectId ||
+              resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
               appStoreForConversation.selectedProjectId ||
               appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
               null;
@@ -252,8 +251,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       }
 
       const appStore = useAppStore.getState();
-      if (plan.projectId && appStore.selectedProjectId !== plan.projectId) {
-        await appStore.switchProjectContext(plan.projectId);
+      const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
+      if (planProjectId && appStore.selectedProjectId !== planProjectId) {
+        await appStore.switchProjectContext(planProjectId);
       }
 
       setActivePlanId(planId);
@@ -278,7 +278,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (!conversationId || hasSharedConversation) {
         const appStoreForConversation = useAppStore.getState();
         const fallbackProjectId =
-          plan.projectId ||
+          resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
           appStoreForConversation.selectedProjectId ||
           appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
           null;
@@ -384,7 +384,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         })
       );
       const wasActive = activePlanId === plan.id;
-      const refreshed = await listArchitectPlans(targetBranch, false, showArchived);
+      const refreshed = await listArchitectPlans(targetBranch, showArchived, showArchived);
       const refreshedScopedPlans = refreshed.plans.filter((candidate) =>
         isPlanVisibleForProject(candidate, selectedProjectId)
       );
@@ -421,15 +421,20 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     setIsDeleting(true);
     try {
-      await deletePlanAndCleanupBranches({
+      const deletedPlanId = planToDelete.id;
+      const cleanup = await deletePlanAndCleanupBranches({
         branchName: targetBranch,
-        planId: planToDelete.id,
-        hardDelete: true,
+        planId: deletedPlanId,
       });
+      useTaskStore.getState().clearPlanRuntimeState({
+        planId: deletedPlanId,
+        deletedWorktreeKeys: cleanup.deletedWorktreeKeys,
+      });
+      await useTaskStore.getState().refreshFromPlan();
 
       toast.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
 
-      const refreshed = await listArchitectPlans(targetBranch, false, showArchived);
+      const refreshed = await listArchitectPlans(targetBranch, showArchived, showArchived);
       const refreshedScopedPlans = refreshed.plans.filter((candidate) =>
         isPlanVisibleForProject(candidate, selectedProjectId)
       );
@@ -615,18 +620,24 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const isActive = plan.id === activePlanId;
               const statusClass = statusClassName[plan.status] || statusClassName.draft;
               const isBusy = isActivating === plan.id;
+              const isUnavailable = plan.status === 'deleted';
               const readyPlan = readyPlanSummaries.find((candidate) => candidate.id === plan.id && candidate.readyForValidation);
 
               return (
                 <button
                   key={plan.id}
-                  onClick={() => void activatePlan(plan.id)}
+                  onClick={() => {
+                    if (!isUnavailable) {
+                      void activatePlan(plan.id);
+                    }
+                  }}
                   disabled={isBusy}
                   className={cn(
                     'w-full text-left p-2.5 rounded-lg border transition-colors',
                     isActive
                       ? 'border-primary/40 bg-primary/5'
-                      : 'border-border hover:bg-accent'
+                      : 'border-border hover:bg-accent',
+                    isUnavailable && 'cursor-default opacity-80'
                   )}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -676,19 +687,19 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          if (plan.status === 'archived') {
+                          if (plan.status === 'archived' || plan.status === 'deleted') {
                             void handleRestorePlan(plan);
                             return;
                           }
                           void handleArchivePlan(plan);
                         }}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center"
-                        title={plan.status === 'archived'
+                        title={plan.status === 'archived' || plan.status === 'deleted'
                           ? t('architect.planSelector.restorePlan', 'Restore plan')
                           : t('architect.planSelector.archivePlan', 'Archive plan')}
                       >
                         <Icon
-                          name={plan.status === 'archived' ? 'rotate-ccw' : 'archive'}
+                          name={plan.status === 'archived' || plan.status === 'deleted' ? 'rotate-ccw' : 'archive'}
                           size={11}
                           className="text-muted-foreground"
                         />
@@ -745,13 +756,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           planToDelete
             ? t('architect.planSelector.deleteDialogDescription', {
               title: planToDelete.title,
-              defaultValue: `This will permanently delete "${planToDelete.title}" and its strategy data. This action cannot be undone.`,
+              defaultValue: `This will mark "${planToDelete.title}" as deleted and clean its plan branches/worktrees. The plan metadata is kept for recovery.`,
             })
             : t('architect.planSelector.deleteDialogFallback', 'This action cannot be undone.')
         }
         confirmLabel={isDeleting
           ? t('architect.planSelector.deleting', 'Deleting...')
-          : t('architect.planSelector.deletePermanently', 'Delete permanently')}
+          : t('architect.planSelector.deletePermanently', 'Delete and clean')}
         cancelLabel={t('common.cancel', 'Cancel')}
         confirmVariant="error"
         onCancel={() => {

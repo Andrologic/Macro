@@ -4,6 +4,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/architectPlanService';
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
+import { normalizeNodeProjectIds } from '../../services/implementTaskDerivation';
 import { toast } from '../ui/Toaster';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
@@ -75,6 +76,11 @@ interface BranchCardView {
 }
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
+
+const nodeMatchesProjectId = (node: Pick<PlanNode, 'projectId' | 'projectIds'>, projectId: string): boolean => {
+  const projectIds = normalizeNodeProjectIds(node);
+  return projectIds.length === 0 || projectIds.includes(projectId);
+};
 
 // Utility hook for element size
 function useElementSize<T extends HTMLElement>() {
@@ -195,13 +201,15 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     let nodes: PlanNode[] = [];
 
     if (selectedProjectId) {
-      nodes = planNodes.filter((n: PlanNode) => n.projectId === selectedProjectId);
+      nodes = planNodes.filter((node: PlanNode) => nodeMatchesProjectId(node, selectedProjectId));
     } else if (selectedGroupId) {
       // Find all project IDs in this group
       const group = projectGroups.find(g => g.id === selectedGroupId);
       if (group && group.projects) {
         const projectIds = group.projects.map(p => p.id);
-        nodes = planNodes.filter((n: PlanNode) => n.projectId && projectIds.includes(n.projectId));
+        nodes = planNodes.filter((node: PlanNode) =>
+          projectIds.some((projectId) => nodeMatchesProjectId(node, projectId))
+        );
       }
     } else {
       nodes = planNodes;
