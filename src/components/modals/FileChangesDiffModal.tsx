@@ -6,6 +6,7 @@ import { CodeViewer } from '../ui/CodeViewer';
 import { cn } from '../../utils/cn';
 
 interface FileChangesDiffModalProps {
+  repositoryId: string;
   changeId: string;
   onClose: () => void;
 }
@@ -16,9 +17,14 @@ const CONTEXT_LABELS = {
   full: 'Full file context',
 } as const;
 
-export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ changeId, onClose }) => {
+export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({
+  repositoryId,
+  changeId,
+  onClose,
+}) => {
   const { t } = useTranslation();
   const {
+    getRepository,
     getChange,
     markAsReviewed,
     loadChangeContext,
@@ -26,37 +32,35 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ chan
     updateEditingBuffer,
     cancelEditingChange,
     saveEditedChange,
-    loadingChangeId,
-    savingChangeId,
-    lastError,
   } = useFileChangesStore();
 
-  const change = getChange(changeId);
+  const repository = getRepository(repositoryId);
+  const change = getChange(repositoryId, changeId);
 
-  if (!change) return null;
+  if (!repository || !change) return null;
 
-  const isLoadingContext = loadingChangeId === changeId;
-  const isSavingEdit = savingChangeId === changeId;
+  const isLoadingContext = repository.loadingChangeId === changeId;
+  const isSavingEdit = repository.savingChangeId === changeId;
   const isBusy = isLoadingContext || isSavingEdit;
 
   const handleMarkReviewed = () => {
-    markAsReviewed(changeId);
+    markAsReviewed(repositoryId, changeId);
     onClose();
   };
 
   const handleEditStart = async () => {
     try {
-      await startEditingChange(changeId);
+      await startEditingChange(repositoryId, changeId);
     } catch {
-      // Store lastError is surfaced in the modal.
+      // Repository state surfaces lastError in the modal.
     }
   };
 
   const handleSaveEdit = async () => {
     try {
-      await saveEditedChange(changeId);
+      await saveEditedChange(repositoryId, changeId);
     } catch {
-      // Store lastError is surfaced in the modal.
+      // Repository state surfaces lastError in the modal.
     }
   };
 
@@ -96,6 +100,9 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ chan
                 <span className="px-2 py-0.5 rounded-full bg-background/80 border border-border">
                   {t(`implement.context.${change.contextMode}`, CONTEXT_LABELS[change.contextMode])}
                 </span>
+                <span className="px-2 py-0.5 rounded-full bg-background/80 border border-border">
+                  {repository.branchName}
+                </span>
               </div>
             </div>
           </div>
@@ -112,9 +119,9 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ chan
           </div>
         </div>
 
-        {lastError && (
+        {repository.lastError && (
           <div className="px-6 py-3 border-b border-border bg-red-500/5 text-sm text-red-500">
-            {lastError}
+            {repository.lastError}
           </div>
         )}
 
@@ -130,7 +137,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ chan
               code={change.editingContent ?? change.modifiedContent}
               language={change.language}
               readOnly={false}
-              onChange={(value) => updateEditingBuffer(changeId, value)}
+              onChange={(value) => updateEditingBuffer(repositoryId, changeId, value)}
               className="min-h-[60vh]"
             />
           </div>
@@ -225,7 +232,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ chan
           <div className="flex items-center gap-3">
             {!change.isEditing && change.contextMode === 'default' && (
               <button
-                onClick={() => void loadChangeContext(changeId, 'expanded')}
+                onClick={() => void loadChangeContext(repositoryId, changeId, 'expanded')}
                 disabled={isBusy}
                 className="px-4 py-2 text-sm font-medium rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
@@ -236,7 +243,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ chan
 
             {!change.isEditing && change.contextMode !== 'full' && (
               <button
-                onClick={() => void loadChangeContext(changeId, 'full')}
+                onClick={() => void loadChangeContext(repositoryId, changeId, 'full')}
                 disabled={isBusy}
                 className="px-4 py-2 text-sm font-medium rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
@@ -258,7 +265,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ chan
 
             {!change.isEditing && change.canEdit && change.contextMode !== 'full' && (
               <button
-                onClick={() => void loadChangeContext(changeId, 'full')}
+                onClick={() => void loadChangeContext(repositoryId, changeId, 'full')}
                 disabled={isBusy}
                 className="px-4 py-2 text-sm font-medium rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
@@ -269,7 +276,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ chan
 
             {change.isEditing && (
               <button
-                onClick={() => cancelEditingChange(changeId)}
+                onClick={() => cancelEditingChange(repositoryId, changeId)}
                 disabled={isBusy}
                 className="px-4 py-2 text-sm font-medium rounded-lg text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >

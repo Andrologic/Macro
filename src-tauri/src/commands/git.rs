@@ -91,6 +91,14 @@ pub struct GitSyncDto {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitMergeCheckDto {
+    pub mergeable: bool,
+    pub conflict_files: Vec<String>,
+    pub has_changes: bool,
+}
+
+#[derive(Serialize, Clone)]
 pub struct MacroBranchSyncDto {
     pub branch: String,
     pub state: String,
@@ -1223,6 +1231,167 @@ fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Res
     Ok(())
 }
 
+fn collect_index_conflict_paths(index: &git2::Index) -> Result<Vec<String>> {
+    let mut conflict_files = Vec::new();
+    let conflicts = index.conflicts().map_err(|e| BackendError::Git {
+        message: e.to_string(),
+    })?;
+
+    for conflict in conflicts {
+        let conflict = conflict.map_err(|e| BackendError::Git {
+            message: e.to_string(),
+        })?;
+        let path = conflict
+            .our
+            .as_ref()
+            .or(conflict.their.as_ref())
+            .or(conflict.ancestor.as_ref())
+            .map(|entry| String::from_utf8_lossy(&entry.path).to_string());
+
+        if let Some(path) = path {
+            conflict_files.push(path);
+        }
+    }
+
+    conflict_files.sort();
+    conflict_files.dedup();
+    Ok(conflict_files)
+}
+
+pub(crate) fn build_git_merge_check(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+) -> Result<GitMergeCheckDto> {
+    validate_branch_name(branch_name)?;
+    validate_branch_name(into_branch)?;
+
+    let diff = diff_repo(
+        repo,
+        Some(into_branch),
+        Some(branch_name),
+        DiffRequestOptions {
+            context_lines: Some(0),
+            ignore_whitespace: false,
+            paths: None,
+        },
+    )?;
+    let has_changes = !diff.trim().is_empty();
+    if !has_changes {
+        return Ok(GitMergeCheckDto {
+            mergeable: true,
+            conflict_files: Vec::new(),
+            has_changes: false,
+        });
+    }
+
+    let into_commit = resolve_commit(repo, into_branch)?;
+    let branch_commit = resolve_commit(repo, branch_name)?;
+    let index = repo
+        .merge_commits(&into_commit, &branch_commit, None)
+        .map_err(|e| BackendError::Git {
+            message: e.to_string(),
+        })?;
+    let conflict_files = if index.has_conflicts() {
+        collect_index_conflict_paths(&index)?
+    } else {
+        Vec::new()
+    };
+
+    Ok(GitMergeCheckDto {
+        mergeable: conflict_files.is_empty(),
+        conflict_files,
+        has_changes,
+    })
+}
+
+pub(crate) fn merge_repo(repo: &Repository, branch_name: &str, into_branch: &str) -> Result<String> {
+    ensure_clean(repo)?;
+
+    let merge_check = build_git_merge_check(repo, branch_name, into_branch)?;
+    if !merge_check.has_changes {
+        return Ok(format!("Branch {} is already integrated into {}", branch_name, into_branch));
+    }
+    if !merge_check.mergeable {
+        let detail = if merge_check.conflict_files.is_empty() {
+            format!("Cannot merge {} into {}", branch_name, into_branch)
+        } else {
+            format!(
+                "Cannot merge {} into {} because of conflicts in: {}",
+                branch_name,
+                into_branch,
+                merge_check.conflict_files.join(", ")
+            )
+        };
+        return Err(BackendError::GitMergeConflict { message: detail });
+    }
+
+    let original_branch = get_branch_name(repo)?;
+    if original_branch.as_deref() != Some(into_branch) {
+        checkout_repo(repo, into_branch, false)?;
+    }
+
+    let root = repo_root(repo)?;
+    let output = run_git_command(
+        &root,
+        &[
+            "merge".to_string(),
+            "--no-ff".to_string(),
+            "--no-edit".to_string(),
+            branch_name.to_string(),
+        ],
+    )?;
+
+    if !output.success {
+        let merge_head_path = repo.path().join("MERGE_HEAD");
+        if merge_head_path.exists() {
+            let abort_output =
+                run_git_command(&root, &["merge".to_string(), "--abort".to_string()])?;
+            if !abort_output.success {
+                let abort_details = command_output_text(&abort_output);
+                return Err(BackendError::Git {
+                    message: if abort_details.is_empty() {
+                        format!(
+                            "git merge failed and merge --abort also failed (exit code: {:?})",
+                            abort_output.code
+                        )
+                    } else {
+                        abort_details
+                    },
+                });
+            }
+        }
+
+        if let Some(original_branch) = original_branch.as_deref() {
+            if original_branch != into_branch {
+                let _ = checkout_repo(repo, original_branch, false);
+            }
+        }
+
+        let details = command_output_text(&output);
+        return Err(BackendError::Git {
+            message: if details.is_empty() {
+                format!("git merge failed (exit code: {:?})", output.code)
+            } else {
+                details
+            },
+        });
+    }
+
+    if let Some(original_branch) = original_branch.as_deref() {
+        if original_branch != into_branch {
+            checkout_repo(repo, original_branch, false)?;
+        }
+    }
+
+    let details = command_output_text(&output);
+    if details.is_empty() {
+        Ok(format!("Merged {} into {}", branch_name, into_branch))
+    } else {
+        Ok(details)
+    }
+}
+
 pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> Result<String> {
     validate_commit_message(message)?;
     ensure_safe_config(repo)?;
@@ -1521,6 +1690,56 @@ pub async fn git_checkout(
         })?;
 
         checkout_repo(&repo, &branch_or_commit, create)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Check whether a merge can be performed without conflicts.
+pub async fn git_merge_check(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    into_branch: String,
+) -> Result<GitMergeCheckDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        build_git_merge_check(&repo, &branch_name, &into_branch)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Merge one local branch into another after a conflict preflight.
+pub async fn git_merge(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    into_branch: String,
+) -> Result<String> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        merge_repo(&repo, &branch_name, &into_branch)
     })
     .await
     .map_err(to_join_error)?
@@ -2250,6 +2469,46 @@ mod tests {
         checkout_repo(&repo, "feature", true).unwrap();
         let current = get_branch_name(&repo).unwrap();
         assert_eq!(current.as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn test_git_merge_check_detects_mergeable_branch() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo)
+            .unwrap()
+            .expect("base branch");
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "hello\nfeature change").unwrap();
+        commit_repo(&repo, "feat: update readme on feature", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+
+        let check = build_git_merge_check(&repo, "feature", &base_branch).unwrap();
+        assert!(check.has_changes);
+        assert!(check.mergeable);
+        assert!(check.conflict_files.is_empty());
+    }
+
+    #[test]
+    fn test_git_merge_check_detects_conflicts() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo)
+            .unwrap()
+            .expect("base branch");
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature branch change").unwrap();
+        commit_repo(&repo, "feat: feature readme change", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base branch change").unwrap();
+        commit_repo(&repo, "feat: base readme change", true).unwrap();
+
+        let check = build_git_merge_check(&repo, "feature", &base_branch).unwrap();
+        assert!(check.has_changes);
+        assert!(!check.mergeable);
+        assert!(check.conflict_files.iter().any(|path| path == "README.md"));
     }
 
     #[test]

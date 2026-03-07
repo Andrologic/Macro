@@ -45,6 +45,35 @@ export interface FinalizedPlanRepositoryResult {
   mergeOutput?: string;
 }
 
+export interface PlanReviewTaskSummary {
+  id: string;
+  title: string;
+  status: PlanNode['status'];
+  branchName: string;
+  projectIds: string[];
+}
+
+export interface PlanReviewRepositoryResult {
+  id: string;
+  projectId: string;
+  repoPath: string;
+  planBranchName: string;
+  baseBranchName: string;
+  isClean: boolean;
+  hasChanges: boolean;
+  mergeable: boolean;
+  conflictFiles: string[];
+  diff: string;
+  checkStatus: 'not_run' | 'passed' | 'failed';
+  blockingReason: string | null;
+}
+
+export interface PlanReviewResult {
+  plan: ArchitectPlanRecord;
+  tasks: PlanReviewTaskSummary[];
+  repositories: PlanReviewRepositoryResult[];
+}
+
 const resolveProjectRepoPaths = (projectIds: string[], explicitRepoPath?: string): Array<{ projectId: string; repoPath: string }> => {
   const appState = useAppStore.getState();
   const resolved: Array<{ projectId: string; repoPath: string }> = [];
@@ -163,6 +192,77 @@ const ensureSafeCheckoutBeforeDeletion = async (
     branchOrCommit: fallback,
     create: false,
   });
+};
+
+const formatMergeConflictMessage = (repositoryPath: string, conflictFiles: string[]): string => {
+  if (conflictFiles.length === 0) {
+    return `Cannot finalize plan because ${repositoryPath} would conflict during merge.`;
+  }
+  return `Cannot finalize plan because ${repositoryPath} would conflict in: ${conflictFiles.join(', ')}.`;
+};
+
+const buildPlanReviewTasks = (plan: ArchitectPlanRecord): PlanReviewTaskSummary[] => {
+  return (plan.nodes || []).map((node) => ({
+    id: node.id,
+    title: node.title,
+    status: node.status,
+    branchName: node.assignedBranch || 'work',
+    projectIds: normalizeNodeProjectIds(node),
+  }));
+};
+
+const preflightPlanRepositories = async (params: {
+  plan: ArchitectPlanRecord;
+  explicitRepoPath?: string;
+}): Promise<PlanReviewRepositoryResult[]> => {
+  const planBranchName = toPlanIntegrationBranch(params.plan.slug || params.plan.title);
+  const baseBranchName = params.plan.targetBranch || getGitFlowBaseBranch();
+  const repositories = resolveProjectRepoPaths(getPlanProjectIds(params.plan), params.explicitRepoPath);
+
+  return Promise.all(
+    repositories.map(async (repository) => {
+      const status = await tauriIpc.gitStatus(repository.repoPath);
+      const diff = await tauriIpc.gitDiff({
+        repoPath: repository.repoPath,
+        base: baseBranchName,
+        head: planBranchName,
+        contextLines: 3,
+      });
+
+      const mergeCheck = status.is_clean
+        ? await tauriIpc.gitMergeCheck({
+          repoPath: repository.repoPath,
+          branchName: planBranchName,
+          intoBranch: baseBranchName,
+        })
+        : {
+          mergeable: false,
+          conflictFiles: [],
+          hasChanges: diff.trim().length > 0,
+        };
+
+      const blockingReason = !status.is_clean
+        ? `Repository ${repository.repoPath} has uncommitted changes.`
+        : !mergeCheck.mergeable
+          ? formatMergeConflictMessage(repository.repoPath, mergeCheck.conflictFiles)
+          : null;
+
+      return {
+        id: `${repository.projectId}::${repository.repoPath}`,
+        projectId: repository.projectId,
+        repoPath: repository.repoPath,
+        planBranchName,
+        baseBranchName,
+        isClean: status.is_clean,
+        hasChanges: mergeCheck.hasChanges,
+        mergeable: mergeCheck.mergeable,
+        conflictFiles: mergeCheck.conflictFiles,
+        diff,
+        checkStatus: 'not_run' as const,
+        blockingReason,
+      };
+    })
+  );
 };
 
 export const provisionPlanBranches = async (
@@ -331,6 +431,26 @@ export const mergeFeatureBranchIntoPlanBranch = async (params: {
   });
 };
 
+export const loadPlanReview = async (params: {
+  branchName: string;
+  planId: string;
+  repoPath?: string;
+}): Promise<PlanReviewResult> => {
+  const plan = await getArchitectPlan(params.branchName, params.planId);
+  if (!plan || plan.status === 'deleted') {
+    throw new Error(`Plan ${params.planId} is unavailable.`);
+  }
+
+  return {
+    plan,
+    tasks: buildPlanReviewTasks(plan),
+    repositories: await preflightPlanRepositories({
+      plan,
+      explicitRepoPath: params.repoPath,
+    }),
+  };
+};
+
 export const finalizePlanIntoBaseBranch = async (params: {
   branchName: string;
   planId: string;
@@ -345,39 +465,31 @@ export const finalizePlanIntoBaseBranch = async (params: {
     throw new Error(`Plan ${params.planId} is unavailable.`);
   }
 
-  const planBranchName = toPlanIntegrationBranch(plan.slug || plan.title);
-  const baseBranchName = plan.targetBranch || getGitFlowBaseBranch();
-  const repositories = resolveProjectRepoPaths(getPlanProjectIds(plan), params.repoPath);
+  const preflightRepositories = await preflightPlanRepositories({
+    plan,
+    explicitRepoPath: params.repoPath,
+  });
+
+  const blockedRepository = preflightRepositories.find((repository) => repository.blockingReason);
+  if (blockedRepository?.blockingReason) {
+    throw new Error(blockedRepository.blockingReason);
+  }
 
   const finalizedRepositories: FinalizedPlanRepositoryResult[] = [];
-  for (const repository of repositories) {
-    const status = await tauriIpc.gitStatus(repository.repoPath);
-    if (!status.is_clean) {
-      throw new Error(
-        `Cannot finalize plan while repository ${repository.repoPath} has uncommitted changes.`
-      );
-    }
-
-    const diff = await tauriIpc.gitDiff({
-      repoPath: repository.repoPath,
-      base: baseBranchName,
-      head: planBranchName,
-      contextLines: 0,
-    });
-
-    const mergeOutput = diff.trim().length > 0
+  for (const repository of preflightRepositories) {
+    const mergeOutput = repository.hasChanges
       ? await tauriIpc.gitMerge({
         repoPath: repository.repoPath,
-        branchName: planBranchName,
-        intoBranch: baseBranchName,
+        branchName: repository.planBranchName,
+        intoBranch: repository.baseBranchName,
       })
       : undefined;
 
     finalizedRepositories.push({
       projectId: repository.projectId,
       repoPath: repository.repoPath,
-      planBranchName,
-      baseBranchName,
+      planBranchName: repository.planBranchName,
+      baseBranchName: repository.baseBranchName,
       mergeOutput,
     });
   }

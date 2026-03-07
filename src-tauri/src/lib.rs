@@ -144,6 +144,8 @@ pub fn run() {
             commands::git::git_branch_create,
             commands::git::git_branch_delete,
             commands::git::git_checkout,
+            commands::git::git_merge_check,
+            commands::git::git_merge,
             commands::git::git_commit,
             commands::git::git_add,
             commands::git::git_reset,

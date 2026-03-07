@@ -16,10 +16,12 @@ import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowSer
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useNeedsStore } from '../../stores/useNeedsStore';
+import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
 import { toast } from '../ui/Toaster';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { PlanFormModal } from './PlanFormModal';
+import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { cn } from '../../utils/cn';
 
 interface PlanSelectorProps {
@@ -70,6 +72,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [planToDelete, setPlanToDelete] = useState<ArchitectPlanSummary | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [planReviewTarget, setPlanReviewTarget] = useState<{ planId: string; branchName: string } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const conversationToastShownRef = useRef<Set<string>>(new Set());
   const autoCreatingRef = useRef(false);
@@ -88,6 +91,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     if (!activePlanId) return null;
     return plans.find((plan) => plan.id === activePlanId) || null;
   }, [plans, activePlanId]);
+  const readyPlanSummaries = useTaskStore((state) => state.planSummaries);
 
   const displayedActivePlanTitle = useMemo(() => {
     if (activePlanContext && activePlanContext.id === activePlanId && activePlanContext.title.trim().length > 0) {
@@ -611,6 +615,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const isActive = plan.id === activePlanId;
               const statusClass = statusClassName[plan.status] || statusClassName.draft;
               const isBusy = isActivating === plan.id;
+              const readyPlan = readyPlanSummaries.find((candidate) => candidate.id === plan.id && candidate.readyForValidation);
 
               return (
                 <button
@@ -633,6 +638,29 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                       <span className={cn('text-[10px] px-1.5 py-0.5 rounded border uppercase', statusClass)}>
                         {t(`architect.status.${plan.status}`, plan.status)}
                       </span>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (!readyPlan) return;
+                          setPlanReviewTarget({
+                            planId: readyPlan.id,
+                            branchName: readyPlan.targetBranch,
+                          });
+                        }}
+                        disabled={!readyPlan}
+                        className={cn(
+                          'w-6 h-6 rounded border flex items-center justify-center',
+                          readyPlan
+                            ? 'border-emerald-500/30 hover:bg-emerald-500/10'
+                            : 'border-border/50 opacity-40 cursor-not-allowed'
+                        )}
+                        title={readyPlan
+                          ? t('implement.planReadyForValidation', 'Plan ready for validation')
+                          : t('implement.finalizePlanUnavailable', 'Complete all tasks to review this plan')}
+                      >
+                        <Icon name="git-merge" size={11} className={readyPlan ? 'text-emerald-500' : 'text-muted-foreground'} />
+                      </button>
                       <button
                         type="button"
                         onClick={(event) => {
@@ -748,6 +776,18 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           }}
           isLoading={formLoading}
           error={formError}
+        />
+      )}
+
+      {planReviewTarget && (
+        <PlanReviewModal
+          isOpen
+          branchName={planReviewTarget.branchName}
+          planId={planReviewTarget.planId}
+          onClose={() => setPlanReviewTarget(null)}
+          onFinalized={() => {
+            void loadPlans(false);
+          }}
         />
       )}
     </div>

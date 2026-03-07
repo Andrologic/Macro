@@ -85,6 +85,12 @@ export interface GitSyncDto {
   output: string;
 }
 
+export interface GitMergeCheckDto {
+  mergeable: boolean;
+  conflictFiles: string[];
+  hasChanges: boolean;
+}
+
 export type MacroSyncState = 'clean' | 'pending' | 'failed' | 'conflict';
 
 export interface MacroBranchSyncDto {
@@ -519,6 +525,18 @@ export async function gitMerge(params: {
   intoBranch: string;
 }): Promise<string> {
   return invoke<string>('git_merge', {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    intoBranch: params.intoBranch,
+  });
+}
+
+export async function gitMergeCheck(params: {
+  repoPath: string;
+  branchName: string;
+  intoBranch: string;
+}): Promise<GitMergeCheckDto> {
+  return invoke<GitMergeCheckDto>('git_merge_check', {
     repoPath: params.repoPath,
     branchName: params.branchName,
     intoBranch: params.intoBranch,
