@@ -5,7 +5,15 @@ import { useTaskStore } from './useTaskStore';
 import type { ImplementTask } from './useTaskStore';
 import type { TaskStatus } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
-import { parseUnifiedDiff } from '../services/gitDiffParser';
+import { parseUnifiedDiff, type ParsedDiffHunk } from '../services/gitDiffParser';
+
+export type FileChangeContextMode = 'default' | 'expanded' | 'full';
+
+const FILE_CHANGE_CONTEXT_LINES: Record<FileChangeContextMode, number> = {
+  default: 3,
+  expanded: 12,
+  full: 100000,
+};
 
 export interface FileChangeEntry {
   id: string;
@@ -17,6 +25,11 @@ export interface FileChangeEntry {
   originalContent: string;
   modifiedContent: string;
   language: string;
+  hunks: ParsedDiffHunk[];
+  contextMode: FileChangeContextMode;
+  isEditing: boolean;
+  editingContent: string | null;
+  canEdit: boolean;
 }
 
 export interface FolderNode {
@@ -49,7 +62,7 @@ export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
       const isFile = i === parts.length - 1;
       const currentPath = parts.slice(0, i + 1).join('/');
 
-      let existing = current.find((n) => n.name === part);
+      let existing = current.find((node) => node.name === part);
 
       if (!existing) {
         existing = {
@@ -89,6 +102,15 @@ const normalizeStatus = (status: string): FileChangeEntry['status'] => {
   return 'modified';
 };
 
+const normalizePortablePath = (value: string): string =>
+  value.replace(/\\/g, '/').replace(/\/+$/, '');
+
+export const resolveChangeFilePath = (repoPath: string, relativePath: string): string => {
+  const base = normalizePortablePath(repoPath);
+  const relative = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+  return `${base}/${relative}`;
+};
+
 const resolveActiveProjectPath = (): string | null => {
   const activeRepositoryPath = useTaskStore.getState().activeRepositoryPath;
   if (activeRepositoryPath) {
@@ -102,7 +124,7 @@ const resolveActiveProjectPath = (): string | null => {
   }
 
   if (appState.selectedGroupId) {
-    const group = appState.projectGroups.find((g) => g.id === appState.selectedGroupId);
+    const group = appState.projectGroups.find((candidate) => candidate.id === appState.selectedGroupId);
     return group?.projects[0]?.path ?? null;
   }
 
@@ -117,6 +139,13 @@ interface CommitContext {
 
 const tChanges = (key: string, fallback: string, options?: Record<string, unknown>): string =>
   i18n.t(key, { defaultValue: fallback, ...(options || {}) });
+
+const updateChangeEntry = (
+  changes: FileChangeEntry[],
+  changeId: string,
+  updater: (change: FileChangeEntry) => FileChangeEntry
+): FileChangeEntry[] =>
+  changes.map((change) => (change.id === changeId ? updater(change) : change));
 
 const resolveCommitContext = (changes: FileChangeEntry[]): CommitContext => {
   if (!tauriIpc.isTauriAvailable()) {
@@ -201,6 +230,40 @@ const ensureNoForeignStagedFiles = async (repoPath: string, reviewedPaths: strin
   }
 };
 
+const loadFileChangeEntry = async (
+  repoPath: string,
+  file: { path: string; status: string },
+  previousChange?: FileChangeEntry,
+  contextModeOverride?: FileChangeContextMode
+): Promise<FileChangeEntry> => {
+  const id = `change-${file.path}`;
+  const status = normalizeStatus(file.status);
+  const contextMode = contextModeOverride ?? previousChange?.contextMode ?? 'default';
+  const patch = await tauriIpc.gitDiff({
+    repoPath,
+    paths: [file.path],
+    contextLines: FILE_CHANGE_CONTEXT_LINES[contextMode],
+  });
+  const parsed = parseUnifiedDiff(patch || '');
+
+  return {
+    id,
+    path: file.path,
+    status,
+    additions: parsed.additions,
+    deletions: parsed.deletions,
+    reviewed: previousChange?.reviewed ?? false,
+    originalContent: parsed.originalContent,
+    modifiedContent: parsed.modifiedContent,
+    language: deriveLanguage(file.path),
+    hunks: parsed.hunks,
+    contextMode,
+    isEditing: false,
+    editingContent: null,
+    canEdit: status !== 'deleted',
+  };
+};
+
 const loadCurrentChangesInternal = async (
   previousChanges: FileChangeEntry[],
   previousSelectedChangeId: string | null
@@ -225,30 +288,13 @@ const loadCurrentChangesInternal = async (
     }
   });
 
-  const reviewedById = new Map(previousChanges.map((change) => [change.id, change.reviewed]));
+  const previousById = new Map(previousChanges.map((change) => [change.id, change]));
   const entries: FileChangeEntry[] = [];
 
   for (const file of uniqueByPath.values()) {
-    const patch = await tauriIpc.gitDiff({
-      repoPath,
-      paths: [file.path],
-      contextLines: 3,
-    });
-
-    const parsed = parseUnifiedDiff(patch || '');
     const id = `change-${file.path}`;
-
-    entries.push({
-      id,
-      path: file.path,
-      status: normalizeStatus(file.status),
-      additions: parsed.additions,
-      deletions: parsed.deletions,
-      reviewed: reviewedById.get(id) ?? false,
-      originalContent: parsed.originalContent,
-      modifiedContent: parsed.modifiedContent,
-      language: deriveLanguage(file.path),
-    });
+    const previousChange = previousById.get(id);
+    entries.push(await loadFileChangeEntry(repoPath, file, previousChange));
   }
 
   const hasPreviousSelection =
@@ -278,16 +324,23 @@ interface FileChangesState {
   isDiffModalOpen: boolean;
   isLoading: boolean;
   isCommitting: boolean;
+  loadingChangeId: string | null;
+  savingChangeId: string | null;
   lastError: string | null;
   lastCommitHash: string | null;
 
   // Actions
   loadCurrentChanges: () => Promise<void>;
+  loadChangeContext: (id: string, contextMode: FileChangeContextMode) => Promise<void>;
   selectChange: (id: string | null) => void;
   openDiffModal: (id: string) => void;
   closeDiffModal: () => void;
   markAsReviewed: (id: string) => void;
   markAllAsReviewed: () => void;
+  startEditingChange: (id: string) => Promise<void>;
+  updateEditingBuffer: (id: string, content: string) => void;
+  cancelEditingChange: (id: string) => void;
+  saveEditedChange: (id: string) => Promise<void>;
   stageReviewedChanges: () => Promise<string[]>;
   commitReviewedChanges: (message: string) => Promise<CommitTaskChangesResult>;
   getChange: (id: string) => FileChangeEntry | undefined;
@@ -302,6 +355,8 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
   isDiffModalOpen: false,
   isLoading: false,
   isCommitting: false,
+  loadingChangeId: null,
+  savingChangeId: null,
   lastError: null,
   lastCommitHash: null,
 
@@ -334,6 +389,46 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
     }
   },
 
+  loadChangeContext: async (id, contextMode) => {
+    const currentChange = get().getChange(id);
+    if (!currentChange || currentChange.contextMode === contextMode || currentChange.isEditing) {
+      return;
+    }
+
+    const repoPath = resolveActiveProjectPath();
+    if (!repoPath) {
+      set({
+        lastError: tChanges('implement.errors.noActiveRepositoryPath', 'No active repository path found for this task.'),
+      });
+      return;
+    }
+
+    set({ loadingChangeId: id, lastError: null });
+
+    try {
+      const reloaded = await loadFileChangeEntry(
+        repoPath,
+        { path: currentChange.path, status: currentChange.status },
+        currentChange,
+        contextMode
+      );
+
+      set((state) => ({
+        changes: updateChangeEntry(state.changes, id, () => reloaded),
+        loadingChangeId: null,
+        lastError: null,
+      }));
+    } catch (error) {
+      set({
+        loadingChangeId: null,
+        lastError:
+          error instanceof Error
+            ? error.message
+            : tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.'),
+      });
+    }
+  },
+
   selectChange: (id) => {
     set({ selectedChangeId: id });
   },
@@ -343,21 +438,133 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
   },
 
   closeDiffModal: () => {
-    set({ isDiffModalOpen: false });
+    const selectedChangeId = get().selectedChangeId;
+    set((state) => ({
+      isDiffModalOpen: false,
+      changes: selectedChangeId
+        ? updateChangeEntry(state.changes, selectedChangeId, (change) => ({
+          ...change,
+          isEditing: false,
+          editingContent: null,
+        }))
+        : state.changes,
+    }));
   },
 
   markAsReviewed: (id) => {
     set((state) => ({
-      changes: state.changes.map((c) =>
-        c.id === id ? { ...c, reviewed: true } : c
-      ),
+      changes: updateChangeEntry(state.changes, id, (change) => ({
+        ...change,
+        reviewed: true,
+      })),
     }));
   },
 
   markAllAsReviewed: () => {
     set((state) => ({
-      changes: state.changes.map((c) => ({ ...c, reviewed: true })),
+      changes: state.changes.map((change) => ({ ...change, reviewed: true })),
     }));
+  },
+
+  startEditingChange: async (id) => {
+    const currentChange = get().getChange(id);
+    if (!currentChange) return;
+
+    if (!currentChange.canEdit) {
+      set({
+        lastError: tChanges(
+          'implement.errors.deletedChangeReadOnly',
+          'Deleted files are read-only during review. Restore them from the task flow instead.'
+        ),
+      });
+      return;
+    }
+
+    if (currentChange.contextMode !== 'full') {
+      await get().loadChangeContext(id, 'full');
+    }
+
+    const latest = get().getChange(id);
+    if (!latest) return;
+
+    set((state) => ({
+      changes: updateChangeEntry(state.changes, id, (change) => ({
+        ...change,
+        isEditing: true,
+        editingContent: latest.modifiedContent,
+      })),
+      lastError: null,
+    }));
+  },
+
+  updateEditingBuffer: (id, content) => {
+    set((state) => ({
+      changes: updateChangeEntry(state.changes, id, (change) => ({
+        ...change,
+        editingContent: content,
+      })),
+    }));
+  },
+
+  cancelEditingChange: (id) => {
+    set((state) => ({
+      changes: updateChangeEntry(state.changes, id, (change) => ({
+        ...change,
+        isEditing: false,
+        editingContent: null,
+      })),
+    }));
+  },
+
+  saveEditedChange: async (id) => {
+    const change = get().getChange(id);
+    if (!change || !change.canEdit) return;
+
+    if (!tauriIpc.isTauriAvailable()) {
+      throw new Error(
+        tChanges('implement.errors.commitDesktopOnly', 'Git commit flow is only available in desktop mode.')
+      );
+    }
+
+    const repoPath = resolveActiveProjectPath();
+    if (!repoPath) {
+      throw new Error(
+        tChanges('implement.errors.noActiveRepositoryPath', 'No active repository path found for this task.')
+      );
+    }
+
+    const nextContent = change.editingContent ?? change.modifiedContent;
+
+    set({ savingChangeId: id, lastError: null });
+
+    try {
+      await tauriIpc.fsWriteFile({
+        path: resolveChangeFilePath(repoPath, change.path),
+        content: nextContent,
+        createDirs: true,
+        allowOutsideWorkspace: true,
+      });
+
+      set((state) => ({
+        changes: updateChangeEntry(state.changes, id, (entry) => ({
+          ...entry,
+          reviewed: false,
+          isEditing: false,
+          editingContent: null,
+        })),
+      }));
+
+      await get().loadCurrentChanges();
+
+      set({ savingChangeId: null, lastError: null });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
+      set({ savingChangeId: null, lastError: message });
+      throw error;
+    }
   },
 
   stageReviewedChanges: async () => {
@@ -425,16 +632,16 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
   },
 
   getChange: (id) => {
-    return get().changes.find((c) => c.id === id);
+    return get().changes.find((change) => change.id === id);
   },
 
   getStats: () => {
     const changes = get().changes;
     return {
       total: changes.length,
-      reviewed: changes.filter((c) => c.reviewed).length,
-      additions: changes.reduce((sum, c) => sum + c.additions, 0),
-      deletions: changes.reduce((sum, c) => sum + c.deletions, 0),
+      reviewed: changes.filter((change) => change.reviewed).length,
+      additions: changes.reduce((sum, change) => sum + change.additions, 0),
+      deletions: changes.reduce((sum, change) => sum + change.deletions, 0),
     };
   },
 }));

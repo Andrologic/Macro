@@ -13,10 +13,27 @@ import { cn } from '../../utils/cn';
 
 interface CodeMirrorEditorProps {
   code: string;
-  language?: 'javascript' | 'typescript' | 'rust';
+  language?: string;
   className?: string;
   readOnly?: boolean;
+  onChange?: (value: string) => void;
 }
+
+const resolveLanguageExtension = (language: string) => {
+  if (language === 'rust') {
+    return rust();
+  }
+
+  if (language === 'javascript' || language === 'jsx') {
+    return javascript({ jsx: true, typescript: false });
+  }
+
+  if (language === 'typescript' || language === 'tsx') {
+    return javascript({ jsx: true, typescript: true });
+  }
+
+  return [];
+};
 
 /**
  * CodeMirrorEditor - Heavy code editor component
@@ -31,24 +48,30 @@ const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
   language = 'typescript',
   className,
   readOnly = true,
+  onChange,
 }) => {
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const latestCodeRef = useRef(code);
+  const onChangeRef = useRef(onChange);
+
+  useEffect(() => {
+    latestCodeRef.current = code;
+  }, [code]);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   useEffect(() => {
     if (!editorRef.current) return;
 
-    const languageExtension =
-      language === 'rust'
-        ? rust()
-        : javascript({ jsx: true, typescript: language === 'typescript' });
-
     const state = EditorState.create({
-      doc: code,
+      doc: latestCodeRef.current,
       extensions: [
         basicSetup,
         oneDark,
-        languageExtension,
+        resolveLanguageExtension(language),
         EditorView.lineWrapping,
         EditorView.theme({
           '&': {
@@ -60,6 +83,10 @@ const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
         }),
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),
+        EditorView.updateListener.of((update) => {
+          if (!update.docChanged) return;
+          onChangeRef.current?.(update.state.doc.toString());
+        }),
       ],
     });
 
@@ -74,7 +101,23 @@ const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
       view.destroy();
       viewRef.current = null;
     };
-  }, [code, language, readOnly]);
+  }, [language, readOnly]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    const current = view.state.doc.toString();
+    if (current === code) return;
+
+    view.dispatch({
+      changes: {
+        from: 0,
+        to: current.length,
+        insert: code,
+      },
+    });
+  }, [code]);
 
   return (
     <div
