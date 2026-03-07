@@ -32,6 +32,20 @@ import {
 
 type TaskSource = 'architect' | 'mixed' | 'fallback' | 'empty';
 
+export interface TaskCompletionRepositoryRecord {
+  projectId: string;
+  repoPath: string;
+  branchName: string;
+  planBranchName: string;
+  mergeOutput?: string;
+}
+
+interface CompleteTaskOptions {
+  allowWithoutCodeChanges?: boolean;
+  skipIntegration?: boolean;
+  repositories?: TaskCompletionRepositoryRecord[];
+}
+
 let appSyncUnsubscribe: (() => void) | null = null;
 
 const normalizeBranchName = (value?: string): string => {
@@ -196,7 +210,7 @@ interface TaskStore {
   startTask: (taskId: string) => Promise<void>;
   startReview: (taskId: string) => Promise<void>;
   requestTaskChanges: (taskId: string) => Promise<void>;
-  completeTask: (taskId: string, options?: { allowWithoutCodeChanges?: boolean }) => Promise<void>;
+  completeTask: (taskId: string, options?: CompleteTaskOptions) => Promise<void>;
   finalizePlan: (planId: string) => Promise<void>;
   markTaskAwaitingResponse: (taskId: string) => Promise<void>;
   markTaskFailed: (taskId: string) => Promise<void>;
@@ -484,6 +498,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
 
     const allowWithoutCodeChanges = options?.allowWithoutCodeChanges === true;
+    const skipIntegration = options?.skipIntegration === true;
 
     if (task.status !== 'InReview') {
       set({
@@ -502,20 +517,14 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
-    const repositories: Array<{
-      projectId: string;
-      repoPath: string;
-      branchName: string;
-      planBranchName: string;
-      mergeOutput?: string;
-    }> = [];
+    const repositories: TaskCompletionRepositoryRecord[] = [...(options?.repositories || [])];
     const mergeTargetBranch = task.task_source === 'architect'
       ? null
       : getGitFlowBaseBranch();
 
-    let mergedRepositoryCount = 0;
+    let mergedRepositoryCount = repositories.filter((repository) => Boolean(repository.mergeOutput)).length;
 
-    if (tauriIpc.isTauriAvailable()) {
+    if (!skipIntegration && tauriIpc.isTauriAvailable()) {
       for (const target of executionTargets) {
         const worktreePath = get().branchWorktrees[target.worktreeKey];
         if (!worktreePath) {

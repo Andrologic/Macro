@@ -7,6 +7,7 @@ import { Icon, IconName } from '../ui/Icon';
 import { Select } from '../ui/Select';
 import { cn } from '../../utils/cn';
 import { toast } from '../ui/Toaster';
+import { PlanReviewModal } from '../plan/PlanReviewModal';
 import type { TaskStatus } from '../../types';
 
 interface TaskQueueProps {
@@ -246,7 +247,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const activateTask = useTaskStore((state) => state.activateTask);
   const startTask = useTaskStore((state) => state.startTask);
   const startReview = useTaskStore((state) => state.startReview);
-  const finalizePlan = useTaskStore((state) => state.finalizePlan);
   const markTaskAwaitingResponse = useTaskStore((state) => state.markTaskAwaitingResponse);
   const markTaskFailed = useTaskStore((state) => state.markTaskFailed);
   const retryTask = useTaskStore((state) => state.retryTask);
@@ -254,6 +254,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const lastErrorToastRef = useRef<string | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const [planFilter, setPlanFilter] = useState<string>(ALL_PLANS_FILTER);
+  const [planReviewTarget, setPlanReviewTarget] = useState<{ planId: string; branchName: string } | null>(null);
 
   useEffect(() => {
     if (!taskError || taskError === lastErrorToastRef.current) return;
@@ -449,7 +450,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   </div>
                   <button
                     type="button"
-                    onClick={() => void finalizePlan(plan.id)}
+                    onClick={() => setPlanReviewTarget({
+                      planId: plan.id,
+                      branchName: plan.targetBranch,
+                    })}
                     disabled={Boolean(finalizingPlanId)}
                     className={cn(
                       'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
@@ -567,6 +571,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           {t('implement.completedCount', '{{count}} completed', { count: completedCount })}
         </span>
       </div>
+
+      {planReviewTarget && (
+        <PlanReviewModal
+          isOpen
+          branchName={planReviewTarget.branchName}
+          planId={planReviewTarget.planId}
+          onClose={() => setPlanReviewTarget(null)}
+        />
+      )}
     </aside>
   );
 };

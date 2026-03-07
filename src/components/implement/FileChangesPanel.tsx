@@ -1,24 +1,24 @@
-import React, { useMemo, useState } from 'react';
-import { useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
-import { useFileChangesStore, buildFolderTree, FolderNode } from '../../stores/useFileChangesStore';
-import { Icon, IconName } from '../ui/Icon';
+import {
+  useFileChangesStore,
+  buildFolderTree,
+  type FolderNode,
+  type ReviewRepositoryState,
+} from '../../stores/useFileChangesStore';
+import { Icon, type IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { toast } from '../ui/Toaster';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
-import { FileChangesDiffModal } from '../modals/FileChangesDiffModal.tsx';
+import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
 
 interface FileChangesPanelProps {
   className?: string;
 }
 
-/**
- * FileChangesPanel - Displays file changes in Implement mode
- *
- * PERFORMANCE: Lazy loaded via ModeRouter, only rendered when Implement mode is active
- */
+type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
 
 const STATUS_COLORS = {
   added: 'text-emerald-500',
@@ -38,16 +38,7 @@ const STATUS_ICONS: Record<string, IconName> = {
   deleted: 'trash',
 };
 
-const fallbackCommitMessage = 'chore: update task changes';
-
-const toDefaultCommitMessage = (title?: string | null): string => {
-  const trimmed = title?.trim();
-  if (!trimmed) return fallbackCommitMessage;
-  const normalized = trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
-  return `feat: ${normalized}`;
-};
-
-const normalizeCommitErrorMessage = (raw: string, t: (key: string, fallback: string) => string): string => {
+const normalizeCommitErrorMessage = (raw: string, t: TranslateFn): string => {
   const value = raw.toLowerCase();
   if (value.includes('staged files outside this task')) {
     return t(
@@ -58,10 +49,10 @@ const normalizeCommitErrorMessage = (raw: string, t: (key: string, fallback: str
   if (value.includes('review all file changes')) {
     return t('implement.commitNeedsReview', 'Review all file changes before committing this task.');
   }
-  if (value.includes('in progress or awaiting response')) {
+  if (value.includes('must be in review before commit')) {
     return t(
       'implement.commitRequiresActiveTaskStatus',
-      'Task must be in progress or awaiting response before commit.'
+      'Task must be in review before commit.'
     );
   }
   return raw;
@@ -70,12 +61,12 @@ const normalizeCommitErrorMessage = (raw: string, t: (key: string, fallback: str
 interface FolderTreeItemProps {
   node: FolderNode;
   depth: number;
-  onFileClick: (id: string) => void;
+  selectedChangeId: string | null;
+  onFileClick: (changeId: string) => void;
 }
 
-const FolderTreeItem: React.FC<FolderTreeItemProps> = ({ node, depth, onFileClick }) => {
+const FolderTreeItem: React.FC<FolderTreeItemProps> = ({ node, depth, selectedChangeId, onFileClick }) => {
   const [isOpen, setIsOpen] = useState(true);
-  const { selectedChangeId } = useFileChangesStore();
 
   if (node.type === 'folder') {
     return (
@@ -104,6 +95,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({ node, depth, onFileClic
                 key={child.path}
                 node={child}
                 depth={depth + 1}
+                selectedChangeId={selectedChangeId}
                 onFileClick={onFileClick}
               />
             ))}
@@ -113,7 +105,6 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({ node, depth, onFileClic
     );
   }
 
-  // File node
   const change = node.fileChange;
   if (!change) return null;
 
@@ -130,7 +121,6 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({ node, depth, onFileClic
       )}
       style={{ paddingLeft: `${depth * 12 + 8}px` }}
     >
-      {/* Status indicator */}
       <div
         className={cn(
           'w-5 h-5 rounded flex items-center justify-center shrink-0',
@@ -140,15 +130,12 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({ node, depth, onFileClic
         <Icon name={STATUS_ICONS[change.status]} size={10} className={STATUS_COLORS[change.status]} />
       </div>
 
-      {/* File name */}
       <span className="text-sm text-foreground truncate flex-1 text-left">{node.name}</span>
 
-      {/* Review indicator */}
       {change.reviewed && (
         <Icon name="check" size={12} className="text-emerald-500 shrink-0" />
       )}
 
-      {/* Line changes */}
       <div className="flex items-center gap-1 text-xs shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">
         {change.additions > 0 && (
           <span className="text-emerald-500 font-mono">+{change.additions}</span>
@@ -161,10 +148,27 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({ node, depth, onFileClic
   );
 };
 
-// Base component - wrapped with React.memo below for performance
+const renderRepositoryState = (
+  repository: ReviewRepositoryState,
+  t: TranslateFn
+): string => {
+  if (repository.commitState === 'committed') {
+    return t('implement.repositoryCommitted', 'Committed');
+  }
+  if (repository.commitState === 'no_changes') {
+    return t('implement.repositoryNoChanges', 'No changes');
+  }
+  return t('implement.repositoryReviewProgress', '{{reviewed}}/{{total}} reviewed', {
+    reviewed: repository.stats.reviewed,
+    total: repository.stats.total,
+  });
+};
+
 const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) => {
   const { t } = useTranslation();
-  const { selectedGroupId, selectedTaskId } = useAppStore();
+  const translate: TranslateFn = (key, fallback, options) =>
+    String(t(key, { defaultValue: fallback, ...(options || {}) }));
+  const { selectedGroupId, selectedTaskId, getProjectById } = useAppStore();
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
   );
@@ -173,18 +177,23 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const completeTask = useTaskStore((state) => state.completeTask);
   const [isCommitPromptOpen, setIsCommitPromptOpen] = useState(false);
   const {
-    changes,
+    repositories,
+    selectedRepositoryId,
+    selectedDiffTarget,
     isDiffModalOpen,
-    selectedChangeId,
     isLoading,
     isCommitting,
     lastError,
     loadCurrentChanges,
+    resetReviewState,
+    selectRepository,
     openDiffModal,
     closeDiffModal,
     markAllAsReviewed,
     commitReviewedChanges,
-    getStats,
+    setCommitMessageDraft,
+    getSelectedRepository,
+    getOverallStats,
   } = useFileChangesStore();
 
   useEffect(() => {
@@ -192,23 +201,34 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     void loadCurrentChanges();
   }, [selectedGroupId, selectedTaskId, loadCurrentChanges]);
 
-  const stats = getStats();
-  const folderTree = useMemo(() => buildFolderTree(changes), [changes]);
-  const progressPercent = stats.total > 0 ? (stats.reviewed / stats.total) * 100 : 0;
+  const selectedRepository = getSelectedRepository();
+  const selectedProject = selectedRepository ? getProjectById(selectedRepository.projectId) : null;
+  const overallStats = getOverallStats();
+  const folderTree = useMemo(
+    () => buildFolderTree(selectedRepository?.changes || []),
+    [selectedRepository?.changes]
+  );
+  const progressPercent = overallStats.total > 0 ? (overallStats.reviewed / overallStats.total) * 100 : 0;
   const canCommitTaskStatus = currentTask?.status === 'InReview';
   const canStartReview = currentTask?.status === 'InProgress' || currentTask?.status === 'AwaitingResponse';
   const canRequestChanges = currentTask?.status === 'InReview';
-  const canCompleteWithoutCodeChanges = currentTask?.status === 'InReview' && stats.total === 0 && !isCommitting;
-  const canCommit =
-    !isLoading &&
-    !isCommitting &&
-    canCommitTaskStatus &&
-    stats.total > 0 &&
-    stats.reviewed === stats.total;
-  const commitMessageDefault = useMemo(
-    () => toDefaultCommitMessage(currentTask?.title),
-    [currentTask?.title]
+  const allRepositoriesNoChanges = repositories.length > 0 && repositories.every(
+    (repository) => repository.commitState === 'no_changes'
   );
+  const canCompleteWithoutCodeChanges =
+    currentTask?.status === 'InReview' &&
+    allRepositoriesNoChanges &&
+    !isCommitting;
+  const canCommit =
+    selectedRepository
+      ? !isLoading &&
+        !isCommitting &&
+        canCommitTaskStatus &&
+        selectedRepository.commitState !== 'committed' &&
+        selectedRepository.stats.total > 0 &&
+        selectedRepository.stats.reviewed === selectedRepository.stats.total
+      : false;
+
   const currentTaskStatusLabel = currentTask
     ? {
       Pending: t('tasks.pending', 'Pending'),
@@ -222,6 +242,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     : null;
 
   const commitDisabledReason = (() => {
+    if (!selectedRepository) {
+      return t('implement.selectRepository', 'Select a repository to review changes.');
+    }
     if (isCommitting) {
       return t('implement.commitInProgress', 'Committing changes...');
     }
@@ -231,10 +254,13 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         'Task must be in review before commit.'
       );
     }
-    if (stats.total === 0) {
-      return t('implement.commitNoChanges', 'No file changes available for this task.');
+    if (selectedRepository.commitState === 'committed') {
+      return t('implement.repositoryAlreadyCommitted', 'This repository has already been committed.');
     }
-    if (stats.reviewed < stats.total) {
+    if (selectedRepository.stats.total === 0) {
+      return t('implement.commitNoChanges', 'No file changes available for this repository.');
+    }
+    if (selectedRepository.stats.reviewed < selectedRepository.stats.total) {
       return t(
         'implement.commitNeedsReview',
         'Review all file changes before committing this task.'
@@ -243,19 +269,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     return '';
   })();
 
-  const displayError = lastError
-    ? normalizeCommitErrorMessage(lastError, (key, fallback) => t(key, fallback))
-    : null;
-
-  const handleFileClick = (id: string) => {
-    openDiffModal(id);
-  };
+  const displayError = normalizeCommitErrorMessage(
+    selectedRepository?.lastError || lastError || '',
+    translate
+  );
 
   const handleCommitConfirm = async (message?: string) => {
-    if (isCommitting) return;
-    const commitMessage = (message || '').trim() || commitMessageDefault;
+    if (isCommitting || !selectedRepositoryId || !selectedRepository) return;
+    const commitMessage = (message || '').trim() || selectedRepository.commitMessageDraft;
+    setCommitMessageDraft(selectedRepositoryId, commitMessage);
+
     try {
-      const result = await commitReviewedChanges(commitMessage);
+      const result = await commitReviewedChanges(selectedRepositoryId, commitMessage);
       if (result.taskCompleted) {
         toast.success(
           t('implement.commitSuccess', 'Committed {{hash}} and marked task complete', {
@@ -264,7 +289,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         );
       } else {
         toast.success(
-          t('implement.commitSuccessNoComplete', 'Committed {{hash}}. Complete the task manually.', {
+          t('implement.repositoryCommitSuccess', 'Committed {{hash}} for this repository.', {
             hash: result.hash,
           })
         );
@@ -280,6 +305,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (!currentTask || isCommitting) return;
     try {
       await startReview(currentTask.id);
+      await loadCurrentChanges();
       toast.success(t('implement.reviewStarted', 'Task moved to review'));
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
@@ -291,6 +317,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (!currentTask || isCommitting) return;
     try {
       await requestTaskChanges(currentTask.id);
+      resetReviewState();
       toast.success(t('implement.requestChangesSuccess', 'Task moved back to implementation'));
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
@@ -311,6 +338,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
     try {
       await completeTask(currentTask.id, { allowWithoutCodeChanges: true });
+      resetReviewState();
       toast.success(t('implement.completeWithoutCodeChangesSuccess', 'Task completed without code changes'));
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
@@ -356,7 +384,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   return (
     <aside className={cn('h-full w-full bg-card border-l border-border flex flex-col', className)}>
-      {/* Header */}
       <div className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
         <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
           <Icon name="git-compare" size={16} className="text-primary" />
@@ -369,31 +396,71 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             </span>
           )}
           <span className="text-xs text-muted-foreground">
-            {stats.reviewed}/{stats.total} reviewed
+            {overallStats.reviewed}/{overallStats.total} reviewed
           </span>
         </div>
       </div>
 
-      {/* Stats Bar */}
+      {repositories.length > 0 && (
+        <div className="px-3 py-3 border-b border-border flex items-center gap-2 overflow-x-auto shrink-0">
+          {repositories.map((repository) => {
+            const project = getProjectById(repository.projectId);
+            const isSelected = repository.id === selectedRepositoryId;
+            return (
+              <button
+                key={repository.id}
+                type="button"
+                onClick={() => selectRepository(repository.id)}
+                className={cn(
+                  'min-w-0 rounded-lg border px-3 py-2 text-left transition-colors',
+                  isSelected
+                    ? 'border-primary/40 bg-primary/10'
+                    : 'border-border hover:bg-accent'
+                )}
+              >
+                <div className="text-xs font-medium text-foreground truncate">
+                  {project?.name || repository.projectId}
+                </div>
+                <div className="text-[11px] text-muted-foreground truncate">
+                  {renderRepositoryState(repository, translate)}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <div className="px-4 py-3 border-b border-border flex items-center justify-between bg-muted/20 shrink-0">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
             <span className="text-emerald-500 text-sm font-mono font-semibold">
-              +{stats.additions}
+              +{selectedRepository?.stats.additions ?? 0}
             </span>
             <span className="text-xs text-muted-foreground">lines</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="text-red-400 text-sm font-mono font-semibold">-{stats.deletions}</span>
+            <span className="text-red-400 text-sm font-mono font-semibold">
+              -{selectedRepository?.stats.deletions ?? 0}
+            </span>
             <span className="text-xs text-muted-foreground">lines</span>
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs text-muted-foreground">{stats.total} files</span>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {selectedProject && (
+            <span className="inline-flex items-center gap-1">
+              <Icon name="folder" size={10} />
+              {selectedProject.name}
+            </span>
+          )}
+          {selectedRepository && (
+            <span className="inline-flex items-center gap-1">
+              <Icon name="git-branch" size={10} />
+              {selectedRepository.branchName}
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Progress bar */}
       <div className="px-4 py-2 border-b border-border shrink-0">
         <div className="h-1.5 bg-muted rounded-full overflow-hidden">
           <div
@@ -403,11 +470,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         </div>
       </div>
 
-      {/* File Tree */}
       <div className="flex-1 overflow-y-auto py-2">
         {isLoading && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-            Loading repository changes...
+            {t('implement.loadingRepositoryChanges', 'Loading repository changes...')}
           </div>
         )}
         {!isLoading && displayError && (
@@ -415,21 +481,41 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             {displayError}
           </div>
         )}
-        {!isLoading && !displayError && folderTree.length === 0 && (
+        {!isLoading && !displayError && !selectedRepository && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-            No pending file changes for this task.
+            {t('implement.selectRepository', 'Select a repository to review changes.')}
           </div>
         )}
-        {folderTree.map((node) => (
-          <FolderTreeItem key={node.path} node={node} depth={0} onFileClick={handleFileClick} />
+        {!isLoading && !displayError && selectedRepository && selectedRepository.commitState === 'committed' && (
+          <div className="px-4 py-8 text-center text-sm text-emerald-500">
+            {t('implement.repositoryCommittedHelp', 'This repository has already been committed and integrated.')}
+          </div>
+        )}
+        {!isLoading && !displayError && selectedRepository && selectedRepository.commitState === 'no_changes' && (
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+            {t('implement.repositoryNoChangesHelp', 'No pending file changes for this repository.')}
+          </div>
+        )}
+        {!isLoading && !displayError && selectedRepository && selectedRepository.commitState === 'idle' && folderTree.length === 0 && (
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+            {t('implement.noPendingChanges', 'No pending file changes for this repository.')}
+          </div>
+        )}
+        {selectedRepository && folderTree.map((node) => (
+          <FolderTreeItem
+            key={node.path}
+            node={node}
+            depth={0}
+            selectedChangeId={selectedRepository.selectedChangeId}
+            onFileClick={(changeId) => openDiffModal(selectedRepository.id, changeId)}
+          />
         ))}
       </div>
 
-      {/* Footer Actions */}
       <div className="p-3 border-t border-border shrink-0 space-y-2">
-        {stats.reviewed < stats.total && (
+        {selectedRepository && selectedRepository.stats.reviewed < selectedRepository.stats.total && (
           <button
-            onClick={markAllAsReviewed}
+            onClick={() => markAllAsReviewed(selectedRepository.id)}
             disabled={isCommitting}
             className="w-full py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center justify-center gap-2"
           >
@@ -471,7 +557,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           <Icon name={isCommitting ? 'loader' : 'git-commit'} size={14} className={isCommitting ? 'animate-spin' : undefined} />
           {isCommitting
             ? t('implement.commitInProgress', 'Committing changes...')
-            : t('implement.commitChanges', 'Commit Changes')}
+            : t('implement.commitRepositoryChanges', 'Commit Repository Changes')}
         </button>
         {canCompleteWithoutCodeChanges && (
           <button
@@ -487,9 +573,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         )}
       </div>
 
-      {/* Diff Modal */}
-      {isDiffModalOpen && selectedChangeId && (
-        <FileChangesDiffModal changeId={selectedChangeId} onClose={closeDiffModal} />
+      {isDiffModalOpen && selectedDiffTarget && (
+        <FileChangesDiffModal
+          repositoryId={selectedDiffTarget.repositoryId}
+          changeId={selectedDiffTarget.changeId}
+          onClose={closeDiffModal}
+        />
       )}
 
       <ConfirmPromptModal
@@ -497,11 +586,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         title={t('implement.commitPromptTitle', 'Commit reviewed changes')}
         description={t(
           'implement.commitPromptDescription',
-          'Provide a concise commit message for this task.'
+          'Provide a concise commit message for this repository.'
         )}
         confirmLabel={t('implement.commitConfirm', 'Commit')}
         cancelLabel={t('common.cancel', 'Cancel')}
-        initialValue={commitMessageDefault}
+        initialValue={selectedRepository?.commitMessageDraft || ''}
         inputPlaceholder={t('implement.commitPromptPlaceholder', 'feat: update task implementation')}
         requireInput
         onCancel={() => setIsCommitPromptOpen(false)}
@@ -513,10 +602,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   );
 };
 
-// Performance: Memoize the entire panel to prevent re-renders
-
-// Performance: Memoize the entire panel to prevent re-renders
 export const FileChangesPanel = React.memo(FileChangesPanelBase);
 
-// Export default for lazy loading compatibility
 export default FileChangesPanel;

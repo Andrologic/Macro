@@ -5,6 +5,7 @@ import { MermaidRenderer } from './MermaidRenderer';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import ReactMarkdown from 'react-markdown';
+import type { Components } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 
@@ -68,6 +69,13 @@ type RenderSegment =
   | { type: 'text'; content: string }
   | { type: 'thinking'; content: string }
   | { type: 'tool'; toolName: string; detail?: string; status: 'run' | 'done' };
+
+const omitMarkdownDomProps = <T extends { node?: unknown; ref?: unknown }>(
+  props: T
+): Omit<T, 'node' | 'ref'> => {
+  const { node: _node, ref: _ref, ...domProps } = props;
+  return domProps;
+};
 
 // =============================================================================
 // THINKING BLOCK COMPONENT
@@ -435,43 +443,68 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     return expanded;
   }, [content, isStreaming]);
 
-  const components = useMemo(() => ({
-    a: ({ href, children, ...props }: React.ComponentProps<'a'>) => (
-      <a
-        {...props}
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-primary hover:underline"
-      >
-        {children}
-      </a>
-    ),
-    h1: (props: React.ComponentProps<'h1'>) => (
-      <h1 {...props} className={cn('text-xl font-bold mt-4 mb-2', props.className)} />
-    ),
-    h2: (props: React.ComponentProps<'h2'>) => (
-      <h2 {...props} className={cn('text-lg font-semibold mt-4 mb-2', props.className)} />
-    ),
-    h3: (props: React.ComponentProps<'h3'>) => (
-      <h3 {...props} className={cn('text-base font-semibold mt-3 mb-2', props.className)} />
-    ),
-    h4: (props: React.ComponentProps<'h4'>) => (
-      <h4 {...props} className={cn('text-sm font-semibold mt-3 mb-2', props.className)} />
-    ),
-    h5: (props: React.ComponentProps<'h5'>) => (
-      <h5 {...props} className={cn('text-sm font-medium mt-3 mb-2', props.className)} />
-    ),
-    h6: (props: React.ComponentProps<'h6'>) => (
-      <h6 {...props} className={cn('text-xs font-medium mt-3 mb-2', props.className)} />
-    ),
-    blockquote: (props: React.ComponentProps<'blockquote'>) => (
-      <blockquote
-        {...props}
-        className={cn('border-l-2 border-primary/50 pl-3 my-2 text-muted-foreground italic', props.className)}
-      />
-    ),
-    code: ({ className, children, ...props }: React.ComponentProps<'code'>) => {
+  const components = useMemo<Components>(() => ({
+    a: ({ href, children, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <a
+          {...domProps}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary hover:underline"
+        >
+          {children}
+        </a>
+      );
+    },
+    h1: ({ className: headingClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <h1 {...domProps} className={cn('text-xl font-bold mt-4 mb-2', headingClassName)} />
+      );
+    },
+    h2: ({ className: headingClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <h2 {...domProps} className={cn('text-lg font-semibold mt-4 mb-2', headingClassName)} />
+      );
+    },
+    h3: ({ className: headingClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <h3 {...domProps} className={cn('text-base font-semibold mt-3 mb-2', headingClassName)} />
+      );
+    },
+    h4: ({ className: headingClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <h4 {...domProps} className={cn('text-sm font-semibold mt-3 mb-2', headingClassName)} />
+      );
+    },
+    h5: ({ className: headingClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <h5 {...domProps} className={cn('text-sm font-medium mt-3 mb-2', headingClassName)} />
+      );
+    },
+    h6: ({ className: headingClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <h6 {...domProps} className={cn('text-xs font-medium mt-3 mb-2', headingClassName)} />
+      );
+    },
+    blockquote: ({ className: blockquoteClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <blockquote
+          {...domProps}
+          className={cn('border-l-2 border-primary/50 pl-3 my-2 text-muted-foreground italic', blockquoteClassName)}
+        />
+      );
+    },
+    code: ({ className, children, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
       const blockKeyRef = useRef(++blockKeySeed);
       const languageMatch = /language-([^\s]+)/i.exec(className || '');
       const language = languageMatch?.[1] || '';
@@ -501,7 +534,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
 
       return (
         <code
-          {...props}
+          {...domProps}
           className={cn(
             'px-1.5 py-0.5 mx-0.5 bg-muted border border-border/50 rounded-md text-[0.875em] font-mono text-primary font-medium',
             className
@@ -511,48 +544,76 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         </code>
       );
     },
-    pre: (props: any) => <>{props.children}</>,
-    ul: (props: React.ComponentProps<'ul'>) => (
-      <ul {...props} className={cn('list-disc list-inside my-2 space-y-1', props.className)} />
-    ),
-    ol: (props: React.ComponentProps<'ol'>) => (
-      <ol {...props} className={cn('list-decimal list-inside my-2 space-y-1', props.className)} />
-    ),
-    li: (props: React.ComponentProps<'li'>) => (
-      <li {...props} className={cn('text-foreground', props.className)} />
-    ),
-    table: (props: React.ComponentProps<'table'>) => (
-      <table {...props} className={cn('w-full text-sm border border-border rounded-lg overflow-hidden', props.className)} />
-    ),
-    thead: (props: React.ComponentProps<'thead'>) => (
-      <thead {...props} className={cn('bg-muted/40', props.className)} />
-    ),
-    tbody: (props: React.ComponentProps<'tbody'>) => (
-      <tbody {...props} className={cn('divide-y divide-border', props.className)} />
-    ),
-    tr: (props: React.ComponentProps<'tr'>) => (
-      <tr {...props} className={cn('divide-x divide-border', props.className)} />
-    ),
-    th: (props: React.ComponentProps<'th'>) => (
-      <th {...props} className={cn('text-left font-semibold px-3 py-2', props.className)} />
-    ),
-    td: (props: React.ComponentProps<'td'>) => (
-      <td {...props} className={cn('px-3 py-2 align-top', props.className)} />
-    ),
-    input: ({ type, ...props }: React.ComponentProps<'input'>) => {
+    pre: (props) => <>{props.children}</>,
+    ul: ({ className: listClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <ul {...domProps} className={cn('list-disc list-inside my-2 space-y-1', listClassName)} />
+      );
+    },
+    ol: ({ className: listClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <ol {...domProps} className={cn('list-decimal list-inside my-2 space-y-1', listClassName)} />
+      );
+    },
+    li: ({ className: itemClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <li {...domProps} className={cn('text-foreground', itemClassName)} />
+      );
+    },
+    table: ({ className: tableClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <table {...domProps} className={cn('w-full text-sm border border-border rounded-lg overflow-hidden', tableClassName)} />
+      );
+    },
+    thead: ({ className: sectionClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <thead {...domProps} className={cn('bg-muted/40', sectionClassName)} />
+      );
+    },
+    tbody: ({ className: sectionClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <tbody {...domProps} className={cn('divide-y divide-border', sectionClassName)} />
+      );
+    },
+    tr: ({ className: rowClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <tr {...domProps} className={cn('divide-x divide-border', rowClassName)} />
+      );
+    },
+    th: ({ className: cellClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <th {...domProps} className={cn('text-left font-semibold px-3 py-2', cellClassName)} />
+      );
+    },
+    td: ({ className: cellClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return (
+        <td {...domProps} className={cn('px-3 py-2 align-top', cellClassName)} />
+      );
+    },
+    input: ({ type, className: inputClassName, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
       if (type === 'checkbox') {
         return (
           <input
-            {...props}
+            {...domProps}
             type="checkbox"
             disabled
-            className={cn('mr-2 align-middle accent-primary', props.className)}
+            className={cn('mr-2 align-middle accent-primary', inputClassName)}
           />
         );
       }
-      return <input {...props} />;
+      return <input {...domProps} type={type} className={inputClassName} />;
     },
-  }), [isStreaming]);
+  }), []);
 
   return (
     <div className={cn('markdown-content', className)}>
