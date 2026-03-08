@@ -68,6 +68,7 @@ interface TaskItemProps {
   task: ImplementTask;
   isSelected: boolean;
   isBusy: boolean;
+  planLabel: string;
   statusLabel: string;
   multiRepoPresentation: MultiRepoTaskPresentation | null;
   onSelect: () => void;
@@ -82,6 +83,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   task,
   isSelected,
   isBusy,
+  planLabel,
   statusLabel,
   multiRepoPresentation,
   onSelect,
@@ -153,7 +155,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
             <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/60 px-1.5 py-0.5 text-xs text-muted-foreground">
               <Icon name={task.task_source === 'architect' ? 'layers' : 'zap'} size={10} />
-              {task.plan_title || t('implement.standaloneTask', 'Standalone')}
+              {planLabel}
             </span>
 
             <span className="text-xs text-muted-foreground inline-flex items-center gap-1 leading-none">
@@ -346,6 +348,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     Failed: t('implement.failed', 'Failed'),
     Blocked: t('tasks.blocked', 'Blocked'),
   };
+  const standalonePlanLabel = t('implement.standaloneTask', 'Standalone');
 
   const buildMultiRepoPresentation = (
     task: ImplementTask,
@@ -473,6 +476,22 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     return planSummaries.filter((plan) => scopedPlanIds.has(plan.id));
   }, [planSummaries, scopedTasks]);
 
+  const planLabelsById = useMemo(() => {
+    const titleCounts = new Map<string, number>();
+    availablePlanSummaries.forEach((plan) => {
+      titleCounts.set(plan.title, (titleCounts.get(plan.title) || 0) + 1);
+    });
+
+    return new Map(
+      availablePlanSummaries.map((plan) => [
+        plan.id,
+        (titleCounts.get(plan.title) || 0) > 1
+          ? `${plan.title} (${plan.targetBranch})`
+          : plan.title,
+      ])
+    );
+  }, [availablePlanSummaries]);
+
   const hasScopedStandaloneTasks = useMemo(() => {
     if (!hasStandaloneTasks) return false;
     return scopedTasks.some((task) => task.task_source === 'standalone');
@@ -504,6 +523,14 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     }
     return scopedTasks.filter((task) => task.plan_id === planFilter);
   }, [planFilter, scopedTasks]);
+
+  const getTaskPlanLabel = (task: ImplementTask): string => {
+    if (task.task_source === 'standalone') {
+      return standalonePlanLabel;
+    }
+
+    return planLabelsById.get(task.plan_id) || task.plan_title || standalonePlanLabel;
+  };
 
   const readyTasks = useMemo(() => {
     return [...filteredTasks]
@@ -581,7 +608,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             </option>
             {availablePlanSummaries.map((plan) => (
               <option key={plan.id} value={plan.id}>
-                {plan.title}
+                {planLabelsById.get(plan.id) || plan.title}
               </option>
             ))}
             {hasScopedStandaloneTasks && (
@@ -604,7 +631,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                       {t('implement.planReadyForValidation', 'Plan ready for validation')}
                     </div>
                     <div className="text-xs text-muted-foreground truncate">
-                      {plan.title}
+                      {planLabelsById.get(plan.id) || plan.title}
                     </div>
                   </div>
                   <button
@@ -667,6 +694,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   task={task}
                   isSelected={selectedTaskId === task.id}
                   isBusy={pendingTaskId === task.id}
+                  planLabel={getTaskPlanLabel(task)}
                   statusLabel={statusLabels[task.status]}
                   multiRepoPresentation={buildMultiRepoPresentation(
                     task,
@@ -709,6 +737,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   task={task}
                   isSelected={selectedTaskId === task.id}
                   isBusy={pendingTaskId === task.id}
+                  planLabel={getTaskPlanLabel(task)}
                   statusLabel={statusLabels[task.status]}
                   multiRepoPresentation={buildMultiRepoPresentation(
                     task,
