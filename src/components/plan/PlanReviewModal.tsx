@@ -1,6 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { loadPlanReview, type PlanReviewResult } from '../../services/architectGitFlowService';
+import {
+  isArchitectPlanReplicaDivergenceError,
+  repairArchitectPlanReplicas,
+  type ArchitectPlanReplicaDivergence,
+} from '../../services/architectPlanService';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { CodeViewer } from '../ui/CodeViewer';
 import { Icon } from '../ui/Icon';
@@ -35,6 +40,64 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
   const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [replicaRepair, setReplicaRepair] = useState<{
+    divergence: ArchitectPlanReplicaDivergence;
+    message: string;
+  } | null>(null);
+  const [isRepairingReplica, setIsRepairingReplica] = useState(false);
+  const pendingReplicaRetryRef = useRef<(() => Promise<void>) | null>(null);
+
+  const openReplicaRepair = (loadError: unknown, retry?: () => Promise<void>): boolean => {
+    if (!isArchitectPlanReplicaDivergenceError(loadError)) {
+      return false;
+    }
+
+    pendingReplicaRetryRef.current = retry || null;
+    setReplicaRepair({
+      divergence: loadError.divergence,
+      message: loadError.message,
+    });
+    setError(loadError.message);
+    return true;
+  };
+
+  const loadReview = useCallback(async (options?: { cancelled?: () => boolean }): Promise<void> => {
+    const nextReview = await loadPlanReview({ branchName, planId });
+    if (options?.cancelled?.()) {
+      return;
+    }
+    setReview(nextReview);
+    setSelectedRepositoryId((current) =>
+      nextReview.repositories.some((repository) => repository.id === current)
+        ? current
+        : nextReview.repositories[0]?.id ?? null
+    );
+  }, [branchName, planId]);
+
+  const performReplicaRepair = async (strategy: 'oldest' | 'newest'): Promise<void> => {
+    if (!replicaRepair) return;
+
+    setIsRepairingReplica(true);
+    try {
+      await repairArchitectPlanReplicas({
+        branchName: replicaRepair.divergence.branchName,
+        planId: replicaRepair.divergence.planId,
+        strategy,
+      });
+      await loadReview();
+      const retry = pendingReplicaRetryRef.current;
+      pendingReplicaRetryRef.current = null;
+      setReplicaRepair(null);
+      setError(null);
+      if (retry) {
+        await retry();
+      }
+    } catch (repairError) {
+      setError(repairError instanceof Error ? repairError.message : String(repairError));
+    } finally {
+      setIsRepairingReplica(false);
+    }
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -44,16 +107,12 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
       setIsLoading(true);
       setError(null);
       try {
-        const nextReview = await loadPlanReview({ branchName, planId });
-        if (cancelled) return;
-        setReview(nextReview);
-        setSelectedRepositoryId((current) =>
-          nextReview.repositories.some((repository) => repository.id === current)
-            ? current
-            : nextReview.repositories[0]?.id ?? null
-        );
+        await loadReview({ cancelled: () => cancelled });
       } catch (loadError) {
         if (cancelled) return;
+        if (openReplicaRepair(loadError, () => loadReview())) {
+          return;
+        }
         setError(loadError instanceof Error ? loadError.message : String(loadError));
       } finally {
         if (!cancelled) {
@@ -66,7 +125,7 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [branchName, isOpen, planId]);
+  }, [isOpen, loadReview, planId]);
 
   const selectedRepository = useMemo(
     () => review?.repositories.find((repository) => repository.id === selectedRepositoryId) ?? review?.repositories[0] ?? null,
@@ -76,7 +135,14 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
 
   const handleFinalize = async () => {
     setError(null);
-    await finalizePlan(planId);
+    try {
+      await finalizePlan(planId);
+    } catch (finalizeError) {
+      if (openReplicaRepair(finalizeError, () => handleFinalize())) {
+        return;
+      }
+      setError(finalizeError instanceof Error ? finalizeError.message : String(finalizeError));
+    }
     const storeError = useTaskStore.getState().lastError;
     if (storeError) {
       setError(storeError);
@@ -295,6 +361,58 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
           </div>
         </div>
       </div>
+
+      {replicaRepair && (
+        <div className="fixed inset-0 z-[96] flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg rounded-xl border border-border bg-card shadow-2xl">
+            <div className="px-5 py-4 border-b border-border">
+              <h3 className="text-sm font-semibold text-foreground">
+                {t('implement.planReviewReplicaRepair', 'Repair plan metadata replicas')}
+              </h3>
+              <p className="mt-2 text-xs text-muted-foreground">{replicaRepair.message}</p>
+            </div>
+
+            <div className="px-5 py-4 space-y-2 text-xs text-muted-foreground">
+              {replicaRepair.divergence.replicas.map((replica) => (
+                <div key={replica.scopeKey} className="rounded-md border border-border px-3 py-2">
+                  <div className="text-foreground">{replica.repoPath || replica.scopeKey}</div>
+                  <div>{replica.missing ? 'Missing replica' : replica.updatedAt || 'Unknown date'}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="px-5 py-4 border-t border-border flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={isRepairingReplica}
+                onClick={() => {
+                  pendingReplicaRetryRef.current = null;
+                  setReplicaRepair(null);
+                }}
+                className="px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+              >
+                {t('common.cancel', 'Cancel')}
+              </button>
+              <button
+                type="button"
+                disabled={isRepairingReplica}
+                onClick={() => void performReplicaRepair('oldest')}
+                className="px-3 py-2 rounded-md border border-border hover:bg-accent text-sm"
+              >
+                {isRepairingReplica ? 'Repairing...' : 'Keep oldest'}
+              </button>
+              <button
+                type="button"
+                disabled={isRepairingReplica}
+                onClick={() => void performReplicaRepair('newest')}
+                className="px-3 py-2 rounded-md bg-primary text-primary-foreground text-sm hover:opacity-90"
+              >
+                {isRepairingReplica ? 'Repairing...' : 'Keep newest'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

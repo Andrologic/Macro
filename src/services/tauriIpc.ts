@@ -348,11 +348,13 @@ export async function fsReadFileWithOptions(params: {
   path: string;
   allowOutsideWorkspace?: boolean;
   workspaceScope?: WorkspaceScope;
+  workspacePath?: string | null;
 }): Promise<FsFileContentDto> {
   return invoke<FsFileContentDto>('fs_read_file', {
     path: params.path,
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
     workspaceScope: params.workspaceScope ?? null,
+    workspacePath: params.workspacePath ?? null,
   });
 }
 
@@ -362,6 +364,7 @@ export async function fsWriteFile(params: {
   createDirs?: boolean;
   allowOutsideWorkspace?: boolean;
   workspaceScope?: WorkspaceScope;
+  workspacePath?: string | null;
 }): Promise<FsWriteResultDto> {
   return invoke<FsWriteResultDto>('fs_write_file', {
     path: params.path,
@@ -369,6 +372,7 @@ export async function fsWriteFile(params: {
     createDirs: params.createDirs ?? null,
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
     workspaceScope: params.workspaceScope ?? null,
+    workspacePath: params.workspacePath ?? null,
   });
 }
 
@@ -378,6 +382,8 @@ export async function fsListDir(params: {
   includeHidden?: boolean;
   maxDepth?: number;
   allowOutsideWorkspace?: boolean;
+  workspaceScope?: WorkspaceScope;
+  workspacePath?: string | null;
 }): Promise<FsDirEntryDto[]> {
   return invoke<FsDirEntryDto[]>('fs_list_dir', {
     path: params.path,
@@ -385,36 +391,58 @@ export async function fsListDir(params: {
     includeHidden: params.includeHidden ?? null,
     maxDepth: params.maxDepth ?? null,
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
+    workspaceScope: params.workspaceScope ?? null,
+    workspacePath: params.workspacePath ?? null,
   });
 }
 
-export async function fsStat(path: string): Promise<FsFileStatsDto> {
-  return invoke<FsFileStatsDto>('fs_stat', { path });
+export async function fsStat(path: string, options?: {
+  workspaceScope?: WorkspaceScope;
+  workspacePath?: string | null;
+}): Promise<FsFileStatsDto> {
+  return invoke<FsFileStatsDto>('fs_stat', {
+    path,
+    workspaceScope: options?.workspaceScope ?? null,
+    workspacePath: options?.workspacePath ?? null,
+  });
 }
 
-export async function fsExists(path: string): Promise<boolean> {
-  return invoke<boolean>('fs_exists', { path });
+export async function fsExists(path: string, options?: {
+  workspaceScope?: WorkspaceScope;
+  workspacePath?: string | null;
+}): Promise<boolean> {
+  return invoke<boolean>('fs_exists', {
+    path,
+    workspaceScope: options?.workspaceScope ?? null,
+    workspacePath: options?.workspacePath ?? null,
+  });
 }
 
 export async function fsDelete(params: {
   path: string;
   recursive?: boolean;
   workspaceScope?: WorkspaceScope;
+  workspacePath?: string | null;
 }): Promise<void> {
   return invoke('fs_delete', {
     path: params.path,
     recursive: params.recursive ?? null,
     workspaceScope: params.workspaceScope ?? null,
+    workspacePath: params.workspacePath ?? null,
   });
 }
 
 export async function fsCreateDir(params: {
   path: string;
   recursive?: boolean;
+  workspaceScope?: WorkspaceScope;
+  workspacePath?: string | null;
 }): Promise<void> {
   return invoke('fs_create_dir', {
     path: params.path,
     recursive: params.recursive ?? null,
+    workspaceScope: params.workspaceScope ?? null,
+    workspacePath: params.workspacePath ?? null,
   });
 }
 
@@ -683,28 +711,46 @@ export async function gitPull(params: {
   });
 }
 
-export async function macroBranchEnsure(): Promise<MacroBranchSyncDto> {
-  return invoke<MacroBranchSyncDto>('macro_branch_ensure');
+export async function macroBranchEnsure(params?: {
+  workspacePath?: string | null;
+}): Promise<MacroBranchSyncDto> {
+  return invoke<MacroBranchSyncDto>('macro_branch_ensure', {
+    workspacePath: params?.workspacePath ?? null,
+  });
 }
 
-export async function macroBranchStatus(): Promise<MacroBranchSyncDto> {
-  return invoke<MacroBranchSyncDto>('macro_branch_status');
+export async function macroBranchStatus(params?: {
+  workspacePath?: string | null;
+}): Promise<MacroBranchSyncDto> {
+  return invoke<MacroBranchSyncDto>('macro_branch_status', {
+    workspacePath: params?.workspacePath ?? null,
+  });
 }
 
 export async function macroBranchCommitIfDirty(params?: {
   message?: string;
+  workspacePath?: string | null;
 }): Promise<MacroBranchSyncDto> {
   return invoke<MacroBranchSyncDto>('macro_branch_commit_if_dirty', {
     message: params?.message ?? null,
+    workspacePath: params?.workspacePath ?? null,
   });
 }
 
-export async function macroBranchPush(): Promise<MacroBranchSyncDto> {
-  return invoke<MacroBranchSyncDto>('macro_branch_push');
+export async function macroBranchPush(params?: {
+  workspacePath?: string | null;
+}): Promise<MacroBranchSyncDto> {
+  return invoke<MacroBranchSyncDto>('macro_branch_push', {
+    workspacePath: params?.workspacePath ?? null,
+  });
 }
 
-export async function macroBranchPull(): Promise<MacroBranchSyncDto> {
-  return invoke<MacroBranchSyncDto>('macro_branch_pull');
+export async function macroBranchPull(params?: {
+  workspacePath?: string | null;
+}): Promise<MacroBranchSyncDto> {
+  return invoke<MacroBranchSyncDto>('macro_branch_pull', {
+    workspacePath: params?.workspacePath ?? null,
+  });
 }
 
 // ============ Workspace ============
