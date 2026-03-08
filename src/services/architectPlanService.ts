@@ -970,6 +970,56 @@ const mergePlanSummaries = (
   };
 };
 
+const listLocalTargetBranches = (): string[] => {
+  if (typeof window === 'undefined') return [];
+
+  const branches: string[] = [];
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (!key?.startsWith(`${LOCAL_INDEX_KEY_PREFIX}:`)) {
+      continue;
+    }
+
+    const branchName = key.slice(`${LOCAL_INDEX_KEY_PREFIX}:`.length).trim();
+    if (branchName.length > 0) {
+      branches.push(normalizeBranchName(branchName));
+    }
+  }
+
+  return Array.from(new Set(branches));
+};
+
+const listTargetBranchesAtScope = async (
+  scope: ArchitectMetadataScope
+): Promise<string[]> => {
+  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
+    return listLocalTargetBranches();
+  }
+
+  try {
+    const entries = await tauriIpc.fsListDir({
+      path: 'branches',
+      recursive: true,
+      includeHidden: true,
+      allowOutsideWorkspace: false,
+      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspacePath: scope.workspacePath,
+    });
+
+    const suffix = '/plans/index.json';
+    return Array.from(new Set(
+      entries
+        .filter((entry) => entry.kind === 'file')
+        .map((entry) => entry.relative_path.replace(/\\/g, '/').replace(/^\/+/, ''))
+        .filter((relativePath) => relativePath.endsWith(suffix))
+        .map((relativePath) => normalizeBranchName(relativePath.slice(0, -suffix.length)))
+        .filter((branchName) => branchName.length > 0)
+    ));
+  } catch {
+    return [];
+  }
+};
+
 const readAggregatedIndex = async (branchName: string): Promise<ArchitectPlanIndex> => {
   const normalized = normalizeBranchName(branchName);
   const scopes = await resolveMetadataScopes(undefined, { includeAllKnown: true });
@@ -994,6 +1044,18 @@ const readAggregatedIndex = async (branchName: string): Promise<ArchitectPlanInd
       new Set(indexes.flatMap(({ index }) => index.reservedPlanSlugs.map((slug) => slugifyPlanTitle(slug))))
     ),
   };
+};
+
+export const listArchitectPlanTargetBranches = async (): Promise<string[]> => {
+  const scopes = await resolveMetadataScopes(undefined, { includeAllKnown: true });
+  const discoveredBranches = (
+    await Promise.all(scopes.map((scope) => listTargetBranchesAtScope(scope)))
+  ).flat();
+
+  return Array.from(new Set([
+    getGitFlowBaseBranch(),
+    ...discoveredBranches,
+  ])).sort((left, right) => left.localeCompare(right));
 };
 
 const loadPlanReplicaSet = async (
