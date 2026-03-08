@@ -2301,8 +2301,10 @@ pub async fn macro_branch_ensure(
     git_state: State<'_, GitState>,
     workspace_path: Option<String>,
 ) -> Result<MacroBranchSyncDto> {
-    let workspace =
-        resolve_macro_workspace_path(&workspace_root.inner().0.read().await.clone(), workspace_path);
+    let workspace = resolve_macro_workspace_path(
+        &workspace_root.inner().0.read().await.clone(),
+        workspace_path,
+    );
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
@@ -2327,8 +2329,10 @@ pub async fn macro_branch_status(
     git_state: State<'_, GitState>,
     workspace_path: Option<String>,
 ) -> Result<MacroBranchSyncDto> {
-    let workspace =
-        resolve_macro_workspace_path(&workspace_root.inner().0.read().await.clone(), workspace_path);
+    let workspace = resolve_macro_workspace_path(
+        &workspace_root.inner().0.read().await.clone(),
+        workspace_path,
+    );
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
@@ -2347,8 +2351,10 @@ pub async fn macro_branch_commit_if_dirty(
     message: Option<String>,
     workspace_path: Option<String>,
 ) -> Result<MacroBranchSyncDto> {
-    let workspace =
-        resolve_macro_workspace_path(&workspace_root.inner().0.read().await.clone(), workspace_path);
+    let workspace = resolve_macro_workspace_path(
+        &workspace_root.inner().0.read().await.clone(),
+        workspace_path,
+    );
     let git_state = git_state.inner().clone();
     let commit_message = message
         .unwrap_or_else(|| "chore(metadata): persist metadata updates".to_string())
@@ -2478,8 +2484,10 @@ pub async fn macro_branch_push(
     git_state: State<'_, GitState>,
     workspace_path: Option<String>,
 ) -> Result<MacroBranchSyncDto> {
-    let workspace =
-        resolve_macro_workspace_path(&workspace_root.inner().0.read().await.clone(), workspace_path);
+    let workspace = resolve_macro_workspace_path(
+        &workspace_root.inner().0.read().await.clone(),
+        workspace_path,
+    );
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
@@ -2533,8 +2541,10 @@ pub async fn macro_branch_pull(
     git_state: State<'_, GitState>,
     workspace_path: Option<String>,
 ) -> Result<MacroBranchSyncDto> {
-    let workspace =
-        resolve_macro_workspace_path(&workspace_root.inner().0.read().await.clone(), workspace_path);
+    let workspace = resolve_macro_workspace_path(
+        &workspace_root.inner().0.read().await.clone(),
+        workspace_path,
+    );
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
@@ -2643,10 +2653,8 @@ mod tests {
     fn test_resolve_macro_workspace_path_prefers_explicit_repo_path() {
         let default_root = PathBuf::from("/workspace/default");
 
-        let resolved = resolve_macro_workspace_path(
-            &default_root,
-            Some("/workspace/project-a".to_string()),
-        );
+        let resolved =
+            resolve_macro_workspace_path(&default_root, Some("/workspace/project-a".to_string()));
 
         assert_eq!(resolved, PathBuf::from("/workspace/project-a"));
     }
@@ -2729,19 +2737,25 @@ mod tests {
         fs::write(temp.path().join("README.md"), "base branch change").unwrap();
         commit_repo(&repo, "feat: base readme change", true).unwrap();
 
-        let output = run_git_command(temp.path(), &[
-            "merge".to_string(),
-            "--no-ff".to_string(),
-            "--no-edit".to_string(),
-            "feature".to_string(),
-        ])
+        let output = run_git_command(
+            temp.path(),
+            &[
+                "merge".to_string(),
+                "--no-ff".to_string(),
+                "--no-edit".to_string(),
+                "feature".to_string(),
+            ],
+        )
         .unwrap();
         assert!(!output.success);
 
         let status = build_git_status(&repo).unwrap();
         assert!(!status.is_clean);
         assert!(status.merge_in_progress);
-        assert!(status.conflicted_files.iter().any(|path| path == "README.md"));
+        assert!(status
+            .conflicted_files
+            .iter()
+            .any(|path| path == "README.md"));
     }
 
     #[test]

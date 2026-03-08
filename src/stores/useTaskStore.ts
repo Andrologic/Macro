@@ -58,12 +58,6 @@ interface CompleteTaskOptions {
 
 let appSyncUnsubscribe: (() => void) | null = null;
 
-export const taskStoreBindings = {
-  listTasks: () => services.listTasks(),
-  finalizePlanIntoBaseBranch,
-  mergeFeatureBranchIntoPlanBranch,
-};
-
 const normalizeBranchName = (value?: string): string => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed || 'work';
@@ -339,7 +333,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   refreshFromPlan: async () => {
     try {
-      const catalog = await taskStoreBindings.listTasks();
+      const catalog = await services.listTasks();
       set({
         tasks: catalog.tasks,
         planSummaries: catalog.plans,
@@ -624,7 +618,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
           const mergeOutput = allowWithoutCodeChanges || !diff.trim()
             ? undefined
-            : await taskStoreBindings.mergeFeatureBranchIntoPlanBranch({
+            : await mergeFeatureBranchIntoPlanBranch({
               projectId: target.projectId,
               branchName: target.branchName,
               planBranchName: integrationBranchName,
@@ -696,7 +690,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     set({ finalizingPlanId: planId, lastError: null });
 
     try {
-      const result = await taskStoreBindings.finalizePlanIntoBaseBranch({
+      const result = await finalizePlanIntoBaseBranch({
         branchName: resolveTargetBranch(summary.targetBranch),
         planId,
       });
