@@ -160,6 +160,7 @@ describe('macroSyncService', () => {
         {
           repoPath: '/repos/web',
           projectId: 'web',
+          worktreePath: '/workspace/.git/macro-metadata-worktree',
           state: 'pending',
           error: null,
           reason: 'behind',
@@ -169,6 +170,7 @@ describe('macroSyncService', () => {
         {
           repoPath: '/repos/api',
           projectId: 'api',
+          worktreePath: '/workspace/.git/macro-metadata-worktree',
           state: 'clean',
           error: null,
           reason: 'clean',
@@ -179,7 +181,7 @@ describe('macroSyncService', () => {
     });
   });
 
-  it('blocks only the repositories that still require a commit before pull', async () => {
+  it('blocks pull across all repositories when one target still requires a commit', async () => {
     macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
       workspacePath?.includes('web')
         ? createMacroResult({
@@ -197,8 +199,62 @@ describe('macroSyncService', () => {
     const result = await service.pullMacroMetadata();
 
     expect(result?.reason).toBe('dirty');
-    expect(macroBranchPullMock).toHaveBeenCalledTimes(1);
-    expect(macroBranchPullMock).toHaveBeenCalledWith({ workspacePath: '/repos/api' });
+    expect(result?.next_action).toBe('commit');
+    expect(macroBranchPullMock).not.toHaveBeenCalled();
+    expect(setMetadataSyncStatusMock).toHaveBeenLastCalledWith({
+      state: 'pending',
+      error: null,
+      reason: 'dirty',
+      nextAction: 'commit',
+      conflictFiles: [],
+      repositories: [
+        {
+          repoPath: '/repos/web',
+          projectId: 'web',
+          worktreePath: '/workspace/.git/macro-metadata-worktree',
+          state: 'pending',
+          error: null,
+          reason: 'dirty',
+          nextAction: 'commit',
+          conflictFiles: [],
+        },
+        {
+          repoPath: '/repos/api',
+          projectId: 'api',
+          worktreePath: '/workspace/.git/macro-metadata-worktree',
+          state: 'clean',
+          error: null,
+          reason: 'clean',
+          nextAction: null,
+          conflictFiles: [],
+        },
+      ],
+    });
+  });
+
+  it('blocks commit across all repositories when one target already has conflicts', async () => {
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      workspacePath?.includes('web')
+        ? createMacroResult({
+            state: 'conflict',
+            reason: 'merge_conflict',
+            next_action: 'resolve_conflict',
+            conflicted_files: ['macro/state.json'],
+            error: 'Metadata has unresolved merge conflicts.',
+          })
+        : createMacroResult({
+            output: `ensured:${workspacePath || 'default'}`,
+          })
+    );
+
+    const service = loadMacroSyncService();
+    const result = await service.commitMacroMetadata({
+      commitMessage: 'chore(metadata): manual commit',
+    });
+
+    expect(result?.state).toBe('conflict');
+    expect(result?.reason).toBe('merge_conflict');
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
   });
 
   it('commits metadata in every targeted repository without pushing', async () => {
@@ -220,6 +276,29 @@ describe('macroSyncService', () => {
     expect(result?.next_action).toBe('push');
   });
 
+  it('blocks push across all repositories when one target must pull first', async () => {
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      workspacePath?.includes('api')
+        ? createMacroResult({
+            state: 'pending',
+            behind: 2,
+            reason: 'behind',
+            next_action: 'pull',
+          })
+        : createMacroResult({
+            output: `ensured:${workspacePath || 'default'}`,
+          })
+    );
+
+    const service = loadMacroSyncService();
+    const result = await service.pushMacroMetadata();
+
+    expect(result?.state).toBe('pending');
+    expect(result?.reason).toBe('behind');
+    expect(result?.next_action).toBe('pull');
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+  });
+
   it('auto-pushes stream metadata updates across all repositories when enabled', async () => {
     const service = loadMacroSyncService({ metadataAutoPush: true });
 
@@ -232,6 +311,40 @@ describe('macroSyncService', () => {
     expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(2);
     expect(macroBranchPushMock).toHaveBeenCalledTimes(2);
     expect(result?.state).toBe('clean');
+  });
+
+  it('blocks stream auto-push globally when a committed repository still has merge conflicts', async () => {
+    macroBranchCommitIfDirtyMock.mockImplementation(async ({ workspacePath }: { message?: string; workspacePath?: string | null } = {}) =>
+      workspacePath?.includes('web')
+        ? createMacroResult({
+            state: 'conflict',
+            reason: 'merge_conflict',
+            next_action: 'resolve_conflict',
+            conflicted_files: ['macro/state.json'],
+            error: 'Metadata has unresolved merge conflicts.',
+          })
+        : createMacroResult({
+            state: 'pending',
+            has_upstream: false,
+            committed: true,
+            commit_hash: 'api123',
+            reason: 'missing_upstream',
+            next_action: 'push',
+            output: `commit ok:${workspacePath || 'default'}`,
+          })
+    );
+
+    const service = loadMacroSyncService({ metadataAutoPush: true });
+    const result = await service.syncMacroMetadataAfterStream({
+      mode: 'Architect',
+      conversationId: 'conv-1',
+      trigger: 'send',
+    });
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(2);
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+    expect(result?.state).toBe('conflict');
+    expect(result?.conflicted_files).toEqual(['macro/state.json']);
   });
 
   it('normalizes thrown failures into actionable metadata diagnostics', async () => {

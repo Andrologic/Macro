@@ -3,16 +3,18 @@ import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
 import { toast } from '../ui/Toaster';
 import { useAppStore } from '../../stores/useAppStore';
-import { useChatStore } from '../../stores/useChatStore';
 import { toServiceError } from '../../services/contracts/errors';
 import * as tauriIpc from '../../services/tauriIpc';
 import {
-  commitMacroMetadata,
-  getMacroSyncDescription,
-  pullMacroMetadata,
-  pushMacroMetadata,
-  refreshMacroSyncStatus,
-} from '../../services/macroSyncService';
+  buildMacroConflictAssistantPrompt,
+  toMacroConflictResolutionEntries,
+  type ConflictResolutionEntry,
+} from '../../services/conflictResolution';
+import { openConflictAssistant } from '../../services/conflictAssistantService';
+import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
+import { commitMacroMetadata, getMacroSyncDescription, pullMacroMetadata, pushMacroMetadata, refreshMacroSyncStatus } from '../../services/macroSyncService';
+
+type MacroConflictContext = 'commit' | 'pull' | 'push' | 'refresh';
 
 interface CodeStatusSnapshot {
   branch: string;
@@ -98,7 +100,6 @@ export const Footer: React.FC = () => {
   const isTauriRuntime = tauriIpc.isTauriAvailable();
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
   const getProjectById = useAppStore((state) => state.getProjectById);
-  const setMode = useAppStore((state) => state.setMode);
   const metadataSyncState = useAppStore((state) => state.metadataSyncState);
   const metadataSyncError = useAppStore((state) => state.metadataSyncError);
   const metadataSyncReason = useAppStore((state) => state.metadataSyncReason);
@@ -114,6 +115,7 @@ export const Footer: React.FC = () => {
   const [macroSnapshot, setMacroSnapshot] = useState<tauriIpc.MacroBranchSyncDto | null>(null);
 
   const lastConflictToastAtRef = useRef(0);
+  const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
 
   const selectedProject = useMemo(
     () => (selectedProjectId ? getProjectById(selectedProjectId) : undefined),
@@ -122,11 +124,12 @@ export const Footer: React.FC = () => {
   const repoPath = selectedProject?.path || null;
 
   const presentConflictIfNeeded = useCallback(
-    (result: tauriIpc.MacroBranchSyncDto, context: 'pull' | 'push' | 'refresh') => {
+    (result: tauriIpc.MacroBranchSyncDto, context: MacroConflictContext) => {
       if (result.state !== 'conflict') {
         return;
       }
 
+      lastMacroConflictActionRef.current = context;
       setShowConflictModal(true);
 
       const now = Date.now();
@@ -135,7 +138,7 @@ export const Footer: React.FC = () => {
         return;
       }
 
-        const description =
+      const description =
         context === 'pull'
           ? '@macro pull reported merge conflicts. Resolve files then re-run sync.'
           : '@macro has unresolved conflicts. Resolve manually or launch AI guidance.';
@@ -279,16 +282,17 @@ export const Footer: React.FC = () => {
     }
   };
 
-  const handleMacroPull = async () => {
+  const handleMacroPull = async (): Promise<tauriIpc.MacroBranchSyncDto | null> => {
     if (!isTauriRuntime || macroAction) {
-      return;
+      return null;
     }
 
+    lastMacroConflictActionRef.current = 'pull';
     setMacroAction('pull');
     try {
       const result = await pullMacroMetadata();
       if (!result) {
-        return;
+        return null;
       }
 
       setMacroSnapshot(result);
@@ -307,28 +311,30 @@ export const Footer: React.FC = () => {
           description: formatGitOutput(result.output),
         });
       }
+      return result;
     } finally {
       setMacroAction(null);
     }
   };
 
-  const handleMacroCommit = async () => {
+  const handleMacroCommit = async (): Promise<tauriIpc.MacroBranchSyncDto | null> => {
     if (!isTauriRuntime || macroAction) {
-      return;
+      return null;
     }
 
+    lastMacroConflictActionRef.current = 'commit';
     setMacroAction('commit');
     try {
       const result = await commitMacroMetadata({
         commitMessage: 'chore(metadata): manual commit from footer controls',
       });
       if (!result) {
-        return;
+        return null;
       }
 
       setMacroSnapshot(result);
       if (result.state === 'conflict') {
-        presentConflictIfNeeded(result, 'refresh');
+        presentConflictIfNeeded(result, 'commit');
       } else if (result.committed) {
         toast.success('@macro commit complete', {
           description: formatGitOutput(result.output),
@@ -342,21 +348,23 @@ export const Footer: React.FC = () => {
           description: formatGitOutput(result.output) || 'Metadata branch is already up to date.',
         });
       }
+      return result;
     } finally {
       setMacroAction(null);
     }
   };
 
-  const handleMacroPush = async () => {
+  const handleMacroPush = async (): Promise<tauriIpc.MacroBranchSyncDto | null> => {
     if (!isTauriRuntime || macroAction) {
-      return;
+      return null;
     }
 
+    lastMacroConflictActionRef.current = 'push';
     setMacroAction('push');
     try {
       const result = await pushMacroMetadata();
       if (!result) {
-        return;
+        return null;
       }
 
       setMacroSnapshot(result);
@@ -378,41 +386,31 @@ export const Footer: React.FC = () => {
           description: formatGitOutput(result.output),
         });
       }
+      return result;
     } finally {
       setMacroAction(null);
     }
   };
 
   const openAiConflictAssistant = async () => {
-    const worktreePath = macroSnapshot?.worktree_path || '(unknown worktree path)';
-    const conflictFilesBlock = metadataConflictFiles.length
-      ? metadataConflictFiles.map((file) => `- ${file}`).join('\n')
-      : '- (none reported)';
-
-    const prompt = [
-      'I have conflicts on the @macro metadata branch after pull.',
-      'Please help me resolve them safely without touching code branch history.',
-      '',
-      `Metadata worktree: ${worktreePath}`,
-      '',
-      'Conflicted files:',
-      conflictFilesBlock,
-      '',
-      'Provide a short plan first, then run safe git commands to resolve conflicts.',
-    ].join('\n');
+    const fallbackRepositories = metadataSyncRepositories.length > 0
+      ? metadataSyncRepositories
+      : [{
+        repoPath: repoPath || '@macro',
+        projectId: selectedProjectId,
+        worktreePath: macroSnapshot?.worktree_path || null,
+        state: metadataSyncState,
+        error: metadataSyncError,
+        reason: metadataSyncReason,
+        nextAction: metadataSyncNextAction,
+        conflictFiles: metadataConflictFiles,
+      }];
+    const prompt = buildMacroConflictAssistantPrompt({
+      repositories: fallbackRepositories,
+    });
 
     try {
-      setMode('Debug');
-      const chatStore = useChatStore.getState();
-      const conversationId = await chatStore.ensureConversationForCurrentMode();
-      if (!conversationId) {
-        toast.error('Cannot open AI assistant', {
-          description: 'No Debug conversation available.',
-        });
-        return;
-      }
-
-      await chatStore.sendMessage({ conversationId, content: prompt });
+      await openConflictAssistant(prompt);
       toast.success('AI conflict assistant started', {
         description: 'Switched to Debug mode and posted the conflict context.',
       });
@@ -423,12 +421,62 @@ export const Footer: React.FC = () => {
     }
   };
 
+  const handleRetryMacroSync = async () => {
+    const action = lastMacroConflictActionRef.current;
+    let result: tauriIpc.MacroBranchSyncDto | null = null;
+
+    if (action === 'commit') {
+      result = await handleMacroCommit();
+    } else if (action === 'pull') {
+      result = await handleMacroPull();
+    } else if (action === 'push') {
+      result = await handleMacroPush();
+    } else {
+      setIsRefreshing(true);
+      try {
+        result = await refreshMacroStatus(true);
+      } finally {
+        setIsRefreshing(false);
+      }
+    }
+
+    if (result && result.state !== 'conflict') {
+      setShowConflictModal(false);
+    }
+  };
+
   const metadataLabel =
     macroStateLabel[metadataSyncState as tauriIpc.MacroSyncState] || '@macro unknown';
   const metadataLabelClass =
     macroStateClass[metadataSyncState as tauriIpc.MacroSyncState] || 'text-muted-foreground';
   const codeStateClass = codeStatus.isClean ? 'text-emerald-400' : 'text-amber-400';
   const codeStateLabel = codeStatus.isClean ? 'clean' : `${codeStatus.changedCount} changes`;
+  const macroConflictEntries = useMemo<ConflictResolutionEntry[]>(() => {
+    const repositories = metadataSyncRepositories.length > 0
+      ? metadataSyncRepositories
+      : [{
+        repoPath: repoPath || '@macro',
+        projectId: selectedProjectId,
+        worktreePath: macroSnapshot?.worktree_path || null,
+        state: metadataSyncState,
+        error: metadataSyncError,
+        reason: metadataSyncReason,
+        nextAction: metadataSyncNextAction,
+        conflictFiles: metadataConflictFiles,
+      }];
+
+    return toMacroConflictResolutionEntries(repositories);
+  }, [
+    macroSnapshot,
+    metadataConflictFiles,
+    metadataSyncError,
+    metadataSyncNextAction,
+    metadataSyncReason,
+    metadataSyncRepositories,
+    metadataSyncState,
+    repoPath,
+    selectedProjectId,
+  ]);
   const macroHint = useMemo(() => {
     const baseHint = formatMacroHint(macroSnapshot);
     if (metadataSyncRepositories.length <= 1) {
@@ -573,66 +621,20 @@ export const Footer: React.FC = () => {
             onClick={() => setShowConflictModal(false)}
           />
 
-          <div className="relative w-full max-w-xl rounded-xl border border-border bg-card p-4 shadow-2xl">
-            <h3 className="text-sm font-semibold text-foreground">@macro sync conflict</h3>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Pulling metadata produced merge conflicts. Resolve files in the metadata worktree,
-              then run @macro pull/push again.
-            </p>
-
-            {macroSnapshot?.worktree_path && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Worktree: <span className="text-foreground/90">{macroSnapshot.worktree_path}</span>
-              </p>
-            )}
-
-            {metadataSyncError && (
-              <p className="mt-2 text-xs text-red-400">{metadataSyncError}</p>
-            )}
-
-            <div className="mt-3 max-h-36 overflow-auto rounded border border-border bg-background/40 p-2 text-xs">
-              {metadataSyncRepositories.some((repository) => repository.conflictFiles.length > 0) ? (
-                metadataSyncRepositories.flatMap((repository) =>
-                  repository.conflictFiles.map((file) => (
-                    <div key={`${repository.repoPath}:${file}`} className="truncate text-foreground/90">
-                      {repository.repoPath}: {file}
-                    </div>
-                  ))
-                )
-              ) : metadataConflictFiles.length > 0 ? (
-                metadataConflictFiles.map((file) => (
-                  <div key={file} className="truncate text-foreground/90">
-                    {file}
-                  </div>
-                ))
-              ) : (
-                <div className="text-muted-foreground">No conflict file list returned.</div>
-              )}
-            </div>
-
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  toast.info('Manual resolution selected', {
-                    description:
-                      'Resolve conflicted files in the metadata worktree, commit, then use @macro pull/push.',
-                  });
-                  setShowConflictModal(false);
-                }}
-              >
-                Resolve Manually
-              </Button>
-
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => void openAiConflictAssistant()}
-              >
-                Use AI Assistant
-              </Button>
-            </div>
+          <div className="relative w-full max-w-3xl rounded-xl border border-border bg-card p-4 shadow-2xl">
+            <ConflictResolutionPanel
+              title="@macro sync conflict"
+              description="Resolve the reported metadata blockers, then retry the same @macro sync step explicitly."
+              repositories={macroConflictEntries}
+              error={metadataSyncError}
+              retryLabel="Retry sync"
+              retryDisabled={Boolean(macroAction)}
+              retryLoading={Boolean(macroAction) || isRefreshing}
+              onDismiss={() => setShowConflictModal(false)}
+              dismissLabel="Close"
+              onRetry={() => void handleRetryMacroSync()}
+              onUseAiAssistant={() => void openAiConflictAssistant()}
+            />
           </div>
         </div>
       )}

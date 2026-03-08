@@ -314,6 +314,7 @@ const toRepositoryStatus = (
   reason: result.reason,
   nextAction: result.next_action,
   conflictFiles: result.conflicted_files,
+  worktreePath: result.worktree_path?.trim() ? result.worktree_path : null,
 });
 
 const compareMacroResults = (left: MacroSyncResult, right: MacroSyncResult): number => {
@@ -467,6 +468,7 @@ export const createMacroSyncService = (
       repositories: targets.map((target) => ({
         repoPath: target.repoPath,
         projectId: target.projectId,
+        worktreePath: null,
         state: 'pending',
         error: null,
         reason: null,
@@ -508,6 +510,37 @@ export const createMacroSyncService = (
     );
   };
 
+  const ensureTargetsForAction = async (
+    targets: MetadataSyncTarget[],
+    action: ManualMacroAction
+  ): Promise<{
+    blocked: boolean;
+    entries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }>;
+  }> => {
+    const entries = await Promise.all(
+      targets.map(async (target) => {
+        try {
+          return {
+            target,
+            result: await dependencies.tauriIpc.macroBranchEnsure({
+              workspacePath: target.repoPath,
+            }),
+          };
+        } catch (error) {
+          return {
+            target,
+            result: toFailedMacroResult(dependencies.toServiceError(error).message),
+          };
+        }
+      })
+    );
+
+    return {
+      blocked: entries.some(({ result }) => shouldBlockMacroAction(result, action)),
+      entries,
+    };
+  };
+
   const refreshMacroSyncStatus = async (options?: {
     ensure?: boolean;
   }): Promise<MacroSyncResult | null> => {
@@ -546,21 +579,22 @@ export const createMacroSyncService = (
         return applyMacroSyncResult(createAggregateMacroResult([]), []);
       }
 
-      setMacroSyncPending(targets);
       try {
-        return await runAcrossTargets(targets, async (target) => {
-          const ensure = await dependencies.tauriIpc.macroBranchEnsure({
-            workspacePath: target.repoPath,
-          });
-          if (shouldBlockMacroAction(ensure, 'commit')) {
-            return ensure;
-          }
+        const preflight = await ensureTargetsForAction(targets, 'commit');
+        if (preflight.blocked) {
+          return applyMacroSyncResult(
+            createAggregateMacroResult(preflight.entries),
+            preflight.entries.map(({ target, result }) => toRepositoryStatus(target, result))
+          );
+        }
 
-          return dependencies.tauriIpc.macroBranchCommitIfDirty({
+        setMacroSyncPending(targets);
+        return await runAcrossTargets(targets, (target) =>
+          dependencies.tauriIpc.macroBranchCommitIfDirty({
             message: options?.commitMessage,
             workspacePath: target.repoPath,
-          });
-        });
+          })
+        );
       } catch (error) {
         return applyMacroSyncFailure(error, targets);
       }
@@ -578,20 +612,21 @@ export const createMacroSyncService = (
         return applyMacroSyncResult(createAggregateMacroResult([]), []);
       }
 
-      setMacroSyncPending(targets);
       try {
-        return await runAcrossTargets(targets, async (target) => {
-          const ensure = await dependencies.tauriIpc.macroBranchEnsure({
-            workspacePath: target.repoPath,
-          });
-          if (shouldBlockMacroAction(ensure, 'pull')) {
-            return ensure;
-          }
+        const preflight = await ensureTargetsForAction(targets, 'pull');
+        if (preflight.blocked) {
+          return applyMacroSyncResult(
+            createAggregateMacroResult(preflight.entries),
+            preflight.entries.map(({ target, result }) => toRepositoryStatus(target, result))
+          );
+        }
 
-          return dependencies.tauriIpc.macroBranchPull({
+        setMacroSyncPending(targets);
+        return await runAcrossTargets(targets, (target) =>
+          dependencies.tauriIpc.macroBranchPull({
             workspacePath: target.repoPath,
-          });
-        });
+          })
+        );
       } catch (error) {
         return applyMacroSyncFailure(error, targets);
       }
@@ -609,20 +644,21 @@ export const createMacroSyncService = (
         return applyMacroSyncResult(createAggregateMacroResult([]), []);
       }
 
-      setMacroSyncPending(targets);
       try {
-        return await runAcrossTargets(targets, async (target) => {
-          const ensure = await dependencies.tauriIpc.macroBranchEnsure({
-            workspacePath: target.repoPath,
-          });
-          if (shouldBlockMacroAction(ensure, 'push')) {
-            return ensure;
-          }
+        const preflight = await ensureTargetsForAction(targets, 'push');
+        if (preflight.blocked) {
+          return applyMacroSyncResult(
+            createAggregateMacroResult(preflight.entries),
+            preflight.entries.map(({ target, result }) => toRepositoryStatus(target, result))
+          );
+        }
 
-          return dependencies.tauriIpc.macroBranchPush({
+        setMacroSyncPending(targets);
+        return await runAcrossTargets(targets, (target) =>
+          dependencies.tauriIpc.macroBranchPush({
             workspacePath: target.repoPath,
-          });
-        });
+          })
+        );
       } catch (error) {
         return applyMacroSyncFailure(error, targets);
       }
@@ -642,19 +678,20 @@ export const createMacroSyncService = (
         return applyMacroSyncResult(createAggregateMacroResult([]), []);
       }
 
-      setMacroSyncPending(targets);
       try {
+        const preflight = await ensureTargetsForAction(targets, 'commit');
+        if (preflight.blocked) {
+          return applyMacroSyncResult(
+            createAggregateMacroResult(preflight.entries),
+            preflight.entries.map(({ target, result }) => toRepositoryStatus(target, result))
+          );
+        }
+
+        setMacroSyncPending(targets);
         const commitMessage = `chore(metadata): sync ${params.trigger} stream for ${params.conversationId}`;
         const commitResults = await Promise.all(
           targets.map(async (target) => {
             try {
-              const ensure = await dependencies.tauriIpc.macroBranchEnsure({
-                workspacePath: target.repoPath,
-              });
-              if (ensure.state === 'conflict') {
-                return { target, result: ensure };
-              }
-
               const commit = await dependencies.tauriIpc.macroBranchCommitIfDirty({
                 message: commitMessage,
                 workspacePath: target.repoPath,
@@ -670,11 +707,15 @@ export const createMacroSyncService = (
         );
 
         if (dependencies.getAppState().metadataAutoPush) {
+          if (commitResults.some(({ result }) => shouldBlockMacroAction(result, 'push'))) {
+            return applyMacroSyncResult(
+              createAggregateMacroResult(commitResults),
+              commitResults.map(({ target, result }) => toRepositoryStatus(target, result))
+            );
+          }
+
           const pushedEntries = await Promise.all(
-            commitResults.map(async ({ target, result }) => {
-              if (shouldBlockMacroAction(result, 'push')) {
-                return { target, result };
-              }
+            commitResults.map(async ({ target }) => {
               try {
                 return {
                   target,

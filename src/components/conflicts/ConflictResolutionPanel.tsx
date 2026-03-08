@@ -1,0 +1,135 @@
+import React from 'react';
+import type { ConflictResolutionEntry } from '../../services/conflictResolution';
+import { Button } from '../ui/Button';
+import { Icon } from '../ui/Icon';
+import { cn } from '../../utils/cn';
+
+interface ConflictResolutionPanelProps {
+  title: string;
+  description: string;
+  repositories: ConflictResolutionEntry[];
+  error?: string | null;
+  retryLabel?: string;
+  retryDisabled?: boolean;
+  retryLoading?: boolean;
+  onRetry?: () => void;
+  onUseAiAssistant?: () => void;
+  onDismiss?: () => void;
+  dismissLabel?: string;
+}
+
+const toneClassName: Record<ConflictResolutionEntry['statusTone'], string> = {
+  success: 'bg-emerald-500/10 text-emerald-500',
+  warning: 'bg-amber-500/10 text-amber-500',
+  danger: 'bg-red-500/10 text-red-500',
+};
+
+export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = ({
+  title,
+  description,
+  repositories,
+  error,
+  retryLabel = 'Retry',
+  retryDisabled = false,
+  retryLoading = false,
+  onRetry,
+  onUseAiAssistant,
+  onDismiss,
+  dismissLabel = 'Close',
+}) => {
+  return (
+    <div className="rounded-xl border border-red-500/20 bg-red-500/5">
+      <div className="border-b border-red-500/10 px-4 py-3">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-lg bg-red-500/10 p-2 text-red-500">
+            <Icon name="alert-circle" size={16} />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+            <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+            {error && <p className="mt-2 text-xs text-red-500">{error}</p>}
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3 px-4 py-4">
+        {repositories.map((repository) => (
+          <div key={repository.id} className="rounded-lg border border-border bg-background/50 px-4 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-foreground break-all">{repository.repoPath}</div>
+                {repository.subtitle && (
+                  <div className="mt-1 text-xs text-muted-foreground">{repository.subtitle}</div>
+                )}
+              </div>
+              <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium uppercase', toneClassName[repository.statusTone])}>
+                {repository.statusLabel}
+              </span>
+            </div>
+
+            {repository.worktreePath && (
+              <div className="mt-3 text-xs text-muted-foreground">
+                Worktree: <span className="break-all text-foreground/90">{repository.worktreePath}</span>
+              </div>
+            )}
+
+            {repository.reason && (
+              <div className="mt-3 text-xs text-red-500">{repository.reason}</div>
+            )}
+
+            {repository.nextStep && (
+              <div className="mt-2 text-xs text-muted-foreground">
+                Next step: <span className="text-foreground/90">{repository.nextStep}</span>
+              </div>
+            )}
+
+            <div className="mt-3 rounded-md border border-border bg-background/70 px-3 py-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Conflicted files
+              </div>
+              <div className="mt-2 space-y-1">
+                {repository.conflictFiles.length > 0 ? (
+                  repository.conflictFiles.map((file) => (
+                    <div key={`${repository.id}:${file}`} className="break-all text-xs text-foreground/90">
+                      {file}
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-xs text-muted-foreground">No conflict file list reported.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {(onDismiss || onRetry || onUseAiAssistant) && (
+        <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
+          {onDismiss && (
+            <Button variant="ghost" size="sm" onClick={onDismiss}>
+              {dismissLabel}
+            </Button>
+          )}
+          {onRetry && (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={retryDisabled}
+              isLoading={retryLoading}
+              onClick={onRetry}
+            >
+              {retryLabel}
+            </Button>
+          )}
+          {onUseAiAssistant && (
+            <Button variant="primary" size="sm" onClick={onUseAiAssistant}>
+              Use AI Assistant
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default ConflictResolutionPanel;
