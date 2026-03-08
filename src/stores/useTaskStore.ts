@@ -696,6 +696,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       set({ finalizingPlanId: null, lastError: normalized.message });
+      throw error;
     }
   },
 
