@@ -43,6 +43,7 @@ L'application dispose deja d'une base solide :
 - filtres par plan et prise en charge des taches hors plan maintenant presents dans la file de taches
 - lifecycle des plans maintenant robuste sur le socle desktop local-first
 - sync `@macro` maintenant structuree avec etats exploitables, actions explicites et erreurs remontees proprement
+- merge conflicts pilotes par Macro maintenant detectes, bloques en fail-closed et traites via un workflow assiste de resolution et reprise
 - couches de services, stores et IPC deja structurees
 - kernel headless deja present en premiere version
 
@@ -136,10 +137,11 @@ Etat deja consolide :
 - duplication coherente de la metadata de plan sur chaque depot implique pour les plans multi-projets
 - lecture, restauration, archivage, suppression et sync metadata des plans multi-projets maintenant decouplees d'un `projectId` unique
 - divergence entre copies metadata d'un meme plan maintenant detectee en fail-closed avec reparation explicite
+- merge conflicts de finalisation de plan et de sync `@macro` maintenant detectes avant mutation avec diagnostic par depot, aide IA et reprise explicite
 
 Etat a consolider :
-- resolution assistee des merge conflicts issus des merges pilotes par Macro
-- fermeture complete de la phase Git/metadata sur des cas reels de conflits assistes
+- la phase coeur Git/metadata n'a plus de blocage critique cote desktop local-first
+- les prochains gains structurants sur ce domaine passent surtout par l'experience multi-projet premium cote Implement et review
 
 ### 4.6 Multi-projet
 
@@ -153,6 +155,7 @@ Etat a consolider :
 - lisibilite UX du multi-projet
 - gestion de bout en bout des taches qui touchent plusieurs projets
 - clarte globale des filtres, de la review et de la navigation
+- review Implement multi-depots encore trop implicite dans les parcours quotidiens
 
 ### 4.7 Mode Chat
 
@@ -321,9 +324,11 @@ Critere de sortie :
 - l'infrastructure Git de Macro est suffisamment fiable pour du travail long cours
 
 Etat :
-- tranche prioritaire livree sur finalisation, suppression logique, cleanup, preflights et sync `@macro`
+- phase consideree comme livree sur le socle desktop local-first
+- finalisation, suppression logique, cleanup, preflights et sync `@macro` maintenant robustes
 - coherence metadata par projet maintenant livree pour les plans multi-projets cote desktop local-first
-- il reste a finir la resolution assistee des merge conflicts pilotes par Macro pour cloturer totalement la phase
+- merge conflicts pilotes par Macro maintenant detectes, bloques en fail-closed et traitables via un workflow assiste avec reprise explicite
+- les prochaines evolutions prioritaires basculent sur l'experience multi-projet premium
 
 ### Phase 3 - Experience multi-projet premium
 
@@ -337,9 +342,9 @@ Critere de sortie :
 - le multi-projet devient un vrai avantage produit visible
 
 Prochaine tranche recommandee apres merge :
-- resolution assistee des merge conflicts issus des merges pilotes par Macro
-- workflow de blocage, diagnostic, aide IA et reprise de finalisation apres resolution
-- verification de bout en bout sur finalisation de plan et sync `@macro` en presence de conflits reels
+- review multi-projet premium cote Implement
+- navigation explicite depot par depot dans une meme tache multi-projet, avec contexte plus lisible dans la file et dans la review
+- validation et commits par depot sans ambiguite, tout en conservant une completion unifiee de la tache
 
 ### Phase 4 - Automatisation et supervision
 
