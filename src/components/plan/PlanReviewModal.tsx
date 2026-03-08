@@ -1,14 +1,27 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { loadPlanReview, type PlanReviewResult } from '../../services/architectGitFlowService';
+import {
+  isPlanFinalizationBlockedError,
+  loadPlanReview,
+  type PlanReviewResult,
+} from '../../services/architectGitFlowService';
+import {
+  buildPlanFinalizationConflictAssistantPrompt,
+  describePlanFinalizationNextStep,
+  toPlanConflictResolutionEntries,
+} from '../../services/conflictResolution';
+import { openConflictAssistant } from '../../services/conflictAssistantService';
+import { toServiceError } from '../../services/contracts/errors';
 import {
   isArchitectPlanReplicaDivergenceError,
   repairArchitectPlanReplicas,
   type ArchitectPlanReplicaDivergence,
 } from '../../services/architectPlanService';
 import { useTaskStore } from '../../stores/useTaskStore';
+import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { CodeViewer } from '../ui/CodeViewer';
 import { Icon } from '../ui/Icon';
+import { toast } from '../ui/Toaster';
 import { cn } from '../../utils/cn';
 
 interface PlanReviewModalProps {
@@ -36,18 +49,21 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
   const { t } = useTranslation();
   const finalizePlan = useTaskStore((state) => state.finalizePlan);
   const finalizingPlanId = useTaskStore((state) => state.finalizingPlanId);
+  const blockedPlanFinalization = useTaskStore((state) => state.blockedPlanFinalization);
+  const clearPlanFinalizationBlock = useTaskStore((state) => state.clearPlanFinalizationBlock);
   const [review, setReview] = useState<PlanReviewResult | null>(null);
   const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRetryingFinalization, setIsRetryingFinalization] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [replicaRepair, setReplicaRepair] = useState<{
     divergence: ArchitectPlanReplicaDivergence;
     message: string;
   } | null>(null);
   const [isRepairingReplica, setIsRepairingReplica] = useState(false);
-  const pendingReplicaRetryRef = useRef<(() => Promise<void>) | null>(null);
+  const pendingReplicaRetryRef = useRef<(() => Promise<unknown>) | null>(null);
 
-  const openReplicaRepair = (loadError: unknown, retry?: () => Promise<void>): boolean => {
+  const openReplicaRepair = (loadError: unknown, retry?: () => Promise<unknown>): boolean => {
     if (!isArchitectPlanReplicaDivergenceError(loadError)) {
       return false;
     }
@@ -61,10 +77,10 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
     return true;
   };
 
-  const loadReview = useCallback(async (options?: { cancelled?: () => boolean }): Promise<void> => {
+  const loadReview = useCallback(async (options?: { cancelled?: () => boolean }): Promise<PlanReviewResult> => {
     const nextReview = await loadPlanReview({ branchName, planId });
     if (options?.cancelled?.()) {
-      return;
+      return nextReview;
     }
     setReview(nextReview);
     setSelectedRepositoryId((current) =>
@@ -72,7 +88,14 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
         ? current
         : nextReview.repositories[0]?.id ?? null
     );
+    return nextReview;
   }, [branchName, planId]);
+
+  const handleClose = useCallback(() => {
+    clearPlanFinalizationBlock();
+    setError(null);
+    onClose();
+  }, [clearPlanFinalizationBlock, onClose]);
 
   const performReplicaRepair = async (strategy: 'oldest' | 'newest'): Promise<void> => {
     if (!replicaRepair) return;
@@ -127,29 +150,98 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
     };
   }, [isOpen, loadReview, planId]);
 
+  useEffect(() => {
+    if (!isOpen) {
+      clearPlanFinalizationBlock();
+      setError(null);
+    }
+  }, [clearPlanFinalizationBlock, isOpen]);
+
+  useEffect(() => {
+    if (blockedPlanFinalization && blockedPlanFinalization.planId !== planId) {
+      clearPlanFinalizationBlock();
+    }
+  }, [blockedPlanFinalization, clearPlanFinalizationBlock, planId]);
+
   const selectedRepository = useMemo(
     () => review?.repositories.find((repository) => repository.id === selectedRepositoryId) ?? review?.repositories[0] ?? null,
     [review, selectedRepositoryId]
   );
-  const hasBlockingIssues = review?.repositories.some((repository) => Boolean(repository.blockingReason)) ?? false;
+  const blockedPlan = blockedPlanFinalization?.planId === planId ? blockedPlanFinalization : null;
+  const blockedRepositories = useMemo(() => {
+    if (blockedPlan?.blockedRepositories.length) {
+      return blockedPlan.blockedRepositories;
+    }
+    return review?.repositories.filter((repository) => Boolean(repository.blockingReason)) ?? [];
+  }, [blockedPlan, review]);
+  const hasBlockingIssues = blockedRepositories.length > 0;
+  const conflictEntries = useMemo(
+    () => toPlanConflictResolutionEntries(blockedRepositories),
+    [blockedRepositories]
+  );
+  const panelError = blockedPlan?.message ?? null;
+  const showInlineError = Boolean(error && (!hasBlockingIssues || error !== panelError));
 
   const handleFinalize = async () => {
     setError(null);
+    clearPlanFinalizationBlock();
     try {
       await finalizePlan(planId);
     } catch (finalizeError) {
       if (openReplicaRepair(finalizeError, () => handleFinalize())) {
         return;
       }
-      setError(finalizeError instanceof Error ? finalizeError.message : String(finalizeError));
+      if (!isPlanFinalizationBlockedError(finalizeError)) {
+        setError(toServiceError(finalizeError).message);
+      }
     }
     const storeError = useTaskStore.getState().lastError;
-    if (storeError) {
+    if (storeError && !useTaskStore.getState().blockedPlanFinalization) {
       setError(storeError);
       return;
     }
     onFinalized?.();
-    onClose();
+    handleClose();
+  };
+
+  const handleRetryFinalization = async () => {
+    setIsRetryingFinalization(true);
+    setError(null);
+    clearPlanFinalizationBlock();
+    try {
+      const nextReview = await loadReview();
+      if (nextReview.repositories.some((repository) => Boolean(repository.blockingReason))) {
+        return;
+      }
+      await handleFinalize();
+    } catch (retryError) {
+      if (openReplicaRepair(retryError, () => handleRetryFinalization())) {
+        return;
+      }
+      if (!isPlanFinalizationBlockedError(retryError)) {
+        setError(toServiceError(retryError).message);
+      }
+    } finally {
+      setIsRetryingFinalization(false);
+    }
+  };
+
+  const openAiConflictReviewAssistant = async () => {
+    if (!review || blockedRepositories.length === 0) {
+      return;
+    }
+
+    try {
+      await openConflictAssistant(buildPlanFinalizationConflictAssistantPrompt({
+        planTitle: review.plan.title,
+        repositories: blockedRepositories,
+      }));
+      toast.success('AI conflict assistant started', {
+        description: 'Switched to Debug mode and posted the plan finalization blockers.',
+      });
+    } catch (assistantError) {
+      setError(toServiceError(assistantError).message);
+    }
   };
 
   if (!isOpen) return null;
@@ -174,14 +266,14 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             className="w-8 h-8 rounded-md border border-border hover:bg-accent flex items-center justify-center"
           >
             <Icon name="x" size={16} className="text-muted-foreground" />
           </button>
         </div>
 
-        {error && (
+        {showInlineError && (
           <div className="px-6 py-3 border-b border-border bg-red-500/5 text-sm text-red-500">
             {error}
           </div>
@@ -297,9 +389,38 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-4">
+                  {hasBlockingIssues && (
+                    <ConflictResolutionPanel
+                      title={t('implement.planFinalizationBlockedTitle', 'Plan finalization blocked')}
+                      description={t(
+                        'implement.planFinalizationBlockedDescription',
+                        'Resolve the repository blockers below, then retry finalization explicitly.'
+                      )}
+                      repositories={conflictEntries}
+                      error={panelError}
+                      retryLabel={t('implement.retryFinalization', 'Retry finalization')}
+                      retryDisabled={Boolean(finalizingPlanId) || isRetryingFinalization || isLoading}
+                      retryLoading={Boolean(finalizingPlanId) || isRetryingFinalization}
+                      onDismiss={handleClose}
+                      dismissLabel={t('common.close', 'Close')}
+                      onRetry={() => void handleRetryFinalization()}
+                      onUseAiAssistant={() => void openAiConflictReviewAssistant()}
+                    />
+                  )}
+
                   <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
                     <div className="font-medium text-foreground mb-1">{selectedRepository.repoPath}</div>
                     <div>{selectedRepository.planBranchName} -&gt; {selectedRepository.baseBranchName}</div>
+                    {selectedRepository.mergeInProgress && (
+                      <div className="mt-2 inline-flex rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-500">
+                        {t('implement.mergeInProgress', 'Merge in progress')}
+                      </div>
+                    )}
+                    {selectedRepository.nextAction && (
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        {describePlanFinalizationNextStep(selectedRepository.nextAction)}
+                      </div>
+                    )}
                     {selectedRepository.conflictFiles.length > 0 && (
                       <div className="mt-2 text-red-500">
                         {selectedRepository.conflictFiles.join(', ')}
@@ -333,7 +454,7 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClose}
               className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
             >
               {t('common.close', 'Close')}

@@ -27,6 +27,8 @@ pub struct GitStatusDto {
     pub staged_files: Vec<GitFileStatus>,
     pub unstaged_files: Vec<GitFileStatus>,
     pub untracked_files: Vec<GitFileStatus>,
+    pub conflicted_files: Vec<String>,
+    pub merge_in_progress: bool,
     pub is_clean: bool,
 }
 
@@ -250,6 +252,10 @@ fn gather_macro_conflicted_files(repo: &Repository) -> Result<Vec<String>> {
         }
     }
     Ok(conflicted)
+}
+
+fn is_merge_in_progress(repo: &Repository) -> bool {
+    repo.path().join("MERGE_HEAD").exists()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1122,10 +1128,18 @@ pub(crate) fn build_git_status(repo: &Repository) -> Result<GitStatusDto> {
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
     let mut untracked = Vec::new();
+    let mut conflicted_files = Vec::new();
 
     for entry in statuses.iter() {
         let status = entry.status();
         let (old_path, path) = status_entry_paths(&entry);
+
+        if status.is_conflicted() {
+            if let Some(path) = path.clone() {
+                conflicted_files.push(path);
+            }
+            continue;
+        }
 
         if status.is_index_new()
             || status.is_index_modified()
@@ -1170,12 +1184,18 @@ pub(crate) fn build_git_status(repo: &Repository) -> Result<GitStatusDto> {
         });
     }
 
+    conflicted_files.sort();
+    conflicted_files.dedup();
+    let merge_in_progress = is_merge_in_progress(repo);
+
     Ok(GitStatusDto {
         branch,
         head_commit,
         staged_files: staged,
         unstaged_files: unstaged,
         untracked_files: untracked,
+        conflicted_files,
+        merge_in_progress,
         is_clean: statuses.is_empty(),
     })
 }
@@ -2682,6 +2702,8 @@ mod tests {
         assert!(status.is_clean);
         assert!(status.staged_files.is_empty());
         assert!(status.unstaged_files.is_empty());
+        assert!(status.conflicted_files.is_empty());
+        assert!(!status.merge_in_progress);
     }
 
     #[test]
@@ -2690,6 +2712,36 @@ mod tests {
         fs::write(temp.path().join("new.txt"), "data").unwrap();
         let status = build_git_status(&repo).unwrap();
         assert!(status.untracked_files.iter().any(|f| f.path == "new.txt"));
+        assert!(status.conflicted_files.is_empty());
+        assert!(!status.merge_in_progress);
+    }
+
+    #[test]
+    fn test_git_status_detects_conflicted_files_and_merge_in_progress() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature branch change").unwrap();
+        commit_repo(&repo, "feat: feature readme change", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base branch change").unwrap();
+        commit_repo(&repo, "feat: base readme change", true).unwrap();
+
+        let output = run_git_command(temp.path(), &[
+            "merge".to_string(),
+            "--no-ff".to_string(),
+            "--no-edit".to_string(),
+            "feature".to_string(),
+        ])
+        .unwrap();
+        assert!(!output.success);
+
+        let status = build_git_status(&repo).unwrap();
+        assert!(!status.is_clean);
+        assert!(status.merge_in_progress);
+        assert!(status.conflicted_files.iter().any(|path| path == "README.md"));
     }
 
     #[test]
