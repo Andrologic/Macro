@@ -33,6 +33,12 @@ import {
   type CatalogedImplementTask,
   type ImplementTaskPlanSummary,
 } from '../services/implementTaskCatalog';
+import {
+  buildPlanFinalizationFailureState,
+  buildPlanFinalizationRefreshState,
+  buildPlanFinalizationSuccessState,
+  type BlockedPlanFinalizationState,
+} from './taskStorePlanFinalizationState';
 
 type TaskSource = 'architect' | 'mixed' | 'fallback' | 'empty';
 
@@ -51,6 +57,12 @@ interface CompleteTaskOptions {
 }
 
 let appSyncUnsubscribe: (() => void) | null = null;
+
+export const taskStoreBindings = {
+  listTasks: () => services.listTasks(),
+  finalizePlanIntoBaseBranch,
+  mergeFeatureBranchIntoPlanBranch,
+};
 
 const normalizeBranchName = (value?: string): string => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -202,6 +214,7 @@ interface TaskStore {
   hasStandaloneTasks: boolean;
   isLoading: boolean;
   finalizingPlanId: string | null;
+  blockedPlanFinalization: BlockedPlanFinalizationState | null;
   lastError: string | null;
   source: TaskSource;
   branchWorktrees: Record<string, string>;
@@ -220,6 +233,7 @@ interface TaskStore {
   markTaskFailed: (taskId: string) => Promise<void>;
   retryTask: (taskId: string) => Promise<void>;
   setTaskStatus: (taskId: string, status: TaskStatus) => Promise<void>;
+  clearPlanFinalizationBlock: () => void;
   clearPlanRuntimeState: (params: ClearPlanRuntimeStateParams) => void;
   getTaskById: (taskId: string) => CatalogedImplementTask | undefined;
 }
@@ -307,6 +321,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   hasStandaloneTasks: false,
   isLoading: false,
   finalizingPlanId: null,
+  blockedPlanFinalization: null,
   lastError: null,
   source: 'empty',
   branchWorktrees: {},
@@ -324,13 +339,13 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   refreshFromPlan: async () => {
     try {
-      const catalog = await services.listTasks();
+      const catalog = await taskStoreBindings.listTasks();
       set({
         tasks: catalog.tasks,
         planSummaries: catalog.plans,
         hasStandaloneTasks: catalog.hasStandaloneTasks,
         source: catalog.source,
-        lastError: null,
+        ...buildPlanFinalizationRefreshState(),
         isLoading: false,
       });
 
@@ -609,7 +624,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
           const mergeOutput = allowWithoutCodeChanges || !diff.trim()
             ? undefined
-            : await mergeFeatureBranchIntoPlanBranch({
+            : await taskStoreBindings.mergeFeatureBranchIntoPlanBranch({
               projectId: target.projectId,
               branchName: target.branchName,
               planBranchName: integrationBranchName,
@@ -681,7 +696,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     set({ finalizingPlanId: planId, lastError: null });
 
     try {
-      const result = await finalizePlanIntoBaseBranch({
+      const result = await taskStoreBindings.finalizePlanIntoBaseBranch({
         branchName: resolveTargetBranch(summary.targetBranch),
         planId,
       });
@@ -692,10 +707,9 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         ),
       });
       await get().refreshFromPlan();
-      set({ finalizingPlanId: null, lastError: null });
+      set(buildPlanFinalizationSuccessState());
     } catch (error) {
-      const normalized = toServiceError(error);
-      set({ finalizingPlanId: null, lastError: normalized.message });
+      set(buildPlanFinalizationFailureState(error));
       throw error;
     }
   },
@@ -808,6 +822,10 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     if (nextRuntimeState.shouldSyncWorkspaceRoot) {
       void syncWorkspaceRoot(null);
     }
+  },
+
+  clearPlanFinalizationBlock: () => {
+    set({ blockedPlanFinalization: null });
   },
 
   getTaskById: (taskId) => get().tasks.find((task) => task.id === taskId),

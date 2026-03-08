@@ -81,8 +81,11 @@ export interface PlanReviewRepositoryResult {
   hasChanges: boolean;
   mergeable: boolean;
   conflictFiles: string[];
+  mergeInProgress: boolean;
   diff: string;
   checkStatus: 'not_run' | 'passed' | 'failed';
+  blockingKind: PlanFinalizationBlockingKind | null;
+  nextAction: PlanFinalizationNextAction | null;
   blockingReason: string | null;
 }
 
@@ -90,6 +93,24 @@ export interface PlanReviewResult {
   plan: ArchitectPlanRecord;
   tasks: PlanReviewTaskSummary[];
   repositories: PlanReviewRepositoryResult[];
+}
+
+export type PlanFinalizationBlockingKind =
+  | 'repository_dirty'
+  | 'merge_conflict'
+  | 'merge_in_progress';
+
+export type PlanFinalizationNextAction =
+  | 'clean_repository'
+  | 'resolve_conflicts'
+  | 'finish_or_abort_merge';
+
+export interface PlanFinalizationBlockedError extends Error {
+  name: 'PlanFinalizationBlockedError';
+  planId: string;
+  branchName: string;
+  repositories: PlanReviewRepositoryResult[];
+  blockedRepositories: PlanReviewRepositoryResult[];
 }
 
 interface ResolvedProjectRepository {
@@ -275,11 +296,112 @@ const ensureSafeCheckoutBeforeDeletion = async (
   });
 };
 
+const getRepositoryConflictFiles = (status: tauriIpc.GitStatusDto): string[] => {
+  return Array.from(
+    new Set([...(status.conflictedFiles || []), ...((status.conflicted_files as string[] | undefined) || [])])
+  );
+};
+
+const isMergeInProgress = (status: tauriIpc.GitStatusDto): boolean =>
+  Boolean(status.mergeInProgress ?? status.merge_in_progress);
+
 const formatMergeConflictMessage = (repositoryPath: string, conflictFiles: string[]): string => {
   if (conflictFiles.length === 0) {
     return `Cannot finalize plan because ${repositoryPath} would conflict during merge.`;
   }
   return `Cannot finalize plan because ${repositoryPath} would conflict in: ${conflictFiles.join(', ')}.`;
+};
+
+const formatMergeInProgressMessage = (repositoryPath: string): string =>
+  `Cannot finalize plan because ${repositoryPath} already has a merge in progress. Finish or abort it first.`;
+
+const formatDirtyRepositoryMessage = (repositoryPath: string): string =>
+  `Cannot finalize plan because ${repositoryPath} has uncommitted changes.`;
+
+const buildPlanRepositoryBlockingState = (params: {
+  repositoryPath: string;
+  status: tauriIpc.GitStatusDto;
+  mergeCheck: tauriIpc.GitMergeCheckDto;
+}): Pick<PlanReviewRepositoryResult, 'blockingKind' | 'blockingReason' | 'nextAction' | 'conflictFiles' | 'mergeInProgress'> => {
+  const statusConflictFiles = getRepositoryConflictFiles(params.status);
+  const mergeInProgress = isMergeInProgress(params.status);
+
+  if (statusConflictFiles.length > 0) {
+    return {
+      blockingKind: 'merge_conflict',
+      blockingReason: formatMergeConflictMessage(params.repositoryPath, statusConflictFiles),
+      nextAction: 'resolve_conflicts',
+      conflictFiles: statusConflictFiles,
+      mergeInProgress,
+    };
+  }
+
+  if (mergeInProgress) {
+    return {
+      blockingKind: 'merge_in_progress',
+      blockingReason: formatMergeInProgressMessage(params.repositoryPath),
+      nextAction: 'finish_or_abort_merge',
+      conflictFiles: [],
+      mergeInProgress,
+    };
+  }
+
+  if (!params.status.is_clean) {
+    return {
+      blockingKind: 'repository_dirty',
+      blockingReason: formatDirtyRepositoryMessage(params.repositoryPath),
+      nextAction: 'clean_repository',
+      conflictFiles: [],
+      mergeInProgress,
+    };
+  }
+
+  if (!params.mergeCheck.mergeable) {
+    return {
+      blockingKind: 'merge_conflict',
+      blockingReason: formatMergeConflictMessage(params.repositoryPath, params.mergeCheck.conflictFiles),
+      nextAction: 'resolve_conflicts',
+      conflictFiles: params.mergeCheck.conflictFiles,
+      mergeInProgress,
+    };
+  }
+
+  return {
+    blockingKind: null,
+    blockingReason: null,
+    nextAction: null,
+    conflictFiles: params.mergeCheck.conflictFiles,
+    mergeInProgress,
+  };
+};
+
+const createPlanFinalizationBlockedError = (params: {
+  planId: string;
+  branchName: string;
+  repositories: PlanReviewRepositoryResult[];
+}): PlanFinalizationBlockedError => {
+  const blockedRepositories = params.repositories.filter((repository) => Boolean(repository.blockingReason));
+  const primaryReason = blockedRepositories[0]?.blockingReason || 'Plan finalization is blocked.';
+  const message = blockedRepositories.length > 1
+    ? `${primaryReason} ${blockedRepositories.length} repositories are currently blocked.`
+    : primaryReason;
+
+  return Object.assign(new Error(message), {
+    name: 'PlanFinalizationBlockedError' as const,
+    planId: params.planId,
+    branchName: params.branchName,
+    repositories: params.repositories,
+    blockedRepositories,
+  });
+};
+
+export const isPlanFinalizationBlockedError = (error: unknown): error is PlanFinalizationBlockedError => {
+  return (
+    error instanceof Error &&
+    error.name === 'PlanFinalizationBlockedError' &&
+    'planId' in error &&
+    'repositories' in error
+  );
 };
 
 const buildPlanReviewTasks = (plan: ArchitectPlanRecord): PlanReviewTaskSummary[] => {
@@ -509,12 +631,11 @@ const preflightPlanRepositories = async (params: {
           conflictFiles: [],
           hasChanges: diff.trim().length > 0,
         };
-
-      const blockingReason = !status.is_clean
-        ? `Repository ${repository.repoPath} has uncommitted changes.`
-        : !mergeCheck.mergeable
-          ? formatMergeConflictMessage(repository.repoPath, mergeCheck.conflictFiles)
-          : null;
+      const blocking = buildPlanRepositoryBlockingState({
+        repositoryPath: repository.repoPath,
+        status,
+        mergeCheck,
+      });
 
       return {
         id: `${repository.projectId}::${repository.repoPath}`,
@@ -525,10 +646,13 @@ const preflightPlanRepositories = async (params: {
         isClean: status.is_clean,
         hasChanges: mergeCheck.hasChanges,
         mergeable: mergeCheck.mergeable,
-        conflictFiles: mergeCheck.conflictFiles,
+        conflictFiles: blocking.conflictFiles,
+        mergeInProgress: blocking.mergeInProgress,
         diff,
         checkStatus: 'not_run' as const,
-        blockingReason,
+        blockingKind: blocking.blockingKind,
+        nextAction: blocking.nextAction,
+        blockingReason: blocking.blockingReason,
       };
     })
   );
@@ -740,9 +864,12 @@ export const finalizePlanIntoBaseBranch = async (params: {
     explicitRepoPath: params.repoPath,
   });
 
-  const blockedRepository = preflightRepositories.find((repository) => repository.blockingReason);
-  if (blockedRepository?.blockingReason) {
-    throw new Error(blockedRepository.blockingReason);
+  if (preflightRepositories.some((repository) => repository.blockingReason)) {
+    throw createPlanFinalizationBlockedError({
+      planId: plan.id,
+      branchName: params.branchName,
+      repositories: preflightRepositories,
+    });
   }
 
   await preflightPlanCleanup(buildCleanupPlanTargets(plan, params.repoPath));
