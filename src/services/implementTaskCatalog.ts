@@ -43,6 +43,9 @@ const normalizeBranchName = (value?: string): string => {
 
 const unique = (items: string[]): string[] => Array.from(new Set(items.filter((item) => item.trim().length > 0)));
 
+const compareOptionalText = (left: string | null | undefined, right: string | null | undefined): number =>
+  (left || '').localeCompare(right || '');
+
 const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[] =>
   unique([
     ...(Array.isArray(projectIds) ? projectIds : []).filter((value): value is string => typeof value === 'string'),
@@ -171,9 +174,19 @@ const sortCatalogTasks = (tasks: CatalogedImplementTask[]): CatalogedImplementTa
     }
 
     if (left.plan_id !== right.plan_id) {
-      const planTitleDelta = (left.plan_title || '').localeCompare(right.plan_title || '');
+      const planTitleDelta = compareOptionalText(left.plan_title, right.plan_title);
       if (planTitleDelta !== 0) {
         return planTitleDelta;
+      }
+
+      const planTargetBranchDelta = compareOptionalText(left.plan_target_branch, right.plan_target_branch);
+      if (planTargetBranchDelta !== 0) {
+        return planTargetBranchDelta;
+      }
+
+      const planIdDelta = compareOptionalText(left.plan_id, right.plan_id);
+      if (planIdDelta !== 0) {
+        return planIdDelta;
       }
     }
 
@@ -238,7 +251,15 @@ export const buildImplementTaskCatalog = (params: {
       };
     })
     .filter((plan) => plan.taskCount > 0)
-    .sort((left, right) => left.title.localeCompare(right.title));
+    .sort((left, right) => {
+      const titleDelta = left.title.localeCompare(right.title);
+      if (titleDelta !== 0) return titleDelta;
+
+      const targetBranchDelta = left.targetBranch.localeCompare(right.targetBranch);
+      if (targetBranchDelta !== 0) return targetBranchDelta;
+
+      return left.id.localeCompare(right.id);
+    });
 
   const tasks = sortCatalogTasks([...architectTasks, ...standaloneTasks]);
   let source: ImplementTaskCatalogSource = 'empty';

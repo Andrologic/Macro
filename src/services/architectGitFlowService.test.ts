@@ -128,6 +128,11 @@ const registerArchitectGitFlowMocks = () => {
     getArchitectPlan: getArchitectPlanMock,
     getArchitectPlanProjectIds: (plan: { projectId?: string; projectIds?: string[] }) =>
       Array.from(new Set([...(plan.projectIds || []), ...(plan.projectId ? [plan.projectId] : [])])),
+    listArchitectPlans: async () => ({
+      activePlanId: null,
+      plans: [],
+    }),
+    listArchitectPlanTargetBranches: async () => ['develop'],
     updateArchitectPlan: updateArchitectPlanMock,
     deleteArchitectPlan: deleteArchitectPlanMock,
     getGitFlowBaseBranch: () => 'develop',
