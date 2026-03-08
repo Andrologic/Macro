@@ -15,7 +15,10 @@ const initialOriginalFiles: Record<string, Record<string, string>> = {
 };
 
 let currentFiles: Record<string, Record<string, string>> = {};
-let taskStatus: 'InReview' | 'Completed' = 'InReview';
+let taskStatuses: Record<string, 'InReview' | 'Completed'> = {
+  'task-1': 'InReview',
+  'task-2': 'InReview',
+};
 
 const buildPatch = (repoPath: string, path: string): string => {
   const original = initialOriginalFiles[repoPath]?.[path] ?? '';
@@ -116,33 +119,61 @@ const mergeFeatureBranchIntoPlanBranchMock = mock(async ({ projectId }: { projec
   `merged-${projectId}`
 );
 
-const task = {
-  id: 'task-1',
-  title: 'Implement multi repo flow',
-  description: 'Test task',
-  status: 'InReview' as const,
-  task_source: 'architect' as const,
-  project_id: 'project-a',
-  project_ids: ['project-a', 'project-b'],
-  assigned_branch: 'feature/task-a',
-  execution_targets: [
-    {
-      projectId: 'project-a',
-      branchName: 'feature/task-a',
-      worktreeKey: 'project-a::feature-task-a',
-      planBranchName: 'plan/integration',
-    },
-    {
-      projectId: 'project-b',
-      branchName: 'feature/task-b',
-      worktreeKey: 'project-b::feature-task-b',
-      planBranchName: 'plan/integration',
-    },
-  ],
+const tasksById = {
+  'task-1': {
+    id: 'task-1',
+    title: 'Implement multi repo flow',
+    description: 'Test task',
+    status: 'InReview' as const,
+    task_source: 'architect' as const,
+    project_id: 'project-a',
+    project_ids: ['project-a', 'project-b'],
+    assigned_branch: 'feature/task-a',
+    execution_targets: [
+      {
+        projectId: 'project-a',
+        branchName: 'feature/task-a',
+        worktreeKey: 'project-a::feature-task-a',
+        planBranchName: 'plan/integration',
+      },
+      {
+        projectId: 'project-b',
+        branchName: 'feature/task-b',
+        worktreeKey: 'project-b::feature-task-b',
+        planBranchName: 'plan/integration',
+      },
+    ],
+  },
+  'task-2': {
+    id: 'task-2',
+    title: 'Follow-up review task',
+    description: 'Second task',
+    status: 'InReview' as const,
+    task_source: 'architect' as const,
+    project_id: 'project-a',
+    project_ids: ['project-a', 'project-b'],
+    assigned_branch: 'feature/task-a',
+    execution_targets: [
+      {
+        projectId: 'project-a',
+        branchName: 'feature/task-a',
+        worktreeKey: 'project-a::feature-task-a',
+        planBranchName: 'plan/integration',
+      },
+      {
+        projectId: 'project-b',
+        branchName: 'feature/task-b',
+        worktreeKey: 'project-b::feature-task-b',
+        planBranchName: 'plan/integration',
+      },
+    ],
+  },
 };
 
-const completeTaskMock = mock(async () => {
-  taskStatus = 'Completed';
+const completeTaskMock = mock(async (taskId: string) => {
+  if (taskId in taskStatuses) {
+    taskStatuses[taskId] = 'Completed';
+  }
 });
 
 const taskStoreState = {
@@ -152,14 +183,18 @@ const taskStoreState = {
     'project-a::feature-task-a': worktreeAPath,
     'project-b::feature-task-b': worktreeBPath,
   },
-  getTaskById: (taskId: string) => (taskId === task.id ? { ...task, status: taskStatus } : undefined),
+  getTaskById: (taskId: string) => {
+    const task = tasksById[taskId as keyof typeof tasksById];
+    if (!task) return undefined;
+    return { ...task, status: taskStatuses[taskId] ?? task.status };
+  },
   completeTask: completeTaskMock,
 };
 
 const appStoreState = {
   selectedProjectId: null,
   selectedGroupId: 'group-1',
-  selectedTaskId: task.id,
+  selectedTaskId: 'task-1',
   projectGroups: [],
   getProjectById: (projectId: string) => {
     if (projectId === 'project-a') return { id: 'project-a', name: 'Project A', path: repoAPath };
@@ -219,7 +254,11 @@ describe('useFileChangesStore', () => {
         'README.md': 'Hello\nupdated',
       },
     };
-    taskStatus = 'InReview';
+    taskStatuses = {
+      'task-1': 'InReview',
+      'task-2': 'InReview',
+    };
+    appStoreState.selectedTaskId = 'task-1';
 
     gitStatusMock.mockClear();
     gitDiffMock.mockClear();
@@ -239,10 +278,33 @@ describe('useFileChangesStore', () => {
   it('loads one review repository per execution target', async () => {
     await useFileChangesStore.getState().loadCurrentChanges();
 
-    const repositories = useFileChangesStore.getState().repositories;
+    const { repositories, reviewSummary } = useFileChangesStore.getState();
     expect(repositories).toHaveLength(2);
     expect(repositories.map((repository: { projectId: string }) => repository.projectId)).toEqual(['project-a', 'project-b']);
     expect(repositories.map((repository: { stats: { total: number } }) => repository.stats.total)).toEqual([1, 1]);
+    expect(reviewSummary.repositoryCount).toBe(2);
+    expect(reviewSummary.nextAction).toBe('review_repository');
+    expect(reviewSummary.currentRepositoryId).toBe('project-a::project-a::feature-task-a');
+  });
+
+  it('clears stale diff state when switching to another task', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    store.openDiffModal('project-a::project-a::feature-task-a', 'project-a::project-a::feature-task-a::src/main.ts');
+    expect(useFileChangesStore.getState().selectedDiffTarget).toEqual({
+      repositoryId: 'project-a::project-a::feature-task-a',
+      changeId: 'project-a::project-a::feature-task-a::src/main.ts',
+    });
+    expect(useFileChangesStore.getState().isDiffModalOpen).toBe(true);
+
+    appStoreState.selectedTaskId = 'task-2';
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.currentTaskId).toBe('task-2');
+    expect(nextState.selectedDiffTarget).toBeNull();
+    expect(nextState.isDiffModalOpen).toBe(false);
   });
 
   it('completes the task only after the last repository commit', async () => {
@@ -258,6 +320,9 @@ describe('useFileChangesStore', () => {
     );
     expect(firstCommit.taskCompleted).toBe(false);
     expect(completeTaskMock).not.toHaveBeenCalled();
+    expect(useFileChangesStore.getState().selectedRepositoryId).toBe('project-b::project-b::feature-task-b');
+    expect(useFileChangesStore.getState().reviewSummary.hasCommittedRepositories).toBe(true);
+    expect(useFileChangesStore.getState().reviewSummary.currentRepositoryId).toBe('project-b::project-b::feature-task-b');
 
     const secondCommit = await store.commitReviewedChanges(
       'project-b::project-b::feature-task-b',
