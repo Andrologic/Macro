@@ -327,4 +327,137 @@ describe('createLoadImplementTaskCatalog', () => {
       }),
     ]);
   });
+
+  it('ignores invalid target branches and preserves valid plans when one branch or plan load fails', async () => {
+    const webPlan = makePlan({
+      id: 'plan-web',
+      title: 'Web Checkout',
+      status: 'validated',
+      targetBranch: 'develop',
+      projectId: 'web',
+      projectIds: ['web'],
+      nodes: [
+        {
+          id: 'task-web',
+          title: 'Build checkout UI',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'checkout-ui',
+          projectId: 'web',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-web',
+          name: 'checkout-ui',
+          color: '#3b82f6',
+          parentBranch: 'plan/web-checkout',
+          projectId: 'web',
+          taskIds: ['task-web'],
+          status: 'pending',
+        },
+      ],
+    });
+    const brokenPlan = makePlan({
+      id: 'plan-broken',
+      title: 'Broken Payments',
+      status: 'validated',
+      targetBranch: 'feature/payments',
+      projectId: 'api',
+      projectIds: ['api'],
+      nodes: [
+        {
+          id: 'task-broken',
+          title: 'Broken endpoint',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'broken-payments',
+          projectId: 'api',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-broken',
+          name: 'broken-payments',
+          color: '#ef4444',
+          parentBranch: 'plan/broken-payments',
+          projectId: 'api',
+          taskIds: ['task-broken'],
+          status: 'pending',
+        },
+      ],
+    });
+
+    const resolveTargetBranch = (value: unknown): string => {
+      const normalized = String(value || '').trim();
+      if (normalized === 'develop' || normalized === 'feature/payments') {
+        return normalized;
+      }
+      throw new Error(`Invalid branch: ${normalized}`);
+    };
+
+    const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        selectedGroupId: 'group-1',
+        selectedProjectId: 'web',
+        projectGroups: [
+          {
+            id: 'group-1',
+            name: 'Checkout',
+            isOpen: true,
+            projects: [
+              { id: 'web', name: 'Web', path: '/repos/web', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+              { id: 'api', name: 'API', path: '/repos/api', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+            ],
+          },
+        ],
+        getProjectById: () => undefined,
+      } as never),
+      listArchitectPlans: async (branchName: string) => {
+        if (branchName === 'feature/payments') {
+          throw new Error('metadata branch unavailable');
+        }
+        return {
+          activePlanId: null,
+          plans: branchName === 'develop' ? [toSummary(webPlan), toSummary(brokenPlan)] : [],
+        };
+      },
+      getArchitectPlan: async (_branchName: string, planId: string) => {
+        if (planId === 'plan-broken') {
+          throw new Error('plan replica divergence');
+        }
+        return webPlan;
+      },
+      listArchitectPlanTargetBranches: async () => ['develop', 'invalid branch', 'feature/payments'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch,
+      buildImplementTaskCatalog,
+    });
+
+    const catalog = await loadImplementTaskCatalog([
+      makeTask({
+        id: 'standalone-1',
+        title: 'Fix production typo',
+        project_id: 'web',
+        status: 'InProgress',
+      }),
+    ]);
+
+    expect(catalog.tasks.map((task) => task.id)).toEqual([
+      'task-web',
+      'standalone-1',
+    ]);
+    expect(catalog.plans).toEqual([
+      expect.objectContaining({
+        id: 'plan-web',
+        targetBranch: 'develop',
+      }),
+    ]);
+  });
 });
