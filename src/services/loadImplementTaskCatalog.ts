@@ -132,6 +132,27 @@ const dedupePlanRefs = (items: Array<{ branchName: string; planId: string }>): A
   return uniqueItems;
 };
 
+const resolveCandidateTargetBranches = (
+  branchNames: Array<string | null | undefined>,
+  resolveBranch: (value: unknown) => string
+): string[] => {
+  const resolvedBranches: string[] = [];
+
+  for (const branchName of branchNames) {
+    if (typeof branchName !== 'string' || branchName.trim().length === 0) {
+      continue;
+    }
+
+    try {
+      resolvedBranches.push(resolveBranch(branchName));
+    } catch {
+      // Ignore unexpected metadata branch folders that do not match the supported Git Flow patterns.
+    }
+  }
+
+  return Array.from(new Set(resolvedBranches));
+};
+
 export const createLoadImplementTaskCatalog = (
   dependencies: LoadImplementTaskCatalogDependencies = {
     getAppState: useAppStore.getState,
@@ -146,27 +167,37 @@ export const createLoadImplementTaskCatalog = (
   return async (fallbackTasks: Task[]): Promise<ImplementTaskCatalog> => {
     const appState = dependencies.getAppState();
     const relevantProjectIds = resolveRelevantProjectIds(appState);
-    const activeTargetBranch = appState.activePlanContext?.targetBranch
-      ? dependencies.resolveTargetBranch(appState.activePlanContext.targetBranch)
-      : null;
+    const activeTargetBranch = resolveCandidateTargetBranches(
+      [appState.activePlanContext?.targetBranch || null],
+      dependencies.resolveTargetBranch
+    )[0] || null;
     let plans: ArchitectPlanRecord[] = [];
 
     try {
       const discoveredTargetBranches = await dependencies.listArchitectPlanTargetBranches();
-      const candidateTargetBranches = Array.from(new Set(
+      const candidateTargetBranches = resolveCandidateTargetBranches(
         [
           activeTargetBranch,
           ...discoveredTargetBranches,
-          dependencies.resolveTargetBranch(dependencies.getGitFlowBaseBranch()),
-        ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-      ));
-
-      const planIndexes = await Promise.all(
-        candidateTargetBranches.map(async (branchName) => ({
-          branchName,
-          index: await dependencies.listArchitectPlans(branchName),
-        }))
+          dependencies.getGitFlowBaseBranch(),
+        ],
+        dependencies.resolveTargetBranch
       );
+
+      const planIndexes = (
+        await Promise.all(
+          candidateTargetBranches.map(async (branchName) => {
+            try {
+              return {
+                branchName,
+                index: await dependencies.listArchitectPlans(branchName),
+              };
+            } catch {
+              return null;
+            }
+          })
+        )
+      ).filter((entry): entry is { branchName: string; index: Awaited<ReturnType<typeof listArchitectPlans>> } => Boolean(entry));
       const executablePlanRefs = dedupePlanRefs(
         planIndexes.flatMap(({ branchName, index }) =>
           index.plans
@@ -179,7 +210,13 @@ export const createLoadImplementTaskCatalog = (
         )
       );
       const loadedPlans = await Promise.all(
-        executablePlanRefs.map(({ branchName, planId }) => dependencies.getArchitectPlan(branchName, planId))
+        executablePlanRefs.map(async ({ branchName, planId }) => {
+          try {
+            return await dependencies.getArchitectPlan(branchName, planId);
+          } catch {
+            return null;
+          }
+        })
       );
       plans = loadedPlans.filter((plan): plan is ArchitectPlanRecord => Boolean(plan && plan.status !== 'deleted'));
     } catch {
