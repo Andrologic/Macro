@@ -195,8 +195,11 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
         setError(toServiceError(finalizeError).message);
       }
     }
+    if (useTaskStore.getState().blockedPlanFinalization) {
+      return;
+    }
     const storeError = useTaskStore.getState().lastError;
-    if (storeError && !useTaskStore.getState().blockedPlanFinalization) {
+    if (storeError) {
       setError(storeError);
       return;
     }
