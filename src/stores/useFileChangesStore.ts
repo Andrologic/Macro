@@ -11,6 +11,12 @@ import {
   type TaskCompletionRepositoryRecord,
 } from './useTaskStore';
 import type { TaskExecutionTarget, TaskStatus } from '../types';
+import {
+  EMPTY_REVIEW_TASK_SUMMARY,
+  buildReviewTaskSummary,
+  selectReviewRepositoryId,
+  type ReviewTaskSummary,
+} from '../services/implementMultiRepoSummary';
 
 export type FileChangeContextMode = 'default' | 'expanded' | 'full';
 export type ReviewRepositoryCommitState = 'idle' | 'committing' | 'committed' | 'no_changes';
@@ -387,10 +393,22 @@ const buildCompletionRepositoryRecord = (
   mergeOutput: existingRecord?.mergeOutput,
 });
 
+const deriveReviewState = (
+  repositories: ReviewRepositoryState[],
+  selectedRepositoryId?: string | null
+): Pick<FileChangesState, 'selectedRepositoryId' | 'reviewSummary'> => {
+  const nextSelectedRepositoryId = selectReviewRepositoryId(repositories, selectedRepositoryId);
+  return {
+    selectedRepositoryId: nextSelectedRepositoryId,
+    reviewSummary: buildReviewTaskSummary(repositories, nextSelectedRepositoryId),
+  };
+};
+
 interface FileChangesState {
   currentTaskId: string | null;
   repositories: ReviewRepositoryState[];
   selectedRepositoryId: string | null;
+  reviewSummary: ReviewTaskSummary;
   selectedDiffTarget: SelectedDiffTarget | null;
   isDiffModalOpen: boolean;
   isLoading: boolean;
@@ -419,12 +437,14 @@ interface FileChangesState {
   getSelectedDiffTarget: () => SelectedDiffTarget | null;
   getStats: (repositoryId?: string | null) => ReviewRepositoryStats;
   getOverallStats: () => ReviewRepositoryStats;
+  getReviewSummary: () => ReviewTaskSummary;
 }
 
 export const useFileChangesStore = create<FileChangesState>((set, get) => ({
   currentTaskId: null,
   repositories: [],
   selectedRepositoryId: null,
+  reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
   selectedDiffTarget: null,
   isDiffModalOpen: false,
   isLoading: false,
@@ -441,6 +461,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
         currentTaskId: null,
         repositories: [],
         selectedRepositoryId: null,
+        reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
         selectedDiffTarget: null,
         isDiffModalOpen: false,
         isLoading: false,
@@ -455,6 +476,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
         currentTaskId: null,
         repositories: [],
         selectedRepositoryId: null,
+        reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
         selectedDiffTarget: null,
         isDiffModalOpen: false,
         isLoading: false,
@@ -463,13 +485,29 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
       return;
     }
 
+    const previousState = get();
+    const sameTask = previousState.currentTaskId === task.id;
+    const taskChanged = previousState.currentTaskId !== null && !sameTask;
+    if (taskChanged) {
+      set({
+        currentTaskId: null,
+        repositories: [],
+        selectedRepositoryId: null,
+        reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
+        selectedDiffTarget: null,
+        isDiffModalOpen: false,
+        executionRecords: {},
+      });
+    }
+
     try {
-      const previousState = get();
-      const sameTask = previousState.currentTaskId === task.id;
       const previousRepositories = new Map(
         (sameTask ? previousState.repositories : []).map((repository) => [repository.id, repository])
       );
       const executionRecords = sameTask ? previousState.executionRecords : {};
+      const previousSelectedRepositoryId = sameTask ? previousState.selectedRepositoryId : null;
+      const previousSelectedDiffTarget = sameTask ? previousState.selectedDiffTarget : null;
+      const previousIsDiffModalOpen = sameTask && previousState.isDiffModalOpen;
       const repositories = await Promise.all(
         getExecutionTargets(task).map((target) => {
           const repositoryId = buildRepositoryId(target);
@@ -482,37 +520,37 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
         })
       );
 
-      const selectedRepositoryId = repositories.some((repository) => repository.id === previousState.selectedRepositoryId)
-        ? previousState.selectedRepositoryId
-        : repositories[0]?.id ?? null;
+      const derivedReviewState = deriveReviewState(repositories, previousSelectedRepositoryId);
       const selectedDiffTarget =
-        previousState.selectedDiffTarget &&
+        previousSelectedDiffTarget &&
           repositories.some((repository) =>
-            repository.id === previousState.selectedDiffTarget?.repositoryId &&
-            repository.changes.some((change) => change.id === previousState.selectedDiffTarget?.changeId)
+            repository.id === previousSelectedDiffTarget.repositoryId &&
+            repository.changes.some((change) => change.id === previousSelectedDiffTarget.changeId)
           )
-          ? previousState.selectedDiffTarget
+          ? previousSelectedDiffTarget
           : null;
 
       set({
         currentTaskId: task.id,
         repositories,
-        selectedRepositoryId,
+        selectedRepositoryId: derivedReviewState.selectedRepositoryId,
+        reviewSummary: derivedReviewState.reviewSummary,
         selectedDiffTarget,
-        isDiffModalOpen: Boolean(selectedDiffTarget) && previousState.isDiffModalOpen,
+        isDiffModalOpen: Boolean(selectedDiffTarget) && previousIsDiffModalOpen,
         isLoading: false,
         lastError: null,
         executionRecords,
       });
 
       syncActiveReviewRepository(
-        repositories.find((repository) => repository.id === selectedRepositoryId) || repositories[0]
+        repositories.find((repository) => repository.id === derivedReviewState.selectedRepositoryId) || repositories[0]
       );
     } catch (error) {
       set({
         isLoading: false,
         repositories: [],
         selectedRepositoryId: null,
+        reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
         selectedDiffTarget: null,
         isDiffModalOpen: false,
         executionRecords: {},
@@ -529,6 +567,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
       currentTaskId: null,
       repositories: [],
       selectedRepositoryId: null,
+      reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
       selectedDiffTarget: null,
       isDiffModalOpen: false,
       isLoading: false,
@@ -540,10 +579,11 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
   },
 
   selectRepository: (repositoryId) => {
-    const repository = repositoryId
-      ? get().repositories.find((candidate) => candidate.id === repositoryId)
+    const derivedReviewState = deriveReviewState(get().repositories, repositoryId);
+    const repository = derivedReviewState.selectedRepositoryId
+      ? get().repositories.find((candidate) => candidate.id === derivedReviewState.selectedRepositoryId)
       : null;
-    set({ selectedRepositoryId: repositoryId });
+    set(derivedReviewState);
     syncActiveReviewRepository(repository);
   },
 
@@ -601,9 +641,14 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
   },
 
   openDiffModal: (repositoryId, changeId) => {
-    const repository = get().repositories.find((candidate) => candidate.id === repositoryId) ?? null;
+    const repositories = get().repositories;
+    const derivedReviewState = deriveReviewState(repositories, repositoryId);
+    const repository = derivedReviewState.selectedRepositoryId
+      ? repositories.find((candidate) => candidate.id === derivedReviewState.selectedRepositoryId) ?? null
+      : null;
     set({
-      selectedRepositoryId: repositoryId,
+      selectedRepositoryId: derivedReviewState.selectedRepositoryId,
+      reviewSummary: derivedReviewState.reviewSummary,
       selectedDiffTarget: { repositoryId, changeId },
       isDiffModalOpen: true,
     });
@@ -629,17 +674,23 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
 
   markAsReviewed: (repositoryId, changeId) => {
     set((state) => ({
-      repositories: updateRepositoryState(state.repositories, repositoryId, (repository) => {
-        const changes = updateChangeEntry(repository.changes, changeId, (change) => ({
-          ...change,
-          reviewed: true,
-        }));
+      ...(() => {
+        const repositories = updateRepositoryState(state.repositories, repositoryId, (repository) => {
+          const changes = updateChangeEntry(repository.changes, changeId, (change) => ({
+            ...change,
+            reviewed: true,
+          }));
+          return {
+            ...repository,
+            changes,
+            stats: computeStats(changes),
+          };
+        });
         return {
-          ...repository,
-          changes,
-          stats: computeStats(changes),
+          repositories,
+          ...deriveReviewState(repositories, state.selectedRepositoryId),
         };
-      }),
+      })(),
     }));
   },
 
@@ -648,14 +699,20 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
     if (!targetRepositoryId) return;
 
     set((state) => ({
-      repositories: updateRepositoryState(state.repositories, targetRepositoryId, (repository) => {
-        const changes = repository.changes.map((change) => ({ ...change, reviewed: true }));
+      ...(() => {
+        const repositories = updateRepositoryState(state.repositories, targetRepositoryId, (repository) => {
+          const changes = repository.changes.map((change) => ({ ...change, reviewed: true }));
+          return {
+            ...repository,
+            changes,
+            stats: computeStats(changes),
+          };
+        });
         return {
-          ...repository,
-          changes,
-          stats: computeStats(changes),
+          repositories,
+          ...deriveReviewState(repositories, state.selectedRepositoryId),
         };
-      }),
+      })(),
     }));
   },
 
@@ -756,17 +813,23 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
       });
 
       set((state) => ({
-        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-          ...currentRepository,
-          changes: updateChangeEntry(currentRepository.changes, changeId, (entry) => ({
-            ...entry,
-            reviewed: false,
-            isEditing: false,
-            editingContent: null,
-          })),
-          savingChangeId: null,
-          lastError: null,
-        })),
+        ...(() => {
+          const repositories = updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+            ...currentRepository,
+            changes: updateChangeEntry(currentRepository.changes, changeId, (entry) => ({
+              ...entry,
+              reviewed: false,
+              isEditing: false,
+              editingContent: null,
+            })),
+            savingChangeId: null,
+            lastError: null,
+          }));
+          return {
+            repositories,
+            ...deriveReviewState(repositories, state.selectedRepositoryId),
+          };
+        })(),
       }));
 
       await get().loadCurrentChanges();
@@ -848,12 +911,18 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
     set((state) => ({
       isCommitting: true,
       lastError: null,
-      repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-        ...currentRepository,
-        commitState: 'committing',
-        commitMessageDraft: commitMessage,
-        lastError: null,
-      })),
+      ...(() => {
+        const repositories = updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          commitState: 'committing',
+          commitMessageDraft: commitMessage,
+          lastError: null,
+        }));
+        return {
+          repositories,
+          ...deriveReviewState(repositories, state.selectedRepositoryId),
+        };
+      })(),
     }));
 
     try {
@@ -907,14 +976,15 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
         };
       });
 
-      const nextSelectedRepository = nextRepositories.find((candidate) => candidate.commitState === 'idle') ||
-        nextRepositories.find((candidate) => candidate.commitState === 'no_changes') ||
-        nextRepositories.find((candidate) => candidate.id === repositoryId) ||
-        null;
+      const derivedReviewState = deriveReviewState(nextRepositories, repositoryId);
+      const nextSelectedRepository = derivedReviewState.selectedRepositoryId
+        ? nextRepositories.find((candidate) => candidate.id === derivedReviewState.selectedRepositoryId) ?? null
+        : null;
 
       set({
         repositories: nextRepositories,
-        selectedRepositoryId: nextSelectedRepository?.id ?? null,
+        selectedRepositoryId: derivedReviewState.selectedRepositoryId,
+        reviewSummary: derivedReviewState.reviewSummary,
         executionRecords: nextExecutionRecords,
         isCommitting: false,
         lastCommitHash: hash,
@@ -954,11 +1024,17 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
       set((state) => ({
         isCommitting: false,
         lastError: messageText,
-        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-          ...currentRepository,
-          commitState: currentRepository.changes.length === 0 ? 'no_changes' : 'idle',
-          lastError: messageText,
-        })),
+        ...(() => {
+          const repositories = updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+            ...currentRepository,
+            commitState: currentRepository.changes.length === 0 ? 'no_changes' : 'idle',
+            lastError: messageText,
+          }));
+          return {
+            repositories,
+            ...deriveReviewState(repositories, state.selectedRepositoryId),
+          };
+        })(),
       }));
       throw error;
     }
@@ -1006,4 +1082,6 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
       deletions: aggregate.deletions + repository.stats.deletions,
     }), { ...EMPTY_STATS });
   },
+
+  getReviewSummary: () => get().reviewSummary,
 }));

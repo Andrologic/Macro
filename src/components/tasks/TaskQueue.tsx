@@ -2,7 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
+import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import { taskMatchesProjectId } from '../../services/implementTaskCatalog';
+import {
+  getTaskRepositoryDescriptors,
+  type ReviewRepositoryUiState,
+  type ReviewTaskSummary,
+  type TaskRepositoryDescriptor,
+} from '../../services/implementMultiRepoSummary';
 import { Icon, IconName } from '../ui/Icon';
 import { Select } from '../ui/Select';
 import { cn } from '../../utils/cn';
@@ -37,11 +44,32 @@ const readyStatusOrder: Record<TaskStatus, number> = {
   Completed: 6,
 };
 
+const REPOSITORY_CHIP_STATE_CLASSES: Record<ReviewRepositoryUiState, string> = {
+  pending_review: 'border-amber-500/20 bg-amber-500/10 text-amber-500',
+  ready_to_commit: 'border-sky-500/20 bg-sky-500/10 text-sky-400',
+  committed: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-500',
+  no_changes: 'border-border bg-muted/60 text-muted-foreground',
+};
+
+interface MultiRepoTaskPresentation {
+  repositories: Array<{
+    id: string;
+    label: string;
+    title: string;
+    state: ReviewRepositoryUiState | null;
+    isCurrent: boolean;
+    isNext: boolean;
+  }>;
+  progressLabel: string;
+  nextActionLabel: string;
+}
+
 interface TaskItemProps {
   task: ImplementTask;
   isSelected: boolean;
   isBusy: boolean;
   statusLabel: string;
+  multiRepoPresentation: MultiRepoTaskPresentation | null;
   onSelect: () => void;
   onStart: () => void;
   onReview: () => void;
@@ -55,6 +83,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   isSelected,
   isBusy,
   statusLabel,
+  multiRepoPresentation,
   onSelect,
   onStart,
   onReview,
@@ -143,15 +172,42 @@ const TaskItem: React.FC<TaskItemProps> = ({
               </span>
             )}
 
-            {(task.project_ids || []).length > 1 && (
+            {multiRepoPresentation && (
               <span className="text-xs text-muted-foreground inline-flex items-center gap-1 leading-none">
                 <Icon name="folder" size={10} />
-                {t('implement.multiProjectTask', '{{count}} projects', {
-                  count: (task.project_ids || []).length,
+                {t('implement.multiProjectTask', '{{count}} repositories', {
+                  count: multiRepoPresentation.repositories.length,
                 })}
               </span>
             )}
           </div>
+
+          {multiRepoPresentation && (
+            <div className="mt-2 space-y-1.5">
+              <div className="flex flex-wrap gap-1">
+                {multiRepoPresentation.repositories.map((repository) => (
+                  <span
+                    key={repository.id}
+                    title={repository.title}
+                    className={cn(
+                      'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]',
+                      repository.state ? REPOSITORY_CHIP_STATE_CLASSES[repository.state] : 'border-border bg-muted/40 text-muted-foreground'
+                    )}
+                  >
+                    <span>{repository.label}</span>
+                    {repository.isCurrent && (
+                      <span className="text-primary">{t('implement.currentRepository', 'Current')}</span>
+                    )}
+                    {repository.isNext && !repository.isCurrent && (
+                      <span className="text-sky-400">{t('implement.nextRepository', 'Next')}</span>
+                    )}
+                  </span>
+                ))}
+              </div>
+              <p className="text-[11px] text-muted-foreground">{multiRepoPresentation.progressLabel}</p>
+              <p className="text-[11px] text-muted-foreground">{multiRepoPresentation.nextActionLabel}</p>
+            </div>
+          )}
 
         </div>
 
@@ -240,6 +296,7 @@ const MemoizedTaskItem = React.memo(TaskItem);
 const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const { t } = useTranslation();
   const { selectedGroupId, selectedProjectId, selectedTaskId, projectGroups } = useAppStore();
+  const getProjectById = useAppStore((state) => state.getProjectById);
   const tasks = useTaskStore((state) => state.tasks);
   const planSummaries = useTaskStore((state) => state.planSummaries);
   const hasStandaloneTasks = useTaskStore((state) => state.hasStandaloneTasks);
@@ -251,6 +308,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const markTaskFailed = useTaskStore((state) => state.markTaskFailed);
   const retryTask = useTaskStore((state) => state.retryTask);
   const taskError = useTaskStore((state) => state.lastError);
+  const reviewCurrentTaskId = useFileChangesStore((state) => state.currentTaskId);
+  const liveReviewSummary = useFileChangesStore((state) => state.reviewSummary);
   const lastErrorToastRef = useRef<string | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const [planFilter, setPlanFilter] = useState<string>(ALL_PLANS_FILTER);
@@ -286,6 +345,106 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     Completed: t('tasks.completed', 'Completed'),
     Failed: t('implement.failed', 'Failed'),
     Blocked: t('tasks.blocked', 'Blocked'),
+  };
+
+  const buildMultiRepoPresentation = (
+    task: ImplementTask,
+    reviewSummary: ReviewTaskSummary | null
+  ): MultiRepoTaskPresentation | null => {
+    const repositoryDescriptors = getTaskRepositoryDescriptors(
+      task,
+      (projectId) => getProjectById(projectId) ?? null
+    );
+
+    if (repositoryDescriptors.length <= 1) {
+      return null;
+    }
+
+    const reviewSummaryByKey = new Map(
+      (reviewSummary?.repositories || []).map((repository) => [
+        `${repository.projectId}:${repository.branchName}`,
+        repository,
+      ])
+    );
+    const repositoryLabelForSummary = (descriptor: TaskRepositoryDescriptor): string =>
+      descriptor.projectName ||
+      descriptor.repoPath?.replace(/\\/g, '/').split('/').filter(Boolean).pop() ||
+      descriptor.projectId;
+    const nextRepositoryDescriptor =
+      reviewSummary?.nextRepositoryId
+        ? repositoryDescriptors.find((descriptor) => {
+          const repositorySummary = reviewSummaryByKey.get(`${descriptor.projectId}:${descriptor.branchName}`);
+          return repositorySummary?.id === reviewSummary.nextRepositoryId;
+        }) ?? null
+        : null;
+
+    const repositories = repositoryDescriptors.map((descriptor) => {
+      const repositorySummary = reviewSummaryByKey.get(`${descriptor.projectId}:${descriptor.branchName}`) ?? null;
+      return {
+        id: descriptor.id,
+        label: descriptor.label,
+        title: descriptor.repoPath || descriptor.label,
+        state: repositorySummary?.state ?? null,
+        isCurrent: repositorySummary?.id === reviewSummary?.currentRepositoryId,
+        isNext: repositorySummary?.id === reviewSummary?.nextRepositoryId,
+      };
+    });
+
+    let progressLabel = t('implement.repositoryCountInline', '{{count}} repositories involved', {
+      count: repositoryDescriptors.length,
+    });
+    let nextActionLabel = t('implement.taskNextActionStart', 'Next: start implementation');
+
+    if (reviewSummary && task.status === 'InReview') {
+      const resolvedCount = reviewSummary.stateCounts.committed + reviewSummary.stateCounts.no_changes;
+      progressLabel = t('implement.taskReviewProgress', '{{resolved}}/{{total}} repositories resolved', {
+        resolved: resolvedCount,
+        total: reviewSummary.repositoryCount,
+      });
+
+      if (reviewSummary.nextAction === 'commit_repository' && nextRepositoryDescriptor) {
+        nextActionLabel = t('implement.taskNextActionCommitRepository', 'Next: commit {{repository}}', {
+          repository: repositoryLabelForSummary(nextRepositoryDescriptor),
+        });
+      } else if (reviewSummary.nextAction === 'review_repository' && nextRepositoryDescriptor) {
+        nextActionLabel = t('implement.taskNextActionReviewRepository', 'Next: review {{repository}}', {
+          repository: repositoryLabelForSummary(nextRepositoryDescriptor),
+        });
+      } else if (reviewSummary.nextAction === 'complete_without_code_changes') {
+        nextActionLabel = t(
+          'implement.taskNextActionCompleteWithoutCodeChanges',
+          'Next: complete without code changes'
+        );
+      } else if (reviewSummary.nextAction === 'complete_task') {
+        nextActionLabel = t('implement.taskNextActionCompleteTask', 'Next: task completion');
+      } else {
+        nextActionLabel = t(
+          'implement.taskNextActionReviewAllRepositories',
+          'Next: review and resolve the remaining repositories'
+        );
+      }
+    } else if (task.status === 'InProgress') {
+      nextActionLabel = t('implement.taskNextActionContinueImplementation', 'Next: continue implementation');
+    } else if (task.status === 'AwaitingResponse') {
+      nextActionLabel = t('implement.taskNextActionAwaitingResponse', 'Next: answer the pending request');
+    } else if (task.status === 'InReview') {
+      nextActionLabel = t(
+        'implement.taskNextActionReviewRepositories',
+        'Next: review and commit each repository'
+      );
+    } else if (task.status === 'Completed') {
+      nextActionLabel = t('implement.taskNextActionCompleted', 'Task completed across repositories');
+    } else if (task.status === 'Failed') {
+      nextActionLabel = t('implement.taskNextActionRetry', 'Next: retry task');
+    } else if (task.status === 'Blocked') {
+      nextActionLabel = t('implement.taskNextActionBlocked', 'Next: unblock task dependencies');
+    }
+
+    return {
+      repositories,
+      progressLabel,
+      nextActionLabel,
+    };
   };
 
   const scopedTasks = useMemo(() => {
@@ -509,6 +668,12 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   isSelected={selectedTaskId === task.id}
                   isBusy={pendingTaskId === task.id}
                   statusLabel={statusLabels[task.status]}
+                  multiRepoPresentation={buildMultiRepoPresentation(
+                    task,
+                    reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
+                      ? liveReviewSummary
+                      : null
+                  )}
                   onSelect={() => void activateTask(task.id)}
                   onStart={() => void runTaskAction(task.id, () => startTask(task.id))}
                   onReview={() => void runTaskAction(task.id, () => startReview(task.id))}
@@ -545,6 +710,12 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   isSelected={selectedTaskId === task.id}
                   isBusy={pendingTaskId === task.id}
                   statusLabel={statusLabels[task.status]}
+                  multiRepoPresentation={buildMultiRepoPresentation(
+                    task,
+                    reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
+                      ? liveReviewSummary
+                      : null
+                  )}
                   onSelect={() => void activateTask(task.id)}
                   onStart={() => void runTaskAction(task.id, () => startTask(task.id))}
                   onReview={() => void runTaskAction(task.id, () => startReview(task.id))}
