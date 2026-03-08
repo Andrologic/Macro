@@ -44,17 +44,19 @@ fn to_join_error(err: tokio::task::JoinError) -> BackendError {
 async fn resolve_workspace_for_path(
     workspace: PathBuf,
     git_state: GitState,
+    workspace_path: Option<PathBuf>,
     path: &str,
     allow_outside_workspace: Option<bool>,
     workspace_scope: Option<&str>,
 ) -> Result<PathBuf, BackendError> {
+    let base_workspace = workspace_path.unwrap_or(workspace);
     let metadata_scope = matches!(workspace_scope.map(str::trim), Some("metadata"));
     if allow_outside_workspace.unwrap_or(false) || (!metadata_scope && !is_macro_scoped_path(path))
     {
-        return Ok(workspace);
+        return Ok(base_workspace);
     }
 
-    tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&workspace))
+    tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&base_workspace))
         .await
         .map_err(to_join_error)?
 }
@@ -156,6 +158,7 @@ pub async fn fs_read_file(
     path: String,
     allow_outside_workspace: Option<bool>,
     workspace_scope: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<FileContentDto, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -166,6 +169,7 @@ pub async fn fs_read_file(
     let workspace = resolve_workspace_for_path(
         workspace,
         git_state.inner().clone(),
+        workspace_path.map(PathBuf::from),
         &path,
         allow_outside_workspace,
         workspace_scope.as_deref(),
@@ -269,6 +273,7 @@ pub async fn fs_write_file(
     create_dirs: Option<bool>,
     allow_outside_workspace: Option<bool>,
     workspace_scope: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<WriteResultDto, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -279,6 +284,7 @@ pub async fn fs_write_file(
     let workspace = resolve_workspace_for_path(
         workspace,
         git_state.inner().clone(),
+        workspace_path.map(PathBuf::from),
         &path,
         allow_outside_workspace,
         workspace_scope.as_deref(),
@@ -488,6 +494,7 @@ pub async fn fs_list_dir(
     max_depth: Option<u32>,
     allow_outside_workspace: Option<bool>,
     workspace_scope: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<Vec<DirEntryDto>, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -498,6 +505,7 @@ pub async fn fs_list_dir(
     let workspace = resolve_workspace_for_path(
         workspace,
         git_state.inner().clone(),
+        workspace_path.map(PathBuf::from),
         &path,
         allow_outside_workspace,
         workspace_scope.as_deref(),
@@ -633,6 +641,7 @@ pub async fn fs_stat(
     git_state: tauri::State<'_, GitState>,
     path: String,
     workspace_scope: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<FileStatsDto, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -643,6 +652,7 @@ pub async fn fs_stat(
     let workspace = resolve_workspace_for_path(
         workspace,
         git_state.inner().clone(),
+        workspace_path.map(PathBuf::from),
         &path,
         None,
         workspace_scope.as_deref(),
@@ -657,6 +667,7 @@ pub async fn fs_exists(
     git_state: tauri::State<'_, GitState>,
     path: String,
     workspace_scope: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<bool, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -667,6 +678,7 @@ pub async fn fs_exists(
     let workspace = resolve_workspace_for_path(
         workspace,
         git_state.inner().clone(),
+        workspace_path.map(PathBuf::from),
         &path,
         None,
         workspace_scope.as_deref(),
@@ -696,6 +708,7 @@ pub async fn fs_delete(
     path: String,
     recursive: Option<bool>,
     workspace_scope: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<(), BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -706,6 +719,7 @@ pub async fn fs_delete(
     let workspace = resolve_workspace_for_path(
         workspace,
         git_state.inner().clone(),
+        workspace_path.map(PathBuf::from),
         &path,
         None,
         workspace_scope.as_deref(),
@@ -754,6 +768,7 @@ pub async fn fs_create_dir(
     path: String,
     recursive: Option<bool>,
     workspace_scope: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<(), BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -764,6 +779,7 @@ pub async fn fs_create_dir(
     let workspace = resolve_workspace_for_path(
         workspace,
         git_state.inner().clone(),
+        workspace_path.map(PathBuf::from),
         &path,
         None,
         workspace_scope.as_deref(),
@@ -802,7 +818,7 @@ pub async fn fs_copy(
         ));
     }
     let workspace = if src_macro {
-        resolve_workspace_for_path(workspace, git_state.inner().clone(), &src, None, None).await?
+        resolve_workspace_for_path(workspace, git_state.inner().clone(), None, &src, None, None).await?
     } else {
         workspace
     };
@@ -863,7 +879,7 @@ pub async fn fs_move(
         ));
     }
     let workspace = if src_macro {
-        resolve_workspace_for_path(workspace, git_state.inner().clone(), &src, None, None).await?
+        resolve_workspace_for_path(workspace, git_state.inner().clone(), None, &src, None, None).await?
     } else {
         workspace
     };
@@ -943,6 +959,7 @@ pub async fn fs_move(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git2::Repository;
     use std::collections::HashSet;
     use std::fs;
     use std::io::Write;
@@ -992,6 +1009,46 @@ mod tests {
 
     fn setup_empty_workspace() -> TempDir {
         TempDir::new().expect("Failed to create temp directory")
+    }
+
+    fn init_git_repo(path: &Path) -> Repository {
+        let repo = Repository::init(path).expect("init repo");
+        let file_path = path.join("README.md");
+        fs::write(&file_path, "hello").expect("write file");
+
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add");
+        let tree_id = index.write_tree().expect("write tree");
+        {
+            let tree = repo.find_tree(tree_id).expect("tree");
+            let sig = git2::Signature::now("Tester", "tester@example.com").expect("sig");
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .expect("commit");
+        }
+
+        repo
+    }
+
+    #[tokio::test]
+    async fn test_resolve_workspace_for_path_uses_explicit_repo_for_metadata_scope() {
+        let default_workspace = setup_empty_workspace();
+        let explicit_repo = setup_empty_workspace();
+        let _repo = init_git_repo(explicit_repo.path());
+        let git_state = GitState::new();
+
+        let resolved = resolve_workspace_for_path(
+            default_workspace.path().to_path_buf(),
+            git_state,
+            Some(explicit_repo.path().to_path_buf()),
+            "branches/develop/plans/index.json",
+            None,
+            Some("metadata"),
+        )
+        .await
+        .expect("resolve metadata workspace");
+
+        assert!(resolved.starts_with(explicit_repo.path()));
+        assert!(resolved.ends_with(Path::new("macro-metadata-worktree")));
     }
 
     #[tokio::test]

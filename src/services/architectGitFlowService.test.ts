@@ -123,9 +123,12 @@ const registerArchitectGitFlowMocks = () => {
   mock.module('./architectPlanService', () => ({
     archiveArchitectPlan: archiveArchitectPlanMock,
     getArchitectPlan: getArchitectPlanMock,
+    getArchitectPlanProjectIds: (plan: { projectId?: string; projectIds?: string[] }) =>
+      Array.from(new Set([...(plan.projectIds || []), ...(plan.projectId ? [plan.projectId] : [])])),
     updateArchitectPlan: updateArchitectPlanMock,
     deleteArchitectPlan: deleteArchitectPlanMock,
     getGitFlowBaseBranch: () => 'develop',
+    resolveTargetBranch: (value: unknown) => String(value || 'develop'),
     toPlanIntegrationBranch: (slug: string) => `plan/${slug}`,
     toPlanScopedFeatureBranch: (slug: string, branchName: string) => `feature/${slug}/${branchName.split('/').pop()}`,
   }));
@@ -324,6 +327,50 @@ describe('architectGitFlowService', () => {
       planId: 'plan-1',
     })).rejects.toThrow('uncommitted changes');
 
+    expect(gitMergeMock).not.toHaveBeenCalled();
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    expect(archiveArchitectPlanMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before any git mutation when plan metadata replicas diverge', async () => {
+    const divergenceError = Object.assign(
+      new Error('Plan metadata replicas diverged across repositories.'),
+      {
+        name: 'ArchitectPlanReplicaDivergenceError',
+        divergence: {
+          branchName: 'feature/implement',
+          planId: 'plan-1',
+          replicas: [
+            {
+              scopeKey: 'repo:/repos/web',
+              repoPath: '/repos/web',
+              updatedAt: '2026-03-07T00:00:00.000Z',
+              missing: false,
+            },
+            {
+              scopeKey: 'repo:/repos/api',
+              repoPath: '/repos/api',
+              updatedAt: '2026-03-06T00:00:00.000Z',
+              missing: false,
+            },
+          ],
+        },
+      }
+    );
+    getArchitectPlanMock.mockImplementationOnce(async () => {
+      throw divergenceError;
+    });
+
+    const { finalizePlanIntoBaseBranch } = await loadArchitectGitFlowService();
+
+    await expect(finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    })).rejects.toThrow('Plan metadata replicas diverged across repositories.');
+
+    expect(gitStatusMock).not.toHaveBeenCalled();
     expect(gitMergeMock).not.toHaveBeenCalled();
     expect(updateArchitectPlanMock).not.toHaveBeenCalled();
     expect(archiveArchitectPlanMock).not.toHaveBeenCalled();

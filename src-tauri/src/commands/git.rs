@@ -220,6 +220,23 @@ fn resolve_macro_worktree(
     Ok((worktree_path, worktree_repo))
 }
 
+fn resolve_macro_workspace_path(
+    default_workspace_root: &Path,
+    workspace_path: Option<String>,
+) -> PathBuf {
+    match workspace_path {
+        Some(path) => {
+            let candidate = PathBuf::from(path);
+            if candidate.is_absolute() {
+                candidate
+            } else {
+                default_workspace_root.join(candidate)
+            }
+        }
+        None => default_workspace_root.to_path_buf(),
+    }
+}
+
 fn gather_macro_conflicted_files(repo: &Repository) -> Result<Vec<String>> {
     let statuses = repo.statuses(Some(&mut get_status_options()))?;
     let mut conflicted = Vec::new();
@@ -2262,8 +2279,10 @@ pub async fn git_pull(
 pub async fn macro_branch_ensure(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    workspace_path: Option<String>,
 ) -> Result<MacroBranchSyncDto> {
-    let workspace = workspace_root.inner().0.read().await.clone();
+    let workspace =
+        resolve_macro_workspace_path(&workspace_root.inner().0.read().await.clone(), workspace_path);
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
@@ -2286,8 +2305,10 @@ pub async fn macro_branch_ensure(
 pub async fn macro_branch_status(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    workspace_path: Option<String>,
 ) -> Result<MacroBranchSyncDto> {
-    let workspace = workspace_root.inner().0.read().await.clone();
+    let workspace =
+        resolve_macro_workspace_path(&workspace_root.inner().0.read().await.clone(), workspace_path);
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
@@ -2304,8 +2325,10 @@ pub async fn macro_branch_commit_if_dirty(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
     message: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<MacroBranchSyncDto> {
-    let workspace = workspace_root.inner().0.read().await.clone();
+    let workspace =
+        resolve_macro_workspace_path(&workspace_root.inner().0.read().await.clone(), workspace_path);
     let git_state = git_state.inner().clone();
     let commit_message = message
         .unwrap_or_else(|| "chore(metadata): persist metadata updates".to_string())
@@ -2433,8 +2456,10 @@ pub async fn macro_branch_commit_if_dirty(
 pub async fn macro_branch_push(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    workspace_path: Option<String>,
 ) -> Result<MacroBranchSyncDto> {
-    let workspace = workspace_root.inner().0.read().await.clone();
+    let workspace =
+        resolve_macro_workspace_path(&workspace_root.inner().0.read().await.clone(), workspace_path);
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
@@ -2486,8 +2511,10 @@ pub async fn macro_branch_push(
 pub async fn macro_branch_pull(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    workspace_path: Option<String>,
 ) -> Result<MacroBranchSyncDto> {
-    let workspace = workspace_root.inner().0.read().await.clone();
+    let workspace =
+        resolve_macro_workspace_path(&workspace_root.inner().0.read().await.clone(), workspace_path);
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
@@ -2590,6 +2617,18 @@ mod tests {
         }
         repo.set_head(&branch_ref).expect("set HEAD to @macro");
         (temp, repo)
+    }
+
+    #[test]
+    fn test_resolve_macro_workspace_path_prefers_explicit_repo_path() {
+        let default_root = PathBuf::from("/workspace/default");
+
+        let resolved = resolve_macro_workspace_path(
+            &default_root,
+            Some("/workspace/project-a".to_string()),
+        );
+
+        assert_eq!(resolved, PathBuf::from("/workspace/project-a"));
     }
 
     #[test]

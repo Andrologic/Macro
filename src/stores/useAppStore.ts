@@ -44,6 +44,16 @@ export type SettingsTab = 'general' | 'appearance' | 'ai' | 'tools' | 'shortcuts
 export type UiZoomMode = 'auto' | 'override';
 export type MetadataSyncState = 'clean' | 'pending' | 'failed' | 'conflict';
 
+export interface MetadataSyncRepositoryStatus {
+  repoPath: string;
+  projectId: string | null;
+  state: MetadataSyncState;
+  error: string | null;
+  reason: MacroSyncReason | null;
+  nextAction: MacroSyncNextAction | null;
+  conflictFiles: string[];
+}
+
 interface RememberedProject {
   projectId: string;
   groupId: string;
@@ -465,6 +475,7 @@ interface AppStore {
   metadataSyncReason: MacroSyncReason | null;
   metadataSyncNextAction: MacroSyncNextAction | null;
   metadataConflictFiles: string[];
+  metadataSyncRepositories: MetadataSyncRepositoryStatus[];
   recentProjects: RememberedProject[];
   macroEnabledProjects: RememberedProject[];
   // Architect mode state
@@ -500,6 +511,7 @@ interface AppStore {
     reason?: MacroSyncReason | null;
     nextAction?: MacroSyncNextAction | null;
     conflictFiles?: string[];
+    repositories?: MetadataSyncRepositoryStatus[];
   }) => void;
   switchProjectContext: (projectId: string | null) => Promise<void>;
   setPlanNodes: (nodes: PlanNode[]) => void;
@@ -584,6 +596,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   metadataSyncReason: null,
   metadataSyncNextAction: null,
   metadataConflictFiles: [],
+  metadataSyncRepositories: [],
   recentProjects: [],
   macroEnabledProjects: [],
   activeArchitectPlanId: null,
@@ -655,13 +668,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     void savePreference(PREF_KEYS.IMPLEMENT_EXECUTION_MODE, normalized);
   },
 
-  setMetadataSyncStatus: ({ state, error, reason, nextAction, conflictFiles }) => {
+  setMetadataSyncStatus: ({ state, error, reason, nextAction, conflictFiles, repositories }) => {
     set({
       metadataSyncState: state,
       metadataSyncError: error ?? null,
       metadataSyncReason: reason ?? null,
       metadataSyncNextAction: nextAction ?? null,
       metadataConflictFiles: state === 'conflict' ? (conflictFiles ?? []) : [],
+      metadataSyncRepositories: repositories ?? [],
     });
   },
 

@@ -6,12 +6,15 @@ import {
   getArchitectPlan,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
+  isArchitectPlanReplicaDivergenceError,
   listArchitectPlans,
   planMatchesProjectId,
+  repairArchitectPlanReplicas,
   resolvePlanProjectContextId,
   restoreArchitectPlan,
   setActiveArchitectPlan,
   updateArchitectPlan,
+  type ArchitectPlanReplicaDivergence,
   type ArchitectPlanSummary,
 } from '../../services/architectPlanService';
 import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
@@ -84,6 +87,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   } | null>(null);
   const [formLoading, setFormLoading] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [replicaRepair, setReplicaRepair] = useState<{
+    divergence: ArchitectPlanReplicaDivergence;
+    message: string;
+  } | null>(null);
+  const [isRepairingReplica, setIsRepairingReplica] = useState(false);
+  const pendingReplicaRetryRef = useRef<(() => Promise<void>) | null>(null);
 
   const activePlan = useMemo(() => {
     if (!activePlanId) return null;
@@ -97,6 +106,64 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
     return activePlan?.title || t('architect.planSelector.selectPlan', 'Select plan');
   }, [activePlan, activePlanContext, activePlanId, t]);
+
+  const openReplicaRepair = (
+    error: unknown,
+    retry?: () => Promise<void>,
+    options?: { toastOnError?: boolean }
+  ): boolean => {
+    if (!isArchitectPlanReplicaDivergenceError(error)) {
+      return false;
+    }
+
+    pendingReplicaRetryRef.current = retry || null;
+    setReplicaRepair({
+      divergence: error.divergence,
+      message: error.message,
+    });
+    setError(error.message);
+    if (options?.toastOnError !== false) {
+      toast.error(error.message);
+    }
+    return true;
+  };
+
+  const resolveOperationMessage = (value: unknown, fallback: string): string =>
+    value instanceof Error ? value.message : fallback;
+
+  const performReplicaRepair = async (strategy: 'newest' | 'oldest'): Promise<void> => {
+    if (!replicaRepair) return;
+
+    setIsRepairingReplica(true);
+    try {
+      await repairArchitectPlanReplicas({
+        branchName: replicaRepair.divergence.branchName,
+        planId: replicaRepair.divergence.planId,
+        strategy,
+      });
+      setReplicaRepair(null);
+      await loadPlans(true);
+      const retry = pendingReplicaRetryRef.current;
+      pendingReplicaRetryRef.current = null;
+      if (retry) {
+        await retry();
+      }
+      toast.success(
+        strategy === 'oldest'
+          ? t('architect.planSelector.replicaRepairOldest', 'Plan metadata repaired from the oldest replica.')
+          : t('architect.planSelector.replicaRepairNewest', 'Plan metadata repaired from the newest replica.')
+      );
+    } catch (repairError) {
+      const message = resolveOperationMessage(
+        repairError,
+        t('architect.planSelector.errorRepairReplica', 'Failed to repair plan metadata.')
+      );
+      setError(message);
+      toast.error(message);
+    } finally {
+      setIsRepairingReplica(false);
+    }
+  };
 
   const loadPlans = async (hydrateActive = false) => {
     setIsLoading(true);
@@ -229,6 +296,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         }
       }
     } catch (loadError) {
+      if (openReplicaRepair(loadError, () => loadPlans(hydrateActive), { toastOnError: false })) {
+        setPlans([]);
+        setActivePlanId(null);
+        return;
+      }
       const message = loadError instanceof Error
         ? loadError.message
         : t('architect.planSelector.errorLoadPlans', 'Failed to load plans.');
@@ -305,6 +377,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       }
       setIsOpen(false);
     } catch (activationError) {
+      if (openReplicaRepair(activationError, () => activatePlan(planId))) {
+        return;
+      }
       const message = activationError instanceof Error
         ? activationError.message
         : t('architect.planSelector.errorActivatePlan', 'Failed to activate plan.');
@@ -366,6 +441,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         await loadPlans(false);
       }
     } catch (err) {
+      if (openReplicaRepair(err, () => handleFormConfirm(title, description))) {
+        return;
+      }
       setFormError(err instanceof Error ? err.message : t('architect.planSelector.errorOperationFailed', 'Operation failed.'));
     } finally {
       setFormLoading(false);
@@ -405,9 +483,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         }
       }
     } catch (archiveError) {
-      const message = archiveError instanceof Error
-        ? archiveError.message
-        : t('architect.planSelector.errorArchivePlan', 'Failed to archive plan.');
+      if (openReplicaRepair(archiveError, () => handleArchivePlan(plan))) {
+        return;
+      }
+      const message = resolveOperationMessage(
+        archiveError,
+        t('architect.planSelector.errorArchivePlan', 'Failed to archive plan.')
+      );
       setError(message);
       toast.error(message);
     } finally {
@@ -420,6 +502,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
     setError(null);
     setIsDeleting(true);
+    let keepDeleteDialogOpen = false;
     try {
       const deletedPlanId = planToDelete.id;
       const cleanup = await deletePlanAndCleanupBranches({
@@ -458,14 +541,21 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         }
       }
     } catch (deleteError) {
-      const message = deleteError instanceof Error
-        ? deleteError.message
-        : t('architect.planSelector.errorDeletePlan', 'Failed to delete plan.');
+      if (openReplicaRepair(deleteError, () => handleConfirmDeletePlan())) {
+        keepDeleteDialogOpen = true;
+        return;
+      }
+      const message = resolveOperationMessage(
+        deleteError,
+        t('architect.planSelector.errorDeletePlan', 'Failed to delete plan.')
+      );
       setError(message);
       toast.error(message);
     } finally {
       setIsDeleting(false);
-      setPlanToDelete(null);
+      if (!keepDeleteDialogOpen) {
+        setPlanToDelete(null);
+      }
     }
   };
 
@@ -482,9 +572,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       );
       await loadPlans(false);
     } catch (restoreError) {
-      const message = restoreError instanceof Error
-        ? restoreError.message
-        : t('architect.planSelector.errorRestorePlan', 'Failed to restore plan.');
+      if (openReplicaRepair(restoreError, () => handleRestorePlan(plan))) {
+        return;
+      }
+      const message = resolveOperationMessage(
+        restoreError,
+        t('architect.planSelector.errorRestorePlan', 'Failed to restore plan.')
+      );
       setError(message);
       toast.error(message);
     } finally {
@@ -800,6 +894,68 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             void loadPlans(false);
           }}
         />
+      )}
+
+      {replicaRepair && (
+        <div className="fixed inset-0 z-[96] flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg rounded-xl border border-border bg-card shadow-2xl">
+            <div className="px-5 py-4 border-b border-border">
+              <h3 className="text-sm font-semibold text-foreground">
+                {t('architect.planSelector.replicaRepairTitle', 'Repair plan metadata replicas')}
+              </h3>
+              <p className="mt-2 text-xs text-muted-foreground">
+                {replicaRepair.message}
+              </p>
+            </div>
+
+            <div className="px-5 py-4 space-y-2 text-xs text-muted-foreground">
+              {replicaRepair.divergence.replicas.map((replica) => (
+                <div key={replica.scopeKey} className="rounded-md border border-border px-3 py-2">
+                  <div className="text-foreground">{replica.repoPath || replica.scopeKey}</div>
+                  <div>
+                    {replica.missing
+                      ? t('architect.planSelector.replicaMissing', 'Missing replica')
+                      : replica.updatedAt || t('architect.planSelector.unknownDate', 'Unknown date')}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="px-5 py-4 border-t border-border flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={isRepairingReplica}
+                onClick={() => {
+                  pendingReplicaRetryRef.current = null;
+                  setReplicaRepair(null);
+                }}
+                className="px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+              >
+                {t('common.cancel', 'Cancel')}
+              </button>
+              <button
+                type="button"
+                disabled={isRepairingReplica}
+                onClick={() => void performReplicaRepair('oldest')}
+                className="px-3 py-2 rounded-md border border-border hover:bg-accent text-sm"
+              >
+                {isRepairingReplica
+                  ? t('architect.planSelector.repairing', 'Repairing...')
+                  : t('architect.planSelector.keepOldestReplica', 'Keep oldest')}
+              </button>
+              <button
+                type="button"
+                disabled={isRepairingReplica}
+                onClick={() => void performReplicaRepair('newest')}
+                className="px-3 py-2 rounded-md bg-primary text-primary-foreground text-sm hover:opacity-90"
+              >
+                {isRepairingReplica
+                  ? t('architect.planSelector.repairing', 'Repairing...')
+                  : t('architect.planSelector.keepNewestReplica', 'Keep newest')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -104,6 +104,7 @@ export const Footer: React.FC = () => {
   const metadataSyncReason = useAppStore((state) => state.metadataSyncReason);
   const metadataSyncNextAction = useAppStore((state) => state.metadataSyncNextAction);
   const metadataConflictFiles = useAppStore((state) => state.metadataConflictFiles);
+  const metadataSyncRepositories = useAppStore((state) => state.metadataSyncRepositories);
 
   const [codeStatus, setCodeStatus] = useState<CodeStatusSnapshot>(DEFAULT_CODE_STATUS);
   const [codeAction, setCodeAction] = useState<'pull' | 'push' | null>(null);
@@ -428,7 +429,13 @@ export const Footer: React.FC = () => {
     macroStateClass[metadataSyncState as tauriIpc.MacroSyncState] || 'text-muted-foreground';
   const codeStateClass = codeStatus.isClean ? 'text-emerald-400' : 'text-amber-400';
   const codeStateLabel = codeStatus.isClean ? 'clean' : `${codeStatus.changedCount} changes`;
-  const macroHint = useMemo(() => formatMacroHint(macroSnapshot), [macroSnapshot]);
+  const macroHint = useMemo(() => {
+    const baseHint = formatMacroHint(macroSnapshot);
+    if (metadataSyncRepositories.length <= 1) {
+      return baseHint;
+    }
+    return [baseHint, `${metadataSyncRepositories.length} repos`].filter(Boolean).join(' | ');
+  }, [macroSnapshot, metadataSyncRepositories.length]);
   const macroTooltip = useMemo(() => {
     const description = getMacroSyncDescription(macroSnapshot ?? {
       error: metadataSyncError,
@@ -437,8 +444,21 @@ export const Footer: React.FC = () => {
     const nextAction = metadataSyncNextAction
       ? `Next action: ${metadataSyncNextAction.replace(/_/g, ' ')}.`
       : null;
-    return [description, nextAction].filter(Boolean).join(' ');
-  }, [macroSnapshot, metadataSyncError, metadataSyncNextAction, metadataSyncReason]);
+    const repositorySummary = metadataSyncRepositories
+      .map((repository) => {
+        const repoName = repository.repoPath.split(/[\\/]/).filter(Boolean).pop() || repository.repoPath;
+        const reason = repository.error || repository.reason || repository.state;
+        return `${repoName}: ${reason}`;
+      })
+      .join(' | ');
+    return [description, nextAction, repositorySummary].filter(Boolean).join(' ');
+  }, [
+    macroSnapshot,
+    metadataSyncError,
+    metadataSyncNextAction,
+    metadataSyncReason,
+    metadataSyncRepositories,
+  ]);
 
   const controlsDisabled = !isTauriRuntime;
 
@@ -571,7 +591,15 @@ export const Footer: React.FC = () => {
             )}
 
             <div className="mt-3 max-h-36 overflow-auto rounded border border-border bg-background/40 p-2 text-xs">
-              {metadataConflictFiles.length > 0 ? (
+              {metadataSyncRepositories.some((repository) => repository.conflictFiles.length > 0) ? (
+                metadataSyncRepositories.flatMap((repository) =>
+                  repository.conflictFiles.map((file) => (
+                    <div key={`${repository.repoPath}:${file}`} className="truncate text-foreground/90">
+                      {repository.repoPath}: {file}
+                    </div>
+                  ))
+                )
+              ) : metadataConflictFiles.length > 0 ? (
                 metadataConflictFiles.map((file) => (
                   <div key={file} className="truncate text-foreground/90">
                     {file}

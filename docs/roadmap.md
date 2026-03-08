@@ -133,10 +133,12 @@ Etat deja consolide :
 - sync `@macro` maintenant exposee comme `clean / pending / failed / conflict` avec diagnostics structures
 - actions explicites `commit / pull / push` pour `@macro` maintenant disponibles cote UI/store
 - erreurs de divergence, remote manquant, upstream manquant, auth absente, reseau et conflit maintenant mieux remontees
+- duplication coherente de la metadata de plan sur chaque depot implique pour les plans multi-projets
+- lecture, restauration, archivage, suppression et sync metadata des plans multi-projets maintenant decouplees d'un `projectId` unique
+- divergence entre copies metadata d'un meme plan maintenant detectee en fail-closed avec reparation explicite
 
 Etat a consolider :
 - resolution assistee des merge conflicts issus des merges pilotes par Macro
-- duplication et consultation fiables des metadata de plan par projet quand un plan touche plusieurs depots
 - fermeture complete de la phase Git/metadata sur des cas reels de conflits assistes
 
 ### 4.6 Multi-projet
@@ -150,7 +152,6 @@ Etat attendu :
 Etat a consolider :
 - lisibilite UX du multi-projet
 - gestion de bout en bout des taches qui touchent plusieurs projets
-- duplication et consultation fiables des plans par projet
 - clarte globale des filtres, de la review et de la navigation
 
 ### 4.7 Mode Chat
@@ -321,7 +322,8 @@ Critere de sortie :
 
 Etat :
 - tranche prioritaire livree sur finalisation, suppression logique, cleanup, preflights et sync `@macro`
-- il reste a finir la resolution assistee des merge conflicts et la coherence metadata par projet pour cloturer totalement la phase
+- coherence metadata par projet maintenant livree pour les plans multi-projets cote desktop local-first
+- il reste a finir la resolution assistee des merge conflicts pilotes par Macro pour cloturer totalement la phase
 
 ### Phase 3 - Experience multi-projet premium
 
@@ -335,9 +337,9 @@ Critere de sortie :
 - le multi-projet devient un vrai avantage produit visible
 
 Prochaine tranche recommandee apres merge :
-- duplication des plans et de leur historique metadata par projet
-- lecture et restauration coherentes de ces metadata depuis chaque depot implique
-- verification de bout en bout des filtres et de la navigation quand un plan touche plusieurs projets
+- resolution assistee des merge conflicts issus des merges pilotes par Macro
+- workflow de blocage, diagnostic, aide IA et reprise de finalisation apres resolution
+- verification de bout en bout sur finalisation de plan et sync `@macro` en presence de conflits reels
 
 ### Phase 4 - Automatisation et supervision
 
