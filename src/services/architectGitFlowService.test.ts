@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { toBranchWorktreeKey } from './implementTaskDerivation';
+import type { PlanFinalizationBlockedError } from './architectGitFlowService';
 
 const projectPaths = new Map<string, { id: string; name: string; path: string }>();
 let currentPlan: any = null;
@@ -11,6 +12,7 @@ interface MockGitStatus {
   modified_files: string[];
   untracked_files: string[];
   conflicted_files: string[];
+  merge_in_progress: boolean;
   ahead: number;
   behind: number;
 }
@@ -27,6 +29,7 @@ const createGitStatus = (overrides: Partial<MockGitStatus> = {}): MockGitStatus 
   modified_files: [],
   untracked_files: [],
   conflicted_files: [],
+  merge_in_progress: false,
   ahead: 0,
   behind: 0,
   ...overrides,
@@ -284,9 +287,83 @@ describe('architectGitFlowService', () => {
     expect(review.repositories.map((repository: { repoPath: string }) => repository.repoPath)).toEqual(['/repos/web', '/repos/api']);
     expect(review.repositories[0]?.mergeable).toBe(true);
     expect(review.repositories[0]?.blockingReason).toBeNull();
+    expect(review.repositories[0]?.blockingKind).toBeNull();
+    expect(review.repositories[0]?.nextAction).toBeNull();
+    expect(review.repositories[0]?.mergeInProgress).toBe(false);
     expect(review.repositories[1]?.mergeable).toBe(false);
     expect(review.repositories[1]?.blockingReason).toContain('uncommitted changes');
+    expect(review.repositories[1]?.blockingKind).toBe('repository_dirty');
+    expect(review.repositories[1]?.nextAction).toBe('clean_repository');
     expect(gitMergeCheckMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces already conflicted repositories in the plan review without running merge-check', async () => {
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      if (worktreeStatusByPath.has(repoPath)) {
+        return worktreeStatusByPath.get(repoPath)!;
+      }
+
+      if (repoPath === '/repos/api') {
+        return createGitStatus({
+          is_clean: false,
+          conflicted_files: ['src/conflict.ts'],
+          merge_in_progress: true,
+        });
+      }
+
+      return createGitStatus();
+    });
+
+    const { loadPlanReview } = await loadArchitectGitFlowService();
+    const review = await loadPlanReview({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    });
+
+    expect(review.repositories[1]).toMatchObject({
+      repoPath: '/repos/api',
+      mergeable: false,
+      mergeInProgress: true,
+      conflictFiles: ['src/conflict.ts'],
+      blockingKind: 'merge_conflict',
+      nextAction: 'resolve_conflicts',
+    });
+    expect(review.repositories[1]?.blockingReason).toContain('src/conflict.ts');
+    expect(gitMergeCheckMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces merge-in-progress repositories in the plan review', async () => {
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      if (worktreeStatusByPath.has(repoPath)) {
+        return worktreeStatusByPath.get(repoPath)!;
+      }
+
+      if (repoPath === '/repos/api') {
+        return createGitStatus({
+          is_clean: true,
+          merge_in_progress: true,
+        });
+      }
+
+      return createGitStatus();
+    });
+
+    const { loadPlanReview } = await loadArchitectGitFlowService();
+    const review = await loadPlanReview({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    });
+
+    expect(review.repositories[1]).toMatchObject({
+      repoPath: '/repos/api',
+      mergeable: true,
+      mergeInProgress: true,
+      blockingKind: 'merge_in_progress',
+      nextAction: 'finish_or_abort_merge',
+      conflictFiles: [],
+    });
+    expect(review.repositories[1]?.blockingReason).toContain('merge in progress');
+    expect(gitMergeCheckMock).toHaveBeenCalledTimes(2);
   });
 
   it('blocks finalization before any mutation when plan tasks are incomplete', async () => {
@@ -320,13 +397,85 @@ describe('architectGitFlowService', () => {
       });
     });
 
-    const { finalizePlanIntoBaseBranch } = await loadArchitectGitFlowService();
+    const { finalizePlanIntoBaseBranch, isPlanFinalizationBlockedError } = await loadArchitectGitFlowService();
 
     await expect(finalizePlanIntoBaseBranch({
       branchName: 'feature/implement',
       planId: 'plan-1',
     })).rejects.toThrow('uncommitted changes');
 
+    let blockedError: unknown;
+    try {
+      await finalizePlanIntoBaseBranch({
+        branchName: 'feature/implement',
+        planId: 'plan-1',
+      });
+    } catch (error) {
+      blockedError = error;
+    }
+
+    expect(isPlanFinalizationBlockedError(blockedError)).toBe(true);
+    if (isPlanFinalizationBlockedError(blockedError)) {
+      const typedBlockedError = blockedError as PlanFinalizationBlockedError;
+      expect(typedBlockedError.planId).toBe('plan-1');
+      expect(typedBlockedError.branchName).toBe('feature/implement');
+      expect(typedBlockedError.blockedRepositories).toHaveLength(1);
+      expect(typedBlockedError.blockedRepositories[0]).toMatchObject({
+        repoPath: '/repos/api',
+        blockingKind: 'repository_dirty',
+        nextAction: 'clean_repository',
+      });
+    }
+
+    expect(gitMergeMock).not.toHaveBeenCalled();
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    expect(archiveArchitectPlanMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks finalization before any mutation when a repository is already conflicted', async () => {
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      if (worktreeStatusByPath.has(repoPath)) {
+        return worktreeStatusByPath.get(repoPath)!;
+      }
+
+      if (repoPath === '/repos/api') {
+        return createGitStatus({
+          is_clean: false,
+          conflicted_files: ['src/conflict.ts'],
+          merge_in_progress: true,
+        });
+      }
+
+      return createGitStatus();
+    });
+
+    const { finalizePlanIntoBaseBranch, isPlanFinalizationBlockedError } = await loadArchitectGitFlowService();
+
+    let blockedError: unknown;
+    try {
+      await finalizePlanIntoBaseBranch({
+        branchName: 'feature/implement',
+        planId: 'plan-1',
+      });
+    } catch (error) {
+      blockedError = error;
+    }
+
+    expect(isPlanFinalizationBlockedError(blockedError)).toBe(true);
+    if (isPlanFinalizationBlockedError(blockedError)) {
+      const typedBlockedError = blockedError as PlanFinalizationBlockedError;
+      expect(typedBlockedError.blockedRepositories[0]).toMatchObject({
+        repoPath: '/repos/api',
+        mergeInProgress: true,
+        conflictFiles: ['src/conflict.ts'],
+        blockingKind: 'merge_conflict',
+        nextAction: 'resolve_conflicts',
+      });
+    }
+
+    expect(gitMergeCheckMock).toHaveBeenCalledTimes(1);
     expect(gitMergeMock).not.toHaveBeenCalled();
     expect(updateArchitectPlanMock).not.toHaveBeenCalled();
     expect(archiveArchitectPlanMock).not.toHaveBeenCalled();

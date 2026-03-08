@@ -47,6 +47,7 @@ export type MetadataSyncState = 'clean' | 'pending' | 'failed' | 'conflict';
 export interface MetadataSyncRepositoryStatus {
   repoPath: string;
   projectId: string | null;
+  worktreePath: string | null;
   state: MetadataSyncState;
   error: string | null;
   reason: MacroSyncReason | null;

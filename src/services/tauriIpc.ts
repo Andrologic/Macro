@@ -64,6 +64,10 @@ export interface GitStatusDto {
   staged_files: GitFileStatus[];
   unstaged_files: GitFileStatus[];
   untracked_files: GitFileStatus[];
+  conflicted_files?: string[];
+  merge_in_progress?: boolean;
+  conflictedFiles: string[];
+  mergeInProgress: boolean;
   is_clean: boolean;
 }
 
@@ -252,6 +256,19 @@ export interface ToolModePolicyDto {
 }
 
 export type WorkspaceScope = 'default' | 'metadata';
+
+const normalizeGitStatus = (status: Omit<GitStatusDto, 'conflictedFiles' | 'mergeInProgress'>): GitStatusDto => {
+  const conflictedFiles = status.conflicted_files ?? [];
+  const mergeInProgress = status.merge_in_progress ?? false;
+
+  return {
+    ...status,
+    conflicted_files: conflictedFiles,
+    merge_in_progress: mergeInProgress,
+    conflictedFiles,
+    mergeInProgress,
+  };
+};
 
 // ============ Conversations ============
 
@@ -515,7 +532,8 @@ export async function deleteProviderConfig(id: string): Promise<void> {
 // ============ Git ============
 
 export async function gitStatus(repoPath: string): Promise<GitStatusDto> {
-  return invoke<GitStatusDto>('git_status', { repoPath });
+  const status = await invoke<Omit<GitStatusDto, 'conflictedFiles' | 'mergeInProgress'>>('git_status', { repoPath });
+  return normalizeGitStatus(status);
 }
 
 export async function gitLog(params: {
