@@ -8,6 +8,11 @@ import {
   type FolderNode,
   type ReviewRepositoryState,
 } from '../../stores/useFileChangesStore';
+import {
+  canRequestTaskChangesFromReview,
+  type ReviewRepositorySummary,
+  type ReviewRepositoryUiState,
+} from '../../services/implementMultiRepoSummary';
 import { Icon, type IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { toast } from '../ui/Toaster';
@@ -36,6 +41,18 @@ const STATUS_ICONS: Record<string, IconName> = {
   added: 'plus',
   modified: 'edit',
   deleted: 'trash',
+};
+
+const REVIEW_STATE_CLASSES: Record<ReviewRepositoryUiState, string> = {
+  pending_review: 'bg-amber-500/10 text-amber-500',
+  ready_to_commit: 'bg-sky-500/10 text-sky-400',
+  committed: 'bg-emerald-500/10 text-emerald-500',
+  no_changes: 'bg-muted text-muted-foreground',
+};
+
+const getRepositoryPathTail = (repoPath: string | null | undefined, fallback: string): string => {
+  const normalized = (repoPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return normalized.split('/').filter(Boolean).pop() || fallback;
 };
 
 const normalizeCommitErrorMessage = (raw: string, t: TranslateFn): string => {
@@ -150,8 +167,21 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({ node, depth, selectedCh
 
 const renderRepositoryState = (
   repository: ReviewRepositoryState,
+  repositorySummary: ReviewRepositorySummary | undefined,
   t: TranslateFn
 ): string => {
+  if (repositorySummary?.isCommitting) {
+    return t('implement.commitInProgress', 'Committing changes...');
+  }
+  if (repositorySummary?.state === 'committed') {
+    return t('implement.repositoryCommitted', 'Committed');
+  }
+  if (repositorySummary?.state === 'no_changes') {
+    return t('implement.repositoryNoChanges', 'No changes');
+  }
+  if (repositorySummary?.state === 'ready_to_commit') {
+    return t('implement.repositoryReadyToCommit', 'Ready to commit');
+  }
   if (repository.commitState === 'committed') {
     return t('implement.repositoryCommitted', 'Committed');
   }
@@ -162,6 +192,42 @@ const renderRepositoryState = (
     reviewed: repository.stats.reviewed,
     total: repository.stats.total,
   });
+};
+
+const describeReviewNextAction = (
+  reviewSummary: ReturnType<typeof useFileChangesStore.getState>['reviewSummary'],
+  repositories: ReviewRepositoryState[],
+  getProjectById: ReturnType<typeof useAppStore.getState>['getProjectById'],
+  t: TranslateFn
+): string => {
+  const nextRepository = reviewSummary.nextRepositoryId
+    ? repositories.find((repository) => repository.id === reviewSummary.nextRepositoryId) ?? null
+    : null;
+  const nextRepositoryLabel = nextRepository
+    ? getProjectById(nextRepository.projectId)?.name ||
+      getRepositoryPathTail(nextRepository.repoPath, nextRepository.projectId)
+    : null;
+
+  if (reviewSummary.nextAction === 'commit_repository' && nextRepositoryLabel) {
+    return t('implement.nextActionCommitRepository', 'Next: commit {{repository}}', {
+      repository: nextRepositoryLabel,
+    });
+  }
+  if (reviewSummary.nextAction === 'review_repository' && nextRepositoryLabel) {
+    return t('implement.nextActionReviewRepository', 'Next: review {{repository}}', {
+      repository: nextRepositoryLabel,
+    });
+  }
+  if (reviewSummary.nextAction === 'complete_without_code_changes') {
+    return t(
+      'implement.nextActionCompleteWithoutCodeChanges',
+      'Next: complete the task without code changes.'
+    );
+  }
+  if (reviewSummary.nextAction === 'complete_task') {
+    return t('implement.nextActionCompleteTask', 'Next: task completion will finalize automatically.');
+  }
+  return t('implement.reviewOverviewIdle', 'Review each repository until every one is resolved.');
 };
 
 const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) => {
@@ -178,6 +244,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const [isCommitPromptOpen, setIsCommitPromptOpen] = useState(false);
   const {
     repositories,
+    reviewSummary,
     selectedRepositoryId,
     selectedDiffTarget,
     isDiffModalOpen,
@@ -203,15 +270,21 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   const selectedRepository = getSelectedRepository();
   const selectedProject = selectedRepository ? getProjectById(selectedRepository.projectId) : null;
-  const overallStats = getOverallStats();
-  const folderTree = useMemo(
-    () => buildFolderTree(selectedRepository?.changes || []),
-    [selectedRepository?.changes]
+  const repositorySummaryById = useMemo(
+    () => new Map(reviewSummary.repositories.map((repository) => [repository.id, repository])),
+    [reviewSummary.repositories]
   );
+  const selectedRepositorySummary = selectedRepository
+    ? repositorySummaryById.get(selectedRepository.id)
+    : undefined;
+  const overallStats = getOverallStats();
+  const folderTree = buildFolderTree(selectedRepository?.changes || []);
   const progressPercent = overallStats.total > 0 ? (overallStats.reviewed / overallStats.total) * 100 : 0;
   const canCommitTaskStatus = currentTask?.status === 'InReview';
   const canStartReview = currentTask?.status === 'InProgress' || currentTask?.status === 'AwaitingResponse';
-  const canRequestChanges = currentTask?.status === 'InReview';
+  const canShowRequestChanges = currentTask?.status === 'InReview';
+  const canRequestChanges =
+    currentTask?.status === 'InReview' && canRequestTaskChangesFromReview(reviewSummary);
   const allRepositoriesNoChanges = repositories.length > 0 && repositories.every(
     (repository) => repository.commitState === 'no_changes'
   );
@@ -228,6 +301,22 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         selectedRepository.stats.total > 0 &&
         selectedRepository.stats.reviewed === selectedRepository.stats.total
       : false;
+  const resolvedRepositoryCount =
+    reviewSummary.stateCounts.committed + reviewSummary.stateCounts.no_changes;
+  const requestChangesDisabledReason =
+    currentTask?.status === 'InReview' && !canRequestChanges
+      ? t(
+        'implement.requestChangesBlockedAfterRepositoryCommit',
+        'A repository has already been committed for this task. Finish the remaining repositories instead of reopening implementation.'
+      )
+      : '';
+  const commitButtonLabel = selectedRepository
+    ? t('implement.commitSelectedRepositoryChanges', 'Commit {{repository}}', {
+      repository:
+        selectedProject?.name ||
+        getRepositoryPathTail(selectedRepository.repoPath, selectedRepository.projectId),
+    })
+    : t('implement.commitRepositoryChanges', 'Commit Repository Changes');
 
   const currentTaskStatusLabel = currentTask
     ? {
@@ -315,6 +404,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   const handleRequestChanges = async () => {
     if (!currentTask || isCommitting) return;
+    if (!canRequestTaskChangesFromReview(reviewSummary)) {
+      toast.error(requestChangesDisabledReason);
+      return;
+    }
     try {
       await requestTaskChanges(currentTask.id);
       resetReviewState();
@@ -401,28 +494,107 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         </div>
       </div>
 
+      {reviewSummary.repositoryCount > 0 && (
+        <div className="px-4 py-3 border-b border-border bg-muted/10 shrink-0">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-foreground">
+                {t('implement.repositoryResolutionProgress', '{{resolved}}/{{total}} repositories resolved', {
+                  resolved: resolvedRepositoryCount,
+                  total: reviewSummary.repositoryCount,
+                })}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {describeReviewNextAction(reviewSummary, repositories, getProjectById, translate)}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap text-[11px]">
+              {reviewSummary.stateCounts.pending_review > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500">
+                  {t('implement.pendingRepositoryCount', '{{count}} pending review', {
+                    count: reviewSummary.stateCounts.pending_review,
+                  })}
+                </span>
+              )}
+              {reviewSummary.stateCounts.ready_to_commit > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-400">
+                  {t('implement.readyRepositoryCount', '{{count}} ready to commit', {
+                    count: reviewSummary.stateCounts.ready_to_commit,
+                  })}
+                </span>
+              )}
+              {reviewSummary.stateCounts.committed > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500">
+                  {t('implement.committedRepositoryCount', '{{count}} committed', {
+                    count: reviewSummary.stateCounts.committed,
+                  })}
+                </span>
+              )}
+              {reviewSummary.stateCounts.no_changes > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                  {t('implement.noChangesRepositoryCount', '{{count}} no changes', {
+                    count: reviewSummary.stateCounts.no_changes,
+                  })}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {repositories.length > 0 && (
         <div className="px-3 py-3 border-b border-border flex items-center gap-2 overflow-x-auto shrink-0">
           {repositories.map((repository) => {
             const project = getProjectById(repository.projectId);
             const isSelected = repository.id === selectedRepositoryId;
+            const repositorySummary = repositorySummaryById.get(repository.id);
             return (
               <button
                 key={repository.id}
                 type="button"
                 onClick={() => selectRepository(repository.id)}
                 className={cn(
-                  'min-w-0 rounded-lg border px-3 py-2 text-left transition-colors',
+                  'min-w-[210px] rounded-lg border px-3 py-2 text-left transition-colors',
                   isSelected
                     ? 'border-primary/40 bg-primary/10'
-                    : 'border-border hover:bg-accent'
+                    : repositorySummary?.isNextAction
+                      ? 'border-sky-500/30 bg-sky-500/5 hover:bg-sky-500/10'
+                      : 'border-border hover:bg-accent'
                 )}
               >
-                <div className="text-xs font-medium text-foreground truncate">
-                  {project?.name || repository.projectId}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-medium text-foreground truncate">
+                    {project?.name || repository.projectId}
+                  </div>
+                  {repositorySummary && (
+                    <span className={cn('px-1.5 py-0.5 rounded-full text-[10px]', REVIEW_STATE_CLASSES[repositorySummary.state])}>
+                      {renderRepositoryState(repository, repositorySummary, translate)}
+                    </span>
+                  )}
                 </div>
-                <div className="text-[11px] text-muted-foreground truncate">
-                  {renderRepositoryState(repository, translate)}
+                <div className="mt-1 text-[11px] text-muted-foreground truncate">
+                  {getRepositoryPathTail(repository.repoPath, repository.projectId)}
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <span className="inline-flex items-center gap-1 truncate">
+                    <Icon name="git-branch" size={10} />
+                    {repository.branchName}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                  {repositorySummary?.isSelected && (
+                    <span className="text-primary">
+                      {t('implement.currentRepository', 'Current')}
+                    </span>
+                  )}
+                  {repositorySummary?.isNextAction && !repositorySummary.isSelected && (
+                    <span className="text-sky-400">
+                      {t('implement.nextRepository', 'Next')}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 text-[11px] text-muted-foreground truncate">
+                  {renderRepositoryState(repository, repositorySummary, translate)}
                 </div>
               </button>
             );
@@ -456,6 +628,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             <span className="inline-flex items-center gap-1">
               <Icon name="git-branch" size={10} />
               {selectedRepository.branchName}
+            </span>
+          )}
+          {selectedRepositorySummary && (
+            <span className={cn('px-2 py-0.5 rounded-full', REVIEW_STATE_CLASSES[selectedRepositorySummary.state])}>
+              {renderRepositoryState(selectedRepository!, selectedRepositorySummary, translate)}
             </span>
           )}
         </div>
@@ -533,11 +710,17 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             {t('implement.startReview', 'Send to review')}
           </button>
         )}
-        {canRequestChanges && (
+        {canShowRequestChanges && (
           <button
             onClick={() => void handleRequestChanges()}
-            disabled={isCommitting}
-            className="w-full py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center justify-center gap-2"
+            disabled={isCommitting || !canRequestChanges}
+            title={!canRequestChanges ? requestChangesDisabledReason : undefined}
+            className={cn(
+              'w-full py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
+              canRequestChanges && !isCommitting
+                ? 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                : 'text-muted-foreground/60 bg-muted cursor-not-allowed'
+            )}
           >
             <Icon name="rotate-ccw" size={14} />
             {t('implement.requestChanges', 'Request changes')}
@@ -557,7 +740,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           <Icon name={isCommitting ? 'loader' : 'git-commit'} size={14} className={isCommitting ? 'animate-spin' : undefined} />
           {isCommitting
             ? t('implement.commitInProgress', 'Committing changes...')
-            : t('implement.commitRepositoryChanges', 'Commit Repository Changes')}
+            : commitButtonLabel}
         </button>
         {canCompleteWithoutCodeChanges && (
           <button
@@ -567,6 +750,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             <Icon name="check" size={14} />
             {t('implement.completeWithoutCodeChanges', 'Complete without code changes')}
           </button>
+        )}
+        {!canRequestChanges && requestChangesDisabledReason && (
+          <p className="text-xs text-muted-foreground">{requestChangesDisabledReason}</p>
         )}
         {!canCommit && commitDisabledReason && (
           <p className="text-xs text-muted-foreground">{commitDisabledReason}</p>
