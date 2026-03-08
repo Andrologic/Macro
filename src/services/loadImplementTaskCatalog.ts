@@ -1,5 +1,4 @@
-import type { Task } from '../types';
-import { useAppStore } from '../stores/useAppStore';
+import type { PlanNode, PredictedBranch, ProjectGroup, Task } from '../types';
 import {
   getArchitectPlan,
   getGitFlowBaseBranch,
@@ -15,10 +14,26 @@ import {
   type ImplementTaskCatalog,
 } from './implementTaskCatalog';
 
-type AppState = ReturnType<typeof useAppStore.getState>;
+interface ActivePlanContextState {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  targetBranch: string;
+}
+
+interface AppState {
+  selectedGroupId: string | null;
+  selectedProjectId: string | null;
+  projectGroups: ProjectGroup[];
+  activeArchitectPlanId: string | null;
+  activePlanContext: ActivePlanContextState | null;
+  planNodes: PlanNode[];
+  predictedBranches: PredictedBranch[];
+}
 
 interface LoadImplementTaskCatalogDependencies {
-  getAppState: () => AppState;
+  getAppState: () => AppState | Promise<AppState>;
   listArchitectPlans: typeof listArchitectPlans;
   getArchitectPlan: typeof getArchitectPlan;
   listArchitectPlanTargetBranches: typeof listArchitectPlanTargetBranches;
@@ -155,7 +170,10 @@ const resolveCandidateTargetBranches = (
 
 export const createLoadImplementTaskCatalog = (
   dependencies: LoadImplementTaskCatalogDependencies = {
-    getAppState: useAppStore.getState,
+    getAppState: async () => {
+      const { useAppStore } = await import('../stores/useAppStore');
+      return useAppStore.getState();
+    },
     listArchitectPlans,
     getArchitectPlan,
     listArchitectPlanTargetBranches,
@@ -165,7 +183,7 @@ export const createLoadImplementTaskCatalog = (
   }
 ) => {
   return async (fallbackTasks: Task[]): Promise<ImplementTaskCatalog> => {
-    const appState = dependencies.getAppState();
+    const appState = await dependencies.getAppState();
     const relevantProjectIds = resolveRelevantProjectIds(appState);
     const activeTargetBranch = resolveCandidateTargetBranches(
       [appState.activePlanContext?.targetBranch || null],
