@@ -27,32 +27,49 @@ const createMacroResult = (overrides: Partial<MacroBranchSyncDto> = {}): MacroBr
   ...overrides,
 });
 
-const macroBranchEnsureMock = mock(async () => createMacroResult({
-  output: 'ensured',
-}));
-const macroBranchStatusMock = mock(async () => createMacroResult({
-  state: 'pending',
-  behind: 2,
-  reason: 'behind',
-  next_action: 'pull',
-}));
-const macroBranchCommitIfDirtyMock = mock(async () => createMacroResult({
-  state: 'pending',
-  has_upstream: false,
-  committed: true,
-  commit_hash: 'abc123',
-  reason: 'missing_upstream',
-  next_action: 'push',
-  output: 'commit ok',
-}));
-const macroBranchPullMock = mock(async () => createMacroResult({
-  output: 'pull ok',
-}));
-const macroBranchPushMock = mock(async () => createMacroResult({
-  output: 'push ok',
-}));
+const macroBranchEnsureMock = mock(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+  createMacroResult({
+    output: `ensured:${workspacePath || 'default'}`,
+  })
+);
+const macroBranchStatusMock = mock(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+  createMacroResult({
+    state: workspacePath?.includes('api') ? 'clean' : 'pending',
+    behind: workspacePath?.includes('api') ? 0 : 2,
+    reason: workspacePath?.includes('api') ? 'clean' : 'behind',
+    next_action: workspacePath?.includes('api') ? null : 'pull',
+  })
+);
+const macroBranchCommitIfDirtyMock = mock(async ({ workspacePath }: { message?: string; workspacePath?: string | null } = {}) =>
+  createMacroResult({
+    state: 'pending',
+    has_upstream: false,
+    committed: true,
+    commit_hash: workspacePath?.includes('api') ? 'api123' : 'web123',
+    reason: 'missing_upstream',
+    next_action: 'push',
+    output: `commit ok:${workspacePath || 'default'}`,
+  })
+);
+const macroBranchPullMock = mock(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+  createMacroResult({
+    output: `pull ok:${workspacePath || 'default'}`,
+  })
+);
+const macroBranchPushMock = mock(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+  createMacroResult({
+    output: `push ok:${workspacePath || 'default'}`,
+  })
+);
 
-const loadMacroSyncService = () => createMacroSyncService({
+const metadataTargets = [
+  { repoPath: '/repos/web', projectId: 'web' },
+  { repoPath: '/repos/api', projectId: 'api' },
+];
+
+const loadMacroSyncService = (overrides?: {
+  metadataAutoPush?: boolean;
+}) => createMacroSyncService({
   tauriIpc: {
     isTauriAvailable: () => true,
     macroBranchEnsure: macroBranchEnsureMock,
@@ -62,115 +79,167 @@ const loadMacroSyncService = () => createMacroSyncService({
     macroBranchPush: macroBranchPushMock,
   },
   getAppState: () => ({
-    metadataAutoPush: false,
+    metadataAutoPush: overrides?.metadataAutoPush ?? false,
+    activeArchitectPlanId: 'plan-1',
+    activePlanContext: { targetBranch: 'develop' },
+    selectedProjectId: 'web',
+    getProjectById: (_projectId: string) => undefined,
     setMetadataSyncStatus: setMetadataSyncStatusMock,
   }),
+  resolveTargets: async () => metadataTargets,
   toServiceError,
 });
 
 describe('macroSyncService', () => {
   beforeEach(() => {
     setMetadataSyncStatusMock.mockReset();
+
     macroBranchEnsureMock.mockReset();
-    macroBranchEnsureMock.mockImplementation(async () => createMacroResult({
-      output: 'ensured',
-    }));
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      createMacroResult({
+        output: `ensured:${workspacePath || 'default'}`,
+      })
+    );
 
     macroBranchStatusMock.mockReset();
-    macroBranchStatusMock.mockImplementation(async () => createMacroResult({
-      state: 'pending',
-      behind: 2,
-      reason: 'behind',
-      next_action: 'pull',
-    }));
+    macroBranchStatusMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      createMacroResult({
+        state: workspacePath?.includes('api') ? 'clean' : 'pending',
+        behind: workspacePath?.includes('api') ? 0 : 2,
+        reason: workspacePath?.includes('api') ? 'clean' : 'behind',
+        next_action: workspacePath?.includes('api') ? null : 'pull',
+      })
+    );
 
     macroBranchCommitIfDirtyMock.mockReset();
-    macroBranchCommitIfDirtyMock.mockImplementation(async () => createMacroResult({
-      state: 'pending',
-      has_upstream: false,
-      committed: true,
-      commit_hash: 'abc123',
-      reason: 'missing_upstream',
-      next_action: 'push',
-      output: 'commit ok',
-    }));
+    macroBranchCommitIfDirtyMock.mockImplementation(async ({ workspacePath }: { message?: string; workspacePath?: string | null } = {}) =>
+      createMacroResult({
+        state: 'pending',
+        has_upstream: false,
+        committed: true,
+        commit_hash: workspacePath?.includes('api') ? 'api123' : 'web123',
+        reason: 'missing_upstream',
+        next_action: 'push',
+        output: `commit ok:${workspacePath || 'default'}`,
+      })
+    );
 
     macroBranchPullMock.mockReset();
-    macroBranchPullMock.mockImplementation(async () => createMacroResult({
-      output: 'pull ok',
-    }));
+    macroBranchPullMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      createMacroResult({
+        output: `pull ok:${workspacePath || 'default'}`,
+      })
+    );
 
     macroBranchPushMock.mockReset();
-    macroBranchPushMock.mockImplementation(async () => createMacroResult({
-      output: 'push ok',
-    }));
+    macroBranchPushMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      createMacroResult({
+        output: `push ok:${workspacePath || 'default'}`,
+      })
+    );
   });
 
-  it('maps structured metadata diagnostics into the app store on refresh', async () => {
+  it('aggregates metadata diagnostics across all active-plan repositories on refresh', async () => {
     const service = loadMacroSyncService();
 
     const result = await service.refreshMacroSyncStatus();
 
     expect(result?.reason).toBe('behind');
     expect(result?.next_action).toBe('pull');
-    expect(setMetadataSyncStatusMock).toHaveBeenCalledWith({
+    expect(macroBranchStatusMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
+      '/repos/web',
+      '/repos/api',
+    ]);
+    expect(setMetadataSyncStatusMock).toHaveBeenLastCalledWith({
       state: 'pending',
       error: null,
       reason: 'behind',
       nextAction: 'pull',
       conflictFiles: [],
+      repositories: [
+        {
+          repoPath: '/repos/web',
+          projectId: 'web',
+          state: 'pending',
+          error: null,
+          reason: 'behind',
+          nextAction: 'pull',
+          conflictFiles: [],
+        },
+        {
+          repoPath: '/repos/api',
+          projectId: 'api',
+          state: 'clean',
+          error: null,
+          reason: 'clean',
+          nextAction: null,
+          conflictFiles: [],
+        },
+      ],
     });
   });
 
-  it('blocks pull when metadata must be committed first', async () => {
-    macroBranchEnsureMock.mockImplementation(async () => createMacroResult({
-      state: 'pending',
-      is_dirty: true,
-      reason: 'dirty',
-      next_action: 'commit',
-    }));
+  it('blocks only the repositories that still require a commit before pull', async () => {
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      workspacePath?.includes('web')
+        ? createMacroResult({
+            state: 'pending',
+            is_dirty: true,
+            reason: 'dirty',
+            next_action: 'commit',
+          })
+        : createMacroResult({
+            output: `ensured:${workspacePath || 'default'}`,
+          })
+    );
 
     const service = loadMacroSyncService();
     const result = await service.pullMacroMetadata();
 
     expect(result?.reason).toBe('dirty');
-    expect(macroBranchPullMock).not.toHaveBeenCalled();
+    expect(macroBranchPullMock).toHaveBeenCalledTimes(1);
+    expect(macroBranchPullMock).toHaveBeenCalledWith({ workspacePath: '/repos/api' });
   });
 
-  it('commits metadata explicitly without pushing', async () => {
+  it('commits metadata in every targeted repository without pushing', async () => {
     const service = loadMacroSyncService();
 
     const result = await service.commitMacroMetadata({
       commitMessage: 'chore(metadata): manual commit',
     });
 
-    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledWith({
-      message: 'chore(metadata): manual commit',
-    });
+    expect(macroBranchCommitIfDirtyMock.mock.calls.map(([params]) => ({
+      message: params?.message,
+      workspacePath: params?.workspacePath,
+    }))).toEqual([
+      { message: 'chore(metadata): manual commit', workspacePath: '/repos/web' },
+      { message: 'chore(metadata): manual commit', workspacePath: '/repos/api' },
+    ]);
     expect(macroBranchPushMock).not.toHaveBeenCalled();
     expect(result?.committed).toBe(true);
     expect(result?.next_action).toBe('push');
   });
 
-  it('does not auto-commit during manual push', async () => {
-    macroBranchEnsureMock.mockImplementation(async () => createMacroResult({
-      state: 'pending',
-      is_dirty: true,
-      reason: 'dirty',
-      next_action: 'commit',
-    }));
+  it('auto-pushes stream metadata updates across all repositories when enabled', async () => {
+    const service = loadMacroSyncService({ metadataAutoPush: true });
 
-    const service = loadMacroSyncService();
-    const result = await service.pushMacroMetadata();
+    const result = await service.syncMacroMetadataAfterStream({
+      mode: 'Architect',
+      conversationId: 'conv-1',
+      trigger: 'send',
+    });
 
-    expect(result?.reason).toBe('dirty');
-    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
-    expect(macroBranchPushMock).not.toHaveBeenCalled();
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(2);
+    expect(macroBranchPushMock).toHaveBeenCalledTimes(2);
+    expect(result?.state).toBe('clean');
   });
 
   it('normalizes thrown failures into actionable metadata diagnostics', async () => {
-    macroBranchStatusMock.mockImplementation(async () => {
-      throw new Error('fatal: could not read from remote repository');
+    macroBranchStatusMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) => {
+      if (workspacePath?.includes('web')) {
+        throw new Error('fatal: could not read from remote repository');
+      }
+      return createMacroResult();
     });
 
     const service = loadMacroSyncService();
