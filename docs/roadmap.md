@@ -41,6 +41,7 @@ L'application dispose deja d'une base solide :
 - socle desktop `Architect -> Implement -> Review -> Commit -> validation finale de plan` maintenant stabilise
 - catalogue de taches `Implement` maintenant capable d'agreger plusieurs plans executables cote desktop
 - filtres par plan et prise en charge des taches hors plan maintenant presents dans la file de taches
+- review Implement multi-depots maintenant explicite dans la file et dans la review, avec progression depot par depot et completion unifiee de la tache
 - lifecycle des plans maintenant robuste sur le socle desktop local-first
 - sync `@macro` maintenant structuree avec etats exploitables, actions explicites et erreurs remontees proprement
 - merge conflicts pilotes par Macro maintenant detectes, bloques en fail-closed et traites via un workflow assiste de resolution et reprise
@@ -99,9 +100,12 @@ Etat deja consolide :
 - filtrage de la file par plan
 - support des taches hors plan dans la file et dans le cycle de completion
 - meilleur rattachement des taches multi-projets au projet courant
+- review multi-depots cote Implement maintenant lisible dans la file et dans la review
+- navigation explicite depot par depot, commits distincts par depot et completion de tache unifiee
+- verrouillage des etats fantomes entre review, commit par depot et completion finale
 
 Etat a consolider :
-- backend de listing des taches encore centre sur le plan courant
+- catalogue/backend de listing des taches encore centre sur le plan courant et sur une branche cible a la fois
 - UX de la review et de l'edition ciblee
 - mode semi-auto vs full-auto
 - questions IA a reponses rapides reellement branchees
@@ -151,11 +155,16 @@ Etat attendu :
 - vision partagee du contexte
 - commits distincts par projet mais validation fonctionnelle unifiee
 
+Etat deja consolide :
+- review Implement multi-depots maintenant explicite dans les parcours quotidiens
+- progression et prochaine action attendue maintenant visibles pour les taches multi-projets actives
+- commits par depot maintenant mieux exposes sans perdre la completion unifiee de la tache
+
 Etat a consolider :
 - lisibilite UX du multi-projet
 - gestion de bout en bout des taches qui touchent plusieurs projets
 - clarte globale des filtres, de la review et de la navigation
-- review Implement multi-depots encore trop implicite dans les parcours quotidiens
+- catalogue et filtres multi-plan / multi-projet encore trop dependants du plan actif
 
 ### 4.7 Mode Chat
 
@@ -235,6 +244,7 @@ Chantiers :
 - fiabiliser les taches multi-projets
 - garantir la qualite des commits par projet
 - ameliorer navigation, filtres et lisibilite de contexte
+- decoupler le catalogue Implement du plan actif pour exposer tous les plans executables pertinents
 
 ### 5.3 Priorite 3 - Fiabiliser l'autonomie assistee
 
@@ -341,10 +351,16 @@ Livrables :
 Critere de sortie :
 - le multi-projet devient un vrai avantage produit visible
 
+Etat :
+- tranche `review multi-projet premium cote Implement` consideree comme livree sur le socle desktop local-first
+- la file de taches et la review exposent maintenant les depots impliques, la progression depot par depot et la prochaine action attendue
+- commits distincts par depot et completion unifiee de la tache maintenant tenus sans etats fantomes dans le flow Implement stabilise
+- le prochain verrou majeur de la phase devient un catalogue Implement vraiment global quand plusieurs plans executables coexistent
+
 Prochaine tranche recommandee apres merge :
-- review multi-projet premium cote Implement
-- navigation explicite depot par depot dans une meme tache multi-projet, avec contexte plus lisible dans la file et dans la review
-- validation et commits par depot sans ambiguite, tout en conservant une completion unifiee de la tache
+- catalogue global multi-plan / multi-projet cote Implement
+- chargement des plans executables et de leurs taches sans dependre du seul plan actif ni d'une seule branche cible
+- synthese de plans, file de taches et filtres coherents quand plusieurs plans vivants coexistent dans un meme groupe
 
 ### Phase 4 - Automatisation et supervision
 
