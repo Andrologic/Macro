@@ -39,8 +39,9 @@ L'application dispose deja d'une base solide :
 - pipeline Git et metadata deja bien amorce
 - taches, review et commit deja presents cote Implement
 - socle desktop `Architect -> Implement -> Review -> Commit -> validation finale de plan` maintenant stabilise
-- catalogue de taches `Implement` maintenant capable d'agreger plusieurs plans executables cote desktop
+- catalogue de taches `Implement` maintenant capable d'agreger plusieurs plans executables et plusieurs branches cibles cote desktop
 - filtres par plan et prise en charge des taches hors plan maintenant presents dans la file de taches
+- resumes de plans `Implement` maintenant fiables pour les filtres et la validation quand plusieurs plans vivants coexistent
 - review Implement multi-depots maintenant explicite dans la file et dans la review, avec progression depot par depot et completion unifiee de la tache
 - lifecycle des plans maintenant robuste sur le socle desktop local-first
 - sync `@macro` maintenant structuree avec etats exploitables, actions explicites et erreurs remontees proprement
@@ -97,7 +98,9 @@ Etat attendu :
 
 Etat deja consolide :
 - derivation et agregation de taches depuis plusieurs plans executables cote desktop
+- catalogue/backend de listing des taches maintenant decouple du seul plan actif et d'une seule branche cible
 - filtrage de la file par plan
+- resumes de plans maintenant coherents pour les filtres et la validation quand plusieurs plans vivent en parallele
 - support des taches hors plan dans la file et dans le cycle de completion
 - meilleur rattachement des taches multi-projets au projet courant
 - review multi-depots cote Implement maintenant lisible dans la file et dans la review
@@ -105,7 +108,6 @@ Etat deja consolide :
 - verrouillage des etats fantomes entre review, commit par depot et completion finale
 
 Etat a consolider :
-- catalogue/backend de listing des taches encore centre sur le plan courant et sur une branche cible a la fois
 - UX de la review et de l'edition ciblee
 - mode semi-auto vs full-auto
 - questions IA a reponses rapides reellement branchees
@@ -159,12 +161,12 @@ Etat deja consolide :
 - review Implement multi-depots maintenant explicite dans les parcours quotidiens
 - progression et prochaine action attendue maintenant visibles pour les taches multi-projets actives
 - commits par depot maintenant mieux exposes sans perdre la completion unifiee de la tache
+- catalogue Implement maintenant global a l'echelle du contexte desktop local-first, avec coexistence coherente de plusieurs plans vivants et des taches hors plan
 
 Etat a consolider :
 - lisibilite UX du multi-projet
 - gestion de bout en bout des taches qui touchent plusieurs projets
 - clarte globale des filtres, de la review et de la navigation
-- catalogue et filtres multi-plan / multi-projet encore trop dependants du plan actif
 
 ### 4.7 Mode Chat
 
@@ -232,7 +234,7 @@ Chantiers :
 - durcir le git flow de plan
 - fiabiliser les transitions de taches
 - finaliser l'UX de review et d'edition ciblee
-- finaliser le multi-plan cote Implement jusqu'au backend et a la review
+- stabiliser la lisibilite du multi-plan cote Implement dans la review et la finalisation
 
 ### 5.2 Priorite 2 - Rendre le multi-projet reellement premium
 
@@ -244,7 +246,7 @@ Chantiers :
 - fiabiliser les taches multi-projets
 - garantir la qualite des commits par projet
 - ameliorer navigation, filtres et lisibilite de contexte
-- decoupler le catalogue Implement du plan actif pour exposer tous les plans executables pertinents
+- mieux articuler finalisation de plan, review et navigation quand plusieurs plans restent actifs en parallele
 
 ### 5.3 Priorite 3 - Fiabiliser l'autonomie assistee
 
@@ -353,14 +355,17 @@ Critere de sortie :
 
 Etat :
 - tranche `review multi-projet premium cote Implement` consideree comme livree sur le socle desktop local-first
+- tranche `catalogue global multi-plan / multi-projet cote Implement` consideree comme livree sur le socle desktop local-first
 - la file de taches et la review exposent maintenant les depots impliques, la progression depot par depot et la prochaine action attendue
 - commits distincts par depot et completion unifiee de la tache maintenant tenus sans etats fantomes dans le flow Implement stabilise
-- le prochain verrou majeur de la phase devient un catalogue Implement vraiment global quand plusieurs plans executables coexistent
+- le catalogue charge maintenant tous les plans executables pertinents sans dependre du seul plan actif ni d'une seule branche cible
+- la synthese de plans, la file de taches et les filtres restent maintenant coherents quand plusieurs plans vivants coexistent dans un meme groupe, sans regression sur les taches hors plan
+- le prochain verrou majeur de la phase redevient la lisibilite UX du multi-projet et l'articulation review / finalisation quand plusieurs plans restent actifs
 
 Prochaine tranche recommandee apres merge :
-- catalogue global multi-plan / multi-projet cote Implement
-- chargement des plans executables et de leurs taches sans dependre du seul plan actif ni d'une seule branche cible
-- synthese de plans, file de taches et filtres coherents quand plusieurs plans vivants coexistent dans un meme groupe
+- lisibilite UX groupe / projet / plan / tache cote Implement
+- clarte des filtres, de la navigation et de la review quand plusieurs plans et plusieurs depots restent actifs en parallele
+- meilleure articulation entre review de tache multi-projet, validation globale de plan et finalisation
 
 ### Phase 4 - Automatisation et supervision
 
