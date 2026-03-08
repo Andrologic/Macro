@@ -1,0 +1,330 @@
+import { describe, expect, it } from 'bun:test';
+import type { Task } from '../types';
+import type {
+  ArchitectPlanRecord,
+  ArchitectPlanSummary,
+} from './architectPlanService';
+import { buildImplementTaskCatalog } from './implementTaskCatalog';
+import { createLoadImplementTaskCatalog } from './loadImplementTaskCatalog';
+
+const makePlan = (
+  overrides: Partial<ArchitectPlanRecord> & Pick<ArchitectPlanRecord, 'id' | 'title' | 'status' | 'targetBranch'>
+): ArchitectPlanRecord => ({
+  id: overrides.id,
+  slug: overrides.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+  title: overrides.title,
+  description: overrides.description || '',
+  status: overrides.status,
+  targetBranch: overrides.targetBranch,
+  conversationId: overrides.conversationId,
+  projectId: overrides.projectId || 'web',
+  projectIds: overrides.projectIds || ['web'],
+  createdAt: overrides.createdAt || '2026-03-08T00:00:00.000Z',
+  updatedAt: overrides.updatedAt || '2026-03-08T00:00:00.000Z',
+  nodes: overrides.nodes || [],
+  predictedBranches: overrides.predictedBranches || [],
+});
+
+const toSummary = (plan: ArchitectPlanRecord): ArchitectPlanSummary => ({
+  id: plan.id,
+  slug: plan.slug,
+  title: plan.title,
+  description: plan.description,
+  status: plan.status,
+  targetBranch: plan.targetBranch,
+  conversationId: plan.conversationId,
+  projectId: plan.projectId,
+  projectIds: plan.projectIds,
+  createdAt: plan.createdAt,
+  updatedAt: plan.updatedAt,
+  nodeCount: plan.nodes.length,
+});
+
+const makeTask = (overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task => ({
+  id: overrides.id,
+  plan_id: overrides.plan_id ?? '',
+  project_id: overrides.project_id ?? 'web',
+  project_ids: overrides.project_ids,
+  title: overrides.title,
+  description: overrides.description ?? '',
+  status: overrides.status ?? 'Pending',
+  dependencies: overrides.dependencies ?? [],
+  estimated_changes: overrides.estimated_changes ?? [],
+  code_diff: overrides.code_diff,
+});
+
+describe('createLoadImplementTaskCatalog', () => {
+  it('aggregates executable plans across multiple target branches within the selected group', async () => {
+    const webPlan = makePlan({
+      id: 'plan-web',
+      title: 'Web Checkout',
+      status: 'validated',
+      targetBranch: 'develop',
+      projectId: 'web',
+      projectIds: ['web'],
+      nodes: [
+        {
+          id: 'task-web',
+          title: 'Build checkout UI',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'checkout-ui',
+          projectId: 'web',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-web',
+          name: 'checkout-ui',
+          color: '#3b82f6',
+          parentBranch: 'plan/web-checkout',
+          projectId: 'web',
+          taskIds: ['task-web'],
+          status: 'pending',
+        },
+      ],
+    });
+    const apiPlan = makePlan({
+      id: 'plan-api',
+      title: 'API Payments',
+      status: 'in_progress',
+      targetBranch: 'feature/payments',
+      projectId: 'api',
+      projectIds: ['api'],
+      nodes: [
+        {
+          id: 'task-api',
+          title: 'Add payment endpoint',
+          type: 'task',
+          status: 'in-progress',
+          dependencies: [],
+          assignedBranch: 'payments-api',
+          projectId: 'api',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-api',
+          name: 'payments-api',
+          color: '#10b981',
+          parentBranch: 'plan/api-payments',
+          projectId: 'api',
+          taskIds: ['task-api'],
+          status: 'active',
+        },
+      ],
+    });
+    const unrelatedPlan = makePlan({
+      id: 'plan-mobile',
+      title: 'Mobile Push',
+      status: 'validated',
+      targetBranch: 'release/mobile',
+      projectId: 'mobile',
+      projectIds: ['mobile'],
+      nodes: [
+        {
+          id: 'task-mobile',
+          title: 'Add push permissions',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'mobile-push',
+          projectId: 'mobile',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-mobile',
+          name: 'mobile-push',
+          color: '#f97316',
+          parentBranch: 'plan/mobile-push',
+          projectId: 'mobile',
+          taskIds: ['task-mobile'],
+          status: 'pending',
+        },
+      ],
+    });
+    const plansByKey = new Map([
+      ['develop:plan-web', webPlan],
+      ['feature/payments:plan-api', apiPlan],
+      ['release/mobile:plan-mobile', unrelatedPlan],
+    ]);
+    const summariesByBranch = new Map<string, ArchitectPlanSummary[]>([
+      ['develop', [toSummary(webPlan)]],
+      ['feature/payments', [toSummary(apiPlan)]],
+      ['release/mobile', [toSummary(unrelatedPlan)]],
+    ]);
+
+    const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        selectedGroupId: 'group-1',
+        selectedProjectId: 'web',
+        projectGroups: [
+          {
+            id: 'group-1',
+            name: 'Checkout',
+            isOpen: true,
+            projects: [
+              { id: 'web', name: 'Web', path: '/repos/web', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+              { id: 'api', name: 'API', path: '/repos/api', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+            ],
+          },
+          {
+            id: 'group-2',
+            name: 'Mobile',
+            isOpen: true,
+            projects: [
+              { id: 'mobile', name: 'Mobile', path: '/repos/mobile', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+            ],
+          },
+        ],
+        getProjectById: () => undefined,
+      } as never),
+      listArchitectPlans: async (branchName: string) => ({
+        activePlanId: null,
+        plans: summariesByBranch.get(branchName) || [],
+      }),
+      getArchitectPlan: async (branchName: string, planId: string) =>
+        plansByKey.get(`${branchName}:${planId}`) || null,
+      listArchitectPlanTargetBranches: async () => ['develop', 'feature/payments', 'release/mobile'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value || 'develop'),
+      buildImplementTaskCatalog,
+    });
+
+    const catalog = await loadImplementTaskCatalog([
+      makeTask({
+        id: 'task-web',
+        title: 'Duplicate architect task',
+        plan_id: 'plan-web',
+        project_id: 'web',
+      }),
+      makeTask({
+        id: 'standalone-1',
+        title: 'Fix production typo',
+        project_id: 'web',
+        status: 'InProgress',
+      }),
+    ]);
+
+    expect(catalog.source).toBe('mixed');
+    expect(catalog.tasks.map((task) => task.id)).toEqual([
+      'task-api',
+      'task-web',
+      'standalone-1',
+    ]);
+    expect(catalog.plans.map((plan) => ({
+      id: plan.id,
+      targetBranch: plan.targetBranch,
+    }))).toEqual([
+      { id: 'plan-api', targetBranch: 'feature/payments' },
+      { id: 'plan-web', targetBranch: 'develop' },
+    ]);
+  });
+
+  it('injects the executable active plan from memory even when it is not yet discoverable from metadata', async () => {
+    const stalePersistedPlan = makePlan({
+      id: 'plan-live',
+      title: 'Checkout Live',
+      status: 'validated',
+      targetBranch: 'develop',
+      projectId: 'web',
+      projectIds: ['web'],
+      nodes: [
+        {
+          id: 'stale-task',
+          title: 'Persisted stale task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'checkout-old',
+          projectId: 'web',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'stale-branch',
+          name: 'checkout-old',
+          color: '#64748b',
+          parentBranch: 'plan/checkout-live',
+          projectId: 'web',
+          taskIds: ['stale-task'],
+          status: 'pending',
+        },
+      ],
+    });
+
+    const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: 'plan-live',
+        activePlanContext: {
+          id: 'plan-live',
+          title: 'Checkout Live',
+          description: 'Live in-memory version',
+          status: 'validated',
+          targetBranch: 'feature/live-checkout',
+        },
+        planNodes: [
+          {
+            id: 'live-task',
+            title: 'Live in-memory task',
+            type: 'task',
+            status: 'pending',
+            dependencies: [],
+            assignedBranch: 'checkout-live',
+            projectId: 'web',
+          },
+        ],
+        predictedBranches: [
+          {
+            id: 'live-branch',
+            name: 'checkout-live',
+            color: '#8b5cf6',
+            parentBranch: 'plan/checkout-live',
+            projectId: 'web',
+            taskIds: ['live-task'],
+            status: 'pending',
+          },
+        ],
+        selectedGroupId: 'group-1',
+        selectedProjectId: 'web',
+        projectGroups: [
+          {
+            id: 'group-1',
+            name: 'Checkout',
+            isOpen: true,
+            projects: [
+              { id: 'web', name: 'Web', path: '/repos/web', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+            ],
+          },
+        ],
+        getProjectById: () => undefined,
+      } as never),
+      listArchitectPlans: async () => ({
+        activePlanId: 'plan-live',
+        plans: [toSummary(stalePersistedPlan)],
+      }),
+      getArchitectPlan: async () => stalePersistedPlan,
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value || 'develop'),
+      buildImplementTaskCatalog,
+    });
+
+    const catalog = await loadImplementTaskCatalog([]);
+
+    expect(catalog.tasks.map((task) => task.id)).toEqual(['live-task']);
+    expect(catalog.tasks[0]?.plan_target_branch).toBe('feature/live-checkout');
+    expect(catalog.plans).toEqual([
+      expect.objectContaining({
+        id: 'plan-live',
+        targetBranch: 'feature/live-checkout',
+      }),
+    ]);
+  });
+});

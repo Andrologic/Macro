@@ -178,6 +178,102 @@ describe('buildImplementTaskCatalog', () => {
     expect(standaloneTask?.plan_title).toBeNull();
     expect(standaloneTask?.plan_status).toBeNull();
   });
+
+  it('keeps tasks grouped by plan when duplicate titles exist on different target branches', () => {
+    const plans = [
+      makePlan({
+        id: 'plan-a',
+        title: 'Checkout',
+        status: 'validated',
+        targetBranch: 'develop',
+        projectId: 'web',
+        projectIds: ['web'],
+        nodes: [
+          {
+            id: 'task-a1',
+            title: 'Checkout web step 1',
+            type: 'task',
+            status: 'pending',
+            dependencies: [],
+            assignedBranch: 'checkout-web',
+            projectId: 'web',
+          },
+          {
+            id: 'task-a2',
+            title: 'Checkout web step 2',
+            type: 'task',
+            status: 'pending',
+            dependencies: ['task-a1'],
+            assignedBranch: 'checkout-web',
+            projectId: 'web',
+          },
+        ],
+        predictedBranches: [
+          {
+            id: 'branch-a',
+            name: 'checkout-web',
+            color: '#3b82f6',
+            parentBranch: 'plan/checkout-web',
+            projectId: 'web',
+            taskIds: ['task-a1', 'task-a2'],
+            status: 'pending',
+          },
+        ],
+      }),
+      makePlan({
+        id: 'plan-b',
+        title: 'Checkout',
+        status: 'validated',
+        targetBranch: 'feature/payments',
+        projectId: 'api',
+        projectIds: ['api'],
+        nodes: [
+          {
+            id: 'task-b1',
+            title: 'Checkout API step 1',
+            type: 'task',
+            status: 'pending',
+            dependencies: [],
+            assignedBranch: 'checkout-api',
+            projectId: 'api',
+          },
+          {
+            id: 'task-b2',
+            title: 'Checkout API step 2',
+            type: 'task',
+            status: 'pending',
+            dependencies: ['task-b1'],
+            assignedBranch: 'checkout-api',
+            projectId: 'api',
+          },
+        ],
+        predictedBranches: [
+          {
+            id: 'branch-b',
+            name: 'checkout-api',
+            color: '#10b981',
+            parentBranch: 'plan/checkout-api',
+            projectId: 'api',
+            taskIds: ['task-b1', 'task-b2'],
+            status: 'pending',
+          },
+        ],
+      }),
+    ];
+
+    const catalog = buildImplementTaskCatalog({ plans, fallbackTasks: [] });
+
+    expect(catalog.tasks.map((task) => task.id)).toEqual([
+      'task-a1',
+      'task-a2',
+      'task-b1',
+      'task-b2',
+    ]);
+    expect(catalog.plans.map((plan) => [plan.id, plan.targetBranch])).toEqual([
+      ['plan-a', 'develop'],
+      ['plan-b', 'feature/payments'],
+    ]);
+  });
 });
 
 describe('deriveFallbackImplementTasks', () => {
