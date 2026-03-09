@@ -297,7 +297,14 @@ const MemoizedTaskItem = React.memo(TaskItem);
 
 const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const { t } = useTranslation();
-  const { selectedGroupId, selectedProjectId, selectedTaskId, projectGroups } = useAppStore();
+  const {
+    selectedGroupId,
+    selectedProjectId,
+    selectedTaskId,
+    projectGroups,
+    implementExecutionMode,
+    setImplementExecutionMode,
+  } = useAppStore();
   const getProjectById = useAppStore((state) => state.getProjectById);
   const tasks = useTaskStore((state) => state.tasks);
   const planSummaries = useTaskStore((state) => state.planSummaries);
@@ -570,17 +577,40 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   return (
     <aside className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}>
-      <div className="h-12 border-b border-border flex items-center justify-between px-4">
+      <div className="h-12 border-b border-border flex items-center justify-between gap-3 px-4">
         <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
           <Icon name="list-todo" size={16} className="text-primary" />
           {t('implement.tasks', 'Tasks')}
         </h1>
-        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-          {inProgressCount > 0 && (
-            <span className="px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-500">
-              {t('implement.activeCount', '{{count}} active', { count: inProgressCount })}
-            </span>
-          )}
+        <div className="inline-flex shrink-0 items-center rounded-lg border border-border bg-muted/60 p-0.5">
+          <button
+            type="button"
+            onClick={() => setImplementExecutionMode('semi_auto')}
+            className={cn(
+              'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors',
+              implementExecutionMode === 'semi_auto'
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+            title={t('implement.executionModeSemiAuto', 'Semi-auto')}
+          >
+            <Icon name="pause" size={11} />
+            {t('implement.executionModeSemiAuto', 'Semi-auto')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setImplementExecutionMode('full_auto')}
+            className={cn(
+              'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors',
+              implementExecutionMode === 'full_auto'
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+            title={t('implement.executionModeFullAuto', 'Full-auto')}
+          >
+            <Icon name="play" size={11} />
+            {t('implement.executionModeFullAuto', 'Full-auto')}
+          </button>
         </div>
       </div>
 
@@ -597,26 +627,33 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             style={{ width: `${progressPercent}%` }}
           />
         </div>
-        <div className="mt-3">
-          <Select
-            value={planFilter}
-            onChange={(event) => setPlanFilter(event.target.value)}
-            className="h-9 py-1.5 text-xs"
-          >
-            <option value={ALL_PLANS_FILTER}>
-              {t('implement.planFilterAll', 'All plans')}
-            </option>
-            {availablePlanSummaries.map((plan) => (
-              <option key={plan.id} value={plan.id}>
-                {planLabelsById.get(plan.id) || plan.title}
+        <div className="mt-3 flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <Select
+              value={planFilter}
+              onChange={(event) => setPlanFilter(event.target.value)}
+              className="h-9 py-1.5 text-xs"
+            >
+              <option value={ALL_PLANS_FILTER}>
+                {t('implement.planFilterAll', 'All plans')}
               </option>
-            ))}
-            {hasScopedStandaloneTasks && (
-              <option value={STANDALONE_FILTER}>
-                {t('implement.planFilterStandalone', 'No plan / standalone')}
-              </option>
-            )}
-          </Select>
+              {availablePlanSummaries.map((plan) => (
+                <option key={plan.id} value={plan.id}>
+                  {planLabelsById.get(plan.id) || plan.title}
+                </option>
+              ))}
+              {hasScopedStandaloneTasks && (
+                <option value={STANDALONE_FILTER}>
+                  {t('implement.planFilterStandalone', 'No plan / standalone')}
+                </option>
+              )}
+            </Select>
+          </div>
+          {inProgressCount > 0 && (
+            <span className="shrink-0 rounded-full bg-amber-500/10 px-2 py-1 text-[11px] text-amber-500">
+              {t('implement.activeCount', '{{count}} active', { count: inProgressCount })}
+            </span>
+          )}
         </div>
         {visibleReadyPlans.length > 0 && (
           <div className="mt-3 space-y-2">

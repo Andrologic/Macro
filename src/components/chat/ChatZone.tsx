@@ -81,7 +81,6 @@ const ChatZone: React.FC = () => {
     agentType,
     setAgentType,
     implementExecutionMode,
-    setImplementExecutionMode,
     selectedProjectId,
     selectedTaskId,
     getProjectById,
@@ -976,36 +975,6 @@ const ChatZone: React.FC = () => {
                 )}
                 <ProviderDropdown />
                 <ModelDropdown />
-                {mode === 'Implement' && (
-                  <div className="inline-flex items-center rounded-lg border border-border bg-muted/60 p-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setImplementExecutionMode('semi_auto')}
-                      className={cn(
-                        'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        implementExecutionMode === 'semi_auto'
-                          ? 'bg-primary text-primary-foreground'
-                          : 'text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      <Icon name="pause" size={12} />
-                      {t('implement.executionModeSemiAuto', 'Semi-auto')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setImplementExecutionMode('full_auto')}
-                      className={cn(
-                        'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        implementExecutionMode === 'full_auto'
-                          ? 'bg-primary text-primary-foreground'
-                          : 'text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      <Icon name="play" size={12} />
-                      {t('implement.executionModeFullAuto', 'Full-auto')}
-                    </button>
-                  </div>
-                )}
               </div>
               {mode === 'Architect' && (
                 <button
