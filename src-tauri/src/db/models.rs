@@ -33,8 +33,22 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     pub is_enabled: bool,
     pub is_local: bool,
+    pub auth_status: Option<String>,
+    pub auth_source: Option<String>,
+    pub plan_type: Option<String>,
+    pub account_label: Option<String>,
+    pub token_expires_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderAuthMetadata {
+    pub auth_status: Option<String>,
+    pub auth_source: Option<String>,
+    pub plan_type: Option<String>,
+    pub account_label: Option<String>,
+    pub token_expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

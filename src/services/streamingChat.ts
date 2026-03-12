@@ -6,11 +6,15 @@
  */
 
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions } from './webSearch';
+import * as tauriIpc from './tauriIpc';
 
 // Global references to active streaming resources for cancellation
 let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 let currentStream: ReadableStream<Uint8Array> | null = null;
+let currentTauriRequestId: string | null = null;
+let currentTauriUnlisteners: UnlistenFn[] = [];
 
 /**
  * Cancel the currently active stream
@@ -27,6 +31,22 @@ export function cancelStream(): void {
       // Ignore errors during cancel
     });
     currentStream = null;
+  }
+  if (currentTauriRequestId && tauriIpc.isTauriAvailable()) {
+    void tauriIpc.aiCancelStream(currentTauriRequestId).catch(() => {
+      // Ignore backend cancel failures
+    });
+  }
+  currentTauriRequestId = null;
+  if (currentTauriUnlisteners.length > 0) {
+    currentTauriUnlisteners.forEach((unlisten) => {
+      try {
+        unlisten();
+      } catch {
+        // Ignore listener cleanup errors
+      }
+    });
+    currentTauriUnlisteners = [];
   }
 }
 
@@ -811,7 +831,472 @@ const DELETE_STRATEGY_TOOL = {
 /**
  * Send a streaming chat completion request
  */
+const createStreamingRequestId = () => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const clearTauriListeners = () => {
+  if (currentTauriUnlisteners.length > 0) {
+    currentTauriUnlisteners.forEach((unlisten) => {
+      try {
+        unlisten();
+      } catch {
+        // Ignore listener cleanup errors
+      }
+    });
+    currentTauriUnlisteners = [];
+  }
+};
+
+const streamChatGptTurnViaTauri = async (params: {
+  providerId: string;
+  modelId: string;
+  messages: StreamMessage[];
+  signal?: AbortSignal;
+  onDelta: (delta: string) => void;
+}): Promise<string> => {
+  if (!tauriIpc.isTauriAvailable()) {
+    throw new Error('ChatGPT provider requires the desktop backend.');
+  }
+
+  clearTauriListeners();
+
+  const requestId = createStreamingRequestId();
+  currentTauriRequestId = requestId;
+
+  let fullContent = '';
+
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTauriListeners();
+      currentTauriRequestId = null;
+      fn();
+    };
+
+    const signalHandler = () => {
+      void tauriIpc.aiCancelStream(requestId).catch(() => {
+        // Ignore backend cancel failures
+      });
+      finish(() => reject(new DOMException('Aborted', 'AbortError')));
+    };
+
+    if (params.signal?.aborted) {
+      signalHandler();
+      return;
+    }
+
+    if (params.signal) {
+      params.signal.addEventListener('abort', signalHandler, { once: true });
+    }
+
+    void (async () => {
+      try {
+        const unlisteners = await Promise.all([
+          listen<tauriIpc.AiStreamChunkEvent>('ai:stream', (event) => {
+            if (event.payload.request_id !== requestId) return;
+            fullContent += event.payload.delta;
+            params.onDelta(event.payload.delta);
+          }),
+          listen<tauriIpc.AiStreamDoneEvent>('ai:done', (event) => {
+            if (event.payload.request_id !== requestId) return;
+            if (params.signal) {
+              params.signal.removeEventListener('abort', signalHandler);
+            }
+            finish(() => resolve(fullContent));
+          }),
+          listen<tauriIpc.AiStreamErrorEvent>('ai:error', (event) => {
+            if (event.payload.request_id !== requestId) return;
+            if (params.signal) {
+              params.signal.removeEventListener('abort', signalHandler);
+            }
+            finish(() => reject(new Error(event.payload.message)));
+          }),
+        ]);
+
+        currentTauriUnlisteners = unlisteners;
+
+        await tauriIpc.aiStreamChat({
+          requestId,
+          providerId: params.providerId,
+          modelId: params.modelId,
+          messages: params.messages.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+        });
+      } catch (error) {
+        if (params.signal) {
+          params.signal.removeEventListener('abort', signalHandler);
+        }
+        finish(() => reject(error instanceof Error ? error : new Error(String(error))));
+      }
+    })();
+  });
+};
+
+const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Promise<void> => {
+  const {
+    providerId,
+    modelId,
+    messages,
+    onToken,
+    onComplete,
+    onError,
+    enableWebSearch = true,
+    enableWebFetch = true,
+    webSearchOptions,
+    onToolCall,
+    onToolResult,
+    fileToolContext = [],
+    allowedToolIds,
+    showToolTraces = false,
+  } = options;
+
+  const allowedTools = new Set(allowedToolIds ?? []);
+
+  const formatToolUsageLabel = (toolName: string, args: Record<string, unknown>) => {
+    if (toolName === 'web_search') {
+      const query = typeof args.query === 'string' ? args.query : '';
+      return `\n\n[TOOL] web_search${query ? ` ("${query}")` : ''}\n`;
+    }
+
+    if (toolName === 'web_fetch') {
+      const url = typeof args.url === 'string' ? args.url : '';
+      return `\n\n[TOOL] web_fetch${url ? ` ("${url}")` : ''}\n`;
+    }
+
+    if (toolName === 'read_file') {
+      const file = typeof args.file === 'string' ? args.file : '';
+      return `\n\n[TOOL] read_file${file ? ` ("${file}")` : ''}\n`;
+    }
+
+    return `\n\n[TOOL] ${toolName}\n`;
+  };
+
+  let currentMessages: StreamMessage[] = [...messages];
+  let fullContent = '';
+  const readEvidenceBySource = new Map<string, string>();
+  const MAX_TURNS = 10;
+  let turnCount = 0;
+
+  const normalizeSourceKey = (value?: string): string =>
+    (value || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\.\//, '')
+      .toLowerCase();
+
+  const rememberReadEvidence = (source: string, content: string) => {
+    const key = normalizeSourceKey(source);
+    if (!key || !content.trim()) return;
+    readEvidenceBySource.set(key, content);
+  };
+
+  const rememberReadEvidenceFromWorkspaceResult = (result: string) => {
+    const fileHeaderMatch = result.match(/^FILE:\s*(.+)$/m);
+    if (!fileHeaderMatch) return;
+
+    const filePath = fileHeaderMatch[1].trim();
+    const separatorIndex = result.indexOf('\n\n');
+    const content = separatorIndex >= 0 ? result.slice(separatorIndex + 2) : '';
+    rememberReadEvidence(filePath, content);
+  };
+
+  try {
+    while (turnCount < MAX_TURNS) {
+      if (options.signal?.aborted) {
+        onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
+        return;
+      }
+
+      const turnContent = await streamChatGptTurnViaTauri({
+        providerId,
+        modelId,
+        messages: currentMessages,
+        signal: options.signal,
+        onDelta: (delta) => {
+          fullContent += delta;
+          onToken(delta);
+        },
+      });
+
+      const toolCalls: ToolCall[] = [];
+      const inlineToolRegex = /<tool_call>\s*(?=\{)([\s\S]*?)\s*<\/tool_call>/gi;
+      let match: RegExpExecArray | null;
+      const inlineReplacements: Array<{ original: string }> = [];
+
+      while ((match = inlineToolRegex.exec(turnContent)) !== null) {
+        try {
+          const parsed = JSON.parse(match[1].trim());
+          if (parsed.name) {
+            toolCalls.push({
+              id: `call_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+              type: 'function',
+              function: {
+                name: parsed.name,
+                arguments: typeof parsed.arguments === 'string'
+                  ? parsed.arguments
+                  : JSON.stringify(parsed.arguments || {}),
+              },
+            });
+            inlineReplacements.push({ original: match[0] });
+          }
+        } catch {
+          console.warn('Failed to parse inline JSON tool call', match[1]);
+        }
+      }
+
+      if (turnContent.trim().length > 0) {
+        currentMessages.push({
+          role: 'assistant',
+          content: turnContent,
+        });
+      }
+
+      for (const replacement of inlineReplacements) {
+        fullContent = fullContent.replace(replacement.original, '');
+      }
+
+      const validToolCalls = toolCalls.filter((toolCall) => toolCall.id && toolCall.function.name);
+      if (validToolCalls.length === 0) {
+        break;
+      }
+
+      const toolResults: ToolResult[] = [];
+
+      for (const toolCall of validToolCalls) {
+        const toolName = toolCall.function.name;
+        let toolResult = '';
+        let customToolResult: string | undefined;
+
+        try {
+          const args = JSON.parse(toolCall.function.arguments);
+
+          if (!allowedTools.has(toolName)) {
+            toolResult = `Tool ${toolName} is disabled for the current mode.`;
+            toolResults.push({ tool_call_id: toolCall.id, content: toolResult });
+            continue;
+          }
+
+          const customResult = await onToolCall?.(toolName, args);
+          customToolResult = typeof customResult === 'string' ? customResult : undefined;
+
+          if (showToolTraces) {
+            const toolUsageMsg = formatToolUsageLabel(toolName, args);
+            fullContent += toolUsageMsg;
+            onToken(toolUsageMsg);
+          }
+
+          if (toolName === 'web_search') {
+            if (!enableWebSearch || (!webSearchOptions?.tavilyApiKey && !webSearchOptions?.braveApiKey)) {
+              toolResult = 'Web search is not configured for this provider.';
+              onToolResult?.(toolName, toolResult);
+              toolResults.push({ tool_call_id: toolCall.id, content: toolResult });
+              continue;
+            }
+            const searchResults = await webSearch(args.query, webSearchOptions);
+            toolResult = formatSearchResultsAsContext(searchResults);
+
+            if (showToolTraces) {
+              const searchMsg = `\n\n🔍 **Recherche web:** "${args.query}"\n`;
+              fullContent += searchMsg;
+              onToken(searchMsg);
+            }
+          }
+
+          if (toolName === 'web_fetch') {
+            if (!enableWebFetch) {
+              toolResult = 'Web fetch is disabled for this provider.';
+              onToolResult?.(toolName, toolResult);
+              toolResults.push({ tool_call_id: toolCall.id, content: toolResult });
+              continue;
+            }
+            const url = typeof args.url === 'string' ? args.url : '';
+            if (!url.trim()) {
+              toolResult = 'Missing URL for web_fetch.';
+            } else {
+              const fetched = await fetchWebPage(url);
+              toolResult = `TITLE: ${fetched.title}\nURL: ${fetched.url}\n\n${fetched.content}`;
+            }
+          }
+
+          if (toolName === 'read_file') {
+            const normalizeMatch = (value?: string) =>
+              (value || '')
+                .trim()
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase();
+
+            const requestedRaw = typeof args.file === 'string' ? args.file.trim() : '';
+            const requested = normalizeMatch(requestedRaw);
+            const extractText = args.extract_text === true;
+            const available = fileToolContext.map((f) => f.path || f.title || f.source).filter(Boolean);
+            let workspaceReadAttempted = false;
+            const workspaceMode = allowedTools.has('read') || allowedTools.has('list');
+
+            if (requestedRaw && allowedTools.has('read') && onToolCall) {
+              workspaceReadAttempted = true;
+              const workspaceResult = await onToolCall('read', {
+                path: requestedRaw,
+                start_line: typeof args.start_line === 'number' ? args.start_line : undefined,
+                end_line: typeof args.end_line === 'number' ? args.end_line : undefined,
+              });
+
+              if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
+                const isWorkspaceReadError =
+                  /^Error executing read:/i.test(workspaceResult) ||
+                  /^Missing\s+/i.test(workspaceResult) ||
+                  /^No match found/i.test(workspaceResult) ||
+                  /^File not found/i.test(workspaceResult) ||
+                  /^Cannot\s+/i.test(workspaceResult);
+
+                if (isWorkspaceReadError) {
+                  toolResult = `Error executing tool read_file: ${workspaceResult}`;
+                } else {
+                  toolResult = workspaceResult;
+                  rememberReadEvidenceFromWorkspaceResult(workspaceResult);
+                }
+              } else {
+                toolResult = 'Error executing tool read_file: workspace read returned no content.';
+              }
+            }
+
+            if (!toolResult.trim()) {
+              if (workspaceReadAttempted) {
+                toolResult = `Error executing tool read_file: unable to read "${requestedRaw}" from workspace.`;
+              } else if (workspaceMode) {
+                toolResult =
+                  `Error executing tool read_file: workspace read tool is unavailable for "${requestedRaw}".` +
+                  ' Use the read tool directly with an explicit path.';
+              } else {
+                const contextMatch = fileToolContext.find((file) => {
+                  const title = normalizeMatch(file.title);
+                  const source = normalizeMatch(file.source);
+                  const path = normalizeMatch(file.path);
+                  return (
+                    requested === title ||
+                    requested === source ||
+                    requested === path ||
+                    title.includes(requested) ||
+                    source.includes(requested) ||
+                    path.includes(requested)
+                  );
+                });
+
+                if (!requested) {
+                  toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
+                } else if (!contextMatch) {
+                  toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+                } else {
+                  const label = contextMatch.path || contextMatch.title || contextMatch.source;
+                  const content = (contextMatch.snippet || '').trim();
+                  const base = content
+                    ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
+                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
+
+                  const isDocx = /\.docx$/i.test(label || '');
+                  const extractNotice =
+                    extractText && isDocx
+                      ? '\n\nNote: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
+                      : '';
+
+                  toolResult = `${base}${extractNotice}`;
+                  if (label) {
+                    rememberReadEvidence(label, content);
+                  }
+                }
+              }
+            }
+          }
+
+          if (toolName === 'mark_source_passage') {
+            const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
+            const kind = rawKind === 'interesting' ? 'interesting' : 'used';
+            const source = typeof args.source === 'string' ? args.source : '';
+            const title = typeof args.title === 'string' ? args.title : '';
+            const passage = typeof args.passage === 'string' ? args.passage : '';
+            const normalizedPassage = passage.trim();
+
+            const sourceKey = normalizeSourceKey(source || title);
+            const sourceEvidence = sourceKey ? readEvidenceBySource.get(sourceKey) : undefined;
+            const anyEvidence = Array.from(readEvidenceBySource.values());
+            const hasMatchingEvidence = normalizedPassage
+              ? (
+                (sourceEvidence && sourceEvidence.includes(normalizedPassage)) ||
+                anyEvidence.some((evidence) => evidence.includes(normalizedPassage))
+              )
+              : false;
+
+            if (!hasMatchingEvidence) {
+              toolResult = 'Error executing tool mark_source_passage: passage is not present in previously read file content.';
+            } else {
+              toolResult = `Source passage marked successfully (kind=${kind}).`;
+            }
+          } else if (toolName === 'read_sources') {
+            toolResult = customToolResult || 'No source passages available.';
+          } else if (toolName === 'edit_source_passage') {
+            toolResult = customToolResult || 'Source passage edit request processed.';
+          } else if (customToolResult) {
+            toolResult = customToolResult;
+          } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
+            toolResult = `Unsupported tool: ${toolName}`;
+          }
+
+          onToolResult?.(toolName, toolResult);
+        } catch (error) {
+          toolResult = `Error executing tool ${toolName}: ${error instanceof Error ? error.message : String(error)}`;
+          onToolResult?.(toolName, toolResult);
+        }
+
+        toolResults.push({
+          tool_call_id: toolCall.id,
+          content: toolResult,
+        });
+      }
+
+      if (toolResults.length > 0) {
+        const textResults = toolResults.map((toolResult) =>
+          `[Tool Result for ${validToolCalls.find((toolCall) => toolCall.id === toolResult.tool_call_id)?.function.name}]:\n${toolResult.content}`
+        ).join('\n\n');
+
+        currentMessages.push({
+          role: 'user',
+          content: `Here are the results of the tools you called:\n\n${textResults}\n\nPlease continue your task using these results.`,
+        });
+      }
+
+      turnCount++;
+    }
+
+    onComplete(fullContent);
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
+      return;
+    }
+
+    const err = error instanceof Error ? error : new Error(String(error));
+    onError(err);
+  } finally {
+    clearTauriListeners();
+    currentTauriRequestId = null;
+  }
+};
+
 export async function streamChat(options: StreamingChatOptions): Promise<void> {
+  if (options.providerType === 'chatgpt') {
+    return streamChatViaChatGptProvider(options);
+  }
+
   const {
     providerId,
     providerType,
@@ -1642,6 +2127,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
  */
 export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, 'onToken'>): Promise<string> {
   const {
+    providerId,
     providerType,
     baseUrl,
     apiKey,
@@ -1650,6 +2136,26 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     onComplete,
     onError,
   } = options;
+
+  if (providerType === 'chatgpt') {
+    try {
+      const content = await streamChatGptTurnViaTauri({
+        providerId,
+        modelId,
+        messages,
+        signal: options.signal,
+        onDelta: () => {
+          // No-op for metadata generation.
+        },
+      });
+      onComplete(content);
+      return content;
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      onError(err);
+      throw err;
+    }
+  }
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',

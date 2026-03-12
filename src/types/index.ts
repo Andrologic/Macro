@@ -327,6 +327,11 @@ export interface ProviderConfig {
   apiKey?: string;
   isEnabled: boolean;
   isLocal: boolean;
+  authStatus?: 'authenticated' | 'unauthenticated' | 'authorizing' | 'refreshing' | 'expired' | 'error';
+  authSource?: string;
+  planType?: string;
+  accountLabel?: string;
+  tokenExpiresAt?: string;
 }
 
 export interface ProviderSettings {

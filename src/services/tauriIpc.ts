@@ -48,6 +48,11 @@ export interface DbProviderConfig {
   api_key: string | null;
   is_enabled: boolean;
   is_local: boolean;
+  auth_status: string | null;
+  auth_source: string | null;
+  plan_type: string | null;
+  account_label: string | null;
+  token_expires_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -186,6 +191,59 @@ export interface DbProviderModelInput {
   pricing_prompt?: string | null;
   pricing_completion?: string | null;
   pricing_request?: string | null;
+}
+
+export interface AiChatMessageImageUrl {
+  url: string;
+}
+
+export interface AiChatMessagePart {
+  type: string;
+  text?: string;
+  image_url?: AiChatMessageImageUrl;
+}
+
+export type AiChatMessageContent = string | AiChatMessagePart[];
+
+export interface AiChatMessage {
+  role: string;
+  content: AiChatMessageContent;
+}
+
+export interface AiStreamChunkEvent {
+  request_id: string;
+  delta: string;
+}
+
+export interface AiStreamDoneEvent {
+  request_id: string;
+}
+
+export interface AiStreamErrorEvent {
+  request_id: string;
+  message: string;
+}
+
+export interface AiAuthStartedEvent {
+  request_id: string;
+  provider_id: string;
+}
+
+export interface AiAuthSuccessEvent {
+  request_id: string;
+  provider_id: string;
+}
+
+export interface AiAuthCancelledEvent {
+  request_id: string;
+  provider_id: string;
+}
+
+export interface AiAuthErrorEvent {
+  request_id: string;
+  provider_id: string;
+  code: string;
+  message: string;
 }
 
 export interface FsFileContentDto {
@@ -527,6 +585,50 @@ export async function createProviderConfig(params: {
 
 export async function deleteProviderConfig(id: string): Promise<void> {
   return invoke('db_delete_provider_config', { id });
+}
+
+export async function aiStartChatGptAuth(params: {
+  requestId: string;
+  providerId?: string;
+}): Promise<void> {
+  return invoke('ai_start_chatgpt_auth', {
+    requestId: params.requestId,
+    providerId: params.providerId ?? null,
+  });
+}
+
+export async function aiCancelChatGptAuth(requestId: string): Promise<void> {
+  return invoke('ai_cancel_chatgpt_auth', { requestId });
+}
+
+export async function aiDisconnectProviderAuth(providerId: string): Promise<DbProviderConfig> {
+  return invoke<DbProviderConfig>('ai_disconnect_provider_auth', {
+    providerId,
+  });
+}
+
+export async function aiSyncProviderModels(providerId: string): Promise<DbAiModel[]> {
+  return invoke<DbAiModel[]>('ai_sync_provider_models', { providerId });
+}
+
+export async function aiStreamChat(params: {
+  requestId: string;
+  providerId: string;
+  modelId: string;
+  messages: AiChatMessage[];
+}): Promise<void> {
+  return invoke('ai_stream_chat', {
+    request: {
+      request_id: params.requestId,
+      provider_id: params.providerId,
+      model_id: params.modelId,
+      messages: params.messages,
+    },
+  });
+}
+
+export async function aiCancelStream(requestId: string): Promise<void> {
+  return invoke('ai_cancel_stream', { requestId });
 }
 
 // ============ Git ============
