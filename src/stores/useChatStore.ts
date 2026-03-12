@@ -328,10 +328,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
+  const providerHasAuthSession = (provider: { providerType: string; authStatus?: string }): boolean => {
+    return provider.providerType === 'chatgpt'
+      && ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '');
+  };
+
   const hasProviderCredentials = (providerId: string): boolean => {
     const provider = useProviderStore.getState().providerConfigs.find((candidate) => candidate.id === providerId);
     if (!provider || !provider.isEnabled) return false;
-    return provider.isLocal || !!provider.apiKey?.trim();
+    return provider.isLocal || !!provider.apiKey?.trim() || providerHasAuthSession(provider);
   };
 
   const isSelectionUsable = (selection: PersistedAISelection | null): boolean => {
@@ -385,7 +390,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!provider || !provider.isEnabled) {
       return false;
     }
-    if (!provider.isLocal && !provider.apiKey?.trim()) {
+    if (!provider.isLocal && !provider.apiKey?.trim() && !providerHasAuthSession(provider)) {
       return false;
     }
 
@@ -417,7 +422,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const applyFallbackSelection = async (): Promise<boolean> => {
     const providerStore = useProviderStore.getState();
     const candidateProviders = providerStore.providerConfigs.filter(
-      (provider) => provider.isEnabled && (provider.isLocal || !!provider.apiKey?.trim())
+      (provider) => provider.isEnabled && (provider.isLocal || !!provider.apiKey?.trim() || providerHasAuthSession(provider))
     );
 
     for (const provider of candidateProviders) {
@@ -1226,7 +1231,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const prepareMessagesForRequest = async (
     conversationId: string,
     allowedToolIds: string[],
-    messageWithImagesId?: string
+    messageWithImagesId?: string,
+    providerType?: string
   ) => {
     const appState = useAppStore.getState();
     const taskState = useTaskStore.getState();
@@ -1351,6 +1357,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (allowedToolIds.includes('edit_source_passage')) {
       systemInstructions.push(
         'Use edit_source_passage only when the user asks to update, reclassify, or delete saved source passages.'
+      );
+    }
+    if (providerType === 'chatgpt' && allowedToolIds.length > 0) {
+      systemInstructions.push(
+        'This provider does not support native tool calls. When you need a tool, emit exactly one inline tag in the form <tool_call>{"name":"tool_name","arguments":{...}}</tool_call> with valid JSON and no markdown code fence inside the tag.'
       );
     }
     if (useAppStore.getState().mode === 'Debug') {
@@ -2162,7 +2173,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const messagesForRequest = await prepareMessagesForRequest(
         conversationId,
         allowedToolIds,
-        userMessage.id
+        userMessage.id,
+        providerConfig.providerType
       );
       const fileToolContext = useCitationsStore
         .getState()
@@ -2367,7 +2379,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const messagesForRequest = await prepareMessagesForRequest(
         conversationId,
         allowedToolIds,
-        messageId
+        messageId,
+        providerConfig.providerType
       );
       const fileToolContext = useCitationsStore
         .getState()
