@@ -12,6 +12,7 @@ mod ai;
 mod index;
 pub mod workspace;
 
+use ai::AiState;
 use commands::DbPool;
 use core::{init_logging, load_config};
 use fs::watcher::init_watcher;
@@ -49,6 +50,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(Arc::new(Mutex::new(None)) as DbPool)
+        .manage(AiState::default())
         .manage(GitState::new())
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -74,6 +76,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match db::init_db(&app_handle).await {
                     Ok(pool) => {
+                        if let Err(error) =
+                            ai::chatgpt::migrate_provider_secret(&pool, "chatgpt").await
+                        {
+                            tracing::warn!("Failed to migrate ChatGPT secret: {}", error);
+                        }
                         let mut pool_guard = pool_state.lock().await;
                         *pool_guard = Some(pool);
                         tracing::info!("Database initialized successfully");
@@ -105,6 +112,12 @@ pub fn run() {
             commands::db_update_provider_config,
             commands::db_create_provider_config,
             commands::db_delete_provider_config,
+            commands::ai::ai_start_chatgpt_auth,
+            commands::ai::ai_cancel_chatgpt_auth,
+            commands::ai::ai_disconnect_provider_auth,
+            commands::ai::ai_sync_provider_models,
+            commands::ai::ai_stream_chat,
+            commands::ai::ai_cancel_stream,
             // Git metadata commands
             commands::db_upsert_git_repository,
             commands::db_upsert_git_worktree,

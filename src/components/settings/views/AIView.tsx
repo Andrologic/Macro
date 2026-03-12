@@ -20,6 +20,25 @@ interface EditingProvider {
   providerType: string;
 }
 
+const getErrorMessage = (error: unknown, fallback: string): string => {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+
+  if (typeof error === 'string' && error.trim()) {
+    return error;
+  }
+
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) {
+      return message;
+    }
+  }
+
+  return fallback;
+};
+
 export const AIView: React.FC = () => {
   const { t } = useTranslation();
   const {
@@ -38,6 +57,9 @@ export const AIView: React.FC = () => {
     updateProviderConfig,
     createProviderConfig,
     deleteProviderConfig,
+    startChatGptAuth,
+    authErrorsByProvider,
+    disconnectProviderAuth,
     testConnection,
   } = useProviderStore();
 
@@ -73,6 +95,26 @@ export const AIView: React.FC = () => {
   }, [providerConfigs, searchQuery]);
 
   const getProviderStatus = (provider: ProviderConfig) => {
+    if (provider.providerType === 'chatgpt') {
+      const authStatus = provider.authStatus ?? 'unauthenticated';
+      if (authStatus === 'authorizing') {
+        return { label: 'Connecting', dot: 'bg-blue-500', text: 'text-blue-600' };
+      }
+      if (authStatus === 'refreshing') {
+        return { label: 'Refreshing', dot: 'bg-blue-500', text: 'text-blue-600' };
+      }
+      if (authStatus === 'authenticated') {
+        return { label: 'Linked', dot: 'bg-emerald-500', text: 'text-emerald-600' };
+      }
+      if (authStatus === 'expired') {
+        return { label: 'Expired', dot: 'bg-amber-500', text: 'text-amber-600' };
+      }
+      if (authStatus === 'error') {
+        return { label: 'Error', dot: 'bg-red-500', text: 'text-red-600' };
+      }
+      return { label: 'Not linked', dot: 'bg-muted-foreground', text: 'text-muted-foreground' };
+    }
+
     if (!provider.isEnabled) {
       return { label: 'Disabled', dot: 'bg-muted-foreground', text: 'text-muted-foreground' };
     }
@@ -334,10 +376,161 @@ export const AIView: React.FC = () => {
                const models = modelsByProvider[provider.id] || [];
                const settings = providerSettingsById[provider.id];
                const showFreeOnly = provider.providerType === 'openrouter' && settings?.filterFreeModels;
-               const filteredModels = showFreeOnly
-                 ? models.filter((model) => model.isFree)
-                 : models;
-               const hasKey = !!provider.apiKey;
+                const filteredModels = showFreeOnly
+                  ? models.filter((model) => model.isFree)
+                  : models;
+                const authError = authErrorsByProvider[provider.id];
+                const hasKey = provider.providerType === 'chatgpt'
+                  ? ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '')
+                  : !!provider.apiKey;
+
+               if (provider.providerType === 'chatgpt') {
+                 return (
+                   <div key={provider.id} className="bg-card border border-border rounded-xl">
+                     <div className="flex items-center justify-between p-4">
+                       <div className="flex items-center gap-4">
+                         <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-primary/10 text-primary">
+                           <Icon name="cpu" size={20} />
+                         </div>
+                         <div>
+                           <h4 className="font-medium text-foreground">{provider.name}</h4>
+                           <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                             <span className="capitalize">{provider.providerType}</span>
+                             <span>•</span>
+                             <span>{provider.baseUrl}</span>
+                           </div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {provider.accountLabel || 'Connect with ChatGPT in your browser.'}
+                              {provider.planType ? ` • ${provider.planType}` : ''}
+                            </div>
+                          </div>
+                       </div>
+
+                       <div className="flex items-center gap-3">
+                         <div className="flex items-center gap-1.5 px-2 py-1 bg-muted/50 rounded-md">
+                           <div className={cn("w-2 h-2 rounded-full", status.dot)} />
+                           <span className={cn("text-xs font-medium", status.text)}>{status.label}</span>
+                         </div>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={async () => {
+                              try {
+                                await startChatGptAuth(provider.id);
+                                toast.success('ChatGPT linked');
+                              } catch (error) {
+                                toast.error(getErrorMessage(error, 'Failed to connect with ChatGPT'));
+                              }
+                            }}
+                            disabled={provider.authStatus === 'authorizing'}
+                          >
+                            {provider.authStatus === 'authorizing' ? 'Connecting…' : 'Connect with ChatGPT'}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={async () => {
+                              try {
+                                await scanModelsForProvider(provider.id);
+                                toast.success('Models refreshed');
+                             } catch (error) {
+                               toast.error(getErrorMessage(error, 'Failed to refresh models'));
+                             }
+                           }}
+                           disabled={!hasKey}
+                         >
+                           Refresh models
+                         </Button>
+                         <Button
+                           variant="ghost"
+                           size="sm"
+                           onClick={async () => {
+                             try {
+                               await disconnectProviderAuth(provider.id);
+                               toast.success('ChatGPT disconnected');
+                             } catch (error) {
+                               toast.error(getErrorMessage(error, 'Failed to disconnect'));
+                             }
+                           }}
+                            disabled={!hasKey}
+                          >
+                            Disconnect
+                          </Button>
+                        </div>
+                      </div>
+
+                      {authError && (
+                        <div className="mx-4 mb-4 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                          {authError.code}: {authError.message}
+                        </div>
+                      )}
+
+                      <div className="border-t border-border px-4 py-3">
+                       <div className="flex items-center justify-between mb-3">
+                         <div>
+                           <h5 className="text-sm font-medium">Models</h5>
+                           <p className="text-xs text-muted-foreground">
+                             {models.length} total • {models.filter((m) => m.isEnabled !== false).length} enabled
+                           </p>
+                         </div>
+                         <div className="flex items-center gap-2">
+                           <Button
+                             variant="secondary"
+                             size="sm"
+                             onClick={() => {
+                               setAddingModelForProvider(provider.id);
+                               setManualModelId('');
+                               setManualModelName('');
+                             }}
+                           >
+                             <Icon name="plus" size={14} className="mr-1" />
+                             Add model
+                           </Button>
+                           <Button
+                             variant="secondary"
+                             size="sm"
+                             onClick={() => setAllProviderModelsEnabled(provider.id, true)}
+                             disabled={filteredModels.length === 0}
+                           >
+                             Enable all
+                           </Button>
+                           <Button
+                             variant="secondary"
+                             size="sm"
+                             onClick={() => setAllProviderModelsEnabled(provider.id, false)}
+                             disabled={filteredModels.length === 0}
+                           >
+                             Disable all
+                           </Button>
+                         </div>
+                       </div>
+
+                       <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                         {filteredModels.map((model) => (
+                           <div key={model.id} className="flex items-center justify-between p-2 rounded-md border border-border/60 bg-muted/30">
+                             <div>
+                               <div className="text-sm font-medium text-foreground">{model.name || model.id}</div>
+                               <div className="text-xs text-muted-foreground">{model.id}</div>
+                             </div>
+                             <Switch
+                               checked={model.isEnabled !== false}
+                               onCheckedChange={(checked) => setProviderModelEnabled(provider.id, model.id, checked)}
+                             />
+                           </div>
+                         ))}
+
+                          {filteredModels.length === 0 && (
+                            <div className="text-xs text-muted-foreground py-3">
+                              {hasKey
+                                ? 'No models synced yet. Refresh models or add one manually.'
+                                : 'Connect with ChatGPT to sync models.'}
+                            </div>
+                          )}
+                       </div>
+                     </div>
+                   </div>
+                 );
+               }
 
                return (
                  <div key={provider.id} className="bg-card border border-border rounded-xl">

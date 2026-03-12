@@ -170,6 +170,50 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     .execute(pool)
     .await?;
 
+    let provider_columns = sqlx::query("PRAGMA table_info(provider_configs)")
+        .fetch_all(pool)
+        .await?;
+    let has_auth_status = provider_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "auth_status");
+    let has_auth_source = provider_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "auth_source");
+    let has_plan_type = provider_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "plan_type");
+    let has_account_label = provider_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "account_label");
+    let has_token_expires_at = provider_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "token_expires_at");
+    if !has_auth_status {
+        sqlx::query("ALTER TABLE provider_configs ADD COLUMN auth_status TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !has_auth_source {
+        sqlx::query("ALTER TABLE provider_configs ADD COLUMN auth_source TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !has_plan_type {
+        sqlx::query("ALTER TABLE provider_configs ADD COLUMN plan_type TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !has_account_label {
+        sqlx::query("ALTER TABLE provider_configs ADD COLUMN account_label TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !has_token_expires_at {
+        sqlx::query("ALTER TABLE provider_configs ADD COLUMN token_expires_at TEXT")
+            .execute(pool)
+            .await?;
+    }
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS ai_models (
@@ -283,6 +327,13 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
 
 async fn insert_default_providers(pool: &SqlitePool) -> DbResult<()> {
     let default_providers = vec![
+        (
+            "chatgpt",
+            "ChatGPT",
+            "chatgpt",
+            "https://chatgpt.com/backend-api",
+            false,
+        ),
         (
             "openai",
             "OpenAI",
