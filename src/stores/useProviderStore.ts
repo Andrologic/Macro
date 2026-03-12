@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { ProviderConfig, AIProvider, AIModel, ProviderSettings } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import { fetchModelsFromProvider, testProviderConnection } from '../services/providerApi';
@@ -52,6 +53,10 @@ const getFirstEnabledModelId = (models: AIModel[]): string | null => {
   return enabled?.id ?? null;
 };
 
+const getFirstUsableProvider = (providerConfigs: ProviderConfig[]): ProviderConfig | null => {
+  return providerConfigs.find((provider) => providerHasCredentials(provider)) ?? null;
+};
+
 type AISelectionModeKey = 'ChatDebug' | 'Architect' | 'Implement';
 
 interface PersistedAISelection {
@@ -98,8 +103,16 @@ const getModeSelectionFromPreference = (
   return normalizePersistedSelection(modeSelections[getSelectionModeKey(mode)]);
 };
 
+const providerHasAuthSession = (provider: ProviderConfig): boolean => {
+  if (provider.providerType !== 'chatgpt') {
+    return false;
+  }
+
+  return ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '');
+};
+
 const providerHasCredentials = (provider: ProviderConfig): boolean => {
-  return provider.isEnabled && (provider.isLocal || !!provider.apiKey?.trim());
+  return provider.isEnabled && (provider.isLocal || !!provider.apiKey?.trim() || providerHasAuthSession(provider));
 };
 
 const mergeLocalProviderConfig = async (
@@ -124,6 +137,65 @@ const mergeLocalProviderConfig = async (
   });
 };
 
+const normalizeDbProviderConfig = (config: tauriIpc.DbProviderConfig): ProviderConfig => ({
+  id: config.id,
+  name: config.name,
+  providerType: config.provider_type,
+  baseUrl: config.base_url,
+  apiKey: config.api_key || undefined,
+  isEnabled: config.is_enabled,
+  isLocal: config.is_local,
+  authStatus:
+    (config.auth_status as ProviderConfig['authStatus']) ??
+    (config.provider_type === 'chatgpt' ? 'unauthenticated' : undefined),
+  authSource: config.auth_source ?? undefined,
+  planType: config.plan_type ?? undefined,
+  accountLabel: config.account_label ?? undefined,
+  tokenExpiresAt: config.token_expires_at ?? undefined,
+});
+
+const toProviderStatus = (
+  config: ProviderConfig,
+  connectionStatus: 'online' | 'offline' | 'checking' | undefined = undefined
+): AIProvider['status'] => {
+  if (config.providerType === 'chatgpt') {
+    return providerHasAuthSession(config) ? 'online' : 'offline';
+  }
+
+  return connectionStatus === 'online' ? 'online' : 'offline';
+};
+
+const getErrorMessage = (error: unknown, fallback: string): string => {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+
+  if (typeof error === 'string' && error.trim()) {
+    return error;
+  }
+
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) {
+      return message;
+    }
+  }
+
+  return fallback;
+};
+
+const createRequestId = () => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+};
+
+interface ProviderAuthErrorState {
+  code: string;
+  message: string;
+}
+
 interface ProviderStore {
   // State
   providerConfigs: ProviderConfig[];
@@ -136,6 +208,8 @@ interface ProviderStore {
   isLoadingModels: boolean;
   lastError: string | null;
   connectionStatus: Record<string, 'online' | 'offline' | 'checking'>;
+  authErrorsByProvider: Record<string, ProviderAuthErrorState | undefined>;
+  authRequestIdsByProvider: Record<string, string | undefined>;
 
   // Actions
   initialize: () => Promise<void>;
@@ -157,6 +231,9 @@ interface ProviderStore {
   updateProviderConfig: (id: string, updates: Partial<ProviderConfig>) => Promise<void>;
   createProviderConfig: (config: Omit<ProviderConfig, 'id'>) => Promise<void>;
   deleteProviderConfig: (id: string) => Promise<void>;
+  startChatGptAuth: (providerId?: string) => Promise<void>;
+  cancelChatGptAuth: (providerId: string) => Promise<void>;
+  disconnectProviderAuth: (providerId: string) => Promise<ProviderConfig>;
   testConnection: (providerId: string) => Promise<{ success: boolean; message: string }>;
 }
 
@@ -171,19 +248,21 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   isLoadingModels: false,
   lastError: null,
   connectionStatus: {},
+  authErrorsByProvider: {},
+  authRequestIdsByProvider: {},
 
   initialize: async () => {
     const { loadProviderConfigs, loadProviderModels, scanModelsForProvider, testConnection } = get();
     await loadProviderConfigs();
 
-    const { providerConfigs, providers, selectProvider } = get();
+    const { providerConfigs, selectProvider } = get();
     const connectivityChecks: Array<Promise<unknown>> = [];
 
     for (const provider of providerConfigs) {
       await loadProviderModels(provider.id);
       const models = get().modelsByProvider[provider.id] || [];
 
-      const hasCredentials = (provider.apiKey && provider.apiKey.trim() !== '') || provider.isLocal;
+      const hasCredentials = providerHasCredentials(provider);
       const shouldCheckConnectivity = provider.isEnabled && hasCredentials;
 
       if (!shouldCheckConnectivity) {
@@ -237,7 +316,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }
     }
 
-    const enabledProvider = providers.find((p) => p.isEnabled);
+    const enabledProvider = providerConfigs.find((provider) => providerHasCredentials(provider));
     if (enabledProvider) {
       selectProvider(enabledProvider.id);
     }
@@ -249,27 +328,41 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     try {
       if (tauriIpc.isTauriAvailable()) {
         const configs = await tauriIpc.listProviderConfigs();
-        const normalizedConfigs: ProviderConfig[] = configs.map((c) => ({
-          id: c.id,
-          name: c.name,
-          providerType: c.provider_type,
-          baseUrl: c.base_url,
-          apiKey: c.api_key || undefined,
-          isEnabled: c.is_enabled,
-          isLocal: c.is_local,
-        }));
+        const normalizedConfigs: ProviderConfig[] = configs.map(normalizeDbProviderConfig);
         const providerConfigs = await mergeLocalProviderConfig(normalizedConfigs);
+        const currentSelectedProviderId = get().selectedProviderId;
+        const currentSelectedModelId = get().selectedModelId;
+        const currentSelectedProvider = providerConfigs.find(
+          (provider) => provider.id === currentSelectedProviderId
+        );
+        const fallbackProvider = getFirstUsableProvider(providerConfigs);
+        const nextSelectedProviderId =
+          currentSelectedProvider && providerHasCredentials(currentSelectedProvider)
+            ? currentSelectedProvider.id
+            : fallbackProvider?.id ?? null;
+        const nextSelectedModelId =
+          nextSelectedProviderId === currentSelectedProviderId
+            ? currentSelectedModelId
+            : nextSelectedProviderId
+              ? getFirstEnabledModelId(get().modelsByProvider[nextSelectedProviderId] || [])
+              : null;
         
         const providers: AIProvider[] = providerConfigs.map((c) => ({
           id: c.id,
           name: c.name,
-          status: 'offline',
+          status: toProviderStatus(c),
           baseUrl: c.baseUrl,
           isLocal: c.isLocal,
           isEnabled: c.isEnabled,
         }));
 
-        set({ providerConfigs, providers, isLoading: false });
+        set({
+          providerConfigs,
+          providers,
+          isLoading: false,
+          selectedProviderId: nextSelectedProviderId,
+          selectedModelId: nextSelectedModelId,
+        });
 
         for (const provider of providerConfigs) {
           get().loadProviderSettings(provider.id);
@@ -278,6 +371,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         // Fallback mock providers for development without Tauri
         const mockConfigs: ProviderConfig[] = [
           { id: 'openai', name: 'OpenAI', providerType: 'openai', baseUrl: 'https://api.openai.com/v1', isEnabled: true, isLocal: false },
+          { id: 'chatgpt', name: 'ChatGPT', providerType: 'chatgpt', baseUrl: 'https://chatgpt.com/backend-api', isEnabled: true, isLocal: false, authStatus: 'unauthenticated' },
           { id: 'zai', name: 'z.ai', providerType: 'openai', baseUrl: 'https://api.z.ai/api/coding/paas/v4', isEnabled: true, isLocal: false },
           { id: 'anthropic', name: 'Anthropic', providerType: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', isEnabled: true, isLocal: false },
           { id: 'openrouter', name: 'OpenRouter', providerType: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', isEnabled: true, isLocal: false },
@@ -285,17 +379,39 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           { id: 'lmstudio', name: 'LM Studio', providerType: 'lmstudio', baseUrl: 'http://localhost:1234/v1', isEnabled: true, isLocal: true },
         ];
         const providerConfigs = await mergeLocalProviderConfig(mockConfigs);
+        const currentSelectedProviderId = get().selectedProviderId;
+        const currentSelectedModelId = get().selectedModelId;
+        const currentSelectedProvider = providerConfigs.find(
+          (provider) => provider.id === currentSelectedProviderId
+        );
+        const fallbackProvider = getFirstUsableProvider(providerConfigs);
+        const nextSelectedProviderId =
+          currentSelectedProvider && providerHasCredentials(currentSelectedProvider)
+            ? currentSelectedProvider.id
+            : fallbackProvider?.id ?? null;
+        const nextSelectedModelId =
+          nextSelectedProviderId === currentSelectedProviderId
+            ? currentSelectedModelId
+            : nextSelectedProviderId
+              ? getFirstEnabledModelId(get().modelsByProvider[nextSelectedProviderId] || [])
+              : null;
         
         const providers: AIProvider[] = providerConfigs.map((c) => ({
           id: c.id,
           name: c.name,
-          status: 'offline',
+          status: toProviderStatus(c),
           baseUrl: c.baseUrl,
           isLocal: c.isLocal,
           isEnabled: c.isEnabled,
         }));
 
-        set({ providerConfigs, providers, isLoading: false });
+        set({
+          providerConfigs,
+          providers,
+          isLoading: false,
+          selectedProviderId: nextSelectedProviderId,
+          selectedModelId: nextSelectedModelId,
+        });
 
         for (const provider of providerConfigs) {
           get().loadProviderSettings(provider.id);
@@ -349,6 +465,53 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
     if (!config) {
       return modelsByProvider[providerId] || [];
+    }
+
+    if (config.providerType === 'chatgpt') {
+      if (!providerHasAuthSession(config)) {
+        return modelsByProvider[providerId] || [];
+      }
+
+      set({ isLoadingModels: true });
+      set((state) => ({
+        connectionStatus: { ...state.connectionStatus, [providerId]: 'checking' },
+      }));
+
+      try {
+        const updated = tauriIpc.isTauriAvailable()
+          ? await tauriIpc.aiSyncProviderModels(providerId)
+          : [];
+        const normalized = updated.map(normalizeDbModel);
+        set((state) => ({
+          modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+          connectionStatus: { ...state.connectionStatus, [providerId]: 'online' },
+          providers: state.providers.map((p) =>
+            p.id === providerId ? { ...p, status: 'online' } : p
+          ),
+          isLoadingModels: false,
+        }));
+
+        const { selectedProviderId, selectedModelId } = get();
+        if (selectedProviderId === providerId) {
+          const selectedExists = normalized.some((m) => m.id === selectedModelId && m.isEnabled !== false);
+          if (!selectedExists) {
+            set({ selectedModelId: getFirstEnabledModelId(normalized) });
+          }
+        }
+
+        return normalized;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to sync ChatGPT models';
+        set((state) => ({
+          connectionStatus: { ...state.connectionStatus, [providerId]: 'offline' },
+          providers: state.providers.map((p) =>
+            p.id === providerId ? { ...p, status: 'offline' } : p
+          ),
+          isLoadingModels: false,
+          lastError: message,
+        }));
+        return modelsByProvider[providerId] || [];
+      }
     }
 
     const requiresApiKey = !config.isLocal;
@@ -603,8 +766,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   cycleProvider: () => {
-    const { providers, selectedProviderId, selectProvider } = get();
-    const enabledProviders = providers.filter((p) => p.isEnabled);
+    const { providerConfigs, selectedProviderId, selectProvider } = get();
+    const enabledProviders = providerConfigs.filter((provider) => providerHasCredentials(provider));
     if (enabledProviders.length === 0) return;
 
     const currentIndex = enabledProviders.findIndex((p) => p.id === selectedProviderId);
@@ -657,7 +820,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
       const config = get().providerConfigs.find((c) => c.id === id);
       const shouldScan =
-        (updates.apiKey && updates.apiKey.trim() !== '') || config?.isLocal === true;
+        config?.providerType === 'chatgpt'
+          ? providerHasAuthSession({ ...config, ...updates } as ProviderConfig)
+          : (updates.apiKey && updates.apiKey.trim() !== '') || config?.isLocal === true;
       if (shouldScan) {
         await get().loadProviderModels(id);
         const models = get().modelsByProvider[id] || [];
@@ -764,6 +929,148 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
+  startChatGptAuth: async (providerId = 'chatgpt') => {
+    if (!tauriIpc.isTauriAvailable()) {
+      throw new Error('ChatGPT auth requires the desktop app.');
+    }
+
+    const requestId = createRequestId();
+
+    set((state) => ({
+      authRequestIdsByProvider: { ...state.authRequestIdsByProvider, [providerId]: requestId },
+      authErrorsByProvider: { ...state.authErrorsByProvider, [providerId]: undefined },
+      providerConfigs: state.providerConfigs.map((provider) =>
+        provider.id === providerId
+          ? { ...provider, authStatus: 'authorizing' }
+          : provider
+      ),
+    }));
+
+    const cleanupListeners = (unlisteners: UnlistenFn[]) => {
+      unlisteners.forEach((unlisten) => {
+        try {
+          unlisten();
+        } catch {
+          // Ignore listener cleanup errors.
+        }
+      });
+    };
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        let unlisteners: UnlistenFn[] = [];
+
+        const finish = (fn: () => void, unlisteners: UnlistenFn[]) => {
+          if (settled) return;
+          settled = true;
+          cleanupListeners(unlisteners);
+          fn();
+        };
+
+        void (async () => {
+          try {
+            unlisteners = await Promise.all([
+              listen<tauriIpc.AiAuthSuccessEvent>('ai:auth-success', (event) => {
+                if (event.payload.request_id !== requestId) return;
+                finish(() => resolve(), unlisteners);
+              }),
+              listen<tauriIpc.AiAuthCancelledEvent>('ai:auth-cancelled', (event) => {
+                if (event.payload.request_id !== requestId) return;
+                finish(() => reject(new Error('ChatGPT login was cancelled.')), unlisteners);
+              }),
+              listen<tauriIpc.AiAuthErrorEvent>('ai:auth-error', (event) => {
+                if (event.payload.request_id !== requestId) return;
+                const error = new Error(event.payload.message);
+                (error as Error & { code?: string }).code = event.payload.code;
+                finish(() => reject(error), unlisteners);
+              }),
+            ]);
+
+            await tauriIpc.aiStartChatGptAuth({ requestId, providerId });
+          } catch (error) {
+            finish(
+              () => reject(new Error(getErrorMessage(error, 'Failed to start ChatGPT login.'))),
+              unlisteners
+            );
+          }
+        })();
+      });
+
+      await get().loadProviderConfigs();
+      await get().loadProviderModels(providerId);
+      await get().scanModelsForProvider(providerId);
+    } catch (error) {
+      const message = getErrorMessage(error, 'Failed to connect with ChatGPT.');
+      const code =
+        error instanceof Error && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
+          ? (error as { code: string }).code
+          : 'browser_open_failed';
+
+      set((state) => ({
+        authErrorsByProvider: {
+          ...state.authErrorsByProvider,
+          [providerId]: { code, message },
+        },
+        providerConfigs: state.providerConfigs.map((provider) =>
+          provider.id === providerId
+            ? { ...provider, authStatus: 'error' }
+            : provider
+        ),
+      }));
+      throw new Error(message);
+    } finally {
+      set((state) => ({
+        authRequestIdsByProvider: {
+          ...state.authRequestIdsByProvider,
+          [providerId]: undefined,
+        },
+      }));
+    }
+  },
+
+  cancelChatGptAuth: async (providerId: string) => {
+    const requestId = get().authRequestIdsByProvider[providerId];
+    if (!requestId || !tauriIpc.isTauriAvailable()) {
+      return;
+    }
+
+    await tauriIpc.aiCancelChatGptAuth(requestId);
+    set((state) => ({
+      authRequestIdsByProvider: {
+        ...state.authRequestIdsByProvider,
+        [providerId]: undefined,
+      },
+      providerConfigs: state.providerConfigs.map((provider) =>
+        provider.id === providerId && provider.authStatus === 'authorizing'
+          ? { ...provider, authStatus: 'unauthenticated' }
+          : provider
+      ),
+    }));
+  },
+
+  disconnectProviderAuth: async (providerId: string) => {
+    if (!tauriIpc.isTauriAvailable()) {
+      throw new Error('Provider auth disconnect requires the desktop app.');
+    }
+
+    try {
+      const updated = normalizeDbProviderConfig(await tauriIpc.aiDisconnectProviderAuth(providerId));
+      set((state) => ({
+        connectionStatus: { ...state.connectionStatus, [providerId]: 'offline' },
+        authErrorsByProvider: { ...state.authErrorsByProvider, [providerId]: undefined },
+        modelsByProvider: {
+          ...state.modelsByProvider,
+          [providerId]: (state.modelsByProvider[providerId] || []).filter((model) => model.isManual),
+        },
+      }));
+      await get().loadProviderConfigs();
+      return updated;
+    } catch (error) {
+      throw new Error(getErrorMessage(error, 'Failed to disconnect provider auth.'));
+    }
+  },
+
   testConnection: async (providerId: string) => {
     const { providerConfigs } = get();
     const config = providerConfigs.find((c) => c.id === providerId);
@@ -775,6 +1082,31 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     set((state) => ({
       connectionStatus: { ...state.connectionStatus, [providerId]: 'checking' },
     }));
+
+    if (config.providerType === 'chatgpt') {
+      if (config.authStatus === 'authorizing') {
+        return { success: false, message: 'Browser login is in progress.' };
+      }
+
+      const success = providerHasAuthSession(config);
+      const message = success
+        ? `ChatGPT linked${config.planType ? ` (${config.planType})` : ''}.`
+        : 'Not linked. Use Connect with ChatGPT.';
+
+      set((state) => ({
+        connectionStatus: {
+          ...state.connectionStatus,
+          [providerId]: success ? 'online' : 'offline',
+        },
+        providers: state.providers.map((p) =>
+          p.id === providerId
+            ? { ...p, status: success ? 'online' : 'offline' }
+            : p
+        ),
+      }));
+
+      return { success, message };
+    }
 
     const result = await testProviderConnection(
       config.baseUrl,

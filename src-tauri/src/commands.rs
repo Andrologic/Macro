@@ -1,3 +1,5 @@
+#[path = "commands/ai.rs"]
+pub mod ai;
 #[path = "commands/fs.rs"]
 pub mod fs;
 #[path = "commands/git.rs"]

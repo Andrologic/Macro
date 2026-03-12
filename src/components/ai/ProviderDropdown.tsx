@@ -8,7 +8,15 @@ export const ProviderDropdown: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const enabledProviders = providerConfigs.filter((p) => p.isEnabled);
+  const enabledProviders = providerConfigs.filter((provider) =>
+    provider.isEnabled &&
+    (
+      provider.isLocal ||
+      !!provider.apiKey?.trim() ||
+      (provider.providerType === 'chatgpt' &&
+        ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? ''))
+    )
+  );
   const selectedProvider = providerConfigs.find((p) => p.id === selectedProviderId);
 
   const handleSelect = (providerId: string) => {

@@ -818,7 +818,8 @@ pub async fn fs_copy(
         ));
     }
     let workspace = if src_macro {
-        resolve_workspace_for_path(workspace, git_state.inner().clone(), None, &src, None, None).await?
+        resolve_workspace_for_path(workspace, git_state.inner().clone(), None, &src, None, None)
+            .await?
     } else {
         workspace
     };
@@ -879,7 +880,8 @@ pub async fn fs_move(
         ));
     }
     let workspace = if src_macro {
-        resolve_workspace_for_path(workspace, git_state.inner().clone(), None, &src, None, None).await?
+        resolve_workspace_for_path(workspace, git_state.inner().clone(), None, &src, None, None)
+            .await?
     } else {
         workspace
     };

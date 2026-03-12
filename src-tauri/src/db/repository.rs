@@ -491,7 +491,9 @@ pub async fn delete_messages_after(
 pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderConfig>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, name, provider_type, base_url, is_enabled, is_local, created_at, updated_at
+        SELECT id, name, provider_type, base_url, is_enabled, is_local,
+               auth_status, auth_source, plan_type, account_label, token_expires_at,
+               created_at, updated_at
         FROM provider_configs
         ORDER BY is_local ASC, name ASC
         "#,
@@ -509,6 +511,11 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
             api_key: None,
             is_enabled: row.get::<i32, _>("is_enabled") != 0,
             is_local: row.get::<i32, _>("is_local") != 0,
+            auth_status: row.get("auth_status"),
+            auth_source: row.get("auth_source"),
+            plan_type: row.get("plan_type"),
+            account_label: row.get("account_label"),
+            token_expires_at: row.get("token_expires_at"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
@@ -520,7 +527,9 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
 pub async fn get_provider_config(pool: &SqlitePool, id: &str) -> DbResult<Option<ProviderConfig>> {
     let row = sqlx::query(
         r#"
-        SELECT id, name, provider_type, base_url, is_enabled, is_local, created_at, updated_at
+        SELECT id, name, provider_type, base_url, is_enabled, is_local,
+               auth_status, auth_source, plan_type, account_label, token_expires_at,
+               created_at, updated_at
         FROM provider_configs
         WHERE id = ?
         "#,
@@ -537,6 +546,11 @@ pub async fn get_provider_config(pool: &SqlitePool, id: &str) -> DbResult<Option
         api_key: None,
         is_enabled: row.get::<i32, _>("is_enabled") != 0,
         is_local: row.get::<i32, _>("is_local") != 0,
+        auth_status: row.get("auth_status"),
+        auth_source: row.get("auth_source"),
+        plan_type: row.get("plan_type"),
+        account_label: row.get("account_label"),
+        token_expires_at: row.get("token_expires_at"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }))
@@ -624,9 +638,46 @@ pub async fn create_provider_config(
         api_key: None,
         is_enabled: true,
         is_local,
+        auth_status: None,
+        auth_source: None,
+        plan_type: None,
+        account_label: None,
+        token_expires_at: None,
         created_at: now.clone(),
         updated_at: now,
     })
+}
+
+pub async fn update_provider_auth_metadata(
+    pool: &SqlitePool,
+    provider_id: &str,
+    metadata: &ProviderAuthMetadata,
+) -> DbResult<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        UPDATE provider_configs
+        SET auth_status = ?,
+            auth_source = ?,
+            plan_type = ?,
+            account_label = ?,
+            token_expires_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(&metadata.auth_status)
+    .bind(&metadata.auth_source)
+    .bind(&metadata.plan_type)
+    .bind(&metadata.account_label)
+    .bind(&metadata.token_expires_at)
+    .bind(&now)
+    .bind(provider_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 pub async fn delete_provider_config(pool: &SqlitePool, id: &str) -> DbResult<()> {
@@ -736,6 +787,30 @@ pub async fn upsert_provider_models(
 
     tx.commit().await?;
 
+    Ok(())
+}
+
+pub async fn prune_provider_models(
+    pool: &SqlitePool,
+    provider_id: &str,
+    keep_model_ids: &[String],
+) -> DbResult<()> {
+    if keep_model_ids.is_empty() {
+        return Ok(());
+    }
+
+    let placeholders = vec!["?"; keep_model_ids.len()].join(", ");
+    let query = format!(
+        "DELETE FROM ai_models WHERE provider_id = ? AND is_manual = 0 AND model_id NOT IN ({})",
+        placeholders
+    );
+
+    let mut statement = sqlx::query(&query).bind(provider_id);
+    for model_id in keep_model_ids {
+        statement = statement.bind(model_id);
+    }
+
+    statement.execute(pool).await?;
     Ok(())
 }
 
