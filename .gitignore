@@ -46,3 +46,4 @@ src-tauri/target/
 
 # Local AI keys
 public/ai-keys.local.json
+dev/ai-keys.local.json
