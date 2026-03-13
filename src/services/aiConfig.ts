@@ -1,3 +1,5 @@
+import { aiGetDevProviderOverrides, isTauriAvailable } from './tauriIpc';
+
 export interface AIProviderConfig {
   apiKey?: string;
   baseUrl?: string;
@@ -22,10 +24,12 @@ export const loadAIConfigFile = async (): Promise<AIConfigFile | null> => {
   if (cachedConfig) return cachedConfig;
   if (loadingConfig) return loadingConfig;
 
-  loadingConfig = fetch('/ai-keys.local.json', { cache: 'no-store' })
-    .then(async (response) => {
-      if (!response.ok) return null;
-      const data = (await response.json()) as AIConfigFile;
+  if (!isTauriAvailable()) {
+    return null;
+  }
+
+  loadingConfig = aiGetDevProviderOverrides()
+    .then((data) => {
       cachedConfig = data;
       return data;
     })

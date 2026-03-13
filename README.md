@@ -131,21 +131,24 @@ VITE_REMOTE_AUTH_TOKEN=
 VITE_REMOTE_TIMEOUT_MS=15000
 ```
 
-### Local API Keys for Dev
+### Local API Keys for Tauri Dev
 
-To avoid re-entering provider API keys in Settings on every dev restart, create a local keys file:
+To avoid re-entering provider API keys on every `bun run tauri:dev` restart, create a local keys file:
 
 ```bash
-cp public/ai-keys.local.example.json public/ai-keys.local.json
+cp dev/ai-keys.local.example.json dev/ai-keys.local.json
 ```
 
-Then edit `public/ai-keys.local.json` with your real keys.
+Then edit `dev/ai-keys.local.json` with your real keys.
 
 - File format supports provider IDs (`openai`, `anthropic`, `openrouter`, `zai`, etc.)
 - Provider keys are matched flexibly (`zai` and `z.ai` both work)
 - `apiKey` is enough in most cases
 - `baseUrl` is optional and only needed for custom/proxy endpoints
-- This file is ignored by git (`public/ai-keys.local.json`)
+- This file is ignored by git (`dev/ai-keys.local.json`)
+- The preload only works in `bun run tauri:dev`
+- `bun run dev`, `bun run build`, and `bun run tauri:build` do not load this file
+- Remove any legacy `public/ai-keys.local.json`; the build now fails if a secret file remains in `public`
 
 Example:
 
