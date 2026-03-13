@@ -56,7 +56,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - notifications et supervision distante non finalisees
 - articulation desktop / remote / mobile encore incomplete
 - experience multi-plan et multi-projet encore a consolider de bout en bout
-- documents de reference seulement en cours de reconstruction
+- documents de reference maintenant reconstitues autour d'un socle unique et d'une archive minimale non normative
 
 ---
 
@@ -71,8 +71,9 @@ Etat attendu :
 - une roadmap exploitable
 
 Etat a consolider :
-- plusieurs anciens documents restent encore a archiver ou a remplacer
-- les nouveaux documents doivent devenir l'unique source de verite
+- le socle documentaire actif est maintenant recentre sur `functional-spec.md`, `technical-architecture.md` et `roadmap.md`
+- l'archive documentaire a ete reduite a un historique minimal non normatif
+- les nouveaux documents constituent maintenant l'unique source de verite
 
 ### 4.2 Mode Architect
 
@@ -321,6 +322,7 @@ Critere de sortie :
 - un utilisateur peut livrer un plan complet sur desktop sans bricolage majeur
 
 Etat :
+- socle documentaire de reference maintenant assaini et archive historique reduite au minimum utile
 - socle desktop local-first considere comme stabilise
 - les prochaines evolutions doivent preserver les contrats deja poses du flow Implement
 
