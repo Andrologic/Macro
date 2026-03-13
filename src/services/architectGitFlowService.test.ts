@@ -1,6 +1,10 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { toBranchWorktreeKey } from './implementTaskDerivation';
-import type { PlanFinalizationBlockedError } from './architectGitFlowService';
+import {
+  createArchitectGitFlowService,
+  isPlanFinalizationBlockedError,
+  type PlanFinalizationBlockedError,
+} from './architectGitFlowService';
 
 const projectPaths = new Map<string, { id: string; name: string; path: string }>();
 let currentPlan: any = null;
@@ -8,36 +12,56 @@ let currentPlan: any = null;
 interface MockGitStatus {
   branch: string;
   is_clean: boolean;
-  staged_files: string[];
+  head_commit: null;
+  staged_files: Array<{ path: string; status: string }>;
+  unstaged_files: Array<{ path: string; status: string }>;
   modified_files: string[];
-  untracked_files: string[];
+  untracked_files: Array<{ path: string; status: string }>;
   conflicted_files: string[];
+  conflictedFiles: string[];
   merge_in_progress: boolean;
+  mergeInProgress: boolean;
   ahead: number;
   behind: number;
 }
 
 interface MockGitBranch {
   name: string;
-  upstream: string | null;
+  is_head: boolean;
+  commit: string;
 }
 
-const createGitStatus = (overrides: Partial<MockGitStatus> = {}): MockGitStatus => ({
-  branch: 'develop',
-  is_clean: true,
-  staged_files: [],
-  modified_files: [],
-  untracked_files: [],
-  conflicted_files: [],
-  merge_in_progress: false,
-  ahead: 0,
-  behind: 0,
-  ...overrides,
-});
+const createGitStatus = (overrides: Partial<MockGitStatus> = {}): MockGitStatus => {
+  const conflictedFiles = overrides.conflictedFiles ?? overrides.conflicted_files ?? [];
+  const mergeInProgress = overrides.mergeInProgress ?? overrides.merge_in_progress ?? false;
+
+  const base: MockGitStatus = {
+    branch: 'develop',
+    head_commit: null,
+    is_clean: true,
+    staged_files: [],
+    unstaged_files: [],
+    modified_files: [],
+    untracked_files: [],
+    conflicted_files: conflictedFiles,
+    conflictedFiles,
+    merge_in_progress: mergeInProgress,
+    mergeInProgress,
+    ahead: 0,
+    behind: 0,
+  };
+
+  return Object.assign(base, overrides, {
+    conflicted_files: conflictedFiles,
+    conflictedFiles,
+    merge_in_progress: mergeInProgress,
+    mergeInProgress,
+  });
+};
 
 const createGitBranches = (names: string[]): { current: string; local: MockGitBranch[]; remote: MockGitBranch[] } => ({
   current: 'develop',
-  local: names.map((name) => ({ name, upstream: null })),
+  local: names.map((name) => ({ name, is_head: name === 'develop', commit: `${name}-sha` })),
   remote: [],
 });
 
@@ -66,7 +90,7 @@ const gitBranchListMock = mock(async (_repoPath: string) => createGitBranches([
   'feature/checkout/checkout-web',
   'feature/checkout/checkout-api',
 ]));
-const gitBranchDeleteMock = mock(async (_params: { repoPath: string; branchName: string; force: boolean }) => undefined);
+const gitBranchDeleteMock = mock(async (_params: { repoPath: string; branchName: string; force?: boolean }) => undefined);
 const gitCheckoutMock = mock(async (_params: { repoPath: string; branchOrCommit: string }) => undefined);
 const gitBranchCreateMock = mock(async (_params: { repoPath: string; branchName: string; fromRef: string }) => undefined);
 const gitWorktreeRemoveMock = mock(async (_params: { repoPath: string; taskId: string }) => undefined);
@@ -94,61 +118,6 @@ const archiveArchitectPlanMock = mock(async (_branchName: string, _planId: strin
   return currentPlan;
 });
 const deleteArchitectPlanMock = mock(async () => undefined);
-
-const registerArchitectGitFlowMocks = () => {
-  mock.restore();
-
-  mock.module('../stores/useAppStore', () => ({
-    useAppStore: {
-      getState: () => ({
-        selectedProjectId: 'web',
-        getProjectById: (projectId: string) => projectPaths.get(projectId) ?? null,
-      }),
-    },
-  }));
-
-  mock.module('./tauriIpc', () => ({
-    isTauriAvailable: () => true,
-    gitStatus: gitStatusMock,
-    gitDiff: gitDiffMock,
-    gitMergeCheck: gitMergeCheckMock,
-    gitMerge: gitMergeMock,
-    gitBranchList: gitBranchListMock,
-    gitBranchDelete: gitBranchDeleteMock,
-    gitCheckout: gitCheckoutMock,
-    gitBranchCreate: gitBranchCreateMock,
-    gitWorktreeRemove: gitWorktreeRemoveMock,
-    gitAdd: gitAddMock,
-    gitCommit: gitCommitMock,
-    fsWriteFile: fsWriteFileMock,
-  }));
-
-  mock.module('./architectPlanService', () => ({
-    archiveArchitectPlan: archiveArchitectPlanMock,
-    getArchitectPlan: getArchitectPlanMock,
-    getArchitectPlanProjectIds: (plan: { projectId?: string; projectIds?: string[] }) =>
-      Array.from(new Set([...(plan.projectIds || []), ...(plan.projectId ? [plan.projectId] : [])])),
-    listArchitectPlans: async () => ({
-      activePlanId: null,
-      plans: [],
-    }),
-    listArchitectPlanTargetBranches: async () => ['develop'],
-    updateArchitectPlan: updateArchitectPlanMock,
-    deleteArchitectPlan: deleteArchitectPlanMock,
-    getGitFlowBaseBranch: () => 'develop',
-    resolveTargetBranch: (value: unknown) => String(value || 'develop'),
-    toPlanIntegrationBranch: (slug: string) => `plan/${slug}`,
-    toPlanScopedFeatureBranch: (slug: string, branchName: string) => `feature/${slug}/${branchName.split('/').pop()}`,
-  }));
-};
-
-let architectGitFlowImportCounter = 0;
-
-const loadArchitectGitFlowService = async () => {
-  registerArchitectGitFlowMocks();
-  architectGitFlowImportCounter += 1;
-  return import(`./architectGitFlowService.ts?test=${architectGitFlowImportCounter}`);
-};
 
 const buildPlan = () => ({
   id: 'plan-1',
@@ -207,6 +176,8 @@ const buildPlan = () => ({
 
 const getExpectedWorktreePath = (projectId: string, repoPath: string, branchName: string) =>
   `${repoPath}/.macro/worktrees/task${toBranchWorktreeKey(projectId, branchName)}`;
+
+let architectGitFlowService: ReturnType<typeof createArchitectGitFlowService>;
 
 describe('architectGitFlowService', () => {
   beforeEach(() => {
@@ -269,6 +240,32 @@ describe('architectGitFlowService', () => {
     updateArchitectPlanMock.mockClear();
     archiveArchitectPlanMock.mockClear();
     deleteArchitectPlanMock.mockClear();
+
+    architectGitFlowService = createArchitectGitFlowService({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitMerge: gitMergeMock,
+        gitBranchList: gitBranchListMock,
+        gitBranchDelete: gitBranchDeleteMock,
+        gitCheckout: gitCheckoutMock,
+        gitBranchCreate: gitBranchCreateMock,
+        gitWorktreeRemove: gitWorktreeRemoveMock,
+      },
+      getAppState: () => ({
+        selectedProjectId: 'web',
+        getProjectById: (projectId: string) => projectPaths.get(projectId),
+      }),
+      getArchitectPlan: getArchitectPlanMock,
+      updateArchitectPlan: updateArchitectPlanMock,
+      archiveArchitectPlan: archiveArchitectPlanMock,
+      deleteArchitectPlan: deleteArchitectPlanMock,
+      getGitFlowBaseBranch: () => 'develop',
+      toPlanIntegrationBranch: (slug: string) => `plan/${slug}`,
+      toPlanScopedFeatureBranch: (slug: string, branchName: string) => `feature/${slug}/${branchName.split('/').pop()}`,
+    });
   });
 
   it('surfaces repository blocking state in the plan review', async () => {
@@ -282,8 +279,7 @@ describe('architectGitFlowService', () => {
       });
     });
 
-    const { loadPlanReview } = await loadArchitectGitFlowService();
-    const review = await loadPlanReview({
+    const review = await architectGitFlowService.loadPlanReview({
       branchName: 'feature/implement',
       planId: 'plan-1',
     });
@@ -319,8 +315,7 @@ describe('architectGitFlowService', () => {
       return createGitStatus();
     });
 
-    const { loadPlanReview } = await loadArchitectGitFlowService();
-    const review = await loadPlanReview({
+    const review = await architectGitFlowService.loadPlanReview({
       branchName: 'feature/implement',
       planId: 'plan-1',
     });
@@ -353,8 +348,7 @@ describe('architectGitFlowService', () => {
       return createGitStatus();
     });
 
-    const { loadPlanReview } = await loadArchitectGitFlowService();
-    const review = await loadPlanReview({
+    const review = await architectGitFlowService.loadPlanReview({
       branchName: 'feature/implement',
       planId: 'plan-1',
     });
@@ -379,9 +373,7 @@ describe('architectGitFlowService', () => {
       ),
     };
 
-    const { finalizePlanIntoBaseBranch } = await loadArchitectGitFlowService();
-
-    await expect(finalizePlanIntoBaseBranch({
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
       branchName: 'feature/implement',
       planId: 'plan-1',
     })).rejects.toThrow('tasks are incomplete');
@@ -402,16 +394,14 @@ describe('architectGitFlowService', () => {
       });
     });
 
-    const { finalizePlanIntoBaseBranch, isPlanFinalizationBlockedError } = await loadArchitectGitFlowService();
-
-    await expect(finalizePlanIntoBaseBranch({
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
       branchName: 'feature/implement',
       planId: 'plan-1',
     })).rejects.toThrow('uncommitted changes');
 
     let blockedError: unknown;
     try {
-      await finalizePlanIntoBaseBranch({
+      await architectGitFlowService.finalizePlanIntoBaseBranch({
         branchName: 'feature/implement',
         planId: 'plan-1',
       });
@@ -456,11 +446,9 @@ describe('architectGitFlowService', () => {
       return createGitStatus();
     });
 
-    const { finalizePlanIntoBaseBranch, isPlanFinalizationBlockedError } = await loadArchitectGitFlowService();
-
     let blockedError: unknown;
     try {
-      await finalizePlanIntoBaseBranch({
+      await architectGitFlowService.finalizePlanIntoBaseBranch({
         branchName: 'feature/implement',
         planId: 'plan-1',
       });
@@ -517,9 +505,7 @@ describe('architectGitFlowService', () => {
       throw divergenceError;
     });
 
-    const { finalizePlanIntoBaseBranch } = await loadArchitectGitFlowService();
-
-    await expect(finalizePlanIntoBaseBranch({
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
       branchName: 'feature/implement',
       planId: 'plan-1',
     })).rejects.toThrow('Plan metadata replicas diverged across repositories.');
@@ -533,9 +519,7 @@ describe('architectGitFlowService', () => {
   });
 
   it('finalizes mergeable repositories, archives the plan, and cleans plan branches/worktrees', async () => {
-    const { finalizePlanIntoBaseBranch } = await loadArchitectGitFlowService();
-
-    const result = await finalizePlanIntoBaseBranch({
+    const result = await architectGitFlowService.finalizePlanIntoBaseBranch({
       branchName: 'feature/implement',
       planId: 'plan-1',
     });
@@ -616,8 +600,7 @@ describe('architectGitFlowService', () => {
     worktreeStatusByPath.set(getExpectedWorktreePath('api', '/repos/api', 'feature/checkout/checkout-api'), null);
     gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
 
-    const { cleanupPlanBranches } = await loadArchitectGitFlowService();
-    const cleanup = await cleanupPlanBranches(currentPlan);
+    const cleanup = await architectGitFlowService.cleanupPlanBranches(currentPlan);
 
     expect(cleanup).toEqual([
       {
@@ -653,9 +636,7 @@ describe('architectGitFlowService', () => {
       })
     );
 
-    const { deletePlanAndCleanupBranches } = await loadArchitectGitFlowService();
-
-    await expect(deletePlanAndCleanupBranches({
+    await expect(architectGitFlowService.deletePlanAndCleanupBranches({
       branchName: 'feature/implement',
       planId: 'plan-1',
     })).rejects.toThrow('has uncommitted changes');
@@ -665,9 +646,7 @@ describe('architectGitFlowService', () => {
   });
 
   it('soft deletes only after cleanup succeeds', async () => {
-    const { deletePlanAndCleanupBranches } = await loadArchitectGitFlowService();
-
-    const result = await deletePlanAndCleanupBranches({
+    const result = await architectGitFlowService.deletePlanAndCleanupBranches({
       branchName: 'feature/implement',
       planId: 'plan-1',
     });
@@ -687,9 +666,5 @@ describe('architectGitFlowService', () => {
       toBranchWorktreeKey('web', 'feature/checkout/checkout-web'),
       toBranchWorktreeKey('api', 'feature/checkout/checkout-api'),
     ]);
-  });
-
-  afterAll(() => {
-    mock.restore();
   });
 });

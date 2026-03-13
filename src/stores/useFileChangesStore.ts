@@ -1,15 +1,9 @@
+import { createRequire } from 'node:module';
 import { create } from 'zustand';
 import i18n from '../i18n';
-import { getGitFlowBaseBranch } from '../services/architectPlanService';
-import { mergeFeatureBranchIntoPlanBranch } from '../services/architectGitFlowService';
 import { parseUnifiedDiff, type ParsedDiffHunk } from '../services/gitDiffParser';
 import * as tauriIpc from '../services/tauriIpc';
-import { useAppStore } from './useAppStore';
-import {
-  useTaskStore,
-  type ImplementTask,
-  type TaskCompletionRepositoryRecord,
-} from './useTaskStore';
+import type { TaskCompletionRepositoryRecord } from './useTaskStore';
 import type { TaskExecutionTarget, TaskStatus } from '../types';
 import {
   EMPTY_REVIEW_TASK_SUMMARY,
@@ -96,6 +90,87 @@ const EMPTY_STATS: ReviewRepositoryStats = {
   reviewed: 0,
   additions: 0,
   deletions: 0,
+};
+
+type UseAppStoreModule = typeof import('./useAppStore');
+type UseTaskStoreModule = typeof import('./useTaskStore');
+type ArchitectGitFlowModule = typeof import('../services/architectGitFlowService');
+type ArchitectPlanServiceModule = typeof import('../services/architectPlanService');
+
+const requireModule = createRequire(import.meta.url);
+
+const loadUseAppStoreModule = (): UseAppStoreModule => requireModule('./useAppStore');
+const loadUseTaskStoreModule = (): UseTaskStoreModule => requireModule('./useTaskStore');
+const loadArchitectGitFlowModule = (): ArchitectGitFlowModule => requireModule('../services/architectGitFlowService');
+const loadArchitectPlanServiceModule = (): ArchitectPlanServiceModule => requireModule('../services/architectPlanService');
+
+interface FileChangesProjectRef {
+  path?: string | null;
+}
+
+interface FileChangesTaskLike {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  task_source: 'architect' | 'mixed' | 'fallback' | 'empty' | 'standalone';
+  project_id?: string | null;
+  assigned_branch: string;
+  execution_targets?: TaskExecutionTarget[];
+}
+
+interface FileChangesGitStatus {
+  branch: string;
+  staged_files: Array<{ path: string; status: string }>;
+  unstaged_files: Array<{ path: string; status: string }>;
+  untracked_files: Array<{ path: string; status: string }>;
+  is_clean: boolean;
+}
+
+type FileChangesTauriDeps = Pick<
+  typeof tauriIpc,
+  'isTauriAvailable' | 'gitDiff' | 'fsWriteFile' | 'gitAdd' | 'gitCommit'
+> & {
+  gitStatus: (repoPath: string) => Promise<FileChangesGitStatus>;
+};
+
+interface FileChangesAppState {
+  selectedTaskId: string | null;
+  getProjectById: (projectId: string) => FileChangesProjectRef | null | undefined;
+}
+
+interface FileChangesTaskStoreState {
+  activeRepositoryPath: string | null;
+  activeBranchName: string | null;
+  branchWorktrees: Record<string, string>;
+  getTaskById: (taskId: string) => FileChangesTaskLike | undefined;
+  completeTask: (taskId: string, options?: {
+    skipIntegration?: boolean;
+    repositories?: TaskCompletionRepositoryRecord[];
+  }) => Promise<void> | void;
+}
+
+type FileChangesSetTaskState = (partial: {
+  activeBranchName: string | null;
+  activeRepositoryPath: string | null;
+}) => void;
+
+export interface FileChangesStoreDependencies {
+  tauri: FileChangesTauriDeps;
+  mergeFeatureBranchIntoPlanBranch: ArchitectGitFlowModule['mergeFeatureBranchIntoPlanBranch'];
+  getGitFlowBaseBranch: ArchitectPlanServiceModule['getGitFlowBaseBranch'];
+  getAppState: () => FileChangesAppState;
+  getTaskState: () => FileChangesTaskStoreState;
+  setTaskState: FileChangesSetTaskState;
+}
+
+const defaultFileChangesStoreDependencies: FileChangesStoreDependencies = {
+  tauri: tauriIpc,
+  mergeFeatureBranchIntoPlanBranch: (params) =>
+    loadArchitectGitFlowModule().mergeFeatureBranchIntoPlanBranch(params),
+  getGitFlowBaseBranch: () => loadArchitectPlanServiceModule().getGitFlowBaseBranch(),
+  getAppState: () => loadUseAppStoreModule().useAppStore.getState(),
+  getTaskState: () => loadUseTaskStoreModule().useTaskStore.getState(),
+  setTaskState: (partial) => loadUseTaskStoreModule().useTaskStore.setState(partial),
 };
 
 export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
@@ -200,15 +275,21 @@ const updateRepositoryState = (
     repository.id === repositoryId ? updater(repository) : repository
   ));
 
-const syncActiveReviewRepository = (repository: ReviewRepositoryState | null | undefined): void => {
+const syncActiveReviewRepository = (
+  deps: FileChangesStoreDependencies,
+  repository: ReviewRepositoryState | null | undefined
+): void => {
   if (!repository) return;
-  useTaskStore.setState({
+  deps.setTaskState({
     activeBranchName: repository.branchName,
     activeRepositoryPath: repository.worktreePath,
   });
 };
 
-const getExecutionTargets = (task: ImplementTask): TaskExecutionTarget[] => {
+const getExecutionTargets = (
+  deps: FileChangesStoreDependencies,
+  task: FileChangesTaskLike
+): TaskExecutionTarget[] => {
   if (task.execution_targets?.length) {
     return task.execution_targets;
   }
@@ -221,18 +302,18 @@ const getExecutionTargets = (task: ImplementTask): TaskExecutionTarget[] => {
     projectId: task.project_id,
     branchName: task.assigned_branch,
     worktreeKey: `${task.project_id}::${normalizeBranchName(task.assigned_branch)}`,
-    planBranchName: task.task_source === 'standalone' ? getGitFlowBaseBranch() : undefined,
+    planBranchName: task.task_source === 'standalone' ? deps.getGitFlowBaseBranch() : undefined,
   }];
 };
 
-const resolveSelectedTask = (): ImplementTask | null => {
-  const selectedTaskId = useAppStore.getState().selectedTaskId;
+const resolveSelectedTask = (deps: FileChangesStoreDependencies): FileChangesTaskLike | null => {
+  const selectedTaskId = deps.getAppState().selectedTaskId;
   if (!selectedTaskId) return null;
-  return useTaskStore.getState().getTaskById(selectedTaskId) ?? null;
+  return deps.getTaskState().getTaskById(selectedTaskId) ?? null;
 };
 
-const ensureReviewTask = (): ImplementTask => {
-  const task = resolveSelectedTask();
+const ensureReviewTask = (deps: FileChangesStoreDependencies): FileChangesTaskLike => {
+  const task = resolveSelectedTask(deps);
   if (!task) {
     throw new Error(
       tChanges('implement.errors.selectTaskBeforeCommit', 'Select a task before reviewing changes.')
@@ -241,8 +322,12 @@ const ensureReviewTask = (): ImplementTask => {
   return task;
 };
 
-const resolveRepositoryWorktreePath = (target: TaskExecutionTarget, task: ImplementTask): string | null => {
-  const taskState = useTaskStore.getState();
+const resolveRepositoryWorktreePath = (
+  deps: FileChangesStoreDependencies,
+  target: TaskExecutionTarget,
+  task: FileChangesTaskLike
+): string | null => {
+  const taskState = deps.getTaskState();
   const worktreePath = taskState.branchWorktrees[target.worktreeKey];
   if (worktreePath) {
     return worktreePath;
@@ -252,11 +337,12 @@ const resolveRepositoryWorktreePath = (target: TaskExecutionTarget, task: Implem
     return taskState.activeRepositoryPath;
   }
 
-  const appState = useAppStore.getState();
+  const appState = deps.getAppState();
   return appState.getProjectById(target.projectId)?.path ?? null;
 };
 
 const loadFileChangeEntry = async (
+  deps: FileChangesStoreDependencies,
   repositoryId: string,
   worktreePath: string,
   file: { path: string; status: string },
@@ -266,7 +352,7 @@ const loadFileChangeEntry = async (
   const id = `${repositoryId}::${file.path}`;
   const status = normalizeStatus(file.status);
   const contextMode = contextModeOverride ?? previousChange?.contextMode ?? 'default';
-  const patch = await tauriIpc.gitDiff({
+  const patch = await deps.tauri.gitDiff({
     repoPath: worktreePath,
     paths: [file.path],
     contextLines: FILE_CHANGE_CONTEXT_LINES[contextMode],
@@ -292,16 +378,17 @@ const loadFileChangeEntry = async (
 };
 
 const loadRepositoryState = async (params: {
-  task: ImplementTask;
+  deps: FileChangesStoreDependencies;
+  task: FileChangesTaskLike;
   target: TaskExecutionTarget;
   previousRepository?: ReviewRepositoryState;
   committedRecord?: TaskCompletionRepositoryRecord;
 }): Promise<ReviewRepositoryState> => {
-  const { task, target, previousRepository, committedRecord } = params;
-  const appState = useAppStore.getState();
+  const { deps, task, target, previousRepository, committedRecord } = params;
+  const appState = deps.getAppState();
   const project = appState.getProjectById(target.projectId);
   const repoPath = project?.path ?? target.repoPath ?? null;
-  const worktreePath = resolveRepositoryWorktreePath(target, task);
+  const worktreePath = resolveRepositoryWorktreePath(deps, target, task);
 
   if (!repoPath || !worktreePath) {
     throw new Error(
@@ -312,7 +399,7 @@ const loadRepositoryState = async (params: {
   }
 
   const repositoryId = buildRepositoryId(target);
-  const status = await tauriIpc.gitStatus(worktreePath);
+  const status = await deps.tauri.gitStatus(worktreePath);
   const candidates = [
     ...status.staged_files,
     ...status.unstaged_files,
@@ -332,7 +419,7 @@ const loadRepositoryState = async (params: {
   for (const file of uniqueByPath.values()) {
     const changeId = `${repositoryId}::${file.path}`;
     const previousChange = previousById.get(changeId);
-    changes.push(await loadFileChangeEntry(repositoryId, worktreePath, file, previousChange));
+    changes.push(await loadFileChangeEntry(deps, repositoryId, worktreePath, file, previousChange));
   }
 
   const selectedChangeId = previousRepository?.selectedChangeId &&
@@ -351,7 +438,7 @@ const loadRepositoryState = async (params: {
     repoPath,
     worktreePath,
     branchName: normalizeBranchName(target.branchName),
-    planBranchName: target.planBranchName || (task.task_source === 'standalone' ? getGitFlowBaseBranch() : null),
+    planBranchName: target.planBranchName || (task.task_source === 'standalone' ? deps.getGitFlowBaseBranch() : null),
     changes,
     selectedChangeId,
     stats: computeStats(changes),
@@ -364,8 +451,12 @@ const loadRepositoryState = async (params: {
   };
 };
 
-const ensureNoForeignStagedFiles = async (worktreePath: string, reviewedPaths: string[]): Promise<void> => {
-  const status = await tauriIpc.gitStatus(worktreePath);
+const ensureNoForeignStagedFiles = async (
+  deps: FileChangesStoreDependencies,
+  worktreePath: string,
+  reviewedPaths: string[]
+): Promise<void> => {
+  const status = await deps.tauri.gitStatus(worktreePath);
   const reviewedSet = new Set(reviewedPaths);
   const foreignStaged = status.staged_files
     .map((file) => file.path)
@@ -383,13 +474,14 @@ const ensureNoForeignStagedFiles = async (worktreePath: string, reviewedPaths: s
 };
 
 const buildCompletionRepositoryRecord = (
+  deps: FileChangesStoreDependencies,
   repository: ReviewRepositoryState,
   existingRecord?: TaskCompletionRepositoryRecord
 ): TaskCompletionRepositoryRecord => ({
   projectId: repository.projectId,
   repoPath: repository.repoPath,
   branchName: repository.branchName,
-  planBranchName: repository.planBranchName || getGitFlowBaseBranch(),
+  planBranchName: repository.planBranchName || deps.getGitFlowBaseBranch(),
   mergeOutput: existingRecord?.mergeOutput,
 });
 
@@ -440,23 +532,35 @@ interface FileChangesState {
   getReviewSummary: () => ReviewTaskSummary;
 }
 
-export const useFileChangesStore = create<FileChangesState>((set, get) => ({
-  currentTaskId: null,
-  repositories: [],
-  selectedRepositoryId: null,
-  reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
-  selectedDiffTarget: null,
-  isDiffModalOpen: false,
-  isLoading: false,
-  isCommitting: false,
-  lastError: null,
-  lastCommitHash: null,
-  executionRecords: {},
+export const createFileChangesStore = (
+  overrides: Partial<FileChangesStoreDependencies> = {}
+) => {
+  const deps: FileChangesStoreDependencies = {
+    ...defaultFileChangesStoreDependencies,
+    ...overrides,
+    tauri: {
+      ...defaultFileChangesStoreDependencies.tauri,
+      ...(overrides.tauri || {}),
+    },
+  };
+
+  return create<FileChangesState>((set, get) => ({
+    currentTaskId: null,
+    repositories: [],
+    selectedRepositoryId: null,
+    reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
+    selectedDiffTarget: null,
+    isDiffModalOpen: false,
+    isLoading: false,
+    isCommitting: false,
+    lastError: null,
+    lastCommitHash: null,
+    executionRecords: {},
 
   loadCurrentChanges: async () => {
     set({ isLoading: true, lastError: null });
 
-    if (!tauriIpc.isTauriAvailable()) {
+    if (!deps.tauri.isTauriAvailable()) {
       set({
         currentTaskId: null,
         repositories: [],
@@ -470,7 +574,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
       return;
     }
 
-    const task = resolveSelectedTask();
+    const task = resolveSelectedTask(deps);
     if (!task) {
       set({
         currentTaskId: null,
@@ -509,9 +613,10 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
       const previousSelectedDiffTarget = sameTask ? previousState.selectedDiffTarget : null;
       const previousIsDiffModalOpen = sameTask && previousState.isDiffModalOpen;
       const repositories = await Promise.all(
-        getExecutionTargets(task).map((target) => {
+        getExecutionTargets(deps, task).map((target) => {
           const repositoryId = buildRepositoryId(target);
           return loadRepositoryState({
+            deps,
             task,
             target,
             previousRepository: previousRepositories.get(repositoryId),
@@ -543,6 +648,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
       });
 
       syncActiveReviewRepository(
+        deps,
         repositories.find((repository) => repository.id === derivedReviewState.selectedRepositoryId) || repositories[0]
       );
     } catch (error) {
@@ -584,7 +690,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
       ? get().repositories.find((candidate) => candidate.id === derivedReviewState.selectedRepositoryId)
       : null;
     set(derivedReviewState);
-    syncActiveReviewRepository(repository);
+    syncActiveReviewRepository(deps, repository);
   },
 
   loadChangeContext: async (repositoryId, changeId, contextMode) => {
@@ -605,6 +711,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
 
     try {
       const reloaded = await loadFileChangeEntry(
+        deps,
         repositoryId,
         repository.worktreePath,
         { path: currentChange.path, status: currentChange.status },
@@ -652,7 +759,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
       selectedDiffTarget: { repositoryId, changeId },
       isDiffModalOpen: true,
     });
-    syncActiveReviewRepository(repository);
+    syncActiveReviewRepository(deps, repository);
   },
 
   closeDiffModal: () => {
@@ -787,7 +894,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
     const change = get().getChange(repositoryId, changeId);
     if (!repository || !change || !change.canEdit) return;
 
-    if (!tauriIpc.isTauriAvailable()) {
+    if (!deps.tauri.isTauriAvailable()) {
       throw new Error(
         tChanges('implement.errors.commitDesktopOnly', 'Git commit flow is only available in desktop mode.')
       );
@@ -805,7 +912,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
     }));
 
     try {
-      await tauriIpc.fsWriteFile({
+      await deps.tauri.fsWriteFile({
         path: resolveChangeFilePath(repository.worktreePath, change.path),
         content: nextContent,
         createDirs: true,
@@ -856,7 +963,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
       throw new Error(tChanges('implement.errors.commitMessageRequired', 'Commit message is required.'));
     }
 
-    const task = ensureReviewTask();
+    const task = ensureReviewTask(deps);
     if (task.status !== 'InReview') {
       throw new Error(
         tChanges('implement.errors.commitRequiresActiveTaskStatus', 'Task must be in review before commit.')
@@ -896,7 +1003,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
     }
 
     const integrationBranchName = repository.planBranchName || (
-      task.task_source === 'standalone' ? getGitFlowBaseBranch() : null
+      task.task_source === 'standalone' ? deps.getGitFlowBaseBranch() : null
     );
     if (!integrationBranchName) {
       throw new Error(
@@ -926,19 +1033,19 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
     }));
 
     try {
-      await ensureNoForeignStagedFiles(repository.worktreePath, reviewedPaths);
-      await tauriIpc.gitAdd({
+      await ensureNoForeignStagedFiles(deps, repository.worktreePath, reviewedPaths);
+      await deps.tauri.gitAdd({
         repoPath: repository.worktreePath,
         paths: reviewedPaths,
       });
 
-      const hash = await tauriIpc.gitCommit({
+      const hash = await deps.tauri.gitCommit({
         repoPath: repository.worktreePath,
         message: commitMessage,
         stageAll: false,
       });
 
-      const mergeOutput = await mergeFeatureBranchIntoPlanBranch({
+      const mergeOutput = await deps.mergeFeatureBranchIntoPlanBranch({
         projectId: repository.projectId,
         branchName: repository.branchName,
         planBranchName: integrationBranchName,
@@ -990,24 +1097,24 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
         lastCommitHash: hash,
         lastError: null,
       });
-      syncActiveReviewRepository(nextSelectedRepository);
+      syncActiveReviewRepository(deps, nextSelectedRepository);
 
       const completionRecords = nextRepositories.map((currentRepository) =>
         nextExecutionRecords[currentRepository.id] ||
-        buildCompletionRepositoryRecord(currentRepository)
+        buildCompletionRepositoryRecord(deps, currentRepository)
       );
       const allRepositoriesResolved = nextRepositories.every((currentRepository) =>
         currentRepository.commitState === 'committed' || currentRepository.commitState === 'no_changes'
       );
 
       let taskCompleted = false;
-      let taskStatus: TaskStatus | null = useTaskStore.getState().getTaskById(task.id)?.status ?? null;
+      let taskStatus: TaskStatus | null = deps.getTaskState().getTaskById(task.id)?.status ?? null;
       if (allRepositoriesResolved && completionRecords.some((record) => Boolean(record.mergeOutput))) {
-        await useTaskStore.getState().completeTask(task.id, {
+        await deps.getTaskState().completeTask(task.id, {
           skipIntegration: true,
           repositories: completionRecords,
         });
-        taskStatus = useTaskStore.getState().getTaskById(task.id)?.status ?? null;
+        taskStatus = deps.getTaskState().getTaskById(task.id)?.status ?? null;
         taskCompleted = taskStatus === 'Completed';
       }
 
@@ -1084,4 +1191,7 @@ export const useFileChangesStore = create<FileChangesState>((set, get) => ({
   },
 
   getReviewSummary: () => get().reviewSummary,
-}));
+  }));
+};
+
+export const useFileChangesStore = createFileChangesStore();

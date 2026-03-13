@@ -1,4 +1,5 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { createFileChangesStore, resolveChangeFilePath } from './useFileChangesStore';
 
 const repoAPath = 'C:/repos/project-a';
 const repoBPath = 'C:/repos/project-b';
@@ -65,6 +66,10 @@ const gitStatusMock = mock(async (repoPath: string) => {
         ? [{ path: 'src/main.ts', status: 'modified' }]
         : [],
       untracked_files: [],
+      conflicted_files: [],
+      conflictedFiles: [],
+      merge_in_progress: false,
+      mergeInProgress: false,
       is_clean: !currentFiles[repoPath]?.['src/main.ts'],
     };
   }
@@ -78,6 +83,10 @@ const gitStatusMock = mock(async (repoPath: string) => {
         ? [{ path: 'README.md', status: 'modified' }]
         : [],
       untracked_files: [],
+      conflicted_files: [],
+      conflictedFiles: [],
+      merge_in_progress: false,
+      mergeInProgress: false,
       is_clean: !currentFiles[repoPath]?.['README.md'],
     };
   }
@@ -88,6 +97,10 @@ const gitStatusMock = mock(async (repoPath: string) => {
     staged_files: [],
     unstaged_files: [],
     untracked_files: [],
+    conflicted_files: [],
+    conflictedFiles: [],
+    merge_in_progress: false,
+    mergeInProgress: false,
     is_clean: true,
   };
 });
@@ -199,53 +212,15 @@ const appStoreState = {
   getProjectById: (projectId: string) => {
     if (projectId === 'project-a') return { id: 'project-a', name: 'Project A', path: repoAPath };
     if (projectId === 'project-b') return { id: 'project-b', name: 'Project B', path: repoBPath };
-    return null;
+    return undefined;
   },
 };
 
-const registerFileChangesStoreMocks = () => {
-  mock.restore();
-  mock.module('../services/tauriIpc', () => ({
-    isTauriAvailable: () => true,
-    gitStatus: gitStatusMock,
-    gitDiff: gitDiffMock,
-    fsWriteFile: fsWriteFileMock,
-    gitAdd: gitAddMock,
-    gitCommit: gitCommitMock,
-  }));
-
-  mock.module('../services/architectGitFlowService', () => ({
-    mergeFeatureBranchIntoPlanBranch: mergeFeatureBranchIntoPlanBranchMock,
-  }));
-
-  mock.module('./useTaskStore', () => ({
-    useTaskStore: {
-      getState: () => taskStoreState,
-      setState: mock(() => undefined),
-    },
-  }));
-
-  mock.module('./useAppStore', () => ({
-    useAppStore: {
-      getState: () => appStoreState,
-    },
-  }));
-};
-
-let fileChangesStoreImportCounter = 0;
-
-const loadFileChangesStore = async () => {
-  registerFileChangesStoreMocks();
-  fileChangesStoreImportCounter += 1;
-  return import(`./useFileChangesStore.ts?test=${fileChangesStoreImportCounter}`);
-};
-
-let resolveChangeFilePath: (repoPath: string, filePath: string) => string;
-let useFileChangesStore: Awaited<ReturnType<typeof loadFileChangesStore>>['useFileChangesStore'];
+const setTaskStateMock = mock(() => undefined);
+let useFileChangesStore: ReturnType<typeof createFileChangesStore>;
 
 describe('useFileChangesStore', () => {
-  beforeEach(async () => {
-    ({ resolveChangeFilePath, useFileChangesStore } = await loadFileChangesStore());
+  beforeEach(() => {
     currentFiles = {
       [worktreeAPath]: {
         'src/main.ts': 'const value = 2;\nconsole.log(value);',
@@ -267,6 +242,23 @@ describe('useFileChangesStore', () => {
     gitCommitMock.mockClear();
     mergeFeatureBranchIntoPlanBranchMock.mockClear();
     completeTaskMock.mockClear();
+    setTaskStateMock.mockClear();
+
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitDiff: gitDiffMock,
+        fsWriteFile: fsWriteFileMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+      },
+      mergeFeatureBranchIntoPlanBranch: mergeFeatureBranchIntoPlanBranchMock,
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: setTaskStateMock,
+    });
 
     useFileChangesStore.getState().resetReviewState();
   });
@@ -331,9 +323,5 @@ describe('useFileChangesStore', () => {
     expect(secondCommit.taskCompleted).toBe(true);
     expect(completeTaskMock).toHaveBeenCalledTimes(1);
     expect(mergeFeatureBranchIntoPlanBranchMock).toHaveBeenCalledTimes(2);
-  });
-
-  afterAll(() => {
-    mock.restore();
   });
 });
