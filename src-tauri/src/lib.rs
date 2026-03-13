@@ -17,6 +17,7 @@ use commands::DbPool;
 use core::{init_logging, load_config};
 use fs::watcher::init_watcher;
 use git::GitState;
+use serde::Serialize;
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::{Mutex, RwLock};
@@ -26,10 +27,108 @@ pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
 #[derive(Clone)]
 pub struct WorkspaceMetadataRoot(pub Arc<RwLock<std::path::PathBuf>>);
 
+#[derive(Serialize)]
+struct WindowSizePayload {
+    width: u32,
+    height: u32,
+}
+
+#[derive(Serialize)]
+struct WindowPositionPayload {
+    x: i32,
+    y: i32,
+}
+
 // Command to show the main window explicitly from frontend
 #[tauri::command]
 async fn show_main_window(window: tauri::WebviewWindow) {
     let _ = window.show();
+}
+
+#[tauri::command]
+async fn window_close(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.close().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn window_minimize(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.minimize().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn window_maximize(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.maximize().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn window_unmaximize(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.unmaximize().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn window_toggle_maximize(window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.is_maximized().map_err(|error| error.to_string())? {
+        window.unmaximize().map_err(|error| error.to_string())
+    } else {
+        window.maximize().map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+async fn window_is_maximized(window: tauri::WebviewWindow) -> Result<bool, String> {
+    window.is_maximized().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn window_set_size(
+    window: tauri::WebviewWindow,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    window
+        .set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn window_set_position(
+    window: tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    window
+        .set_position(tauri::LogicalPosition::new(x, y))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn window_outer_size(window: tauri::WebviewWindow) -> Result<WindowSizePayload, String> {
+    let size = window.outer_size().map_err(|error| error.to_string())?;
+    Ok(WindowSizePayload {
+        width: size.width,
+        height: size.height,
+    })
+}
+
+#[tauri::command]
+async fn window_outer_position(
+    window: tauri::WebviewWindow,
+) -> Result<WindowPositionPayload, String> {
+    let position = window.outer_position().map_err(|error| error.to_string())?;
+    Ok(WindowPositionPayload {
+        x: position.x,
+        y: position.y,
+    })
+}
+
+#[tauri::command]
+async fn window_scale_factor(window: tauri::WebviewWindow) -> Result<f64, String> {
+    window.scale_factor().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn window_set_zoom(window: tauri::WebviewWindow, scale: f64) -> Result<(), String> {
+    window.set_zoom(scale).map_err(|error| error.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -96,6 +195,18 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Database commands
             show_main_window,
+            window_close,
+            window_minimize,
+            window_maximize,
+            window_unmaximize,
+            window_toggle_maximize,
+            window_is_maximized,
+            window_set_size,
+            window_set_position,
+            window_outer_size,
+            window_outer_position,
+            window_scale_factor,
+            window_set_zoom,
             commands::db_list_conversations,
             commands::db_get_conversation,
             commands::db_create_conversation,

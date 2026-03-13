@@ -1,135 +1,126 @@
 import { useState, useEffect, useCallback } from 'react';
-
-interface TauriWindowAPI {
-  minimize: () => Promise<void>;
-  maximize: () => Promise<void>;
-  unmaximize: () => Promise<void>;
-  toggleMaximize: () => Promise<void>;
-  close: () => Promise<void>;
-  isMaximized: () => Promise<boolean>;
-}
-
-let tauriWindowAPI: TauriWindowAPI | null = null;
-let initPromise: Promise<void> | null = null;
-
-async function initTauriWindowAPI(): Promise<void> {
-  if (initPromise) {
-    return initPromise;
-  }
-
-  initPromise = (async () => {
-    try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      const window = getCurrentWindow();
-      
-      tauriWindowAPI = {
-        minimize: () => window.minimize(),
-        maximize: () => window.maximize(),
-        unmaximize: () => window.unmaximize(),
-        toggleMaximize: () => window.toggleMaximize(),
-        close: () => window.close(),
-        isMaximized: () => window.isMaximized(),
-      };
-    } catch (error) {
-      console.error('Failed to initialize Tauri window API:', error);
-      tauriWindowAPI = null;
-    }
-  })();
-
-  return initPromise;
-}
+import {
+  isTauriEnvironment,
+  windowClose,
+  windowIsMaximized,
+  windowMaximize,
+  windowMinimize,
+  windowToggleMaximize,
+  windowUnmaximize,
+} from '../services/tauriWindow';
 
 export function useTauriWindow() {
-  const [isAvailable, setIsAvailable] = useState(false);
+  const isAvailable = isTauriEnvironment();
   const [isMaximized, setIsMaximized] = useState(false);
-  const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
+    if (!isAvailable) {
+      setIsMaximized(false);
+      return;
+    }
+
     let mounted = true;
 
-    const checkAndInit = async () => {
-      // Check if running in Tauri
-      const isTauri = typeof window !== 'undefined' && 
-                     (window as any).__TAURI__ !== undefined ||
-                     (window as any).__TAURI_INTERNALS__ !== undefined ||
-                     window.location.protocol === 'tauri:';
-
-      if (!isTauri || !mounted) {
-        setIsInitialized(true);
-        return;
-      }
-
+    const loadInitialWindowState = async () => {
       try {
-        await initTauriWindowAPI();
-        
+        const max = await windowIsMaximized();
         if (mounted) {
-          setIsAvailable(!!tauriWindowAPI);
-          setIsInitialized(true);
-
-          // Get initial maximized state
-          if (tauriWindowAPI) {
-            const max = await tauriWindowAPI.isMaximized();
-            if (mounted) {
-              setIsMaximized(max);
-            }
-          }
+          setIsMaximized(max);
         }
       } catch (error) {
-        console.error('Error initializing Tauri window:', error);
+        console.error('Error reading initial Tauri window state:', error);
         if (mounted) {
-          setIsAvailable(false);
-          setIsInitialized(true);
+          setIsMaximized(false);
         }
       }
     };
 
-    checkAndInit();
+    void loadInitialWindowState();
 
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [isAvailable]);
+
+  const syncMaximizedState = useCallback(async () => {
+    if (!isAvailable) {
+      return;
+    }
+
+    try {
+      setIsMaximized(await windowIsMaximized());
+    } catch (error) {
+      console.error('Error syncing Tauri window state:', error);
+    }
+  }, [isAvailable]);
 
   const minimize = useCallback(async () => {
-    if (tauriWindowAPI) {
-      await tauriWindowAPI.minimize();
+    if (!isAvailable) {
+      return;
     }
-  }, []);
+
+    try {
+      await windowMinimize();
+    } catch (error) {
+      console.error('Failed to minimize window:', error);
+    }
+  }, [isAvailable]);
 
   const maximize = useCallback(async () => {
-    if (tauriWindowAPI) {
-      await tauriWindowAPI.maximize();
-      setIsMaximized(true);
+    if (!isAvailable) {
+      return;
     }
-  }, []);
+
+    try {
+      await windowMaximize();
+      setIsMaximized(true);
+    } catch (error) {
+      console.error('Failed to maximize window:', error);
+      await syncMaximizedState();
+    }
+  }, [isAvailable, syncMaximizedState]);
 
   const unmaximize = useCallback(async () => {
-    if (tauriWindowAPI) {
-      await tauriWindowAPI.unmaximize();
-      setIsMaximized(false);
+    if (!isAvailable) {
+      return;
     }
-  }, []);
+
+    try {
+      await windowUnmaximize();
+      setIsMaximized(false);
+    } catch (error) {
+      console.error('Failed to restore window:', error);
+      await syncMaximizedState();
+    }
+  }, [isAvailable, syncMaximizedState]);
 
   const toggleMaximize = useCallback(async () => {
-    if (tauriWindowAPI) {
-      if (isMaximized) {
-        await tauriWindowAPI.unmaximize();
-        setIsMaximized(false);
-      } else {
-        await tauriWindowAPI.maximize();
-        setIsMaximized(true);
-      }
+    if (!isAvailable) {
+      return;
     }
-  }, [isMaximized]);
+
+    try {
+      await windowToggleMaximize();
+      await syncMaximizedState();
+    } catch (error) {
+      console.error('Failed to toggle maximize state:', error);
+    }
+  }, [isAvailable, syncMaximizedState]);
 
   const close = useCallback(async () => {
-    if (tauriWindowAPI) {
-      await tauriWindowAPI.close();
+    if (!isAvailable) {
+      return;
     }
-  }, []);
+
+    try {
+      await windowClose();
+    } catch (error) {
+      console.error('Failed to close window:', error);
+    }
+  }, [isAvailable]);
 
   return {
-    isAvailable: isAvailable && isInitialized,
+    isAvailable,
     isMaximized,
     minimize,
     maximize,

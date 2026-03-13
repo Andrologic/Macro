@@ -11,6 +11,17 @@ import {
   loadPreferences,
   PREF_KEYS,
 } from "../services/preferences";
+import {
+  isTauriEnvironment,
+  showMainWindow,
+  windowIsMaximized,
+  windowMaximize,
+  windowOuterPosition,
+  windowOuterSize,
+  windowScaleFactor,
+  windowSetPosition,
+  windowSetSize,
+} from "../services/tauriWindow";
 
 // Debounce timer ref
 let saveTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -19,7 +30,7 @@ let saveTimeout: ReturnType<typeof setTimeout> | null = null;
  * Check if running in Tauri environment
  */
 function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  return isTauriEnvironment();
 }
 
 /**
@@ -27,6 +38,7 @@ function isTauri(): boolean {
  */
 export function useWindowRestoration() {
   const isInitialized = useRef(false);
+  const lastSavedState = useRef<string | null>(null);
   const windowApiRef = useRef<{
     setSize: (width: number, height: number) => Promise<void>;
     setPosition: (x: number, y: number) => Promise<void>;
@@ -42,30 +54,14 @@ export function useWindowRestoration() {
     if (!isTauri()) return null;
 
     try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const { LogicalSize, LogicalPosition } = await import(
-        "@tauri-apps/api/dpi"
-      );
-      const win = getCurrentWindow();
-
       return {
-        setSize: async (width: number, height: number) => {
-          await win.setSize(new LogicalSize(width, height));
-        },
-        setPosition: async (x: number, y: number) => {
-          await win.setPosition(new LogicalPosition(x, y));
-        },
-        getOuterSize: async () => {
-          const size = await win.outerSize();
-          return { width: size.width, height: size.height };
-        },
-        getOuterPosition: async () => {
-          const pos = await win.outerPosition();
-          return { x: pos.x, y: pos.y };
-        },
-        getScaleFactor: () => win.scaleFactor(),
-        maximize: () => win.maximize(),
-        isMaximized: () => win.isMaximized(),
+        setSize: (width: number, height: number) => windowSetSize(width, height),
+        setPosition: (x: number, y: number) => windowSetPosition(x, y),
+        getOuterSize: () => windowOuterSize(),
+        getOuterPosition: () => windowOuterPosition(),
+        getScaleFactor: () => windowScaleFactor(),
+        maximize: () => windowMaximize(),
+        isMaximized: () => windowIsMaximized(),
       };
     } catch (error) {
       console.error("Failed to init window API for restoration:", error);
@@ -80,6 +76,9 @@ export function useWindowRestoration() {
 
     try {
       const isMax = await api.isMaximized();
+      const nextState: Record<string, number | boolean | null> = {
+        isMaximized: isMax,
+      };
 
       // Only save size/position if not maximized
       if (!isMax) {
@@ -93,6 +92,16 @@ export function useWindowRestoration() {
         const logicalHeight = Math.round(size.height / scaleFactor);
         const logicalX = Math.round(pos.x / scaleFactor);
         const logicalY = Math.round(pos.y / scaleFactor);
+        nextState.width = logicalWidth;
+        nextState.height = logicalHeight;
+        nextState.x = logicalX;
+        nextState.y = logicalY;
+
+        const serializedState = JSON.stringify(nextState);
+        if (lastSavedState.current === serializedState) {
+          return;
+        }
+        lastSavedState.current = serializedState;
 
         await Promise.all([
           savePreference(PREF_KEYS.WINDOW_WIDTH, logicalWidth),
@@ -100,6 +109,12 @@ export function useWindowRestoration() {
           savePreference(PREF_KEYS.WINDOW_X, logicalX),
           savePreference(PREF_KEYS.WINDOW_Y, logicalY),
         ]);
+      } else {
+        const serializedState = JSON.stringify(nextState);
+        if (lastSavedState.current === serializedState) {
+          return;
+        }
+        lastSavedState.current = serializedState;
       }
 
       await savePreference(PREF_KEYS.IS_MAXIMIZED, isMax);
@@ -161,11 +176,8 @@ export function useWindowRestoration() {
       } catch (error) {
         console.error("Failed to restore window state:", error);
       } finally {
-        // Explicitly show the main window using the Rust command
-        // This ensures the window is visible only AFTER it has been resized
         try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("show_main_window");
+          await showMainWindow();
           console.log("Window shown via command");
         } catch (err) {
           console.error("Failed to invoke show_main_window:", err);
@@ -180,34 +192,19 @@ export function useWindowRestoration() {
   useEffect(() => {
     if (!isTauri()) return;
 
-    let unlistenResize: (() => void) | null = null;
-    let unlistenMove: (() => void) | null = null;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
 
-    const setupListeners = async () => {
-      try {
-        const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        const win = getCurrentWindow();
-
-        unlistenResize = await win.onResized(() => {
-          debouncedSave();
-        });
-
-        unlistenMove = await win.onMoved(() => {
-          debouncedSave();
-        });
-      } catch (error) {
-        console.error("Failed to setup window listeners:", error);
-      }
-    };
-
-    setupListeners();
+    intervalId = setInterval(() => {
+      debouncedSave();
+    }, 1000);
 
     return () => {
       if (saveTimeout) {
         clearTimeout(saveTimeout);
       }
-      unlistenResize?.();
-      unlistenMove?.();
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
     };
   }, [debouncedSave]);
 }
