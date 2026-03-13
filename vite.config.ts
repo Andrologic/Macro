@@ -1,12 +1,62 @@
+import { existsSync, readdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+const projectRoot = dirname(fileURLToPath(import.meta.url));
+const ALLOWED_PUBLIC_SECRET_FILES = new Set(["ai-keys.local.example.json"]);
+
+const collectProhibitedPublicSecretFiles = (dir: string, root: string): string[] => {
+  if (!existsSync(dir)) {
+    return [];
+  }
+
+  const prohibited: string[] = [];
+
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      prohibited.push(...collectProhibitedPublicSecretFiles(entryPath, root));
+      continue;
+    }
+
+    const isSecretJson = /^ai-keys.*\.json$/i.test(entry.name);
+    if (isSecretJson && !ALLOWED_PUBLIC_SECRET_FILES.has(entry.name)) {
+      prohibited.push(entryPath.slice(root.length + 1).replace(/\\/g, "/"));
+    }
+  }
+
+  return prohibited;
+};
+
+export const validatePublicSecretFiles = (rootDir: string = projectRoot): void => {
+  const publicDir = resolve(rootDir, "public");
+  const prohibitedFiles = collectProhibitedPublicSecretFiles(publicDir, rootDir);
+
+  if (prohibitedFiles.length === 0) {
+    return;
+  }
+
+  throw new Error(
+    [
+      "Secret provider files are forbidden in public/ because Vite copies them into dist/.",
+      `Move them to dev/${prohibitedFiles[0].split("/").pop() ?? "ai-keys.local.json"} and load them via Tauri dev overrides instead.`,
+      `Blocked file${prohibitedFiles.length > 1 ? "s" : ""}: ${prohibitedFiles.join(", ")}`,
+    ].join(" ")
+  );
+};
 
 // https://vitejs.dev/config/
 // Optimized for Bun runtime - Maximum Performance Configuration
-export default defineConfig({
+export default defineConfig(({ command }) => {
+  if (command === "build") {
+    validatePublicSecretFiles(projectRoot);
+  }
+
+  return {
   plugins: [
     react({
       // Use automatic JSX runtime for smaller bundle
@@ -214,4 +264,5 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
   },
+  };
 });

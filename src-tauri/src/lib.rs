@@ -2,6 +2,7 @@
 pub mod commands;
 pub mod core;
 mod db;
+mod dev_overrides;
 mod secrets;
 
 // Placeholder modules for critical manual implementation
@@ -223,6 +224,7 @@ pub fn run() {
             commands::db_update_provider_config,
             commands::db_create_provider_config,
             commands::db_delete_provider_config,
+            commands::ai_get_dev_provider_overrides,
             commands::ai::ai_start_chatgpt_auth,
             commands::ai::ai_cancel_chatgpt_auth,
             commands::ai::ai_disconnect_provider_auth,

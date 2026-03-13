@@ -51,6 +51,19 @@ describe('tauriIpc executeWorkspaceTool', () => {
     ]);
   });
 
+  it('calls ai_get_dev_provider_overrides without payload', async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.aiGetDevProviderOverrides();
+
+    expect(invokeCalls).toEqual([
+      {
+        command: 'ai_get_dev_provider_overrides',
+        payload: undefined,
+      },
+    ]);
+  });
+
   afterAll(() => {
     mock.restore();
   });
