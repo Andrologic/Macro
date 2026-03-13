@@ -161,6 +161,15 @@ export interface DbProviderSettings {
   filter_free_models: boolean;
 }
 
+export interface DevProviderOverrideConfig {
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+export interface DevProviderOverridesFile {
+  providers?: Record<string, DevProviderOverrideConfig>;
+}
+
 export interface DbAppSetting {
   key: string;
   value_json: string;
@@ -609,6 +618,10 @@ export async function aiDisconnectProviderAuth(providerId: string): Promise<DbPr
 
 export async function aiSyncProviderModels(providerId: string): Promise<DbAiModel[]> {
   return invoke<DbAiModel[]>('ai_sync_provider_models', { providerId });
+}
+
+export async function aiGetDevProviderOverrides(): Promise<DevProviderOverridesFile | null> {
+  return invoke<DevProviderOverridesFile | null>('ai_get_dev_provider_overrides');
 }
 
 export async function aiStreamChat(params: {

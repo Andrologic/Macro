@@ -11,6 +11,7 @@ use crate::core::tool_policy::{
     get_mode_policy, is_macro_scoped_path, validate_tool_execution, ToolModePolicyResult,
     ToolValidationResult,
 };
+use crate::dev_overrides::DevProviderOverridesFile;
 use crate::db::{models::*, repository, DbError};
 use crate::git::GitState;
 use crate::secrets;
@@ -59,6 +60,20 @@ pub async fn tool_validate_execution(
     path: Option<String>,
 ) -> CommandResult<ToolValidationResult> {
     Ok(validate_tool_execution(&mode, &tool_id, path.as_deref()))
+}
+
+#[tauri::command]
+pub async fn ai_get_dev_provider_overrides(
+    workspace_metadata_root: State<'_, WorkspaceMetadataRoot>,
+) -> CommandResult<Option<DevProviderOverridesFile>> {
+    if !tauri::is_dev() {
+        return Ok(None);
+    }
+
+    let workspace_root = workspace_metadata_root.0.read().await.clone();
+    Ok(crate::dev_overrides::load_dev_provider_overrides_from_workspace(
+        &workspace_root,
+    ))
 }
 
 fn json_arg_string(args: &Value, key: &str) -> Option<String> {
