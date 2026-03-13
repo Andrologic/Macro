@@ -1,8 +1,9 @@
 import { useEffect } from 'react';
 import { useAppStore } from '../stores/useAppStore';
+import { isTauriEnvironment, windowSetZoom } from '../services/tauriWindow';
 
 function isTauri(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  return isTauriEnvironment();
 }
 
 function applyBrowserZoom(scale: number): void {
@@ -14,8 +15,6 @@ export function useUiZoom() {
   const uiZoomLevel = useAppStore((state) => state.uiZoomLevel);
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
-
     const setupZoom = async () => {
       if (!isTauri()) {
         applyBrowserZoom(uiZoomMode === 'override' ? uiZoomLevel : 1);
@@ -23,22 +22,9 @@ export function useUiZoom() {
       }
 
       try {
-        const [{ getCurrentWindow }, { getCurrentWebview }] = await Promise.all([
-          import('@tauri-apps/api/window'),
-          import('@tauri-apps/api/webview'),
-        ]);
-
-        const win = getCurrentWindow();
-        const webview = getCurrentWebview();
         const effectiveScale = uiZoomMode === 'auto' ? 1 : uiZoomLevel;
 
-        await webview.setZoom(effectiveScale);
-
-        if (uiZoomMode === 'auto') {
-          unlisten = await win.onScaleChanged(() => {
-            void webview.setZoom(1);
-          });
-        }
+        await windowSetZoom(effectiveScale);
       } catch (error) {
         console.error('Failed to apply UI zoom:', error);
         applyBrowserZoom(uiZoomMode === 'override' ? uiZoomLevel : 1);
@@ -46,9 +32,5 @@ export function useUiZoom() {
     };
 
     void setupZoom();
-
-    return () => {
-      unlisten?.();
-    };
   }, [uiZoomMode, uiZoomLevel]);
 }
