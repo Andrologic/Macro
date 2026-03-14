@@ -1,8 +1,9 @@
-import type { AppMode } from '../types';
+import type { AppMode, ProjectGroup } from '../types';
 import type { MetadataSyncRepositoryStatus } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
+import { getFocusedProjectForGroup, getSubProjectsForGroup } from './globalProjects';
 
 type MacroSyncResult = tauriIpc.MacroBranchSyncDto;
 type ManualMacroAction = 'commit' | 'pull' | 'push';
@@ -29,7 +30,9 @@ interface MacroSyncAppState {
   metadataAutoPush: boolean;
   activeArchitectPlanId: string | null;
   activePlanContext: { targetBranch: string } | null;
+  selectedGroupId: string | null;
   selectedProjectId: string | null;
+  projectGroups: ProjectGroup[];
   getProjectById: (projectId: string) => { path: string } | undefined;
   setMetadataSyncStatus: (params: {
     state: tauriIpc.MacroSyncState;
@@ -159,6 +162,25 @@ const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<Met
     } catch {
       // Fall back to the selected project scope below.
     }
+  }
+
+  const scopedProjects = appState.selectedGroupId
+    ? getSubProjectsForGroup(appState.projectGroups, appState.selectedGroupId)
+    : [];
+  const focusedProject = getFocusedProjectForGroup(
+    appState.projectGroups,
+    appState.selectedGroupId,
+    appState.selectedProjectId
+  );
+
+  const groupTargets = [
+    ...(focusedProject ? [{ repoPath: focusedProject.path, projectId: focusedProject.id }] : []),
+    ...scopedProjects
+      .filter((project) => project.id !== focusedProject?.id)
+      .map((project) => ({ repoPath: project.path, projectId: project.id })),
+  ].filter((target) => target.repoPath.trim().length > 0);
+  if (groupTargets.length > 0) {
+    return dedupeTargets(groupTargets);
   }
 
   const selectedProjectPath = appState.selectedProjectId

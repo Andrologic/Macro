@@ -4,11 +4,11 @@ import {
   archiveArchitectPlan,
   createArchitectPlan,
   getArchitectPlan,
+  getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   isArchitectPlanReplicaDivergenceError,
   listArchitectPlans,
-  planMatchesProjectId,
   repairArchitectPlanReplicas,
   resolvePlanProjectContextId,
   restoreArchitectPlan,
@@ -18,6 +18,7 @@ import {
   type ArchitectPlanSummary,
 } from '../../services/architectPlanService';
 import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
+import { getScopedProjectIds } from '../../services/globalProjects';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useNeedsStore } from '../../stores/useNeedsStore';
@@ -48,10 +49,15 @@ const formatRelativeDate = (iso: string, unknownLabel: string): string => {
   return date.toLocaleDateString();
 };
 
-const isPlanVisibleForProject = (
+const isPlanVisibleForSelection = (
   plan: ArchitectPlanSummary,
-  selectedProjectId: string | null
-): boolean => planMatchesProjectId(plan, selectedProjectId);
+  scopedProjectIds: string[]
+): boolean => {
+  if (scopedProjectIds.length === 0) return true;
+  const scopedProjectIdSet = new Set(scopedProjectIds);
+  const planProjectIds = getArchitectPlanProjectIds(plan);
+  return planProjectIds.length === 0 || planProjectIds.some((projectId) => scopedProjectIdSet.has(projectId));
+};
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const { t } = useTranslation();
@@ -62,6 +68,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setActivePlanContext,
     activeArchitectPlanId,
     activePlanContext,
+    projectGroups,
+    selectedGroupId,
     selectedProjectId,
   } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
@@ -98,6 +106,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     if (!activePlanId) return null;
     return plans.find((plan) => plan.id === activePlanId) || null;
   }, [plans, activePlanId]);
+  const scopedProjectIds = useMemo(
+    () => getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
   const readyPlanSummaries = useTaskStore((state) => state.planSummaries);
 
   const displayedActivePlanTitle = useMemo(() => {
@@ -172,10 +184,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const result = await listArchitectPlans(targetBranch, showArchived, showArchived);
       const fullResult = showArchived ? result : await listArchitectPlans(targetBranch, true, true);
       const scopedPlans = result.plans.filter((plan) =>
-        isPlanVisibleForProject(plan, selectedProjectId)
+        isPlanVisibleForSelection(plan, scopedProjectIds)
       );
       const scopedFullPlans = fullResult.plans.filter((plan) =>
-        isPlanVisibleForProject(plan, selectedProjectId)
+        isPlanVisibleForSelection(plan, scopedProjectIds)
       );
 
       // Auto-create a default plan when none exist
@@ -184,7 +196,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         try {
           const appStoreForCreation = useAppStore.getState();
           const fallbackProjectId =
-            selectedProjectId ||
+            scopedProjectIds[0] ||
             appStoreForCreation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
             null;
           let createdTitle = t('architect.planForm.createTitle', 'New Plan');
@@ -199,7 +211,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               created = await createArchitectPlan({
                 branchName: targetBranch,
                 title: candidateTitle,
-                projectId: selectedProjectId || undefined,
+                projectId: scopedProjectIds[0] || undefined,
+                projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
                 conversationId: conversation.id,
                 status: 'draft',
                 setActive: true,
@@ -245,7 +258,18 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         if (plan && plan.status !== 'deleted') {
           const appStore = useAppStore.getState();
           const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
-          if (planProjectId && appStore.selectedProjectId !== planProjectId) {
+          const currentScopedProjectIds = getScopedProjectIds(
+            appStore.projectGroups,
+            appStore.selectedGroupId,
+            appStore.selectedProjectId
+          );
+          const currentScopedProjectIdSet = new Set(currentScopedProjectIds);
+          const planProjectIds = getArchitectPlanProjectIds(plan);
+          const isPlanAlreadyInScope =
+            currentScopedProjectIdSet.size > 0 &&
+            (planProjectIds.length === 0 ||
+              planProjectIds.some((projectId) => currentScopedProjectIdSet.has(projectId)));
+          if (planProjectId && !isPlanAlreadyInScope) {
             await appStore.switchProjectContext(planProjectId);
           }
 
@@ -269,6 +293,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             const appStoreForConversation = useAppStore.getState();
             const fallbackProjectId =
               resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
+              getArchitectPlanProjectIds(plan)[0] ||
+              scopedProjectIds[0] ||
               appStoreForConversation.selectedProjectId ||
               appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
               null;
@@ -324,7 +350,18 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
       const appStore = useAppStore.getState();
       const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
-      if (planProjectId && appStore.selectedProjectId !== planProjectId) {
+      const currentScopedProjectIds = getScopedProjectIds(
+        appStore.projectGroups,
+        appStore.selectedGroupId,
+        appStore.selectedProjectId
+      );
+      const currentScopedProjectIdSet = new Set(currentScopedProjectIds);
+      const planProjectIds = getArchitectPlanProjectIds(plan);
+      const isPlanAlreadyInScope =
+        currentScopedProjectIdSet.size > 0 &&
+        (planProjectIds.length === 0 ||
+          planProjectIds.some((projectId) => currentScopedProjectIdSet.has(projectId)));
+      if (planProjectId && !isPlanAlreadyInScope) {
         await appStore.switchProjectContext(planProjectId);
       }
 
@@ -351,6 +388,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         const appStoreForConversation = useAppStore.getState();
         const fallbackProjectId =
           resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
+          getArchitectPlanProjectIds(plan)[0] ||
+          scopedProjectIds[0] ||
           appStoreForConversation.selectedProjectId ||
           appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
           null;
@@ -408,7 +447,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (planFormModal.mode === 'create') {
         const appStoreForConversation = useAppStore.getState();
         const fallbackProjectId =
-          selectedProjectId ||
+          scopedProjectIds[0] ||
           appStoreForConversation.projectGroups.flatMap((g) => g.projects)[0]?.id ||
           null;
         const conversation = await useChatStore
@@ -419,7 +458,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           title,
           slug: title,
           description,
-          projectId: selectedProjectId || undefined,
+          projectId: scopedProjectIds[0] || undefined,
+          projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
           conversationId: conversation.id,
           status: 'draft',
           setActive: true,
@@ -464,7 +504,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const wasActive = activePlanId === plan.id;
       const refreshed = await listArchitectPlans(targetBranch, showArchived, showArchived);
       const refreshedScopedPlans = refreshed.plans.filter((candidate) =>
-        isPlanVisibleForProject(candidate, selectedProjectId)
+        isPlanVisibleForSelection(candidate, scopedProjectIds)
       );
       setPlans(refreshedScopedPlans);
       if (wasActive) {
@@ -519,7 +559,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
       const refreshed = await listArchitectPlans(targetBranch, showArchived, showArchived);
       const refreshedScopedPlans = refreshed.plans.filter((candidate) =>
-        isPlanVisibleForProject(candidate, selectedProjectId)
+        isPlanVisibleForSelection(candidate, scopedProjectIds)
       );
       setPlans(refreshedScopedPlans);
 
@@ -587,12 +627,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   };
 
   useEffect(() => {
-    const effectKey = `${activeArchitectPlanId || 'none'}::${selectedProjectId || 'none'}::${showArchived ? '1' : '0'}`;
+    const effectKey = `${activeArchitectPlanId || 'none'}::${selectedGroupId || 'none'}::${selectedProjectId || 'none'}::${showArchived ? '1' : '0'}`;
     if (lastEffectIdRef.current === effectKey) return;
     lastEffectIdRef.current = effectKey;
     void loadPlans(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeArchitectPlanId, selectedProjectId, showArchived]);
+  }, [activeArchitectPlanId, selectedGroupId, selectedProjectId, showArchived]);
 
   useEffect(() => {
     if (!activePlanContext) return;

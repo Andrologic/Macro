@@ -3,7 +3,7 @@ use crate::git::GitState;
 use crate::workspace;
 use crate::workspace::metadata::{
     CreateProjectRequest, ImportGitRepoRequest, ProjectDto, ProjectGroupDto, WorkspaceBootstrapDto,
-    WorkspaceMetadataDto, WorkspaceTaskCatalogDto,
+    ProjectRegistryDiagnosticsDto, WorkspaceMetadataDto, WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
@@ -67,6 +67,17 @@ pub async fn workspace_get_metadata(
 }
 
 #[tauri::command]
+pub async fn workspace_get_project_registry_diagnostics(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+) -> Result<ProjectRegistryDiagnosticsDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::get_project_registry_diagnostics(&workspace_path, &metadata_root).await
+}
+
+#[tauri::command]
 pub async fn workspace_get_active_root(workspace_root: State<'_, WorkspaceRoot>) -> Result<String> {
     let workspace_path = workspace_root.inner().read().await.clone();
     Ok(workspace_path.to_string_lossy().to_string())
@@ -108,6 +119,7 @@ pub async fn workspace_create_project(
     name: String,
     description: String,
     group_id: Option<String>,
+    group_name: Option<String>,
     path: Option<String>,
 ) -> Result<ProjectDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
@@ -117,6 +129,7 @@ pub async fn workspace_create_project(
         name,
         description,
         group_id,
+        group_name,
         path,
     };
 
@@ -131,6 +144,7 @@ pub async fn workspace_import_git_repo(
     project_name: String,
     branch: String,
     group_id: Option<String>,
+    group_name: Option<String>,
     path: Option<String>,
 ) -> Result<ProjectDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
@@ -141,6 +155,7 @@ pub async fn workspace_import_git_repo(
         project_name,
         branch,
         group_id,
+        group_name,
         path,
     };
 
@@ -198,6 +213,18 @@ pub async fn workspace_archive_project(
 }
 
 #[tauri::command]
+pub async fn workspace_remove_project_group(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    group_id: String,
+) -> Result<Vec<ProjectGroupDto>> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::remove_project_group(&workspace_path, &metadata_root, &group_id).await
+}
+
+#[tauri::command]
 pub async fn workspace_close_project(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
@@ -207,4 +234,16 @@ pub async fn workspace_close_project(
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     workspace::close_project(&workspace_path, &metadata_root, &project_id).await
+}
+
+#[tauri::command]
+pub async fn workspace_remove_project(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_id: String,
+) -> Result<Vec<ProjectGroupDto>> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::remove_project(&workspace_path, &metadata_root, &project_id).await
 }

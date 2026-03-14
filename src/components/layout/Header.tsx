@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { ProjectNavigator } from '../modals/ProjectNavigator';
 import { cn } from '../../utils/cn';
 import type { AppMode } from '../../types';
+import { getGlobalProjectById } from '../../services/globalProjects';
 
 // Constants
 const MODES_DROPDOWN_WIDTH = 192; // 12rem
@@ -39,7 +40,6 @@ export function Header({
   const setMode = useAppStore((state) => state.setMode);
   const openSettings = useAppStore((state) => state.openSettings);
   const openAccount = useAppStore((state) => state.openAccount);
-  const selectedProjectId = useAppStore((state) => state.selectedProjectId);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const projectGroups = useAppStore((state) => state.projectGroups);
 
@@ -123,15 +123,7 @@ export function Header({
   };
 
   const getCurrentProjectName = (): string | null => {
-    if (!selectedGroupId) return null;
-    const group = projectGroups.find((g) => g.id === selectedGroupId);
-    if (!group) return null;
-    
-    if (selectedProjectId) {
-      const project = group.projects.find((p) => p.id === selectedProjectId);
-      return project?.name || group.name;
-    }
-    return group.name;
+    return getGlobalProjectById(projectGroups, selectedGroupId)?.name ?? null;
   };
 
   const projectName = getCurrentProjectName();

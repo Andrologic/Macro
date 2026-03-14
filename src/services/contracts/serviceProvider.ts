@@ -33,6 +33,7 @@ export interface ServiceProvider {
     name: string;
     description: string;
     groupId: string | null;
+    groupName?: string | null;
     path?: string;
   }) => Promise<ProjectDto>;
   importGitRepo: (data: {
@@ -40,6 +41,7 @@ export interface ServiceProvider {
     projectName: string;
     branch: string;
     groupId: string | null;
+    groupName?: string | null;
     path?: string;
   }) => Promise<ProjectDto>;
   renameProjectGroup: (data: {
@@ -56,6 +58,12 @@ export interface ServiceProvider {
   archiveProject: (data: {
     projectId: string;
   }) => Promise<ProjectDto>;
+  removeProjectGroup: (data: {
+    groupId: string;
+  }) => Promise<{ projectGroups: ProjectGroup[] }>;
+  removeProject: (data: {
+    projectId: string;
+  }) => Promise<{ projectGroups: ProjectGroup[] }>;
   closeProject: (data: {
     projectId: string;
   }) => Promise<{ projectGroups: ProjectGroup[] }>;

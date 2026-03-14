@@ -16,6 +16,7 @@ import { canUseRemoteKernel, getRemoteToolModePolicy } from '../services/remoteK
 import * as tauriIpc from '../services/tauriIpc';
 import {
   getArchitectPlan,
+  getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   listArchitectPlans,
@@ -29,6 +30,12 @@ import {
 import { normalizeArchitectToolId } from '../services/architectToolNames';
 import { normalizeStrategyDependencies } from '../services/implementTaskDerivation';
 import { getLocalProjectContextState } from '../services/localProjectContext';
+import {
+  getFocusedProjectForGroup,
+  getGlobalProjectById,
+  getProjectGroupByProjectId,
+  getScopedProjectIds,
+} from '../services/globalProjects';
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from '../services/macroSyncService';
 import { resolveProjectExecutionContext } from '../services/projectExecutionContext';
 import { parseMessageQuickReplies } from '../services/chatQuickReplies';
@@ -273,7 +280,8 @@ interface ChatStore {
   createConversation: (
     title: string,
     taskId: string | null,
-    projectId: string | null
+    projectId: string | null,
+    groupId?: string | null
   ) => Promise<Conversation>;
   ensureConversationForCurrentMode: () => Promise<string | null>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
@@ -301,6 +309,7 @@ interface ChatStore {
   addComposerContextRef: (ref: ContextReference) => void;
   removeComposerContextRef: (id: string, kind: ContextRefKind) => void;
   clearComposerContextRefs: () => void;
+  reconcileProjectRegistry: (validGroupIds: string[], validProjectIds: string[]) => void;
   initialize: () => Promise<void>;
 }
 
@@ -612,7 +621,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const appStore = useAppStore.getState();
       const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
-      if (planProjectId && appStore.selectedProjectId !== planProjectId) {
+      const scopedProjectIds = getScopedProjectIds(
+        appStore.projectGroups,
+        appStore.selectedGroupId,
+        appStore.selectedProjectId
+      );
+      const isPlanAlreadyInScope =
+        scopedProjectIds.length > 0 &&
+        (getArchitectPlanProjectIds(plan).length === 0 ||
+          getArchitectPlanProjectIds(plan).some((projectId) => scopedProjectIds.includes(projectId)));
+      if (planProjectId && !isPlanAlreadyInScope) {
         await appStore.switchProjectContext(planProjectId);
       }
       appStore.setActiveArchitectPlanId(plan.id);
@@ -632,15 +650,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
 
       if (!conversationId || hasSharedConversation) {
+        const fallbackGroupId = appStore.selectedGroupId;
+        const fallbackGroupProjectId = getFocusedProjectForGroup(
+          appStore.projectGroups,
+          fallbackGroupId,
+          appStore.selectedProjectId
+        )?.id ?? null;
         const fallbackProjectId =
           resolvePlanProjectContextId(plan, appStore.selectedProjectId) ||
+          fallbackGroupProjectId ||
           appStore.selectedProjectId ||
           appStore.projectGroups.flatMap((group) => group.projects)[0]?.id ||
           null;
         const created = await get().createConversation(
           `Plan · ${plan.title}`,
           null,
-          fallbackProjectId
+          fallbackProjectId,
+          fallbackGroupId
         );
         conversationId = created.id;
         await updateArchitectPlan({
@@ -762,13 +788,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       const appState = useAppStore.getState();
-      const selectedProjectIds = appState.selectedGroupId
-        ? appState.projectGroups.find((candidate) => candidate.id === appState.selectedGroupId)?.projects.map((project) => project.id) || []
-        : [];
+      const selectedProjectIds = getScopedProjectIds(
+        appState.projectGroups,
+        appState.selectedGroupId,
+        appState.selectedProjectId
+      );
       const fallbackProjectIds = appState.projectGroups.flatMap((group) => group.projects).map((project) => project.id);
       const defaultProjectIds = Array.from(new Set([
-        ...(appState.selectedProjectId ? [appState.selectedProjectId] : []),
         ...selectedProjectIds,
+        ...(appState.selectedProjectId ? [appState.selectedProjectId] : []),
         ...fallbackProjectIds,
       ])).filter(Boolean);
 
@@ -1206,9 +1234,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const executionContext = resolveProjectExecutionContext({
         mode,
         projects: appState.projectGroups.flatMap((group) => group.projects),
+        projectGroups: appState.projectGroups,
         tasks: taskState.tasks,
         conversations: get().conversations,
         conversationId,
+        selectedGroupId: appState.selectedGroupId,
         selectedProjectId: appState.selectedProjectId,
         selectedTaskId: appState.selectedTaskId,
         activeRepositoryPath: taskState.activeRepositoryPath,
@@ -1217,6 +1247,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       return executeWorkspaceTool(normalizedToolName, args, mode, {
         workspacePath: executionContext.workspacePath,
+        defaultWorkspacePath: executionContext.defaultWorkspacePath,
+        projectId: executionContext.projectId,
+        groupId: executionContext.groupId,
+        workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
       });
     }
   };
@@ -1239,9 +1273,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const executionContext = resolveProjectExecutionContext({
       mode: appState.mode,
       projects: appState.projectGroups.flatMap((group) => group.projects),
+      projectGroups: appState.projectGroups,
       tasks: taskState.tasks,
       conversations: get().conversations,
       conversationId,
+      selectedGroupId: appState.selectedGroupId,
       selectedProjectId: appState.selectedProjectId,
       selectedTaskId: appState.selectedTaskId,
       activeRepositoryPath: taskState.activeRepositoryPath,
@@ -1402,13 +1438,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (
+      executionContext.groupName ||
       executionContext.projectName ||
       executionContext.workspacePath ||
       executionContext.taskId ||
       executionContext.branchName
     ) {
+      const scopedProjects = executionContext.projectIds
+        .map((projectId) => appState.getProjectById(projectId)?.name || projectId)
+        .join(', ') || 'none';
       systemInstructions.push(
-        `[Execution Context] project="${executionContext.projectName || executionContext.projectId || 'none'}", task="${executionContext.taskId || 'none'}", branch="${executionContext.branchName || 'none'}", workspace_path="${executionContext.workspacePath || 'none'}". Treat this workspace as the default repository root for workspace and git operations unless the user explicitly targets another project or path.`
+        `[Execution Context] global_project="${executionContext.groupName || executionContext.groupId || 'none'}", default_project="${executionContext.projectName || executionContext.projectId || 'none'}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || 'none'}", branch="${executionContext.branchName || 'none'}", workspace_path="${executionContext.workspacePath || 'none'}". Treat the global project as the default scope. For workspace or git operations, you may target a specific subproject by passing project_id when needed; otherwise use the best matching workspace automatically.`
       );
     }
 
@@ -1448,17 +1488,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
+  const getConversationGroupId = (conversation: Conversation): string | null => {
+    if (conversation.group_id) {
+      return conversation.group_id;
+    }
+
+    return getProjectGroupByProjectId(
+      useAppStore.getState().projectGroups,
+      conversation.project_id
+    )?.id ?? null;
+  };
+
   const isConversationAllowedForMode = (
     conversation: Conversation,
     mode: AppMode,
+    selectedGroupId: string | null,
     selectedProjectId: string | null,
     selectedTaskId: string | null
   ): boolean => {
     if (mode === 'Chat' || mode === 'Debug') {
-      return !conversation.project_id && !conversation.task_id;
+      return !conversation.group_id && !conversation.project_id && !conversation.task_id;
     }
 
     if (mode === 'Architect') {
+      if (selectedGroupId) {
+        return getConversationGroupId(conversation) === selectedGroupId && !conversation.task_id;
+      }
       if (selectedProjectId) {
         return conversation.project_id === selectedProjectId && !conversation.task_id;
       }
@@ -1476,12 +1531,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const getFallbackConversationIdForMode = (
     conversations: Conversation[],
     mode: AppMode,
+    selectedGroupId: string | null,
     selectedProjectId: string | null,
     selectedTaskId: string | null
   ): string | null => {
     const scoped = conversations
       .filter((conversation) =>
-        isConversationAllowedForMode(conversation, mode, selectedProjectId, selectedTaskId)
+        isConversationAllowedForMode(
+          conversation,
+          mode,
+          selectedGroupId,
+          selectedProjectId,
+          selectedTaskId
+        )
       )
       .sort((a, b) =>
         new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
@@ -1752,6 +1814,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     clearComposerContextRefs: () => set({ composerContextRefs: [] }),
 
+    reconcileProjectRegistry: (validGroupIds, validProjectIds) => {
+      const validGroupIdSet = new Set(validGroupIds);
+      const validProjectIdSet = new Set(validProjectIds);
+      set((state) => ({
+        conversations: state.conversations.map((conversation) => ({
+          ...conversation,
+          group_id:
+            conversation.group_id && validGroupIdSet.has(conversation.group_id)
+              ? conversation.group_id
+              : null,
+          project_id:
+            conversation.project_id && validProjectIdSet.has(conversation.project_id)
+              ? conversation.project_id
+              : null,
+        })),
+      }));
+    },
+
     selectConversation: (conversationId) => {
       set((state) => {
         const appState = useAppStore.getState();
@@ -1764,6 +1844,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           !isConversationAllowedForMode(
             conversation,
             appState.mode,
+            appState.selectedGroupId,
             appState.selectedProjectId,
             appState.selectedTaskId
           )
@@ -1788,7 +1869,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       void applySelectionForContext(appState.mode, conversationId);
     },
 
-    createConversation: async (title, taskId, projectId) => {
+    createConversation: async (title, taskId, projectId, groupId) => {
       let newConversation: Conversation;
       const mode = useAppStore.getState().mode;
 
@@ -1797,6 +1878,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           const dbConv = await tauriIpc.createConversation({
             title,
             taskId,
+            groupId,
             projectId,
           });
           newConversation = {
@@ -1804,6 +1886,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             title: dbConv.title,
             description: dbConv.description || '',
             task_id: dbConv.task_id,
+            group_id: dbConv.group_id,
             project_id: dbConv.project_id,
             last_message: dbConv.last_message || '',
             message_count: dbConv.message_count,
@@ -1818,6 +1901,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             title,
             description: '',
             task_id: taskId,
+            group_id: groupId ?? null,
             project_id: projectId,
             last_message: '',
             message_count: 0,
@@ -1831,6 +1915,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           title,
           description: '',
           task_id: taskId,
+          group_id: groupId ?? null,
           project_id: projectId,
           last_message: '',
           message_count: 0,
@@ -1855,6 +1940,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const appState = useAppStore.getState();
       const state = get();
       const mode = appState.mode;
+      const selectedGroupId = appState.selectedGroupId;
       const selectedProjectId = appState.selectedProjectId;
       const selectedTaskId = appState.selectedTaskId;
 
@@ -1862,6 +1948,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const debugFallback = getFallbackConversationIdForMode(
           state.conversations,
           'Debug',
+          selectedGroupId,
           selectedProjectId,
           selectedTaskId
         );
@@ -1884,8 +1971,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return debugFallback;
       }
 
-      const localProjectContext = selectedProjectId
-        ? await getLocalProjectContextState(selectedProjectId)
+      const localProjectContext = selectedGroupId
+        ? await getLocalProjectContextState(selectedGroupId)
         : null;
       const localContextConversationId =
         mode === 'Architect'
@@ -1902,6 +1989,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         isConversationAllowedForMode(
           localContextConversation,
           mode,
+          selectedGroupId,
           selectedProjectId,
           selectedTaskId
         )
@@ -1924,6 +2012,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         isConversationAllowedForMode(
           rememberedConversation,
           mode,
+          selectedGroupId,
           selectedProjectId,
           selectedTaskId
         )
@@ -1939,6 +2028,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const fallbackConversationId = getFallbackConversationIdForMode(
         state.conversations,
         mode,
+        selectedGroupId,
         selectedProjectId,
         selectedTaskId
       );
@@ -1952,18 +2042,47 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return fallbackConversationId;
       }
 
-      if (mode === 'Architect' && selectedProjectId) {
-        const project = appState.getProjectById(selectedProjectId);
-        const title = project ? `Architect · ${project.name}` : 'Architect Session';
-        const created = await get().createConversation(title, null, selectedProjectId);
+      if (mode === 'Architect' && selectedGroupId) {
+        const globalProject = getGlobalProjectById(appState.projectGroups, selectedGroupId);
+        const fallbackProjectId =
+          getFocusedProjectForGroup(
+            appState.projectGroups,
+            selectedGroupId,
+            selectedProjectId,
+            localProjectContext
+          )?.id ??
+          globalProject?.primarySubProjectId ??
+          selectedProjectId ??
+          null;
+        const project = globalProject;
+        const title = project ? `Architect - ${project.name}` : 'Architect Session';
+        const created = await get().createConversation(
+          title,
+          null,
+          fallbackProjectId,
+          selectedGroupId
+        );
         return created.id;
       }
 
       if (mode === 'Implement' && selectedTaskId) {
         const task = useTaskStore.getState().getTaskById(selectedTaskId);
-        const title = task ? `Task · ${task.title}` : 'Task Session';
-        const projectId = task?.project_id ?? selectedProjectId;
-        const created = await get().createConversation(title, selectedTaskId, projectId ?? null);
+        const title = task ? `Task - ${task.title}` : 'Task Session';
+        const projectId =
+          task?.project_id ??
+          getFocusedProjectForGroup(
+            appState.projectGroups,
+            selectedGroupId,
+            selectedProjectId,
+            localProjectContext
+          )?.id ??
+          selectedProjectId;
+        const created = await get().createConversation(
+          title,
+          selectedTaskId,
+          projectId ?? null,
+          selectedGroupId
+        );
         return created.id;
       }
 
@@ -2001,9 +2120,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
             'Suppression bloquée: une conversation Implement nécessite une confirmation explicite.'
           );
         }
-      } else if (conversation.project_id) {
+      } else if (conversation.group_id || conversation.project_id) {
+        const appState = useAppStore.getState();
         const projectName =
-          useAppStore.getState().getProjectById(conversation.project_id)?.name?.trim() || null;
+          (conversation.group_id
+            ? getGlobalProjectById(appState.projectGroups, conversation.group_id)?.name?.trim()
+            : null) ||
+          (conversation.project_id
+            ? appState.getProjectById(conversation.project_id)?.name?.trim()
+            : null) ||
+          null;
 
         if (confirmation?.mode !== 'architect') {
           throw new Error(
@@ -2047,6 +2173,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const fallbackForCurrentMode = getFallbackConversationIdForMode(
           newConversations,
           appState.mode,
+          appState.selectedGroupId,
           appState.selectedProjectId,
           appState.selectedTaskId
         );
@@ -2493,6 +2620,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             title: c.title,
             description: c.description || '',
             task_id: c.task_id,
+            group_id: c.group_id,
             project_id: c.project_id,
             last_message: c.last_message || '',
             message_count: c.message_count,
