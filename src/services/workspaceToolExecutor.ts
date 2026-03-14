@@ -7,12 +7,17 @@ import {
   validateRemoteToolExecution,
 } from './remoteKernelApi';
 import { useAppStore } from '../stores/useAppStore';
+import { getFocusedProjectForGroup, getSubProjectsForGroup } from './globalProjects';
 
 type ToolArgs = Record<string, unknown>;
 const isGitTool = (toolName: string): boolean => toolName.startsWith('git_');
 
 export interface ExecuteWorkspaceToolOptions {
   workspacePath?: string | null;
+  defaultWorkspacePath?: string | null;
+  workspacePathsByProjectId?: Record<string, string>;
+  projectId?: string | null;
+  groupId?: string | null;
 }
 
 export const isWriteTool = (toolName: string): boolean => toolName === 'write' || toolName === 'edit';
@@ -87,21 +92,13 @@ const getSelectedProjectRoot = (): string => {
   const appState = useAppStore.getState();
   const normalize = (value?: string): string => (value || '').replace(/\\/g, '/').replace(/\/$/, '');
 
-  if (appState.selectedProjectId) {
-    for (const group of appState.projectGroups) {
-      const selectedProject = group.projects.find((project) => project.id === appState.selectedProjectId);
-      if (selectedProject?.path) {
-        return normalize(selectedProject.path) || '.';
-      }
-    }
-  }
-
-  if (appState.selectedGroupId) {
-    const group = appState.projectGroups.find((candidate) => candidate.id === appState.selectedGroupId);
-    const fallbackGroupProject = group?.projects[0];
-    if (fallbackGroupProject?.path) {
-      return normalize(fallbackGroupProject.path) || '.';
-    }
+  const focusedProject = getFocusedProjectForGroup(
+    appState.projectGroups,
+    appState.selectedGroupId,
+    appState.selectedProjectId
+  );
+  if (focusedProject?.path) {
+    return normalize(focusedProject.path) || '.';
   }
 
   for (const group of appState.projectGroups) {
@@ -120,6 +117,180 @@ const normalizeWorkspacePath = (value?: string | null): string | null => {
     return null;
   }
   return trimmed;
+};
+
+interface ProjectWorkspaceCandidate {
+  id: string;
+  name: string;
+  workspacePath: string | null;
+}
+
+const slugifyProjectAlias = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+const getProjectWorkspaceCandidates = (
+  options: ExecuteWorkspaceToolOptions
+): ProjectWorkspaceCandidate[] => {
+  const appState = useAppStore.getState();
+  const projects =
+    options.groupId
+      ? getSubProjectsForGroup(appState.projectGroups, options.groupId)
+      : appState.projectGroups.flatMap((group) => group.projects);
+
+  return projects.map((project) => ({
+    id: project.id,
+    name: project.name,
+    workspacePath:
+      normalizeWorkspacePath(options.workspacePathsByProjectId?.[project.id]) ||
+      normalizeWorkspacePath(project.path),
+  }));
+};
+
+const getProjectAliases = (candidate: ProjectWorkspaceCandidate): string[] => {
+  const workspaceTail =
+    candidate.workspacePath?.split('/').filter(Boolean).pop() ||
+    '';
+  return Array.from(
+    new Set(
+      [
+        candidate.id,
+        candidate.name,
+        slugifyProjectAlias(candidate.name),
+        workspaceTail,
+        slugifyProjectAlias(workspaceTail),
+      ]
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+};
+
+const stripProjectAliasPrefix = (
+  inputPath: string,
+  candidates: ProjectWorkspaceCandidate[]
+): { projectId: string; path: string } | null => {
+  const normalizedInput = inputPath.replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalizedInput || normalizedInput === '.') {
+    return null;
+  }
+
+  for (const candidate of candidates) {
+    for (const alias of getProjectAliases(candidate)) {
+      if (normalizedInput === alias) {
+        return { projectId: candidate.id, path: '.' };
+      }
+      if (normalizedInput.startsWith(`${alias}/`)) {
+        return {
+          projectId: candidate.id,
+          path: normalizedInput.slice(alias.length + 1) || '.',
+        };
+      }
+    }
+  }
+
+  return null;
+};
+
+const findProjectByAbsolutePath = (
+  inputPath: string,
+  candidates: ProjectWorkspaceCandidate[]
+): ProjectWorkspaceCandidate | null => {
+  const normalizedInput = normalizeWorkspacePath(inputPath);
+  if (!normalizedInput) return null;
+
+  const matchingCandidates = candidates
+    .filter((candidate) => candidate.workspacePath && normalizedInput.startsWith(candidate.workspacePath))
+    .sort((left, right) => (right.workspacePath?.length || 0) - (left.workspacePath?.length || 0));
+
+  return matchingCandidates[0] || null;
+};
+
+const getProjectWorkspacePath = (
+  projectId: string | null | undefined,
+  candidates: ProjectWorkspaceCandidate[]
+): string | null => {
+  if (!projectId) return null;
+  return candidates.find((candidate) => candidate.id === projectId)?.workspacePath ?? null;
+};
+
+const stripProjectSelectionArgs = (args: ToolArgs): ToolArgs => {
+  const nextArgs = { ...args };
+  delete nextArgs.project_id;
+  delete nextArgs.projectId;
+  return nextArgs;
+};
+
+const getExplicitToolProjectId = (
+  args: ToolArgs,
+  candidates: ProjectWorkspaceCandidate[]
+): string | null => {
+  const explicit = sanitizePathInput(toString(args.project_id) || toString(args.projectId));
+  if (!explicit) return null;
+  const normalizedExplicit = explicit.toLowerCase();
+  const match = candidates.find((candidate) =>
+    candidate.id === explicit ||
+    getProjectAliases(candidate).includes(normalizedExplicit)
+  );
+  return match?.id ?? null;
+};
+
+export const resolveToolWorkspaceRouting = (
+  toolName: string,
+  args: ToolArgs,
+  options: ExecuteWorkspaceToolOptions
+): {
+  projectId: string | null;
+  workspacePath: string | null;
+  args: ToolArgs;
+} => {
+  const candidates = getProjectWorkspaceCandidates(options);
+  const strippedArgs = stripProjectSelectionArgs(args);
+  const rawPath =
+    sanitizePathInput(
+      isGitTool(toolName)
+        ? toString(args.repo_path)
+        : toString(args.path)
+    ) || '';
+  const defaultWorkspacePath =
+    normalizeWorkspacePath(options.defaultWorkspacePath) ||
+    normalizeWorkspacePath(options.workspacePath) ||
+    getProjectWorkspacePath(options.projectId, candidates) ||
+    normalizeWorkspacePath(getSelectedProjectRoot());
+
+  let projectId = getExplicitToolProjectId(args, candidates);
+  let adjustedPath = rawPath;
+
+  if (rawPath) {
+    if (!isAbsolutePath(rawPath)) {
+      const prefixedMatch = stripProjectAliasPrefix(rawPath, candidates);
+      if (prefixedMatch && (!projectId || projectId === prefixedMatch.projectId)) {
+        projectId = prefixedMatch.projectId;
+        adjustedPath = prefixedMatch.path;
+      }
+    } else if (!projectId) {
+      projectId = findProjectByAbsolutePath(rawPath, candidates)?.id ?? null;
+    }
+  }
+
+  const resolvedProjectId = projectId || options.projectId || null;
+  const workspacePath =
+    getProjectWorkspacePath(resolvedProjectId, candidates) ||
+    defaultWorkspacePath;
+  const nextArgs = { ...strippedArgs };
+  const pathKey = isGitTool(toolName) ? 'repo_path' : 'path';
+  if (rawPath && adjustedPath !== rawPath) {
+    nextArgs[pathKey] = adjustedPath;
+  }
+
+  return {
+    projectId: resolvedProjectId,
+    workspacePath,
+    args: nextArgs,
+  };
 };
 
 const isAbsolutePath = (value: string): boolean =>
@@ -287,7 +458,11 @@ export const executeWorkspaceTool = async (
 ): Promise<string | undefined> => {
   const useTauri = tauriIpc.isTauriAvailable();
   const useRemoteKernel = !useTauri && canUseRemoteKernel();
+  const routing = resolveToolWorkspaceRouting(toolName, args, options);
+  args = routing.args;
   const effectiveWorkspacePath =
+    normalizeWorkspacePath(routing.workspacePath) ||
+    normalizeWorkspacePath(options.defaultWorkspacePath) ||
     normalizeWorkspacePath(options.workspacePath) ||
     normalizeWorkspacePath(getSelectedProjectRoot());
 

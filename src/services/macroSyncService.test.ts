@@ -67,6 +67,59 @@ const metadataTargets = [
   { repoPath: '/repos/api', projectId: 'api' },
 ];
 
+const createAppState = (overrides?: {
+  metadataAutoPush?: boolean;
+  activeArchitectPlanId?: string | null;
+  activePlanContext?: { targetBranch: string } | null;
+  selectedGroupId?: string | null;
+  selectedProjectId?: string | null;
+}) => ({
+  metadataAutoPush: overrides?.metadataAutoPush ?? false,
+  activeArchitectPlanId: overrides?.activeArchitectPlanId ?? 'plan-1',
+  activePlanContext: overrides?.activePlanContext ?? { targetBranch: 'develop' },
+  selectedGroupId: overrides?.selectedGroupId ?? 'group-1',
+  selectedProjectId: overrides?.selectedProjectId ?? 'web',
+  projectGroups: [
+    {
+      id: 'group-1',
+      name: 'Suite',
+      isOpen: true,
+      projects: [
+        {
+          id: 'web',
+          name: 'Web',
+          path: '/repos/web',
+          created_at: '2026-03-14T00:00:00.000Z',
+          status: 'active' as const,
+          metadata: {
+            description: '',
+            tags: [],
+            team_members: [],
+            api_contracts: [],
+            dependencies: [],
+          },
+        },
+        {
+          id: 'api',
+          name: 'API',
+          path: '/repos/api',
+          created_at: '2026-03-14T00:00:00.000Z',
+          status: 'active' as const,
+          metadata: {
+            description: '',
+            tags: [],
+            team_members: [],
+            api_contracts: [],
+            dependencies: [],
+          },
+        },
+      ],
+    },
+  ],
+  getProjectById: (_projectId: string) => undefined,
+  setMetadataSyncStatus: setMetadataSyncStatusMock,
+});
+
 const loadMacroSyncService = (overrides?: {
   metadataAutoPush?: boolean;
 }) => createMacroSyncService({
@@ -78,13 +131,8 @@ const loadMacroSyncService = (overrides?: {
     macroBranchPull: macroBranchPullMock,
     macroBranchPush: macroBranchPushMock,
   },
-  getAppState: () => ({
-    metadataAutoPush: overrides?.metadataAutoPush ?? false,
-    activeArchitectPlanId: 'plan-1',
-    activePlanContext: { targetBranch: 'develop' },
-    selectedProjectId: 'web',
-    getProjectById: (_projectId: string) => undefined,
-    setMetadataSyncStatus: setMetadataSyncStatusMock,
+  getAppState: () => createAppState({
+    metadataAutoPush: overrides?.metadataAutoPush,
   }),
   resolveTargets: async () => metadataTargets,
   toServiceError,
@@ -362,5 +410,32 @@ describe('macroSyncService', () => {
     expect(result?.reason).toBe('auth_required');
     expect(result?.next_action).toBe('configure_auth');
     expect(getMacroSyncDescription(result!)).toContain('authentication');
+  });
+
+  it('falls back to all repositories in the selected global project when no plan targets are active', async () => {
+    const service = createMacroSyncService({
+      tauriIpc: {
+        isTauriAvailable: () => true,
+        macroBranchEnsure: macroBranchEnsureMock,
+        macroBranchStatus: macroBranchStatusMock,
+        macroBranchCommitIfDirty: macroBranchCommitIfDirtyMock,
+        macroBranchPull: macroBranchPullMock,
+        macroBranchPush: macroBranchPushMock,
+      },
+      getAppState: () =>
+        createAppState({
+          activeArchitectPlanId: null,
+          activePlanContext: null,
+          selectedProjectId: 'api',
+        }),
+      toServiceError,
+    });
+
+    await service.refreshMacroSyncStatus();
+
+    expect(macroBranchStatusMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
+      '/repos/api',
+      '/repos/web',
+    ]);
   });
 });

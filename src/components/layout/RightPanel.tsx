@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import { useGitStore } from '../../stores/useGitStore';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/Tabs';
@@ -15,22 +15,26 @@ interface RightPanelProps {
 }
 
 export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
-  const { currentPlan, projectGroups } = useAppStore();
+  const { currentPlan, projectGroups, selectedGroupId } = useAppStore();
   const [panelView, setPanelView] = useState<PanelView>('tree');
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(null);
   const { trees, commitsByProject, loadTree, loadCommits } = useGitStore();
+  const selectedGlobalProject = selectedGroupId
+    ? projectGroups.find((group) => group.id === selectedGroupId) ?? null
+    : null;
+  const activeProjects = useMemo(
+    () => (selectedGlobalProject?.projects || projectGroups.flatMap((group) => group.projects))
+      .filter((project) => currentPlan?.project_ids.includes(project.id)),
+    [currentPlan?.project_ids, projectGroups, selectedGlobalProject]
+  );
 
   useEffect(() => {
     if (!currentPlan) return;
-    const activeProjects = projectGroups
-      .flatMap((group) => group.projects)
-      .filter((project) => currentPlan.project_ids.includes(project.id));
-
     activeProjects.forEach((project) => {
       void loadTree(project.id);
       void loadCommits(project.id);
     });
-  }, [currentPlan, projectGroups, loadTree, loadCommits]);
+  }, [activeProjects, currentPlan, loadTree, loadCommits]);
 
   if (!currentPlan) {
     return (
@@ -46,11 +50,6 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
     );
   }
 
-  // Get projects involved in current plan
-  const activeProjects = projectGroups
-    .flatMap((group) => group.projects)
-    .filter((project) => currentPlan.project_ids.includes(project.id));
-
   return (
     <aside
       className={cn('h-full bg-card border-l border-border flex flex-col', className)}
@@ -58,14 +57,19 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
     >
       {/* Header */}
       <div className="h-12 border-b border-border flex items-center justify-between px-4">
-        <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-          <Icon
-            name={panelView === 'tree' ? 'git-branch' : 'git-commit'}
-            size={16}
-            className="text-primary"
-          />
-          Repository
-        </h1>
+        <div className="min-w-0">
+          <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <Icon
+              name={panelView === 'tree' ? 'git-branch' : 'git-commit'}
+              size={16}
+              className="text-primary"
+            />
+            {selectedGlobalProject?.name || 'Global Project'}
+          </h1>
+          <p className="text-[11px] text-muted-foreground truncate">
+            {activeProjects.length} {activeProjects.length === 1 ? 'subproject' : 'subprojects'}
+          </p>
+        </div>
       </div>
 
       {/* View Toggle */}
