@@ -221,6 +221,7 @@ export const createProject = async (data: {
   name: string;
   description: string;
   groupId: string | null;
+  groupName?: string | null;
   path?: string;
 }): Promise<ProjectDto> => {
   await delay(DEFAULT_LATENCY_MS);
@@ -249,6 +250,7 @@ export const importGitRepo = async (data: {
   projectName: string;
   branch: string;
   groupId: string | null;
+  groupName?: string | null;
   path?: string;
 }): Promise<ProjectDto> => {
   await delay(DEFAULT_LATENCY_MS);
@@ -376,6 +378,22 @@ export const archiveProject = async (data: {
     };
 
   return simulate({ project });
+};
+
+export const removeProjectGroup = async (data: {
+  groupId: string;
+}): Promise<{ projectGroups: ProjectGroup[] }> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+
+  const projectGroups = mockProjects.filter((group) => group.id !== data.groupId);
+  return simulate({ projectGroups });
+};
+
+export const removeProject = async (data: {
+  projectId: string;
+}): Promise<{ projectGroups: ProjectGroup[] }> => {
+  return closeProject(data);
 };
 
 export const closeProject = async (data: {
@@ -510,6 +528,8 @@ export const provider: ServiceProvider = {
   renameProject,
   archiveProjectGroup,
   archiveProject,
+  removeProjectGroup,
+  removeProject,
   closeProject,
   getToolSettings,
   updateToolSettings,

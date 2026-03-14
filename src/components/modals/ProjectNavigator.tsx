@@ -1,22 +1,23 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   DndContext,
   DragEndEvent,
   DragOverlay,
   DragStartEvent,
-  closestCenter,
   PointerSensor,
+  closestCenter,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
+import { toServiceError } from '../../services/contracts/errors';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
-import { cn } from '../../utils/cn';
 import { toast } from '../ui/Toaster';
+import { cn } from '../../utils/cn';
 import type { Project, ProjectGroup, TaskStatus } from '../../types';
 
 interface ProjectNavigatorProps {
@@ -26,7 +27,6 @@ interface ProjectNavigatorProps {
 
 interface ProjectItemProps {
   project: Project;
-  isSelected: boolean;
   badges: { label: string; variant: 'default' | 'success' | 'warning' | 'attention' }[];
   onSelect: () => void;
   onMenuOpen: (e: React.MouseEvent) => void;
@@ -34,7 +34,6 @@ interface ProjectItemProps {
 
 const ProjectItem: React.FC<ProjectItemProps> = ({
   project,
-  isSelected,
   badges,
   onSelect,
   onMenuOpen,
@@ -44,23 +43,25 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
       onClick={onSelect}
       className={cn(
         'flex items-center justify-between px-3 py-2 rounded-lg transition-all duration-200 group cursor-pointer',
-        isSelected
-          ? 'border-primary/30 bg-primary/10'
-          : 'border border-transparent hover:bg-accent/40'
+        'border border-transparent hover:bg-accent/40'
       )}
     >
       <div className="flex items-center gap-3 min-w-0">
-        <div className={cn(
-          'w-7 h-7 rounded-lg flex items-center justify-center shrink-0',
-          project.status === 'active' ? 'bg-primary/10' : 'bg-muted'
-        )}>
+        <div
+          className={cn(
+            'w-7 h-7 rounded-lg flex items-center justify-center shrink-0',
+            project.status === 'active' ? 'bg-primary/10' : 'bg-muted'
+          )}
+        >
           <Icon
             name="folder-open"
             size={14}
             className={cn(
-              project.status === 'active' ? 'text-primary' :
-              project.status === 'paused' ? 'text-amber-500' :
-              'text-muted-foreground'
+              project.status === 'active'
+                ? 'text-primary'
+                : project.status === 'paused'
+                  ? 'text-amber-500'
+                  : 'text-muted-foreground'
             )}
           />
         </div>
@@ -68,23 +69,25 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
       </div>
 
       <div className="flex items-center gap-2">
-        {/* Task status badges */}
         {badges.map((badge) => (
           <span
             key={`${project.id}-${badge.label}`}
             className={cn(
               'px-2 py-0.5 rounded-full text-[11px] font-medium border',
-              badge.variant === 'success' && 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
-              badge.variant === 'warning' && 'bg-amber-500/10 text-amber-500 border-amber-500/20',
-              badge.variant === 'attention' && 'bg-destructive/10 text-destructive border-destructive/20',
-              badge.variant === 'default' && 'bg-muted/60 text-muted-foreground border-border/50'
+              badge.variant === 'success' &&
+                'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
+              badge.variant === 'warning' &&
+                'bg-amber-500/10 text-amber-500 border-amber-500/20',
+              badge.variant === 'attention' &&
+                'bg-destructive/10 text-destructive border-destructive/20',
+              badge.variant === 'default' &&
+                'bg-muted/60 text-muted-foreground border-border/50'
             )}
           >
             {badge.label}
           </span>
         ))}
 
-        {/* Menu button */}
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -105,14 +108,14 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   const {
     projectGroups,
     selectedGroupId,
-    selectedProjectId,
-    switchProjectContext,
+    projectRegistryRepairSummary,
+    isLoading,
+    setSelectedGroup,
     toggleProjectGroup,
     renameProjectGroup,
     renameProject,
-    archiveProjectGroup,
-    archiveProject,
-    closeProject,
+    removeProjectGroup,
+    removeProject,
     openProjectModal,
   } = useAppStore();
   const tasks = useTaskStore((state) => state.tasks);
@@ -123,7 +126,10 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   const [renameTarget, setRenameTarget] = useState<
     { type: 'group'; group: ProjectGroup } | { type: 'project'; project: Project } | null
   >(null);
-  const [closeTarget, setCloseTarget] = useState<Project | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<
+    { type: 'group'; group: ProjectGroup } | { type: 'project'; project: Project } | null
+  >(null);
+  const [isSubmittingConfirm, setIsSubmittingConfirm] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -133,7 +139,6 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     })
   );
 
-  // Filter groups and projects based on search query
   const filteredGroups = useMemo(() => {
     if (!searchQuery.trim()) {
       return projectGroups;
@@ -155,7 +160,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   const handleDragStart = (event: DragStartEvent) => {
     const projectId = event.active.id as string;
     for (const group of projectGroups) {
-      const project = group.projects.find(p => p.id === projectId);
+      const project = group.projects.find((candidate) => candidate.id === projectId);
       if (project) {
         setDraggedProject(project);
         break;
@@ -163,33 +168,23 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     }
   };
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
+  const handleDragEnd = (_event: DragEndEvent) => {
     setDraggedProject(null);
-
-    if (!over || active.id === over.id) return;
-
-    // Here we would handle merge logic when dropping on another project
-    console.log('Merge projects:', active.id, 'into', over.id);
   };
 
   const handleSelectGroup = (groupId: string) => {
-    const group = projectGroups.find((candidate) => candidate.id === groupId);
-    const fallbackProjectId = group?.projects[0]?.id ?? null;
-    void switchProjectContext(fallbackProjectId);
-    onClose();
-  };
-
-  const handleSelectProject = (groupId: string, projectId: string) => {
-    if (selectedGroupId !== groupId || selectedProjectId !== projectId) {
-      void switchProjectContext(projectId);
-    }
+    setSelectedGroup(groupId);
     onClose();
   };
 
   const handleNewProject = () => {
     onClose();
-    openProjectModal();
+    openProjectModal(null);
+  };
+
+  const handleAddSubproject = (groupId: string) => {
+    onClose();
+    openProjectModal(groupId);
   };
 
   const handleRenameGroup = async (group: ProjectGroup, nextName: string) => {
@@ -198,22 +193,30 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     }
 
     try {
+      setIsSubmittingConfirm(true);
       await renameProjectGroup(group.id, nextName);
+      setRenameTarget(null);
       toast.success(t('projects.groupRenamed', 'Project group renamed'));
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
+      const message = toServiceError(error).message || t('common.error', 'An error occurred');
       toast.error(message);
+    } finally {
+      setIsSubmittingConfirm(false);
     }
   };
 
-  const handleArchiveGroup = async (group: ProjectGroup) => {
+  const handleRemoveGroup = async (group: ProjectGroup) => {
     try {
-      await archiveProjectGroup(group.id);
+      setIsSubmittingConfirm(true);
+      await removeProjectGroup(group.id);
       setMenuOpenFor(null);
-      toast.success(t('projects.groupArchived', 'Project group archived'));
+      setRemoveTarget(null);
+      toast.success(t('projects.groupRemoved', 'Projet global retire de Macro'));
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
+      const message = toServiceError(error).message || t('common.error', 'An error occurred');
       toast.error(message);
+    } finally {
+      setIsSubmittingConfirm(false);
     }
   };
 
@@ -223,33 +226,30 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     }
 
     try {
+      setIsSubmittingConfirm(true);
       await renameProject(project.id, nextName);
+      setRenameTarget(null);
       toast.success(t('projects.projectRenamed', 'Project renamed'));
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
+      const message = toServiceError(error).message || t('common.error', 'An error occurred');
       toast.error(message);
+    } finally {
+      setIsSubmittingConfirm(false);
     }
   };
 
-  const handleArchiveProject = async (project: Project) => {
+  const handleRemoveProject = async (project: Project) => {
     try {
-      await archiveProject(project.id);
+      setIsSubmittingConfirm(true);
+      await removeProject(project.id);
       setMenuOpenFor(null);
-      toast.success(t('projects.projectArchived', 'Project archived'));
+      setRemoveTarget(null);
+      toast.success(t('projects.projectRemoved', 'Sous-projet retire de Macro'));
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
+      const message = toServiceError(error).message || t('common.error', 'An error occurred');
       toast.error(message);
-    }
-  };
-
-  const handleCloseProject = async (project: Project) => {
-    try {
-      await closeProject(project.id);
-      setMenuOpenFor(null);
-      toast.success(t('projects.projectClosed', 'Project closed'));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
-      toast.error(message);
+    } finally {
+      setIsSubmittingConfirm(false);
     }
   };
 
@@ -269,7 +269,8 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       counts[task.status] += 1;
     });
 
-    const needsAttention = counts.AwaitingResponse + counts.InReview + counts.Blocked + counts.Failed;
+    const needsAttention =
+      counts.AwaitingResponse + counts.InReview + counts.Blocked + counts.Failed;
 
     return {
       counts,
@@ -280,9 +281,17 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
 
   const getProjectBadges = (projectId: string) => {
     const { counts, needsAttention, total } = getProjectTaskCounts(projectId);
-    if (total === 0) return [] as { label: string; variant: 'default' | 'success' | 'warning' | 'attention' }[];
+    if (total === 0) {
+      return [] as {
+        label: string;
+        variant: 'default' | 'success' | 'warning' | 'attention';
+      }[];
+    }
 
-    const badges = [] as { label: string; variant: 'default' | 'success' | 'warning' | 'attention' }[];
+    const badges = [] as {
+      label: string;
+      variant: 'default' | 'success' | 'warning' | 'attention';
+    }[];
 
     if (counts.InProgress > 0) {
       badges.push({
@@ -329,7 +338,6 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     }, 0);
   };
 
-  // Close menu on click outside
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
@@ -349,15 +357,9 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
-      />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Modal */}
       <div className="relative w-full max-w-lg bg-card border border-border rounded-xl shadow-2xl overflow-hidden">
-        {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
             <Icon name="layers" size={16} className="text-primary" />
@@ -371,16 +373,19 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
           </button>
         </div>
 
-        {/* Search */}
         <div className="px-4 py-3 border-b border-border">
           <SearchBar
             value={searchQuery}
             onChange={setSearchQuery}
             placeholder={t('projects.search', 'Search projects...')}
           />
+          {projectRegistryRepairSummary && (
+            <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              {projectRegistryRepairSummary}
+            </div>
+          )}
         </div>
 
-        {/* Project List */}
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -398,14 +403,10 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
             ) : (
               filteredGroups.map((group) => {
                 const attentionCount = getGroupAttentionCount(group);
-                const isGroupSelected = selectedGroupId === group.id && !selectedProjectId;
+                const isGroupSelected = selectedGroupId === group.id;
 
                 return (
-                  <div
-                    key={group.id}
-                    className="rounded-lg border border-border overflow-visible"
-                  >
-                    {/* Group Header */}
+                  <div key={group.id} className="rounded-lg border border-border overflow-visible">
                     <div
                       className={cn(
                         'flex items-center justify-between px-3 py-2.5 cursor-pointer transition-colors relative',
@@ -434,7 +435,6 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                       </div>
 
                       <div className="flex items-center gap-1">
-                        {/* Group menu */}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -446,7 +446,6 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                           <Icon name="more-vertical" size={14} className="text-muted-foreground" />
                         </button>
 
-                        {/* Expand/collapse */}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -462,13 +461,21 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                         </button>
                       </div>
 
-                      {/* Group Context Menu */}
                       {menuOpenFor === group.id && (
                         <div
                           className="absolute right-2 top-full mt-1 w-40 bg-card border border-border rounded-lg shadow-lg py-1 z-20"
                           data-project-nav-menu="true"
                           onClick={(e) => e.stopPropagation()}
                         >
+                          <button
+                            onClick={() => {
+                              handleAddSubproject(group.id);
+                            }}
+                            className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+                          >
+                            <Icon name="plus" size={12} />
+                            {t('projects.addSubproject', 'Add subproject')}
+                          </button>
                           <button
                             onClick={() => {
                               setRenameTarget({ type: 'group', group });
@@ -481,32 +488,29 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                           </button>
                           <button
                             onClick={() => {
-                              void handleArchiveGroup(group);
+                              setRemoveTarget({ type: 'group', group });
+                              setMenuOpenFor(null);
                             }}
                             className="w-full px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10 flex items-center gap-2"
                           >
-                            <Icon name="archive" size={12} />
-                            {t('common.archive', 'Archive')}
+                            <Icon name="x" size={12} />
+                            {t('projects.removeFromMacro', 'Retirer de Macro')}
                           </button>
                         </div>
                       )}
                     </div>
 
-                    {/* Projects */}
                     {group.isOpen && (
                       <div className="px-2 py-2 space-y-1 bg-muted/30">
                         {group.projects.map((project) => {
                           const isProjectMenuOpen = menuOpenFor === project.id;
-                          const isProjectSelected =
-                            selectedGroupId === group.id && selectedProjectId === project.id;
 
                           return (
                             <div key={project.id} className="relative">
                               <ProjectItem
                                 project={project}
-                                isSelected={isProjectSelected}
                                 badges={getProjectBadges(project.id)}
-                                onSelect={() => handleSelectProject(group.id, project.id)}
+                                onSelect={() => handleSelectGroup(group.id)}
                                 onMenuOpen={(e) => {
                                   e.stopPropagation();
                                   setMenuOpenFor(isProjectMenuOpen ? null : project.id);
@@ -531,22 +535,13 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                                   </button>
                                   <button
                                     onClick={() => {
-                                      void handleArchiveProject(project);
+                                      setRemoveTarget({ type: 'project', project });
+                                      setMenuOpenFor(null);
                                     }}
                                     className="w-full px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10 flex items-center gap-2"
                                   >
-                                    <Icon name="archive" size={12} />
-                                    {t('common.archive', 'Archive')}
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      setCloseTarget(project);
-                                      setMenuOpenFor(null);
-                                    }}
-                                    className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
-                                  >
                                     <Icon name="x" size={12} />
-                                    {t('projects.closeProject', 'Close Project')}
+                                    {t('projects.removeFromMacro', 'Retirer de Macro')}
                                   </button>
                                 </div>
                               )}
@@ -573,11 +568,11 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
           </DragOverlay>
         </DndContext>
 
-        {/* Footer Actions */}
         <div className="flex items-center px-4 py-3 border-t border-border bg-muted/30">
           <button
             onClick={handleNewProject}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-foreground hover:bg-accent transition-colors"
+            disabled={isLoading}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50"
           >
             <Icon name="plus" size={14} />
             {t('projects.new', 'New Project')}
@@ -604,10 +599,17 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
         }
         inputPlaceholder={t('common.name', 'Name')}
         requireInput
-        onCancel={() => setRenameTarget(null)}
+        isSubmitting={isSubmittingConfirm}
+        onCancel={() => {
+          if (!isSubmittingConfirm) {
+            setRenameTarget(null);
+          }
+        }}
         onConfirm={(value) => {
           if (!renameTarget || !value) {
-            setRenameTarget(null);
+            if (!isSubmittingConfirm) {
+              setRenameTarget(null);
+            }
             return;
           }
 
@@ -616,22 +618,40 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
           } else {
             void handleRenameProject(renameTarget.project, value);
           }
-          setRenameTarget(null);
         }}
       />
 
       <ConfirmPromptModal
-        isOpen={!!closeTarget}
-        title={t('projects.closeProject', 'Close Project')}
-        description={t('projects.closeProjectPrompt', 'This removes the project from the current Macro session list without deleting local files.')}
-        confirmLabel={t('projects.closeProject', 'Close Project')}
+        isOpen={!!removeTarget}
+        title={t('projects.removeFromMacro', 'Retirer de Macro')}
+        description={
+          removeTarget?.type === 'group'
+            ? t(
+                'projects.removeGroupPrompt',
+                'Retire ce projet global et ses sous-projets de Macro sans supprimer les fichiers locaux.'
+              )
+            : t(
+                'projects.removeProjectPrompt',
+                'Retire ce sous-projet de Macro sans supprimer les fichiers locaux.'
+              )
+        }
+        confirmLabel={t('projects.removeFromMacro', 'Retirer de Macro')}
         cancelLabel={t('common.cancel', 'Cancel')}
-        onCancel={() => setCloseTarget(null)}
-        onConfirm={() => {
-          if (closeTarget) {
-            void handleCloseProject(closeTarget);
+        isSubmitting={isSubmittingConfirm}
+        onCancel={() => {
+          if (!isSubmittingConfirm) {
+            setRemoveTarget(null);
           }
-          setCloseTarget(null);
+        }}
+        onConfirm={() => {
+          if (!removeTarget) {
+            return;
+          }
+          if (removeTarget.type === 'group') {
+            void handleRemoveGroup(removeTarget.group);
+          } else {
+            void handleRemoveProject(removeTarget.project);
+          }
         }}
       />
     </div>

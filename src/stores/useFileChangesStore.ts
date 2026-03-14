@@ -1,9 +1,8 @@
-import { createRequire } from 'node:module';
 import { create } from 'zustand';
 import i18n from '../i18n';
 import { parseUnifiedDiff, type ParsedDiffHunk } from '../services/gitDiffParser';
 import * as tauriIpc from '../services/tauriIpc';
-import type { TaskCompletionRepositoryRecord } from './useTaskStore';
+import { useTaskStore, type TaskCompletionRepositoryRecord } from './useTaskStore';
 import type { TaskExecutionTarget, TaskStatus } from '../types';
 import {
   EMPTY_REVIEW_TASK_SUMMARY,
@@ -11,6 +10,9 @@ import {
   selectReviewRepositoryId,
   type ReviewTaskSummary,
 } from '../services/implementMultiRepoSummary';
+import { useAppStore } from './useAppStore';
+import { mergeFeatureBranchIntoPlanBranch } from '../services/architectGitFlowService';
+import { getGitFlowBaseBranch } from '../services/architectPlanService';
 
 export type FileChangeContextMode = 'default' | 'expanded' | 'full';
 export type ReviewRepositoryCommitState = 'idle' | 'committing' | 'committed' | 'no_changes';
@@ -92,18 +94,6 @@ const EMPTY_STATS: ReviewRepositoryStats = {
   deletions: 0,
 };
 
-type UseAppStoreModule = typeof import('./useAppStore');
-type UseTaskStoreModule = typeof import('./useTaskStore');
-type ArchitectGitFlowModule = typeof import('../services/architectGitFlowService');
-type ArchitectPlanServiceModule = typeof import('../services/architectPlanService');
-
-const requireModule = createRequire(import.meta.url);
-
-const loadUseAppStoreModule = (): UseAppStoreModule => requireModule('./useAppStore');
-const loadUseTaskStoreModule = (): UseTaskStoreModule => requireModule('./useTaskStore');
-const loadArchitectGitFlowModule = (): ArchitectGitFlowModule => requireModule('../services/architectGitFlowService');
-const loadArchitectPlanServiceModule = (): ArchitectPlanServiceModule => requireModule('../services/architectPlanService');
-
 interface FileChangesProjectRef {
   path?: string | null;
 }
@@ -156,8 +146,8 @@ type FileChangesSetTaskState = (partial: {
 
 export interface FileChangesStoreDependencies {
   tauri: FileChangesTauriDeps;
-  mergeFeatureBranchIntoPlanBranch: ArchitectGitFlowModule['mergeFeatureBranchIntoPlanBranch'];
-  getGitFlowBaseBranch: ArchitectPlanServiceModule['getGitFlowBaseBranch'];
+  mergeFeatureBranchIntoPlanBranch: typeof mergeFeatureBranchIntoPlanBranch;
+  getGitFlowBaseBranch: typeof getGitFlowBaseBranch;
   getAppState: () => FileChangesAppState;
   getTaskState: () => FileChangesTaskStoreState;
   setTaskState: FileChangesSetTaskState;
@@ -165,12 +155,11 @@ export interface FileChangesStoreDependencies {
 
 const defaultFileChangesStoreDependencies: FileChangesStoreDependencies = {
   tauri: tauriIpc,
-  mergeFeatureBranchIntoPlanBranch: (params) =>
-    loadArchitectGitFlowModule().mergeFeatureBranchIntoPlanBranch(params),
-  getGitFlowBaseBranch: () => loadArchitectPlanServiceModule().getGitFlowBaseBranch(),
-  getAppState: () => loadUseAppStoreModule().useAppStore.getState(),
-  getTaskState: () => loadUseTaskStoreModule().useTaskStore.getState(),
-  setTaskState: (partial) => loadUseTaskStoreModule().useTaskStore.setState(partial),
+  mergeFeatureBranchIntoPlanBranch,
+  getGitFlowBaseBranch,
+  getAppState: () => useAppStore.getState(),
+  getTaskState: () => useTaskStore.getState(),
+  setTaskState: (partial) => useTaskStore.setState(partial),
 };
 
 export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {

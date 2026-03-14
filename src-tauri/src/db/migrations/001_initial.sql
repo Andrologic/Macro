@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     title TEXT NOT NULL,
     description TEXT,
     task_id TEXT,
+    group_id TEXT,
     project_id TEXT,
     last_message TEXT,
     message_count INTEGER DEFAULT 0,

@@ -2,6 +2,7 @@ import type { PlanNode, PredictedBranch } from '../types';
 import type { Need } from '../types';
 import { useAppStore } from '../stores/useAppStore';
 import * as tauriIpc from './tauriIpc';
+import { getScopedProjectIds } from './globalProjects';
 import {
   getArchitectGitNamingSettings,
   normalizeFeatureSlugInput,
@@ -1207,9 +1208,14 @@ const ensurePlanScopes = async (projectIds: string[]): Promise<ArchitectMetadata
     }
   }
 
-  const selectedProjectId = useAppStore.getState().selectedProjectId;
-  if (selectedProjectId) {
-    const selectedScopes = dedupeScopes(getProjectMetadataScopes([selectedProjectId]));
+  const appState = useAppStore.getState();
+  const scopedProjectIds = getScopedProjectIds(
+    appState.projectGroups,
+    appState.selectedGroupId,
+    appState.selectedProjectId
+  );
+  if (scopedProjectIds.length > 0) {
+    const selectedScopes = dedupeScopes(getProjectMetadataScopes(scopedProjectIds));
     assertWritableScopes(selectedScopes);
     if (selectedScopes.length > 0) {
       return selectedScopes;

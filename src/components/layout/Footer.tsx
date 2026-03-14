@@ -13,6 +13,7 @@ import {
 import { openConflictAssistant } from '../../services/conflictAssistantService';
 import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { commitMacroMetadata, getMacroSyncDescription, pullMacroMetadata, pushMacroMetadata, refreshMacroSyncStatus } from '../../services/macroSyncService';
+import { getFocusedProjectForGroup, getGlobalProjectById, getSubProjectsForGroup } from '../../services/globalProjects';
 
 type MacroConflictContext = 'commit' | 'pull' | 'push' | 'refresh';
 
@@ -98,8 +99,10 @@ const toCodeStatusSnapshot = (status: tauriIpc.GitStatusDto): CodeStatusSnapshot
 
 export const Footer: React.FC = () => {
   const isTauriRuntime = tauriIpc.isTauriAvailable();
+  const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
-  const getProjectById = useAppStore((state) => state.getProjectById);
+  const projectGroups = useAppStore((state) => state.projectGroups);
+  const switchProjectContext = useAppStore((state) => state.switchProjectContext);
   const metadataSyncState = useAppStore((state) => state.metadataSyncState);
   const metadataSyncError = useAppStore((state) => state.metadataSyncError);
   const metadataSyncReason = useAppStore((state) => state.metadataSyncReason);
@@ -117,11 +120,19 @@ export const Footer: React.FC = () => {
   const lastConflictToastAtRef = useRef(0);
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
 
-  const selectedProject = useMemo(
-    () => (selectedProjectId ? getProjectById(selectedProjectId) : undefined),
-    [getProjectById, selectedProjectId]
+  const selectedGlobalProject = useMemo(
+    () => getGlobalProjectById(projectGroups, selectedGroupId),
+    [projectGroups, selectedGroupId]
   );
-  const repoPath = selectedProject?.path || null;
+  const focusProjects = useMemo(
+    () => getSubProjectsForGroup(projectGroups, selectedGroupId),
+    [projectGroups, selectedGroupId]
+  );
+  const focusedProject = useMemo(
+    () => getFocusedProjectForGroup(projectGroups, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const repoPath = focusedProject?.path || null;
 
   const presentConflictIfNeeded = useCallback(
     (result: tauriIpc.MacroBranchSyncDto, context: MacroConflictContext) => {
@@ -397,7 +408,7 @@ export const Footer: React.FC = () => {
       ? metadataSyncRepositories
       : [{
         repoPath: repoPath || '@macro',
-        projectId: selectedProjectId,
+        projectId: focusedProject?.id ?? selectedProjectId,
         worktreePath: macroSnapshot?.worktree_path || null,
         state: metadataSyncState,
         error: metadataSyncError,
@@ -456,7 +467,7 @@ export const Footer: React.FC = () => {
       ? metadataSyncRepositories
       : [{
         repoPath: repoPath || '@macro',
-        projectId: selectedProjectId,
+        projectId: focusedProject?.id ?? selectedProjectId,
         worktreePath: macroSnapshot?.worktree_path || null,
         state: metadataSyncState,
         error: metadataSyncError,
@@ -476,6 +487,7 @@ export const Footer: React.FC = () => {
     metadataSyncState,
     repoPath,
     selectedProjectId,
+    focusedProject?.id,
   ]);
   const macroHint = useMemo(() => {
     const baseHint = formatMacroHint(macroSnapshot);
@@ -515,11 +527,30 @@ export const Footer: React.FC = () => {
       <footer className="h-8 bg-card border-t border-border px-2 sm:px-3 text-[11px] text-muted-foreground overflow-x-auto">
         <div className="h-full w-full min-w-[940px] flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0 flex-1">
+            <span className="flex items-center gap-1 min-w-0" title={selectedGlobalProject?.name || undefined}>
+              <Icon name="layers" size={12} className="text-primary shrink-0" />
+              <span className="truncate text-foreground">
+                {selectedGlobalProject?.name || 'No global project'}
+              </span>
+            </span>
             <span className="flex items-center gap-1 min-w-0" title={codeStatus.branch}>
               <Icon name="git-branch" size={12} className="text-blue-400 shrink-0" />
               <span className="truncate">{codeStatus.branch}</span>
             </span>
             <span className={`truncate ${codeStateClass}`}>{codeStateLabel}</span>
+            {focusProjects.length > 1 && (
+              <select
+                className="h-6 max-w-[180px] bg-card border border-border rounded px-2 text-[11px] text-foreground"
+                value={focusedProject?.id ?? ''}
+                onChange={(event) => void switchProjectContext(event.target.value || null)}
+              >
+                {focusProjects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
