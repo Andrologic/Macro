@@ -47,6 +47,8 @@ export const services = {
   renameProject: provider.renameProject,
   archiveProjectGroup: provider.archiveProjectGroup,
   archiveProject: provider.archiveProject,
+  removeProjectGroup: provider.removeProjectGroup,
+  removeProject: provider.removeProject,
   closeProject: provider.closeProject,
   getToolSettings: provider.getToolSettings,
   updateToolSettings: provider.updateToolSettings,

@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import * as tauriIpc from '../../services/tauriIpc';
 import { useCodeFileStore } from '../../stores/useCodeFileStore';
 import { useAppStore } from '../../stores/useAppStore';
+import { getFocusedProjectForGroup, getSubProjectsForGroup } from '../../services/globalProjects';
 
 interface DebugWorkspaceExplorerProps {
   className?: string;
@@ -162,24 +163,26 @@ export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ 
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [localFocusedProjectId, setLocalFocusedProjectId] = useState<string | null>(null);
 
-  const activeProject = useMemo(() => {
-    if (!selectedGroupId) return null;
-    const group = projectGroups.find((candidate) => candidate.id === selectedGroupId);
-    if (!group) return null;
+  const availableProjects = useMemo(
+    () => getSubProjectsForGroup(projectGroups, selectedGroupId),
+    [projectGroups, selectedGroupId]
+  );
+  const activeProject = useMemo(
+    () => getFocusedProjectForGroup(projectGroups, selectedGroupId, localFocusedProjectId ?? selectedProjectId),
+    [localFocusedProjectId, projectGroups, selectedGroupId, selectedProjectId]
+  );
 
-    if (selectedProjectId) {
-      return group.projects.find((project) => project.id === selectedProjectId) ?? null;
-    }
-
-    return group.projects[0] ?? null;
-  }, [projectGroups, selectedGroupId, selectedProjectId]);
+  useEffect(() => {
+    setLocalFocusedProjectId(selectedProjectId);
+  }, [selectedGroupId, selectedProjectId]);
 
   const activeRootPath = (activeProject?.path || '.').replace(/\\/g, '/').replace(/\/$/, '') || '.';
 
   const tree = useMemo(() => buildTree(filePaths), [filePaths]);
 
-  const loadTree = async () => {
+  const loadTree = useCallback(async () => {
     if (!tauriIpc.isTauriAvailable()) {
       setLastError('Tauri runtime required to browse the workspace tree.');
       setFilePaths([]);
@@ -223,11 +226,11 @@ export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ 
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [activeRootPath]);
 
   useEffect(() => {
     void loadTree();
-  }, [activeRootPath]);
+  }, [loadTree]);
 
   const toggleFolder = (path: string) => {
     setExpandedFolders((previous) => {
@@ -265,17 +268,34 @@ export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ 
   return (
     <aside className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}>
       <div className="h-12 border-b border-border flex items-center justify-between px-4">
-        <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-          <Icon name="folder-open" size={16} className="text-primary" />
-          {activeProject?.name || 'Explorer'}
-        </h1>
-        <button
-          onClick={() => void loadTree()}
-          className="p-1 rounded hover:bg-accent transition-colors"
-          title="Refresh tree"
-        >
-          <Icon name="refresh-cw" size={14} className="text-muted-foreground" />
-        </button>
+        <div className="min-w-0 flex-1">
+          <h1 className="text-sm font-semibold text-foreground flex items-center gap-2 min-w-0">
+            <Icon name="folder-open" size={16} className="text-primary shrink-0" />
+            <span className="truncate">{activeProject?.name || 'Explorer'}</span>
+          </h1>
+        </div>
+        <div className="flex items-center gap-2">
+          {availableProjects.length > 1 && (
+            <select
+              className="max-w-[160px] bg-card border border-border rounded px-2 py-1 text-xs text-foreground"
+              value={activeProject?.id ?? ''}
+              onChange={(event) => setLocalFocusedProjectId(event.target.value || null)}
+            >
+              {availableProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            onClick={() => void loadTree()}
+            className="p-1 rounded hover:bg-accent transition-colors"
+            title="Refresh tree"
+          >
+            <Icon name="refresh-cw" size={14} className="text-muted-foreground" />
+          </button>
+        </div>
       </div>
 
       <div className="px-4 py-2 border-b border-border bg-muted/20">

@@ -160,6 +160,7 @@ pub struct CreateProjectRequest {
     pub name: String,
     pub description: String,
     pub group_id: Option<String>,
+    pub group_name: Option<String>,
     pub path: Option<String>,
 }
 
@@ -169,5 +170,55 @@ pub struct ImportGitRepoRequest {
     pub project_name: String,
     pub branch: String,
     pub group_id: Option<String>,
+    pub group_name: Option<String>,
     pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProjectRegistryRepairReportDto {
+    pub duplicate_paths_removed: usize,
+    pub empty_groups_removed: usize,
+    pub removed_synthetic_groups: usize,
+    pub removed_synthetic_projects: usize,
+    pub removed_group_ids: Vec<String>,
+    pub removed_project_ids: Vec<String>,
+    pub current_plan_project_ids_removed: usize,
+    pub current_plan_tasks_removed: usize,
+    pub current_plan_task_targets_removed: usize,
+    pub plan_nodes_removed: usize,
+    pub predicted_branches_removed: usize,
+}
+
+impl ProjectRegistryRepairReportDto {
+    pub fn has_repairs(&self) -> bool {
+        self.duplicate_paths_removed > 0
+            || self.empty_groups_removed > 0
+            || self.removed_synthetic_groups > 0
+            || self.removed_synthetic_projects > 0
+            || !self.removed_group_ids.is_empty()
+            || !self.removed_project_ids.is_empty()
+            || self.current_plan_project_ids_removed > 0
+            || self.current_plan_tasks_removed > 0
+            || self.current_plan_task_targets_removed > 0
+            || self.plan_nodes_removed > 0
+            || self.predicted_branches_removed > 0
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectRegistryDiagnosticsDto {
+    #[serde(rename = "rawProjectGroups")]
+    pub raw_project_groups: Vec<ProjectGroupDto>,
+    #[serde(rename = "sanitizedProjectGroups")]
+    pub sanitized_project_groups: Vec<ProjectGroupDto>,
+    #[serde(rename = "rawGroupCount")]
+    pub raw_group_count: usize,
+    #[serde(rename = "rawProjectCount")]
+    pub raw_project_count: usize,
+    #[serde(rename = "sanitizedGroupCount")]
+    pub sanitized_group_count: usize,
+    #[serde(rename = "sanitizedProjectCount")]
+    pub sanitized_project_count: usize,
+    #[serde(rename = "repairReport")]
+    pub repair_report: ProjectRegistryRepairReportDto,
 }

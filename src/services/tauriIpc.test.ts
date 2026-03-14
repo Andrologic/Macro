@@ -64,6 +64,101 @@ describe('tauriIpc executeWorkspaceTool', () => {
     ]);
   });
 
+  it('uses camelCase payload keys for workspace project mutations', async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.workspaceCreateProject({
+      name: 'Web',
+      description: '',
+      groupId: 'group-1',
+      groupName: 'Suite',
+      path: 'C:/dev/web',
+    });
+    await tauriIpc.workspaceImportGitRepo({
+      gitUrl: 'https://example.com/repo.git',
+      projectName: 'API',
+      branch: 'main',
+      groupId: 'group-1',
+      groupName: 'Suite',
+      path: 'C:/dev/api',
+    });
+    await tauriIpc.workspaceRenameProjectGroup({ groupId: 'group-1', name: 'Renamed' });
+    await tauriIpc.workspaceRenameProject({ projectId: 'project-1', name: 'Renamed Project' });
+    await tauriIpc.workspaceArchiveProjectGroup({ groupId: 'group-1' });
+    await tauriIpc.workspaceArchiveProject({ projectId: 'project-1' });
+    await tauriIpc.workspaceRemoveProjectGroup({ groupId: 'group-1' });
+    await tauriIpc.workspaceRemoveProject({ projectId: 'project-1' });
+    await tauriIpc.workspaceCloseProject({ projectId: 'project-1' });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: 'workspace_create_project',
+        payload: {
+          name: 'Web',
+          description: '',
+          groupId: 'group-1',
+          groupName: 'Suite',
+          path: 'C:/dev/web',
+        },
+      },
+      {
+        command: 'workspace_import_git_repo',
+        payload: {
+          gitUrl: 'https://example.com/repo.git',
+          projectName: 'API',
+          branch: 'main',
+          groupId: 'group-1',
+          groupName: 'Suite',
+          path: 'C:/dev/api',
+        },
+      },
+      {
+        command: 'workspace_rename_project_group',
+        payload: {
+          groupId: 'group-1',
+          name: 'Renamed',
+        },
+      },
+      {
+        command: 'workspace_rename_project',
+        payload: {
+          projectId: 'project-1',
+          name: 'Renamed Project',
+        },
+      },
+      {
+        command: 'workspace_archive_project_group',
+        payload: {
+          groupId: 'group-1',
+        },
+      },
+      {
+        command: 'workspace_archive_project',
+        payload: {
+          projectId: 'project-1',
+        },
+      },
+      {
+        command: 'workspace_remove_project_group',
+        payload: {
+          groupId: 'group-1',
+        },
+      },
+      {
+        command: 'workspace_remove_project',
+        payload: {
+          projectId: 'project-1',
+        },
+      },
+      {
+        command: 'workspace_close_project',
+        payload: {
+          projectId: 'project-1',
+        },
+      },
+    ]);
+  });
+
   afterAll(() => {
     mock.restore();
   });

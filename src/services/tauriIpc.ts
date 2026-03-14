@@ -23,6 +23,7 @@ export interface DbConversation {
   title: string;
   description: string | null;
   task_id: string | null;
+  group_id: string | null;
   project_id: string | null;
   created_at: string;
   updated_at: string;
@@ -178,6 +179,8 @@ export interface DbAppSetting {
 
 export interface DbProjectContextState {
   project_id: string;
+  group_id: string | null;
+  focus_project_id: string | null;
   last_plan_id: string | null;
   last_task_id: string | null;
   architect_conversation_id: string | null;
@@ -190,6 +193,37 @@ export interface DbSessionContextState {
   selected_project_id: string | null;
   mode: string | null;
   updated_at: string;
+}
+
+export interface DbProjectRegistryRepairReport {
+  conversations_updated: number;
+  project_contexts_deleted: number;
+  project_contexts_updated: number;
+  session_context_updated: boolean;
+}
+
+export interface ProjectRegistryRepairReportDto {
+  duplicate_paths_removed: number;
+  empty_groups_removed: number;
+  removed_synthetic_groups: number;
+  removed_synthetic_projects: number;
+  removed_group_ids: string[];
+  removed_project_ids: string[];
+  current_plan_project_ids_removed: number;
+  current_plan_tasks_removed: number;
+  current_plan_task_targets_removed: number;
+  plan_nodes_removed: number;
+  predicted_branches_removed: number;
+}
+
+export interface ProjectRegistryDiagnosticsDto {
+  rawProjectGroups: ProjectGroup[];
+  sanitizedProjectGroups: ProjectGroup[];
+  rawGroupCount: number;
+  rawProjectCount: number;
+  sanitizedGroupCount: number;
+  sanitizedProjectCount: number;
+  repairReport: ProjectRegistryRepairReportDto;
 }
 
 export interface DbProviderModelInput {
@@ -350,11 +384,13 @@ export async function getConversation(id: string): Promise<DbConversation | null
 export async function createConversation(params?: {
   title?: string;
   taskId?: string | null;
+  groupId?: string | null;
   projectId?: string | null;
 }): Promise<DbConversation> {
   return invoke<DbConversation>('db_create_conversation', {
     title: params?.title,
     taskId: params?.taskId ?? null,
+    groupId: params?.groupId ?? null,
     projectId: params?.projectId ?? null,
   });
 }
@@ -916,12 +952,14 @@ export async function workspaceCreateProject(params: {
   name: string;
   description: string;
   groupId?: string | null;
+  groupName?: string | null;
   path?: string;
 }): Promise<Project> {
   return invoke<Project>('workspace_create_project', {
     name: params.name,
     description: params.description,
-    group_id: params.groupId ?? null,
+    groupId: params.groupId ?? null,
+    groupName: params.groupName ?? null,
     path: params.path ?? null,
   });
 }
@@ -931,13 +969,15 @@ export async function workspaceImportGitRepo(params: {
   projectName: string;
   branch: string;
   groupId?: string | null;
+  groupName?: string | null;
   path?: string;
 }): Promise<Project> {
   return invoke<Project>('workspace_import_git_repo', {
-    git_url: params.gitUrl,
-    project_name: params.projectName,
+    gitUrl: params.gitUrl,
+    projectName: params.projectName,
     branch: params.branch,
-    group_id: params.groupId ?? null,
+    groupId: params.groupId ?? null,
+    groupName: params.groupName ?? null,
     path: params.path ?? null,
   });
 }
@@ -947,7 +987,7 @@ export async function workspaceRenameProjectGroup(params: {
   name: string;
 }): Promise<ProjectGroup> {
   return invoke<ProjectGroup>('workspace_rename_project_group', {
-    group_id: params.groupId,
+    groupId: params.groupId,
     name: params.name,
   });
 }
@@ -957,7 +997,7 @@ export async function workspaceRenameProject(params: {
   name: string;
 }): Promise<Project> {
   return invoke<Project>('workspace_rename_project', {
-    project_id: params.projectId,
+    projectId: params.projectId,
     name: params.name,
   });
 }
@@ -966,7 +1006,7 @@ export async function workspaceArchiveProjectGroup(params: {
   groupId: string;
 }): Promise<ProjectGroup> {
   return invoke<ProjectGroup>('workspace_archive_project_group', {
-    group_id: params.groupId,
+    groupId: params.groupId,
   });
 }
 
@@ -974,7 +1014,23 @@ export async function workspaceArchiveProject(params: {
   projectId: string;
 }): Promise<Project> {
   return invoke<Project>('workspace_archive_project', {
-    project_id: params.projectId,
+    projectId: params.projectId,
+  });
+}
+
+export async function workspaceRemoveProjectGroup(params: {
+  groupId: string;
+}): Promise<ProjectGroup[]> {
+  return invoke<ProjectGroup[]>('workspace_remove_project_group', {
+    groupId: params.groupId,
+  });
+}
+
+export async function workspaceRemoveProject(params: {
+  projectId: string;
+}): Promise<ProjectGroup[]> {
+  return invoke<ProjectGroup[]>('workspace_remove_project', {
+    projectId: params.projectId,
   });
 }
 
@@ -982,8 +1038,12 @@ export async function workspaceCloseProject(params: {
   projectId: string;
 }): Promise<ProjectGroup[]> {
   return invoke<ProjectGroup[]>('workspace_close_project', {
-    project_id: params.projectId,
+    projectId: params.projectId,
   });
+}
+
+export async function workspaceGetProjectRegistryDiagnostics(): Promise<ProjectRegistryDiagnosticsDto> {
+  return invoke<ProjectRegistryDiagnosticsDto>('workspace_get_project_registry_diagnostics');
 }
 
 // ============ Provider Models ============
@@ -1076,6 +1136,8 @@ export async function dbGetProjectContextState(projectId: string): Promise<DbPro
 
 export async function dbUpsertProjectContextState(params: {
   projectId: string;
+  groupId?: string | null;
+  focusProjectId?: string | null;
   lastPlanId?: string | null;
   lastTaskId?: string | null;
   architectConversationId?: string | null;
@@ -1084,6 +1146,8 @@ export async function dbUpsertProjectContextState(params: {
   return invoke<DbProjectContextState>('db_upsert_project_context_state', {
     input: {
       project_id: params.projectId,
+      group_id: params.groupId ?? null,
+      focus_project_id: params.focusProjectId ?? null,
       last_plan_id: params.lastPlanId ?? null,
       last_task_id: params.lastTaskId ?? null,
       architect_conversation_id: params.architectConversationId ?? null,
@@ -1112,6 +1176,22 @@ export async function dbUpsertSessionContextState(params: {
       selected_group_id: params.selectedGroupId ?? null,
       selected_project_id: params.selectedProjectId ?? null,
       mode: params.mode ?? null,
+    },
+  });
+}
+
+export async function dbReconcileProjectRegistry(params: {
+  validGroupIds: string[];
+  validProjectIds: string[];
+  selectedGroupId?: string | null;
+  selectedProjectId?: string | null;
+}): Promise<DbProjectRegistryRepairReport> {
+  return invoke<DbProjectRegistryRepairReport>('db_reconcile_project_registry', {
+    input: {
+      valid_group_ids: params.validGroupIds,
+      valid_project_ids: params.validProjectIds,
+      selected_group_id: params.selectedGroupId ?? null,
+      selected_project_id: params.selectedProjectId ?? null,
     },
   });
 }

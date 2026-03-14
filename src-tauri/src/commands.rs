@@ -1026,6 +1026,7 @@ pub async fn db_create_conversation(
     pool: State<'_, DbPool>,
     title: Option<String>,
     task_id: Option<String>,
+    group_id: Option<String>,
     project_id: Option<String>,
 ) -> CommandResult<Conversation> {
     let pool_guard = pool.lock().await;
@@ -1038,6 +1039,7 @@ pub async fn db_create_conversation(
         CreateConversationInput {
             title,
             task_id,
+            group_id,
             project_id,
         },
     )
@@ -1581,6 +1583,21 @@ pub async fn db_upsert_session_context_state(
     })?;
 
     repository::upsert_session_context_state(pool, input)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_reconcile_project_registry(
+    pool: State<'_, DbPool>,
+    input: ReconcileProjectRegistryInput,
+) -> CommandResult<ProjectRegistryDbRepairReport> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::reconcile_project_registry(pool, input)
         .await
         .map_err(Into::into)
 }
