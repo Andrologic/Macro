@@ -1,9 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { DevProviderOverridesFile } from './tauriIpc';
 
-let tauriAvailable = false;
 let devOverrides: DevProviderOverridesFile | null = null;
 let shouldReject = false;
+let tauriAvailable = false;
 
 const aiGetDevProviderOverridesMock = mock(async () => {
   if (shouldReject) {
@@ -15,7 +15,7 @@ const aiGetDevProviderOverridesMock = mock(async () => {
 
 const registerAiConfigMocks = () => {
   mock.restore();
-  mock.module('./tauriIpc.ts', () => ({
+  mock.module('./aiConfigRuntime', () => ({
     aiGetDevProviderOverrides: aiGetDevProviderOverridesMock,
     isTauriAvailable: () => tauriAvailable,
   }));

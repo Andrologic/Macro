@@ -93,6 +93,8 @@ pub struct ProjectGroupDto {
 pub struct ProjectDto {
     pub id: String,
     pub name: String,
+    #[serde(default, rename = "mountName")]
+    pub mount_name: String,
     pub path: String,
     pub created_at: String,
     pub status: String,
@@ -180,6 +182,7 @@ pub struct ProjectRegistryRepairReportDto {
     pub empty_groups_removed: usize,
     pub removed_synthetic_groups: usize,
     pub removed_synthetic_projects: usize,
+    pub mount_names_assigned: usize,
     pub removed_group_ids: Vec<String>,
     pub removed_project_ids: Vec<String>,
     pub current_plan_project_ids_removed: usize,
@@ -195,6 +198,7 @@ impl ProjectRegistryRepairReportDto {
             || self.empty_groups_removed > 0
             || self.removed_synthetic_groups > 0
             || self.removed_synthetic_projects > 0
+            || self.mount_names_assigned > 0
             || !self.removed_group_ids.is_empty()
             || !self.removed_project_ids.is_empty()
             || self.current_plan_project_ids_removed > 0

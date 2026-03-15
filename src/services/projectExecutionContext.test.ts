@@ -6,6 +6,7 @@ describe('resolveProjectExecutionContext', () => {
     {
       id: 'macro-web',
       name: 'Macro Web',
+      mountName: 'web',
       path: 'projects/macro-web',
       created_at: '2026-03-05T00:00:00.000Z',
       status: 'active' as const,
@@ -20,6 +21,7 @@ describe('resolveProjectExecutionContext', () => {
     {
       id: 'macro-api',
       name: 'Macro API',
+      mountName: 'api',
       path: 'C:/dev/macro-api',
       created_at: '2026-03-05T00:00:00.000Z',
       status: 'active' as const,
@@ -70,6 +72,24 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.groupName).toBe('Macro Suite');
     expect(context.projectId).toBe('macro-api');
     expect(context.projectIds).toEqual(['macro-web', 'macro-api']);
+    expect(context.focusedProjectId).toBe('macro-api');
+    expect(context.virtualRootEnabled).toBe(true);
+    expect(context.projectMounts).toEqual([
+      {
+        projectId: 'macro-web',
+        groupId: 'macro-suite',
+        mountName: 'web',
+        displayName: 'Macro Web',
+        workspacePath: 'projects/macro-web',
+      },
+      {
+        projectId: 'macro-api',
+        groupId: 'macro-suite',
+        mountName: 'api',
+        displayName: 'Macro API',
+        workspacePath: 'C:/dev/macro-api',
+      },
+    ]);
     expect(context.workspacePathsByProjectId['macro-web']).toBe('projects/macro-web');
     expect(context.workspacePathsByProjectId['macro-api']).toBe('C:/dev/macro-api');
   });
@@ -125,6 +145,8 @@ describe('resolveProjectExecutionContext', () => {
 
     expect(context.taskId).toBe('task-1');
     expect(context.projectId).toBe('macro-api');
+    expect(context.focusedProjectId).toBe('macro-api');
+    expect(context.virtualRootEnabled).toBe(true);
     expect(context.branchName).toBe('feature/payments');
     expect(context.workspacePath).toBe('C:/worktrees/macro-api-payments');
     expect(context.workspacePathsByProjectId).toEqual({
@@ -142,6 +164,17 @@ describe('resolveProjectExecutionContext', () => {
 
     expect(context.groupId).toBeNull();
     expect(context.projectId).toBe('macro-web');
+    expect(context.focusedProjectId).toBe('macro-web');
+    expect(context.virtualRootEnabled).toBe(false);
+    expect(context.projectMounts).toEqual([
+      {
+        projectId: 'macro-web',
+        groupId: null,
+        mountName: 'web',
+        displayName: 'Macro Web',
+        workspacePath: 'projects/macro-web',
+      },
+    ]);
     expect(context.defaultWorkspacePath).toBe('projects/macro-web');
   });
 
@@ -156,6 +189,8 @@ describe('resolveProjectExecutionContext', () => {
 
     expect(context.groupId).toBe('macro-suite');
     expect(context.projectId).toBe('macro-web');
+    expect(context.focusedProjectId).toBe('macro-web');
+    expect(context.virtualRootEnabled).toBe(true);
     expect(context.defaultWorkspacePath).toBe('projects/macro-web');
   });
 });

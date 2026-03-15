@@ -88,6 +88,7 @@ const createAppState = (overrides?: {
         {
           id: 'web',
           name: 'Web',
+          mountName: 'web',
           path: '/repos/web',
           created_at: '2026-03-14T00:00:00.000Z',
           status: 'active' as const,
@@ -102,6 +103,7 @@ const createAppState = (overrides?: {
         {
           id: 'api',
           name: 'API',
+          mountName: 'api',
           path: '/repos/api',
           created_at: '2026-03-14T00:00:00.000Z',
           status: 'active' as const,

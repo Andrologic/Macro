@@ -181,6 +181,7 @@ export interface ProjectMetadata {
 export interface Project {
   id: string;
   name: string;
+  mountName: string;
   path: string;
   created_at: string;
   status: ProjectStatus;
@@ -200,6 +201,14 @@ export interface GlobalProject {
   subProjects: Project[];
   subProjectIds: string[];
   primarySubProjectId: string | null;
+}
+
+export interface ProjectMount {
+  projectId: string;
+  groupId: string | null;
+  mountName: string;
+  displayName: string;
+  workspacePath: string | null;
 }
 
 export interface FileChange {

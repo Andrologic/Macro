@@ -1,5 +1,6 @@
 import type { Project, ProjectGroup } from '../types';
 import { getFocusedProjectIdForGroup, getProjectGroupByProjectId } from './globalProjects';
+import { assignMountNamesToProjectGroups } from './projectMounts';
 
 export interface RememberedProjectRecord {
   projectId: string;
@@ -97,6 +98,8 @@ export const normalizeProjectRegistry = (params: {
     })
     .filter((group): group is ProjectGroup => Boolean(group));
 
+  const normalizedProjectGroups = assignMountNamesToProjectGroups(nextProjectGroups);
+
   const requestedSelectedProjectId =
     params.selectedProjectId && !isSyntheticProjectId(params.selectedProjectId)
       ? params.selectedProjectId
@@ -111,7 +114,7 @@ export const normalizeProjectRegistry = (params: {
 
   if (requestedSelectedProjectId) {
     const groupForProject = getProjectGroupByProjectId(
-      nextProjectGroups,
+      normalizedProjectGroups,
       requestedSelectedProjectId
     );
     if (groupForProject) {
@@ -121,19 +124,19 @@ export const normalizeProjectRegistry = (params: {
   }
 
   if (!selectedGroupId && requestedSelectedGroupId) {
-    const existingGroup = nextProjectGroups.find((group) => group.id === requestedSelectedGroupId);
+    const existingGroup = normalizedProjectGroups.find((group) => group.id === requestedSelectedGroupId);
     if (existingGroup) {
       selectedGroupId = existingGroup.id;
     }
   }
 
   if (!selectedGroupId) {
-    selectedGroupId = nextProjectGroups[0]?.id ?? null;
+    selectedGroupId = normalizedProjectGroups[0]?.id ?? null;
   }
 
   if (selectedGroupId) {
     selectedProjectId = getFocusedProjectIdForGroup(
-      nextProjectGroups,
+      normalizedProjectGroups,
       selectedGroupId,
       selectedProjectId ?? requestedSelectedProjectId ?? null
     );
@@ -164,7 +167,7 @@ export const normalizeProjectRegistry = (params: {
   };
 
   return {
-    projectGroups: nextProjectGroups,
+    projectGroups: normalizedProjectGroups,
     selectedGroupId,
     selectedProjectId,
     report,

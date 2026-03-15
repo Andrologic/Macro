@@ -6,7 +6,7 @@ import {
   type PlanFinalizationBlockedError,
 } from './architectGitFlowService';
 
-const projectPaths = new Map<string, { id: string; name: string; path: string }>();
+const projectPaths = new Map<string, { id: string; name: string; mountName: string; path: string }>();
 let currentPlan: any = null;
 
 interface MockGitStatus {
@@ -182,8 +182,8 @@ let architectGitFlowService: ReturnType<typeof createArchitectGitFlowService>;
 describe('architectGitFlowService', () => {
   beforeEach(() => {
     projectPaths.clear();
-    projectPaths.set('web', { id: 'web', name: 'Web', path: '/repos/web' });
-    projectPaths.set('api', { id: 'api', name: 'API', path: '/repos/api' });
+    projectPaths.set('web', { id: 'web', name: 'Web', mountName: 'web', path: '/repos/web' });
+    projectPaths.set('api', { id: 'api', name: 'API', mountName: 'api', path: '/repos/api' });
     currentPlan = buildPlan();
     worktreeStatusByPath.clear();
     worktreeStatusByPath.set(
