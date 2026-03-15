@@ -16,7 +16,9 @@ import {
 
 interface ActivePlanContextState {
   id: string;
+  slug?: string;
   title: string;
+  label?: string;
   description: string;
   status: string;
   targetBranch: string;
@@ -110,8 +112,13 @@ const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecor
 
   return {
     id: activePlanId,
-    slug: activePlanContext.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || activePlanId,
+    slug:
+      (typeof activePlanContext.slug === 'string' && activePlanContext.slug.trim().length > 0
+        ? activePlanContext.slug.trim()
+        : activePlanContext.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')) ||
+      activePlanId,
     title: activePlanContext.title,
+    label: activePlanContext.label,
     description: activePlanContext.description,
     status: activePlanContext.status as ArchitectPlanRecord['status'],
     targetBranch: activePlanContext.targetBranch,

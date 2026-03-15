@@ -4,25 +4,24 @@ import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 
 interface PlanFormModalProps {
-  mode: 'create' | 'rename';
-  initialTitle?: string;
-  onConfirm: (title: string, description?: string) => void;
+  initialValue?: string;
+  isCanonicalPlan?: boolean;
+  onConfirm: (value: string) => void;
   onClose: () => void;
   isLoading?: boolean;
   error?: string | null;
 }
 
 export const PlanFormModal: React.FC<PlanFormModalProps> = ({
-  mode,
-  initialTitle = '',
+  initialValue = '',
+  isCanonicalPlan = false,
   onConfirm,
   onClose,
   isLoading = false,
   error = null,
 }) => {
   const { t } = useTranslation();
-  const [title, setTitle] = useState(initialTitle);
-  const [description, setDescription] = useState('');
+  const [value, setValue] = useState(initialValue);
   const [localError, setLocalError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -42,12 +41,17 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) {
-      setLocalError(t('architect.planForm.nameRequired', 'Plan name is required.'));
+    const normalizedValue = value.trim();
+    if (!isCanonicalPlan && !normalizedValue) {
+      setLocalError(
+        isCanonicalPlan
+          ? t('architect.planForm.labelRequired', 'Plan label is required.')
+          : t('architect.planForm.nameRequired', 'Plan name is required.')
+      );
       return;
     }
     setLocalError(null);
-    onConfirm(title.trim(), description.trim() || undefined);
+    onConfirm(normalizedValue);
   };
 
   const displayError = localError || error;
@@ -63,11 +67,11 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
         {/* Header */}
         <header className="h-12 px-4 border-b border-border flex items-center gap-3 shrink-0">
           <div className="p-1.5 bg-primary/10 rounded-lg shrink-0">
-            <Icon name={mode === 'create' ? 'plus' : 'edit'} size={14} className="text-primary" />
+            <Icon name="edit" size={14} className="text-primary" />
           </div>
           <h2 className="text-sm font-semibold text-foreground flex-1">
-            {mode === 'create'
-              ? t('architect.planForm.createTitle', 'New Plan')
+            {isCanonicalPlan
+              ? t('architect.planForm.editLabelTitle', 'Edit Plan Label')
               : t('architect.planForm.renameTitle', 'Rename Plan')}
           </h2>
           <button
@@ -91,42 +95,36 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
 
             <div>
               <label className="block text-sm text-muted-foreground mb-2">
-                {t('architect.planForm.nameLabel', 'Plan name')} <span className="text-red-400">*</span>
+                {isCanonicalPlan
+                  ? t('architect.planForm.labelLabel', 'Plan label')
+                  : t('architect.planForm.nameLabel', 'Plan name')}{' '}
+                {isCanonicalPlan ? (
+                  <span className="text-xs text-muted-foreground/80">
+                    ({t('common.optional', 'optional')})
+                  </span>
+                ) : (
+                  <span className="text-red-400">*</span>
+                )}
               </label>
               <input
                 ref={inputRef}
                 type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder={t('architect.planForm.namePlaceholder', 'e.g. Authentication Overhaul')}
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                placeholder={
+                  isCanonicalPlan
+                    ? t('architect.planForm.labelPlaceholder', 'e.g. Authentication Overhaul')
+                    : t('architect.planForm.namePlaceholder', 'e.g. Authentication Overhaul')
+                }
                 className={cn(
                   'w-full bg-muted border rounded-lg px-3 py-2 text-sm text-foreground',
                   'placeholder:text-muted-foreground focus:outline-none transition-colors',
-                  localError && !title.trim()
+                  localError && !value.trim()
                     ? 'border-red-500/50 focus:border-red-500'
                     : 'border-border focus:border-primary'
                 )}
               />
             </div>
-
-            {mode === 'create' && (
-              <div>
-                <label className="block text-sm text-muted-foreground mb-2">
-                  {t('architect.planForm.descriptionLabel', 'Description')}{' '}
-                  <span className="text-xs opacity-60">({t('common.optional', 'optional')})</span>
-                </label>
-                <textarea
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder={t('architect.planForm.descriptionPlaceholder', 'What is this plan about?')}
-                  rows={3}
-                  className={cn(
-                    'w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground',
-                    'placeholder:text-muted-foreground focus:outline-none focus:border-primary transition-colors resize-none'
-                  )}
-                />
-              </div>
-            )}
           </div>
         </form>
 
@@ -146,8 +144,8 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
             className="h-8 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors flex items-center gap-2"
           >
             {isLoading && <Icon name="loader" size={13} className="animate-spin" />}
-            {mode === 'create'
-              ? t('architect.planForm.createAction', 'Create Plan')
+            {isCanonicalPlan
+              ? t('architect.planForm.saveLabel', 'Save Label')
               : t('common.rename', 'Rename')}
           </button>
         </footer>

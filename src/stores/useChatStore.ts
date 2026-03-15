@@ -16,6 +16,8 @@ import { useTerminalStore } from './useTerminalStore';
 import { canUseRemoteKernel, getRemoteToolModePolicy } from '../services/remoteKernelApi';
 import * as tauriIpc from '../services/tauriIpc';
 import {
+  createArchitectPlan,
+  deleteArchitectPlan,
   getArchitectPlan,
   getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
@@ -23,11 +25,18 @@ import {
   listArchitectPlans,
   resolvePlanProjectContextId,
   resolveTargetBranch,
+  restoreArchitectPlan,
   saveArchitectPlanNeeds,
+  setActiveArchitectPlan,
   toPlanIntegrationBranch,
   toPlanScopedFeatureBranch,
   updateArchitectPlan,
 } from '../services/architectPlanService';
+import {
+  getArchitectPlanConversationTitle,
+  getArchitectPlanDisplayName,
+  isCanonicalArchitectPlan,
+} from '../services/architectPlanPresentation';
 import { normalizeArchitectToolId } from '../services/architectToolNames';
 import { normalizeStrategyDependencies } from '../services/implementTaskDerivation';
 import { getLocalProjectContextState } from '../services/localProjectContext';
@@ -616,6 +625,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return getGitFlowBaseBranch();
     };
 
+    const resolveArchitectPlanStatus = (
+      rawStatus: unknown,
+      fallback: 'draft' | 'validated' | 'in_progress' | 'completed' | 'archived' | 'deleted' = 'draft'
+    ): 'draft' | 'validated' | 'in_progress' | 'completed' | 'archived' | 'deleted' => {
+      const normalizedStatus = typeof rawStatus === 'string' ? rawStatus.trim().toLowerCase() : '';
+      const allowedStatuses = new Set([
+        'draft',
+        'validated',
+        'in_progress',
+        'completed',
+        'archived',
+        'deleted',
+      ]);
+
+      return allowedStatuses.has(normalizedStatus as typeof fallback)
+        ? (normalizedStatus as typeof fallback)
+        : fallback;
+    };
+
     const hydratePlanContext = async (targetBranch: string, planId: string): Promise<void> => {
       const plan = await getArchitectPlan(targetBranch, planId);
       if (!plan || plan.status === 'deleted') return;
@@ -637,6 +665,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       appStore.setActiveArchitectPlanId(plan.id);
       appStore.setPlanNodes(plan.nodes || []);
       appStore.setPredictedBranches(plan.predictedBranches || []);
+      appStore.setActivePlanContext({
+        id: plan.id,
+        slug: plan.slug,
+        title: plan.title,
+        label: plan.label,
+        description: plan.description,
+        status: plan.status,
+        targetBranch: plan.targetBranch,
+      });
 
       const planNeeds = await getArchitectPlanNeeds(targetBranch, plan.id);
       useNeedsStore.getState().replaceNeedsForPlan(plan.id, planNeeds);
@@ -664,7 +701,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           appStore.projectGroups.flatMap((group) => group.projects)[0]?.id ||
           null;
         const created = await get().createConversation(
-          `Plan · ${plan.title}`,
+          getArchitectPlanConversationTitle(plan),
           null,
           fallbackProjectId,
           fallbackGroupId
@@ -971,6 +1008,249 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Successfully added need: "${title}" (ID: ${id}).`;
     }
 
+    if (normalizedToolName === 'plan_create') {
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const appState = useAppStore.getState();
+      const scopedProjectIds = getScopedProjectIds(
+        appState.projectGroups,
+        appState.selectedGroupId,
+        appState.selectedProjectId
+      );
+      const fallbackProjectId =
+        scopedProjectIds[0] ||
+        appState.selectedProjectId ||
+        appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
+        undefined;
+      const titleAlias = typeof args.title === 'string' ? args.title.trim() : '';
+      const label = typeof args.label === 'string' ? args.label.trim() : titleAlias;
+      const description = typeof args.description === 'string' ? args.description : '';
+      const setActive = args.set_active !== false;
+      const plan = await createArchitectPlan({
+        branchName: targetBranch,
+        label: label || undefined,
+        description,
+        status: resolveArchitectPlanStatus(args.status, 'draft'),
+        projectId: fallbackProjectId,
+        projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
+        setActive,
+      });
+
+      if (setActive) {
+        await hydratePlanContext(targetBranch, plan.id);
+      }
+
+      return JSON.stringify(
+        {
+          plan_id: plan.id,
+          plan_slug: plan.slug,
+          plan_title: plan.title,
+          plan_label: plan.label ?? null,
+          display_name: getArchitectPlanDisplayName(plan),
+          target_branch: plan.targetBranch,
+          status: plan.status,
+          active: setActive,
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_list') {
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const includeDeleted = args.include_deleted === true;
+      const includeArchived = args.include_archived === true || includeDeleted;
+      const plansIndex = await listArchitectPlans(targetBranch, includeDeleted, includeArchived);
+
+      return JSON.stringify(
+        {
+          target_branch: targetBranch,
+          active_plan_id: plansIndex.activePlanId,
+          plans: plansIndex.plans.map((plan) => ({
+            id: plan.id,
+            slug: plan.slug,
+            title: plan.title,
+            label: plan.label ?? null,
+            display_name: getArchitectPlanDisplayName(plan),
+            status: plan.status,
+            description: plan.description,
+            target_branch: plan.targetBranch,
+            node_count: plan.nodeCount,
+            conversation_id: plan.conversationId ?? null,
+          })),
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_get') {
+      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      if (!planId) {
+        return 'Missing plan_id for plan_get.';
+      }
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const plan = await getArchitectPlan(targetBranch, planId);
+      if (!plan || plan.status === 'deleted') {
+        return `Plan ${planId} is unavailable.`;
+      }
+
+      return JSON.stringify(
+        {
+          id: plan.id,
+          slug: plan.slug,
+          title: plan.title,
+          label: plan.label ?? null,
+          display_name: getArchitectPlanDisplayName(plan),
+          is_canonical: isCanonicalArchitectPlan(plan),
+          description: plan.description,
+          status: plan.status,
+          target_branch: plan.targetBranch,
+          conversation_id: plan.conversationId ?? null,
+          project_ids: getArchitectPlanProjectIds(plan),
+          nodes: plan.nodes,
+          predicted_branches: plan.predictedBranches,
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_update') {
+      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      if (!planId) {
+        return 'Missing plan_id for plan_update.';
+      }
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const existingPlan = await getArchitectPlan(targetBranch, planId);
+      if (!existingPlan || existingPlan.status === 'deleted') {
+        return `Plan ${planId} is unavailable.`;
+      }
+
+      const isCanonicalPlan = isCanonicalArchitectPlan(existingPlan);
+      const titleAlias = typeof args.title === 'string' ? args.title.trim() : undefined;
+      const label = typeof args.label === 'string' ? args.label.trim() : undefined;
+      const shouldPassTitleAlias =
+        titleAlias !== undefined &&
+        (!isCanonicalPlan || titleAlias !== existingPlan.title || label !== undefined);
+
+      const updatedPlan = await updateArchitectPlan({
+        branchName: targetBranch,
+        planId,
+        ...(shouldPassTitleAlias ? { title: titleAlias } : {}),
+        ...(label !== undefined ? { label } : {}),
+        ...(typeof args.description === 'string' ? { description: args.description } : {}),
+        ...(args.status !== undefined
+          ? { status: resolveArchitectPlanStatus(args.status, existingPlan.status) }
+          : {}),
+        setActive: args.set_active === true,
+      });
+
+      if (args.set_active === true || resolveActivePlanId() === updatedPlan.id) {
+        await hydratePlanContext(targetBranch, updatedPlan.id);
+      }
+
+      return JSON.stringify(
+        {
+          id: updatedPlan.id,
+          slug: updatedPlan.slug,
+          title: updatedPlan.title,
+          label: updatedPlan.label ?? null,
+          display_name: getArchitectPlanDisplayName(updatedPlan),
+          status: updatedPlan.status,
+          target_branch: updatedPlan.targetBranch,
+          active: resolveActivePlanId() === updatedPlan.id,
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_delete') {
+      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      if (!planId) {
+        return 'Missing plan_id for plan_delete.';
+      }
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const wasActive = resolveActivePlanId() === planId;
+      await deleteArchitectPlan({
+        branchName: targetBranch,
+        planId,
+        hardDelete: args.hard_delete === true,
+      });
+
+      if (wasActive) {
+        const appStore = useAppStore.getState();
+        const refreshed = await listArchitectPlans(targetBranch, false, false);
+        const nextActivePlanId =
+          refreshed.activePlanId &&
+          refreshed.plans.some((plan) => plan.id === refreshed.activePlanId)
+            ? refreshed.activePlanId
+            : refreshed.plans[0]?.id ?? null;
+
+        if (nextActivePlanId) {
+          await hydratePlanContext(targetBranch, nextActivePlanId);
+        } else {
+          appStore.setActiveArchitectPlanId(null);
+          appStore.setPlanNodes([]);
+          appStore.setPredictedBranches([]);
+          appStore.setActivePlanContext(null);
+        }
+      }
+
+      return JSON.stringify(
+        {
+          plan_id: planId,
+          deleted: true,
+          hard_delete: args.hard_delete === true,
+          active_plan_id: resolveActivePlanId(),
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_restore') {
+      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      if (!planId) {
+        return 'Missing plan_id for plan_restore.';
+      }
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const restoredPlan = await restoreArchitectPlan(targetBranch, planId);
+
+      return JSON.stringify(
+        {
+          id: restoredPlan.id,
+          slug: restoredPlan.slug,
+          title: restoredPlan.title,
+          label: restoredPlan.label ?? null,
+          display_name: getArchitectPlanDisplayName(restoredPlan),
+          status: restoredPlan.status,
+          target_branch: restoredPlan.targetBranch,
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_set_active') {
+      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      if (!planId) {
+        return 'Missing plan_id for plan_set_active.';
+      }
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      await setActiveArchitectPlan(targetBranch, planId);
+      await hydratePlanContext(targetBranch, planId);
+
+      return JSON.stringify(
+        {
+          active_plan_id: planId,
+          target_branch: targetBranch,
+        },
+        null,
+        2
+      );
+    }
+
     if (normalizedToolName === 'strategy_generate') {
       const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
@@ -991,9 +1271,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
 
       const activePlan = await getArchitectPlan(targetBranch, activePlanId);
-      const inputTitle = typeof args.plan_title === 'string' && args.plan_title.trim().length > 0
-        ? args.plan_title.trim()
-        : activePlan?.title || `Plan ${new Date().toISOString().slice(0, 10)}`;
+      const requestedPlanTitleAlias =
+        typeof args.plan_title === 'string' ? args.plan_title.trim() : undefined;
       const inputDescription = typeof args.plan_description === 'string'
         ? args.plan_description
         : activePlan?.description || '';
@@ -1001,7 +1280,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await updateArchitectPlan({
         branchName: targetBranch,
         planId: activePlanId,
-        title: inputTitle,
+        ...(activePlan && requestedPlanTitleAlias !== undefined
+          ? isCanonicalArchitectPlan(activePlan)
+            ? { label: requestedPlanTitleAlias }
+            : { title: requestedPlanTitleAlias }
+          : {}),
         description: inputDescription,
         status: 'draft',
         nodes: strategy.planNodes,
@@ -1175,7 +1458,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await updateArchitectPlan({
         branchName: targetBranch,
         planId: activePlanId,
-        title: activePlan.title,
+        ...(isCanonicalArchitectPlan(activePlan)
+          ? { label: activePlan.label }
+          : { title: activePlan.title }),
         description: activePlan.description,
         status: activePlan.status,
         nodes: strategy.planNodes,
@@ -1207,7 +1492,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await updateArchitectPlan({
         branchName: targetBranch,
         planId: activePlanId,
-        title: activePlan.title,
+        ...(isCanonicalArchitectPlan(activePlan)
+          ? { label: activePlan.label }
+          : { title: activePlan.title }),
         description: activePlan.description,
         status: activePlan.status,
         nodes: [],
@@ -1516,12 +1803,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         'In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).'
       );
       systemInstructions.push(
-        'Git workflow for plans is strict: integration branch is `plan/<plan-slug>` from `develop`; strategy branches must be `feature/<plan-slug>/<feature-slug>` and are intended to merge into the plan branch in dependency order.'
+        'Git workflow for plans is strict: each new plan gets a generated identifier and uses that identifier as its canonical slug. Integration branch is `plan/<plan-id>` from `develop`; strategy branches must be `feature/<plan-id>/<feature-slug>` and merge into the plan branch in dependency order. Optional labels must never change git branch identity.'
       );
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {
         systemInstructions.push(
-          `[Active Plan] id="${activePlanContext.id}", title="${activePlanContext.title}", description="${activePlanContext.description || 'none'}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". When the user describes their project or requests changes, first write a message proposing updated title/description, then call plan_update to apply them.`
+          `[Active Plan] id="${activePlanContext.id}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || 'none'}", description="${activePlanContext.description || 'none'}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". New plans are identifier-first. Use plan_update.label (or title as legacy alias) only for the optional secondary label, and never rename the canonical id/slug of a new plan.`
         );
       }
     }
@@ -2796,5 +3083,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
   };
 });
+
 
 
