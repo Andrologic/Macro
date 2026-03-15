@@ -4,6 +4,8 @@ pub mod ai;
 pub mod fs;
 #[path = "commands/git.rs"]
 pub mod git;
+#[path = "commands/terminal.rs"]
+pub mod terminal;
 #[path = "commands/workspace.rs"]
 pub mod workspace;
 
@@ -40,9 +42,9 @@ impl From<DbError> for CommandError {
     }
 }
 
-type CommandResult<T> = Result<T, CommandError>;
+pub(crate) type CommandResult<T> = Result<T, CommandError>;
 
-fn command_error(message: impl Into<String>) -> CommandError {
+pub(crate) fn command_error(message: impl Into<String>) -> CommandError {
     CommandError {
         message: message.into(),
     }

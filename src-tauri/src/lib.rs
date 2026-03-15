@@ -152,6 +152,7 @@ pub fn run() {
         .manage(Arc::new(Mutex::new(None)) as DbPool)
         .manage(AiState::default())
         .manage(GitState::new())
+        .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
@@ -256,6 +257,10 @@ pub fn run() {
             commands::tool_get_mode_policy,
             commands::tool_validate_execution,
             commands::tool_execute_workspace,
+            commands::terminal::terminal_create_session,
+            commands::terminal::terminal_run,
+            commands::terminal::terminal_read,
+            commands::terminal::terminal_kill,
             // File System commands
             commands::fs::fs_read_file,
             commands::fs::fs_write_file,

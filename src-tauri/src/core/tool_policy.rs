@@ -91,8 +91,13 @@ fn implement_and_debug_allowed_tool_ids() -> &'static [&'static str] {
         "git_add",
         "git_commit",
         "git_checkout",
+        "git_merge",
         "git_reset",
         "git_stash",
+        "terminal_create_session",
+        "terminal_run",
+        "terminal_read",
+        "terminal_kill",
     ]
 }
 
