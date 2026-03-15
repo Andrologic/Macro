@@ -207,6 +207,7 @@ export interface ProjectRegistryRepairReportDto {
   empty_groups_removed: number;
   removed_synthetic_groups: number;
   removed_synthetic_projects: number;
+  mount_names_assigned: number;
   removed_group_ids: string[];
   removed_project_ids: string[];
   current_plan_project_ids_removed: number;
@@ -354,6 +355,21 @@ export interface ToolValidationResultDto {
 export interface ToolModePolicyDto {
   allowed_tool_ids: string[];
   enforce_macro_only_writes: boolean;
+}
+
+export interface TerminalSessionDto {
+  id: string;
+  project_id: string;
+  project_name: string;
+  mount_name: string;
+  workspace_path: string;
+  cwd: string;
+  status: string;
+  last_command: string | null;
+  output: string;
+  exit_code: number | null;
+  timed_out: boolean;
+  updated_at: string;
 }
 
 export type WorkspaceScope = 'default' | 'metadata';
@@ -1226,6 +1242,36 @@ export async function executeWorkspaceTool(params: {
     workspacePath: params.workspacePath ?? null,
     workspaceScope: params.workspaceScope ?? null,
   });
+}
+
+export async function terminalCreateSession(params: {
+  projectId: string;
+  cwd?: string | null;
+}): Promise<TerminalSessionDto> {
+  return invoke<TerminalSessionDto>('terminal_create_session', {
+    projectId: params.projectId,
+    cwd: params.cwd ?? null,
+  });
+}
+
+export async function terminalRun(params: {
+  sessionId: string;
+  command: string;
+  timeoutMs?: number | null;
+}): Promise<TerminalSessionDto> {
+  return invoke<TerminalSessionDto>('terminal_run', {
+    sessionId: params.sessionId,
+    command: params.command,
+    timeoutMs: params.timeoutMs ?? null,
+  });
+}
+
+export async function terminalRead(sessionId: string): Promise<TerminalSessionDto> {
+  return invoke<TerminalSessionDto>('terminal_read', { sessionId });
+}
+
+export async function terminalKill(sessionId: string): Promise<TerminalSessionDto> {
+  return invoke<TerminalSessionDto>('terminal_kill', { sessionId });
 }
 
 // ============ Utility ============

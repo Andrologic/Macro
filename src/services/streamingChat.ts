@@ -289,11 +289,12 @@ const LIST_TOOL = {
   type: 'function',
   function: {
     name: 'list',
-    description: 'List files and directories under a path in the local workspace.',
+    description: 'List files and directories under a path in the local workspace. In a global project, the visible root can be virtual and contain only subproject mounts such as api/ or web/.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Directory path to list. Defaults to the current execution workspace root for this conversation.' },
+        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
         recursive: { type: 'boolean', description: 'Whether to list recursively.' },
         include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
         max_depth: { type: 'number', description: 'Maximum recursion depth when recursive=true.' },
@@ -307,11 +308,12 @@ const READ_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'read',
-    description: 'Read a file from the local execution workspace by path.',
+    description: 'Read a file from the local execution workspace by path. In a virtual global project root, prefer paths like api/src/server.ts or pass project_id.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path of the file to read.' },
+        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
         start_line: { type: 'number', description: 'Optional 1-based start line.' },
         end_line: { type: 'number', description: 'Optional 1-based end line.' },
       },
@@ -324,11 +326,12 @@ const WRITE_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'write',
-    description: 'Create or overwrite a file in the current execution workspace with full content.',
+    description: 'Create or overwrite a file in the current execution workspace with full content. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path of the file to write.' },
+        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
         content: { type: 'string', description: 'Final file content.' },
         create_dirs: { type: 'boolean', description: 'Create missing parent directories.' },
       },
@@ -341,11 +344,12 @@ const EDIT_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'edit',
-    description: 'Edit a file in the current execution workspace by replacing exact text.',
+    description: 'Edit a file in the current execution workspace by replacing exact text. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path of the file to edit.' },
+        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
         old_text: { type: 'string', description: 'Exact text to replace.' },
         new_text: { type: 'string', description: 'Replacement text.' },
         replace_all: { type: 'boolean', description: 'Replace all matches (default false = first only).' },
@@ -359,11 +363,12 @@ const GLOB_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'glob',
-    description: 'Find files in the current execution workspace matching a glob pattern (example: src/**/*.ts).',
+    description: 'Find files in the current execution workspace matching a glob pattern. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.',
     parameters: {
       type: 'object',
       properties: {
         pattern: { type: 'string', description: 'Glob pattern.' },
+        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
         include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
       },
       required: ['pattern'],
@@ -375,11 +380,12 @@ const GREP_WORKSPACE_TOOL = {
   type: 'function',
   function: {
     name: 'grep',
-    description: 'Search text in files under the current execution workspace.',
+    description: 'Search text in files under the current execution workspace. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.',
     parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Text or regex to search for.' },
+        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
         is_regexp: { type: 'boolean', description: 'Treat query as regex when true.' },
         include_pattern: { type: 'string', description: 'Optional file glob filter.' },
         include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
@@ -394,11 +400,12 @@ const GIT_STATUS_TOOL = {
   type: 'function',
   function: {
     name: 'git_status',
-    description: 'Get git status for the current execution repository context.',
+    description: 'Get git status for exactly one subproject repository context. There is no git status at the virtual global root.',
     parameters: {
       type: 'object',
       properties: {
-        repo_path: { type: 'string', description: 'Optional repository path override.' },
+        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
+        repo_path: { type: 'string', description: 'Optional repository path override. In a virtual global root, you can use mount-prefixed values such as api or api/src.' },
       },
       required: [],
     },
@@ -414,6 +421,7 @@ const GIT_LOG_TOOL = {
       type: 'object',
       properties: {
         repo_path: { type: 'string' },
+        project_id: { type: 'string' },
         limit: { type: 'number' },
         branch: { type: 'string' },
       },
@@ -431,6 +439,7 @@ const GIT_BRANCH_LIST_TOOL = {
       type: 'object',
       properties: {
         repo_path: { type: 'string' },
+        project_id: { type: 'string' },
       },
       required: [],
     },
@@ -446,6 +455,7 @@ const GIT_DIFF_TOOL = {
       type: 'object',
       properties: {
         repo_path: { type: 'string' },
+        project_id: { type: 'string' },
         base: { type: 'string' },
         head: { type: 'string' },
         context_lines: { type: 'number' },
@@ -466,6 +476,7 @@ const GIT_GET_TREE_TOOL = {
       type: 'object',
       properties: {
         repo_path: { type: 'string' },
+        project_id: { type: 'string' },
         branch: { type: 'string' },
       },
       required: [],
@@ -482,6 +493,7 @@ const GIT_ADD_TOOL = {
       type: 'object',
       properties: {
         repo_path: { type: 'string' },
+        project_id: { type: 'string' },
         paths: { type: 'array', items: { type: 'string' } },
       },
       required: [],
@@ -498,6 +510,7 @@ const GIT_COMMIT_TOOL = {
       type: 'object',
       properties: {
         repo_path: { type: 'string' },
+        project_id: { type: 'string' },
         message: { type: 'string' },
         stage_all: { type: 'boolean' },
       },
@@ -515,6 +528,7 @@ const GIT_CHECKOUT_TOOL = {
       type: 'object',
       properties: {
         repo_path: { type: 'string' },
+        project_id: { type: 'string' },
         branch_or_commit: { type: 'string' },
         create: { type: 'boolean' },
       },
@@ -527,11 +541,12 @@ const GIT_MERGE_TOOL = {
   type: 'function',
   function: {
     name: 'git_merge',
-    description: 'Merge a source branch into a target branch.',
+    description: 'Merge a source branch into a target branch for exactly one subproject repository context.',
     parameters: {
       type: 'object',
       properties: {
         repo_path: { type: 'string' },
+        project_id: { type: 'string' },
         branch_name: { type: 'string' },
         into_branch: { type: 'string' },
       },
@@ -549,6 +564,7 @@ const GIT_RESET_TOOL = {
       type: 'object',
       properties: {
         repo_path: { type: 'string' },
+        project_id: { type: 'string' },
         mode: { type: 'string', enum: ['soft', 'mixed', 'hard'] },
         commit: { type: 'string' },
         confirm: { type: 'boolean' },
@@ -567,9 +583,73 @@ const GIT_STASH_TOOL = {
       type: 'object',
       properties: {
         repo_path: { type: 'string' },
+        project_id: { type: 'string' },
         message: { type: 'string' },
       },
       required: [],
+    },
+  },
+};
+
+const TERMINAL_CREATE_SESSION_TOOL = {
+  type: 'function',
+  function: {
+    name: 'terminal_create_session',
+    description: 'Create a terminal session bound to exactly one subproject. project_id is required. There is no terminal at the virtual global root.',
+    parameters: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string', description: 'Required subproject identifier.' },
+        cwd: { type: 'string', description: 'Optional directory under the selected subproject or worktree.' },
+      },
+      required: ['project_id'],
+    },
+  },
+};
+
+const TERMINAL_RUN_TOOL = {
+  type: 'function',
+  function: {
+    name: 'terminal_run',
+    description: 'Run a shell command inside an existing terminal session.',
+    parameters: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Terminal session identifier returned by terminal_create_session.' },
+        command: { type: 'string', description: 'Shell command to execute.' },
+        timeout_ms: { type: 'number', description: 'Optional timeout in milliseconds.' },
+      },
+      required: ['session_id', 'command'],
+    },
+  },
+};
+
+const TERMINAL_READ_TOOL = {
+  type: 'function',
+  function: {
+    name: 'terminal_read',
+    description: 'Read the latest output and status from an existing terminal session.',
+    parameters: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Terminal session identifier returned by terminal_create_session.' },
+      },
+      required: ['session_id'],
+    },
+  },
+};
+
+const TERMINAL_KILL_TOOL = {
+  type: 'function',
+  function: {
+    name: 'terminal_kill',
+    description: 'Kill the active process in an existing terminal session.',
+    parameters: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Terminal session identifier returned by terminal_create_session.' },
+      },
+      required: ['session_id'],
     },
   },
 };
@@ -1387,6 +1467,20 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       return `\n\n[TOOL] grep${query ? ` ("${query}")` : ''}\n`;
     }
 
+    if (toolName === 'terminal_create_session') {
+      const projectId = typeof args.project_id === 'string' ? args.project_id : '';
+      return `\n\n[TOOL] terminal_create_session${projectId ? ` ("${projectId}")` : ''}\n`;
+    }
+
+    if (toolName === 'terminal_run') {
+      const command = typeof args.command === 'string' ? args.command : '';
+      return `\n\n[TOOL] terminal_run${command ? ` ("${command}")` : ''}\n`;
+    }
+
+    if (toolName === 'terminal_read' || toolName === 'terminal_kill') {
+      return `\n\n[TOOL] ${toolName}\n`;
+    }
+
     if (toolName === 'need_add') {
       const title = typeof args.title === 'string' ? args.title : '';
       return `\n\n[TOOL] need_add${title ? ` ("${title}")` : ''}\n`;
@@ -1501,6 +1595,18 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   }
   if (allowedTools.has('git_stash')) {
     tools.push(GIT_STASH_TOOL);
+  }
+  if (allowedTools.has('terminal_create_session')) {
+    tools.push(TERMINAL_CREATE_SESSION_TOOL);
+  }
+  if (allowedTools.has('terminal_run')) {
+    tools.push(TERMINAL_RUN_TOOL);
+  }
+  if (allowedTools.has('terminal_read')) {
+    tools.push(TERMINAL_READ_TOOL);
+  }
+  if (allowedTools.has('terminal_kill')) {
+    tools.push(TERMINAL_KILL_TOOL);
   }
   if (
     allowedTools.has('web_search') &&

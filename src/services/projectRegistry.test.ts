@@ -10,6 +10,7 @@ import {
 const makeProject = (id: string, path: string, name = id) => ({
   id,
   name,
+  mountName: id,
   path,
   created_at: '2026-03-14T00:00:00.000Z',
   status: 'active' as const,

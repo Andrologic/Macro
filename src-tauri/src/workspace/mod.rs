@@ -194,6 +194,9 @@ pub async fn create_project(
 
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "create_project").await?;
+    let persisted_project = find_project_by_id(&sanitized_state.project_groups, &project.id)
+        .cloned()
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project.id)))?;
     tracing::info!(
         action = "project_registry_action_succeeded",
         operation = "create_project",
@@ -202,7 +205,7 @@ pub async fn create_project(
         after_project_count = count_projects(&sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
-    Ok(project)
+    Ok(persisted_project)
 }
 
 pub async fn import_git_repo(
@@ -260,6 +263,9 @@ pub async fn import_git_repo(
 
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "import_git_repo").await?;
+    let persisted_project = find_project_by_id(&sanitized_state.project_groups, &project.id)
+        .cloned()
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project.id)))?;
     tracing::info!(
         action = "project_registry_action_succeeded",
         operation = "import_git_repo",
@@ -268,7 +274,7 @@ pub async fn import_git_repo(
         after_project_count = count_projects(&sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
-    Ok(project)
+    Ok(persisted_project)
 }
 
 pub async fn rename_project_group(
@@ -608,6 +614,7 @@ async fn load_state(
             empty_groups_removed = repair_report.empty_groups_removed,
             removed_synthetic_groups = repair_report.removed_synthetic_groups,
             removed_synthetic_projects = repair_report.removed_synthetic_projects,
+            mount_names_assigned = repair_report.mount_names_assigned,
             removed_group_ids = ?repair_report.removed_group_ids,
             removed_project_ids = ?repair_report.removed_project_ids,
             current_plan_project_ids_removed = repair_report.current_plan_project_ids_removed,
@@ -693,6 +700,8 @@ fn sanitize_workspace_state(
             repair_report.removed_group_ids.push(group.id);
             continue;
         }
+
+        repair_report.mount_names_assigned += assign_group_mount_names(&mut sanitized_projects);
 
         sanitized_groups.push(ProjectGroupDto {
             projects: sanitized_projects,
@@ -877,6 +886,7 @@ async fn persist_sanitized_state(
             empty_groups_removed = repair_report.empty_groups_removed,
             removed_synthetic_groups = repair_report.removed_synthetic_groups,
             removed_synthetic_projects = repair_report.removed_synthetic_projects,
+            mount_names_assigned = repair_report.mount_names_assigned,
             removed_group_ids = ?repair_report.removed_group_ids,
             removed_project_ids = ?repair_report.removed_project_ids,
             current_plan_project_ids_removed = repair_report.current_plan_project_ids_removed,
@@ -920,6 +930,7 @@ fn build_project(
 ) -> ProjectDto {
     let now = Utc::now().to_rfc3339();
     let slug = slugify(name);
+    let id = format!("project-{}-{}", slug, Utc::now().timestamp_millis());
     let project_path = path
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -937,8 +948,9 @@ fn build_project(
     };
 
     ProjectDto {
-        id: format!("project-{}-{}", slug, Utc::now().timestamp_millis()),
+        id: id.clone(),
         name: normalized_name,
+        mount_name: derive_project_mount_name(&project_path, name, &id),
         path: project_path,
         created_at: now,
         status: "active".to_string(),
@@ -1130,6 +1142,86 @@ fn slugify(input: &str) -> String {
     slug.trim_matches('-').to_string()
 }
 
+fn slugify_mount_name(input: &str) -> String {
+    let slug = slugify(input);
+    if slug.is_empty() {
+        "project".to_string()
+    } else {
+        slug
+    }
+}
+
+fn get_project_path_basename(project_path: &str) -> Option<String> {
+    let trimmed = project_path.trim().replace('\\', "/");
+    let trimmed = trimmed.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    trimmed
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .last()
+        .map(str::to_string)
+}
+
+fn derive_project_mount_name(project_path: &str, project_name: &str, project_id: &str) -> String {
+    if let Some(base_name) = get_project_path_basename(project_path) {
+        let slug = slugify_mount_name(&base_name);
+        if !slug.is_empty() {
+            return slug;
+        }
+    }
+
+    let name_slug = slugify_mount_name(project_name);
+    if !name_slug.is_empty() {
+        return name_slug;
+    }
+
+    slugify_mount_name(project_id)
+}
+
+fn normalize_project_mount_name(project: &ProjectDto) -> String {
+    let explicit = project.mount_name.trim();
+    if !explicit.is_empty() {
+        return slugify_mount_name(explicit);
+    }
+
+    derive_project_mount_name(&project.path, &project.name, &project.id)
+}
+
+fn assign_group_mount_names(projects: &mut [ProjectDto]) -> usize {
+    let mut used_mounts = HashSet::new();
+    let mut assigned = 0usize;
+
+    for project in projects.iter_mut() {
+        let base = normalize_project_mount_name(project);
+        let mut next_mount = base.clone();
+        let mut suffix = 2usize;
+
+        while used_mounts.contains(&next_mount) {
+            next_mount = format!("{}-{}", base, suffix);
+            suffix += 1;
+        }
+
+        if project.mount_name != next_mount {
+            project.mount_name = next_mount.clone();
+            assigned += 1;
+        }
+
+        used_mounts.insert(next_mount);
+    }
+
+    assigned
+}
+
+fn find_project_by_id<'a>(groups: &'a [ProjectGroupDto], project_id: &str) -> Option<&'a ProjectDto> {
+    groups
+        .iter()
+        .flat_map(|group| group.projects.iter())
+        .find(|project| project.id == project_id)
+}
+
 fn task_status_matches(task: &Value, expected: &[&str]) -> bool {
     task.get("status")
         .and_then(|value| value.as_str())
@@ -1154,6 +1246,7 @@ mod tests {
         ProjectDto {
             id: id.to_string(),
             name: id.to_string(),
+            mount_name: String::new(),
             path: path.to_string(),
             created_at: "2026-03-14T00:00:00.000Z".to_string(),
             status: "active".to_string(),
@@ -1282,11 +1375,46 @@ mod tests {
         assert_eq!(report.current_plan_task_targets_removed, 1);
         assert_eq!(report.plan_nodes_removed, 1);
         assert_eq!(report.predicted_branches_removed, 1);
+        assert_eq!(report.mount_names_assigned, 2);
         assert_eq!(plan.project_ids, vec!["project-web".to_string()]);
         assert_eq!(plan.tasks.len(), 1);
         assert_eq!(
             plan.tasks[0].get("project_ids").and_then(|value| value.as_array()).map(Vec::len),
             Some(1)
         );
+        assert_eq!(sanitized.project_groups[0].projects[0].mount_name, "web");
+        assert_eq!(sanitized.project_groups[0].projects[1].mount_name, "api");
+    }
+
+    #[test]
+    fn sanitize_workspace_state_assigns_unique_mount_names_per_group() {
+        let workspace_path = PathBuf::from("C:/workspace");
+        let state = WorkspaceState {
+            version: 1,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![
+                    ProjectDto {
+                        mount_name: "app".to_string(),
+                        ..make_project("project-app-1", "apps/app")
+                    },
+                    ProjectDto {
+                        mount_name: "app".to_string(),
+                        ..make_project("project-app-2", "packages/app")
+                    },
+                ],
+            }],
+            current_plan: None,
+            plan_nodes: Vec::new(),
+            predicted_branches: Vec::new(),
+        };
+
+        let (sanitized, report) = sanitize_workspace_state(&workspace_path, state);
+
+        assert_eq!(report.mount_names_assigned, 1);
+        assert_eq!(sanitized.project_groups[0].projects[0].mount_name, "app");
+        assert_eq!(sanitized.project_groups[0].projects[1].mount_name, "app-2");
     }
 }

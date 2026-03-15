@@ -230,6 +230,7 @@ export const createProject = async (data: {
   const newProject: Project = {
     id: `project_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     name: data.name,
+    mountName: (data.path || data.name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'project',
     path: data.path || data.name.toLowerCase().replace(/\s+/g, '-'),
     created_at: new Date().toISOString(),
     status: 'active',
@@ -259,6 +260,7 @@ export const importGitRepo = async (data: {
   const newProject: Project = {
     id: `project_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     name: data.projectName,
+    mountName: (data.path || data.projectName).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'project',
     path: data.path || data.projectName.toLowerCase().replace(/\s+/g, '-'),
     created_at: new Date().toISOString(),
     status: 'active',
@@ -310,6 +312,7 @@ export const renameProject = async (data: {
     : {
       id: data.projectId,
       name: data.name,
+      mountName: data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'project',
       path: '.',
       created_at: new Date().toISOString(),
       status: 'active',
@@ -365,6 +368,7 @@ export const archiveProject = async (data: {
     : {
       id: data.projectId,
       name: 'Archived Project',
+      mountName: 'archived-project',
       path: '.',
       created_at: new Date().toISOString(),
       status: 'archived',

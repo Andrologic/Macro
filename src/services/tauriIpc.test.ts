@@ -159,6 +159,52 @@ describe('tauriIpc executeWorkspaceTool', () => {
     ]);
   });
 
+  it('uses camelCase payload keys for terminal commands', async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.terminalCreateSession({
+      projectId: 'project-1',
+      cwd: 'packages/api',
+    });
+    await tauriIpc.terminalRun({
+      sessionId: 'terminal-1',
+      command: 'git status',
+      timeoutMs: 5000,
+    });
+    await tauriIpc.terminalRead('terminal-1');
+    await tauriIpc.terminalKill('terminal-1');
+
+    expect(invokeCalls).toEqual([
+      {
+        command: 'terminal_create_session',
+        payload: {
+          projectId: 'project-1',
+          cwd: 'packages/api',
+        },
+      },
+      {
+        command: 'terminal_run',
+        payload: {
+          sessionId: 'terminal-1',
+          command: 'git status',
+          timeoutMs: 5000,
+        },
+      },
+      {
+        command: 'terminal_read',
+        payload: {
+          sessionId: 'terminal-1',
+        },
+      },
+      {
+        command: 'terminal_kill',
+        payload: {
+          sessionId: 'terminal-1',
+        },
+      },
+    ]);
+  });
+
   afterAll(() => {
     mock.restore();
   });
