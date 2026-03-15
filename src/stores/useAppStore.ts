@@ -82,7 +82,9 @@ let projectSwitchRequestId = 0;
 
 export interface ArchitectPlanContext {
   id: string;
+  slug?: string;
   title: string;
+  label?: string;
   description: string;
   status: string;
   targetBranch: string;
@@ -389,7 +391,9 @@ const restoreProjectContext = async (
           activeArchitectPlanId: plan.id,
           activePlanContext: {
             id: plan.id,
+            slug: plan.slug,
             title: plan.title,
+            label: plan.label,
             description: plan.description,
             status: plan.status,
             targetBranch: plan.targetBranch,

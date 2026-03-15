@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
 import { useFileChangesStore } from '../../stores/useFileChangesStore';
+import { getArchitectPlanDisplayName } from '../../services/architectPlanPresentation';
 import { taskMatchesProjectId } from '../../services/implementTaskCatalog';
 import { getScopedProjectIds } from '../../services/globalProjects';
 import {
@@ -477,17 +478,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }, [planSummaries, scopedTasks]);
 
   const planLabelsById = useMemo(() => {
-    const titleCounts = new Map<string, number>();
-    availablePlanSummaries.forEach((plan) => {
-      titleCounts.set(plan.title, (titleCounts.get(plan.title) || 0) + 1);
-    });
-
     return new Map(
       availablePlanSummaries.map((plan) => [
         plan.id,
-        (titleCounts.get(plan.title) || 0) > 1
-          ? `${plan.title} (${plan.targetBranch})`
-          : plan.title,
+        getArchitectPlanDisplayName(plan),
       ])
     );
   }, [availablePlanSummaries]);
