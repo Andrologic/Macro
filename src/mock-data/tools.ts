@@ -405,7 +405,7 @@ export const mockInternalTools: Tool[] = [
     name: 'Generate Strategy',
     category: 'productivity',
     status: 'enabled',
-    description: 'Generate strategy from collected needs for the active plan',
+    description: 'Generate strategy from collected needs for the active plan using identifier-based plan branches',
     icon: 'git-merge',
     config: {
       enabled: true,
@@ -419,7 +419,7 @@ export const mockInternalTools: Tool[] = [
     name: 'Create Plan',
     category: 'productivity',
     status: 'enabled',
-    description: 'Create a new Architect plan in @macro branch metadata',
+    description: 'Create a new Architect plan with a generated identifier and optional secondary label',
     icon: 'plus-square',
     config: {
       enabled: true,
@@ -461,7 +461,7 @@ export const mockInternalTools: Tool[] = [
     name: 'Update Plan',
     category: 'productivity',
     status: 'enabled',
-    description: 'Update metadata or nodes of an Architect plan',
+    description: 'Update the optional label, description, status, or activity of an Architect plan',
     icon: 'edit',
     config: {
       enabled: true,

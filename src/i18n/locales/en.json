@@ -1,4 +1,4 @@
-{
+﻿{
   "common": {
     "save": "Save",
     "cancel": "Cancel",
@@ -211,12 +211,17 @@
     "planForm": {
       "createTitle": "New Plan",
       "renameTitle": "Rename Plan",
+      "editLabelTitle": "Edit Plan Label",
       "nameLabel": "Plan name",
       "nameRequired": "Plan name is required.",
       "namePlaceholder": "e.g. Authentication Overhaul",
+      "labelLabel": "Plan label",
+      "labelRequired": "Plan label is required.",
+      "labelPlaceholder": "e.g. Authentication Overhaul",
       "descriptionLabel": "Description",
       "descriptionPlaceholder": "What is this plan about?",
-      "createAction": "Create Plan"
+      "createAction": "Create Plan",
+      "saveLabel": "Save Label"
     },
     "planSelector": {
       "title": "Architect plans",
@@ -232,14 +237,15 @@
       "nodesCount": "{{count}} nodes",
       "active": "Active",
       "renamePlan": "Rename plan",
+      "editPlanLabel": "Edit plan label",
       "archivePlan": "Archive plan",
       "restorePlan": "Restore plan",
       "deletePlan": "Delete plan",
       "deleteDialogTitle": "Delete Plan",
-      "deleteDialogDescription": "This will permanently delete \"{{title}}\" and its strategy data. This action cannot be undone.",
+      "deleteDialogDescription": "This will mark \"{{title}}\" as deleted and clean its plan branches/worktrees. The plan metadata is kept for recovery.",
       "deleteDialogFallback": "This action cannot be undone.",
       "deleting": "Deleting...",
-      "deletePermanently": "Delete permanently",
+      "deletePermanently": "Delete and clean",
       "toastConversationCreated": "Conversation created for this plan",
       "toastDedicatedConversation": "Dedicated conversation created for this plan",
       "toastPlanArchived": "Plan \"{{title}}\" archived",
@@ -434,13 +440,13 @@
     "zoom_override_desc": "Manually set interface zoom from 75% to 200%.",
     "architectGitFlow": {
       "title": "Architect Git Flow",
-      "subtitle": "Control the target branch and automatic branch naming used when validating plans.",
+      "subtitle": "Control the target branch and automatic branch naming used when validating plans. New plans use their generated identifier as the plan slug.",
       "baseBranchLabel": "Default target branch",
-      "planTemplateLabel": "Plan branch template",
-      "featureTemplateLabel": "Feature branch template",
+      "planTemplateLabel": "Plan branch template (plan identifier)",
+      "featureTemplateLabel": "Feature branch template (plan identifier)",
       "previewTitle": "Preview",
       "previewTarget": "Target",
-      "previewPlan": "Plan",
+      "previewPlan": "Plan identifier",
       "previewFeature": "Feature",
       "reset": "Reset defaults",
       "save": "Save changes",
@@ -455,3 +461,4 @@
     "delete": "Delete Provider"
   }
 }
+

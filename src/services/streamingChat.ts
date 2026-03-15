@@ -674,30 +674,30 @@ const ADD_NEED_TOOL = {
   },
 };
 
-const GENERATE_PLAN_TOOL = {
+export const GENERATE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'strategy_generate',
-    description: 'Generate a structured strategy for the active plan based on collected needs. Plan integration branch is plan/<plan-slug> (from develop); strategy branches must be feature/<plan-slug>/<feature-slug>.',
+    description: 'Generate a structured strategy for the active plan based on collected needs. New plans use a generated plan identifier as the canonical slug, so plan branches are plan/<plan-id> and feature branches are feature/<plan-id>/<feature-slug>.',
     parameters: {
       type: 'object',
       properties: {
         plan_id: { type: 'string', description: 'Optional existing plan ID to update.' },
-        plan_title: { type: 'string', description: 'Optional plan title for persistence in @macro metadata.' },
+        plan_title: { type: 'string', description: 'Optional secondary plan label to persist. For legacy plans this remains a title alias.' },
         plan_description: { type: 'string', description: 'Optional plan description for persistence in @macro metadata.' },
         target_branch: { type: 'string', description: 'Code branch this plan is associated with.' },
         nodes: {
           type: 'array',
           items: {
             type: 'object',
-            properties: {
-              title: { type: 'string' },
-              description: { type: 'string' },
-              type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
-              assignedBranch: { type: 'string', description: 'The git branch name this task belongs to, e.g., "feature/<plan-slug>/auth-api"' },
-              dependencies: { type: 'array', items: { type: 'string' }, description: 'Titles of nodes this one depends on.' },
-            },
-            required: ['title', 'type', 'assignedBranch'],
+              properties: {
+                title: { type: 'string' },
+                description: { type: 'string' },
+                type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+                assignedBranch: { type: 'string', description: 'The git branch name this task belongs to, e.g. "feature/1710000000000/auth-api"' },
+                dependencies: { type: 'array', items: { type: 'string' }, description: 'Titles of nodes this one depends on.' },
+              },
+              required: ['title', 'type', 'assignedBranch'],
           },
           description: 'List of plan nodes representing the tasks to be done.',
         },
@@ -707,26 +707,27 @@ const GENERATE_PLAN_TOOL = {
   },
 };
 
-const CREATE_PLAN_TOOL = {
+export const CREATE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_create',
-    description: 'Create a new Architect plan stored under the @macro branch metadata for a target code branch.',
+    description: 'Create a new Architect plan stored under the @macro branch metadata for a target code branch. New plans are created immediately with a generated identifier; title is optional and treated as an initial secondary label.',
     parameters: {
       type: 'object',
       properties: {
-        title: { type: 'string' },
+        label: { type: 'string', description: 'Optional secondary plan label.' },
+        title: { type: 'string', description: 'Legacy alias for label. Optional.' },
         description: { type: 'string' },
         target_branch: { type: 'string', description: 'Code branch this plan belongs to (e.g. develop, feature/auth).' },
-        status: { type: 'string', enum: ['draft', 'validated', 'in_progress', 'archived', 'deleted'] },
+        status: { type: 'string', enum: ['draft', 'validated', 'in_progress', 'completed', 'archived', 'deleted'] },
         set_active: { type: 'boolean' },
       },
-      required: ['title'],
+      required: [],
     },
   },
 };
 
-const LIST_PLANS_TOOL = {
+export const LIST_PLANS_TOOL = {
   type: 'function',
   function: {
     name: 'plan_list',
@@ -736,13 +737,14 @@ const LIST_PLANS_TOOL = {
       properties: {
         target_branch: { type: 'string' },
         include_deleted: { type: 'boolean' },
+        include_archived: { type: 'boolean' },
       },
       required: [],
     },
   },
 };
 
-const GET_PLAN_TOOL = {
+export const GET_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_get',
@@ -758,18 +760,19 @@ const GET_PLAN_TOOL = {
   },
 };
 
-const UPDATE_PLAN_TOOL = {
+export const UPDATE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_update',
-    description: 'Update title, description, status, or active flag for an existing plan.',
+    description: 'Update the optional label/title alias, description, status, or active flag for an existing plan. For new plans, label changes never rename the canonical id or slug used for git branches.',
     parameters: {
       type: 'object',
       properties: {
         plan_id: { type: 'string' },
-        title: { type: 'string' },
+        label: { type: 'string', description: 'Optional secondary label for the plan.' },
+        title: { type: 'string', description: 'Legacy alias. For new plans this updates the optional secondary label.' },
         description: { type: 'string' },
-        status: { type: 'string', enum: ['draft', 'validated', 'in_progress', 'archived', 'deleted'] },
+        status: { type: 'string', enum: ['draft', 'validated', 'in_progress', 'completed', 'archived', 'deleted'] },
         target_branch: { type: 'string' },
         set_active: { type: 'boolean' },
       },
@@ -778,7 +781,7 @@ const UPDATE_PLAN_TOOL = {
   },
 };
 
-const DELETE_PLAN_TOOL = {
+export const DELETE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_delete',
@@ -795,7 +798,7 @@ const DELETE_PLAN_TOOL = {
   },
 };
 
-const RESTORE_PLAN_TOOL = {
+export const RESTORE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_restore',
@@ -811,7 +814,7 @@ const RESTORE_PLAN_TOOL = {
   },
 };
 
-const SET_ACTIVE_PLAN_TOOL = {
+export const SET_ACTIVE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_set_active',
@@ -2323,4 +2326,5 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     throw err;
   }
 }
+
 

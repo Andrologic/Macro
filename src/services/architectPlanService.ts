@@ -3,6 +3,7 @@ import type { Need } from '../types';
 import { useAppStore } from '../stores/useAppStore';
 import * as tauriIpc from './tauriIpc';
 import { getScopedProjectIds } from './globalProjects';
+import { isCanonicalArchitectPlan } from './architectPlanPresentation';
 import {
   getArchitectGitNamingSettings,
   normalizeFeatureSlugInput,
@@ -22,6 +23,7 @@ export interface ArchitectPlanRecord {
   id: string;
   slug: string;
   title: string;
+  label?: string;
   description: string;
   status: ArchitectPlanStatus;
   targetBranch: string;
@@ -40,6 +42,7 @@ export interface ArchitectPlanSummary {
   id: string;
   slug: string;
   title: string;
+  label?: string;
   description: string;
   status: ArchitectPlanStatus;
   targetBranch: string;
@@ -160,6 +163,11 @@ const slugifyPlanTitle = (value: string): string =>
     .replace(/^-+/, '')
     .replace(/-+$/, '') || `plan-${Date.now()}`;
 
+const normalizePlanLabel = (value?: string): string | undefined => {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
 const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[] => Array.from(
   new Set(
     [ ...(Array.isArray(projectIds) ? projectIds : []), ...(projectId ? [projectId] : []) ]
@@ -239,10 +247,13 @@ const localPlanNeedsKey = (branchName: string, planId: string): string =>
 
 const buildPlanMarkdown = (plan: ArchitectPlanRecord): string => {
   const lines: string[] = [];
-  lines.push(`# Plan: ${plan.title}`);
+  lines.push(`# Plan: ${plan.id}`);
   lines.push('');
   lines.push('## Metadata');
   lines.push(`- Plan ID: ${plan.id}`);
+  if (plan.label) {
+    lines.push(`- Plan Label: ${plan.label}`);
+  }
   lines.push(`- Plan Slug: ${plan.slug}`);
   lines.push(`- Plan Integration Branch: ${toPlanIntegrationBranch(plan.slug)}`);
   lines.push(`- Target Code Branch: ${plan.targetBranch}`);
@@ -295,6 +306,9 @@ const buildTaskPlannedMarkdown = (plan: ArchitectPlanRecord, node: PlanNode): st
   lines.push('');
   lines.push(`- Plan ID: ${plan.id}`);
   lines.push(`- Plan Title: ${plan.title}`);
+  if (plan.label) {
+    lines.push(`- Plan Label: ${plan.label}`);
+  }
   lines.push(`- Task ID: ${node.id}`);
   lines.push(`- Branch: ${node.assignedBranch || 'work'}`);
   lines.push(`- Projects: ${projectIds.join(', ') || 'none'}`);
@@ -327,6 +341,9 @@ const buildTaskExecutedMarkdown = (plan: ArchitectPlanRecord, record: ArchitectT
   lines.push('');
   lines.push(`- Plan ID: ${plan.id}`);
   lines.push(`- Plan Title: ${plan.title}`);
+  if (plan.label) {
+    lines.push(`- Plan Label: ${plan.label}`);
+  }
   lines.push(`- Task ID: ${record.taskId}`);
   lines.push(`- Completed At: ${record.completedAt}`);
   if (record.summary) {
@@ -694,10 +711,15 @@ const normalizeSummariesForBranch = (
 ): ArchitectPlanSummary[] =>
   summaries.map((summary) => {
     const projectIds = resolvePlanProjectIds(summary);
+    const safeId = sanitizeId(summary.id);
+    const normalizedTitle = (summary.title || safeId).trim() || safeId;
+    const normalizedSlug = slugifyPlanTitle((summary as Partial<ArchitectPlanSummary>).slug || normalizedTitle || safeId);
     return {
       ...summary,
-      id: sanitizeId(summary.id),
-      slug: slugifyPlanTitle((summary as Partial<ArchitectPlanSummary>).slug || summary.title || summary.id),
+      id: safeId,
+      slug: normalizedSlug,
+      title: normalizedSlug === safeId ? safeId : normalizedTitle,
+      label: normalizePlanLabel(summary.label),
       targetBranch: normalizeBranchName(summary.targetBranch || branchName),
       projectId: projectIds[0],
       projectIds,
@@ -771,11 +793,16 @@ const normalizePlanRecordForBranch = (
     nodes,
     predictedBranches,
   });
+  const normalizedId = sanitizeId(plan.id || safeId);
+  const normalizedTitle = (plan.title || normalizedId).trim() || normalizedId;
+  const normalizedSlug = slugifyPlanTitle((plan as Partial<ArchitectPlanRecord>).slug || normalizedTitle || safeId);
 
   return {
     ...plan,
-    id: sanitizeId(plan.id || safeId),
-    slug: slugifyPlanTitle((plan as Partial<ArchitectPlanRecord>).slug || plan.title || safeId),
+    id: normalizedId,
+    slug: normalizedSlug,
+    title: normalizedSlug === normalizedId ? normalizedId : normalizedTitle,
+    label: normalizePlanLabel(plan.label),
     targetBranch: normalizeBranchName(plan.targetBranch || normalized),
     projectId: projectIds[0],
     projectIds,
@@ -828,6 +855,8 @@ const writePlanAtScope = async (scope: ArchitectMetadataScope, branchName: strin
   });
   const normalizedPlan: ArchitectPlanRecord = {
     ...stripPlanReplicaMetadata(plan),
+    title: isCanonicalArchitectPlan(plan) ? plan.id : (plan.title || plan.id).trim() || plan.id,
+    label: normalizePlanLabel(plan.label),
     projectId: projectIds[0],
     projectIds,
     nodes: normalizedNodes,
@@ -929,6 +958,7 @@ const toSummary = (plan: ArchitectPlanRecord): ArchitectPlanSummary => ({
   id: plan.id,
   slug: plan.slug,
   title: plan.title,
+  label: plan.label,
   description: plan.description,
   status: plan.status,
   targetBranch: plan.targetBranch,
@@ -1257,7 +1287,8 @@ export const getArchitectPlan = async (branchName: string, planId: string): Prom
 
 export const createArchitectPlan = async (input: {
   branchName: string;
-  title: string;
+  title?: string;
+  label?: string;
   slug?: string;
   description?: string;
   conversationId?: string;
@@ -1274,16 +1305,17 @@ export const createArchitectPlan = async (input: {
   const now = new Date().toISOString();
 
   // Read index early for uniqueness checks
+  const planId = input.planId ? sanitizeId(input.planId) : String(Date.now());
+  const canonicalSlug = planId;
+  const initialLabel = normalizePlanLabel(input.label || input.title);
   const index = await readAggregatedIndex(normalizedBranch);
-  const nextSlug = slugifyPlanTitle(input.slug || input.title || String(Date.now()));
 
   // Reject duplicate slugs across all historical plans, including deleted ones.
-  if (index.reservedPlanSlugs.includes(nextSlug)) {
-    throw new Error(`A plan named "${input.title}" already exists or existed before. Choose a different name.`);
+  if (index.plans.some((plan) => plan.id === planId)) {
+    throw new Error(`A plan with id "${planId}" already exists. Choose a different identifier.`);
   }
 
   // ID is always a random numeric sequence — independent of the title
-  const planId = input.planId ? sanitizeId(input.planId) : String(Date.now());
   const normalizedNodes = normalizePlanNodes(input.nodes || []);
   const normalizedPredictedBranches = normalizePlanPredictedBranches(input.predictedBranches || []);
   const projectIds = resolvePlanProjectIds({
@@ -1295,8 +1327,9 @@ export const createArchitectPlan = async (input: {
 
   const plan: ArchitectPlanRecord = {
     id: planId,
-    slug: nextSlug,
-    title: (input.title || 'Untitled plan').trim(),
+    slug: canonicalSlug,
+    title: planId,
+    label: initialLabel,
     description: (input.description || '').trim(),
     status: input.status || 'draft',
     targetBranch: normalizedBranch,
@@ -1326,6 +1359,7 @@ export const updateArchitectPlan = async (input: {
   branchName: string;
   planId: string;
   title?: string;
+  label?: string;
   slug?: string;
   description?: string;
   conversationId?: string;
@@ -1344,9 +1378,9 @@ export const updateArchitectPlan = async (input: {
     throw new Error(`Plan not found: ${safeId}`);
   }
   const existing = replicaSet.canonical.plan;
+  const isCanonicalPlan = isCanonicalArchitectPlan(existing);
 
-  // Reject duplicate titles when the title is being changed (case-insensitive, excluding self and deleted plans)
-  if (input.title && input.title.trim().toLowerCase() !== existing.title.trim().toLowerCase()) {
+  if (!isCanonicalPlan && input.title && input.title.trim().toLowerCase() !== existing.title.trim().toLowerCase()) {
     const idx = await readAggregatedIndex(normalizedBranch);
     const normalizedTitle = input.title.trim().toLowerCase();
     const titleConflict = idx.plans.find(
@@ -1361,6 +1395,8 @@ export const updateArchitectPlan = async (input: {
   if (requestedSlug !== existing.slug) {
     throw new Error('Plan slug is immutable and cannot be changed after creation.');
   }
+
+  const requestedLabel = normalizePlanLabel(input.label ?? input.title);
 
   const nextNodes = input.nodes !== undefined ? normalizePlanNodes(input.nodes) : existing.nodes;
   const nextPredictedBranches =
@@ -1377,7 +1413,10 @@ export const updateArchitectPlan = async (input: {
   const next: ArchitectPlanRecord = {
     ...existing,
     slug: existing.slug,
-    title: input.title?.trim() || existing.title,
+    title: isCanonicalPlan ? existing.title : input.title?.trim() || existing.title,
+    label: isCanonicalPlan
+      ? (input.label !== undefined || input.title !== undefined ? requestedLabel : existing.label)
+      : normalizePlanLabel(input.label) ?? existing.label,
     description: input.description !== undefined ? input.description.trim() : existing.description,
     conversationId: input.conversationId !== undefined ? input.conversationId : existing.conversationId,
     status: input.status || existing.status,
