@@ -1,4 +1,5 @@
-import type { AppMode, Conversation, Project, ProjectGroup, TaskExecutionTarget } from '../types';
+import type { AppMode, Conversation, Project, ProjectGroup, ProjectMount, TaskExecutionTarget } from '../types';
+import { buildProjectMounts } from './projectMounts';
 import { getFocusedProjectForGroup, getGlobalProjectById, getProjectGroupByProjectId } from './globalProjects';
 
 export interface ExecutionTaskLike {
@@ -27,6 +28,9 @@ export interface ProjectExecutionContext {
   groupId: string | null;
   groupName: string | null;
   projectIds: string[];
+  projectMounts: ProjectMount[];
+  focusedProjectId: string | null;
+  virtualRootEnabled: boolean;
   workspacePathsByProjectId: Record<string, string>;
   defaultWorkspacePath: string | null;
   projectId: string | null;
@@ -101,11 +105,17 @@ export const resolveProjectExecutionContext = (
 
   const globalProject = getGlobalProjectById(projectGroups, inferredGroupId);
   const focusedProjectId =
-    (inferredGroupId
-      ? getFocusedProjectForGroup(projectGroups, inferredGroupId, selectedProjectId)?.id
-      : null) ||
     selectedProjectId ||
+    cleanString(executionTarget?.projectId) ||
     conversationProjectId ||
+    cleanString(task?.project_id) ||
+    (inferredGroupId
+      ? getFocusedProjectForGroup(
+          projectGroups,
+          inferredGroupId,
+          selectedProjectId || conversationProjectId || cleanString(executionTarget?.projectId)
+        )?.id
+      : null) ||
     null;
   const scopedProjectIds = uniqueStrings([
     ...(taskProjectIds.length > 0 ? taskProjectIds : []),
@@ -162,11 +172,37 @@ export const resolveProjectExecutionContext = (
     cleanString(project?.path) ||
     Object.values(workspacePathsByProjectId)[0] ||
     null;
+  const projectMounts = buildProjectMounts({
+    projectGroups,
+    groupId: inferredGroupId,
+    projectIds: scopedProjectIds,
+    workspacePathsByProjectId,
+  });
+  const fallbackProjectMounts =
+    projectMounts.length > 0
+      ? projectMounts
+      : scopedProjectIds
+          .map((scopedProjectId) => {
+            const scopedProject = projectById.get(scopedProjectId);
+            if (!scopedProject) return null;
+            return {
+              projectId: scopedProject.id,
+              groupId: getProjectGroupByProjectId(projectGroups, scopedProject.id)?.id || null,
+              mountName: scopedProject.mountName,
+              displayName: scopedProject.name,
+              workspacePath: workspacePathsByProjectId[scopedProject.id] || cleanString(scopedProject.path),
+            };
+          })
+          .filter((mount): mount is ProjectMount => Boolean(mount));
+  const virtualRootEnabled = Boolean(inferredGroupId && fallbackProjectMounts.length > 0);
 
   return {
     groupId: inferredGroupId,
     groupName: cleanString(globalProject?.name),
     projectIds: scopedProjectIds,
+    projectMounts: fallbackProjectMounts,
+    focusedProjectId,
+    virtualRootEnabled,
     workspacePathsByProjectId,
     defaultWorkspacePath,
     projectId,

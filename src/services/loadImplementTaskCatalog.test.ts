@@ -170,8 +170,8 @@ describe('createLoadImplementTaskCatalog', () => {
             name: 'Checkout',
             isOpen: true,
             projects: [
-              { id: 'web', name: 'Web', path: '/repos/web', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
-              { id: 'api', name: 'API', path: '/repos/api', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+              { id: 'web', name: 'Web', mountName: 'web', path: '/repos/web', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+              { id: 'api', name: 'API', mountName: 'api', path: '/repos/api', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
             ],
           },
           {
@@ -179,7 +179,7 @@ describe('createLoadImplementTaskCatalog', () => {
             name: 'Mobile',
             isOpen: true,
             projects: [
-              { id: 'mobile', name: 'Mobile', path: '/repos/mobile', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+              { id: 'mobile', name: 'Mobile', mountName: 'mobile', path: '/repos/mobile', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
             ],
           },
         ],
@@ -299,7 +299,7 @@ describe('createLoadImplementTaskCatalog', () => {
             name: 'Checkout',
             isOpen: true,
             projects: [
-              { id: 'web', name: 'Web', path: '/repos/web', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+              { id: 'web', name: 'Web', mountName: 'web', path: '/repos/web', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
             ],
           },
         ],
@@ -412,8 +412,8 @@ describe('createLoadImplementTaskCatalog', () => {
             name: 'Checkout',
             isOpen: true,
             projects: [
-              { id: 'web', name: 'Web', path: '/repos/web', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
-              { id: 'api', name: 'API', path: '/repos/api', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+              { id: 'web', name: 'Web', mountName: 'web', path: '/repos/web', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+              { id: 'api', name: 'API', mountName: 'api', path: '/repos/api', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
             ],
           },
         ],

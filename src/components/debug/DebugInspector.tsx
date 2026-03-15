@@ -5,6 +5,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { useProviderStore } from '../../stores/useProviderStore';
+import { useTerminalStore } from '../../stores/useTerminalStore';
 import * as tauriIpc from '../../services/tauriIpc';
 import { resolveProjectExecutionContext } from '../../services/projectExecutionContext';
 import { getFocusedProjectForGroup, getSubProjectsForGroup } from '../../services/globalProjects';
@@ -80,6 +81,7 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
 
   const selectedProviderId = useProviderStore((state) => state.selectedProviderId);
   const selectedModelId = useProviderStore((state) => state.selectedModelId);
+  const terminalSessions = useTerminalStore((state) => state.sessions);
 
   const availableProjects = useMemo(
     () => getSubProjectsForGroup(projectGroups, selectedGroupId),
@@ -189,6 +191,16 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
   const visibleDebugEvents = useMemo(
     () => debugEvents.slice(0, MAX_VISIBLE_EVENTS),
     [debugEvents]
+  );
+  const visibleTerminalSessions = useMemo(
+    () =>
+      Object.values(terminalSessions)
+        .sort(
+          (left, right) =>
+            new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+        )
+        .slice(0, 4),
+    [terminalSessions]
   );
 
   useEffect(() => {
@@ -306,6 +318,7 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
           {projectRegistryDiagnostics && (
             <div className="mt-2 text-[11px] text-muted-foreground">
               duplicates repaired: {projectRegistryDiagnostics.repairReport.duplicate_paths_removed},
+              mount names assigned: {projectRegistryDiagnostics.repairReport.mount_names_assigned},
               empty groups: {projectRegistryDiagnostics.repairReport.empty_groups_removed},
               dead nodes: {projectRegistryDiagnostics.repairReport.plan_nodes_removed},
               dead branches: {projectRegistryDiagnostics.repairReport.predicted_branches_removed}
@@ -349,10 +362,51 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
           </div>
         </div>
 
+        {effectiveExecutionContext.projectMounts.length > 0 && (
+          <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
+            <div className="text-muted-foreground mb-1">Virtual mounts</div>
+            <div className="space-y-1">
+              {effectiveExecutionContext.projectMounts.map((mount) => (
+                <div key={mount.projectId} className="rounded bg-card px-2 py-1">
+                  <div className="font-mono text-foreground">
+                    {mount.mountName}/
+                    <span className="text-muted-foreground">{' -> '}{mount.projectId}</span>
+                  </div>
+                  <div className="text-muted-foreground truncate">{mount.displayName}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
           <div className="text-muted-foreground mb-0.5">Backend default root</div>
           <div className="font-mono text-foreground truncate">{backendWorkspaceRoot}</div>
         </div>
+
+        {visibleTerminalSessions.length > 0 && (
+          <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
+            <div className="text-muted-foreground mb-1">Terminal sessions</div>
+            <div className="space-y-1">
+              {visibleTerminalSessions.map((session) => (
+                <div key={session.id} className="rounded bg-card px-2 py-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-mono text-foreground truncate">
+                      {session.mount_name}/
+                    </div>
+                    <div className="text-muted-foreground">{session.status}</div>
+                  </div>
+                  <div className="text-muted-foreground truncate">
+                    {session.project_name} ({session.project_id})
+                  </div>
+                  <div className="font-mono text-[11px] text-muted-foreground truncate">
+                    {session.cwd}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {effectiveExecutionContext.workspacePath &&
           backendWorkspaceRoot !== '(unknown)' &&

@@ -12,6 +12,7 @@ import { getToolModePolicy as getLocalToolModePolicy } from '../services/toolMod
 import { executeWorkspaceTool } from '../services/workspaceToolExecutor';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
 import { useNeedsStore } from './useNeedsStore';
+import { useTerminalStore } from './useTerminalStore';
 import { canUseRemoteKernel, getRemoteToolModePolicy } from '../services/remoteKernelApi';
 import * as tauriIpc from '../services/tauriIpc';
 import {
@@ -1226,6 +1227,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       normalizedToolName === 'edit' ||
       normalizedToolName === 'glob' ||
       normalizedToolName === 'grep' ||
+      normalizedToolName === 'terminal_create_session' ||
+      normalizedToolName === 'terminal_run' ||
+      normalizedToolName === 'terminal_read' ||
+      normalizedToolName === 'terminal_kill' ||
       normalizedToolName.startsWith('git_')
     ) {
       const mode = useAppStore.getState().mode;
@@ -1245,11 +1250,62 @@ export const useChatStore = create<ChatStore>((set, get) => {
         branchWorktrees: taskState.branchWorktrees,
       });
 
+      if (normalizedToolName === 'terminal_create_session') {
+        const projectId =
+          (typeof args.project_id === 'string' && args.project_id.trim()) ||
+          executionContext.focusedProjectId ||
+          executionContext.projectId;
+
+        if (!projectId) {
+          return 'Missing project_id argument for terminal_create_session.';
+        }
+
+        const session = await useTerminalStore.getState().createSession({
+          projectId,
+          cwd: typeof args.cwd === 'string' ? args.cwd : null,
+        });
+        return JSON.stringify(session, null, 2);
+      }
+
+      if (normalizedToolName === 'terminal_run') {
+        const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+        const command = typeof args.command === 'string' ? args.command : '';
+        if (!sessionId) return 'Missing session_id argument for terminal_run.';
+        if (!command.trim()) return 'Missing command argument for terminal_run.';
+
+        const session = await useTerminalStore.getState().runCommand({
+          sessionId,
+          command,
+          timeoutMs:
+            typeof args.timeout_ms === 'number' ? Math.max(1, Math.floor(args.timeout_ms)) : null,
+        });
+        return JSON.stringify(session, null, 2);
+      }
+
+      if (normalizedToolName === 'terminal_read') {
+        const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+        if (!sessionId) return 'Missing session_id argument for terminal_read.';
+
+        const session = await useTerminalStore.getState().readSession(sessionId);
+        return JSON.stringify(session, null, 2);
+      }
+
+      if (normalizedToolName === 'terminal_kill') {
+        const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+        if (!sessionId) return 'Missing session_id argument for terminal_kill.';
+
+        const session = await useTerminalStore.getState().killSession(sessionId);
+        return JSON.stringify(session, null, 2);
+      }
+
       return executeWorkspaceTool(normalizedToolName, args, mode, {
         workspacePath: executionContext.workspacePath,
         defaultWorkspacePath: executionContext.defaultWorkspacePath,
         projectId: executionContext.projectId,
+        focusedProjectId: executionContext.focusedProjectId,
         groupId: executionContext.groupId,
+        projectMounts: executionContext.projectMounts,
+        virtualRootEnabled: executionContext.virtualRootEnabled,
         workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
       });
     }
@@ -1447,8 +1503,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const scopedProjects = executionContext.projectIds
         .map((projectId) => appState.getProjectById(projectId)?.name || projectId)
         .join(', ') || 'none';
+      const mountSummary = executionContext.projectMounts
+        .map((mount) => `${mount.mountName}=>${mount.displayName}`)
+        .join(', ') || 'none';
       systemInstructions.push(
-        `[Execution Context] global_project="${executionContext.groupName || executionContext.groupId || 'none'}", default_project="${executionContext.projectName || executionContext.projectId || 'none'}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || 'none'}", branch="${executionContext.branchName || 'none'}", workspace_path="${executionContext.workspacePath || 'none'}". Treat the global project as the default scope. For workspace or git operations, you may target a specific subproject by passing project_id when needed; otherwise use the best matching workspace automatically.`
+        `[Execution Context] global_project="${executionContext.groupName || executionContext.groupId || 'none'}", default_subproject="${executionContext.projectName || executionContext.projectId || 'none'}", focused_subproject="${executionContext.focusedProjectId || 'none'}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || 'none'}", branch="${executionContext.branchName || 'none'}", virtual_root="${executionContext.virtualRootEnabled ? 'enabled' : 'disabled'}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only subproject mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one subproject explicitly. Git and terminal operations must target exactly one subproject; there is no git or terminal at the virtual root.`
       );
     }
 
