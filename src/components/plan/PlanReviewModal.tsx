@@ -77,6 +77,11 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
     return true;
   };
 
+  const resolveOperationMessage = (value: unknown, fallback: string): string => {
+    const message = toServiceError(value).message.trim();
+    return message && message !== 'Unknown error' ? message : fallback;
+  };
+
   const loadReview = useCallback(async (options?: { cancelled?: () => boolean }): Promise<PlanReviewResult> => {
     const nextReview = await loadPlanReview({ branchName, planId });
     if (options?.cancelled?.()) {
@@ -116,7 +121,7 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
         await retry();
       }
     } catch (repairError) {
-      setError(repairError instanceof Error ? repairError.message : String(repairError));
+      setError(resolveOperationMessage(repairError, t('architect.planSelector.errorRepairReplica', 'Failed to repair plan metadata.')));
     } finally {
       setIsRepairingReplica(false);
     }
@@ -136,7 +141,7 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
         if (openReplicaRepair(loadError, () => loadReview())) {
           return;
         }
-        setError(loadError instanceof Error ? loadError.message : String(loadError));
+        setError(resolveOperationMessage(loadError, t('architect.planReview.loadError', 'Failed to load plan review.')));
       } finally {
         if (!cancelled) {
           setIsLoading(false);
