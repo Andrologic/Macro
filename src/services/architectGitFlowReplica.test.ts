@@ -1,0 +1,372 @@
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+
+type MockAppState = {
+  selectedGroupId: string | null;
+  selectedProjectId: string | null;
+  projectGroups: Array<{
+    id: string;
+    name: string;
+    isOpen: boolean;
+    projects: Array<{
+      id: string;
+      name: string;
+      mountName: string;
+      path: string;
+    }>;
+  }>;
+};
+
+const appState: MockAppState = {
+  selectedGroupId: 'group-main',
+  selectedProjectId: 'web',
+  projectGroups: [
+    {
+      id: 'group-main',
+      name: 'Main',
+      isOpen: true,
+      projects: [
+        {
+          id: 'web',
+          name: 'Web',
+          mountName: 'web',
+          path: '/repos/web',
+        },
+      ],
+    },
+  ],
+};
+
+const workspaceFiles = new Map<string, Map<string, string>>();
+let importCounter = 0;
+let originalConsoleInfo: typeof console.info;
+
+const normalizeFsPath = (value: string): string =>
+  value.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/').replace(/\/+$/, '');
+
+const ensureWorkspace = (workspacePath?: string | null): Map<string, string> => {
+  const key = (workspacePath && workspacePath.trim() ? workspacePath : '__workspace__')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '');
+  const workspace = workspaceFiles.get(key);
+  if (workspace) {
+    return workspace;
+  }
+  const next = new Map<string, string>();
+  workspaceFiles.set(key, next);
+  return next;
+};
+
+const writeWorkspaceFile = (workspacePath: string | null | undefined, path: string, content: string): void => {
+  ensureWorkspace(workspacePath).set(normalizeFsPath(path), content);
+};
+
+const writeWorkspaceJson = (workspacePath: string | null | undefined, path: string, value: unknown): void => {
+  writeWorkspaceFile(workspacePath, path, JSON.stringify(value, null, 2));
+};
+
+const readWorkspaceFile = (workspacePath: string | null | undefined, path: string): string | null =>
+  ensureWorkspace(workspacePath).get(normalizeFsPath(path)) ?? null;
+
+const deleteWorkspacePrefix = (workspacePath: string | null | undefined, path: string): void => {
+  const prefix = normalizeFsPath(path);
+  const workspace = ensureWorkspace(workspacePath);
+  for (const key of workspace.keys()) {
+    if (key === prefix || key.startsWith(`${prefix}/`)) {
+      workspace.delete(key);
+    }
+  }
+};
+
+const listWorkspaceFiles = (
+  workspacePath: string | null | undefined,
+  path: string
+): Array<{ kind: 'file'; relative_path: string }> => {
+  const prefix = normalizeFsPath(path);
+  const normalizedPrefix = prefix.length > 0 ? `${prefix}/` : '';
+  return Array.from(ensureWorkspace(workspacePath).keys())
+    .filter((key) => key.startsWith(normalizedPrefix))
+    .map((key) => ({
+      kind: 'file' as const,
+      relative_path: key.slice(normalizedPrefix.length),
+    }));
+};
+
+const buildStoredPlan = () => ({
+  id: 'plan-1',
+  slug: 'checkout',
+  title: 'Checkout',
+  description: 'Stored with a stale session project id.',
+  status: 'validated',
+  targetBranch: 'develop',
+  projectId: 'web',
+  projectIds: ['web', 'session-project-ghost'],
+  createdAt: '2026-03-15T00:00:00.000Z',
+  updatedAt: '2026-03-16T00:00:00.000Z',
+  nodes: [
+    {
+      id: 'task-web',
+      title: 'Build checkout UI',
+      type: 'task',
+      status: 'completed',
+      dependencies: [],
+      assignedBranch: 'feature/checkout/checkout-web',
+      projectId: 'web',
+      projectIds: ['web', 'session-project-ghost'],
+    },
+  ],
+  predictedBranches: [
+    {
+      id: 'branch-web',
+      name: 'feature/checkout/checkout-web',
+      color: '#3b82f6',
+      parentBranch: 'plan/checkout',
+      projectId: 'web',
+      taskIds: ['task-web'],
+      status: 'completed',
+    },
+    {
+      id: 'branch-ghost',
+      name: 'feature/ghost',
+      color: '#000000',
+      parentBranch: 'plan/checkout',
+      projectId: 'session-project-ghost',
+      taskIds: ['task-web'],
+      status: 'planned',
+    },
+  ],
+});
+
+const seedReplica = (plan = buildStoredPlan()): void => {
+  writeWorkspaceJson('/repos/web', 'branches/develop/plans/index.json', {
+    version: 2,
+    activePlanId: plan.id,
+    plans: [
+      {
+        id: plan.id,
+        slug: plan.slug,
+        title: plan.title,
+        description: plan.description,
+        status: plan.status,
+        targetBranch: plan.targetBranch,
+        projectId: plan.projectId,
+        projectIds: plan.projectIds,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt,
+        nodeCount: plan.nodes.length,
+      },
+    ],
+    reservedPlanSlugs: [plan.slug],
+  });
+  writeWorkspaceJson('/repos/web', `branches/develop/plans/${plan.id}/plan.json`, plan);
+  writeWorkspaceJson('/repos/web', `branches/develop/plans/${plan.id}/needs.json`, []);
+};
+
+const gitStatusMock = mock(async () => ({
+  branch: 'develop',
+  head_commit: null,
+  staged_files: [],
+  unstaged_files: [],
+  untracked_files: [],
+  conflicted_files: [],
+  conflictedFiles: [],
+  merge_in_progress: false,
+  mergeInProgress: false,
+  modified_files: [],
+  is_clean: true,
+  ahead: 0,
+  behind: 0,
+}));
+const gitDiffMock = mock(async () => 'diff --git a/file.ts b/file.ts');
+const gitMergeCheckMock = mock(async () => ({
+  mergeable: true,
+  conflictFiles: [],
+  hasChanges: true,
+}));
+const gitMergeMock = mock(async () => 'merge-ok');
+const gitBranchListMock = mock(async () => ({
+  current: 'develop',
+  local: [
+    { name: 'develop', is_head: true, commit: 'develop-sha' },
+    { name: 'plan/checkout', is_head: false, commit: 'plan-sha' },
+    { name: 'feature/checkout/checkout-web', is_head: false, commit: 'feature-sha' },
+  ],
+  remote: [],
+}));
+const gitBranchDeleteMock = mock(async () => undefined);
+const gitCheckoutMock = mock(async () => undefined);
+const gitBranchCreateMock = mock(async () => undefined);
+const gitWorktreeRemoveMock = mock(async () => undefined);
+
+const registerModuleMocks = () => {
+  mock.restore();
+
+  mock.module('./tauriIpc', () => ({
+    isTauriAvailable: () => true,
+    workspaceGetActiveRoot: async () => '/repos/web',
+    fsReadFileWithOptions: async ({
+      path,
+      workspacePath,
+    }: {
+      path: string;
+      workspacePath?: string | null;
+    }) => {
+      const content = readWorkspaceFile(workspacePath, path);
+      if (content === null) {
+        throw new Error(`Missing file: ${workspacePath ?? 'local'}:${path}`);
+      }
+      return {
+        content,
+        language: path.endsWith('.json') ? 'json' : 'text',
+        is_binary: false,
+        size: content.length,
+        encoding: 'utf-8',
+      };
+    },
+    fsWriteFile: async ({
+      path,
+      content,
+      workspacePath,
+    }: {
+      path: string;
+      content: string;
+      workspacePath?: string | null;
+    }) => {
+      writeWorkspaceFile(workspacePath, path, content);
+      return {
+        path,
+        bytes_written: content.length,
+        created: true,
+      };
+    },
+    fsDelete: async ({
+      path,
+      workspacePath,
+    }: {
+      path: string;
+      workspacePath?: string | null;
+    }) => {
+      deleteWorkspacePrefix(workspacePath, path);
+    },
+    fsListDir: async ({
+      path,
+      workspacePath,
+    }: {
+      path: string;
+      workspacePath?: string | null;
+    }) => listWorkspaceFiles(workspacePath, path),
+    gitStatus: gitStatusMock,
+    gitDiff: gitDiffMock,
+    gitMergeCheck: gitMergeCheckMock,
+    gitMerge: gitMergeMock,
+    gitBranchList: gitBranchListMock,
+    gitBranchDelete: gitBranchDeleteMock,
+    gitCheckout: gitCheckoutMock,
+    gitBranchCreate: gitBranchCreateMock,
+    gitWorktreeRemove: gitWorktreeRemoveMock,
+  }));
+
+  mock.module('../stores/useAppStore', () => ({
+    useAppStore: {
+      getState: () => ({
+        ...appState,
+        getProjectById: (projectId: string) =>
+          appState.projectGroups.flatMap((group) => group.projects).find((project) => project.id === projectId) || null,
+      }),
+    },
+  }));
+};
+
+const loadIntegrationModules = async () => {
+  registerModuleMocks();
+  importCounter += 1;
+  const planService = await import(`./architectPlanService.ts?gitflow-replica=${importCounter}`);
+  const gitFlowService = await import(`./architectGitFlowService.ts?gitflow-replica=${importCounter}`);
+  return {
+    planService,
+    gitFlowService,
+  };
+};
+
+describe('architectGitFlowService replica integration', () => {
+  beforeEach(() => {
+    workspaceFiles.clear();
+    seedReplica();
+    originalConsoleInfo = console.info;
+    console.info = () => undefined;
+    gitStatusMock.mockClear();
+    gitDiffMock.mockClear();
+    gitMergeCheckMock.mockClear();
+    gitMergeMock.mockClear();
+    gitBranchListMock.mockClear();
+    gitBranchDeleteMock.mockClear();
+    gitCheckoutMock.mockClear();
+    gitBranchCreateMock.mockClear();
+    gitWorktreeRemoveMock.mockClear();
+  });
+
+  afterEach(() => {
+    console.info = originalConsoleInfo;
+    mock.restore();
+  });
+
+  it('does not fail closed during finalization when replica noise is only a stale session project id', async () => {
+    const { planService, gitFlowService } = await loadIntegrationModules();
+    const service = gitFlowService.createArchitectGitFlowService({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitMerge: gitMergeMock,
+        gitBranchList: gitBranchListMock,
+        gitBranchDelete: gitBranchDeleteMock,
+        gitCheckout: gitCheckoutMock,
+        gitBranchCreate: gitBranchCreateMock,
+        gitWorktreeRemove: gitWorktreeRemoveMock,
+      },
+      getAppState: () => ({
+        selectedProjectId: 'web',
+        getProjectById: (projectId: string) =>
+          appState.projectGroups.flatMap((group) => group.projects).find((project) => project.id === projectId) || null,
+      }),
+      getArchitectPlan: planService.getArchitectPlan,
+      archiveArchitectPlan: async (branchName: string, planId: string) => {
+        const plan = await planService.getArchitectPlan(branchName, planId);
+        return {
+          ...plan!,
+          status: 'archived',
+        };
+      },
+      updateArchitectPlan: async (params: { branchName: string; planId: string; status?: string }) => {
+        const plan = await planService.getArchitectPlan(params.branchName, params.planId);
+        return {
+          ...plan!,
+          status: params.status ?? plan?.status ?? 'validated',
+        };
+      },
+      deleteArchitectPlan: async () => undefined,
+      getGitFlowBaseBranch: () => 'develop',
+      toPlanIntegrationBranch: (slug: string) => `plan/${slug}`,
+      toPlanScopedFeatureBranch: (slug: string, branchName: string) => `feature/${slug}/${branchName.split('/').pop()}`,
+    });
+
+    const result = await service.finalizePlanIntoBaseBranch({
+      branchName: 'develop',
+      planId: 'plan-1',
+    });
+
+    expect(result.plan.projectIds).toEqual(['web']);
+    expect(result.plan.predictedBranches).toHaveLength(1);
+    expect(gitStatusMock).toHaveBeenCalled();
+    expect(gitMergeCheckMock).toHaveBeenCalled();
+    expect(gitMergeMock).toHaveBeenCalledTimes(1);
+    expect(gitBranchDeleteMock).toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).toHaveBeenCalled();
+
+    const persistedPlan = JSON.parse(
+      readWorkspaceFile('/repos/web', 'branches/develop/plans/plan-1/plan.json') || 'null'
+    );
+    expect(persistedPlan.projectIds).toEqual(['web']);
+    expect(persistedPlan.predictedBranches).toHaveLength(1);
+  });
+});
