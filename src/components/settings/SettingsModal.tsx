@@ -5,7 +5,8 @@ import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { GeneralView } from './views/GeneralView';
 import { AppearanceView } from './views/AppearanceView';
-import { AIView } from './views/AIView';
+import { ProvidersSettings } from './views/ai/ProvidersSettings';
+import { ModelsSettings } from './views/ai/ModelsSettings';
 import { ToolsView } from './views/ToolsView';
 import { ShortcutsView } from './views/ShortcutsView';
 import { PromptsView } from './views/PromptsView';
@@ -21,7 +22,8 @@ export const SettingsModal: React.FC = () => {
   const tabs: { id: SettingsTab; icon: IconName; label: string }[] = [
     { id: 'general', icon: 'settings', label: t('settings.general') || 'General' },
     { id: 'appearance', icon: 'palette', label: t('settings.appearance') || 'Appearance' },
-    { id: 'ai', icon: 'cpu', label: t('settings.ai') || 'AI & Models' },
+    { id: 'providers', icon: 'server', label: t('settings.providers') || 'AI Providers' },
+    { id: 'models', icon: 'cpu', label: t('settings.models') || 'AI Models' },
     { id: 'tools', icon: 'tool', label: t('settings.tools') || 'Tools & MCP' },
     { id: 'prompts', icon: 'message-square', label: t('settings.prompts') || 'System Prompts' },
     { id: 'architect', icon: 'git-branch', label: t('settings.architect') || 'Architect Git Flow' },
@@ -94,7 +96,8 @@ export const SettingsModal: React.FC = () => {
             <div className="max-w-3xl mx-auto animate-fade-in">
               {activeSettingsTab === 'general' && <GeneralView />}
               {activeSettingsTab === 'appearance' && <AppearanceView />}
-              {activeSettingsTab === 'ai' && <AIView />}
+              {activeSettingsTab === 'providers' && <ProvidersSettings />}
+              {activeSettingsTab === 'models' && <ModelsSettings />}
               {activeSettingsTab === 'tools' && <ToolsView />}
               {activeSettingsTab === 'prompts' && <PromptsView />}
               {activeSettingsTab === 'architect' && <ArchitectGitFlowView />}

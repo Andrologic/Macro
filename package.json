@@ -41,6 +41,7 @@
     "@lexical/react": "0.40.0",
     "@lexical/selection": "0.40.0",
     "@lexical/utils": "0.40.0",
+    "@radix-ui/react-accordion": "1.2.12",
     "@tanstack/react-virtual": "^3.13.18",
     "@tauri-apps/api": "2.10.1",
     "@tauri-apps/plugin-dialog": "2.6.0",
