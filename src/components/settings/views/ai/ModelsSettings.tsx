@@ -39,8 +39,8 @@ export const ModelsSettings: React.FC = () => {
   if (providers.length === 0) {
       return (
           <div className="text-center py-12 text-muted-foreground animate-in fade-in duration-300">
-              <Icon name="box" size={32} className="mx-auto mb-3 opacity-50" />
-              <p>No providers configured yet. Add a provider first.</p>
+              <Icon name="layers" size={32} className="mx-auto mb-3 opacity-50" />
+              <p>{t('models.noProviders')}</p>
           </div>
       );
   }
