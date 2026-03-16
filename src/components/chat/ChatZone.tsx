@@ -17,6 +17,7 @@ import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
 import { PlanSelector } from '../architect/PlanSelector';
 import { ComposerEditor, type ComposerEditorHandle } from './composer/ComposerEditor';
+import { getFocusedProjectForGroup, getGlobalProjectById } from '../../services/globalProjects';
 
 /**
  * ChatZone - Main chat interface used across all modes
@@ -81,9 +82,10 @@ const ChatZone: React.FC = () => {
     agentType,
     setAgentType,
     implementExecutionMode,
+    selectedGroupId,
     selectedProjectId,
     selectedTaskId,
-    getProjectById,
+    projectGroups,
     activeArchitectPlanId,
     planNodes,
     predictedBranches,
@@ -127,7 +129,7 @@ const ChatZone: React.FC = () => {
     if (isLoading) return;
     void ensureConversationForCurrentMode();
   }, [
-    selectedProjectId,
+    selectedGroupId,
     selectedTaskId,
     isLoading,
     ensureConversationForCurrentMode,
@@ -180,17 +182,33 @@ const ChatZone: React.FC = () => {
     return { completed, total };
   }, [tasks]);
 
-  const selectedProjectName = useMemo(
-    () => (selectedProjectId ? getProjectById(selectedProjectId)?.name ?? null : null),
-    [selectedProjectId, getProjectById]
+  const selectedGlobalProject = useMemo(
+    () => getGlobalProjectById(projectGroups, selectedGroupId),
+    [projectGroups, selectedGroupId]
   );
+  const focusedProject = useMemo(
+    () => getFocusedProjectForGroup(projectGroups, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const selectedGlobalProjectName = selectedGlobalProject?.name ?? null;
+  const focusedProjectName = focusedProject?.name ?? null;
+  const projectScopeLabel = useMemo(() => {
+    if (selectedGlobalProjectName && focusedProjectName && selectedGlobalProjectName !== focusedProjectName) {
+      return `${selectedGlobalProjectName} / ${focusedProjectName}`;
+    }
+    return selectedGlobalProjectName || focusedProjectName || null;
+  }, [focusedProjectName, selectedGlobalProjectName]);
 
   const modeHeader = useMemo(() => {
     if (mode === 'Architect') {
       return {
         icon: 'compass' as const,
-        title: `Architect - ${selectedProjectName || 'Select a project'}`,
-        subtitle: currentConversation?.title || null,
+        title: `Architect - ${selectedGlobalProjectName || 'Select a project'}`,
+        subtitle:
+          currentConversation?.title ||
+          (focusedProjectName && focusedProjectName !== selectedGlobalProjectName
+            ? focusedProjectName
+            : null),
       };
     }
 
@@ -198,7 +216,7 @@ const ChatZone: React.FC = () => {
       return {
         icon: 'check-square' as const,
         title: `Implement - ${selectedTask?.title || 'Select a task'}`,
-        subtitle: selectedProjectName || currentConversation?.title || null,
+        subtitle: projectScopeLabel || currentConversation?.title || null,
       };
     }
 
@@ -206,7 +224,7 @@ const ChatZone: React.FC = () => {
       return {
         icon: 'terminal' as const,
         title: currentConversation?.title || 'Debug Session',
-        subtitle: selectedProjectName || null,
+        subtitle: projectScopeLabel || null,
       };
     }
 
@@ -215,7 +233,14 @@ const ChatZone: React.FC = () => {
       title: currentConversation?.title || 'New Conversation',
       subtitle: null,
     };
-  }, [mode, selectedProjectName, selectedTask?.title, currentConversation?.title]);
+  }, [
+    currentConversation?.title,
+    focusedProjectName,
+    mode,
+    projectScopeLabel,
+    selectedGlobalProjectName,
+    selectedTask?.title,
+  ]);
 
   const activePlanNeedsCount = useMemo(() => {
     if (!activeArchitectPlanId) return 0;

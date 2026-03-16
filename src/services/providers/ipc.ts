@@ -63,6 +63,7 @@ const toConversationDto = (conversation: tauriIpc.DbConversation): Conversation 
   title: conversation.title,
   description: conversation.description ?? undefined,
   task_id: conversation.task_id,
+  group_id: conversation.group_id,
   project_id: conversation.project_id,
   last_message: conversation.last_message ?? '',
   message_count: conversation.message_count,
@@ -222,12 +223,14 @@ export const createProject = async (data: {
   name: string;
   description: string;
   groupId: string | null;
+  groupName?: string | null;
   path?: string;
 }): Promise<ProjectDto> => {
   const project = await tauriIpc.workspaceCreateProject({
     name: data.name,
     description: data.description,
     groupId: data.groupId,
+    groupName: data.groupName,
     path: data.path,
   });
 
@@ -239,6 +242,7 @@ export const importGitRepo = async (data: {
   projectName: string;
   branch: string;
   groupId: string | null;
+  groupName?: string | null;
   path?: string;
 }): Promise<ProjectDto> => {
   const project = await tauriIpc.workspaceImportGitRepo({
@@ -246,6 +250,7 @@ export const importGitRepo = async (data: {
     projectName: data.projectName,
     branch: data.branch,
     groupId: data.groupId,
+    groupName: data.groupName,
     path: data.path,
   });
 
@@ -294,6 +299,26 @@ export const archiveProject = async (data: {
   });
 
   return { project };
+};
+
+export const removeProjectGroup = async (data: {
+  groupId: string;
+}): Promise<{ projectGroups: ProjectGroup[] }> => {
+  const projectGroups = await tauriIpc.workspaceRemoveProjectGroup({
+    groupId: data.groupId,
+  });
+
+  return { projectGroups };
+};
+
+export const removeProject = async (data: {
+  projectId: string;
+}): Promise<{ projectGroups: ProjectGroup[] }> => {
+  const projectGroups = await tauriIpc.workspaceRemoveProject({
+    projectId: data.projectId,
+  });
+
+  return { projectGroups };
 };
 
 export const closeProject = async (data: {
@@ -387,6 +412,8 @@ export const provider: ServiceProvider = {
   renameProject,
   archiveProjectGroup,
   archiveProject,
+  removeProjectGroup,
+  removeProject,
   closeProject,
   getToolSettings,
   updateToolSettings,

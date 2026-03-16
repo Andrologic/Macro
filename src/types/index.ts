@@ -90,6 +90,7 @@ export type NeedCategory = 'functional' | 'technical' | 'ux' | 'performance' | '
 export interface Need {
   id: string;
   planId?: string;
+  groupId?: string;
   title: string;
   description: string;
   category: NeedCategory;
@@ -180,6 +181,7 @@ export interface ProjectMetadata {
 export interface Project {
   id: string;
   name: string;
+  mountName: string;
   path: string;
   created_at: string;
   status: ProjectStatus;
@@ -191,6 +193,22 @@ export interface ProjectGroup {
   name: string;
   isOpen: boolean;
   projects: Project[];
+}
+
+export interface GlobalProject {
+  groupId: string;
+  name: string;
+  subProjects: Project[];
+  subProjectIds: string[];
+  primarySubProjectId: string | null;
+}
+
+export interface ProjectMount {
+  projectId: string;
+  groupId: string | null;
+  mountName: string;
+  displayName: string;
+  workspacePath: string | null;
 }
 
 export interface FileChange {
@@ -261,6 +279,7 @@ export interface Conversation {
   title: string;
   description?: string;
   task_id: string | null;
+  group_id?: string | null;
   project_id: string | null;
   last_message: string;
   message_count: number;

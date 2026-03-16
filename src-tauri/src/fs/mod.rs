@@ -1,6 +1,5 @@
 // File System Module
-// ⚠️ CRITICAL: This module requires manual implementation
-// See docs/fs-todo.md for detailed tasks
+// Core filesystem helpers used by the desktop backend.
 
 use std::path::{Path, PathBuf};
 

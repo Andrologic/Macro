@@ -4,9 +4,10 @@ import { resolveProjectExecutionContext } from './projectExecutionContext';
 describe('resolveProjectExecutionContext', () => {
   const projects = [
     {
-      id: 'macro',
-      name: 'Macro',
-      path: 'projects/macro',
+      id: 'macro-web',
+      name: 'Macro Web',
+      mountName: 'web',
+      path: 'projects/macro-web',
       created_at: '2026-03-05T00:00:00.000Z',
       status: 'active' as const,
       metadata: {
@@ -18,9 +19,10 @@ describe('resolveProjectExecutionContext', () => {
       },
     },
     {
-      id: 'smartcards',
-      name: 'Smartcards',
-      path: 'C:/dev/Smartcards',
+      id: 'macro-api',
+      name: 'Macro API',
+      mountName: 'api',
+      path: 'C:/dev/macro-api',
       created_at: '2026-03-05T00:00:00.000Z',
       status: 'active' as const,
       metadata: {
@@ -33,17 +35,28 @@ describe('resolveProjectExecutionContext', () => {
     },
   ];
 
-  it('uses the architect conversation project before global selection fallbacks', () => {
+  const projectGroups = [
+    {
+      id: 'macro-suite',
+      name: 'Macro Suite',
+      isOpen: true,
+      projects,
+    },
+  ];
+
+  it('uses the architect conversation group as the primary scope', () => {
     const context = resolveProjectExecutionContext({
       mode: 'Architect',
       projects,
+      projectGroups,
       conversations: [
         {
           id: 'conv-1',
           title: 'Architect',
           description: '',
           task_id: null,
-          project_id: 'smartcards',
+          group_id: 'macro-suite',
+          project_id: 'macro-api',
           last_message: '',
           message_count: 0,
           updated_at: '2026-03-05T00:00:00.000Z',
@@ -51,23 +64,59 @@ describe('resolveProjectExecutionContext', () => {
         },
       ],
       conversationId: 'conv-1',
-      selectedProjectId: 'macro',
+      selectedGroupId: 'macro-suite',
+      selectedProjectId: null,
     });
 
-    expect(context.projectId).toBe('smartcards');
-    expect(context.projectName).toBe('Smartcards');
-    expect(context.workspacePath).toBe('C:/dev/Smartcards');
+    expect(context.groupId).toBe('macro-suite');
+    expect(context.groupName).toBe('Macro Suite');
+    expect(context.projectId).toBe('macro-api');
+    expect(context.projectIds).toEqual(['macro-web', 'macro-api']);
+    expect(context.focusedProjectId).toBe('macro-api');
+    expect(context.virtualRootEnabled).toBe(true);
+    expect(context.projectMounts).toEqual([
+      {
+        projectId: 'macro-web',
+        groupId: 'macro-suite',
+        mountName: 'web',
+        displayName: 'Macro Web',
+        workspacePath: 'projects/macro-web',
+      },
+      {
+        projectId: 'macro-api',
+        groupId: 'macro-suite',
+        mountName: 'api',
+        displayName: 'Macro API',
+        workspacePath: 'C:/dev/macro-api',
+      },
+    ]);
+    expect(context.workspacePathsByProjectId['macro-web']).toBe('projects/macro-web');
+    expect(context.workspacePathsByProjectId['macro-api']).toBe('C:/dev/macro-api');
   });
 
-  it('prefers the implement worktree over the project repository root', () => {
+  it('prefers task worktrees for targeted subprojects in implement mode', () => {
     const context = resolveProjectExecutionContext({
       mode: 'Implement',
       projects,
+      projectGroups,
       tasks: [
         {
           id: 'task-1',
-          project_id: 'smartcards',
+          project_id: 'macro-api',
+          project_ids: ['macro-api', 'macro-web'],
           assigned_branch: 'feature/payments',
+          execution_targets: [
+            {
+              projectId: 'macro-api',
+              branchName: 'feature/payments',
+              worktreeKey: 'macro-api::feature/payments',
+            },
+            {
+              projectId: 'macro-web',
+              branchName: 'feature/payments',
+              worktreeKey: 'macro-web::feature/payments',
+            },
+          ],
         },
       ],
       conversations: [
@@ -76,7 +125,8 @@ describe('resolveProjectExecutionContext', () => {
           title: 'Task',
           description: '',
           task_id: 'task-1',
-          project_id: 'smartcards',
+          group_id: 'macro-suite',
+          project_id: 'macro-api',
           last_message: '',
           message_count: 0,
           updated_at: '2026-03-05T00:00:00.000Z',
@@ -84,27 +134,63 @@ describe('resolveProjectExecutionContext', () => {
         },
       ],
       conversationId: 'conv-1',
-      selectedProjectId: 'smartcards',
+      selectedGroupId: 'macro-suite',
       selectedTaskId: 'task-1',
       activeRepositoryPath: 'C:/worktrees/fallback',
       branchWorktrees: {
-        'feature/payments': 'C:/worktrees/smartcards-payments',
+        'macro-api::feature/payments': 'C:/worktrees/macro-api-payments',
+        'macro-web::feature/payments': 'C:/worktrees/macro-web-payments',
       },
     });
 
     expect(context.taskId).toBe('task-1');
+    expect(context.projectId).toBe('macro-api');
+    expect(context.focusedProjectId).toBe('macro-api');
+    expect(context.virtualRootEnabled).toBe(true);
     expect(context.branchName).toBe('feature/payments');
-    expect(context.workspacePath).toBe('C:/worktrees/smartcards-payments');
+    expect(context.workspacePath).toBe('C:/worktrees/macro-api-payments');
+    expect(context.workspacePathsByProjectId).toEqual({
+      'macro-api': 'C:/worktrees/macro-api-payments',
+      'macro-web': 'C:/worktrees/macro-web-payments',
+    });
   });
 
-  it('falls back to the selected project when conversation context is empty', () => {
+  it('falls back to the selected project when no group context is available', () => {
     const context = resolveProjectExecutionContext({
       mode: 'Debug',
       projects,
-      selectedProjectId: 'macro',
+      selectedProjectId: 'macro-web',
     });
 
-    expect(context.projectId).toBe('macro');
-    expect(context.workspacePath).toBe('projects/macro');
+    expect(context.groupId).toBeNull();
+    expect(context.projectId).toBe('macro-web');
+    expect(context.focusedProjectId).toBe('macro-web');
+    expect(context.virtualRootEnabled).toBe(false);
+    expect(context.projectMounts).toEqual([
+      {
+        projectId: 'macro-web',
+        groupId: null,
+        mountName: 'web',
+        displayName: 'Macro Web',
+        workspacePath: 'projects/macro-web',
+      },
+    ]);
+    expect(context.defaultWorkspacePath).toBe('projects/macro-web');
+  });
+
+  it('falls back to the primary subproject of the selected global project when no focus repo is set', () => {
+    const context = resolveProjectExecutionContext({
+      mode: 'Architect',
+      projects,
+      projectGroups,
+      selectedGroupId: 'macro-suite',
+      selectedProjectId: null,
+    });
+
+    expect(context.groupId).toBe('macro-suite');
+    expect(context.projectId).toBe('macro-web');
+    expect(context.focusedProjectId).toBe('macro-web');
+    expect(context.virtualRootEnabled).toBe(true);
+    expect(context.defaultWorkspacePath).toBe('projects/macro-web');
   });
 });

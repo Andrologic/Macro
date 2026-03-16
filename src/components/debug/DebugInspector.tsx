@@ -5,8 +5,10 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { useProviderStore } from '../../stores/useProviderStore';
+import { useTerminalStore } from '../../stores/useTerminalStore';
 import * as tauriIpc from '../../services/tauriIpc';
 import { resolveProjectExecutionContext } from '../../services/projectExecutionContext';
+import { getFocusedProjectForGroup, getSubProjectsForGroup } from '../../services/globalProjects';
 
 type DebugEventType = 'tool' | 'tool_done' | 'error';
 
@@ -58,6 +60,9 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
   const selectedTaskId = useAppStore((state) => state.selectedTaskId);
   const projectGroups = useAppStore((state) => state.projectGroups);
+  const projectRegistryRepairSummary = useAppStore(
+    (state) => state.projectRegistryRepairSummary
+  );
 
   const selectedConversationId = useChatStore((state) => state.selectedConversationId);
   const conversations = useChatStore((state) => state.conversations);
@@ -70,31 +75,38 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
   const branchWorktrees = useTaskStore((state) => state.branchWorktrees);
   const eventsContainerRef = useRef<HTMLDivElement>(null);
   const [backendWorkspaceRoot, setBackendWorkspaceRoot] = React.useState<string>('(unknown)');
+  const [localFocusedProjectId, setLocalFocusedProjectId] = React.useState<string | null>(null);
+  const [projectRegistryDiagnostics, setProjectRegistryDiagnostics] =
+    React.useState<tauriIpc.ProjectRegistryDiagnosticsDto | null>(null);
 
   const selectedProviderId = useProviderStore((state) => state.selectedProviderId);
   const selectedModelId = useProviderStore((state) => state.selectedModelId);
+  const terminalSessions = useTerminalStore((state) => state.sessions);
 
-  const selectedProject = useMemo(() => {
-    if (!selectedGroupId) return null;
-    const group = projectGroups.find((candidate) => candidate.id === selectedGroupId);
-    if (!group) return null;
+  const availableProjects = useMemo(
+    () => getSubProjectsForGroup(projectGroups, selectedGroupId),
+    [projectGroups, selectedGroupId]
+  );
+  const selectedProject = useMemo(
+    () => getFocusedProjectForGroup(projectGroups, selectedGroupId, localFocusedProjectId ?? selectedProjectId),
+    [localFocusedProjectId, projectGroups, selectedGroupId, selectedProjectId]
+  );
 
-    if (selectedProjectId) {
-      return group.projects.find((candidate) => candidate.id === selectedProjectId) ?? null;
-    }
-
-    return group.projects[0] ?? null;
-  }, [projectGroups, selectedGroupId, selectedProjectId]);
+  useEffect(() => {
+    setLocalFocusedProjectId(selectedProjectId);
+  }, [selectedGroupId, selectedProjectId]);
 
   const effectiveExecutionContext = useMemo(
     () =>
       resolveProjectExecutionContext({
         mode,
         projects: projectGroups.flatMap((group) => group.projects),
+        projectGroups,
         tasks,
         conversations,
         conversationId: selectedConversationId,
-        selectedProjectId,
+        selectedGroupId,
+        selectedProjectId: selectedProject?.id ?? selectedProjectId,
         selectedTaskId,
         activeRepositoryPath,
         branchWorktrees,
@@ -106,6 +118,8 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
       mode,
       projectGroups,
       selectedConversationId,
+      selectedGroupId,
+      selectedProject?.id,
       selectedProjectId,
       selectedTaskId,
       tasks,
@@ -178,25 +192,47 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
     () => debugEvents.slice(0, MAX_VISIBLE_EVENTS),
     [debugEvents]
   );
+  const visibleTerminalSessions = useMemo(
+    () =>
+      Object.values(terminalSessions)
+        .sort(
+          (left, right) =>
+            new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+        )
+        .slice(0, 4),
+    [terminalSessions]
+  );
 
   useEffect(() => {
     let cancelled = false;
 
-    const loadActiveRoot = async () => {
+    const loadRuntimeDiagnostics = async () => {
       if (!tauriIpc.isTauriAvailable()) {
-        if (!cancelled) setBackendWorkspaceRoot('(browser)');
+        if (!cancelled) {
+          setBackendWorkspaceRoot('(browser)');
+          setProjectRegistryDiagnostics(null);
+        }
         return;
       }
 
       try {
-        const root = await tauriIpc.workspaceGetActiveRoot();
-        if (!cancelled) setBackendWorkspaceRoot(root || '(unknown)');
+        const [root, diagnostics] = await Promise.all([
+          tauriIpc.workspaceGetActiveRoot(),
+          tauriIpc.workspaceGetProjectRegistryDiagnostics(),
+        ]);
+        if (!cancelled) {
+          setBackendWorkspaceRoot(root || '(unknown)');
+          setProjectRegistryDiagnostics(diagnostics);
+        }
       } catch {
-        if (!cancelled) setBackendWorkspaceRoot('(error)');
+        if (!cancelled) {
+          setBackendWorkspaceRoot('(error)');
+          setProjectRegistryDiagnostics(null);
+        }
       }
     };
 
-    void loadActiveRoot();
+    void loadRuntimeDiagnostics();
 
     return () => {
       cancelled = true;
@@ -250,6 +286,69 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
         </div>
 
         <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
+          <div className="text-muted-foreground mb-1">Project registry</div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded bg-card px-2 py-1">
+              <div className="text-muted-foreground">Frontend groups</div>
+              <div className="text-foreground font-medium">{projectGroups.length}</div>
+            </div>
+            <div className="rounded bg-card px-2 py-1">
+              <div className="text-muted-foreground">Frontend projects</div>
+              <div className="text-foreground font-medium">
+                {projectGroups.reduce((total, group) => total + group.projects.length, 0)}
+              </div>
+            </div>
+            <div className="rounded bg-card px-2 py-1">
+              <div className="text-muted-foreground">Backend raw</div>
+              <div className="text-foreground font-medium">
+                {projectRegistryDiagnostics
+                  ? `${projectRegistryDiagnostics.rawGroupCount}/${projectRegistryDiagnostics.rawProjectCount}`
+                  : '(n/a)'}
+              </div>
+            </div>
+            <div className="rounded bg-card px-2 py-1">
+              <div className="text-muted-foreground">Backend sanitized</div>
+              <div className="text-foreground font-medium">
+                {projectRegistryDiagnostics
+                  ? `${projectRegistryDiagnostics.sanitizedGroupCount}/${projectRegistryDiagnostics.sanitizedProjectCount}`
+                  : '(n/a)'}
+              </div>
+            </div>
+          </div>
+          {projectRegistryDiagnostics && (
+            <div className="mt-2 text-[11px] text-muted-foreground">
+              duplicates repaired: {projectRegistryDiagnostics.repairReport.duplicate_paths_removed},
+              mount names assigned: {projectRegistryDiagnostics.repairReport.mount_names_assigned},
+              empty groups: {projectRegistryDiagnostics.repairReport.empty_groups_removed},
+              dead nodes: {projectRegistryDiagnostics.repairReport.plan_nodes_removed},
+              dead branches: {projectRegistryDiagnostics.repairReport.predicted_branches_removed}
+            </div>
+          )}
+          {projectRegistryRepairSummary && (
+            <div className="mt-2 rounded border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
+              {projectRegistryRepairSummary}
+            </div>
+          )}
+        </div>
+
+        {availableProjects.length > 1 && (
+          <label className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs flex flex-col gap-1">
+            <span className="text-muted-foreground">Debug repo focus</span>
+            <select
+              className="bg-card border border-border rounded px-2 py-1 text-foreground"
+              value={selectedProject?.id ?? ''}
+              onChange={(event) => setLocalFocusedProjectId(event.target.value || null)}
+            >
+              {availableProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
           <div className="text-muted-foreground mb-0.5">Effective project</div>
           <div className="font-mono text-foreground truncate">
             {effectiveExecutionContext.projectName || effectiveExecutionContext.projectId || '(none)'}
@@ -263,10 +362,51 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
           </div>
         </div>
 
+        {effectiveExecutionContext.projectMounts.length > 0 && (
+          <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
+            <div className="text-muted-foreground mb-1">Virtual mounts</div>
+            <div className="space-y-1">
+              {effectiveExecutionContext.projectMounts.map((mount) => (
+                <div key={mount.projectId} className="rounded bg-card px-2 py-1">
+                  <div className="font-mono text-foreground">
+                    {mount.mountName}/
+                    <span className="text-muted-foreground">{' -> '}{mount.projectId}</span>
+                  </div>
+                  <div className="text-muted-foreground truncate">{mount.displayName}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
           <div className="text-muted-foreground mb-0.5">Backend default root</div>
           <div className="font-mono text-foreground truncate">{backendWorkspaceRoot}</div>
         </div>
+
+        {visibleTerminalSessions.length > 0 && (
+          <div className="rounded-md border border-border bg-muted/20 px-2 py-1.5 text-xs">
+            <div className="text-muted-foreground mb-1">Terminal sessions</div>
+            <div className="space-y-1">
+              {visibleTerminalSessions.map((session) => (
+                <div key={session.id} className="rounded bg-card px-2 py-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-mono text-foreground truncate">
+                      {session.mount_name}/
+                    </div>
+                    <div className="text-muted-foreground">{session.status}</div>
+                  </div>
+                  <div className="text-muted-foreground truncate">
+                    {session.project_name} ({session.project_id})
+                  </div>
+                  <div className="font-mono text-[11px] text-muted-foreground truncate">
+                    {session.cwd}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {effectiveExecutionContext.workspacePath &&
           backendWorkspaceRoot !== '(unknown)' &&

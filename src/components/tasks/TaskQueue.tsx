@@ -3,7 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
 import { useFileChangesStore } from '../../stores/useFileChangesStore';
+import { getArchitectPlanDisplayName } from '../../services/architectPlanPresentation';
 import { taskMatchesProjectId } from '../../services/implementTaskCatalog';
+import { getScopedProjectIds } from '../../services/globalProjects';
 import {
   getTaskRepositoryDescriptors,
   type ReviewRepositoryUiState,
@@ -458,20 +460,12 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const scopedTasks = useMemo(() => {
-    if (selectedProjectId) {
-      return tasks.filter((task) => taskMatchesProjectId(task, selectedProjectId));
-    }
+    const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
+    if (scopedProjectIds.length === 0) return [];
 
-    if (selectedGroupId) {
-      const group = projectGroups.find((candidate) => candidate.id === selectedGroupId);
-      const groupProjectIds = new Set(group?.projects.map((project) => project.id) ?? []);
-      if (groupProjectIds.size === 0) return [];
-      return tasks.filter((task) =>
-        Array.from(groupProjectIds).some((projectId) => taskMatchesProjectId(task, projectId))
-      );
-    }
-
-    return [];
+    return tasks.filter((task) =>
+      scopedProjectIds.some((projectId) => taskMatchesProjectId(task, projectId))
+    );
   }, [tasks, selectedProjectId, selectedGroupId, projectGroups]);
 
   const availablePlanSummaries = useMemo(() => {
@@ -484,17 +478,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }, [planSummaries, scopedTasks]);
 
   const planLabelsById = useMemo(() => {
-    const titleCounts = new Map<string, number>();
-    availablePlanSummaries.forEach((plan) => {
-      titleCounts.set(plan.title, (titleCounts.get(plan.title) || 0) + 1);
-    });
-
     return new Map(
       availablePlanSummaries.map((plan) => [
         plan.id,
-        (titleCounts.get(plan.title) || 0) > 1
-          ? `${plan.title} (${plan.targetBranch})`
-          : plan.title,
+        getArchitectPlanDisplayName(plan),
       ])
     );
   }, [availablePlanSummaries]);

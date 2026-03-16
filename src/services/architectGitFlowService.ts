@@ -130,6 +130,79 @@ interface CleanupPlanRepositoryTarget extends ResolvedProjectRepository {
   worktrees: CleanupPlanWorktreeTarget[];
 }
 
+interface ArchitectGitFlowProjectRef {
+  path?: string | null;
+}
+
+interface ArchitectGitFlowGitStatus {
+  branch: string;
+  is_clean: boolean;
+  conflicted_files?: string[];
+  conflictedFiles?: string[];
+  merge_in_progress?: boolean;
+  mergeInProgress?: boolean;
+}
+
+interface ArchitectGitFlowGitBranchRef {
+  name: string;
+}
+
+interface ArchitectGitFlowGitBranches {
+  local: ArchitectGitFlowGitBranchRef[];
+  remote: ArchitectGitFlowGitBranchRef[];
+  current: string | null;
+}
+
+type ArchitectGitFlowMergeCheck = Pick<tauriIpc.GitMergeCheckDto, 'mergeable' | 'conflictFiles' | 'hasChanges'>;
+
+type ArchitectGitFlowTauriDeps = Pick<
+  typeof tauriIpc,
+  | 'isTauriAvailable'
+  | 'gitDiff'
+  | 'gitMerge'
+  | 'gitBranchDelete'
+  | 'gitCheckout'
+  | 'gitBranchCreate'
+  | 'gitWorktreeRemove'
+> & {
+  gitStatus: (repoPath: string) => Promise<ArchitectGitFlowGitStatus>;
+  gitMergeCheck: (params: {
+    repoPath: string;
+    branchName: string;
+    intoBranch: string;
+  }) => Promise<ArchitectGitFlowMergeCheck>;
+  gitBranchList: (repoPath: string) => Promise<ArchitectGitFlowGitBranches>;
+};
+
+interface ArchitectGitFlowAppState {
+  selectedProjectId: string | null;
+  getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined;
+}
+
+export interface ArchitectGitFlowDependencies {
+  tauri: ArchitectGitFlowTauriDeps;
+  getAppState: () => ArchitectGitFlowAppState;
+  getArchitectPlan: typeof getArchitectPlan;
+  updateArchitectPlan: typeof updateArchitectPlan;
+  archiveArchitectPlan: typeof archiveArchitectPlan;
+  deleteArchitectPlan: typeof deleteArchitectPlan;
+  getGitFlowBaseBranch: typeof getGitFlowBaseBranch;
+  toPlanIntegrationBranch: typeof toPlanIntegrationBranch;
+  toPlanScopedFeatureBranch: typeof toPlanScopedFeatureBranch;
+}
+
+const defaultArchitectGitFlowDependencies: ArchitectGitFlowDependencies = {
+  tauri: tauriIpc,
+  getAppState: () => useAppStore.getState(),
+  getArchitectPlan,
+  updateArchitectPlan,
+  archiveArchitectPlan,
+  deleteArchitectPlan,
+  getGitFlowBaseBranch,
+  toPlanIntegrationBranch,
+  toPlanScopedFeatureBranch,
+};
+
 const joinRepoPath = (repoPath: string, ...segments: string[]): string =>
   [repoPath.replace(/[\\/]+$/, ''), ...segments.map((segment) => segment.replace(/^[\\/]+|[\\/]+$/g, ''))]
     .filter(Boolean)
@@ -234,7 +307,7 @@ const buildPredictedBranchesForPlan = (
   });
 };
 
-const resolveDevelopBaseRef = (branches: tauriIpc.GitBranchesDto): string => {
+const resolveDevelopBaseRef = (branches: ArchitectGitFlowGitBranches): string => {
   const baseBranch = getGitFlowBaseBranch();
   const local = new Set((branches.local || []).map((branch) => branch.name));
   const remote = new Set((branches.remote || []).map((branch) => branch.name));
@@ -247,7 +320,7 @@ const resolveDevelopBaseRef = (branches: tauriIpc.GitBranchesDto): string => {
 const resolveSafeCheckoutBeforeDeletion = async (
   repoPath: string,
   branchesToDelete: Set<string>,
-  branches: tauriIpc.GitBranchesDto
+  branches: ArchitectGitFlowGitBranches
 ): Promise<string | null> => {
   const status = await tauriIpc.gitStatus(repoPath);
   const current = status.branch;
@@ -282,7 +355,7 @@ const resolveSafeCheckoutBeforeDeletion = async (
 const ensureSafeCheckoutBeforeDeletion = async (
   repoPath: string,
   branchesToDelete: Set<string>,
-  branches: tauriIpc.GitBranchesDto
+  branches: ArchitectGitFlowGitBranches
 ): Promise<void> => {
   const fallback = await resolveSafeCheckoutBeforeDeletion(repoPath, branchesToDelete, branches);
   if (!fallback) {
@@ -296,13 +369,13 @@ const ensureSafeCheckoutBeforeDeletion = async (
   });
 };
 
-const getRepositoryConflictFiles = (status: tauriIpc.GitStatusDto): string[] => {
+const getRepositoryConflictFiles = (status: ArchitectGitFlowGitStatus): string[] => {
   return Array.from(
     new Set([...(status.conflictedFiles || []), ...((status.conflicted_files as string[] | undefined) || [])])
   );
 };
 
-const isMergeInProgress = (status: tauriIpc.GitStatusDto): boolean =>
+const isMergeInProgress = (status: ArchitectGitFlowGitStatus): boolean =>
   Boolean(status.mergeInProgress ?? status.merge_in_progress);
 
 const formatMergeConflictMessage = (repositoryPath: string, conflictFiles: string[]): string => {
@@ -320,8 +393,8 @@ const formatDirtyRepositoryMessage = (repositoryPath: string): string =>
 
 const buildPlanRepositoryBlockingState = (params: {
   repositoryPath: string;
-  status: tauriIpc.GitStatusDto;
-  mergeCheck: tauriIpc.GitMergeCheckDto;
+  status: ArchitectGitFlowGitStatus;
+  mergeCheck: ArchitectGitFlowMergeCheck;
 }): Pick<PlanReviewRepositoryResult, 'blockingKind' | 'blockingReason' | 'nextAction' | 'conflictFiles' | 'mergeInProgress'> => {
   const statusConflictFiles = getRepositoryConflictFiles(params.status);
   const mergeInProgress = isMergeInProgress(params.status);
@@ -950,5 +1023,669 @@ export const deletePlanAndCleanupBranches = async (params: {
       repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
     ),
     repositories,
+  };
+};
+
+export const createArchitectGitFlowService = (
+  overrides: Partial<ArchitectGitFlowDependencies> = {}
+) => {
+  const deps: ArchitectGitFlowDependencies = {
+    ...defaultArchitectGitFlowDependencies,
+    ...overrides,
+    tauri: {
+      ...defaultArchitectGitFlowDependencies.tauri,
+      ...(overrides.tauri || {}),
+    },
+  };
+
+  const resolveProjectRepoPathsWithDeps = (
+    projectIds: string[],
+    explicitRepoPath?: string
+  ): ResolvedProjectRepository[] => {
+    const appState = deps.getAppState();
+    const uniqueProjectIds = Array.from(new Set(projectIds.filter((projectId) => projectId.trim().length > 0)));
+    const resolved: ResolvedProjectRepository[] = [];
+    const missingProjectIds: string[] = [];
+
+    for (const projectId of uniqueProjectIds) {
+      const project = appState.getProjectById(projectId);
+      if (project?.path?.trim()) {
+        resolved.push({ projectId, repoPath: project.path });
+      } else {
+        missingProjectIds.push(projectId);
+      }
+    }
+
+    if (missingProjectIds.length > 0) {
+      if (explicitRepoPath && uniqueProjectIds.length <= 1) {
+        const fallbackProjectId = uniqueProjectIds[0] || appState.selectedProjectId || 'default-project';
+        return [{ projectId: fallbackProjectId, repoPath: explicitRepoPath }];
+      }
+
+      throw new Error(
+        `Unable to resolve repository path for project${missingProjectIds.length > 1 ? 's' : ''} ${missingProjectIds.join(', ')}.`
+      );
+    }
+
+    if (resolved.length === 0 && explicitRepoPath) {
+      const fallbackProjectId = uniqueProjectIds[0] || appState.selectedProjectId || 'default-project';
+      resolved.push({ projectId: fallbackProjectId, repoPath: explicitRepoPath });
+    }
+
+    return resolved;
+  };
+
+  const normalizePlanNodesForGitFlowWithDeps = (plan: ArchitectPlanRecord): PlanNode[] => {
+    const planSlug = plan.slug || plan.title;
+    return (plan.nodes || []).map((node) => {
+      const projectIds = normalizeNodeProjectIds(node);
+      return {
+        ...node,
+        assignedBranch: deps.toPlanScopedFeatureBranch(planSlug, node.assignedBranch || node.title || 'work'),
+        projectId: projectIds[0],
+        projectIds,
+      };
+    });
+  };
+
+  const resolveDevelopBaseRefWithDeps = (branches: ArchitectGitFlowGitBranches): string => {
+    const baseBranch = deps.getGitFlowBaseBranch();
+    const local = new Set((branches.local || []).map((branch) => branch.name));
+    const remote = new Set((branches.remote || []).map((branch) => branch.name));
+
+    if (local.has(baseBranch)) return baseBranch;
+    if (remote.has(`origin/${baseBranch}`)) return `origin/${baseBranch}`;
+    throw new Error(`Missing base branch "${baseBranch}". Create/fetch ${baseBranch} before validating this plan.`);
+  };
+
+  const resolveSafeCheckoutBeforeDeletionWithDeps = async (
+    repoPath: string,
+    branchesToDelete: Set<string>,
+    branches: ArchitectGitFlowGitBranches
+  ): Promise<string | null> => {
+    const status = await deps.tauri.gitStatus(repoPath);
+    const current = status.branch;
+    if (!branchesToDelete.has(current)) return null;
+
+    if (!status.is_clean) {
+      throw new Error(`Cannot delete plan branches while currently on "${current}" with local changes. Commit or stash changes first.`);
+    }
+
+    const localNames = (branches.local || []).map((branch) => branch.name);
+    const localSet = new Set(localNames);
+    const fallbackCandidates = [
+      deps.getGitFlowBaseBranch(),
+      'main',
+      'develop',
+      ...localNames.filter((name) => !branchesToDelete.has(name)),
+    ];
+    const fallback = fallbackCandidates.find(
+      (name, index) =>
+        name.trim().length > 0 &&
+        fallbackCandidates.indexOf(name) === index &&
+        localSet.has(name) &&
+        !branchesToDelete.has(name)
+    );
+    if (!fallback) {
+      throw new Error(`Cannot delete active branch "${current}" because no safe fallback branch is available.`);
+    }
+
+    return fallback;
+  };
+
+  const ensureSafeCheckoutBeforeDeletionWithDeps = async (
+    repoPath: string,
+    branchesToDelete: Set<string>,
+    branches: ArchitectGitFlowGitBranches
+  ): Promise<void> => {
+    const fallback = await resolveSafeCheckoutBeforeDeletionWithDeps(repoPath, branchesToDelete, branches);
+    if (!fallback) {
+      return;
+    }
+
+    await deps.tauri.gitCheckout({
+      repoPath,
+      branchOrCommit: fallback,
+      create: false,
+    });
+  };
+
+  const buildCleanupPlanTargetsWithDeps = (
+    plan: ArchitectPlanRecord,
+    explicitRepoPath?: string
+  ): CleanupPlanRepositoryTarget[] => {
+    const planBranchName = deps.toPlanIntegrationBranch(plan.slug || plan.title);
+    const repositories = resolveProjectRepoPathsWithDeps(getPlanProjectIds(plan), explicitRepoPath);
+    if (repositories.length === 0) {
+      throw new Error('Unable to resolve repository path for this plan. Select at least one project before continuing.');
+    }
+
+    return repositories.map((repository) => {
+      const featureBranchNames = Array.from(
+        new Set(
+          [
+            ...(plan.nodes || [])
+              .filter((node) => normalizeNodeProjectIds(node).includes(repository.projectId))
+              .map((node) => node.assignedBranch || ''),
+            ...(plan.predictedBranches || [])
+              .filter((branch) => branch.projectId === repository.projectId)
+              .map((branch) => branch.name),
+          ]
+            .filter((name) => name.trim().length > 0)
+            .map((name) => deps.toPlanScopedFeatureBranch(plan.slug || plan.title, name))
+        )
+      );
+
+      const worktrees = featureBranchNames.map((branchName) => ({
+        worktreeKey: toBranchWorktreeKey(repository.projectId, branchName),
+        branchName,
+        worktreePath: buildTaskWorktreePath(repository.repoPath, toBranchWorktreeKey(repository.projectId, branchName)),
+      }));
+
+      return {
+        ...repository,
+        planBranchName,
+        featureBranchNames,
+        worktrees,
+      };
+    });
+  };
+
+  const preflightPlanCleanupWithDeps = async (targets: CleanupPlanRepositoryTarget[]): Promise<void> => {
+    for (const target of targets) {
+      const branches = await deps.tauri.gitBranchList(target.repoPath);
+      const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
+      const candidates = [...target.featureBranchNames, target.planBranchName].filter((name) => localBranchNames.has(name));
+
+      if (candidates.length > 0) {
+        await resolveSafeCheckoutBeforeDeletionWithDeps(target.repoPath, new Set(candidates), branches);
+      }
+
+      for (const worktree of target.worktrees) {
+        try {
+          const status = await deps.tauri.gitStatus(worktree.worktreePath);
+          if (!status.is_clean) {
+            throw new Error(
+              `Cannot clean up worktree ${worktree.worktreePath} because it has uncommitted changes.`
+            );
+          }
+        } catch (error) {
+          if (isMissingGitTargetError(error)) {
+            continue;
+          }
+          throw error;
+        }
+      }
+    }
+  };
+
+  const cleanupPlanBranchesInternalWithDeps = async (
+    plan: ArchitectPlanRecord,
+    explicitRepoPath?: string,
+    options?: {
+      allowRetained?: boolean;
+    }
+  ): Promise<CleanupPlanRepositoryResult[]> => {
+    const targets = buildCleanupPlanTargetsWithDeps(plan, explicitRepoPath);
+
+    if (!deps.tauri.isTauriAvailable()) {
+      return targets.map((repository) => ({
+        projectId: repository.projectId,
+        repoPath: repository.repoPath,
+        deletedBranches: [],
+        deletedWorktrees: [],
+        retainedBranches: [],
+        retainedWorktrees: [],
+        cleanupError: null,
+      }));
+    }
+
+    await preflightPlanCleanupWithDeps(targets);
+
+    const allowRetained = options?.allowRetained === true;
+    const results: CleanupPlanRepositoryResult[] = [];
+
+    for (const target of targets) {
+      const deletedWorktrees: CleanupPlanRepositoryResult['deletedWorktrees'] = [];
+      const retainedWorktrees: CleanupPlanRepositoryResult['retainedWorktrees'] = [];
+      const deletedBranches: string[] = [];
+      const retainedBranches: string[] = [];
+      let cleanupError: string | null = null;
+
+      const branches = await deps.tauri.gitBranchList(target.repoPath);
+      const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
+      const branchCandidates = [...target.featureBranchNames, target.planBranchName].filter((name) => localBranchNames.has(name));
+
+      if (branchCandidates.length > 0) {
+        await ensureSafeCheckoutBeforeDeletionWithDeps(target.repoPath, new Set(branchCandidates), branches);
+      }
+
+      for (const worktree of target.worktrees) {
+        try {
+          let worktreeExists = true;
+          try {
+            await deps.tauri.gitStatus(worktree.worktreePath);
+          } catch (error) {
+            if (isMissingGitTargetError(error)) {
+              worktreeExists = false;
+            } else {
+              throw error;
+            }
+          }
+
+          if (!worktreeExists) {
+            continue;
+          }
+
+          await deps.tauri.gitWorktreeRemove({
+            repoPath: target.repoPath,
+            taskId: worktree.worktreeKey,
+          });
+          deletedWorktrees.push(worktree);
+        } catch (error) {
+          if (isMissingGitTargetError(error)) {
+            continue;
+          }
+          if (!allowRetained) {
+            throw error;
+          }
+          cleanupError = cleanupError || toServiceError(error).message;
+          retainedWorktrees.push(worktree);
+        }
+      }
+
+      for (const branchName of branchCandidates) {
+        try {
+          await deps.tauri.gitBranchDelete({
+            repoPath: target.repoPath,
+            branchName,
+            force: false,
+          });
+          deletedBranches.push(branchName);
+        } catch (error) {
+          if (!allowRetained) {
+            throw error;
+          }
+          cleanupError = cleanupError || toServiceError(error).message;
+          retainedBranches.push(branchName);
+        }
+      }
+
+      results.push({
+        projectId: target.projectId,
+        repoPath: target.repoPath,
+        deletedBranches,
+        deletedWorktrees,
+        retainedBranches,
+        retainedWorktrees,
+        cleanupError,
+      });
+    }
+
+    return results;
+  };
+
+  const preflightPlanRepositoriesWithDeps = async (params: {
+    plan: ArchitectPlanRecord;
+    explicitRepoPath?: string;
+  }): Promise<PlanReviewRepositoryResult[]> => {
+    const planBranchName = deps.toPlanIntegrationBranch(params.plan.slug || params.plan.title);
+    const baseBranchName = params.plan.targetBranch || deps.getGitFlowBaseBranch();
+    const repositories = resolveProjectRepoPathsWithDeps(getPlanProjectIds(params.plan), params.explicitRepoPath);
+    if (repositories.length === 0) {
+      throw new Error('Unable to resolve repository path for this plan. Select at least one project before continuing.');
+    }
+
+    return Promise.all(
+      repositories.map(async (repository) => {
+        const status = await deps.tauri.gitStatus(repository.repoPath);
+        const diff = await deps.tauri.gitDiff({
+          repoPath: repository.repoPath,
+          base: baseBranchName,
+          head: planBranchName,
+          contextLines: 3,
+        });
+
+        const mergeCheck = status.is_clean
+          ? await deps.tauri.gitMergeCheck({
+            repoPath: repository.repoPath,
+            branchName: planBranchName,
+            intoBranch: baseBranchName,
+          })
+          : {
+            mergeable: false,
+            conflictFiles: [],
+            hasChanges: diff.trim().length > 0,
+          };
+        const blocking = buildPlanRepositoryBlockingState({
+          repositoryPath: repository.repoPath,
+          status,
+          mergeCheck,
+        });
+
+        return {
+          id: `${repository.projectId}::${repository.repoPath}`,
+          projectId: repository.projectId,
+          repoPath: repository.repoPath,
+          planBranchName,
+          baseBranchName,
+          isClean: status.is_clean,
+          hasChanges: mergeCheck.hasChanges,
+          mergeable: mergeCheck.mergeable,
+          conflictFiles: blocking.conflictFiles,
+          mergeInProgress: blocking.mergeInProgress,
+          diff,
+          checkStatus: 'not_run' as const,
+          blockingKind: blocking.blockingKind,
+          nextAction: blocking.nextAction,
+          blockingReason: blocking.blockingReason,
+        };
+      })
+    );
+  };
+
+  const provisionPlanBranchesWithDeps = async (
+    plan: ArchitectPlanRecord,
+    explicitRepoPath?: string
+  ): Promise<ProvisionPlanBranchesResult> => {
+    const planBranchName = deps.toPlanIntegrationBranch(plan.slug || plan.title);
+    const featureBranchesByProject = new Map<string, string[]>();
+
+    for (const node of plan.nodes || []) {
+      const branchName = node.assignedBranch || 'work';
+      for (const projectId of normalizeNodeProjectIds(node)) {
+        const existing = featureBranchesByProject.get(projectId) || [];
+        if (!existing.includes(branchName)) {
+          existing.push(branchName);
+        }
+        featureBranchesByProject.set(projectId, existing);
+      }
+    }
+
+    if (!deps.tauri.isTauriAvailable()) {
+      const existingFeatureBranches = Array.from(featureBranchesByProject.values()).flat();
+      return {
+        planBranchName,
+        repositories: [],
+        createdPlanBranch: false,
+        createdFeatureBranches: [],
+        existingFeatureBranches,
+      };
+    }
+
+    const repositories = resolveProjectRepoPathsWithDeps(getPlanProjectIds(plan), explicitRepoPath);
+    if (repositories.length === 0) {
+      throw new Error('Unable to resolve repository path for this plan. Select at least one project before validating the plan.');
+    }
+
+    const results: ProvisionedPlanRepositoryResult[] = [];
+    for (const repository of repositories) {
+      const branches = await deps.tauri.gitBranchList(repository.repoPath);
+      const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
+      const createdFeatureBranches: string[] = [];
+      const existingFeatureBranches: string[] = [];
+
+      let createdPlanBranch = false;
+      if (!localBranchNames.has(planBranchName)) {
+        const fromRef = resolveDevelopBaseRefWithDeps(branches);
+        await deps.tauri.gitBranchCreate({
+          repoPath: repository.repoPath,
+          branchName: planBranchName,
+          fromRef,
+        });
+        localBranchNames.add(planBranchName);
+        createdPlanBranch = true;
+      }
+
+      for (const featureBranch of featureBranchesByProject.get(repository.projectId) || []) {
+        if (localBranchNames.has(featureBranch)) {
+          existingFeatureBranches.push(featureBranch);
+          continue;
+        }
+
+        await deps.tauri.gitBranchCreate({
+          repoPath: repository.repoPath,
+          branchName: featureBranch,
+          fromRef: planBranchName,
+        });
+        localBranchNames.add(featureBranch);
+        createdFeatureBranches.push(featureBranch);
+      }
+
+      results.push({
+        projectId: repository.projectId,
+        repoPath: repository.repoPath,
+        planBranchName,
+        createdPlanBranch,
+        createdFeatureBranches,
+        existingFeatureBranches,
+      });
+    }
+
+    return {
+      planBranchName,
+      repositories: results,
+      createdPlanBranch: results.some((result) => result.createdPlanBranch),
+      createdFeatureBranches: results.flatMap((result) => result.createdFeatureBranches),
+      existingFeatureBranches: results.flatMap((result) => result.existingFeatureBranches),
+    };
+  };
+
+  const validatePlanAndProvisionBranchesWithDeps = async (params: {
+    branchName: string;
+    planId: string;
+    repoPath?: string;
+    setActive?: boolean;
+  }): Promise<{ plan: ArchitectPlanRecord; provision: ProvisionPlanBranchesResult }> => {
+    const plan = await deps.getArchitectPlan(params.branchName, params.planId);
+    if (!plan || plan.status === 'deleted') {
+      throw new Error(`Plan ${params.planId} is unavailable.`);
+    }
+
+    if (!Array.isArray(plan.nodes) || plan.nodes.length === 0) {
+      throw new Error('Cannot validate a plan without strategy nodes. Generate strategy first.');
+    }
+
+    const normalizedNodes = normalizePlanNodesForGitFlowWithDeps(plan);
+    const planBranchName = deps.toPlanIntegrationBranch(plan.slug || plan.title);
+    const normalizedPredictedBranches = buildPredictedBranchesForPlan(
+      normalizedNodes,
+      plan.predictedBranches || [],
+      planBranchName
+    );
+    const normalizedStrategy = normalizeStrategyDependencies(normalizedNodes, normalizedPredictedBranches);
+    const projectIds = getPlanProjectIds({
+      ...plan,
+      nodes: normalizedStrategy.nodes,
+      predictedBranches: normalizedStrategy.predictedBranches,
+    });
+
+    const normalizedPlan: ArchitectPlanRecord = {
+      ...plan,
+      projectId: projectIds[0],
+      projectIds,
+      nodes: normalizedStrategy.nodes,
+      predictedBranches: normalizedStrategy.predictedBranches,
+    };
+
+    const provision = await provisionPlanBranchesWithDeps(normalizedPlan, params.repoPath);
+
+    const validatedPlan = await deps.updateArchitectPlan({
+      branchName: params.branchName,
+      planId: plan.id,
+      status: 'validated',
+      nodes: normalizedPlan.nodes,
+      predictedBranches: normalizedPlan.predictedBranches,
+      projectId: normalizedPlan.projectId,
+      setActive: params.setActive !== false,
+    });
+
+    return {
+      plan: {
+        ...validatedPlan,
+        projectId: normalizedPlan.projectId,
+        projectIds,
+        nodes: normalizedPlan.nodes,
+        predictedBranches: normalizedPlan.predictedBranches,
+      },
+      provision,
+    };
+  };
+
+  const mergeFeatureBranchIntoPlanBranchWithDeps = async (params: {
+    projectId: string;
+    branchName: string;
+    planBranchName: string;
+    repoPath?: string;
+  }): Promise<string> => {
+    const repository = resolveProjectRepoPathsWithDeps([params.projectId], params.repoPath)[0];
+    if (!repository?.repoPath) {
+      throw new Error(`Unable to resolve repository path for project ${params.projectId}.`);
+    }
+
+    return deps.tauri.gitMerge({
+      repoPath: repository.repoPath,
+      branchName: params.branchName,
+      intoBranch: params.planBranchName,
+    });
+  };
+
+  const loadPlanReviewWithDeps = async (params: {
+    branchName: string;
+    planId: string;
+    repoPath?: string;
+  }): Promise<PlanReviewResult> => {
+    const plan = await deps.getArchitectPlan(params.branchName, params.planId);
+    if (!plan || plan.status === 'deleted') {
+      throw new Error(`Plan ${params.planId} is unavailable.`);
+    }
+
+    return {
+      plan,
+      tasks: buildPlanReviewTasks(plan),
+      repositories: await preflightPlanRepositoriesWithDeps({
+        plan,
+        explicitRepoPath: params.repoPath,
+      }),
+    };
+  };
+
+  const cleanupPlanBranchesWithDeps = async (
+    plan: ArchitectPlanRecord,
+    explicitRepoPath?: string,
+    options?: {
+      allowRetained?: boolean;
+    }
+  ): Promise<CleanupPlanRepositoryResult[]> => {
+    return cleanupPlanBranchesInternalWithDeps(plan, explicitRepoPath, options);
+  };
+
+  const finalizePlanIntoBaseBranchWithDeps = async (params: {
+    branchName: string;
+    planId: string;
+    repoPath?: string;
+  }): Promise<{
+    plan: ArchitectPlanRecord;
+    repositories: FinalizedPlanRepositoryResult[];
+    cleanup: CleanupPlanRepositoryResult[];
+  }> => {
+    const plan = await deps.getArchitectPlan(params.branchName, params.planId);
+    if (!plan || plan.status === 'deleted') {
+      throw new Error(`Plan ${params.planId} is unavailable.`);
+    }
+    assertPlanReadyForFinalization(plan);
+
+    const preflightRepositories = await preflightPlanRepositoriesWithDeps({
+      plan,
+      explicitRepoPath: params.repoPath,
+    });
+
+    if (preflightRepositories.some((repository) => repository.blockingReason)) {
+      throw createPlanFinalizationBlockedError({
+        planId: plan.id,
+        branchName: params.branchName,
+        repositories: preflightRepositories,
+      });
+    }
+
+    await preflightPlanCleanupWithDeps(buildCleanupPlanTargetsWithDeps(plan, params.repoPath));
+
+    const finalizedRepositories: FinalizedPlanRepositoryResult[] = [];
+    for (const repository of preflightRepositories) {
+      const mergeOutput = repository.hasChanges
+        ? await deps.tauri.gitMerge({
+          repoPath: repository.repoPath,
+          branchName: repository.planBranchName,
+          intoBranch: repository.baseBranchName,
+        })
+        : undefined;
+
+      finalizedRepositories.push({
+        projectId: repository.projectId,
+        repoPath: repository.repoPath,
+        planBranchName: repository.planBranchName,
+        baseBranchName: repository.baseBranchName,
+        mergeOutput,
+      });
+    }
+
+    await deps.updateArchitectPlan({
+      branchName: params.branchName,
+      planId: plan.id,
+      status: 'completed',
+      setActive: false,
+    });
+    const archivedPlan = await deps.archiveArchitectPlan(params.branchName, plan.id);
+    const cleanup = await cleanupPlanBranchesWithDeps(archivedPlan, params.repoPath, {
+      allowRetained: true,
+    });
+
+    return {
+      plan: archivedPlan,
+      repositories: finalizedRepositories,
+      cleanup,
+    };
+  };
+
+  const deletePlanAndCleanupBranchesWithDeps = async (params: {
+    branchName: string;
+    planId: string;
+    hardDelete?: boolean;
+    repoPath?: string;
+  }): Promise<{
+    deletedBranches: string[];
+    deletedWorktreeKeys: string[];
+    repositories: CleanupPlanRepositoryResult[];
+  }> => {
+    const plan = await deps.getArchitectPlan(params.branchName, params.planId);
+    if (!plan || plan.status === 'deleted') {
+      throw new Error(`Plan ${params.planId} is unavailable.`);
+    }
+
+    const repositories = await cleanupPlanBranchesWithDeps(plan, params.repoPath);
+
+    await deps.deleteArchitectPlan({
+      branchName: params.branchName,
+      planId: params.planId,
+      hardDelete: params.hardDelete,
+    });
+
+    return {
+      deletedBranches: repositories.flatMap((repository) => repository.deletedBranches),
+      deletedWorktreeKeys: repositories.flatMap((repository) =>
+        repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
+      ),
+      repositories,
+    };
+  };
+
+  return {
+    provisionPlanBranches: provisionPlanBranchesWithDeps,
+    validatePlanAndProvisionBranches: validatePlanAndProvisionBranchesWithDeps,
+    mergeFeatureBranchIntoPlanBranch: mergeFeatureBranchIntoPlanBranchWithDeps,
+    loadPlanReview: loadPlanReviewWithDeps,
+    finalizePlanIntoBaseBranch: finalizePlanIntoBaseBranchWithDeps,
+    cleanupPlanBranches: cleanupPlanBranchesWithDeps,
+    deletePlanAndCleanupBranches: deletePlanAndCleanupBranchesWithDeps,
   };
 };

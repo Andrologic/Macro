@@ -13,6 +13,7 @@ interface ConfirmPromptModalProps {
   initialValue?: string;
   inputPlaceholder?: string;
   requireInput?: boolean;
+  isSubmitting?: boolean;
   onCancel: () => void;
   onConfirm: (value?: string) => void;
 }
@@ -27,6 +28,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   initialValue = '',
   inputPlaceholder,
   requireInput = false,
+  isSubmitting = false,
   onCancel,
   onConfirm,
 }) => {
@@ -41,11 +43,18 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   if (!isOpen) return null;
 
   const showInput = inputPlaceholder !== undefined || requireInput;
-  const confirmDisabled = requireInput && !value.trim();
+  const confirmDisabled = isSubmitting || (requireInput && !value.trim());
 
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onCancel} />
+      <div
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={() => {
+          if (!isSubmitting) {
+            onCancel();
+          }
+        }}
+      />
 
       <div className="relative w-full max-w-sm rounded-xl border border-border bg-card shadow-2xl p-4">
         <h3 className="text-sm font-semibold text-foreground">{title}</h3>
@@ -64,7 +73,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
                 if (event.key === 'Enter' && !confirmDisabled) {
                   onConfirm(value.trim());
                 }
-                if (event.key === 'Escape') {
+                if (event.key === 'Escape' && !isSubmitting) {
                   onCancel();
                 }
               }}
@@ -73,7 +82,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
         )}
 
         <div className={cn('mt-4 flex items-center justify-end gap-2')}>
-          <Button variant="ghost" size="sm" onClick={onCancel}>
+          <Button variant="ghost" size="sm" onClick={onCancel} disabled={isSubmitting}>
             {cancelLabel}
           </Button>
           <Button
@@ -82,7 +91,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
             onClick={() => onConfirm(showInput ? value.trim() : undefined)}
             disabled={confirmDisabled}
           >
-            {confirmLabel}
+            {isSubmitting ? '...' : confirmLabel}
           </Button>
         </div>
       </div>
