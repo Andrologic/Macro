@@ -37,6 +37,7 @@ import {
   getArchitectPlanSecondaryLabel,
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
+import { toServiceError } from '../../services/contracts/errors';
 
 interface PlanSelectorProps {
   className?: string;
@@ -145,7 +146,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   };
 
   const resolveOperationMessage = (value: unknown, fallback: string): string =>
-    value instanceof Error ? value.message : fallback;
+    (() => {
+      const message = toServiceError(value).message.trim();
+      return message && message !== 'Unknown error' ? message : fallback;
+    })();
 
   const performReplicaRepair = async (strategy: 'newest' | 'oldest'): Promise<void> => {
     if (!replicaRepair) return;
@@ -297,9 +301,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         setActivePlanId(null);
         return;
       }
-      const message = loadError instanceof Error
-        ? loadError.message
-        : t('architect.planSelector.errorLoadPlans', 'Failed to load plans.');
+      const message = resolveOperationMessage(
+        loadError,
+        t('architect.planSelector.errorLoadPlans', 'Failed to load plans.')
+      );
       setError(message);
       setPlans([]);
       setActivePlanId(null);
@@ -391,9 +396,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (openReplicaRepair(activationError, () => activatePlan(planId))) {
         return;
       }
-      const message = activationError instanceof Error
-        ? activationError.message
-        : t('architect.planSelector.errorActivatePlan', 'Failed to activate plan.');
+      const message = resolveOperationMessage(
+        activationError,
+        t('architect.planSelector.errorActivatePlan', 'Failed to activate plan.')
+      );
       setError(message);
     } finally {
       setIsActivating(null);
@@ -417,7 +423,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (openReplicaRepair(err, () => handleCreatePlan())) {
         return;
       }
-      const message = err instanceof Error ? err.message : t('architect.planSelector.errorOperationFailed', 'Operation failed.');
+      const message = resolveOperationMessage(
+        err,
+        t('architect.planSelector.errorOperationFailed', 'Operation failed.')
+      );
       setError(message);
       toast.error(message);
     } finally {
@@ -452,7 +461,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (openReplicaRepair(err, () => handleFormConfirm(value))) {
         return;
       }
-      setFormError(err instanceof Error ? err.message : t('architect.planSelector.errorOperationFailed', 'Operation failed.'));
+      setFormError(
+        resolveOperationMessage(
+          err,
+          t('architect.planSelector.errorOperationFailed', 'Operation failed.')
+        )
+      );
     } finally {
       setFormLoading(false);
     }
