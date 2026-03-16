@@ -1,6 +1,5 @@
 // File System Commands
-// ⚠️ CRITICAL: This module requires manual implementation
-// See docs/fs-todo.md for detailed tasks
+// This module contains the desktop FS command surface.
 
 use crate::core::error::{io_error_to_backend_error, BackendError};
 use crate::core::tool_policy::is_macro_scoped_path;

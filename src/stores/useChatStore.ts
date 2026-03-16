@@ -12,23 +12,40 @@ import { getToolModePolicy as getLocalToolModePolicy } from '../services/toolMod
 import { executeWorkspaceTool } from '../services/workspaceToolExecutor';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
 import { useNeedsStore } from './useNeedsStore';
+import { useTerminalStore } from './useTerminalStore';
 import { canUseRemoteKernel, getRemoteToolModePolicy } from '../services/remoteKernelApi';
 import * as tauriIpc from '../services/tauriIpc';
 import {
+  createArchitectPlan,
+  deleteArchitectPlan,
   getArchitectPlan,
+  getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   listArchitectPlans,
   resolvePlanProjectContextId,
   resolveTargetBranch,
+  restoreArchitectPlan,
   saveArchitectPlanNeeds,
+  setActiveArchitectPlan,
   toPlanIntegrationBranch,
   toPlanScopedFeatureBranch,
   updateArchitectPlan,
 } from '../services/architectPlanService';
+import {
+  getArchitectPlanConversationTitle,
+  getArchitectPlanDisplayName,
+  isCanonicalArchitectPlan,
+} from '../services/architectPlanPresentation';
 import { normalizeArchitectToolId } from '../services/architectToolNames';
 import { normalizeStrategyDependencies } from '../services/implementTaskDerivation';
 import { getLocalProjectContextState } from '../services/localProjectContext';
+import {
+  getFocusedProjectForGroup,
+  getGlobalProjectById,
+  getProjectGroupByProjectId,
+  getScopedProjectIds,
+} from '../services/globalProjects';
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from '../services/macroSyncService';
 import { resolveProjectExecutionContext } from '../services/projectExecutionContext';
 import { parseMessageQuickReplies } from '../services/chatQuickReplies';
@@ -273,7 +290,8 @@ interface ChatStore {
   createConversation: (
     title: string,
     taskId: string | null,
-    projectId: string | null
+    projectId: string | null,
+    groupId?: string | null
   ) => Promise<Conversation>;
   ensureConversationForCurrentMode: () => Promise<string | null>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
@@ -301,6 +319,7 @@ interface ChatStore {
   addComposerContextRef: (ref: ContextReference) => void;
   removeComposerContextRef: (id: string, kind: ContextRefKind) => void;
   clearComposerContextRefs: () => void;
+  reconcileProjectRegistry: (validGroupIds: string[], validProjectIds: string[]) => void;
   initialize: () => Promise<void>;
 }
 
@@ -606,18 +625,55 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return getGitFlowBaseBranch();
     };
 
+    const resolveArchitectPlanStatus = (
+      rawStatus: unknown,
+      fallback: 'draft' | 'validated' | 'in_progress' | 'completed' | 'archived' | 'deleted' = 'draft'
+    ): 'draft' | 'validated' | 'in_progress' | 'completed' | 'archived' | 'deleted' => {
+      const normalizedStatus = typeof rawStatus === 'string' ? rawStatus.trim().toLowerCase() : '';
+      const allowedStatuses = new Set([
+        'draft',
+        'validated',
+        'in_progress',
+        'completed',
+        'archived',
+        'deleted',
+      ]);
+
+      return allowedStatuses.has(normalizedStatus as typeof fallback)
+        ? (normalizedStatus as typeof fallback)
+        : fallback;
+    };
+
     const hydratePlanContext = async (targetBranch: string, planId: string): Promise<void> => {
       const plan = await getArchitectPlan(targetBranch, planId);
       if (!plan || plan.status === 'deleted') return;
 
       const appStore = useAppStore.getState();
       const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
-      if (planProjectId && appStore.selectedProjectId !== planProjectId) {
+      const scopedProjectIds = getScopedProjectIds(
+        appStore.projectGroups,
+        appStore.selectedGroupId,
+        appStore.selectedProjectId
+      );
+      const isPlanAlreadyInScope =
+        scopedProjectIds.length > 0 &&
+        (getArchitectPlanProjectIds(plan).length === 0 ||
+          getArchitectPlanProjectIds(plan).some((projectId) => scopedProjectIds.includes(projectId)));
+      if (planProjectId && !isPlanAlreadyInScope) {
         await appStore.switchProjectContext(planProjectId);
       }
       appStore.setActiveArchitectPlanId(plan.id);
       appStore.setPlanNodes(plan.nodes || []);
       appStore.setPredictedBranches(plan.predictedBranches || []);
+      appStore.setActivePlanContext({
+        id: plan.id,
+        slug: plan.slug,
+        title: plan.title,
+        label: plan.label,
+        description: plan.description,
+        status: plan.status,
+        targetBranch: plan.targetBranch,
+      });
 
       const planNeeds = await getArchitectPlanNeeds(targetBranch, plan.id);
       useNeedsStore.getState().replaceNeedsForPlan(plan.id, planNeeds);
@@ -632,15 +688,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
 
       if (!conversationId || hasSharedConversation) {
+        const fallbackGroupId = appStore.selectedGroupId;
+        const fallbackGroupProjectId = getFocusedProjectForGroup(
+          appStore.projectGroups,
+          fallbackGroupId,
+          appStore.selectedProjectId
+        )?.id ?? null;
         const fallbackProjectId =
           resolvePlanProjectContextId(plan, appStore.selectedProjectId) ||
+          fallbackGroupProjectId ||
           appStore.selectedProjectId ||
           appStore.projectGroups.flatMap((group) => group.projects)[0]?.id ||
           null;
         const created = await get().createConversation(
-          `Plan · ${plan.title}`,
+          getArchitectPlanConversationTitle(plan),
           null,
-          fallbackProjectId
+          fallbackProjectId,
+          fallbackGroupId
         );
         conversationId = created.id;
         await updateArchitectPlan({
@@ -762,13 +826,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       const appState = useAppStore.getState();
-      const selectedProjectIds = appState.selectedGroupId
-        ? appState.projectGroups.find((candidate) => candidate.id === appState.selectedGroupId)?.projects.map((project) => project.id) || []
-        : [];
+      const selectedProjectIds = getScopedProjectIds(
+        appState.projectGroups,
+        appState.selectedGroupId,
+        appState.selectedProjectId
+      );
       const fallbackProjectIds = appState.projectGroups.flatMap((group) => group.projects).map((project) => project.id);
       const defaultProjectIds = Array.from(new Set([
-        ...(appState.selectedProjectId ? [appState.selectedProjectId] : []),
         ...selectedProjectIds,
+        ...(appState.selectedProjectId ? [appState.selectedProjectId] : []),
         ...fallbackProjectIds,
       ])).filter(Boolean);
 
@@ -942,6 +1008,249 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Successfully added need: "${title}" (ID: ${id}).`;
     }
 
+    if (normalizedToolName === 'plan_create') {
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const appState = useAppStore.getState();
+      const scopedProjectIds = getScopedProjectIds(
+        appState.projectGroups,
+        appState.selectedGroupId,
+        appState.selectedProjectId
+      );
+      const fallbackProjectId =
+        scopedProjectIds[0] ||
+        appState.selectedProjectId ||
+        appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
+        undefined;
+      const titleAlias = typeof args.title === 'string' ? args.title.trim() : '';
+      const label = typeof args.label === 'string' ? args.label.trim() : titleAlias;
+      const description = typeof args.description === 'string' ? args.description : '';
+      const setActive = args.set_active !== false;
+      const plan = await createArchitectPlan({
+        branchName: targetBranch,
+        label: label || undefined,
+        description,
+        status: resolveArchitectPlanStatus(args.status, 'draft'),
+        projectId: fallbackProjectId,
+        projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
+        setActive,
+      });
+
+      if (setActive) {
+        await hydratePlanContext(targetBranch, plan.id);
+      }
+
+      return JSON.stringify(
+        {
+          plan_id: plan.id,
+          plan_slug: plan.slug,
+          plan_title: plan.title,
+          plan_label: plan.label ?? null,
+          display_name: getArchitectPlanDisplayName(plan),
+          target_branch: plan.targetBranch,
+          status: plan.status,
+          active: setActive,
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_list') {
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const includeDeleted = args.include_deleted === true;
+      const includeArchived = args.include_archived === true || includeDeleted;
+      const plansIndex = await listArchitectPlans(targetBranch, includeDeleted, includeArchived);
+
+      return JSON.stringify(
+        {
+          target_branch: targetBranch,
+          active_plan_id: plansIndex.activePlanId,
+          plans: plansIndex.plans.map((plan) => ({
+            id: plan.id,
+            slug: plan.slug,
+            title: plan.title,
+            label: plan.label ?? null,
+            display_name: getArchitectPlanDisplayName(plan),
+            status: plan.status,
+            description: plan.description,
+            target_branch: plan.targetBranch,
+            node_count: plan.nodeCount,
+            conversation_id: plan.conversationId ?? null,
+          })),
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_get') {
+      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      if (!planId) {
+        return 'Missing plan_id for plan_get.';
+      }
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const plan = await getArchitectPlan(targetBranch, planId);
+      if (!plan || plan.status === 'deleted') {
+        return `Plan ${planId} is unavailable.`;
+      }
+
+      return JSON.stringify(
+        {
+          id: plan.id,
+          slug: plan.slug,
+          title: plan.title,
+          label: plan.label ?? null,
+          display_name: getArchitectPlanDisplayName(plan),
+          is_canonical: isCanonicalArchitectPlan(plan),
+          description: plan.description,
+          status: plan.status,
+          target_branch: plan.targetBranch,
+          conversation_id: plan.conversationId ?? null,
+          project_ids: getArchitectPlanProjectIds(plan),
+          nodes: plan.nodes,
+          predicted_branches: plan.predictedBranches,
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_update') {
+      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      if (!planId) {
+        return 'Missing plan_id for plan_update.';
+      }
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const existingPlan = await getArchitectPlan(targetBranch, planId);
+      if (!existingPlan || existingPlan.status === 'deleted') {
+        return `Plan ${planId} is unavailable.`;
+      }
+
+      const isCanonicalPlan = isCanonicalArchitectPlan(existingPlan);
+      const titleAlias = typeof args.title === 'string' ? args.title.trim() : undefined;
+      const label = typeof args.label === 'string' ? args.label.trim() : undefined;
+      const shouldPassTitleAlias =
+        titleAlias !== undefined &&
+        (!isCanonicalPlan || titleAlias !== existingPlan.title || label !== undefined);
+
+      const updatedPlan = await updateArchitectPlan({
+        branchName: targetBranch,
+        planId,
+        ...(shouldPassTitleAlias ? { title: titleAlias } : {}),
+        ...(label !== undefined ? { label } : {}),
+        ...(typeof args.description === 'string' ? { description: args.description } : {}),
+        ...(args.status !== undefined
+          ? { status: resolveArchitectPlanStatus(args.status, existingPlan.status) }
+          : {}),
+        setActive: args.set_active === true,
+      });
+
+      if (args.set_active === true || resolveActivePlanId() === updatedPlan.id) {
+        await hydratePlanContext(targetBranch, updatedPlan.id);
+      }
+
+      return JSON.stringify(
+        {
+          id: updatedPlan.id,
+          slug: updatedPlan.slug,
+          title: updatedPlan.title,
+          label: updatedPlan.label ?? null,
+          display_name: getArchitectPlanDisplayName(updatedPlan),
+          status: updatedPlan.status,
+          target_branch: updatedPlan.targetBranch,
+          active: resolveActivePlanId() === updatedPlan.id,
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_delete') {
+      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      if (!planId) {
+        return 'Missing plan_id for plan_delete.';
+      }
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const wasActive = resolveActivePlanId() === planId;
+      await deleteArchitectPlan({
+        branchName: targetBranch,
+        planId,
+        hardDelete: args.hard_delete === true,
+      });
+
+      if (wasActive) {
+        const appStore = useAppStore.getState();
+        const refreshed = await listArchitectPlans(targetBranch, false, false);
+        const nextActivePlanId =
+          refreshed.activePlanId &&
+          refreshed.plans.some((plan) => plan.id === refreshed.activePlanId)
+            ? refreshed.activePlanId
+            : refreshed.plans[0]?.id ?? null;
+
+        if (nextActivePlanId) {
+          await hydratePlanContext(targetBranch, nextActivePlanId);
+        } else {
+          appStore.setActiveArchitectPlanId(null);
+          appStore.setPlanNodes([]);
+          appStore.setPredictedBranches([]);
+          appStore.setActivePlanContext(null);
+        }
+      }
+
+      return JSON.stringify(
+        {
+          plan_id: planId,
+          deleted: true,
+          hard_delete: args.hard_delete === true,
+          active_plan_id: resolveActivePlanId(),
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_restore') {
+      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      if (!planId) {
+        return 'Missing plan_id for plan_restore.';
+      }
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      const restoredPlan = await restoreArchitectPlan(targetBranch, planId);
+
+      return JSON.stringify(
+        {
+          id: restoredPlan.id,
+          slug: restoredPlan.slug,
+          title: restoredPlan.title,
+          label: restoredPlan.label ?? null,
+          display_name: getArchitectPlanDisplayName(restoredPlan),
+          status: restoredPlan.status,
+          target_branch: restoredPlan.targetBranch,
+        },
+        null,
+        2
+      );
+    }
+
+    if (normalizedToolName === 'plan_set_active') {
+      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      if (!planId) {
+        return 'Missing plan_id for plan_set_active.';
+      }
+      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
+      await setActiveArchitectPlan(targetBranch, planId);
+      await hydratePlanContext(targetBranch, planId);
+
+      return JSON.stringify(
+        {
+          active_plan_id: planId,
+          target_branch: targetBranch,
+        },
+        null,
+        2
+      );
+    }
+
     if (normalizedToolName === 'strategy_generate') {
       const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
@@ -962,9 +1271,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
 
       const activePlan = await getArchitectPlan(targetBranch, activePlanId);
-      const inputTitle = typeof args.plan_title === 'string' && args.plan_title.trim().length > 0
-        ? args.plan_title.trim()
-        : activePlan?.title || `Plan ${new Date().toISOString().slice(0, 10)}`;
+      const requestedPlanTitleAlias =
+        typeof args.plan_title === 'string' ? args.plan_title.trim() : undefined;
       const inputDescription = typeof args.plan_description === 'string'
         ? args.plan_description
         : activePlan?.description || '';
@@ -972,7 +1280,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await updateArchitectPlan({
         branchName: targetBranch,
         planId: activePlanId,
-        title: inputTitle,
+        ...(activePlan && requestedPlanTitleAlias !== undefined
+          ? isCanonicalArchitectPlan(activePlan)
+            ? { label: requestedPlanTitleAlias }
+            : { title: requestedPlanTitleAlias }
+          : {}),
         description: inputDescription,
         status: 'draft',
         nodes: strategy.planNodes,
@@ -1146,7 +1458,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await updateArchitectPlan({
         branchName: targetBranch,
         planId: activePlanId,
-        title: activePlan.title,
+        ...(isCanonicalArchitectPlan(activePlan)
+          ? { label: activePlan.label }
+          : { title: activePlan.title }),
         description: activePlan.description,
         status: activePlan.status,
         nodes: strategy.planNodes,
@@ -1178,7 +1492,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await updateArchitectPlan({
         branchName: targetBranch,
         planId: activePlanId,
-        title: activePlan.title,
+        ...(isCanonicalArchitectPlan(activePlan)
+          ? { label: activePlan.label }
+          : { title: activePlan.title }),
         description: activePlan.description,
         status: activePlan.status,
         nodes: [],
@@ -1198,6 +1514,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       normalizedToolName === 'edit' ||
       normalizedToolName === 'glob' ||
       normalizedToolName === 'grep' ||
+      normalizedToolName === 'terminal_create_session' ||
+      normalizedToolName === 'terminal_run' ||
+      normalizedToolName === 'terminal_read' ||
+      normalizedToolName === 'terminal_kill' ||
       normalizedToolName.startsWith('git_')
     ) {
       const mode = useAppStore.getState().mode;
@@ -1206,17 +1526,74 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const executionContext = resolveProjectExecutionContext({
         mode,
         projects: appState.projectGroups.flatMap((group) => group.projects),
+        projectGroups: appState.projectGroups,
         tasks: taskState.tasks,
         conversations: get().conversations,
         conversationId,
+        selectedGroupId: appState.selectedGroupId,
         selectedProjectId: appState.selectedProjectId,
         selectedTaskId: appState.selectedTaskId,
         activeRepositoryPath: taskState.activeRepositoryPath,
         branchWorktrees: taskState.branchWorktrees,
       });
 
+      if (normalizedToolName === 'terminal_create_session') {
+        const projectId =
+          (typeof args.project_id === 'string' && args.project_id.trim()) ||
+          executionContext.focusedProjectId ||
+          executionContext.projectId;
+
+        if (!projectId) {
+          return 'Missing project_id argument for terminal_create_session.';
+        }
+
+        const session = await useTerminalStore.getState().createSession({
+          projectId,
+          cwd: typeof args.cwd === 'string' ? args.cwd : null,
+        });
+        return JSON.stringify(session, null, 2);
+      }
+
+      if (normalizedToolName === 'terminal_run') {
+        const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+        const command = typeof args.command === 'string' ? args.command : '';
+        if (!sessionId) return 'Missing session_id argument for terminal_run.';
+        if (!command.trim()) return 'Missing command argument for terminal_run.';
+
+        const session = await useTerminalStore.getState().runCommand({
+          sessionId,
+          command,
+          timeoutMs:
+            typeof args.timeout_ms === 'number' ? Math.max(1, Math.floor(args.timeout_ms)) : null,
+        });
+        return JSON.stringify(session, null, 2);
+      }
+
+      if (normalizedToolName === 'terminal_read') {
+        const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+        if (!sessionId) return 'Missing session_id argument for terminal_read.';
+
+        const session = await useTerminalStore.getState().readSession(sessionId);
+        return JSON.stringify(session, null, 2);
+      }
+
+      if (normalizedToolName === 'terminal_kill') {
+        const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+        if (!sessionId) return 'Missing session_id argument for terminal_kill.';
+
+        const session = await useTerminalStore.getState().killSession(sessionId);
+        return JSON.stringify(session, null, 2);
+      }
+
       return executeWorkspaceTool(normalizedToolName, args, mode, {
         workspacePath: executionContext.workspacePath,
+        defaultWorkspacePath: executionContext.defaultWorkspacePath,
+        projectId: executionContext.projectId,
+        focusedProjectId: executionContext.focusedProjectId,
+        groupId: executionContext.groupId,
+        projectMounts: executionContext.projectMounts,
+        virtualRootEnabled: executionContext.virtualRootEnabled,
+        workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
       });
     }
   };
@@ -1239,9 +1616,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const executionContext = resolveProjectExecutionContext({
       mode: appState.mode,
       projects: appState.projectGroups.flatMap((group) => group.projects),
+      projectGroups: appState.projectGroups,
       tasks: taskState.tasks,
       conversations: get().conversations,
       conversationId,
+      selectedGroupId: appState.selectedGroupId,
       selectedProjectId: appState.selectedProjectId,
       selectedTaskId: appState.selectedTaskId,
       activeRepositoryPath: taskState.activeRepositoryPath,
@@ -1402,13 +1781,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (
+      executionContext.groupName ||
       executionContext.projectName ||
       executionContext.workspacePath ||
       executionContext.taskId ||
       executionContext.branchName
     ) {
+      const scopedProjects = executionContext.projectIds
+        .map((projectId) => appState.getProjectById(projectId)?.name || projectId)
+        .join(', ') || 'none';
+      const mountSummary = executionContext.projectMounts
+        .map((mount) => `${mount.mountName}=>${mount.displayName}`)
+        .join(', ') || 'none';
       systemInstructions.push(
-        `[Execution Context] project="${executionContext.projectName || executionContext.projectId || 'none'}", task="${executionContext.taskId || 'none'}", branch="${executionContext.branchName || 'none'}", workspace_path="${executionContext.workspacePath || 'none'}". Treat this workspace as the default repository root for workspace and git operations unless the user explicitly targets another project or path.`
+        `[Execution Context] global_project="${executionContext.groupName || executionContext.groupId || 'none'}", default_subproject="${executionContext.projectName || executionContext.projectId || 'none'}", focused_subproject="${executionContext.focusedProjectId || 'none'}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || 'none'}", branch="${executionContext.branchName || 'none'}", virtual_root="${executionContext.virtualRootEnabled ? 'enabled' : 'disabled'}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only subproject mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one subproject explicitly. Git and terminal operations must target exactly one subproject; there is no git or terminal at the virtual root.`
       );
     }
 
@@ -1417,12 +1803,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         'In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).'
       );
       systemInstructions.push(
-        'Git workflow for plans is strict: integration branch is `plan/<plan-slug>` from `develop`; strategy branches must be `feature/<plan-slug>/<feature-slug>` and are intended to merge into the plan branch in dependency order.'
+        'Git workflow for plans is strict: each new plan gets a generated identifier and uses that identifier as its canonical slug. Integration branch is `plan/<plan-id>` from `develop`; strategy branches must be `feature/<plan-id>/<feature-slug>` and merge into the plan branch in dependency order. Optional labels must never change git branch identity.'
       );
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {
         systemInstructions.push(
-          `[Active Plan] id="${activePlanContext.id}", title="${activePlanContext.title}", description="${activePlanContext.description || 'none'}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". When the user describes their project or requests changes, first write a message proposing updated title/description, then call plan_update to apply them.`
+          `[Active Plan] id="${activePlanContext.id}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || 'none'}", description="${activePlanContext.description || 'none'}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". New plans are identifier-first. Use plan_update.label (or title as legacy alias) only for the optional secondary label, and never rename the canonical id/slug of a new plan.`
         );
       }
     }
@@ -1448,17 +1834,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
+  const getConversationGroupId = (conversation: Conversation): string | null => {
+    if (conversation.group_id) {
+      return conversation.group_id;
+    }
+
+    return getProjectGroupByProjectId(
+      useAppStore.getState().projectGroups,
+      conversation.project_id
+    )?.id ?? null;
+  };
+
   const isConversationAllowedForMode = (
     conversation: Conversation,
     mode: AppMode,
+    selectedGroupId: string | null,
     selectedProjectId: string | null,
     selectedTaskId: string | null
   ): boolean => {
     if (mode === 'Chat' || mode === 'Debug') {
-      return !conversation.project_id && !conversation.task_id;
+      return !conversation.group_id && !conversation.project_id && !conversation.task_id;
     }
 
     if (mode === 'Architect') {
+      if (selectedGroupId) {
+        return getConversationGroupId(conversation) === selectedGroupId && !conversation.task_id;
+      }
       if (selectedProjectId) {
         return conversation.project_id === selectedProjectId && !conversation.task_id;
       }
@@ -1476,12 +1877,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const getFallbackConversationIdForMode = (
     conversations: Conversation[],
     mode: AppMode,
+    selectedGroupId: string | null,
     selectedProjectId: string | null,
     selectedTaskId: string | null
   ): string | null => {
     const scoped = conversations
       .filter((conversation) =>
-        isConversationAllowedForMode(conversation, mode, selectedProjectId, selectedTaskId)
+        isConversationAllowedForMode(
+          conversation,
+          mode,
+          selectedGroupId,
+          selectedProjectId,
+          selectedTaskId
+        )
       )
       .sort((a, b) =>
         new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
@@ -1752,6 +2160,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     clearComposerContextRefs: () => set({ composerContextRefs: [] }),
 
+    reconcileProjectRegistry: (validGroupIds, validProjectIds) => {
+      const validGroupIdSet = new Set(validGroupIds);
+      const validProjectIdSet = new Set(validProjectIds);
+      set((state) => ({
+        conversations: state.conversations.map((conversation) => ({
+          ...conversation,
+          group_id:
+            conversation.group_id && validGroupIdSet.has(conversation.group_id)
+              ? conversation.group_id
+              : null,
+          project_id:
+            conversation.project_id && validProjectIdSet.has(conversation.project_id)
+              ? conversation.project_id
+              : null,
+        })),
+      }));
+    },
+
     selectConversation: (conversationId) => {
       set((state) => {
         const appState = useAppStore.getState();
@@ -1764,6 +2190,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           !isConversationAllowedForMode(
             conversation,
             appState.mode,
+            appState.selectedGroupId,
             appState.selectedProjectId,
             appState.selectedTaskId
           )
@@ -1788,7 +2215,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       void applySelectionForContext(appState.mode, conversationId);
     },
 
-    createConversation: async (title, taskId, projectId) => {
+    createConversation: async (title, taskId, projectId, groupId) => {
       let newConversation: Conversation;
       const mode = useAppStore.getState().mode;
 
@@ -1797,6 +2224,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           const dbConv = await tauriIpc.createConversation({
             title,
             taskId,
+            groupId,
             projectId,
           });
           newConversation = {
@@ -1804,6 +2232,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             title: dbConv.title,
             description: dbConv.description || '',
             task_id: dbConv.task_id,
+            group_id: dbConv.group_id,
             project_id: dbConv.project_id,
             last_message: dbConv.last_message || '',
             message_count: dbConv.message_count,
@@ -1818,6 +2247,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             title,
             description: '',
             task_id: taskId,
+            group_id: groupId ?? null,
             project_id: projectId,
             last_message: '',
             message_count: 0,
@@ -1831,6 +2261,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           title,
           description: '',
           task_id: taskId,
+          group_id: groupId ?? null,
           project_id: projectId,
           last_message: '',
           message_count: 0,
@@ -1855,6 +2286,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const appState = useAppStore.getState();
       const state = get();
       const mode = appState.mode;
+      const selectedGroupId = appState.selectedGroupId;
       const selectedProjectId = appState.selectedProjectId;
       const selectedTaskId = appState.selectedTaskId;
 
@@ -1862,6 +2294,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const debugFallback = getFallbackConversationIdForMode(
           state.conversations,
           'Debug',
+          selectedGroupId,
           selectedProjectId,
           selectedTaskId
         );
@@ -1884,8 +2317,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return debugFallback;
       }
 
-      const localProjectContext = selectedProjectId
-        ? await getLocalProjectContextState(selectedProjectId)
+      const localProjectContext = selectedGroupId
+        ? await getLocalProjectContextState(selectedGroupId)
         : null;
       const localContextConversationId =
         mode === 'Architect'
@@ -1902,6 +2335,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         isConversationAllowedForMode(
           localContextConversation,
           mode,
+          selectedGroupId,
           selectedProjectId,
           selectedTaskId
         )
@@ -1924,6 +2358,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         isConversationAllowedForMode(
           rememberedConversation,
           mode,
+          selectedGroupId,
           selectedProjectId,
           selectedTaskId
         )
@@ -1939,6 +2374,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const fallbackConversationId = getFallbackConversationIdForMode(
         state.conversations,
         mode,
+        selectedGroupId,
         selectedProjectId,
         selectedTaskId
       );
@@ -1952,18 +2388,47 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return fallbackConversationId;
       }
 
-      if (mode === 'Architect' && selectedProjectId) {
-        const project = appState.getProjectById(selectedProjectId);
-        const title = project ? `Architect · ${project.name}` : 'Architect Session';
-        const created = await get().createConversation(title, null, selectedProjectId);
+      if (mode === 'Architect' && selectedGroupId) {
+        const globalProject = getGlobalProjectById(appState.projectGroups, selectedGroupId);
+        const fallbackProjectId =
+          getFocusedProjectForGroup(
+            appState.projectGroups,
+            selectedGroupId,
+            selectedProjectId,
+            localProjectContext
+          )?.id ??
+          globalProject?.primarySubProjectId ??
+          selectedProjectId ??
+          null;
+        const project = globalProject;
+        const title = project ? `Architect - ${project.name}` : 'Architect Session';
+        const created = await get().createConversation(
+          title,
+          null,
+          fallbackProjectId,
+          selectedGroupId
+        );
         return created.id;
       }
 
       if (mode === 'Implement' && selectedTaskId) {
         const task = useTaskStore.getState().getTaskById(selectedTaskId);
-        const title = task ? `Task · ${task.title}` : 'Task Session';
-        const projectId = task?.project_id ?? selectedProjectId;
-        const created = await get().createConversation(title, selectedTaskId, projectId ?? null);
+        const title = task ? `Task - ${task.title}` : 'Task Session';
+        const projectId =
+          task?.project_id ??
+          getFocusedProjectForGroup(
+            appState.projectGroups,
+            selectedGroupId,
+            selectedProjectId,
+            localProjectContext
+          )?.id ??
+          selectedProjectId;
+        const created = await get().createConversation(
+          title,
+          selectedTaskId,
+          projectId ?? null,
+          selectedGroupId
+        );
         return created.id;
       }
 
@@ -2001,9 +2466,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
             'Suppression bloquée: une conversation Implement nécessite une confirmation explicite.'
           );
         }
-      } else if (conversation.project_id) {
+      } else if (conversation.group_id || conversation.project_id) {
+        const appState = useAppStore.getState();
         const projectName =
-          useAppStore.getState().getProjectById(conversation.project_id)?.name?.trim() || null;
+          (conversation.group_id
+            ? getGlobalProjectById(appState.projectGroups, conversation.group_id)?.name?.trim()
+            : null) ||
+          (conversation.project_id
+            ? appState.getProjectById(conversation.project_id)?.name?.trim()
+            : null) ||
+          null;
 
         if (confirmation?.mode !== 'architect') {
           throw new Error(
@@ -2047,6 +2519,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const fallbackForCurrentMode = getFallbackConversationIdForMode(
           newConversations,
           appState.mode,
+          appState.selectedGroupId,
           appState.selectedProjectId,
           appState.selectedTaskId
         );
@@ -2493,6 +2966,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             title: c.title,
             description: c.description || '',
             task_id: c.task_id,
+            group_id: c.group_id,
             project_id: c.project_id,
             last_message: c.last_message || '',
             message_count: c.message_count,
@@ -2609,5 +3083,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
   };
 });
+
 
 

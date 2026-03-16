@@ -1,14 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   archiveArchitectPlan,
   createArchitectPlan,
   getArchitectPlan,
+  getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   isArchitectPlanReplicaDivergenceError,
   listArchitectPlans,
-  planMatchesProjectId,
   repairArchitectPlanReplicas,
   resolvePlanProjectContextId,
   restoreArchitectPlan,
@@ -18,6 +18,7 @@ import {
   type ArchitectPlanSummary,
 } from '../../services/architectPlanService';
 import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
+import { getScopedProjectIds } from '../../services/globalProjects';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useNeedsStore } from '../../stores/useNeedsStore';
@@ -28,6 +29,14 @@ import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { PlanFormModal } from './PlanFormModal';
 import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { cn } from '../../utils/cn';
+import {
+  getArchitectPlanConversationTitle,
+  getArchitectPlanDisplayName,
+  getArchitectPlanEditableName,
+  getArchitectPlanPrimaryName,
+  getArchitectPlanSecondaryLabel,
+  isCanonicalArchitectPlan,
+} from '../../services/architectPlanPresentation';
 
 interface PlanSelectorProps {
   className?: string;
@@ -48,10 +57,15 @@ const formatRelativeDate = (iso: string, unknownLabel: string): string => {
   return date.toLocaleDateString();
 };
 
-const isPlanVisibleForProject = (
+const isPlanVisibleForSelection = (
   plan: ArchitectPlanSummary,
-  selectedProjectId: string | null
-): boolean => planMatchesProjectId(plan, selectedProjectId);
+  scopedProjectIds: string[]
+): boolean => {
+  if (scopedProjectIds.length === 0) return true;
+  const scopedProjectIdSet = new Set(scopedProjectIds);
+  const planProjectIds = getArchitectPlanProjectIds(plan);
+  return planProjectIds.length === 0 || planProjectIds.some((projectId) => scopedProjectIdSet.has(projectId));
+};
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const { t } = useTranslation();
@@ -62,6 +76,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setActivePlanContext,
     activeArchitectPlanId,
     activePlanContext,
+    projectGroups,
+    selectedGroupId,
     selectedProjectId,
   } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
@@ -80,11 +96,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const lastEffectIdRef = useRef<string | null | undefined>(undefined);
   const targetBranch = getGitFlowBaseBranch();
 
-  const [planFormModal, setPlanFormModal] = useState<{
-    open: boolean;
-    mode: 'create' | 'rename';
-    plan?: ArchitectPlanSummary;
-  } | null>(null);
+  const [planFormModal, setPlanFormModal] = useState<ArchitectPlanSummary | null>(null);
   const [formLoading, setFormLoading] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [replicaRepair, setReplicaRepair] = useState<{
@@ -98,13 +110,17 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     if (!activePlanId) return null;
     return plans.find((plan) => plan.id === activePlanId) || null;
   }, [plans, activePlanId]);
+  const scopedProjectIds = useMemo(
+    () => getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
   const readyPlanSummaries = useTaskStore((state) => state.planSummaries);
 
   const displayedActivePlanTitle = useMemo(() => {
-    if (activePlanContext && activePlanContext.id === activePlanId && activePlanContext.title.trim().length > 0) {
-      return activePlanContext.title;
+    if (activePlanContext && activePlanContext.id === activePlanId) {
+      return getArchitectPlanPrimaryName(activePlanContext);
     }
-    return activePlan?.title || t('architect.planSelector.selectPlan', 'Select plan');
+    return activePlan ? getArchitectPlanPrimaryName(activePlan) : t('architect.planSelector.selectPlan', 'Select plan');
   }, [activePlan, activePlanContext, activePlanId, t]);
 
   const openReplicaRepair = (
@@ -172,58 +188,23 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const result = await listArchitectPlans(targetBranch, showArchived, showArchived);
       const fullResult = showArchived ? result : await listArchitectPlans(targetBranch, true, true);
       const scopedPlans = result.plans.filter((plan) =>
-        isPlanVisibleForProject(plan, selectedProjectId)
+        isPlanVisibleForSelection(plan, scopedProjectIds)
       );
       const scopedFullPlans = fullResult.plans.filter((plan) =>
-        isPlanVisibleForProject(plan, selectedProjectId)
+        isPlanVisibleForSelection(plan, scopedProjectIds)
       );
 
       // Auto-create a default plan when none exist
       if (scopedFullPlans.length === 0 && !autoCreatingRef.current) {
         autoCreatingRef.current = true;
         try {
-          const appStoreForCreation = useAppStore.getState();
-          const fallbackProjectId =
-            selectedProjectId ||
-            appStoreForCreation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
-            null;
-          let createdTitle = t('architect.planForm.createTitle', 'New Plan');
-          let created = null as Awaited<ReturnType<typeof createArchitectPlan>> | null;
-          for (let index = 0; index < 50; index += 1) {
-            const baseTitle = t('architect.planForm.createTitle', 'New Plan');
-            const candidateTitle = index === 0 ? baseTitle : `${baseTitle} ${index + 1}`;
-            try {
-              const conversation = await useChatStore
-                .getState()
-                .createConversation(`Plan · ${candidateTitle}`, null, fallbackProjectId);
-              created = await createArchitectPlan({
-                branchName: targetBranch,
-                title: candidateTitle,
-                projectId: selectedProjectId || undefined,
-                conversationId: conversation.id,
-                status: 'draft',
-                setActive: true,
-              });
-              createdTitle = candidateTitle;
-              break;
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              const isDuplicateNameError = /already exists or existed before/i.test(message);
-              if (!isDuplicateNameError || index === 49) {
-                throw error;
-              }
-            }
-          }
-
-          if (!created) {
-            throw new Error(
-              t('architect.planSelector.autoCreateError', {
-                title: createdTitle,
-                defaultValue: `Unable to auto-create default plan from base title "${createdTitle}".`,
-              })
-            );
-          }
-
+          const created = await createArchitectPlan({
+            branchName: targetBranch,
+            projectId: scopedProjectIds[0] || undefined,
+            projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
+            status: 'draft',
+            setActive: true,
+          });
           await activatePlan(created.id);
           return;
         } finally {
@@ -245,7 +226,18 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         if (plan && plan.status !== 'deleted') {
           const appStore = useAppStore.getState();
           const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
-          if (planProjectId && appStore.selectedProjectId !== planProjectId) {
+          const currentScopedProjectIds = getScopedProjectIds(
+            appStore.projectGroups,
+            appStore.selectedGroupId,
+            appStore.selectedProjectId
+          );
+          const currentScopedProjectIdSet = new Set(currentScopedProjectIds);
+          const planProjectIds = getArchitectPlanProjectIds(plan);
+          const isPlanAlreadyInScope =
+            currentScopedProjectIdSet.size > 0 &&
+            (planProjectIds.length === 0 ||
+              planProjectIds.some((projectId) => currentScopedProjectIdSet.has(projectId)));
+          if (planProjectId && !isPlanAlreadyInScope) {
             await appStore.switchProjectContext(planProjectId);
           }
 
@@ -253,7 +245,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           setPredictedBranches(plan.predictedBranches || []);
           setActivePlanContext({
             id: plan.id,
+            slug: plan.slug,
             title: plan.title,
+            label: plan.label,
             description: plan.description,
             status: plan.status,
             targetBranch: plan.targetBranch,
@@ -269,12 +263,14 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             const appStoreForConversation = useAppStore.getState();
             const fallbackProjectId =
               resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
+              getArchitectPlanProjectIds(plan)[0] ||
+              scopedProjectIds[0] ||
               appStoreForConversation.selectedProjectId ||
               appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
               null;
             const created = await useChatStore
               .getState()
-              .createConversation(`Plan · ${plan.title}`, null, fallbackProjectId);
+              .createConversation(getArchitectPlanConversationTitle(plan), null, fallbackProjectId);
             conversationId = created.id;
             await updateArchitectPlan({
               branchName: targetBranch,
@@ -324,7 +320,18 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
       const appStore = useAppStore.getState();
       const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
-      if (planProjectId && appStore.selectedProjectId !== planProjectId) {
+      const currentScopedProjectIds = getScopedProjectIds(
+        appStore.projectGroups,
+        appStore.selectedGroupId,
+        appStore.selectedProjectId
+      );
+      const currentScopedProjectIdSet = new Set(currentScopedProjectIds);
+      const planProjectIds = getArchitectPlanProjectIds(plan);
+      const isPlanAlreadyInScope =
+        currentScopedProjectIdSet.size > 0 &&
+        (planProjectIds.length === 0 ||
+          planProjectIds.some((projectId) => currentScopedProjectIdSet.has(projectId)));
+      if (planProjectId && !isPlanAlreadyInScope) {
         await appStore.switchProjectContext(planProjectId);
       }
 
@@ -334,7 +341,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       setPredictedBranches(plan.predictedBranches || []);
       setActivePlanContext({
         id: plan.id,
+        slug: plan.slug,
         title: plan.title,
+        label: plan.label,
         description: plan.description,
         status: plan.status,
         targetBranch: plan.targetBranch,
@@ -351,12 +360,14 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         const appStoreForConversation = useAppStore.getState();
         const fallbackProjectId =
           resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
+          getArchitectPlanProjectIds(plan)[0] ||
+          scopedProjectIds[0] ||
           appStoreForConversation.selectedProjectId ||
           appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
           null;
         const created = await useChatStore
           .getState()
-          .createConversation(`Plan · ${plan.title}`, null, fallbackProjectId);
+          .createConversation(getArchitectPlanConversationTitle(plan), null, fallbackProjectId);
         conversationId = created.id;
         await updateArchitectPlan({
           branchName: targetBranch,
@@ -389,59 +400,56 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
   };
 
-  const handleCreatePlan = () => {
+  const handleCreatePlan = async () => {
     setFormError(null);
-    setPlanFormModal({ open: true, mode: 'create' });
+    setIsLoading(true);
+    try {
+      const created = await createArchitectPlan({
+        branchName: targetBranch,
+        projectId: scopedProjectIds[0] || undefined,
+        projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
+        status: 'draft',
+        setActive: true,
+      });
+      await loadPlans(false);
+      await activatePlan(created.id);
+    } catch (err) {
+      if (openReplicaRepair(err, () => handleCreatePlan())) {
+        return;
+      }
+      const message = err instanceof Error ? err.message : t('architect.planSelector.errorOperationFailed', 'Operation failed.');
+      setError(message);
+      toast.error(message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleRenamePlan = (planId: string, _currentTitle: string) => {
+  const handleRenamePlan = (planId: string) => {
     const plan = plans.find((p) => p.id === planId);
     setFormError(null);
-    setPlanFormModal({ open: true, mode: 'rename', plan });
+    setPlanFormModal(plan || null);
   };
 
-  const handleFormConfirm = async (title: string, description?: string) => {
+  const handleFormConfirm = async (value: string) => {
     if (!planFormModal) return;
     setFormLoading(true);
     setFormError(null);
     try {
-      if (planFormModal.mode === 'create') {
-        const appStoreForConversation = useAppStore.getState();
-        const fallbackProjectId =
-          selectedProjectId ||
-          appStoreForConversation.projectGroups.flatMap((g) => g.projects)[0]?.id ||
-          null;
-        const conversation = await useChatStore
-          .getState()
-          .createConversation(`Plan · ${title}`, null, fallbackProjectId);
-        const created = await createArchitectPlan({
-          branchName: targetBranch,
-          title,
-          slug: title,
-          description,
-          projectId: selectedProjectId || undefined,
-          conversationId: conversation.id,
-          status: 'draft',
-          setActive: true,
-        });
+      const existingValue = getArchitectPlanEditableName(planFormModal);
+      if (value === existingValue) {
         setPlanFormModal(null);
-        await loadPlans(false);
-        await activatePlan(created.id);
-      } else if (planFormModal.mode === 'rename' && planFormModal.plan) {
-        if (title === planFormModal.plan.title) {
-          setPlanFormModal(null);
-          return;
-        }
-        await updateArchitectPlan({
-          branchName: targetBranch,
-          planId: planFormModal.plan.id,
-          title,
-        });
-        setPlanFormModal(null);
-        await loadPlans(false);
+        return;
       }
+      await updateArchitectPlan({
+        branchName: targetBranch,
+        planId: planFormModal.id,
+        ...(isCanonicalArchitectPlan(planFormModal) ? { label: value } : { title: value }),
+      });
+      setPlanFormModal(null);
+      await loadPlans(false);
     } catch (err) {
-      if (openReplicaRepair(err, () => handleFormConfirm(title, description))) {
+      if (openReplicaRepair(err, () => handleFormConfirm(value))) {
         return;
       }
       setFormError(err instanceof Error ? err.message : t('architect.planSelector.errorOperationFailed', 'Operation failed.'));
@@ -455,16 +463,17 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setIsLoading(true);
     try {
       await archiveArchitectPlan(targetBranch, plan.id);
+      const planDisplayName = getArchitectPlanDisplayName(plan);
       toast.success(
         t('architect.planSelector.toastPlanArchived', {
-          title: plan.title,
-          defaultValue: `Plan "${plan.title}" archived`,
+          title: planDisplayName,
+          defaultValue: `Plan "${planDisplayName}" archived`,
         })
       );
       const wasActive = activePlanId === plan.id;
       const refreshed = await listArchitectPlans(targetBranch, showArchived, showArchived);
       const refreshedScopedPlans = refreshed.plans.filter((candidate) =>
-        isPlanVisibleForProject(candidate, selectedProjectId)
+        isPlanVisibleForSelection(candidate, scopedProjectIds)
       );
       setPlans(refreshedScopedPlans);
       if (wasActive) {
@@ -519,7 +528,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
       const refreshed = await listArchitectPlans(targetBranch, showArchived, showArchived);
       const refreshedScopedPlans = refreshed.plans.filter((candidate) =>
-        isPlanVisibleForProject(candidate, selectedProjectId)
+        isPlanVisibleForSelection(candidate, scopedProjectIds)
       );
       setPlans(refreshedScopedPlans);
 
@@ -564,10 +573,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setIsLoading(true);
     try {
       await restoreArchitectPlan(targetBranch, plan.id);
+      const planDisplayName = getArchitectPlanDisplayName(plan);
       toast.success(
         t('architect.planSelector.toastPlanRestored', {
-          title: plan.title,
-          defaultValue: `Plan "${plan.title}" restored`,
+          title: planDisplayName,
+          defaultValue: `Plan "${planDisplayName}" restored`,
         })
       );
       await loadPlans(false);
@@ -587,12 +597,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   };
 
   useEffect(() => {
-    const effectKey = `${activeArchitectPlanId || 'none'}::${selectedProjectId || 'none'}::${showArchived ? '1' : '0'}`;
+    const effectKey = `${activeArchitectPlanId || 'none'}::${selectedGroupId || 'none'}::${selectedProjectId || 'none'}::${showArchived ? '1' : '0'}`;
     if (lastEffectIdRef.current === effectKey) return;
     lastEffectIdRef.current = effectKey;
     void loadPlans(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeArchitectPlanId, selectedProjectId, showArchived]);
+  }, [activeArchitectPlanId, selectedGroupId, selectedProjectId, showArchived]);
 
   useEffect(() => {
     if (!activePlanContext) return;
@@ -603,7 +613,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         if (plan.id !== activePlanContext.id) return plan;
         const nextStatus = activePlanContext.status as ArchitectPlanSummary['status'];
         if (
+          plan.slug === activePlanContext.slug &&
           plan.title === activePlanContext.title &&
+          plan.label === activePlanContext.label &&
           plan.description === activePlanContext.description &&
           plan.status === nextStatus
         ) {
@@ -612,7 +624,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         changed = true;
         return {
           ...plan,
+          slug: activePlanContext.slug || plan.slug,
           title: activePlanContext.title,
+          label: activePlanContext.label,
           description: activePlanContext.description,
           status: nextStatus,
           updatedAt: new Date().toISOString(),
@@ -674,7 +688,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                     : t('architect.planSelector.showArchived', 'Show archived')}
                 </button>
                 <button
-                  onClick={handleCreatePlan}
+                  onClick={() => void handleCreatePlan()}
                   className="h-7 px-2 rounded-md text-xs border border-border hover:bg-accent flex items-center gap-1.5"
                 >
                   <Icon name="plus" size={12} />
@@ -716,6 +730,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const isBusy = isActivating === plan.id;
               const isUnavailable = plan.status === 'deleted';
               const readyPlan = readyPlanSummaries.find((candidate) => candidate.id === plan.id && candidate.readyForValidation);
+              const isCanonicalPlan = isCanonicalArchitectPlan(plan);
+              const primaryName = getArchitectPlanPrimaryName(plan);
+              const secondaryLabel = getArchitectPlanSecondaryLabel(plan);
+              const secondaryText = secondaryLabel || (!isCanonicalPlan ? plan.id : null);
+              const renameLabel = isCanonicalPlan
+                ? t('architect.planSelector.editPlanLabel', 'Edit plan label')
+                : t('architect.planSelector.renamePlan', 'Rename plan');
 
               return (
                 <button
@@ -736,8 +757,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="text-xs font-medium text-foreground truncate">{plan.title}</div>
-                      <div className="text-[11px] text-muted-foreground truncate">{plan.id}</div>
+                      <div className="text-xs font-medium text-foreground truncate">{primaryName}</div>
+                      {secondaryText && (
+                        <div className="text-[11px] text-muted-foreground truncate">{secondaryText}</div>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5">
                       <span className={cn('text-[10px] px-1.5 py-0.5 rounded border uppercase', statusClass)}>
@@ -770,10 +793,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          handleRenamePlan(plan.id, plan.title);
+                          handleRenamePlan(plan.id);
                         }}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center"
-                        title={t('architect.planSelector.renamePlan', 'Rename plan')}
+                        title={renameLabel}
                       >
                         <Icon name="edit" size={11} className="text-muted-foreground" />
                       </button>
@@ -818,11 +841,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         defaultValue: `${plan.nodeCount} nodes`,
                       })}
                     </span>
-                    <span>•</span>
+                    <span>&middot;</span>
                     <span>{formatRelativeDate(plan.updatedAt, t('architect.planSelector.unknownDate', 'Unknown date'))}</span>
                     {isActive && (
                       <>
-                        <span>•</span>
+                        <span>&middot;</span>
                         <span className="text-primary inline-flex items-center gap-1">
                           <Icon name="check" size={11} />
                           {t('architect.planSelector.active', 'Active')}
@@ -849,8 +872,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         description={
           planToDelete
             ? t('architect.planSelector.deleteDialogDescription', {
-              title: planToDelete.title,
-              defaultValue: `This will mark "${planToDelete.title}" as deleted and clean its plan branches/worktrees. The plan metadata is kept for recovery.`,
+              title: getArchitectPlanDisplayName(planToDelete),
+              defaultValue: `This will mark "${getArchitectPlanDisplayName(planToDelete)}" as deleted and clean its plan branches/worktrees. The plan metadata is kept for recovery.`,
             })
             : t('architect.planSelector.deleteDialogFallback', 'This action cannot be undone.')
         }
@@ -871,11 +894,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         }}
       />
 
-      {planFormModal?.open && (
+      {planFormModal && (
         <PlanFormModal
-          mode={planFormModal.mode}
-          initialTitle={planFormModal.mode === 'rename' ? (planFormModal.plan?.title ?? '') : ''}
-          onConfirm={(title, description) => void handleFormConfirm(title, description)}
+          initialValue={getArchitectPlanEditableName(planFormModal)}
+          isCanonicalPlan={isCanonicalArchitectPlan(planFormModal)}
+          onConfirm={(value) => void handleFormConfirm(value)}
           onClose={() => {
             if (!formLoading) setPlanFormModal(null);
           }}
@@ -962,3 +985,4 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 };
 
 export default PlanSelector;
+

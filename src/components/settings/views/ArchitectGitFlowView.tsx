@@ -51,9 +51,9 @@ export const ArchitectGitFlowView: React.FC = () => {
   const previews = useMemo(
     () => ({
       targetBranch: settings.baseBranch.trim() || defaultSettings.baseBranch,
-      planBranch: renderTemplatePreview(settings.planBranchTemplate, { planSlug: 'payments-rework' }),
+      planBranch: renderTemplatePreview(settings.planBranchTemplate, { planSlug: '1710000000000' }),
       featureBranch: renderTemplatePreview(settings.featureBranchTemplate, {
-        planSlug: 'payments-rework',
+        planSlug: '1710000000000',
         featureSlug: 'invoice-retry',
       }),
     }),

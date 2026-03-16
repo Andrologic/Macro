@@ -152,6 +152,7 @@ pub fn run() {
         .manage(Arc::new(Mutex::new(None)) as DbPool)
         .manage(AiState::default())
         .manage(GitState::new())
+        .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
@@ -240,6 +241,7 @@ pub fn run() {
             commands::workspace::workspace_list_projects,
             commands::workspace::workspace_list_tasks,
             commands::workspace::workspace_get_metadata,
+            commands::workspace::workspace_get_project_registry_diagnostics,
             commands::workspace::workspace_get_active_root,
             commands::workspace::workspace_set_active_root,
             commands::workspace::workspace_create_project,
@@ -248,11 +250,17 @@ pub fn run() {
             commands::workspace::workspace_rename_project,
             commands::workspace::workspace_archive_project_group,
             commands::workspace::workspace_archive_project,
+            commands::workspace::workspace_remove_project_group,
+            commands::workspace::workspace_remove_project,
             commands::workspace::workspace_close_project,
             // Tool policy validation command
             commands::tool_get_mode_policy,
             commands::tool_validate_execution,
             commands::tool_execute_workspace,
+            commands::terminal::terminal_create_session,
+            commands::terminal::terminal_run,
+            commands::terminal::terminal_read,
+            commands::terminal::terminal_kill,
             // File System commands
             commands::fs::fs_read_file,
             commands::fs::fs_write_file,
@@ -301,6 +309,7 @@ pub fn run() {
             commands::db_delete_project_context_state,
             commands::db_get_session_context_state,
             commands::db_upsert_session_context_state,
+            commands::db_reconcile_project_registry,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

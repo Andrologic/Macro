@@ -11,7 +11,9 @@ export type ImplementTaskCatalogSource = 'architect' | 'mixed' | 'fallback' | 'e
 
 export interface ImplementTaskPlanSummary {
   id: string;
+  slug: string;
   title: string;
+  label?: string;
   status: ArchitectPlanStatus;
   targetBranch: string;
   projectIds: string[];
@@ -234,7 +236,9 @@ export const buildImplementTaskCatalog = (params: {
 
       return {
         id: plan.id,
+        slug: plan.slug,
         title: plan.title,
+        label: plan.label,
         status: plan.status,
         targetBranch: plan.targetBranch,
         projectIds: unique(
