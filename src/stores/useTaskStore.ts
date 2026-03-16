@@ -33,6 +33,7 @@ import {
   type CatalogedImplementTask,
   type ImplementTaskPlanSummary,
 } from '../services/implementTaskCatalog';
+import { getScopedProjectIds } from '../services/globalProjects';
 import {
   buildPlanFinalizationFailureState,
   buildPlanFinalizationRefreshState,
@@ -97,6 +98,11 @@ const canTransitionTaskStatus = (from: TaskStatus, to: TaskStatus): boolean => {
   return ALLOWED_STATUS_TRANSITIONS[from]?.includes(to) ?? false;
 };
 
+const taskMatchesAnyProjectId = (
+  task: CatalogedImplementTask,
+  projectIds: string[]
+): boolean => projectIds.some((projectId) => taskMatchesProjectId(task, projectId));
+
 const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
   i18n.t(key, { defaultValue: fallback, ...(options || {}) });
 
@@ -115,16 +121,29 @@ const ensureAppSync = () => {
     }
 
     if (nextState.selectedProjectId !== previousState.selectedProjectId) {
+      const scopedProjectIds = getScopedProjectIds(
+        nextState.projectGroups,
+        nextState.selectedGroupId,
+        nextState.selectedProjectId
+      );
       const selectedTaskId = nextState.selectedTaskId;
       if (selectedTaskId) {
         const selectedTask = useTaskStore.getState().getTaskById(selectedTaskId);
-        if (!selectedTask || !taskMatchesProjectId(selectedTask, nextState.selectedProjectId)) {
+        if (
+          scopedProjectIds.length > 0 &&
+          (!selectedTask || !taskMatchesAnyProjectId(selectedTask, scopedProjectIds))
+        ) {
           useAppStore.getState().setSelectedTask(null);
           useTaskStore.setState({
             activeBranchName: null,
             activeRepositoryPath: nextState.selectedProjectId
               ? nextState.getProjectById(nextState.selectedProjectId)?.path ?? null
               : null,
+          });
+        } else if (!nextState.selectedProjectId) {
+          useTaskStore.setState({
+            activeBranchName: null,
+            activeRepositoryPath: useTaskStore.getState().activeRepositoryPath,
           });
         }
       } else {
@@ -343,20 +362,22 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         isLoading: false,
       });
 
-      const selectedProjectId = useAppStore.getState().selectedProjectId;
+      const { selectedGroupId, selectedProjectId, projectGroups } = useAppStore.getState();
+      const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
       const selectedTaskIdFromApp = useAppStore.getState().selectedTaskId;
       if (selectedTaskIdFromApp && !catalog.tasks.some((task) => task.id === selectedTaskIdFromApp)) {
         useAppStore.getState().setSelectedTask(null);
       }
 
       const selectedTaskId = useAppStore.getState().selectedTaskId;
-      if (!selectedTaskId && selectedProjectId) {
+      if (!selectedTaskId && scopedProjectIds.length > 0) {
         try {
-          const context = await getLocalProjectContextState(selectedProjectId);
+          const contextKey = selectedGroupId || selectedProjectId;
+          const context = contextKey ? await getLocalProjectContextState(contextKey) : null;
           const candidateTaskId = context?.lastTaskId;
           if (candidateTaskId) {
             const candidateTask = catalog.tasks.find((task) => task.id === candidateTaskId);
-            if (candidateTask && taskMatchesProjectId(candidateTask, selectedProjectId)) {
+            if (candidateTask && taskMatchesAnyProjectId(candidateTask, scopedProjectIds)) {
               useAppStore.getState().setSelectedTask(candidateTaskId);
             }
           }

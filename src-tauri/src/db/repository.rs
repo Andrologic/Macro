@@ -2,13 +2,14 @@ use super::models::*;
 use super::DbResult;
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
+use std::collections::HashSet;
 
 // ============ CONVERSATIONS ============
 
 pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, title, description, task_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
+        SELECT id, title, description, task_id, group_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
         ORDER BY is_pinned DESC, updated_at DESC
         "#,
@@ -23,6 +24,7 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
             title: row.get("title"),
             description: row.get("description"),
             task_id: row.get("task_id"),
+            group_id: row.get("group_id"),
             project_id: row.get("project_id"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
@@ -38,7 +40,7 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
 pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Conversation>> {
     let row = sqlx::query(
         r#"
-        SELECT id, title, description, task_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
+        SELECT id, title, description, task_id, group_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
         WHERE id = ?
         "#,
@@ -52,6 +54,7 @@ pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Co
         title: row.get("title"),
         description: row.get("description"),
         task_id: row.get("task_id"),
+        group_id: row.get("group_id"),
         project_id: row.get("project_id"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
@@ -73,13 +76,14 @@ pub async fn create_conversation(
 
     sqlx::query(
         r#"
-        INSERT INTO conversations (id, title, description, task_id, project_id, created_at, updated_at, message_count, is_pinned)
-        VALUES (?, ?, NULL, ?, ?, ?, ?, 0, 0)
+        INSERT INTO conversations (id, title, description, task_id, group_id, project_id, created_at, updated_at, message_count, is_pinned)
+        VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, 0)
         "#,
     )
     .bind(&id)
     .bind(&title)
     .bind(&input.task_id)
+    .bind(&input.group_id)
     .bind(&input.project_id)
     .bind(&now)
     .bind(&now)
@@ -91,6 +95,7 @@ pub async fn create_conversation(
         title,
         description: None,
         task_id: input.task_id,
+        group_id: input.group_id,
         project_id: input.project_id,
         created_at: now.clone(),
         updated_at: now,
@@ -1010,7 +1015,7 @@ pub async fn get_project_context_state(
 ) -> DbResult<Option<ProjectContextStateRecord>> {
     let row = sqlx::query(
         r#"
-        SELECT project_id, last_plan_id, last_task_id, architect_conversation_id, implement_conversation_id, updated_at
+        SELECT project_id, group_id, focus_project_id, last_plan_id, last_task_id, architect_conversation_id, implement_conversation_id, updated_at
         FROM project_context_states
         WHERE project_id = ?
         "#,
@@ -1021,6 +1026,8 @@ pub async fn get_project_context_state(
 
     Ok(row.map(|row| ProjectContextStateRecord {
         project_id: row.get("project_id"),
+        group_id: row.get("group_id"),
+        focus_project_id: row.get("focus_project_id"),
         last_plan_id: row.get("last_plan_id"),
         last_task_id: row.get("last_task_id"),
         architect_conversation_id: row.get("architect_conversation_id"),
@@ -1039,14 +1046,18 @@ pub async fn upsert_project_context_state(
         r#"
         INSERT INTO project_context_states (
             project_id,
+            group_id,
+            focus_project_id,
             last_plan_id,
             last_task_id,
             architect_conversation_id,
             implement_conversation_id,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id) DO UPDATE SET
+            group_id = excluded.group_id,
+            focus_project_id = excluded.focus_project_id,
             last_plan_id = excluded.last_plan_id,
             last_task_id = excluded.last_task_id,
             architect_conversation_id = excluded.architect_conversation_id,
@@ -1055,6 +1066,8 @@ pub async fn upsert_project_context_state(
         "#,
     )
     .bind(&input.project_id)
+    .bind(&input.group_id)
+    .bind(&input.focus_project_id)
     .bind(&input.last_plan_id)
     .bind(&input.last_task_id)
     .bind(&input.architect_conversation_id)
@@ -1065,6 +1078,8 @@ pub async fn upsert_project_context_state(
 
     Ok(ProjectContextStateRecord {
         project_id: input.project_id,
+        group_id: input.group_id,
+        focus_project_id: input.focus_project_id,
         last_plan_id: input.last_plan_id,
         last_task_id: input.last_task_id,
         architect_conversation_id: input.architect_conversation_id,
@@ -1141,4 +1156,143 @@ pub async fn upsert_session_context_state(
         mode: input.mode,
         updated_at: now,
     })
+}
+
+pub async fn reconcile_project_registry(
+    pool: &SqlitePool,
+    input: ReconcileProjectRegistryInput,
+) -> DbResult<ProjectRegistryDbRepairReport> {
+    let valid_group_ids: HashSet<String> = input
+        .valid_group_ids
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .collect();
+    let valid_project_ids: HashSet<String> = input
+        .valid_project_ids
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .collect();
+
+    let mut report = ProjectRegistryDbRepairReport {
+        conversations_updated: 0,
+        project_contexts_deleted: 0,
+        project_contexts_updated: 0,
+        session_context_updated: false,
+    };
+
+    let conversation_rows = sqlx::query(
+        r#"
+        SELECT id, group_id, project_id
+        FROM conversations
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for row in conversation_rows {
+        let id: String = row.get("id");
+        let current_group_id: Option<String> = row.get("group_id");
+        let current_project_id: Option<String> = row.get("project_id");
+        let next_group_id = current_group_id
+            .clone()
+            .filter(|group_id| valid_group_ids.contains(group_id));
+        let next_project_id = current_project_id
+            .clone()
+            .filter(|project_id| valid_project_ids.contains(project_id));
+
+        if current_group_id != next_group_id || current_project_id != next_project_id {
+            sqlx::query(
+                r#"
+                UPDATE conversations
+                SET group_id = ?, project_id = ?
+                WHERE id = ?
+                "#,
+            )
+            .bind(&next_group_id)
+            .bind(&next_project_id)
+            .bind(&id)
+            .execute(pool)
+            .await?;
+            report.conversations_updated += 1;
+        }
+    }
+
+    let project_context_rows = sqlx::query(
+        r#"
+        SELECT project_id, group_id, focus_project_id, last_plan_id, last_task_id,
+               architect_conversation_id, implement_conversation_id, updated_at
+        FROM project_context_states
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for row in project_context_rows {
+        let project_id: String = row.get("project_id");
+        if !valid_group_ids.contains(&project_id) {
+            sqlx::query("DELETE FROM project_context_states WHERE project_id = ?")
+                .bind(&project_id)
+                .execute(pool)
+                .await?;
+            report.project_contexts_deleted += 1;
+            continue;
+        }
+
+        let current_group_id: Option<String> = row.get("group_id");
+        let current_focus_project_id: Option<String> = row.get("focus_project_id");
+        let next_group_id = current_group_id
+            .clone()
+            .filter(|group_id| valid_group_ids.contains(group_id));
+        let next_focus_project_id = current_focus_project_id
+            .clone()
+            .filter(|project_id| valid_project_ids.contains(project_id));
+
+        if current_group_id != next_group_id || current_focus_project_id != next_focus_project_id {
+            sqlx::query(
+                r#"
+                UPDATE project_context_states
+                SET group_id = ?, focus_project_id = ?
+                WHERE project_id = ?
+                "#,
+            )
+            .bind(&next_group_id)
+            .bind(&next_focus_project_id)
+            .bind(&project_id)
+            .execute(pool)
+            .await?;
+            report.project_contexts_updated += 1;
+        }
+    }
+
+    let session_context = get_session_context_state(pool).await?;
+    let next_selected_group_id = input
+        .selected_group_id
+        .filter(|group_id| valid_group_ids.contains(group_id));
+    let next_selected_project_id = input
+        .selected_project_id
+        .filter(|project_id| valid_project_ids.contains(project_id));
+    let current_selected_group_id = session_context
+        .as_ref()
+        .and_then(|record| record.selected_group_id.clone());
+    let current_selected_project_id = session_context
+        .as_ref()
+        .and_then(|record| record.selected_project_id.clone());
+
+    if current_selected_group_id != next_selected_group_id
+        || current_selected_project_id != next_selected_project_id
+    {
+        let mode = session_context.and_then(|record| record.mode);
+        upsert_session_context_state(
+            pool,
+            UpsertSessionContextStateInput {
+                selected_group_id: next_selected_group_id,
+                selected_project_id: next_selected_project_id,
+                mode,
+            },
+        )
+        .await?;
+        report.session_context_updated = true;
+    }
+
+    Ok(report)
 }

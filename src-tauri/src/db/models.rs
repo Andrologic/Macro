@@ -6,6 +6,7 @@ pub struct Conversation {
     pub title: String,
     pub description: Option<String>,
     pub task_id: Option<String>,
+    pub group_id: Option<String>,
     pub project_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -84,6 +85,8 @@ pub struct AppSettingRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectContextStateRecord {
     pub project_id: String,
+    pub group_id: Option<String>,
+    pub focus_project_id: Option<String>,
     pub last_plan_id: Option<String>,
     pub last_task_id: Option<String>,
     pub architect_conversation_id: Option<String>,
@@ -103,6 +106,7 @@ pub struct SessionContextStateRecord {
 pub struct CreateConversationInput {
     pub title: Option<String>,
     pub task_id: Option<String>,
+    pub group_id: Option<String>,
     pub project_id: Option<String>,
 }
 
@@ -186,6 +190,8 @@ pub struct ProviderModelInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpsertProjectContextStateInput {
     pub project_id: String,
+    pub group_id: Option<String>,
+    pub focus_project_id: Option<String>,
     pub last_plan_id: Option<String>,
     pub last_task_id: Option<String>,
     pub architect_conversation_id: Option<String>,
@@ -197,4 +203,20 @@ pub struct UpsertSessionContextStateInput {
     pub selected_group_id: Option<String>,
     pub selected_project_id: Option<String>,
     pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconcileProjectRegistryInput {
+    pub valid_group_ids: Vec<String>,
+    pub valid_project_ids: Vec<String>,
+    pub selected_group_id: Option<String>,
+    pub selected_project_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectRegistryDbRepairReport {
+    pub conversations_updated: usize,
+    pub project_contexts_deleted: usize,
+    pub project_contexts_updated: usize,
+    pub session_context_updated: bool,
 }
