@@ -35,6 +35,12 @@ const GIT_WRITE_TOOLS = [
 ] as const;
 
 const GIT_TOOLS = [...GIT_READ_TOOLS, ...GIT_WRITE_TOOLS] as const;
+const TERMINAL_TOOLS = [
+  'terminal_create_session',
+  'terminal_run',
+  'terminal_read',
+  'terminal_kill',
+] as const;
 
 const ALL_WORKSPACE_TOOLS = [
   ...BASE_SOURCE_TOOLS,
@@ -72,13 +78,13 @@ export const getToolModePolicy = (mode: AppMode): ToolModePolicy => {
 
   if (mode === 'Debug') {
     return {
-      allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_TOOLS],
+      allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_TOOLS, ...TERMINAL_TOOLS],
       enforceMacroOnlyWrites: false,
     };
   }
 
   return {
-    allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_TOOLS],
+    allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_TOOLS, ...TERMINAL_TOOLS],
     enforceMacroOnlyWrites: false,
   };
 };

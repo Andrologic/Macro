@@ -241,7 +241,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const startReview = useTaskStore((state) => state.startReview);
   const requestTaskChanges = useTaskStore((state) => state.requestTaskChanges);
   const completeTask = useTaskStore((state) => state.completeTask);
-  const [isCommitPromptOpen, setIsCommitPromptOpen] = useState(false);
+  const [commitTargetRepositoryId, setCommitTargetRepositoryId] = useState<string | null>(null);
+  const [expandedRepositoryIds, setExpandedRepositoryIds] = useState<Record<string, boolean>>({});
   const {
     repositories,
     reviewSummary,
@@ -259,7 +260,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     markAllAsReviewed,
     commitReviewedChanges,
     setCommitMessageDraft,
-    getSelectedRepository,
     getOverallStats,
   } = useFileChangesStore();
 
@@ -268,17 +268,26 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     void loadCurrentChanges();
   }, [selectedGroupId, selectedTaskId, loadCurrentChanges]);
 
-  const selectedRepository = getSelectedRepository();
-  const selectedProject = selectedRepository ? getProjectById(selectedRepository.projectId) : null;
+  useEffect(() => {
+    if (repositories.length === 0) return;
+    setExpandedRepositoryIds((current) => {
+      const next = { ...current };
+      repositories.forEach((repository) => {
+        if (next[repository.id] !== undefined) return;
+        next[repository.id] =
+          repositories.length === 1 ||
+          repository.id === selectedRepositoryId ||
+          repository.id === reviewSummary.nextRepositoryId;
+      });
+      return next;
+    });
+  }, [repositories, reviewSummary.nextRepositoryId, selectedRepositoryId]);
+
   const repositorySummaryById = useMemo(
     () => new Map(reviewSummary.repositories.map((repository) => [repository.id, repository])),
     [reviewSummary.repositories]
   );
-  const selectedRepositorySummary = selectedRepository
-    ? repositorySummaryById.get(selectedRepository.id)
-    : undefined;
   const overallStats = getOverallStats();
-  const folderTree = buildFolderTree(selectedRepository?.changes || []);
   const progressPercent = overallStats.total > 0 ? (overallStats.reviewed / overallStats.total) * 100 : 0;
   const canCommitTaskStatus = currentTask?.status === 'InReview';
   const canStartReview = currentTask?.status === 'InProgress' || currentTask?.status === 'AwaitingResponse';
@@ -292,15 +301,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     currentTask?.status === 'InReview' &&
     allRepositoriesNoChanges &&
     !isCommitting;
-  const canCommit =
-    selectedRepository
-      ? !isLoading &&
-        !isCommitting &&
-        canCommitTaskStatus &&
-        selectedRepository.commitState !== 'committed' &&
-        selectedRepository.stats.total > 0 &&
-        selectedRepository.stats.reviewed === selectedRepository.stats.total
-      : false;
   const resolvedRepositoryCount =
     reviewSummary.stateCounts.committed + reviewSummary.stateCounts.no_changes;
   const requestChangesDisabledReason =
@@ -310,13 +310,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         'A repository has already been committed for this task. Finish the remaining repositories instead of reopening implementation.'
       )
       : '';
-  const commitButtonLabel = selectedRepository
-    ? t('implement.commitSelectedRepositoryChanges', 'Commit {{repository}}', {
-      repository:
-        selectedProject?.name ||
-        getRepositoryPathTail(selectedRepository.repoPath, selectedRepository.projectId),
-    })
-    : t('implement.commitRepositoryChanges', 'Commit Repository Changes');
 
   const currentTaskStatusLabel = currentTask
     ? {
@@ -330,10 +323,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     }[currentTask.status]
     : null;
 
-  const commitDisabledReason = (() => {
-    if (!selectedRepository) {
-      return t('implement.selectRepository', 'Select a repository to review changes.');
-    }
+  const getCommitDisabledReason = (repository: ReviewRepositoryState): string => {
     if (isCommitting) {
       return t('implement.commitInProgress', 'Committing changes...');
     }
@@ -343,33 +333,36 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         'Task must be in review before commit.'
       );
     }
-    if (selectedRepository.commitState === 'committed') {
+    if (repository.commitState === 'committed') {
       return t('implement.repositoryAlreadyCommitted', 'This repository has already been committed.');
     }
-    if (selectedRepository.stats.total === 0) {
+    if (repository.commitState === 'no_changes' || repository.stats.total === 0) {
       return t('implement.commitNoChanges', 'No file changes available for this repository.');
     }
-    if (selectedRepository.stats.reviewed < selectedRepository.stats.total) {
+    if (repository.stats.reviewed < repository.stats.total) {
       return t(
         'implement.commitNeedsReview',
         'Review all file changes before committing this task.'
       );
     }
     return '';
-  })();
+  };
 
   const displayError = normalizeCommitErrorMessage(
-    selectedRepository?.lastError || lastError || '',
+    lastError || '',
     translate
   );
+  const commitTargetRepository = commitTargetRepositoryId
+    ? repositories.find((repository) => repository.id === commitTargetRepositoryId) ?? null
+    : null;
 
   const handleCommitConfirm = async (message?: string) => {
-    if (isCommitting || !selectedRepositoryId || !selectedRepository) return;
-    const commitMessage = (message || '').trim() || selectedRepository.commitMessageDraft;
-    setCommitMessageDraft(selectedRepositoryId, commitMessage);
+    if (isCommitting || !commitTargetRepositoryId || !commitTargetRepository) return;
+    const commitMessage = (message || '').trim() || commitTargetRepository.commitMessageDraft;
+    setCommitMessageDraft(commitTargetRepositoryId, commitMessage);
 
     try {
-      const result = await commitReviewedChanges(selectedRepositoryId, commitMessage);
+      const result = await commitReviewedChanges(commitTargetRepositoryId, commitMessage);
       if (result.taskCompleted) {
         toast.success(
           t('implement.commitSuccess', 'Committed {{hash}} and marked task complete', {
@@ -383,7 +376,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           })
         );
       }
-      setIsCommitPromptOpen(false);
+      setCommitTargetRepositoryId(null);
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
       toast.error(messageText || t('implement.commitFailed', 'Failed to commit changes'));
@@ -450,7 +443,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         <div className="text-center px-6">
           <Icon name="folder-git-2" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
           <p className="text-muted-foreground text-sm">
-            {t('implement.selectProject', 'Select a project to view changes')}
+            {t('implement.selectProject', 'Select a global project to view changes')}
           </p>
         </div>
       </aside>
@@ -542,102 +535,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         </div>
       )}
 
-      {repositories.length > 0 && (
-        <div className="px-3 py-3 border-b border-border flex items-center gap-2 overflow-x-auto shrink-0">
-          {repositories.map((repository) => {
-            const project = getProjectById(repository.projectId);
-            const isSelected = repository.id === selectedRepositoryId;
-            const repositorySummary = repositorySummaryById.get(repository.id);
-            return (
-              <button
-                key={repository.id}
-                type="button"
-                onClick={() => selectRepository(repository.id)}
-                className={cn(
-                  'min-w-[210px] rounded-lg border px-3 py-2 text-left transition-colors',
-                  isSelected
-                    ? 'border-primary/40 bg-primary/10'
-                    : repositorySummary?.isNextAction
-                      ? 'border-sky-500/30 bg-sky-500/5 hover:bg-sky-500/10'
-                      : 'border-border hover:bg-accent'
-                )}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-medium text-foreground truncate">
-                    {project?.name || repository.projectId}
-                  </div>
-                  {repositorySummary && (
-                    <span className={cn('px-1.5 py-0.5 rounded-full text-[10px]', REVIEW_STATE_CLASSES[repositorySummary.state])}>
-                      {renderRepositoryState(repository, repositorySummary, translate)}
-                    </span>
-                  )}
-                </div>
-                <div className="mt-1 text-[11px] text-muted-foreground truncate">
-                  {getRepositoryPathTail(repository.repoPath, repository.projectId)}
-                </div>
-                <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-                  <span className="inline-flex items-center gap-1 truncate">
-                    <Icon name="git-branch" size={10} />
-                    {repository.branchName}
-                  </span>
-                </div>
-                <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-                  {repositorySummary?.isSelected && (
-                    <span className="text-primary">
-                      {t('implement.currentRepository', 'Current')}
-                    </span>
-                  )}
-                  {repositorySummary?.isNextAction && !repositorySummary.isSelected && (
-                    <span className="text-sky-400">
-                      {t('implement.nextRepository', 'Next')}
-                    </span>
-                  )}
-                </div>
-                <div className="mt-1 text-[11px] text-muted-foreground truncate">
-                  {renderRepositoryState(repository, repositorySummary, translate)}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      <div className="px-4 py-3 border-b border-border flex items-center justify-between bg-muted/20 shrink-0">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1.5">
-            <span className="text-emerald-500 text-sm font-mono font-semibold">
-              +{selectedRepository?.stats.additions ?? 0}
-            </span>
-            <span className="text-xs text-muted-foreground">lines</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-red-400 text-sm font-mono font-semibold">
-              -{selectedRepository?.stats.deletions ?? 0}
-            </span>
-            <span className="text-xs text-muted-foreground">lines</span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          {selectedProject && (
-            <span className="inline-flex items-center gap-1">
-              <Icon name="folder" size={10} />
-              {selectedProject.name}
-            </span>
-          )}
-          {selectedRepository && (
-            <span className="inline-flex items-center gap-1">
-              <Icon name="git-branch" size={10} />
-              {selectedRepository.branchName}
-            </span>
-          )}
-          {selectedRepositorySummary && (
-            <span className={cn('px-2 py-0.5 rounded-full', REVIEW_STATE_CLASSES[selectedRepositorySummary.state])}>
-              {renderRepositoryState(selectedRepository!, selectedRepositorySummary, translate)}
-            </span>
-          )}
-        </div>
-      </div>
-
       <div className="px-4 py-2 border-b border-border shrink-0">
         <div className="h-1.5 bg-muted rounded-full overflow-hidden">
           <div
@@ -658,48 +555,197 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             {displayError}
           </div>
         )}
-        {!isLoading && !displayError && !selectedRepository && (
+        {!isLoading && !displayError && repositories.length === 0 && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-            {t('implement.selectRepository', 'Select a repository to review changes.')}
+            {t('implement.noPendingChanges', 'No pending file changes for this task yet.')}
           </div>
         )}
-        {!isLoading && !displayError && selectedRepository && selectedRepository.commitState === 'committed' && (
-          <div className="px-4 py-8 text-center text-sm text-emerald-500">
-            {t('implement.repositoryCommittedHelp', 'This repository has already been committed and integrated.')}
-          </div>
-        )}
-        {!isLoading && !displayError && selectedRepository && selectedRepository.commitState === 'no_changes' && (
-          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-            {t('implement.repositoryNoChangesHelp', 'No pending file changes for this repository.')}
-          </div>
-        )}
-        {!isLoading && !displayError && selectedRepository && selectedRepository.commitState === 'idle' && folderTree.length === 0 && (
-          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-            {t('implement.noPendingChanges', 'No pending file changes for this repository.')}
-          </div>
-        )}
-        {selectedRepository && folderTree.map((node) => (
-          <FolderTreeItem
-            key={node.path}
-            node={node}
-            depth={0}
-            selectedChangeId={selectedRepository.selectedChangeId}
-            onFileClick={(changeId) => openDiffModal(selectedRepository.id, changeId)}
-          />
-        ))}
+        {!isLoading && !displayError && repositories.map((repository) => {
+          const project = getProjectById(repository.projectId);
+          const repositorySummary = repositorySummaryById.get(repository.id);
+          const isExpanded =
+            expandedRepositoryIds[repository.id] ??
+            (
+              repositories.length === 1 ||
+              repository.id === selectedRepositoryId ||
+              repositorySummary?.isNextAction ||
+              false
+            );
+          const folderTree = buildFolderTree(repository.changes || []);
+          const repositoryError = normalizeCommitErrorMessage(repository.lastError || '', translate);
+          const commitDisabledReason = getCommitDisabledReason(repository);
+          const canCommitRepository = commitDisabledReason.length === 0;
+
+          return (
+            <section
+              key={repository.id}
+              className={cn(
+                'mx-3 mb-3 rounded-2xl border overflow-hidden',
+                repository.id === selectedRepositoryId ? 'border-primary/30' : 'border-border'
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  selectRepository(repository.id);
+                  setExpandedRepositoryIds((current) => ({
+                    ...current,
+                    [repository.id]: !(
+                      current[repository.id] ??
+                      (repositories.length === 1 ||
+                        repository.id === selectedRepositoryId ||
+                        repository.id === reviewSummary.nextRepositoryId)
+                    ),
+                  }));
+                }}
+                className={cn(
+                  'w-full px-4 py-3 text-left transition-colors',
+                  repository.id === selectedRepositoryId ? 'bg-primary/5' : 'bg-card hover:bg-accent/40'
+                )}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Icon
+                        name={isExpanded ? 'chevron-down' : 'chevron-right'}
+                        size={14}
+                        className="text-muted-foreground shrink-0"
+                      />
+                      <span className="text-sm font-medium text-foreground truncate">
+                        {project?.name || repository.projectId}
+                      </span>
+                      {repositorySummary?.isNextAction && !repositorySummary.isSelected && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-sky-500/10 text-sky-400 text-[10px]">
+                          {t('implement.nextRepository', 'Next')}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 pl-6 text-[11px] text-muted-foreground flex flex-wrap items-center gap-3">
+                      <span>{getRepositoryPathTail(repository.repoPath, repository.projectId)}</span>
+                      <span className="inline-flex items-center gap-1">
+                        <Icon name="git-branch" size={10} />
+                        {repository.branchName}
+                      </span>
+                      <span>
+                        {repository.stats.reviewed}/{repository.stats.total} files reviewed
+                      </span>
+                    </div>
+                  </div>
+                  {repositorySummary && (
+                    <span className={cn('px-2 py-0.5 rounded-full text-[10px] shrink-0', REVIEW_STATE_CLASSES[repositorySummary.state])}>
+                      {renderRepositoryState(repository, repositorySummary, translate)}
+                    </span>
+                  )}
+                </div>
+              </button>
+
+              {isExpanded && (
+                <div className="border-t border-border bg-card/80">
+                  <div className="px-4 py-2 border-b border-border flex items-center justify-between bg-muted/20">
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-emerald-500 text-sm font-mono font-semibold">
+                          +{repository.stats.additions}
+                        </span>
+                        <span className="text-xs text-muted-foreground">lines</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-red-400 text-sm font-mono font-semibold">
+                          -{repository.stats.deletions}
+                        </span>
+                        <span className="text-xs text-muted-foreground">lines</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <span className="inline-flex items-center gap-1">
+                        <Icon name="folder" size={10} />
+                        {project?.name || repository.projectId}
+                      </span>
+                      {repositorySummary && (
+                        <span className={cn('px-2 py-0.5 rounded-full', REVIEW_STATE_CLASSES[repositorySummary.state])}>
+                          {renderRepositoryState(repository, repositorySummary, translate)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="max-h-[320px] overflow-y-auto py-2">
+                    {repositoryError && (
+                      <div className="px-4 py-8 text-center text-sm text-red-500">
+                        {repositoryError}
+                      </div>
+                    )}
+                    {!repositoryError && repository.commitState === 'committed' && (
+                      <div className="px-4 py-8 text-center text-sm text-emerald-500">
+                        {t('implement.repositoryCommittedHelp', 'This repository has already been committed and integrated.')}
+                      </div>
+                    )}
+                    {!repositoryError && repository.commitState === 'no_changes' && (
+                      <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                        {t('implement.repositoryNoChangesHelp', 'No pending file changes for this repository.')}
+                      </div>
+                    )}
+                    {!repositoryError && repository.commitState === 'idle' && folderTree.length === 0 && (
+                      <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                        {t('implement.noPendingChanges', 'No pending file changes for this repository.')}
+                      </div>
+                    )}
+                    {!repositoryError && repository.commitState === 'idle' && folderTree.map((node) => (
+                      <FolderTreeItem
+                        key={node.path}
+                        node={node}
+                        depth={0}
+                        selectedChangeId={repository.selectedChangeId}
+                        onFileClick={(changeId) => {
+                          selectRepository(repository.id);
+                          openDiffModal(repository.id, changeId);
+                        }}
+                      />
+                    ))}
+                  </div>
+
+                  <div className="px-4 py-3 border-t border-border flex flex-wrap items-center gap-2">
+                    {repository.stats.total > 0 && repository.stats.reviewed < repository.stats.total && (
+                      <button
+                        onClick={() => markAllAsReviewed(repository.id)}
+                        disabled={isCommitting}
+                        className="px-3 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center justify-center gap-2"
+                      >
+                        <Icon name="check-circle" size={14} />
+                        {t('implement.markAllReviewed', 'Mark all as reviewed')}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        selectRepository(repository.id);
+                        setCommitTargetRepositoryId(repository.id);
+                      }}
+                      disabled={!canCommitRepository}
+                      title={canCommitRepository ? undefined : commitDisabledReason}
+                      className={cn(
+                        'px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
+                        canCommitRepository
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                          : 'bg-muted text-muted-foreground cursor-not-allowed'
+                      )}
+                    >
+                      <Icon name="git-commit" size={14} />
+                      {t('implement.commitSelectedRepositoryChanges', 'Commit {{repository}}', {
+                        repository: project?.name || repository.projectId,
+                      })}
+                    </button>
+                    {!canCommitRepository && (
+                      <p className="text-xs text-muted-foreground">{commitDisabledReason}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </section>
+          );
+        })}
       </div>
 
       <div className="p-3 border-t border-border shrink-0 space-y-2">
-        {selectedRepository && selectedRepository.stats.reviewed < selectedRepository.stats.total && (
-          <button
-            onClick={() => markAllAsReviewed(selectedRepository.id)}
-            disabled={isCommitting}
-            className="w-full py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center justify-center gap-2"
-          >
-            <Icon name="check-circle" size={14} />
-            {t('implement.markAllReviewed', 'Mark all as reviewed')}
-          </button>
-        )}
         {canStartReview && (
           <button
             onClick={() => void handleStartReview()}
@@ -726,22 +772,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             {t('implement.requestChanges', 'Request changes')}
           </button>
         )}
-        <button
-          onClick={() => setIsCommitPromptOpen(true)}
-          disabled={!canCommit}
-          title={canCommit ? undefined : commitDisabledReason}
-          className={cn(
-            'w-full py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
-            canCommit
-              ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-              : 'bg-muted text-muted-foreground cursor-not-allowed'
-          )}
-        >
-          <Icon name={isCommitting ? 'loader' : 'git-commit'} size={14} className={isCommitting ? 'animate-spin' : undefined} />
-          {isCommitting
-            ? t('implement.commitInProgress', 'Committing changes...')
-            : commitButtonLabel}
-        </button>
         {canCompleteWithoutCodeChanges && (
           <button
             onClick={() => void handleCompleteWithoutCodeChanges()}
@@ -754,9 +784,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         {!canRequestChanges && requestChangesDisabledReason && (
           <p className="text-xs text-muted-foreground">{requestChangesDisabledReason}</p>
         )}
-        {!canCommit && commitDisabledReason && (
-          <p className="text-xs text-muted-foreground">{commitDisabledReason}</p>
-        )}
       </div>
 
       {isDiffModalOpen && selectedDiffTarget && (
@@ -768,7 +795,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       )}
 
       <ConfirmPromptModal
-        isOpen={isCommitPromptOpen}
+        isOpen={!!commitTargetRepository}
         title={t('implement.commitPromptTitle', 'Commit reviewed changes')}
         description={t(
           'implement.commitPromptDescription',
@@ -776,10 +803,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         )}
         confirmLabel={t('implement.commitConfirm', 'Commit')}
         cancelLabel={t('common.cancel', 'Cancel')}
-        initialValue={selectedRepository?.commitMessageDraft || ''}
+        initialValue={commitTargetRepository?.commitMessageDraft || ''}
         inputPlaceholder={t('implement.commitPromptPlaceholder', 'feat: update task implementation')}
         requireInput
-        onCancel={() => setIsCommitPromptOpen(false)}
+        onCancel={() => setCommitTargetRepositoryId(null)}
         onConfirm={(value) => {
           void handleCommitConfirm(value);
         }}

@@ -4,6 +4,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/architectPlanService';
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
+import { getScopedProjectIds } from '../../services/globalProjects';
 import { normalizeNodeProjectIds } from '../../services/implementTaskDerivation';
 import { toast } from '../ui/Toaster';
 import { Icon } from '../ui/Icon';
@@ -198,22 +199,13 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
   // 1. Calculate Layout
   const layoutData = useMemo(() => {
-    let nodes: PlanNode[] = [];
-
-    if (selectedProjectId) {
-      nodes = planNodes.filter((node: PlanNode) => nodeMatchesProjectId(node, selectedProjectId));
-    } else if (selectedGroupId) {
-      // Find all project IDs in this group
-      const group = projectGroups.find(g => g.id === selectedGroupId);
-      if (group && group.projects) {
-        const projectIds = group.projects.map(p => p.id);
-        nodes = planNodes.filter((node: PlanNode) =>
-          projectIds.some((projectId) => nodeMatchesProjectId(node, projectId))
-        );
-      }
-    } else {
-      nodes = planNodes;
-    }
+    const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
+    const nodes =
+      scopedProjectIds.length > 0
+        ? planNodes.filter((node: PlanNode) =>
+            scopedProjectIds.some((projectId) => nodeMatchesProjectId(node, projectId))
+          )
+        : planNodes;
 
     if (nodes.length === 0) return { nodes: [], edges: [], width: 0, height: 0, branches: [], laneHeaders: [], colWidth: 140, effectiveLeftPadding: 0 };
 

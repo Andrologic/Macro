@@ -51,13 +51,14 @@ export const useNeedsStore = create<NeedsState>((set, get) => ({
   addNeed: (needData) => {
     const id = crypto.randomUUID();
     const appState = useAppStore.getState();
-    const selectedProjectId = appState.selectedProjectId;
+    const selectedGroupId = appState.selectedGroupId;
     const activePlanId = appState.activeArchitectPlanId;
     const newNeed: Need = {
       ...needData,
       id,
       planId: needData.planId ?? activePlanId ?? undefined,
-      projectId: needData.projectId ?? selectedProjectId ?? undefined,
+      groupId: needData.groupId ?? selectedGroupId ?? undefined,
+      projectId: needData.projectId ?? undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -110,7 +111,12 @@ export const useNeedsStore = create<NeedsState>((set, get) => ({
   },
 
   replaceNeedsForPlan: (planId, nextNeeds) => {
-    const normalizedNeeds = nextNeeds.map((need) => ({ ...need, planId }));
+    const selectedGroupId = useAppStore.getState().selectedGroupId;
+    const normalizedNeeds = nextNeeds.map((need) => ({
+      ...need,
+      planId,
+      groupId: need.groupId ?? selectedGroupId ?? undefined,
+    }));
     set((state) => {
       const others = state.needs.filter((need) => need.planId !== planId);
       const selectedStillExists = normalizedNeeds.some((need) => need.id === state.selectedNeedId);

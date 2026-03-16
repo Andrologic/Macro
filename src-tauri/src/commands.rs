@@ -4,6 +4,8 @@ pub mod ai;
 pub mod fs;
 #[path = "commands/git.rs"]
 pub mod git;
+#[path = "commands/terminal.rs"]
+pub mod terminal;
 #[path = "commands/workspace.rs"]
 pub mod workspace;
 
@@ -40,9 +42,9 @@ impl From<DbError> for CommandError {
     }
 }
 
-type CommandResult<T> = Result<T, CommandError>;
+pub(crate) type CommandResult<T> = Result<T, CommandError>;
 
-fn command_error(message: impl Into<String>) -> CommandError {
+pub(crate) fn command_error(message: impl Into<String>) -> CommandError {
     CommandError {
         message: message.into(),
     }
@@ -1026,6 +1028,7 @@ pub async fn db_create_conversation(
     pool: State<'_, DbPool>,
     title: Option<String>,
     task_id: Option<String>,
+    group_id: Option<String>,
     project_id: Option<String>,
 ) -> CommandResult<Conversation> {
     let pool_guard = pool.lock().await;
@@ -1038,6 +1041,7 @@ pub async fn db_create_conversation(
         CreateConversationInput {
             title,
             task_id,
+            group_id,
             project_id,
         },
     )
@@ -1581,6 +1585,21 @@ pub async fn db_upsert_session_context_state(
     })?;
 
     repository::upsert_session_context_state(pool, input)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_reconcile_project_registry(
+    pool: State<'_, DbPool>,
+    input: ReconcileProjectRegistryInput,
+) -> CommandResult<ProjectRegistryDbRepairReport> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::reconcile_project_registry(pool, input)
         .await
         .map_err(Into::into)
 }

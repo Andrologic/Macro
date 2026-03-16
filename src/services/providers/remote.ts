@@ -252,6 +252,7 @@ export const createProject = async (_data: {
   name: string;
   description: string;
   groupId: string | null;
+  groupName?: string | null;
   path?: string;
 }): Promise<ProjectDto> => notReady();
 
@@ -260,6 +261,7 @@ export const importGitRepo = async (_data: {
   projectName: string;
   branch: string;
   groupId: string | null;
+  groupName?: string | null;
   path?: string;
 }): Promise<ProjectDto> => notReady();
 
@@ -280,6 +282,14 @@ export const archiveProjectGroup = async (_data: {
 export const archiveProject = async (_data: {
   projectId: string;
 }): Promise<ProjectDto> => notReady();
+
+export const removeProjectGroup = async (_data: {
+  groupId: string;
+}): Promise<{ projectGroups: ProjectGroup[] }> => notReady();
+
+export const removeProject = async (_data: {
+  projectId: string;
+}): Promise<{ projectGroups: ProjectGroup[] }> => notReady();
 
 export const closeProject = async (_data: {
   projectId: string;
@@ -309,6 +319,8 @@ export const provider: ServiceProvider = {
   renameProject,
   archiveProjectGroup,
   archiveProject,
+  removeProjectGroup,
+  removeProject,
   closeProject,
   getToolSettings,
   updateToolSettings,

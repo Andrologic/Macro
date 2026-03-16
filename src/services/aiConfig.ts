@@ -1,4 +1,4 @@
-import { aiGetDevProviderOverrides, isTauriAvailable } from './tauriIpc';
+import { aiGetDevProviderOverrides, isTauriAvailable } from './aiConfigRuntime';
 
 export interface AIProviderConfig {
   apiKey?: string;

@@ -5,6 +5,8 @@ export type ProjectSwitchPolicy = 'resume_per_project' | 'reset_on_switch';
 
 export interface LocalProjectContextState {
   projectId: string;
+  groupId: string | null;
+  focusProjectId: string | null;
   lastPlanId: string | null;
   lastTaskId: string | null;
   architectConversationId: string | null;
@@ -13,6 +15,7 @@ export interface LocalProjectContextState {
 }
 
 export interface LocalSessionContextState {
+  globalProjectId: string | null;
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   mode: AppMode | null;
@@ -49,6 +52,8 @@ const normalizeProjectContext = (
   value: Partial<LocalProjectContextState> | null | undefined
 ): LocalProjectContextState => ({
   projectId,
+  groupId: typeof value?.groupId === 'string' ? value.groupId : null,
+  focusProjectId: typeof value?.focusProjectId === 'string' ? value.focusProjectId : null,
   lastPlanId: typeof value?.lastPlanId === 'string' ? value.lastPlanId : null,
   lastTaskId: typeof value?.lastTaskId === 'string' ? value.lastTaskId : null,
   architectConversationId:
@@ -61,6 +66,12 @@ const normalizeProjectContext = (
 const normalizeSessionContext = (
   value: Partial<LocalSessionContextState> | null | undefined
 ): LocalSessionContextState => ({
+  globalProjectId:
+    typeof value?.globalProjectId === 'string'
+      ? value.globalProjectId
+      : typeof value?.selectedGroupId === 'string'
+        ? value.selectedGroupId
+        : null,
   selectedGroupId: typeof value?.selectedGroupId === 'string' ? value.selectedGroupId : null,
   selectedProjectId: typeof value?.selectedProjectId === 'string' ? value.selectedProjectId : null,
   mode:
@@ -153,6 +164,8 @@ export const getLocalProjectContextState = async (
       if (!record) return null;
       return normalizeProjectContext(projectId, {
         projectId: record.project_id,
+        groupId: record.group_id,
+        focusProjectId: record.focus_project_id,
         lastPlanId: record.last_plan_id,
         lastTaskId: record.last_task_id,
         architectConversationId: record.architect_conversation_id,
@@ -171,6 +184,8 @@ export const getLocalProjectContextState = async (
 export const upsertLocalProjectContextState = async (
   input: {
     projectId: string;
+    groupId?: string | null;
+    focusProjectId?: string | null;
     lastPlanId?: string | null;
     lastTaskId?: string | null;
     architectConversationId?: string | null;
@@ -182,6 +197,8 @@ export const upsertLocalProjectContextState = async (
 
   const normalized = normalizeProjectContext(projectId, {
     projectId,
+    groupId: input.groupId ?? null,
+    focusProjectId: input.focusProjectId ?? null,
     lastPlanId: input.lastPlanId ?? null,
     lastTaskId: input.lastTaskId ?? null,
     architectConversationId: input.architectConversationId ?? null,
@@ -193,6 +210,8 @@ export const upsertLocalProjectContextState = async (
     try {
       const record = await tauriIpc.dbUpsertProjectContextState({
         projectId,
+        groupId: normalized.groupId,
+        focusProjectId: normalized.focusProjectId,
         lastPlanId: normalized.lastPlanId,
         lastTaskId: normalized.lastTaskId,
         architectConversationId: normalized.architectConversationId,
@@ -200,6 +219,8 @@ export const upsertLocalProjectContextState = async (
       });
       return normalizeProjectContext(projectId, {
         projectId: record.project_id,
+        groupId: record.group_id,
+        focusProjectId: record.focus_project_id,
         lastPlanId: record.last_plan_id,
         lastTaskId: record.last_task_id,
         architectConversationId: record.architect_conversation_id,
@@ -262,6 +283,7 @@ export const upsertLocalSessionContextState = async (
   }
 ): Promise<LocalSessionContextState> => {
   const normalized = normalizeSessionContext({
+    globalProjectId: input.selectedGroupId ?? null,
     selectedGroupId: input.selectedGroupId ?? null,
     selectedProjectId: input.selectedProjectId ?? null,
     mode: input.mode ?? null,
@@ -276,6 +298,7 @@ export const upsertLocalSessionContextState = async (
         mode: normalized.mode,
       });
       return normalizeSessionContext({
+        globalProjectId: record.selected_group_id,
         selectedGroupId: record.selected_group_id,
         selectedProjectId: record.selected_project_id,
         mode: record.mode as AppMode | null,
@@ -288,4 +311,66 @@ export const upsertLocalSessionContextState = async (
 
   writeLegacySessionContext(normalized);
   return normalized;
+};
+
+export const reconcileLocalProjectRegistryState = async (input: {
+  validGroupIds: string[];
+  validProjectIds: string[];
+  selectedGroupId?: string | null;
+  selectedProjectId?: string | null;
+}): Promise<void> => {
+  const validGroupIds = new Set(input.validGroupIds);
+  const validProjectIds = new Set(input.validProjectIds);
+  const selectedGroupId =
+    input.selectedGroupId && validGroupIds.has(input.selectedGroupId)
+      ? input.selectedGroupId
+      : null;
+  const selectedProjectId =
+    input.selectedProjectId && validProjectIds.has(input.selectedProjectId)
+      ? input.selectedProjectId
+      : null;
+
+  if (tauriIpc.isTauriAvailable()) {
+    try {
+      await tauriIpc.dbReconcileProjectRegistry({
+        validGroupIds: [...validGroupIds],
+        validProjectIds: [...validProjectIds],
+        selectedGroupId,
+        selectedProjectId,
+      });
+      return;
+    } catch {
+      // fallback to legacy local storage
+    }
+  }
+
+  const legacyContexts = readLegacyProjectContexts();
+  const nextContexts: Record<string, LocalProjectContextState> = {};
+
+  Object.entries(legacyContexts).forEach(([projectId, context]) => {
+    if (!validGroupIds.has(projectId)) {
+      return;
+    }
+
+    nextContexts[projectId] = normalizeProjectContext(projectId, {
+      ...context,
+      groupId: context.groupId && validGroupIds.has(context.groupId) ? context.groupId : null,
+      focusProjectId:
+        context.focusProjectId && validProjectIds.has(context.focusProjectId)
+          ? context.focusProjectId
+          : null,
+    });
+  });
+
+  writeLegacyProjectContexts(nextContexts);
+
+  const legacySession = normalizeSessionContext(readLegacySessionContext());
+  writeLegacySessionContext(
+    normalizeSessionContext({
+      ...legacySession,
+      globalProjectId: selectedGroupId,
+      selectedGroupId,
+      selectedProjectId,
+    })
+  );
 };

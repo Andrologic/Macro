@@ -69,6 +69,7 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
             title TEXT NOT NULL,
             description TEXT,
             task_id TEXT,
+            group_id TEXT,
             project_id TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -90,6 +91,9 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     let has_task_id = conversation_columns
         .iter()
         .any(|row| row.get::<String, _>("name") == "task_id");
+    let has_group_id = conversation_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "group_id");
     let has_project_id = conversation_columns
         .iter()
         .any(|row| row.get::<String, _>("name") == "project_id");
@@ -103,6 +107,11 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
             .execute(pool)
             .await?;
     }
+    if !has_group_id {
+        sqlx::query("ALTER TABLE conversations ADD COLUMN group_id TEXT")
+            .execute(pool)
+            .await?;
+    }
     if !has_project_id {
         sqlx::query("ALTER TABLE conversations ADD COLUMN project_id TEXT")
             .execute(pool)
@@ -113,6 +122,15 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
         r#"
         CREATE INDEX IF NOT EXISTS idx_conversations_project_scope
         ON conversations(project_id, updated_at DESC);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_conversations_group_scope
+        ON conversations(group_id, updated_at DESC);
         "#,
     )
     .execute(pool)
@@ -285,6 +303,8 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
         r#"
         CREATE TABLE IF NOT EXISTS project_context_states (
             project_id TEXT PRIMARY KEY,
+            group_id TEXT,
+            focus_project_id TEXT,
             last_plan_id TEXT,
             last_task_id TEXT,
             architect_conversation_id TEXT,
@@ -295,6 +315,26 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     )
     .execute(pool)
     .await?;
+
+    let project_context_columns = sqlx::query("PRAGMA table_info(project_context_states)")
+        .fetch_all(pool)
+        .await?;
+    let has_project_context_group_id = project_context_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "group_id");
+    let has_focus_project_id = project_context_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "focus_project_id");
+    if !has_project_context_group_id {
+        sqlx::query("ALTER TABLE project_context_states ADD COLUMN group_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !has_focus_project_id {
+        sqlx::query("ALTER TABLE project_context_states ADD COLUMN focus_project_id TEXT")
+            .execute(pool)
+            .await?;
+    }
 
     sqlx::query(
         r#"
