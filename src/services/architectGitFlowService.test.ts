@@ -693,4 +693,30 @@ describe('architectGitFlowService', () => {
       toBranchWorktreeKey('api', 'feature/checkout/checkout-api'),
     ]);
   });
+
+  it('hard deletes an already deleted plan without requiring cleanup', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      status: 'deleted',
+    };
+
+    const result = await architectGitFlowService.deletePlanAndCleanupBranches({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+      hardDelete: true,
+    });
+
+    expect(deleteArchitectPlanMock).toHaveBeenCalledWith({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+      hardDelete: true,
+    });
+    expect(result).toEqual({
+      deletedBranches: [],
+      deletedWorktreeKeys: [],
+      repositories: [],
+    });
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+  });
 });
