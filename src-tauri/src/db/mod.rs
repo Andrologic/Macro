@@ -158,12 +158,34 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
             content TEXT NOT NULL,
             created_at TEXT NOT NULL,
             token_count INTEGER,
+            tool_traces_json TEXT,
+            hidden_context TEXT,
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         );
         "#,
     )
     .execute(pool)
     .await?;
+
+    let message_columns = sqlx::query("PRAGMA table_info(messages)")
+        .fetch_all(pool)
+        .await?;
+    let has_tool_traces_json = message_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "tool_traces_json");
+    let has_hidden_context = message_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "hidden_context");
+    if !has_tool_traces_json {
+        sqlx::query("ALTER TABLE messages ADD COLUMN tool_traces_json TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !has_hidden_context {
+        sqlx::query("ALTER TABLE messages ADD COLUMN hidden_context TEXT")
+            .execute(pool)
+            .await?;
+    }
 
     sqlx::query(
         r#"
