@@ -1027,8 +1027,22 @@ export const deletePlanAndCleanupBranches = async (params: {
   repositories: CleanupPlanRepositoryResult[];
 }> => {
   const plan = await getArchitectPlan(params.branchName, params.planId);
-  if (!plan || plan.status === 'deleted') {
+  if (!plan) {
     throw new Error(`Plan ${params.planId} is unavailable.`);
+  }
+
+  if (plan.status === 'deleted') {
+    await deleteArchitectPlan({
+      branchName: params.branchName,
+      planId: params.planId,
+      hardDelete: params.hardDelete !== false,
+    });
+
+    return {
+      deletedBranches: [],
+      deletedWorktreeKeys: [],
+      repositories: [],
+    };
   }
 
   const repositories = await cleanupPlanBranches(plan, params.repoPath);
@@ -1693,8 +1707,22 @@ export const createArchitectGitFlowService = (
     repositories: CleanupPlanRepositoryResult[];
   }> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
-    if (!plan || plan.status === 'deleted') {
+    if (!plan) {
       throw new Error(`Plan ${params.planId} is unavailable.`);
+    }
+
+    if (plan.status === 'deleted') {
+      await deps.deleteArchitectPlan({
+        branchName: params.branchName,
+        planId: params.planId,
+        hardDelete: params.hardDelete !== false,
+      });
+
+      return {
+        deletedBranches: [],
+        deletedWorktreeKeys: [],
+        repositories: [],
+      };
     }
 
     const repositories = await cleanupPlanBranchesWithDeps(plan, params.repoPath);
