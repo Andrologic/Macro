@@ -14,6 +14,7 @@ import type {
   PredictedBranch,
   Project,
   AppMode,
+  ToolTrace,
 } from '../types';
 
 // ============ Types ============
@@ -39,6 +40,8 @@ export interface DbMessage {
   content: string;
   created_at: string;
   token_count: number | null;
+  tool_traces_json: string | null;
+  hidden_context: string | null;
 }
 
 export interface DbProviderConfig {
@@ -445,25 +448,37 @@ export async function createMessage(
   conversationId: string,
   role: string,
   content: string,
-  tokenCount?: number
+  options?: {
+    tokenCount?: number;
+    toolTraces?: ToolTrace[];
+    hiddenContext?: string;
+  }
 ): Promise<DbMessage> {
   return invoke<DbMessage>('db_create_message', {
     conversationId,
     role,
     content,
-    tokenCount: tokenCount ?? null,
+    tokenCount: options?.tokenCount ?? null,
+    toolTracesJson: options?.toolTraces ? JSON.stringify(options.toolTraces) : null,
+    hiddenContext: options?.hiddenContext ?? null,
   });
 }
 
 export async function updateMessage(
   id: string,
   content: string,
-  tokenCount?: number
+  options?: {
+    tokenCount?: number;
+    toolTraces?: ToolTrace[];
+    hiddenContext?: string;
+  }
 ): Promise<void> {
   return invoke('db_update_message', {
     id,
     content,
-    tokenCount: tokenCount ?? null,
+    tokenCount: options?.tokenCount ?? null,
+    toolTracesJson: options?.toolTraces ? JSON.stringify(options.toolTraces) : null,
+    hiddenContext: options?.hiddenContext ?? null,
   });
 }
 

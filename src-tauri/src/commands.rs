@@ -1136,6 +1136,8 @@ pub async fn db_create_message(
     role: String,
     content: String,
     token_count: Option<i32>,
+    tool_traces_json: Option<String>,
+    hidden_context: Option<String>,
 ) -> CommandResult<Message> {
     let pool_guard = pool.lock().await;
     let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
@@ -1149,6 +1151,8 @@ pub async fn db_create_message(
             role,
             content,
             token_count,
+            tool_traces_json,
+            hidden_context,
         },
     )
     .await
@@ -1161,13 +1165,22 @@ pub async fn db_update_message(
     id: String,
     content: String,
     token_count: Option<i32>,
+    tool_traces_json: Option<String>,
+    hidden_context: Option<String>,
 ) -> CommandResult<()> {
     let pool_guard = pool.lock().await;
     let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
         message: "Database not initialized".to_string(),
     })?;
 
-    repository::update_message_content(pool, &id, &content, token_count)
+    repository::update_message_content(
+        pool,
+        &id,
+        &content,
+        token_count,
+        tool_traces_json,
+        hidden_context,
+    )
         .await
         .map_err(Into::into)
 }

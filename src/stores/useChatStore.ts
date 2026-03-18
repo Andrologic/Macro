@@ -1,9 +1,9 @@
 import { create } from 'zustand';
-import { AppMode, ChatMessage, ContextRefKind, ContextReference, Conversation, PlanNode, PlanNodeStatus, PlanNodeType, PredictedBranch } from '../types';
+import { AppMode, ChatMessage, ContextRefKind, ContextReference, Conversation, PlanNode, PlanNodeStatus, PlanNodeType, PredictedBranch, ToolTrace } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 import { useProviderStore } from './useProviderStore';
 import { useCitationsStore } from './useCitationsStore';
-import { streamChat, cancelStream, sendChatNonStreaming } from '../services/streamingChat';
+import { streamChat, cancelStream, sendChatNonStreaming, type StreamCompletionResult } from '../services/streamingChat';
 import { getStreamingWebSearchConfig } from '../services/webSearchSettings';
 import { useToolsStore } from './useToolsStore';
 import { useAppStore } from './useAppStore';
@@ -284,6 +284,10 @@ interface ChatStore {
   messageImagesByMessageId: Record<string, MessageImageAttachment[]>;
   addMessage: (message: ChatMessage) => void;
   updateMessageContent: (messageId: string, content: string) => void;
+  updateMessageFields: (
+    messageId: string,
+    patch: Partial<Pick<ChatMessage, 'tool_traces' | 'hidden_context'>>
+  ) => void;
   updateLastMessage: (content: string) => void;
   appendToLastMessage: (token: string) => void;
   appendToMessage: (messageId: string, tokenChunk: string) => void;
@@ -532,6 +536,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const sanitizeAssistantContentForModel = (content: string): string => {
     return content
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
       .split('\n')
       .filter((line) => {
         const trimmed = line.trim();
@@ -1648,7 +1653,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const preparedMessages = orderedMessages.map((message, index) => {
       let messageContent = message.content;
       if (message.role === 'assistant') {
-        messageContent = sanitizeAssistantContentForModel(messageContent);
+        const sanitizedVisibleContent = sanitizeAssistantContentForModel(messageContent);
+        messageContent = [sanitizedVisibleContent, message.hidden_context || '']
+          .filter((value) => value.trim().length > 0)
+          .join('\n\n')
+          .trim();
       }
 
       // Inject context into the last user message
@@ -2025,6 +2034,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const applyStreamCompletion = (messageId: string, result: StreamCompletionResult) => {
+    get().updateMessageFields(messageId, {
+      tool_traces: result.toolTraces,
+      hidden_context: result.hiddenContext,
+    });
+    get().updateMessageContent(messageId, result.visibleContent);
+  };
+
+  const persistAssistantStreamResult = (
+    conversationId: string,
+    result: StreamCompletionResult
+  ) => {
+    if (!tauriIpc.isTauriAvailable()) return;
+    tauriIpc
+      .createMessage(conversationId, 'assistant', result.visibleContent, {
+        toolTraces: result.toolTraces,
+        hiddenContext: result.hiddenContext,
+      })
+      .catch(console.error);
+  };
+
   return {
     messages: [],
     conversations: [],
@@ -2091,6 +2121,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         return { messages: updatedMessages, conversations };
       }),
+
+    updateMessageFields: (messageId, patch) =>
+      set((state) => ({
+        messages: state.messages.map((message) =>
+          message.id === messageId
+            ? { ...message, ...patch }
+            : message
+        ),
+      })),
 
     updateLastMessage: (content) =>
       set((state) => {
@@ -2754,6 +2793,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         conversation_id: conversationId,
         role: 'assistant',
         content: '',
+        tool_traces: [],
         timestamp: new Date().toISOString(),
       };
 
@@ -2783,9 +2823,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           onToken: (token) => {
             tokenBatcher.push(token);
           },
-          onComplete: (fullContent) => {
+          onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
+            get().updateMessageFields(assistantMessage.id, { tool_traces: toolTraces });
+          },
+          onComplete: (result) => {
             tokenBatcher.flushNow();
-            get().updateMessageContent(assistantMessage.id, fullContent);
+            applyStreamCompletion(assistantMessage.id, result);
 
             // Update conversation metadata
             set((state) => {
@@ -2793,7 +2836,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 conv.id === conversationId
                   ? {
                     ...conv,
-                    last_message: fullContent.slice(0, 100) + (fullContent.length > 100 ? '...' : ''),
+                    last_message:
+                      result.visibleContent.slice(0, 100) +
+                      (result.visibleContent.length > 100 ? '...' : ''),
                     updated_at: new Date().toISOString(),
                   }
                   : conv
@@ -2801,10 +2846,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               return { conversations, isLoading: false, isStreaming: false, abortController: null };
             });
 
-            // Save assistant message to DB if available
-            if (tauriIpc.isTauriAvailable()) {
-              tauriIpc.createMessage(conversationId, 'assistant', fullContent).catch(console.error);
-            }
+            persistAssistantStreamResult(conversationId, result);
             void syncMacroMetadataAfterStreamService({
               mode: modeAtSend,
               conversationId,
@@ -2960,6 +3002,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         conversation_id: conversationId,
         role: 'assistant',
         content: '',
+        tool_traces: [],
         timestamp: new Date().toISOString(),
       };
 
@@ -2989,22 +3032,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
           onToken: (token) => {
             tokenBatcher.push(token);
           },
-          onComplete: (fullContent) => {
+          onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
+            get().updateMessageFields(assistantMessage.id, { tool_traces: toolTraces });
+          },
+          onComplete: (result) => {
             tokenBatcher.flushNow();
-            get().updateMessageContent(assistantMessage.id, fullContent);
+            applyStreamCompletion(assistantMessage.id, result);
 
             set((state) => {
               const conversations = state.conversations.map((conv) =>
                 conv.id === conversationId
                   ? {
                     ...conv,
-                    last_message: fullContent.slice(0, 100) + (fullContent.length > 100 ? '...' : ''),
+                    last_message:
+                      result.visibleContent.slice(0, 100) +
+                      (result.visibleContent.length > 100 ? '...' : ''),
                     updated_at: new Date().toISOString(),
                   }
                   : conv
               );
               return { conversations, isLoading: false, isStreaming: false, abortController: null };
             });
+            persistAssistantStreamResult(conversationId, result);
             void syncMacroMetadataAfterStreamService({
               mode: modeAtEdit,
               conversationId,

@@ -8,6 +8,7 @@ import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
+import type { ToolTrace } from '../../types';
 
 // =============================================================================
 // HIGHLIGHT.JS - SYNTAX HIGHLIGHTING
@@ -63,12 +64,13 @@ interface MarkdownRendererProps {
   content: string;
   className?: string;
   isStreaming?: boolean;
+  toolTraces?: ToolTrace[];
 }
 
 type RenderSegment =
   | { type: 'text'; content: string }
   | { type: 'thinking'; content: string }
-  | { type: 'tool'; toolName: string; detail?: string; status: 'run' | 'done' };
+  | { type: 'tool'; toolName: string; detail?: string; status: 'running' | 'done' };
 
 const omitMarkdownDomProps = <T extends { node?: unknown; ref?: unknown }>(
   props: T
@@ -122,7 +124,7 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
   );
 };
 
-const ToolCallBlock: React.FC<{ toolName: string; detail?: string; status: 'run' | 'done' }> = ({
+const ToolCallBlock: React.FC<{ toolName: string; detail?: string; status: 'running' | 'done' }> = ({
   toolName,
   detail,
   status,
@@ -141,7 +143,7 @@ const ToolCallBlock: React.FC<{ toolName: string; detail?: string; status: 'run'
           </span>
         )}
         <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-primary/80 bg-primary/10 rounded px-1.5 py-0.5 shrink-0">
-          <span className={cn('w-1.5 h-1.5 rounded-full bg-primary', status === 'run' && 'animate-pulse')} />
+          <span className={cn('w-1.5 h-1.5 rounded-full bg-primary', status === 'running' && 'animate-pulse')} />
           {status}
         </span>
       </div>
@@ -309,6 +311,41 @@ const splitThinkBlocks = (content: string): Array<{ type: 'text' | 'thinking'; c
   return blocks;
 };
 
+const splitStructuredToolTraceBlocks = (content: string, toolTraces: ToolTrace[]): RenderSegment[] => {
+  const segments: RenderSegment[] = [];
+  const orderedToolTraces = [...toolTraces].sort((left, right) => {
+    const leftOffset = typeof left.visible_offset === 'number' ? left.visible_offset : content.length;
+    const rightOffset = typeof right.visible_offset === 'number' ? right.visible_offset : content.length;
+    if (leftOffset !== rightOffset) return leftOffset - rightOffset;
+    return left.tool_call_id.localeCompare(right.tool_call_id);
+  });
+
+  let cursor = 0;
+  for (const toolTrace of orderedToolTraces) {
+    const requestedOffset =
+      typeof toolTrace.visible_offset === 'number' ? toolTrace.visible_offset : content.length;
+    const clampedOffset = Math.max(cursor, Math.min(content.length, requestedOffset));
+    const textBefore = content.slice(cursor, clampedOffset);
+    if (textBefore) {
+      segments.push({ type: 'text', content: textBefore });
+    }
+    segments.push({
+      type: 'tool',
+      toolName: toolTrace.tool_name,
+      detail: toolTrace.detail,
+      status: toolTrace.status,
+    });
+    cursor = clampedOffset;
+  }
+
+  const remaining = content.slice(cursor);
+  if (remaining) {
+    segments.push({ type: 'text', content: remaining });
+  }
+
+  return segments;
+};
+
 const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[] => {
   const segments: RenderSegment[] = [];
   const lines = content.split('\n');
@@ -335,7 +372,7 @@ const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[]
         type: 'tool',
         toolName: startMatch[1],
         detail: startMatch[2],
-        status: isStreaming ? 'run' : 'done',
+        status: isStreaming ? 'running' : 'done',
       };
       const previous = segments[segments.length - 1];
       const sameAsPrevious =
@@ -345,7 +382,7 @@ const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[]
         previous.status === nextToolSegment.status;
       if (!sameAsPrevious) {
         segments.push(nextToolSegment);
-        if (nextToolSegment.status === 'run') {
+        if (nextToolSegment.status === 'running') {
           pendingToolIndexes.push(segments.length - 1);
         }
       }
@@ -360,7 +397,7 @@ const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[]
       const pendingIndex = pendingToolIndexes.findIndex((segmentIndex) => {
         const segment = segments[segmentIndex];
         if (!segment || segment.type !== 'tool') return false;
-        if (segment.toolName !== doneToolName || segment.status !== 'run') return false;
+        if (segment.toolName !== doneToolName || segment.status !== 'running') return false;
         if (!doneDetail) return true;
         return (segment.detail || '').normalize('NFC') === doneDetail.normalize('NFC');
       });
@@ -426,12 +463,28 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   content,
   className,
   isStreaming = false,
+  toolTraces,
 }) => {
+  const structuredToolTraces = toolTraces && toolTraces.length > 0 ? toolTraces : null;
   const segments = useMemo<RenderSegment[]>(() => {
-    const normalizedContent = normalizeToolCallMarkup(content);
-    const thinkSegments = splitThinkBlocks(normalizedContent);
     const expanded: RenderSegment[] = [];
 
+    if (structuredToolTraces) {
+      const anchoredSegments = splitStructuredToolTraceBlocks(content, structuredToolTraces);
+      for (const segment of anchoredSegments) {
+        if (segment.type === 'tool') {
+          expanded.push(segment);
+          continue;
+        }
+        for (const thinkSegment of splitThinkBlocks(segment.content)) {
+          expanded.push(thinkSegment);
+        }
+      }
+      return expanded;
+    }
+
+    const normalizedContent = normalizeToolCallMarkup(content);
+    const thinkSegments = splitThinkBlocks(normalizedContent);
     for (const segment of thinkSegments) {
       if (segment.type === 'thinking') {
         expanded.push(segment);
@@ -441,7 +494,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     }
 
     return expanded;
-  }, [content, isStreaming]);
+  }, [content, isStreaming, structuredToolTraces]);
 
   const components = useMemo<Components>(() => ({
     a: ({ href, children, ...props }) => {

@@ -368,7 +368,7 @@ pub async fn list_git_worktrees_by_project(
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, conversation_id, role, content, created_at, token_count
+        SELECT id, conversation_id, role, content, created_at, token_count, tool_traces_json, hidden_context
         FROM messages
         WHERE conversation_id = ?
         ORDER BY created_at ASC
@@ -387,6 +387,8 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
             content: row.get("content"),
             created_at: row.get("created_at"),
             token_count: row.get("token_count"),
+            tool_traces_json: row.get("tool_traces_json"),
+            hidden_context: row.get("hidden_context"),
         })
         .collect();
 
@@ -399,8 +401,17 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
 
     sqlx::query(
         r#"
-        INSERT INTO messages (id, conversation_id, role, content, created_at, token_count)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO messages (
+            id,
+            conversation_id,
+            role,
+            content,
+            created_at,
+            token_count,
+            tool_traces_json,
+            hidden_context
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&id)
@@ -409,6 +420,8 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
     .bind(&input.content)
     .bind(&now)
     .bind(input.token_count)
+    .bind(&input.tool_traces_json)
+    .bind(&input.hidden_context)
     .execute(pool)
     .await?;
 
@@ -439,6 +452,8 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         content: input.content,
         created_at: now,
         token_count: input.token_count,
+        tool_traces_json: input.tool_traces_json,
+        hidden_context: input.hidden_context,
     })
 }
 
@@ -447,16 +462,20 @@ pub async fn update_message_content(
     id: &str,
     content: &str,
     token_count: Option<i32>,
+    tool_traces_json: Option<String>,
+    hidden_context: Option<String>,
 ) -> DbResult<()> {
     sqlx::query(
         r#"
         UPDATE messages
-        SET content = ?, token_count = ?
+        SET content = ?, token_count = ?, tool_traces_json = ?, hidden_context = ?
         WHERE id = ?
         "#,
     )
     .bind(content)
     .bind(token_count)
+    .bind(tool_traces_json)
+    .bind(hidden_context)
     .bind(id)
     .execute(pool)
     .await?;

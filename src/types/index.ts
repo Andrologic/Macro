@@ -262,6 +262,16 @@ export interface CodeDiff {
   language: string;
 }
 
+export type ToolTraceStatus = 'running' | 'done';
+
+export interface ToolTrace {
+  tool_call_id: string;
+  tool_name: string;
+  detail?: string;
+  status: ToolTraceStatus;
+  visible_offset?: number;
+}
+
 export interface ChatMessage {
   id: string;
   task_id: string;
@@ -272,6 +282,8 @@ export interface ChatMessage {
   code_diff?: CodeDiff;
   choices?: AIChoice[];
   allow_free_response?: boolean;
+  tool_traces?: ToolTrace[];
+  hidden_context?: string;
 }
 
 export interface Conversation {
