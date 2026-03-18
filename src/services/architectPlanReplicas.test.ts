@@ -241,6 +241,42 @@ describe('architectPlanService replicas', () => {
     mock.restore();
   });
 
+  it('creates the v3 replica layout with manifest and chat transcript files', async () => {
+    const service = await loadArchitectPlanService();
+    const created = await service.createArchitectPlan({
+      branchName: 'develop',
+      planId: 'plan-v3',
+      title: 'Plan V3',
+      projectIds: ['web', 'api'],
+    });
+
+    const webIndex = JSON.parse(
+      readWorkspaceFile('/repos/web', 'branches/develop/plans/index.json') || 'null'
+    );
+    const apiIndex = JSON.parse(
+      readWorkspaceFile('/repos/api', 'branches/develop/plans/index.json') || 'null'
+    );
+    const webManifest = JSON.parse(
+      readWorkspaceFile('/repos/web', `branches/develop/plans/${created.id}/manifest.json`) || 'null'
+    );
+    const apiManifest = JSON.parse(
+      readWorkspaceFile('/repos/api', `branches/develop/plans/${created.id}/manifest.json`) || 'null'
+    );
+    const webChat = readWorkspaceFile('/repos/web', `branches/develop/plans/${created.id}/chat.jsonl`);
+    const apiChat = readWorkspaceFile('/repos/api', `branches/develop/plans/${created.id}/chat.jsonl`);
+
+    expect(webIndex.version).toBe(3);
+    expect(apiIndex.version).toBe(3);
+    expect(webManifest.schemaVersion).toBe(3);
+    expect(apiManifest.schemaVersion).toBe(3);
+    expect(webManifest.expectedProjectIds).toEqual(['web', 'api']);
+    expect(apiManifest.expectedProjectIds).toEqual(['web', 'api']);
+    expect(webManifest.revision).toBe(1);
+    expect(apiManifest.revision).toBe(1);
+    expect(webChat).toBe('');
+    expect(apiChat).toBe('');
+  });
+
   it('auto-heals synthetic session project ids without reporting missing replicas', async () => {
     const plan = buildPlan();
     seedReplica('/repos/web', plan);
@@ -272,11 +308,37 @@ describe('architectPlanService replicas', () => {
 
   it('repairs divergent replicas with sanitized canonical metadata', async () => {
     const oldest = buildPlan({
+      projectIds: ['web', 'api'],
       description: 'oldest',
+      nodes: [
+        {
+          id: 'task-api',
+          title: 'Implement API',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          projectId: 'api',
+          projectIds: ['api'],
+        },
+      ],
+      predictedBranches: [],
       updatedAt: '2026-03-15T00:00:00.000Z',
     });
     const newest = buildPlan({
+      projectIds: ['web', 'api'],
       description: 'newest',
+      nodes: [
+        {
+          id: 'task-api',
+          title: 'Implement API',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          projectId: 'api',
+          projectIds: ['api'],
+        },
+      ],
+      predictedBranches: [],
       updatedAt: '2026-03-16T00:00:00.000Z',
     });
     seedReplica('/repos/web', oldest);
@@ -320,39 +382,39 @@ describe('architectPlanService replicas', () => {
     expect(webPlan).toBe(apiPlan);
   });
 
-  it('keeps reporting a real missing replica for registered repositories', async () => {
+  it('loads a degraded plan state when a registered replica is missing and blocks writes', async () => {
     const plan = buildPlan({
       projectIds: ['web', 'api'],
+      nodes: [
+        {
+          id: 'task-api',
+          title: 'Implement API',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          projectId: 'api',
+          projectIds: ['api'],
+        },
+      ],
+      predictedBranches: [],
     });
     seedReplica('/repos/web', plan);
 
     const service = await loadArchitectPlanService();
+    const loaded = await service.getArchitectPlan('develop', plan.id);
 
-    let divergence: unknown;
-    try {
-      await service.getArchitectPlan('develop', plan.id);
-    } catch (error) {
-      divergence = error;
-    }
-
-    expect(service.isArchitectPlanReplicaDivergenceError(divergence)).toBe(true);
-    if (service.isArchitectPlanReplicaDivergenceError(divergence)) {
-      const divergenceError = divergence as {
-        divergence: {
-          reason: string;
-          replicas: Array<{
-            projectId: string | null;
-            missing?: boolean;
-          }>;
-        };
-      };
-      expect(divergenceError.divergence.reason).toBe('missing_replica');
-      expect(
-        divergenceError.divergence.replicas.some(
-          (replica) => replica.projectId === 'api' && replica.missing
-        )
-      ).toBe(true);
-    }
+    expect(loaded).not.toBeNull();
+    expect(loaded?.replicationState).toBe('missing_projects');
+    expect(loaded?.expectedProjectIds).toEqual(['web', 'api']);
+    expect(loaded?.availableProjectIds).toEqual(['web']);
+    expect(loaded?.missingProjectIds).toEqual(['api']);
+    await expect(
+      service.updateArchitectPlan({
+        branchName: 'develop',
+        planId: plan.id,
+        description: 'blocked-write',
+      })
+    ).rejects.toThrow(/expected project replicas are missing: api/i);
   });
 
   it('keeps reporting true content divergence between repositories', async () => {

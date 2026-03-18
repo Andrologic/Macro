@@ -221,9 +221,21 @@ const isMissingGitTargetError = (error: unknown): boolean => {
   );
 };
 
-const resolveProjectRepoPaths = (projectIds: string[], explicitRepoPath?: string): ResolvedProjectRepository[] => {
+const resolveProjectRepoPaths = (
+  projectIds: string[],
+  explicitRepoPath?: string,
+  options?: { allowMissing?: boolean }
+): ResolvedProjectRepository[] => {
   const appState = useAppStore.getState();
   const uniqueProjectIds = Array.from(new Set(projectIds.filter((projectId) => projectId.trim().length > 0)));
+  if (uniqueProjectIds.length === 0) {
+    const selectedProject = appState.selectedProjectId
+      ? appState.getProjectById(appState.selectedProjectId)
+      : null;
+    if (selectedProject?.path?.trim() && appState.selectedProjectId) {
+      return [{ projectId: appState.selectedProjectId, repoPath: selectedProject.path }];
+    }
+  }
   const resolved: ResolvedProjectRepository[] = [];
   const missingProjectIds: string[] = [];
 
@@ -242,6 +254,10 @@ const resolveProjectRepoPaths = (projectIds: string[], explicitRepoPath?: string
       return [{ projectId: fallbackProjectId, repoPath: explicitRepoPath }];
     }
 
+    if (options?.allowMissing && resolved.length > 0) {
+      return resolved;
+    }
+
     throw new Error(
       `Unable to resolve repository path for project${missingProjectIds.length > 1 ? 's' : ''} ${missingProjectIds.join(', ')}.`
     );
@@ -258,7 +274,13 @@ const resolveProjectRepoPaths = (projectIds: string[], explicitRepoPath?: string
 const getPlanProjectIds = (plan: ArchitectPlanRecord): string[] => {
   const nodeProjectIds = (plan.nodes || []).flatMap((node) => normalizeNodeProjectIds(node));
   const branchProjectIds = (plan.predictedBranches || []).map((branch) => branch.projectId).filter(Boolean);
-  return Array.from(new Set([...(plan.projectIds || []), ...(plan.projectId ? [plan.projectId] : []), ...nodeProjectIds, ...branchProjectIds]));
+  return Array.from(new Set([
+    ...(plan.expectedProjectIds || []),
+    ...(plan.projectIds || []),
+    ...(plan.projectId ? [plan.projectId] : []),
+    ...nodeProjectIds,
+    ...branchProjectIds,
+  ]));
 };
 
 const normalizePlanNodesForGitFlow = (plan: ArchitectPlanRecord): PlanNode[] => {
@@ -502,7 +524,7 @@ const buildCleanupPlanTargets = (
   explicitRepoPath?: string
 ): CleanupPlanRepositoryTarget[] => {
   const planBranchName = toPlanIntegrationBranch(plan.slug || plan.title);
-  const repositories = resolveProjectRepoPaths(getPlanProjectIds(plan), explicitRepoPath);
+  const repositories = resolveProjectRepoPaths(getPlanProjectIds(plan), explicitRepoPath, { allowMissing: true });
   if (repositories.length === 0) {
     throw new Error('Unable to resolve repository path for this plan. Select at least one project before continuing.');
   }
@@ -1040,10 +1062,19 @@ export const createArchitectGitFlowService = (
 
   const resolveProjectRepoPathsWithDeps = (
     projectIds: string[],
-    explicitRepoPath?: string
+    explicitRepoPath?: string,
+    options?: { allowMissing?: boolean }
   ): ResolvedProjectRepository[] => {
     const appState = deps.getAppState();
     const uniqueProjectIds = Array.from(new Set(projectIds.filter((projectId) => projectId.trim().length > 0)));
+    if (uniqueProjectIds.length === 0) {
+      const selectedProject = appState.selectedProjectId
+        ? appState.getProjectById(appState.selectedProjectId)
+        : null;
+      if (selectedProject?.path?.trim() && appState.selectedProjectId) {
+        return [{ projectId: appState.selectedProjectId, repoPath: selectedProject.path }];
+      }
+    }
     const resolved: ResolvedProjectRepository[] = [];
     const missingProjectIds: string[] = [];
 
@@ -1060,6 +1091,10 @@ export const createArchitectGitFlowService = (
       if (explicitRepoPath && uniqueProjectIds.length <= 1) {
         const fallbackProjectId = uniqueProjectIds[0] || appState.selectedProjectId || 'default-project';
         return [{ projectId: fallbackProjectId, repoPath: explicitRepoPath }];
+      }
+
+      if (options?.allowMissing && resolved.length > 0) {
+        return resolved;
       }
 
       throw new Error(
@@ -1155,7 +1190,7 @@ export const createArchitectGitFlowService = (
     explicitRepoPath?: string
   ): CleanupPlanRepositoryTarget[] => {
     const planBranchName = deps.toPlanIntegrationBranch(plan.slug || plan.title);
-    const repositories = resolveProjectRepoPathsWithDeps(getPlanProjectIds(plan), explicitRepoPath);
+    const repositories = resolveProjectRepoPathsWithDeps(getPlanProjectIds(plan), explicitRepoPath, { allowMissing: true });
     if (repositories.length === 0) {
       throw new Error('Unable to resolve repository path for this plan. Select at least one project before continuing.');
     }
