@@ -9,6 +9,7 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions } from './webSearch';
 import * as tauriIpc from './tauriIpc';
+import type { ToolTrace } from '../types';
 
 // Global references to active streaming resources for cancellation
 let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -78,6 +79,12 @@ export interface ToolResult {
   content: string;
 }
 
+export interface StreamCompletionResult {
+  visibleContent: string;
+  toolTraces: ToolTrace[];
+  hiddenContext?: string;
+}
+
 export interface StreamingChatOptions {
   providerId: string;
   providerType: string;
@@ -86,8 +93,9 @@ export interface StreamingChatOptions {
   modelId: string;
   messages: StreamMessage[];
   onToken: (token: string) => void;
-  onComplete: (fullContent: string) => void;
+  onComplete: (result: StreamCompletionResult) => void;
   onError: (error: Error) => void;
+  onToolTracesUpdate?: (toolTraces: ToolTrace[]) => void;
   signal?: AbortSignal;
   // Tool calling options
   enableWebSearch?: boolean;
@@ -107,6 +115,260 @@ export interface StreamingChatOptions {
   allowedToolIds?: string[];
   showToolTraces?: boolean;
 }
+
+const TOOL_CALL_OPEN_TAG = '<tool_call>';
+const TOOL_CALL_CLOSE_TAG = '</tool_call>';
+
+const emptyStreamCompletionResult = (visibleContent = ''): StreamCompletionResult => ({
+  visibleContent,
+  toolTraces: [],
+});
+
+const escapeToolContextAttribute = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+const formatToolTraceDetail = (toolName: string, args: Record<string, unknown>): string | undefined => {
+  if (toolName === 'web_search') {
+    return typeof args.query === 'string' ? args.query : undefined;
+  }
+
+  if (toolName === 'web_fetch') {
+    return typeof args.url === 'string' ? args.url : undefined;
+  }
+
+  if (toolName === 'mark_source_passage') {
+    const title = typeof args.title === 'string' ? args.title.trim() : '';
+    const kind = typeof args.kind === 'string' ? args.kind.trim() : '';
+    if (title && kind) return `${title}, kind=${kind}`;
+    return title || kind || undefined;
+  }
+
+  if (toolName === 'read_sources') {
+    const parts = [
+      typeof args.kind === 'string' && args.kind.trim() ? `kind=${args.kind.trim()}` : '',
+      typeof args.query === 'string' && args.query.trim() ? `query=${args.query.trim()}` : '',
+    ].filter(Boolean);
+    return parts.length > 0 ? parts.join(', ') : undefined;
+  }
+
+  if (toolName === 'edit_source_passage') {
+    const parts = [
+      typeof args.citation_id === 'string' && args.citation_id.trim()
+        ? `id=${args.citation_id.trim()}`
+        : '',
+      typeof args.action === 'string' && args.action.trim() ? `action=${args.action.trim()}` : '',
+    ].filter(Boolean);
+    return parts.length > 0 ? parts.join(', ') : undefined;
+  }
+
+  if (toolName === 'read_file') {
+    const file = typeof args.file === 'string' ? args.file.trim() : '';
+    const extractText = args.extract_text === true ? 'extract_text=true' : '';
+    return [file, extractText].filter(Boolean).join(', ') || undefined;
+  }
+
+  if (
+    toolName === 'list' ||
+    toolName === 'read' ||
+    toolName === 'write' ||
+    toolName === 'edit'
+  ) {
+    return typeof args.path === 'string' ? args.path.trim() : undefined;
+  }
+
+  if (toolName === 'glob') {
+    return typeof args.pattern === 'string' ? args.pattern.trim() : undefined;
+  }
+
+  if (toolName === 'grep') {
+    return typeof args.query === 'string' ? args.query.trim() : undefined;
+  }
+
+  if (toolName === 'terminal_create_session') {
+    return typeof args.project_id === 'string' ? args.project_id.trim() : undefined;
+  }
+
+  if (toolName === 'terminal_run') {
+    return typeof args.command === 'string' ? args.command.trim() : undefined;
+  }
+
+  if (toolName === 'need_add') {
+    return typeof args.title === 'string' ? args.title.trim() : undefined;
+  }
+
+  return undefined;
+};
+
+const formatToolUsageLabel = (toolName: string, args: Record<string, unknown>) => {
+  const detail = formatToolTraceDetail(toolName, args);
+  return detail ? `\n\n[TOOL] ${toolName} (${detail})\n` : `\n\n[TOOL] ${toolName}\n`;
+};
+
+const buildToolContextBlock = (
+  toolCallId: string,
+  toolName: string,
+  detail: string | undefined,
+  result: string
+): string | null => {
+  if (!result.trim()) return null;
+  const attrs = [
+    `tool_call_id="${escapeToolContextAttribute(toolCallId)}"`,
+    `tool="${escapeToolContextAttribute(toolName)}"`,
+    detail ? `detail="${escapeToolContextAttribute(detail)}"` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return `<tool_context ${attrs}>\n${result}\n</tool_context>`;
+};
+
+const createInlineToolCallFilter = () => {
+  let pending = '';
+  let insideToolCall = false;
+
+  const emitSafeOutsideText = (): string => {
+    const safeLength = Math.max(0, pending.length - (TOOL_CALL_OPEN_TAG.length - 1));
+    if (safeLength === 0) return '';
+    const visible = pending.slice(0, safeLength);
+    pending = pending.slice(safeLength);
+    return visible;
+  };
+
+  return {
+    push(chunk: string): string {
+      if (!chunk) return '';
+      pending += chunk;
+      let visible = '';
+
+      while (pending.length > 0) {
+        const lowerPending = pending.toLowerCase();
+        if (insideToolCall) {
+          const closeIndex = lowerPending.indexOf(TOOL_CALL_CLOSE_TAG);
+          if (closeIndex === -1) {
+            const keepLength = Math.min(pending.length, TOOL_CALL_CLOSE_TAG.length - 1);
+            pending = pending.slice(-keepLength);
+            return visible;
+          }
+          pending = pending.slice(closeIndex + TOOL_CALL_CLOSE_TAG.length);
+          insideToolCall = false;
+          continue;
+        }
+
+        const openIndex = lowerPending.indexOf(TOOL_CALL_OPEN_TAG);
+        if (openIndex === -1) {
+          visible += emitSafeOutsideText();
+          return visible;
+        }
+
+        visible += pending.slice(0, openIndex);
+        pending = pending.slice(openIndex + TOOL_CALL_OPEN_TAG.length);
+        insideToolCall = true;
+      }
+
+      return visible;
+    },
+    flush(): string {
+      if (insideToolCall) {
+        pending = '';
+        return '';
+      }
+      const visible = pending;
+      pending = '';
+      return visible;
+    },
+  };
+};
+
+const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate'>) => {
+  const inlineToolCallFilter = createInlineToolCallFilter();
+  let visibleContent = '';
+  const toolTraces = new Map<string, ToolTrace>();
+  const toolTraceOrder: string[] = [];
+  const hiddenContextBlocks: string[] = [];
+
+  const snapshotToolTraces = (): ToolTrace[] =>
+    toolTraceOrder
+      .map((toolCallId) => toolTraces.get(toolCallId))
+      .filter((trace): trace is ToolTrace => Boolean(trace))
+      .map((trace) => ({ ...trace }));
+
+  const publishToolTraces = () => {
+    options.onToolTracesUpdate?.(snapshotToolTraces());
+  };
+
+  const markRunningToolTracesDone = () => {
+    let changed = false;
+    for (const toolCallId of toolTraceOrder) {
+      const trace = toolTraces.get(toolCallId);
+      if (!trace || trace.status !== 'running') continue;
+      toolTraces.set(toolCallId, { ...trace, status: 'done' });
+      changed = true;
+    }
+    if (changed) {
+      publishToolTraces();
+    }
+  };
+
+  const appendVisibleChunk = (chunk: string, markToolsDone = true) => {
+    if (!chunk) return;
+    if (markToolsDone) {
+      markRunningToolTracesDone();
+    }
+    visibleContent += chunk;
+    options.onToken(chunk);
+  };
+
+  return {
+    appendProviderDelta(chunk: string) {
+      appendVisibleChunk(inlineToolCallFilter.push(chunk), true);
+    },
+    flushProviderDelta() {
+      appendVisibleChunk(inlineToolCallFilter.flush(), true);
+    },
+    appendSystemChunk(chunk: string, markToolsDone = false) {
+      appendVisibleChunk(chunk, markToolsDone);
+    },
+    upsertRunningToolTrace(toolCallId: string, toolName: string, detail?: string) {
+      const existingTrace = toolTraces.get(toolCallId);
+      const nextTrace: ToolTrace = {
+        tool_call_id: toolCallId,
+        tool_name: toolName,
+        detail,
+        status: 'running',
+        visible_offset: existingTrace?.visible_offset ?? visibleContent.length,
+      };
+      if (!toolTraces.has(toolCallId)) {
+        toolTraceOrder.push(toolCallId);
+      }
+      toolTraces.set(toolCallId, nextTrace);
+      publishToolTraces();
+    },
+    addHiddenToolContext(toolCallId: string, toolName: string, detail: string | undefined, result: string) {
+      const block = buildToolContextBlock(toolCallId, toolName, detail, result);
+      if (block) {
+        hiddenContextBlocks.push(block);
+      }
+    },
+    buildResult(): StreamCompletionResult {
+      markRunningToolTracesDone();
+      const hiddenContext = hiddenContextBlocks.join('\n\n').trim();
+      return {
+        visibleContent,
+        toolTraces: snapshotToolTraces(),
+        hiddenContext: hiddenContext || undefined,
+      };
+    },
+  };
+};
+
+export const __testables = {
+  buildToolContextBlock,
+  createInlineToolCallFilter,
+  formatToolTraceDetail,
+};
 
 // Tool definitions for the LLM
 const WEB_SEARCH_TOOL = {
@@ -1033,6 +1295,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
     onToken,
     onComplete,
     onError,
+    onToolTracesUpdate,
     enableWebSearch = true,
     enableWebFetch = true,
     webSearchOptions,
@@ -1044,28 +1307,11 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
   } = options;
 
   const allowedTools = new Set(allowedToolIds ?? []);
-
-  const formatToolUsageLabel = (toolName: string, args: Record<string, unknown>) => {
-    if (toolName === 'web_search') {
-      const query = typeof args.query === 'string' ? args.query : '';
-      return `\n\n[TOOL] web_search${query ? ` ("${query}")` : ''}\n`;
-    }
-
-    if (toolName === 'web_fetch') {
-      const url = typeof args.url === 'string' ? args.url : '';
-      return `\n\n[TOOL] web_fetch${url ? ` ("${url}")` : ''}\n`;
-    }
-
-    if (toolName === 'read_file') {
-      const file = typeof args.file === 'string' ? args.file : '';
-      return `\n\n[TOOL] read_file${file ? ` ("${file}")` : ''}\n`;
-    }
-
-    return `\n\n[TOOL] ${toolName}\n`;
-  };
-
+  const streamAccumulator = createStreamAccumulator({
+    onToken,
+    onToolTracesUpdate,
+  });
   let currentMessages: StreamMessage[] = [...messages];
-  let fullContent = '';
   const readEvidenceBySource = new Map<string, string>();
   const MAX_TURNS = 10;
   let turnCount = 0;
@@ -1096,7 +1342,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
   try {
     while (turnCount < MAX_TURNS) {
       if (options.signal?.aborted) {
-        onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
+        onComplete(streamAccumulator.buildResult());
         return;
       }
 
@@ -1106,15 +1352,14 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         messages: currentMessages,
         signal: options.signal,
         onDelta: (delta) => {
-          fullContent += delta;
-          onToken(delta);
+          streamAccumulator.appendProviderDelta(delta);
         },
       });
+      streamAccumulator.flushProviderDelta();
 
       const toolCalls: ToolCall[] = [];
       const inlineToolRegex = /<tool_call>\s*(?=\{)([\s\S]*?)\s*<\/tool_call>/gi;
       let match: RegExpExecArray | null;
-      const inlineReplacements: Array<{ original: string }> = [];
 
       while ((match = inlineToolRegex.exec(turnContent)) !== null) {
         try {
@@ -1130,7 +1375,6 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
                   : JSON.stringify(parsed.arguments || {}),
               },
             });
-            inlineReplacements.push({ original: match[0] });
           }
         } catch {
           console.warn('Failed to parse inline JSON tool call', match[1]);
@@ -1144,10 +1388,6 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         });
       }
 
-      for (const replacement of inlineReplacements) {
-        fullContent = fullContent.replace(replacement.original, '');
-      }
-
       const validToolCalls = toolCalls.filter((toolCall) => toolCall.id && toolCall.function.name);
       if (validToolCalls.length === 0) {
         break;
@@ -1159,13 +1399,17 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         const toolName = toolCall.function.name;
         let toolResult = '';
         let customToolResult: string | undefined;
+        let detail: string | undefined;
 
         try {
           const args = JSON.parse(toolCall.function.arguments);
+          detail = formatToolTraceDetail(toolName, args);
+          streamAccumulator.upsertRunningToolTrace(toolCall.id, toolName, detail);
 
           if (!allowedTools.has(toolName)) {
             toolResult = `Tool ${toolName} is disabled for the current mode.`;
             toolResults.push({ tool_call_id: toolCall.id, content: toolResult });
+            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
             continue;
           }
 
@@ -1173,9 +1417,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
           customToolResult = typeof customResult === 'string' ? customResult : undefined;
 
           if (showToolTraces) {
-            const toolUsageMsg = formatToolUsageLabel(toolName, args);
-            fullContent += toolUsageMsg;
-            onToken(toolUsageMsg);
+            streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
           }
 
           if (toolName === 'web_search') {
@@ -1183,6 +1425,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
               toolResult = 'Web search is not configured for this provider.';
               onToolResult?.(toolName, toolResult);
               toolResults.push({ tool_call_id: toolCall.id, content: toolResult });
+              streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
               continue;
             }
             const searchResults = await webSearch(args.query, webSearchOptions);
@@ -1190,8 +1433,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
 
             if (showToolTraces) {
               const searchMsg = `\n\n🔍 **Recherche web:** "${args.query}"\n`;
-              fullContent += searchMsg;
-              onToken(searchMsg);
+              streamAccumulator.appendSystemChunk(searchMsg, false);
             }
           }
 
@@ -1200,6 +1442,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
               toolResult = 'Web fetch is disabled for this provider.';
               onToolResult?.(toolName, toolResult);
               toolResults.push({ tool_call_id: toolCall.id, content: toolResult });
+              streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
               continue;
             }
             const url = typeof args.url === 'string' ? args.url : '';
@@ -1335,9 +1578,11 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
           }
 
           onToolResult?.(toolName, toolResult);
+          streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
         } catch (error) {
           toolResult = `Error executing tool ${toolName}: ${error instanceof Error ? error.message : String(error)}`;
           onToolResult?.(toolName, toolResult);
+          streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
         }
 
         toolResults.push({
@@ -1360,10 +1605,10 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
       turnCount++;
     }
 
-    onComplete(fullContent);
+    onComplete(streamAccumulator.buildResult());
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
+      onComplete(streamAccumulator.buildResult());
       return;
     }
 
@@ -1390,6 +1635,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     onToken,
     onComplete,
     onError,
+    onToolTracesUpdate,
     enableWebSearch = true,
     enableWebFetch = true,
     webSearchOptions,
@@ -1402,103 +1648,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   } = options;
 
   const allowedTools = new Set(allowedToolIds ?? []);
-
-  const formatToolUsageLabel = (toolName: string, args: Record<string, unknown>) => {
-    if (toolName === 'web_search') {
-      const query = typeof args.query === 'string' ? args.query : '';
-      return `\n\n[TOOL] web_search${query ? ` ("${query}")` : ''}\n`;
-    }
-
-    if (toolName === 'web_fetch') {
-      const url = typeof args.url === 'string' ? args.url : '';
-      return `\n\n[TOOL] web_fetch${url ? ` ("${url}")` : ''}\n`;
-    }
-
-    if (toolName === 'mark_source_passage') {
-      const title = typeof args.title === 'string' ? args.title : '';
-      const kind = typeof args.kind === 'string' ? args.kind : 'used';
-      return `\n\n[TOOL] mark_source_passage${title ? ` ("${title}", kind=${kind})` : ''}\n`;
-    }
-
-    if (toolName === 'read_sources') {
-      const kind = typeof args.kind === 'string' ? args.kind : 'all';
-      const query = typeof args.query === 'string' ? args.query : '';
-      const suffix = query ? `, query="${query}"` : '';
-      return `\n\n[TOOL] read_sources (kind=${kind}${suffix})\n`;
-    }
-
-    if (toolName === 'edit_source_passage') {
-      const action = typeof args.action === 'string' ? args.action : '';
-      const citationId = typeof args.citation_id === 'string' ? args.citation_id : '';
-      return `\n\n[TOOL] edit_source_passage${citationId ? ` (id=${citationId}, action=${action || 'update'})` : ''}\n`;
-    }
-
-    if (toolName === 'read_file') {
-      const file = typeof args.file === 'string' ? args.file : '';
-      const extractText = args.extract_text === true;
-      const suffix = extractText ? ', extract_text=true' : '';
-      return `\n\n[TOOL] read_file${file ? ` ("${file}"${suffix})` : ''}\n`;
-    }
-
-    if (toolName === 'list') {
-      const path = typeof args.path === 'string' ? args.path : '.';
-      return `\n\n[TOOL] list${path ? ` ("${path}")` : ''}\n`;
-    }
-
-    if (toolName === 'read') {
-      const path = typeof args.path === 'string' ? args.path : '';
-      return `\n\n[TOOL] read${path ? ` ("${path}")` : ''}\n`;
-    }
-
-    if (toolName === 'write') {
-      const path = typeof args.path === 'string' ? args.path : '';
-      return `\n\n[TOOL] write${path ? ` ("${path}")` : ''}\n`;
-    }
-
-    if (toolName === 'edit') {
-      const path = typeof args.path === 'string' ? args.path : '';
-      return `\n\n[TOOL] edit${path ? ` ("${path}")` : ''}\n`;
-    }
-
-    if (toolName === 'glob') {
-      const pattern = typeof args.pattern === 'string' ? args.pattern : '';
-      return `\n\n[TOOL] glob${pattern ? ` ("${pattern}")` : ''}\n`;
-    }
-
-    if (toolName === 'grep') {
-      const query = typeof args.query === 'string' ? args.query : '';
-      return `\n\n[TOOL] grep${query ? ` ("${query}")` : ''}\n`;
-    }
-
-    if (toolName === 'terminal_create_session') {
-      const projectId = typeof args.project_id === 'string' ? args.project_id : '';
-      return `\n\n[TOOL] terminal_create_session${projectId ? ` ("${projectId}")` : ''}\n`;
-    }
-
-    if (toolName === 'terminal_run') {
-      const command = typeof args.command === 'string' ? args.command : '';
-      return `\n\n[TOOL] terminal_run${command ? ` ("${command}")` : ''}\n`;
-    }
-
-    if (toolName === 'terminal_read' || toolName === 'terminal_kill') {
-      return `\n\n[TOOL] ${toolName}\n`;
-    }
-
-    if (toolName === 'need_add') {
-      const title = typeof args.title === 'string' ? args.title : '';
-      return `\n\n[TOOL] need_add${title ? ` ("${title}")` : ''}\n`;
-    }
-
-    if (toolName === 'strategy_generate') {
-      return `\n\n[TOOL] strategy_generate\n`;
-    }
-
-    if (toolName === 'plan_create' || toolName === 'plan_list' || toolName === 'plan_get' || toolName === 'plan_update' || toolName === 'plan_delete' || toolName === 'plan_restore' || toolName === 'plan_set_active' || toolName === 'strategy_get' || toolName === 'strategy_update' || toolName === 'strategy_delete') {
-      return `\n\n[TOOL] ${toolName}\n`;
-    }
-
-    return `\n\n[TOOL] ${toolName}\n`;
-  };
+  const streamAccumulator = createStreamAccumulator({
+    onToken,
+    onToolTracesUpdate,
+  });
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -1663,7 +1816,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
   // Storage for the entire conversation (mutated across loop turns)
   let currentMessages: StreamMessage[] = [...messages];
-  let fullContent = '';
   const readEvidenceBySource = new Map<string, string>();
   const MAX_TURNS = 10;
   let turnCount = 0;
@@ -1694,7 +1846,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   try {
     while (turnCount < MAX_TURNS) {
       if (options.signal?.aborted) {
-        onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
+        onComplete(streamAccumulator.buildResult());
         return;
       }
 
@@ -1728,8 +1880,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           throw new Error(errorMessage);
         } else {
           const loopError = `\n\n[System: The agent loop stopped due to an API error: ${errorMessage}]`;
-          fullContent += loopError;
-          onToken(loopError);
+          streamAccumulator.appendSystemChunk(loopError, true);
           break;
         }
       }
@@ -1751,8 +1902,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       const startThinking = () => {
         if (!isThinking) {
           turnContent += '<think>';
-          fullContent += '<think>';
-          onToken('<think>');
+          streamAccumulator.appendProviderDelta('<think>');
           isThinking = true;
         }
       };
@@ -1760,8 +1910,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       const endThinking = () => {
         if (isThinking) {
           turnContent += '</think>';
-          fullContent += '</think>';
-          onToken('</think>');
+          streamAccumulator.appendProviderDelta('</think>');
           isThinking = false;
         }
       };
@@ -1774,7 +1923,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           } catch (e) {
             // Ignore cancel errors
           }
-          onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
+          onComplete(streamAccumulator.buildResult());
           return;
         }
 
@@ -1812,8 +1961,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               if (typeof reasoning === 'string' && reasoning.length > 0) {
                 startThinking();
                 turnContent += reasoning;
-                fullContent += reasoning;
-                onToken(reasoning);
+                streamAccumulator.appendProviderDelta(reasoning);
               }
 
               // Handle tool calls
@@ -1843,8 +1991,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 endThinking();
                 const token = delta.content;
                 turnContent += token;
-                fullContent += token;
-                onToken(token);
+                streamAccumulator.appendProviderDelta(token);
               }
             } catch (e) {
               // Skip malformed JSON - some providers send non-JSON lines
@@ -1855,41 +2002,59 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       }
 
       endThinking();
+      streamAccumulator.flushProviderDelta();
 
       // Parse inline JSON tool calls (e.g. from local models like Ollama)
       // <tool_call> {"name": "list", "arguments": { "path": "src" }} </tool_call>
       // Note: We use [\s\S]*? to handle multiline JSON strings
       const inlineToolRegex = /<tool_call>\s*(?=\{)([\s\S]*?)\s*<\/tool_call>/gi;
-      let match;
-      const inlineReplacements: { original: string, parsedName: string }[] = [];
+      let match: RegExpExecArray | null;
+      const inlineToolCallIds = new Set<string>();
 
-      // We parse on a copy so we don't mess up exec indices if not replacing in place
-      let contentForParsing = fullContent;
-      while ((match = inlineToolRegex.exec(contentForParsing)) !== null) {
+      while ((match = inlineToolRegex.exec(turnContent)) !== null) {
         try {
           const parsed = JSON.parse(match[1].trim());
           if (parsed.name) {
+            const toolCallId = `call_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            inlineToolCallIds.add(toolCallId);
             toolCalls.push({
-              id: `call_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+              id: toolCallId,
               type: 'function',
               function: {
                 name: parsed.name,
-                arguments: typeof parsed.arguments === 'string' ? parsed.arguments : JSON.stringify(parsed.arguments || {})
-              }
+                arguments:
+                  typeof parsed.arguments === 'string'
+                    ? parsed.arguments
+                    : JSON.stringify(parsed.arguments || {}),
+              },
             });
-            inlineReplacements.push({ original: match[0], parsedName: parsed.name });
           }
-        } catch (e) {
+        } catch {
           console.warn('Failed to parse inline JSON tool call', match[1]);
         }
       }
 
-      for (const rep of inlineReplacements) {
-        fullContent = fullContent.replace(rep.original, '');
+      // Handle tool calls if any
+      const validToolCalls = toolCalls.filter((toolCall) => toolCall.id && toolCall.function.name);
+      const usedInlineTools =
+        validToolCalls.length > 0 &&
+        validToolCalls.every((toolCall) => inlineToolCallIds.has(toolCall.id));
+
+      if (turnContent.trim().length > 0 || validToolCalls.length > 0) {
+        currentMessages.push(
+          usedInlineTools
+            ? {
+              role: 'assistant',
+              content: turnContent,
+            }
+            : {
+              role: 'assistant',
+              content: turnContent,
+              ...(validToolCalls.length > 0 ? { tool_calls: validToolCalls } : {}),
+            }
+        );
       }
 
-      // Handle tool calls if any
-      const validToolCalls = toolCalls.filter(tc => tc.id && tc.function.name);
       if (validToolCalls.length > 0) {
         const toolResults: ToolResult[] = [];
 
@@ -1897,9 +2062,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           const toolName = toolCall.function.name;
           let toolResult = '';
           let customToolResult: string | undefined;
+          let detail: string | undefined;
 
           try {
             const args = JSON.parse(toolCall.function.arguments);
+            detail = formatToolTraceDetail(toolName, args);
+            streamAccumulator.upsertRunningToolTrace(toolCall.id, toolName, detail);
 
             if (!allowedTools.has(toolName)) {
               toolResult = `Tool ${toolName} is disabled for the current mode.`;
@@ -1907,6 +2075,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 tool_call_id: toolCall.id,
                 content: toolResult,
               });
+              streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
               continue;
             }
 
@@ -1914,12 +2083,21 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             customToolResult = typeof customResult === 'string' ? customResult : undefined;
 
             if (showToolTraces) {
-              const toolUsageMsg = formatToolUsageLabel(toolName, args);
-              fullContent += toolUsageMsg;
-              onToken(toolUsageMsg);
+              streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
             }
 
             if (toolName === 'web_search') {
+              if (!enableWebSearch || (!webSearchOptions?.tavilyApiKey && !webSearchOptions?.braveApiKey)) {
+                toolResult = 'Web search is not configured for this provider.';
+                onToolResult?.(toolName, toolResult);
+                toolResults.push({
+                  tool_call_id: toolCall.id,
+                  content: toolResult,
+                });
+                streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+                continue;
+              }
+
               // Execute web search
               const searchResults = await webSearch(args.query, webSearchOptions);
               toolResult = formatSearchResultsAsContext(searchResults);
@@ -1927,12 +2105,22 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               // Show search indicator in chat
               if (showToolTraces) {
                 const searchMsg = `\n\n🔍 **Recherche web:** "${args.query}"\n`;
-                fullContent += searchMsg;
-                onToken(searchMsg);
+                streamAccumulator.appendSystemChunk(searchMsg, false);
               }
             }
 
             if (toolName === 'web_fetch') {
+              if (!enableWebFetch) {
+                toolResult = 'Web fetch is disabled for this provider.';
+                onToolResult?.(toolName, toolResult);
+                toolResults.push({
+                  tool_call_id: toolCall.id,
+                  content: toolResult,
+                });
+                streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+                continue;
+              }
+
               const url = typeof args.url === 'string' ? args.url : '';
               if (!url.trim()) {
                 toolResult = 'Missing URL for web_fetch.';
@@ -2066,9 +2254,11 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             }
 
             onToolResult?.(toolName, toolResult);
+            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
           } catch (e) {
             toolResult = `Error executing tool ${toolName}: ${e instanceof Error ? e.message : String(e)}`;
             onToolResult?.(toolName, toolResult);
+            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
           }
 
           toolResults.push({
@@ -2090,50 +2280,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             );
           });
           const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
-          const hasWorkspaceFileReadResults = toolResults.some((result) =>
-            /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*WORKSPACE_FILE/m.test(result.content)
-          );
-          const hasContextSnippetReadResults = toolResults.some((result) =>
-            /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*CONTEXT_SNIPPET/m.test(result.content)
-          );
-          const hasWorkspaceReadCall = validToolCalls.some((call) =>
-            call.function.name === 'read' || call.function.name === 'read_file' || call.function.name === 'list'
-          );
-          if (hasWorkspaceFileReadResults) {
-            const readBlocks = toolResults
-              .filter((result) => /^FILE:\s+/m.test(result.content) && /^SOURCE:\s*WORKSPACE_FILE/m.test(result.content))
-              .map((result) => {
-                const fileMatch = result.content.match(/^FILE:\s*(.+)$/m);
-                const filePath = fileMatch?.[1]?.trim() || 'unknown-file';
-                const separatorIndex = result.content.indexOf('\n\n');
-                const rawContent = separatorIndex >= 0
-                  ? result.content.slice(separatorIndex + 2)
-                  : result.content;
-
-                return `Contenu exact lu via l'outil pour ${filePath}:\n\n\`\`\`\n${rawContent}\n\`\`\``;
-              });
-
-            if (readBlocks.length > 0) {
-              const deterministicResponse = readBlocks.join('\n\n---\n\n');
-              fullContent += `\n\n${deterministicResponse}\n`;
-              onToken(`\n\n${deterministicResponse}\n`);
-              // We do not return here! Let the loop continue to the next turn 
-              // so the AI can reason about what it just read.
-            }
-          }
-
-          if (hasContextSnippetReadResults && !hasWorkspaceFileReadResults && hasWorkspaceReadCall) {
+          if (providerType === '__legacy_workspace_fallback__') {
             const deterministicError = [
               'La lecture fichier ne provient pas du workspace actif (context snippet uniquement).',
               'Je refuse de synthétiser ce contenu pour éviter les hallucinations.',
               'Relance avec un chemin explicite (ex: README.md) ou vérifie le root Debug.',
             ].join('\n');
 
-            fullContent += `\n\n${deterministicError}\n`;
-            onToken(`\n\n${deterministicError}\n`);
+            void deterministicError;
           }
 
-          if (hasToolErrors && hasWorkspaceReadCall) {
+          if (providerType === '__legacy_workspace_fallback__') {
             const errorLines = toolResults
               .map((result) => result.content.trim())
               .filter((content) => /^Error executing/i.test(content) || /^Missing\s+/i.test(content) || /^File not found/i.test(content));
@@ -2146,12 +2303,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 'Je ne peux pas déduire le contenu du fichier sans sortie de lecture valide.',
               ].join('\n');
 
-              fullContent += `\n\n${deterministicError}\n`;
-              onToken(`\n\n${deterministicError}\n`);
+              void deterministicError;
             }
           }
-
-          const usedInlineTools = inlineReplacements.length > 0;
 
           if (usedInlineTools) {
             const textResults = toolResults.map(tr =>
@@ -2199,7 +2353,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       turnCount++;
     }
 
-    onComplete(fullContent);
+    onComplete(streamAccumulator.buildResult());
   } catch (error) {
     // Cleanup on error
     if (currentReader) {
@@ -2209,7 +2363,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       currentStream = null;
     }
     if (error instanceof Error && error.name === 'AbortError') {
-      onComplete(options.messages.length > 0 ? '' : 'Request cancelled');
+      onComplete(streamAccumulator.buildResult());
       return;
     }
 
@@ -2257,7 +2411,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
           // No-op for metadata generation.
         },
       });
-      onComplete(content);
+      onComplete(emptyStreamCompletionResult(content));
       return content;
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -2318,7 +2472,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     const content = reasoning
       ? `<think>${reasoning}</think>${messageContent ? `\n${messageContent}` : ''}`
       : messageContent;
-    onComplete(content);
+    onComplete(emptyStreamCompletionResult(content));
     return content;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
