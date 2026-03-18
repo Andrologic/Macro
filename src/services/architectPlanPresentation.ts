@@ -5,9 +5,39 @@ interface ArchitectPlanPresentationShape {
   label?: string | null;
 }
 
+export const DEFAULT_NEW_PLAN_LABEL = 'new plan';
+
 const trimToNull = (value?: string | null): string | null => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed.length > 0 ? trimmed : null;
+};
+
+const DEFAULT_NEW_PLAN_LABEL_PATTERN = /^new plan(?:\s+(\d+))?$/i;
+
+export const isDefaultNewPlanFamilyLabel = (value?: string | null): boolean =>
+  DEFAULT_NEW_PLAN_LABEL_PATTERN.test(trimToNull(value) || '');
+
+export const isDefaultNewPlanBaseLabel = (value?: string | null): boolean =>
+  (trimToNull(value) || '').toLowerCase() === DEFAULT_NEW_PLAN_LABEL;
+
+export const getDefaultNewPlanLabelNumber = (value?: string | null): number | null => {
+  const match = DEFAULT_NEW_PLAN_LABEL_PATTERN.exec(trimToNull(value) || '');
+  if (!match) {
+    return null;
+  }
+
+  return match[1] ? Number.parseInt(match[1], 10) : 0;
+};
+
+export const getNextDefaultNewPlanLabel = (
+  plans: Array<Pick<ArchitectPlanPresentationShape, 'label'>>
+): string => {
+  const maxNumber = plans.reduce((currentMax, plan) => {
+    const value = getDefaultNewPlanLabelNumber(plan.label);
+    return value !== null && Number.isFinite(value) ? Math.max(currentMax, value) : currentMax;
+  }, 0);
+
+  return `${DEFAULT_NEW_PLAN_LABEL} ${maxNumber + 1}`;
 };
 
 export const isCanonicalArchitectPlan = (plan: ArchitectPlanPresentationShape): boolean => {
@@ -17,6 +47,11 @@ export const isCanonicalArchitectPlan = (plan: ArchitectPlanPresentationShape): 
 };
 
 export const getArchitectPlanPrimaryName = (plan: ArchitectPlanPresentationShape): string => {
+  const label = trimToNull(plan.label);
+  if (isCanonicalArchitectPlan(plan) && isDefaultNewPlanFamilyLabel(label)) {
+    return label || DEFAULT_NEW_PLAN_LABEL;
+  }
+
   if (isCanonicalArchitectPlan(plan)) {
     return plan.id;
   }
@@ -27,6 +62,10 @@ export const getArchitectPlanPrimaryName = (plan: ArchitectPlanPresentationShape
 export const getArchitectPlanSecondaryLabel = (
   plan: ArchitectPlanPresentationShape
 ): string | null => {
+  if (isCanonicalArchitectPlan(plan) && isDefaultNewPlanFamilyLabel(plan.label)) {
+    return null;
+  }
+
   if (!isCanonicalArchitectPlan(plan)) {
     return null;
   }
