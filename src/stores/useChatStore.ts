@@ -16,9 +16,11 @@ import { useTerminalStore } from './useTerminalStore';
 import { canUseRemoteKernel, getRemoteToolModePolicy } from '../services/remoteKernelApi';
 import * as tauriIpc from '../services/tauriIpc';
 import {
+  type ArchitectPlanRecord,
   createArchitectPlan,
   deleteArchitectPlan,
   getArchitectPlan,
+  getArchitectPlanChatMessages,
   getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
@@ -293,6 +295,13 @@ interface ChatStore {
     projectId: string | null,
     groupId?: string | null
   ) => Promise<Conversation>;
+  ensureArchitectConversationForPlan: (params: {
+    plan: ArchitectPlanRecord;
+    targetBranch: string;
+    fallbackProjectId?: string;
+    fallbackGroupId?: string;
+    sharedConversation?: boolean;
+  }) => Promise<string | null>;
   ensureConversationForCurrentMode: () => Promise<string | null>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
   deleteConversation: (
@@ -679,7 +688,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       useNeedsStore.getState().replaceNeedsForPlan(plan.id, planNeeds);
 
       const plansIndex = await listArchitectPlans(targetBranch, true);
-      let conversationId = plan.conversationId;
+      let conversationId: string | undefined = plan.conversationId;
       const hasSharedConversation = Boolean(
         conversationId &&
         plansIndex.plans.some(
@@ -700,18 +709,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
           appStore.selectedProjectId ||
           appStore.projectGroups.flatMap((group) => group.projects)[0]?.id ||
           null;
-        const created = await get().createConversation(
-          getArchitectPlanConversationTitle(plan),
-          null,
-          fallbackProjectId,
-          fallbackGroupId
-        );
-        conversationId = created.id;
-        await updateArchitectPlan({
-          branchName: targetBranch,
-          planId: plan.id,
-          conversationId,
+        const ensuredConversationId = await get().ensureArchitectConversationForPlan({
+          plan,
+          targetBranch,
+          fallbackProjectId: fallbackProjectId ?? undefined,
+          fallbackGroupId: fallbackGroupId ?? undefined,
+          sharedConversation: hasSharedConversation,
         });
+        conversationId = ensuredConversationId ?? undefined;
       }
 
       if (conversationId) {
@@ -2280,6 +2285,88 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }));
       persistSelectionForContext(mode, newConversation.id);
       return newConversation;
+    },
+
+    ensureArchitectConversationForPlan: async ({
+      plan,
+      targetBranch,
+      fallbackProjectId,
+      fallbackGroupId,
+      sharedConversation = false,
+    }) => {
+      const existingConversation = plan.conversationId
+        ? get().conversations.find((conversation) => conversation.id === plan.conversationId) ?? null
+        : null;
+      const transcript = await getArchitectPlanChatMessages(targetBranch, plan.id).catch(() => []);
+
+      let conversation = existingConversation && !sharedConversation
+        ? existingConversation
+        : null;
+
+      if (!conversation) {
+        conversation = await get().createConversation(
+          getArchitectPlanConversationTitle(plan),
+          null,
+          fallbackProjectId ?? null,
+          fallbackGroupId ?? null
+        );
+      }
+
+      const localMessages = get().getConversationMessages(conversation.id);
+      if (localMessages.length === 0 && transcript.length > 0 && tauriIpc.isTauriAvailable()) {
+        const restoredMessages: ChatMessage[] = [];
+        for (const message of transcript) {
+          try {
+            const dbMessage = await tauriIpc.createMessage(conversation.id, message.role, message.content);
+            restoredMessages.push({
+              id: dbMessage.id,
+              task_id: '',
+              conversation_id: dbMessage.conversation_id,
+              role: dbMessage.role as 'user' | 'assistant',
+              content: dbMessage.content,
+              timestamp: dbMessage.created_at,
+            });
+          } catch {
+            restoredMessages.push({
+              id: message.id,
+              task_id: '',
+              conversation_id: conversation.id,
+              role: message.role,
+              content: message.content,
+              timestamp: message.createdAt,
+            });
+          }
+        }
+
+        set((state) => ({
+          messages: [...state.messages, ...restoredMessages],
+          conversations: state.conversations.map((candidate) =>
+            candidate.id === conversation!.id
+              ? {
+                  ...candidate,
+                  last_message: restoredMessages[restoredMessages.length - 1]?.content ?? candidate.last_message,
+                  message_count: restoredMessages.length,
+                  updated_at: new Date().toISOString(),
+                }
+              : candidate
+          ),
+        }));
+      }
+
+      if (conversation.id !== plan.conversationId) {
+        try {
+          await updateArchitectPlan({
+            branchName: targetBranch,
+            planId: plan.id,
+            conversationId: conversation.id,
+          });
+        } catch {
+          // Keep local conversation even if metadata cannot be rewritten right now.
+        }
+      }
+
+      get().selectConversation(conversation.id);
+      return conversation.id;
     },
 
     ensureConversationForCurrentMode: async () => {

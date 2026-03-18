@@ -4,6 +4,7 @@ import {
   archiveArchitectPlan,
   createArchitectPlan,
   getArchitectPlan,
+  getArchitectPlanChatMessages,
   getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
@@ -30,11 +31,14 @@ import { PlanFormModal } from './PlanFormModal';
 import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { cn } from '../../utils/cn';
 import {
+  DEFAULT_NEW_PLAN_LABEL,
+  getNextDefaultNewPlanLabel,
   getArchitectPlanConversationTitle,
   getArchitectPlanDisplayName,
   getArchitectPlanEditableName,
   getArchitectPlanPrimaryName,
   getArchitectPlanSecondaryLabel,
+  isDefaultNewPlanBaseLabel,
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
 import { toServiceError } from '../../services/contracts/errors';
@@ -67,6 +71,32 @@ const isPlanVisibleForSelection = (
   const planProjectIds = getArchitectPlanProjectIds(plan);
   return planProjectIds.length === 0 || planProjectIds.some((projectId) => scopedProjectIdSet.has(projectId));
 };
+
+const trimToNull = (value?: string | null): string | null => {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const isDraftPlaceholderCandidate = (plan: ArchitectPlanSummary): boolean => {
+  if (plan.status !== 'draft') {
+    return false;
+  }
+
+  const editableName = getArchitectPlanEditableName(plan);
+  return isDefaultNewPlanBaseLabel(editableName) || (isCanonicalArchitectPlan(plan) && !editableName);
+};
+
+const isPlanBlankDraft = (
+  plan: NonNullable<Awaited<ReturnType<typeof getArchitectPlan>>>,
+  needs: Awaited<ReturnType<typeof getArchitectPlanNeeds>>,
+  chatMessages: Awaited<ReturnType<typeof getArchitectPlanChatMessages>>
+): boolean =>
+  plan.status === 'draft' &&
+  !trimToNull(plan.description) &&
+  (plan.nodes?.length || 0) === 0 &&
+  (plan.predictedBranches?.length || 0) === 0 &&
+  needs.length === 0 &&
+  chatMessages.length === 0;
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const { t } = useTranslation();
@@ -185,6 +215,84 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
   };
 
+  const ensureScopedBlankPlan = async (): Promise<ArchitectPlanSummary | null> => {
+    const fullResult = await listArchitectPlans(targetBranch, true, true);
+    const scopedFullPlans = fullResult.plans.filter((plan) =>
+      isPlanVisibleForSelection(plan, scopedProjectIds)
+    );
+    const draftCandidates = scopedFullPlans.filter(isDraftPlaceholderCandidate);
+    const nextLabels = [...scopedFullPlans];
+    const blankCandidates: ArchitectPlanSummary[] = [];
+
+    let blankPlan: ArchitectPlanSummary | null = null;
+
+    for (const candidate of draftCandidates) {
+      const plan = await getArchitectPlan(targetBranch, candidate.id);
+      if (!plan || plan.status === 'deleted') {
+        continue;
+      }
+
+      const [needs, chatMessages] = await Promise.all([
+        getArchitectPlanNeeds(targetBranch, candidate.id),
+        getArchitectPlanChatMessages(targetBranch, candidate.id),
+      ]);
+
+      if (isPlanBlankDraft(plan, needs, chatMessages)) {
+        blankCandidates.push(candidate);
+        if (!blankPlan || new Date(candidate.updatedAt).getTime() > new Date(blankPlan.updatedAt).getTime()) {
+          blankPlan = candidate;
+        }
+        continue;
+      }
+
+      const nextLabel = getNextDefaultNewPlanLabel(nextLabels);
+      await updateArchitectPlan({
+        branchName: targetBranch,
+        planId: candidate.id,
+        label: nextLabel,
+      });
+      nextLabels.push({
+        ...candidate,
+        label: nextLabel,
+      });
+    }
+
+    if (blankPlan) {
+      for (const candidate of blankCandidates) {
+        if (candidate.id === blankPlan.id) {
+          continue;
+        }
+
+        const nextLabel = getNextDefaultNewPlanLabel(nextLabels);
+        await updateArchitectPlan({
+          branchName: targetBranch,
+          planId: candidate.id,
+          label: nextLabel,
+        });
+        nextLabels.push({
+          ...candidate,
+          label: nextLabel,
+        });
+      }
+
+      if (!isDefaultNewPlanBaseLabel(blankPlan.label)) {
+        await updateArchitectPlan({
+          branchName: targetBranch,
+          planId: blankPlan.id,
+          label: DEFAULT_NEW_PLAN_LABEL,
+        });
+        return {
+          ...blankPlan,
+          label: DEFAULT_NEW_PLAN_LABEL,
+        };
+      }
+
+      return blankPlan;
+    }
+
+    return null;
+  };
+
   const loadPlans = async (hydrateActive = false) => {
     setIsLoading(true);
     setError(null);
@@ -204,6 +312,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         try {
           const created = await createArchitectPlan({
             branchName: targetBranch,
+            label: DEFAULT_NEW_PLAN_LABEL,
             projectId: scopedProjectIds[0] || undefined,
             projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
             status: 'draft',
@@ -258,7 +367,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           });
           const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
           useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
-          let conversationId = plan.conversationId;
+          let conversationId: string | undefined = plan.conversationId;
           const hasSharedConversation = Boolean(
             conversationId &&
             scopedFullPlans.some((candidate) => candidate.id !== plan.id && candidate.conversationId === conversationId)
@@ -272,15 +381,16 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               appStoreForConversation.selectedProjectId ||
               appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
               null;
-            const created = await useChatStore
+            const ensuredConversationId = await useChatStore
               .getState()
-              .createConversation(getArchitectPlanConversationTitle(plan), null, fallbackProjectId);
-            conversationId = created.id;
-            await updateArchitectPlan({
-              branchName: targetBranch,
-              planId: plan.id,
-              conversationId,
-            });
+              .ensureArchitectConversationForPlan({
+                plan,
+                targetBranch,
+                fallbackProjectId: fallbackProjectId ?? undefined,
+                fallbackGroupId: appStoreForConversation.selectedGroupId ?? undefined,
+                sharedConversation: hasSharedConversation,
+              });
+            conversationId = ensuredConversationId ?? undefined;
             if (!conversationToastShownRef.current.has(plan.id)) {
               toast.success(
                 hasSharedConversation
@@ -410,8 +520,16 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setFormError(null);
     setIsLoading(true);
     try {
+      const existingBlankPlan = await ensureScopedBlankPlan();
+      if (existingBlankPlan) {
+        await loadPlans(false);
+        await activatePlan(existingBlankPlan.id);
+        return;
+      }
+
       const created = await createArchitectPlan({
         branchName: targetBranch,
+        label: DEFAULT_NEW_PLAN_LABEL,
         projectId: scopedProjectIds[0] || undefined,
         projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
         status: 'draft',
@@ -743,6 +861,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const statusClass = statusClassName[plan.status] || statusClassName.draft;
               const isBusy = isActivating === plan.id;
               const isUnavailable = plan.status === 'deleted';
+              const isMissingProjects = plan.replicationState === 'missing_projects';
+              const missingCount = plan.missingProjectIds?.length ?? 0;
+              const expectedCount = plan.expectedProjectIds?.length ?? getArchitectPlanProjectIds(plan).length;
+              const availableCount = expectedCount - missingCount;
               const readyPlan = readyPlanSummaries.find((candidate) => candidate.id === plan.id && candidate.readyForValidation);
               const isCanonicalPlan = isCanonicalArchitectPlan(plan);
               const primaryName = getArchitectPlanPrimaryName(plan);
@@ -809,7 +931,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                           event.stopPropagation();
                           handleRenamePlan(plan.id);
                         }}
-                        className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center"
+                        disabled={isMissingProjects}
+                        className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
                         title={renameLabel}
                       >
                         <Icon name="edit" size={11} className="text-muted-foreground" />
@@ -824,7 +947,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                           }
                           void handleArchivePlan(plan);
                         }}
-                        className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center"
+                        disabled={isMissingProjects}
+                        className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
                         title={plan.status === 'archived' || plan.status === 'deleted'
                           ? t('architect.planSelector.restorePlan', 'Restore plan')
                           : t('architect.planSelector.archivePlan', 'Archive plan')}
@@ -857,6 +981,22 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                     </span>
                     <span>&middot;</span>
                     <span>{formatRelativeDate(plan.updatedAt, t('architect.planSelector.unknownDate', 'Unknown date'))}</span>
+                    {expectedCount > 0 && (
+                      <>
+                        <span>&middot;</span>
+                        <span className={cn(isMissingProjects ? 'text-amber-500' : undefined)}>
+                          {`${availableCount}/${expectedCount} repos`}
+                        </span>
+                      </>
+                    )}
+                    {isMissingProjects && (
+                      <>
+                        <span>&middot;</span>
+                        <span className="text-amber-500 truncate">
+                          {`Missing: ${(plan.missingProjectIds || []).join(', ')}`}
+                        </span>
+                      </>
+                    )}
                     {isActive && (
                       <>
                         <span>&middot;</span>

@@ -626,6 +626,32 @@ describe('architectGitFlowService', () => {
     expect(gitBranchDeleteMock).not.toHaveBeenCalled();
   });
 
+  it('falls back to the selected project when a plan has no explicit project ids', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      projectId: undefined,
+      projectIds: [],
+      expectedProjectIds: [],
+      nodes: [],
+      predictedBranches: [],
+    };
+    gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
+
+    const cleanup = await architectGitFlowService.cleanupPlanBranches(currentPlan);
+
+    expect(cleanup).toEqual([
+      {
+        projectId: 'web',
+        repoPath: '/repos/web',
+        deletedBranches: [],
+        deletedWorktrees: [],
+        retainedBranches: [],
+        retainedWorktrees: [],
+        cleanupError: null,
+      },
+    ]);
+  });
+
   it('refuses soft delete when cleanup preflight detects a dirty worktree', async () => {
     worktreeStatusByPath.set(
       getExpectedWorktreePath('web', '/repos/web', 'feature/checkout/checkout-web'),

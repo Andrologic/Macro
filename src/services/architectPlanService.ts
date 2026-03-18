@@ -23,6 +23,57 @@ export type ArchitectPlanStatus =
   | 'archived'
   | 'deleted';
 
+export type ArchitectPlanReplicationState =
+  | 'healthy'
+  | 'missing_projects'
+  | 'diverged'
+  | 'deleted';
+
+export interface ArchitectPlanParticipant {
+  projectId: string;
+  repoPathSnapshot: string | null;
+  mountName?: string | null;
+  displayName?: string | null;
+}
+
+export interface ArchitectPlanContentHashes {
+  plan: string;
+  needs: string;
+  chat: string;
+}
+
+export interface ArchitectPlanConversationSnapshot {
+  conversationId: string | null;
+  title: string | null;
+  messageCount: number;
+  lastMessageAt: string | null;
+}
+
+export interface ArchitectPlanDeletionSnapshot {
+  deletedAt: string;
+}
+
+export interface ArchitectPlanManifest {
+  schemaVersion: 3;
+  planId: string;
+  targetBranch: string;
+  status: ArchitectPlanStatus;
+  expectedProjectIds: string[];
+  participants: ArchitectPlanParticipant[];
+  revision: number;
+  updatedAt: string;
+  contentHashes: ArchitectPlanContentHashes;
+  conversation: ArchitectPlanConversationSnapshot;
+  deletion: ArchitectPlanDeletionSnapshot | null;
+}
+
+export interface ArchitectPlanChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
 export interface ArchitectPlanRecord {
   id: string;
   slug: string;
@@ -38,6 +89,11 @@ export interface ArchitectPlanRecord {
   updatedAt: string;
   nodes: PlanNode[];
   predictedBranches: PredictedBranch[];
+  expectedProjectIds?: string[];
+  availableProjectIds?: string[];
+  missingProjectIds?: string[];
+  replicationState?: ArchitectPlanReplicationState;
+  revision?: number;
   replicas?: ArchitectPlanReplica[];
   hasReplicaDivergence?: boolean;
 }
@@ -56,6 +112,11 @@ export interface ArchitectPlanSummary {
   createdAt: string;
   updatedAt: string;
   nodeCount: number;
+  expectedProjectIds?: string[];
+  availableProjectIds?: string[];
+  missingProjectIds?: string[];
+  replicationState?: ArchitectPlanReplicationState;
+  revision?: number;
   replicas?: ArchitectPlanReplica[];
   hasReplicaDivergence?: boolean;
 }
@@ -102,10 +163,10 @@ export const isArchitectPlanReplicaDivergenceError = (
 
 export type ArchitectPlanReplicaRepairStrategy = 'newest' | 'oldest';
 
-type ArchitectPlanProjectRef = Pick<ArchitectPlanSummary, 'projectId' | 'projectIds'>;
+type ArchitectPlanProjectRef = Pick<ArchitectPlanSummary, 'projectId' | 'projectIds' | 'expectedProjectIds'>;
 
 interface ArchitectPlanIndex {
-  version: 2;
+  version: 2 | 3;
   activePlanId: string | null;
   plans: ArchitectPlanSummary[];
   reservedPlanSlugs: string[];
@@ -114,6 +175,7 @@ interface ArchitectPlanIndex {
 const LOCAL_INDEX_KEY_PREFIX = 'macro_architect_plan_index';
 const LOCAL_PLAN_KEY_PREFIX = 'macro_architect_plan';
 const LOCAL_PLAN_NEEDS_KEY_PREFIX = 'macro_architect_plan_needs';
+const LOCAL_PLAN_CHAT_KEY_PREFIX = 'macro_architect_plan_chat';
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 const DEFAULT_GIT_FLOW_BASE_BRANCH = 'develop';
 const GIT_FLOW_ALLOWED_TARGET_PATTERNS = [
@@ -181,8 +243,57 @@ const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[
   )
 );
 
+const normalizeExpectedProjectIds = (expectedProjectIds?: string[], fallbackProjectIds?: string[]): string[] =>
+  normalizeProjectIds(expectedProjectIds && expectedProjectIds.length > 0 ? expectedProjectIds : fallbackProjectIds);
+
+const hashString = (value: string): string => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `h${(hash >>> 0).toString(16).padStart(8, '0')}`;
+};
+
+const toJsonLines = (messages: ArchitectPlanChatMessage[]): string =>
+  messages
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+const parseJsonLines = (raw: string): ArchitectPlanChatMessage[] =>
+  raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .flatMap((line) => {
+      try {
+        const parsed = JSON.parse(line) as Partial<ArchitectPlanChatMessage>;
+        if (
+          typeof parsed.id !== 'string' ||
+          (parsed.role !== 'user' && parsed.role !== 'assistant') ||
+          typeof parsed.content !== 'string'
+        ) {
+          return [];
+        }
+        return [{
+          id: parsed.id,
+          role: parsed.role,
+          content: parsed.content,
+          createdAt:
+            typeof parsed.createdAt === 'string' && parsed.createdAt.trim().length > 0
+              ? parsed.createdAt
+              : new Date(0).toISOString(),
+        }];
+      } catch {
+        return [];
+      }
+    });
+
 export const getArchitectPlanProjectIds = (plan: ArchitectPlanProjectRef): string[] =>
-  normalizeProjectIds(plan.projectIds, plan.projectId);
+  normalizeExpectedProjectIds(
+    (plan as ArchitectPlanSummary & { expectedProjectIds?: string[] }).expectedProjectIds,
+    normalizeProjectIds(plan.projectIds, plan.projectId)
+  );
 
 export const planMatchesProjectId = (
   plan: ArchitectPlanProjectRef,
@@ -233,21 +344,25 @@ const resolvePlanProjectIds = (params: {
 const getPlanRoot = (branchName: string): string => `branches/${normalizeBranchName(branchName)}/plans`;
 const getIndexPath = (branchName: string): string => `${getPlanRoot(branchName)}/index.json`;
 const getPlanDir = (branchName: string, planId: string): string => `${getPlanRoot(branchName)}/${sanitizeId(planId)}`;
+const getPlanManifestPath = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/manifest.json`;
 const getPlanJsonPath = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/plan.json`;
 const getPlanMarkdownPath = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/plan.md`;
 const getPlanNeedsPath = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/needs.json`;
+const getPlanChatPath = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/chat.jsonl`;
 const getPlanTasksRoot = (branchName: string, planId: string): string => `${getPlanDir(branchName, planId)}/tasks`;
 const getPlanTaskDir = (branchName: string, planId: string, taskId: string): string => `${getPlanTasksRoot(branchName, planId)}/${sanitizeId(taskId)}`;
 const getTaskPlannedPath = (branchName: string, planId: string, taskId: string): string => `${getPlanTaskDir(branchName, planId, taskId)}/planned.md`;
 const getTaskExecutedPath = (branchName: string, planId: string, taskId: string): string => `${getPlanTaskDir(branchName, planId, taskId)}/executed.md`;
 
-const emptyIndex = (): ArchitectPlanIndex => ({ version: 2, activePlanId: null, plans: [], reservedPlanSlugs: [] });
+const emptyIndex = (): ArchitectPlanIndex => ({ version: 3, activePlanId: null, plans: [], reservedPlanSlugs: [] });
 
 const localIndexKey = (branchName: string): string => `${LOCAL_INDEX_KEY_PREFIX}:${normalizeBranchName(branchName)}`;
 const localPlanKey = (branchName: string, planId: string): string =>
   `${LOCAL_PLAN_KEY_PREFIX}:${normalizeBranchName(branchName)}:${sanitizeId(planId)}`;
 const localPlanNeedsKey = (branchName: string, planId: string): string =>
   `${LOCAL_PLAN_NEEDS_KEY_PREFIX}:${normalizeBranchName(branchName)}:${sanitizeId(planId)}`;
+const localPlanChatKey = (branchName: string, planId: string): string =>
+  `${LOCAL_PLAN_CHAT_KEY_PREFIX}:${normalizeBranchName(branchName)}:${sanitizeId(planId)}`;
 
 const buildPlanMarkdown = (plan: ArchitectPlanRecord): string => {
   const lines: string[] = [];
@@ -377,6 +492,7 @@ interface ArchitectPlanReplicaSnapshot {
   scope: ArchitectMetadataScope;
   plan: ArchitectPlanRecord;
   needs: Need[];
+  manifest: ArchitectPlanManifest;
   files: Record<string, string>;
 }
 
@@ -512,6 +628,82 @@ const stableSortObject = (value: unknown): unknown => {
 };
 
 const stableSerialize = (value: unknown): string => JSON.stringify(stableSortObject(value));
+
+const buildPlanContentHashes = (
+  plan: ArchitectPlanRecord,
+  needs: Need[],
+  chatMessages: ArchitectPlanChatMessage[]
+): ArchitectPlanContentHashes => ({
+  plan: hashString(stableSerialize(stripPlanReplicaMetadata(plan))),
+  needs: hashString(stableSerialize(needs)),
+  chat: hashString(toJsonLines(chatMessages)),
+});
+
+const loadParticipantSnapshots = async (
+  expectedProjectIds: string[],
+  registrySnapshot?: ValidProjectRegistrySnapshot | null
+): Promise<ArchitectPlanParticipant[]> => {
+  const uniqueProjectIds = normalizeExpectedProjectIds(expectedProjectIds);
+  if (uniqueProjectIds.length === 0) {
+    return [];
+  }
+
+  const repoPathByProjectId = registrySnapshot?.repoPathByProjectId ?? new Map<string, string>();
+
+  try {
+    const { useAppStore } = await import('../stores/useAppStore');
+    const projects = useAppStore.getState().projectGroups.flatMap((group) => group.projects);
+    return uniqueProjectIds.map((projectId) => {
+      const project = projects.find((candidate) => candidate.id === projectId);
+      return {
+        projectId,
+        repoPathSnapshot: normalizeProjectRegistryPath(project?.path) ?? repoPathByProjectId.get(projectId) ?? null,
+        mountName: project?.mountName ?? null,
+        displayName: project?.name ?? null,
+      };
+    });
+  } catch {
+    return uniqueProjectIds.map((projectId) => ({
+      projectId,
+      repoPathSnapshot: repoPathByProjectId.get(projectId) ?? null,
+    }));
+  }
+};
+
+const buildPlanConversationSnapshot = (
+  plan: ArchitectPlanRecord,
+  chatMessages: ArchitectPlanChatMessage[]
+): ArchitectPlanConversationSnapshot => ({
+  conversationId: plan.conversationId ?? null,
+  title: plan.label || plan.title || null,
+  messageCount: chatMessages.length,
+  lastMessageAt: chatMessages.length > 0 ? chatMessages[chatMessages.length - 1]!.createdAt : null,
+});
+
+const buildPlanManifest = async (params: {
+  plan: ArchitectPlanRecord;
+  needs: Need[];
+  chatMessages: ArchitectPlanChatMessage[];
+  registrySnapshot?: ValidProjectRegistrySnapshot | null;
+}): Promise<ArchitectPlanManifest> => ({
+  schemaVersion: 3,
+  planId: params.plan.id,
+  targetBranch: normalizeBranchName(params.plan.targetBranch),
+  status: params.plan.status,
+  expectedProjectIds: normalizeExpectedProjectIds(params.plan.expectedProjectIds, params.plan.projectIds),
+  participants: await loadParticipantSnapshots(
+    normalizeExpectedProjectIds(params.plan.expectedProjectIds, params.plan.projectIds),
+    params.registrySnapshot
+  ),
+  revision:
+    typeof params.plan.revision === 'number' && Number.isFinite(params.plan.revision) && params.plan.revision > 0
+      ? Math.floor(params.plan.revision)
+      : 1,
+  updatedAt: params.plan.updatedAt,
+  contentHashes: buildPlanContentHashes(params.plan, params.needs, params.chatMessages),
+  conversation: buildPlanConversationSnapshot(params.plan, params.chatMessages),
+  deletion: params.plan.status === 'deleted' ? { deletedAt: params.plan.updatedAt } : null,
+});
 
 interface SanitizedArchitectPlanResult {
   plan: ArchitectPlanRecord | null;
@@ -707,6 +899,11 @@ const sanitizeArchitectPlanRecord = (
     targetBranch: normalizeBranchName(plan.targetBranch || normalized),
     projectId: normalizedProjectIds[0],
     projectIds: normalizedProjectIds,
+    expectedProjectIds: normalizeExpectedProjectIds(plan.expectedProjectIds, normalizedProjectIds),
+    revision:
+      typeof plan.revision === 'number' && Number.isFinite(plan.revision) && plan.revision > 0
+        ? Math.floor(plan.revision)
+        : 1,
     nodes: normalizedNodes,
     predictedBranches: normalizedPredictedBranches,
   };
@@ -731,6 +928,7 @@ const sanitizeArchitectPlanRecord = (
     ...normalizedPlan,
     projectId: sanitizedProjects.projectId,
     projectIds: sanitizedProjects.projectIds,
+    expectedProjectIds: normalizeExpectedProjectIds(normalizedPlan.expectedProjectIds, sanitizedProjects.projectIds),
     nodes: sanitizedNodes.nodes,
     predictedBranches: sanitizedPredictedBranches.predictedBranches,
   };
@@ -787,6 +985,11 @@ const sanitizeArchitectPlanSummary = (
     targetBranch: normalizeBranchName(summary.targetBranch || branchName),
     projectId: projectIds[0],
     projectIds,
+    expectedProjectIds: normalizeExpectedProjectIds(summary.expectedProjectIds, projectIds),
+    revision:
+      typeof summary.revision === 'number' && Number.isFinite(summary.revision) && summary.revision > 0
+        ? Math.floor(summary.revision)
+        : 1,
     nodeCount: typeof summary.nodeCount === 'number' ? summary.nodeCount : 0,
   };
   const sanitizedProjects = sanitizeProjectIdsForRegistry(
@@ -798,6 +1001,7 @@ const sanitizeArchitectPlanSummary = (
     ...normalizedSummary,
     projectId: sanitizedProjects.projectId,
     projectIds: sanitizedProjects.projectIds,
+    expectedProjectIds: normalizeExpectedProjectIds(normalizedSummary.expectedProjectIds, sanitizedProjects.projectIds),
   };
   const changed =
     stableSerialize({
@@ -850,6 +1054,9 @@ const pickCanonicalReplica = <T extends { updatedAt?: string | null; repoPath: s
 
 const stripPlanReplicaMetadata = (plan: ArchitectPlanRecord): ArchitectPlanRecord => ({
   ...plan,
+  availableProjectIds: undefined,
+  missingProjectIds: undefined,
+  replicationState: undefined,
   replicas: undefined,
   hasReplicaDivergence: undefined,
 });
@@ -857,6 +1064,7 @@ const stripPlanReplicaMetadata = (plan: ArchitectPlanRecord): ArchitectPlanRecor
 const filterComparableReplicaFiles = (files: Record<string, string>): Record<string, string> =>
   Object.fromEntries(
     Object.entries(files).filter(([relativePath]) =>
+      relativePath !== 'manifest.json' &&
       relativePath !== 'plan.json' &&
       relativePath !== 'plan.md' &&
       relativePath !== 'needs.json' &&
@@ -872,6 +1080,9 @@ const buildReplicaComparableSnapshot = (snapshot: ArchitectPlanReplicaSnapshot):
 
 const buildReplicaComparableSummary = (summary: ArchitectPlanSummary): unknown => ({
   ...summary,
+  availableProjectIds: undefined,
+  missingProjectIds: undefined,
+  replicationState: undefined,
   replicas: undefined,
   hasReplicaDivergence: undefined,
 });
@@ -951,6 +1162,40 @@ const writeJsonFileAtScope = async (
   });
 };
 
+const readTextFileAtScope = async (
+  scope: ArchitectMetadataScope,
+  path: string
+): Promise<string | null> => {
+  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return null;
+  try {
+    const file = await tauriIpc.fsReadFileWithOptions({
+      path,
+      allowOutsideWorkspace: false,
+      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspacePath: scope.workspacePath,
+    });
+    return file.content;
+  } catch {
+    return null;
+  }
+};
+
+const writeTextFileAtScope = async (
+  scope: ArchitectMetadataScope,
+  path: string,
+  content: string
+): Promise<void> => {
+  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return;
+  await tauriIpc.fsWriteFile({
+    path,
+    content,
+    createDirs: true,
+    allowOutsideWorkspace: false,
+    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspacePath: scope.workspacePath,
+  });
+};
+
 const readLocalIndex = (branchName: string): ArchitectPlanIndex => {
   if (typeof window === 'undefined') return emptyIndex();
   try {
@@ -967,7 +1212,7 @@ const readLocalIndex = (branchName: string): ArchitectPlanIndex => {
       : [];
     if (parsed && Array.isArray(parsed.plans)) {
       return {
-        version: 2,
+        version: parsed.version === 2 ? 2 : 3,
         activePlanId: parsed.activePlanId || null,
         plans: parsed.plans,
         reservedPlanSlugs: Array.from(new Set([...reservedPlanSlugs, ...planSlugsFromIndex])),
@@ -1007,6 +1252,17 @@ const readLocalPlanNeeds = (branchName: string, planId: string): Need[] => {
   }
 };
 
+const readLocalPlanChat = (branchName: string, planId: string): ArchitectPlanChatMessage[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(localPlanChatKey(branchName, planId));
+    if (!raw) return [];
+    return parseJsonLines(raw);
+  } catch {
+    return [];
+  }
+};
+
 const writeLocalPlan = (branchName: string, plan: ArchitectPlanRecord): void => {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(localPlanKey(branchName, plan.id), JSON.stringify(plan));
@@ -1017,6 +1273,11 @@ const writeLocalPlanNeeds = (branchName: string, planId: string, needs: Need[]):
   window.localStorage.setItem(localPlanNeedsKey(branchName, planId), JSON.stringify(needs));
 };
 
+const writeLocalPlanChat = (branchName: string, planId: string, messages: ArchitectPlanChatMessage[]): void => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(localPlanChatKey(branchName, planId), toJsonLines(messages));
+};
+
 const deleteLocalPlan = (branchName: string, planId: string): void => {
   if (typeof window === 'undefined') return;
   window.localStorage.removeItem(localPlanKey(branchName, planId));
@@ -1025,6 +1286,11 @@ const deleteLocalPlan = (branchName: string, planId: string): void => {
 const deleteLocalPlanNeeds = (branchName: string, planId: string): void => {
   if (typeof window === 'undefined') return;
   window.localStorage.removeItem(localPlanNeedsKey(branchName, planId));
+};
+
+const deleteLocalPlanChat = (branchName: string, planId: string): void => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(localPlanChatKey(branchName, planId));
 };
 
 const normalizeSummariesForBranch = (
@@ -1069,7 +1335,7 @@ const readIndexAtScope = async (
       slugifyPlanTitle((plan as Partial<ArchitectPlanSummary>).slug || plan.title || plan.id)
     );
     return {
-      version: 2,
+      version: parsed.version === 2 ? 2 : 3,
       activePlanId: parsed.activePlanId || null,
       plans: normalizeSummariesForBranch(normalized, parsed.plans, registrySnapshot, {
         logContext: 'index_read',
@@ -1155,6 +1421,100 @@ const readPlanNeedsAtScope = async (
   return Array.isArray(parsed) ? parsed : [];
 };
 
+const readPlanChatAtScope = async (
+  scope: ArchitectMetadataScope,
+  branchName: string,
+  planId: string
+): Promise<ArchitectPlanChatMessage[]> => {
+  const normalized = normalizeBranchName(branchName);
+  const safeId = sanitizeId(planId);
+  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
+    return readLocalPlanChat(normalized, safeId);
+  }
+  const raw = await readTextFileAtScope(scope, getPlanChatPath(normalized, safeId));
+  return raw ? parseJsonLines(raw) : [];
+};
+
+const readPlanManifestAtScope = async (params: {
+  scope: ArchitectMetadataScope;
+  branchName: string;
+  plan: ArchitectPlanRecord;
+  needs: Need[];
+  chatMessages: ArchitectPlanChatMessage[];
+  registrySnapshot?: ValidProjectRegistrySnapshot | null;
+}): Promise<ArchitectPlanManifest> => {
+  const normalized = normalizeBranchName(params.branchName);
+  const safeId = sanitizeId(params.plan.id);
+  const fallbackManifest = await buildPlanManifest({
+    plan: params.plan,
+    needs: params.needs,
+    chatMessages: params.chatMessages,
+    registrySnapshot: params.registrySnapshot,
+  });
+
+  if (!tauriIpc.isTauriAvailable() || params.scope.source === 'local') {
+    return fallbackManifest;
+  }
+
+  const parsed = await readJsonFileAtScope<Partial<ArchitectPlanManifest>>(
+    params.scope,
+    getPlanManifestPath(normalized, safeId)
+  );
+  if (!parsed) {
+    return fallbackManifest;
+  }
+
+  return {
+    ...fallbackManifest,
+    ...parsed,
+    schemaVersion: 3,
+    planId: safeId,
+    targetBranch: normalized,
+    status: params.plan.status,
+    expectedProjectIds: normalizeExpectedProjectIds(parsed.expectedProjectIds, fallbackManifest.expectedProjectIds),
+    participants: Array.isArray(parsed.participants) ? parsed.participants : fallbackManifest.participants,
+    revision:
+      typeof parsed.revision === 'number' && Number.isFinite(parsed.revision) && parsed.revision > 0
+        ? Math.floor(parsed.revision)
+        : fallbackManifest.revision,
+    updatedAt:
+      typeof parsed.updatedAt === 'string' && parsed.updatedAt.trim().length > 0
+        ? parsed.updatedAt
+        : fallbackManifest.updatedAt,
+    contentHashes: parsed.contentHashes && typeof parsed.contentHashes === 'object'
+      ? {
+          plan:
+            typeof parsed.contentHashes.plan === 'string'
+              ? parsed.contentHashes.plan
+              : fallbackManifest.contentHashes.plan,
+          needs:
+            typeof parsed.contentHashes.needs === 'string'
+              ? parsed.contentHashes.needs
+              : fallbackManifest.contentHashes.needs,
+          chat:
+            typeof parsed.contentHashes.chat === 'string'
+              ? parsed.contentHashes.chat
+              : fallbackManifest.contentHashes.chat,
+        }
+      : fallbackManifest.contentHashes,
+    conversation: parsed.conversation && typeof parsed.conversation === 'object'
+      ? {
+          conversationId:
+            typeof parsed.conversation.conversationId === 'string' ? parsed.conversation.conversationId : fallbackManifest.conversation.conversationId,
+          title: typeof parsed.conversation.title === 'string' ? parsed.conversation.title : fallbackManifest.conversation.title,
+          messageCount:
+            typeof parsed.conversation.messageCount === 'number' ? parsed.conversation.messageCount : fallbackManifest.conversation.messageCount,
+          lastMessageAt:
+            typeof parsed.conversation.lastMessageAt === 'string' ? parsed.conversation.lastMessageAt : fallbackManifest.conversation.lastMessageAt,
+        }
+      : fallbackManifest.conversation,
+    deletion:
+      parsed.deletion && typeof parsed.deletion === 'object' && typeof parsed.deletion.deletedAt === 'string'
+        ? { deletedAt: parsed.deletion.deletedAt }
+        : fallbackManifest.deletion,
+  };
+};
+
 const writePlanAtScope = async (
   scope: ArchitectMetadataScope,
   branchName: string,
@@ -1199,9 +1559,25 @@ const writePlanAtScope = async (
     workspacePath: scope.workspacePath,
   });
   await syncPlanTaskMetadataAtScope(scope, normalized, normalizedPlan);
+  const needs = await readPlanNeedsAtScope(scope, normalized, safeId);
+  const chatMessages = await readPlanChatAtScope(scope, normalized, safeId);
+  await writeTextFileAtScope(scope, getPlanChatPath(normalized, safeId), toJsonLines(chatMessages));
+  const manifest = await buildPlanManifest({
+    plan: normalizedPlan,
+    needs,
+    chatMessages,
+    registrySnapshot,
+  });
+  await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
 };
 
-const writePlanNeedsAtScope = async (scope: ArchitectMetadataScope, branchName: string, planId: string, needs: Need[]): Promise<void> => {
+const writePlanNeedsAtScope = async (
+  scope: ArchitectMetadataScope,
+  branchName: string,
+  planId: string,
+  needs: Need[],
+  registrySnapshot?: ValidProjectRegistrySnapshot | null
+): Promise<void> => {
   const normalized = normalizeBranchName(branchName);
   const safeId = sanitizeId(planId);
   const normalizedNeeds = needs.map((need) => ({ ...need, planId: safeId }));
@@ -1210,6 +1586,45 @@ const writePlanNeedsAtScope = async (scope: ArchitectMetadataScope, branchName: 
     return;
   }
   await writeJsonFileAtScope(scope, getPlanNeedsPath(normalized, safeId), normalizedNeeds);
+  const planResult = await readPlanAtScopeWithDiagnostics(scope, normalized, safeId, registrySnapshot);
+  if (planResult.plan) {
+    const chatMessages = await readPlanChatAtScope(scope, normalized, safeId);
+    const manifest = await buildPlanManifest({
+      plan: planResult.plan,
+      needs: normalizedNeeds,
+      chatMessages,
+      registrySnapshot,
+    });
+    await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
+  }
+};
+
+const writePlanChatAtScope = async (
+  scope: ArchitectMetadataScope,
+  branchName: string,
+  planId: string,
+  messages: ArchitectPlanChatMessage[],
+  registrySnapshot?: ValidProjectRegistrySnapshot | null
+): Promise<void> => {
+  const normalized = normalizeBranchName(branchName);
+  const safeId = sanitizeId(planId);
+  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
+    writeLocalPlanChat(normalized, safeId, messages);
+    return;
+  }
+
+  await writeTextFileAtScope(scope, getPlanChatPath(normalized, safeId), toJsonLines(messages));
+  const planResult = await readPlanAtScopeWithDiagnostics(scope, normalized, safeId, registrySnapshot);
+  if (planResult.plan) {
+    const needs = await readPlanNeedsAtScope(scope, normalized, safeId);
+    const manifest = await buildPlanManifest({
+      plan: planResult.plan,
+      needs,
+      chatMessages: messages,
+      registrySnapshot,
+    });
+    await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
+  }
 };
 
 const removePlanAtScope = async (scope: ArchitectMetadataScope, branchName: string, planId: string): Promise<void> => {
@@ -1218,6 +1633,7 @@ const removePlanAtScope = async (scope: ArchitectMetadataScope, branchName: stri
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
     deleteLocalPlan(normalized, safeId);
     deleteLocalPlanNeeds(normalized, safeId);
+    deleteLocalPlanChat(normalized, safeId);
     return;
   }
 
@@ -1285,8 +1701,10 @@ const toSummary = (plan: ArchitectPlanRecord): ArchitectPlanSummary => ({
   conversationId: plan.conversationId,
   projectId: plan.projectId,
   projectIds: resolvePlanProjectIds(plan),
+  expectedProjectIds: normalizeExpectedProjectIds(plan.expectedProjectIds, resolvePlanProjectIds(plan)),
   createdAt: plan.createdAt,
   updatedAt: plan.updatedAt,
+  revision: typeof plan.revision === 'number' ? plan.revision : 1,
   nodeCount: plan.nodes.length,
 });
 
@@ -1310,13 +1728,37 @@ const mergePlanSummaries = (
   const projectIds = Array.from(
     new Set(entries.flatMap(({ summary }) => resolvePlanProjectIds(summary)))
   );
+  const expectedProjectIds = normalizeExpectedProjectIds(
+    canonicalEntry.expectedProjectIds,
+    projectIds
+  );
+  const availableProjectIds = Array.from(
+    new Set(
+      entries
+        .map(({ scope, summary }) => scope.projectId || summary.projectId || null)
+        .filter((projectId): projectId is string => Boolean(projectId && expectedProjectIds.includes(projectId)))
+    )
+  );
+  const missingProjectIds = expectedProjectIds.filter((projectId) => !availableProjectIds.includes(projectId));
   const hasReplicaDivergence =
     new Set(entries.map(({ summary }) => stableSerialize(buildReplicaComparableSummary(summary)))).size > 1;
+  const replicationState: ArchitectPlanReplicationState =
+    canonicalEntry.status === 'deleted'
+      ? 'deleted'
+      : hasReplicaDivergence
+        ? 'diverged'
+        : missingProjectIds.length > 0
+          ? 'missing_projects'
+          : 'healthy';
 
   const mergedSummary = {
     ...canonicalEntry,
     projectId: projectIds[0],
     projectIds,
+    expectedProjectIds,
+    availableProjectIds,
+    missingProjectIds,
+    replicationState,
     replicas: entries.map(({ scope, summary }) => toReplicaDescriptor(scope, summary.updatedAt)),
     hasReplicaDivergence,
   };
@@ -1406,7 +1848,7 @@ const readAggregatedIndex = async (
   }
 
   return {
-    version: 2,
+    version: 3,
     activePlanId: indexes.map(({ index }) => index.activePlanId).find((planId) => Boolean(planId)) || null,
     plans: Array.from(plansById.values()).map((entries) => mergePlanSummaries(entries, resolvedRegistrySnapshot)),
     reservedPlanSlugs: Array.from(
@@ -1442,29 +1884,51 @@ const loadPlanReplicaSet = async (
   const resolvedRegistrySnapshot =
     tauriIpc.isTauriAvailable() ? (options?.registrySnapshot ?? await loadValidProjectRegistrySnapshot()) : undefined;
   const scopes = await resolveMetadataScopes(undefined, { includeAllKnown: true }, resolvedRegistrySnapshot);
-  const snapshotDiagnostics = (
-    await Promise.all(
-      scopes.map(async (scope) => {
-        const planResult = await readPlanAtScopeWithDiagnostics(
-          scope,
-          normalizedBranch,
-          safeId,
-          resolvedRegistrySnapshot
-        );
-        if (!planResult.plan) return null;
-        const needs = await readPlanNeedsAtScope(scope, normalizedBranch, safeId);
-        const files = await readPlanFilesAtScope(scope, normalizedBranch, safeId);
-        return {
-          scope,
-          plan: planResult.plan,
-          needs,
-          files,
-          repairApplied: planResult.changed,
-          removedInvalidProjectIds: planResult.removedInvalidProjectIds,
-        } satisfies ArchitectPlanReplicaSnapshotDiagnostics;
-      })
-    )
-  ).filter((snapshot): snapshot is ArchitectPlanReplicaSnapshotDiagnostics => Boolean(snapshot));
+  const snapshotDiagnosticsRaw: Array<ArchitectPlanReplicaSnapshotDiagnostics | null> = await Promise.all(
+    scopes.map(async (scope) => {
+      const planResult = await readPlanAtScopeWithDiagnostics(
+        scope,
+        normalizedBranch,
+        safeId,
+        resolvedRegistrySnapshot
+      );
+      if (!planResult.plan) {
+        return null;
+      }
+
+      const needs = await readPlanNeedsAtScope(scope, normalizedBranch, safeId);
+      const chatMessages = await readPlanChatAtScope(scope, normalizedBranch, safeId);
+      const manifest = await readPlanManifestAtScope({
+        scope,
+        branchName: normalizedBranch,
+        plan: planResult.plan,
+        needs,
+        chatMessages,
+        registrySnapshot: resolvedRegistrySnapshot,
+      });
+      const files = await readPlanFilesAtScope(scope, normalizedBranch, safeId);
+
+      return {
+        scope,
+        plan: {
+          ...planResult.plan,
+          expectedProjectIds: normalizeExpectedProjectIds(
+            manifest.expectedProjectIds,
+            planResult.plan.expectedProjectIds ?? resolvePlanProjectIds(planResult.plan)
+          ),
+          revision: manifest.revision,
+        },
+        needs,
+        manifest,
+        files,
+        repairApplied: planResult.changed,
+        removedInvalidProjectIds: planResult.removedInvalidProjectIds,
+      };
+    })
+  );
+  const snapshotDiagnostics = snapshotDiagnosticsRaw.filter(
+    (snapshot): snapshot is ArchitectPlanReplicaSnapshotDiagnostics => snapshot !== null
+  );
 
   if (snapshotDiagnostics.length === 0) {
     return null;
@@ -1476,26 +1940,49 @@ const loadPlanReplicaSet = async (
   );
 
   const projectIds = Array.from(new Set(snapshots.flatMap((snapshot) => resolvePlanProjectIds(snapshot.plan))));
+  const expectedProjectIds = normalizeExpectedProjectIds(
+    snapshots.flatMap((snapshot) => snapshot.manifest.expectedProjectIds),
+    projectIds
+  );
   const expectedScopes = dedupeScopes([
     ...(await resolveMetadataScopes(
-      projectIds,
+      expectedProjectIds,
       { includeWorkspaceFallback: false },
       resolvedRegistrySnapshot
     )),
     ...snapshots.map((snapshot) => snapshot.scope),
   ]);
 
+  const availableProjectIds = Array.from(
+    new Set(
+      snapshots.flatMap((snapshot) => {
+        if (snapshot.scope.source === 'local' && expectedProjectIds.length > 0) {
+          return expectedProjectIds;
+        }
+
+        const candidates = normalizeExpectedProjectIds(
+          [snapshot.scope.projectId, snapshot.plan.projectId].filter(
+            (projectId): projectId is string => typeof projectId === 'string' && projectId.trim().length > 0
+          ),
+          resolvePlanProjectIds(snapshot.plan)
+        );
+        return candidates.filter((projectId) => expectedProjectIds.includes(projectId));
+      })
+    )
+  );
+  const missingProjectIds = expectedProjectIds.filter((projectId) => !availableProjectIds.includes(projectId));
+
   const missingReplicas = expectedScopes
     .filter((scope) =>
       Boolean(scope.projectId) &&
-      projectIds.includes(scope.projectId as string) &&
+      missingProjectIds.includes(scope.projectId as string) &&
       !snapshots.some((snapshot) => snapshot.scope.scopeKey === scope.scopeKey)
     )
     .map((scope) => toReplicaDescriptor(scope, null, true));
 
   const hasContentDivergence =
     new Set(snapshots.map((snapshot) => stableSerialize(buildReplicaComparableSnapshot(snapshot)))).size > 1;
-  const hasReplicaDivergence = hasContentDivergence || missingReplicas.length > 0;
+  const hasReplicaDivergence = hasContentDivergence;
   const replicas = [
     ...snapshots.map((snapshot) => toReplicaDescriptor(snapshot.scope, snapshot.plan.updatedAt)),
     ...missingReplicas,
@@ -1523,7 +2010,15 @@ const loadPlanReplicaSet = async (
           snapshot.scope,
           normalizedBranch,
           canonicalSnapshot.plan.id,
-          canonicalSnapshot.needs
+          canonicalSnapshot.needs,
+          resolvedRegistrySnapshot
+        );
+        await writePlanChatAtScope(
+          snapshot.scope,
+          normalizedBranch,
+          canonicalSnapshot.plan.id,
+          parseJsonLines(canonicalSnapshot.files['chat.jsonl'] || ''),
+          resolvedRegistrySnapshot
         );
         await upsertPlanInScopeIndex(snapshot.scope, normalizedBranch, canonicalSnapshot.plan, undefined, resolvedRegistrySnapshot);
 
@@ -1531,7 +2026,7 @@ const loadPlanReplicaSet = async (
           return;
         }
 
-        const skippedFiles = new Set(['plan.json', 'plan.md', 'needs.json']);
+        const skippedFiles = new Set(['manifest.json', 'plan.json', 'plan.md', 'needs.json', 'chat.jsonl']);
         await Promise.all(
           Object.entries(canonicalSnapshot.files)
             .filter(([relativePath]) => !skippedFiles.has(relativePath))
@@ -1558,14 +2053,6 @@ const loadPlanReplicaSet = async (
   }
 
   if (!options?.allowDivergence) {
-    if (missingReplicas.length > 0) {
-      throwReplicaDivergence({
-        branchName: normalizedBranch,
-        planId: safeId,
-        reason: 'missing_replica',
-        replicas,
-      });
-    }
     if (hasContentDivergence) {
       throwReplicaDivergence({
         branchName: normalizedBranch,
@@ -1584,6 +2071,14 @@ const loadPlanReplicaSet = async (
     })),
     'newest'
   );
+  const replicationState: ArchitectPlanReplicationState =
+    canonical.plan.status === 'deleted'
+      ? 'deleted'
+      : hasContentDivergence
+        ? 'diverged'
+        : missingProjectIds.length > 0
+          ? 'missing_projects'
+          : 'healthy';
 
   return {
     canonical: {
@@ -1592,10 +2087,16 @@ const loadPlanReplicaSet = async (
         ...canonical.plan,
         projectId: projectIds[0],
         projectIds,
+        expectedProjectIds,
+        availableProjectIds,
+        missingProjectIds,
+        replicationState,
+        revision: canonical.manifest.revision,
         replicas,
         hasReplicaDivergence,
       },
       needs: canonical.needs,
+      manifest: canonical.manifest,
       files: canonical.files,
     },
     snapshots,
@@ -1603,6 +2104,69 @@ const loadPlanReplicaSet = async (
     replicas,
     hasReplicaDivergence,
   };
+};
+
+const assertPlanReplicaSetWritable = (
+  replicaSet: ArchitectPlanReplicaSet,
+  action: string
+): void => {
+  const missingProjectIds = replicaSet.canonical.plan.missingProjectIds || [];
+  if (missingProjectIds.length === 0) {
+    return;
+  }
+
+  throw new Error(
+    `Cannot ${action} plan ${replicaSet.canonical.plan.id} while expected project replicas are missing: ${missingProjectIds.join(', ')}.`
+  );
+};
+
+const commitMetadataScopes = async (
+  scopes: ArchitectMetadataScope[],
+  commitMessage: string
+): Promise<void> => {
+  if (
+    !tauriIpc.isTauriAvailable() ||
+    typeof tauriIpc.macroBranchCommitIfDirty !== 'function'
+  ) {
+    return;
+  }
+
+  const repoScopes = dedupeScopes(
+    scopes.filter(
+      (scope): scope is ArchitectMetadataScope & { workspacePath: string } =>
+        scope.source !== 'local' && typeof scope.workspacePath === 'string' && scope.workspacePath.trim().length > 0
+    )
+  );
+
+  if (repoScopes.length === 0) {
+    return;
+  }
+
+  let metadataAutoPush = false;
+  try {
+    const { useAppStore } = await import('../stores/useAppStore');
+    metadataAutoPush = Boolean(useAppStore.getState().metadataAutoPush);
+  } catch {
+    metadataAutoPush = false;
+  }
+
+  await Promise.all(
+    repoScopes.map(async (scope) => {
+      const commitResult = await tauriIpc.macroBranchCommitIfDirty({
+        message: commitMessage,
+        workspacePath: scope.workspacePath,
+      });
+      if (
+        metadataAutoPush &&
+        commitResult.committed &&
+        typeof tauriIpc.macroBranchPush === 'function'
+      ) {
+        await tauriIpc.macroBranchPush({
+          workspacePath: scope.workspacePath,
+        });
+      }
+    })
+  );
 };
 
 const upsertPlanInScopeIndex = async (
@@ -1617,7 +2181,7 @@ const upsertPlanInScopeIndex = async (
   const index = await readIndexAtScope(scope, branchName, registrySnapshot);
   await writeIndexAtScope(scope, branchName, {
     ...index,
-    version: 2,
+    version: 3,
     plans: upsertSummary(index.plans, toSummary(plan)),
     activePlanId: options?.setActive ? plan.id : index.activePlanId,
     reservedPlanSlugs: Array.from(new Set([...index.reservedPlanSlugs, plan.slug])),
@@ -1635,7 +2199,7 @@ const removePlanFromScopeIndex = async (
   const nextPlans = index.plans.filter((plan) => plan.id !== safeId);
   await writeIndexAtScope(scope, branchName, {
     ...index,
-    version: 2,
+    version: 3,
     plans: nextPlans,
     activePlanId: index.activePlanId === safeId ? nextPlans[0]?.id || null : index.activePlanId,
   });
@@ -1749,6 +2313,10 @@ export const createArchitectPlan = async (input: {
     nodes: normalizedNodes,
     predictedBranches: normalizedPredictedBranches,
   });
+  const expectedProjectIds = normalizeExpectedProjectIds(
+    registrySnapshot?.scopedProjectIds,
+    projectIds
+  );
 
   const planResult = sanitizeArchitectPlanRecord(normalizedBranch, planId, {
     id: planId,
@@ -1761,8 +2329,10 @@ export const createArchitectPlan = async (input: {
     conversationId: input.conversationId,
     projectId: projectIds[0],
     projectIds,
+    expectedProjectIds,
     createdAt: now,
     updatedAt: now,
+    revision: 1,
     nodes: normalizedNodes,
     predictedBranches: normalizedPredictedBranches,
   }, registrySnapshot, {
@@ -1773,7 +2343,7 @@ export const createArchitectPlan = async (input: {
   }
   const plan = planResult.plan;
 
-  const scopes = await ensurePlanScopes(plan.projectIds || [], registrySnapshot);
+  const scopes = await ensurePlanScopes(plan.expectedProjectIds || plan.projectIds || [], registrySnapshot);
   await Promise.all(
     scopes.map(async (scope) => {
       await writePlanAtScope(scope, normalizedBranch, plan, registrySnapshot);
@@ -1782,6 +2352,7 @@ export const createArchitectPlan = async (input: {
       }, registrySnapshot);
     })
   );
+  await commitMetadataScopes(scopes, `chore(metadata): create architect plan ${plan.id}`);
 
   return (await getArchitectPlan(normalizedBranch, plan.id)) || plan;
 };
@@ -1811,6 +2382,7 @@ export const updateArchitectPlan = async (input: {
   if (!replicaSet) {
     throw new Error(`Plan not found: ${safeId}`);
   }
+  assertPlanReplicaSetWritable(replicaSet, 'update');
   const existing = replicaSet.canonical.plan;
   const isCanonicalPlan = isCanonicalArchitectPlan(existing);
 
@@ -1856,9 +2428,11 @@ export const updateArchitectPlan = async (input: {
     status: input.status || existing.status,
     projectId: projectIds[0],
     projectIds,
+    expectedProjectIds: existing.expectedProjectIds,
     nodes: nextNodes,
     predictedBranches: nextPredictedBranches,
     updatedAt: new Date().toISOString(),
+    revision: (existing.revision || 1) + 1,
   }, registrySnapshot, {
     logContext: 'plan_update',
   });
@@ -1867,7 +2441,7 @@ export const updateArchitectPlan = async (input: {
   }
   const next = nextResult.plan;
 
-  const targetScopes = await ensurePlanScopes(next.projectIds || [], registrySnapshot);
+  const targetScopes = await ensurePlanScopes(next.expectedProjectIds || next.projectIds || [], registrySnapshot);
   const existingScopes = dedupeScopes([
     ...replicaSet.expectedScopes,
     ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
@@ -1882,7 +2456,7 @@ export const updateArchitectPlan = async (input: {
   await Promise.all(
     writeScopes.map(async (scope) => {
       await writePlanAtScope(scope, normalizedBranch, next, registrySnapshot);
-      await writePlanNeedsAtScope(scope, normalizedBranch, next.id, replicaSet.canonical.needs);
+      await writePlanNeedsAtScope(scope, normalizedBranch, next.id, replicaSet.canonical.needs, registrySnapshot);
       await upsertPlanInScopeIndex(scope, normalizedBranch, next, {
         setActive: input.setActive === true,
       }, registrySnapshot);
@@ -1894,6 +2468,10 @@ export const updateArchitectPlan = async (input: {
       await removePlanAtScope(scope, normalizedBranch, next.id);
       await removePlanFromScopeIndex(scope, normalizedBranch, next.id, registrySnapshot);
     })
+  );
+  await commitMetadataScopes(
+    dedupeScopes([...writeScopes, ...removedScopes]),
+    `chore(metadata): update architect plan ${next.id}`
   );
 
   return (await getArchitectPlan(normalizedBranch, next.id)) || next;
@@ -1920,7 +2498,7 @@ export const setActiveArchitectPlan = async (branchName: string, planId: string)
       }
       await writeIndexAtScope(scope, normalizedBranch, {
         ...index,
-        version: 2,
+        version: 3,
         activePlanId: safeId,
       });
     })
@@ -1951,6 +2529,7 @@ export const deleteArchitectPlan = async (input: {
         await removePlanFromScopeIndex(scope, normalizedBranch, safeId, registrySnapshot);
       })
     );
+    await commitMetadataScopes(scopes, `chore(metadata): hard delete architect plan ${safeId}`);
     return;
   }
 
@@ -1958,6 +2537,7 @@ export const deleteArchitectPlan = async (input: {
     ...replicaSet.canonical.plan,
     status: 'deleted' as ArchitectPlanStatus,
     updatedAt: new Date().toISOString(),
+    revision: (replicaSet.canonical.plan.revision || 1) + 1,
   }, registrySnapshot, {
     logContext: 'plan_delete',
   });
@@ -1981,7 +2561,7 @@ export const deleteArchitectPlan = async (input: {
 
       await writeIndexAtScope(scope, normalizedBranch, {
         ...index,
-        version: 2,
+        version: 3,
         plans: nextPlans,
         activePlanId: index.activePlanId === safeId
           ? nextPlans.find((plan) => plan.status !== 'deleted')?.id || null
@@ -1989,6 +2569,7 @@ export const deleteArchitectPlan = async (input: {
       });
     })
   );
+  await commitMetadataScopes(scopes, `chore(metadata): delete architect plan ${safeId}`);
 };
 
 export const restoreArchitectPlan = async (branchName: string, planId: string): Promise<ArchitectPlanRecord> => {
@@ -2006,11 +2587,13 @@ export const archiveArchitectPlan = async (branchName: string, planId: string): 
     registrySnapshot,
   });
   if (!replicaSet) throw new Error(`Plan not found: ${safeId}`);
+  assertPlanReplicaSetWritable(replicaSet, 'archive');
   const now = new Date().toISOString();
   const archivedResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...replicaSet.canonical.plan,
     status: 'archived',
     updatedAt: now,
+    revision: (replicaSet.canonical.plan.revision || 1) + 1,
   }, registrySnapshot, {
     logContext: 'plan_archive',
   });
@@ -2031,12 +2614,13 @@ export const archiveArchitectPlan = async (branchName: string, planId: string): 
           : index.activePlanId;
       await writeIndexAtScope(scope, normalizedBranch, {
         ...index,
-        version: 2,
+        version: 3,
         plans: nextPlans,
         activePlanId: nextActivePlanId,
       });
     })
   );
+  await commitMetadataScopes(dedupeScopes(replicaSet.expectedScopes), `chore(metadata): archive architect plan ${safeId}`);
   return (await getArchitectPlan(normalizedBranch, safeId)) || archived;
 };
 
@@ -2053,6 +2637,91 @@ export const getArchitectPlanNeeds = async (branchName: string, planId: string):
   return replicaSet.canonical.needs;
 };
 
+export const getArchitectPlanChatMessages = async (
+  branchName: string,
+  planId: string
+): Promise<ArchitectPlanChatMessage[]> => {
+  const normalizedBranch = normalizeBranchName(branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
+    registrySnapshot,
+  });
+  if (!replicaSet) {
+    throw new Error(`Plan not found: ${sanitizeId(planId)}`);
+  }
+  return readPlanChatAtScope(replicaSet.canonical.scope, normalizedBranch, sanitizeId(planId));
+};
+
+export const saveArchitectPlanChatMessages = async (
+  branchName: string,
+  planId: string,
+  messages: ArchitectPlanChatMessage[]
+): Promise<void> => {
+  const normalizedBranch = normalizeBranchName(branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
+    registrySnapshot,
+  });
+  if (!replicaSet) {
+    throw new Error(`Plan not found: ${sanitizeId(planId)}`);
+  }
+  assertPlanReplicaSetWritable(replicaSet, 'save chat transcript');
+  const nextPlan = {
+    ...replicaSet.canonical.plan,
+    updatedAt: new Date().toISOString(),
+    revision: (replicaSet.canonical.plan.revision || 1) + 1,
+  };
+  await Promise.all(
+    dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
+      await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot);
+      await writePlanChatAtScope(scope, normalizedBranch, planId, messages, registrySnapshot);
+      await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, undefined, registrySnapshot);
+    })
+  );
+  await commitMetadataScopes(dedupeScopes(replicaSet.expectedScopes), `chore(metadata): update architect plan chat ${sanitizeId(planId)}`);
+};
+
+export const syncArchitectPlanChatFromConversation = async (params: {
+  branchName: string;
+  planId: string;
+  conversationId?: string | null;
+}): Promise<void> => {
+  if (!tauriIpc.isTauriAvailable()) {
+    return;
+  }
+
+  const normalizedBranch = normalizeBranchName(params.branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const replicaSet = await loadPlanReplicaSet(normalizedBranch, params.planId, {
+    registrySnapshot,
+  });
+  if (!replicaSet) {
+    throw new Error(`Plan not found: ${sanitizeId(params.planId)}`);
+  }
+  assertPlanReplicaSetWritable(replicaSet, 'sync chat transcript');
+
+  const conversationId = params.conversationId ?? replicaSet.canonical.plan.conversationId ?? null;
+  if (!conversationId) {
+    await saveArchitectPlanChatMessages(normalizedBranch, params.planId, []);
+    return;
+  }
+
+  const dbMessages = await tauriIpc.listMessages(conversationId);
+  const transcript = dbMessages
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .map((message) => ({
+      id: message.id,
+      role: message.role as 'user' | 'assistant',
+      content: message.content,
+      createdAt: message.created_at,
+    }));
+
+  await saveArchitectPlanChatMessages(normalizedBranch, params.planId, transcript);
+};
+
 export const saveArchitectPlanNeeds = async (branchName: string, planId: string, needs: Need[]): Promise<void> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
@@ -2063,11 +2732,20 @@ export const saveArchitectPlanNeeds = async (branchName: string, planId: string,
   if (!replicaSet) {
     throw new Error(`Plan not found: ${sanitizeId(planId)}`);
   }
+  assertPlanReplicaSetWritable(replicaSet, 'save needs');
+  const nextPlan = {
+    ...replicaSet.canonical.plan,
+    updatedAt: new Date().toISOString(),
+    revision: (replicaSet.canonical.plan.revision || 1) + 1,
+  };
   await Promise.all(
-    dedupeScopes(replicaSet.expectedScopes).map((scope) =>
-      writePlanNeedsAtScope(scope, normalizedBranch, planId, needs)
-    )
+    dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
+      await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot);
+      await writePlanNeedsAtScope(scope, normalizedBranch, planId, needs, registrySnapshot);
+      await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, undefined, registrySnapshot);
+    })
   );
+  await commitMetadataScopes(dedupeScopes(replicaSet.expectedScopes), `chore(metadata): update architect plan needs ${sanitizeId(planId)}`);
 };
 
 export const repairArchitectPlanReplicas = async (input: {
@@ -2097,7 +2775,11 @@ export const repairArchitectPlanReplicas = async (input: {
   const canonicalPlan = normalizePlanRecordForBranch(
     normalizedBranch,
     canonicalSnapshot.plan.id,
-    stripPlanReplicaMetadata(canonicalSnapshot.plan),
+    {
+      ...stripPlanReplicaMetadata(canonicalSnapshot.plan),
+      updatedAt: new Date().toISOString(),
+      revision: (canonicalSnapshot.plan.revision || canonicalSnapshot.manifest.revision || 1) + 1,
+    },
     registrySnapshot,
     {
       logContext: 'replica_repair',
@@ -2107,12 +2789,19 @@ export const repairArchitectPlanReplicas = async (input: {
     throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
   }
 
-  const skippedFiles = new Set(['plan.json', 'plan.md', 'needs.json']);
+  const skippedFiles = new Set(['manifest.json', 'plan.json', 'plan.md', 'needs.json', 'chat.jsonl']);
   await Promise.all(
     dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
       await removePlanAtScope(scope, normalizedBranch, canonicalPlan.id);
       await writePlanAtScope(scope, normalizedBranch, canonicalPlan, registrySnapshot);
-      await writePlanNeedsAtScope(scope, normalizedBranch, canonicalPlan.id, canonicalSnapshot.needs);
+      await writePlanNeedsAtScope(scope, normalizedBranch, canonicalPlan.id, canonicalSnapshot.needs, registrySnapshot);
+      await writePlanChatAtScope(
+        scope,
+        normalizedBranch,
+        canonicalPlan.id,
+        parseJsonLines(canonicalSnapshot.files['chat.jsonl'] || ''),
+        registrySnapshot
+      );
       await upsertPlanInScopeIndex(scope, normalizedBranch, canonicalPlan, undefined, registrySnapshot);
 
       if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
@@ -2136,6 +2825,7 @@ export const repairArchitectPlanReplicas = async (input: {
       );
     })
   );
+  await commitMetadataScopes(dedupeScopes(replicaSet.expectedScopes), `chore(metadata): repair architect plan ${canonicalPlan.id}`);
 
   const repairedReplicaSet = await loadPlanReplicaSet(normalizedBranch, canonicalPlan.id, {
     registrySnapshot,

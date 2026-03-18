@@ -701,6 +701,23 @@ export const createMacroSyncService = (
       }
 
       try {
+        const appState = dependencies.getAppState();
+        if (appState.activeArchitectPlanId && appState.activePlanContext?.targetBranch) {
+          try {
+            const {
+              syncArchitectPlanChatFromConversation,
+              resolveTargetBranch,
+            } = await import('./architectPlanService');
+            await syncArchitectPlanChatFromConversation({
+              branchName: resolveTargetBranch(appState.activePlanContext.targetBranch),
+              planId: appState.activeArchitectPlanId,
+              conversationId: params.conversationId,
+            });
+          } catch {
+            // Keep stream-end metadata commits functional even if chat transcript sync is unavailable.
+          }
+        }
+
         const preflight = await ensureTargetsForAction(targets, 'commit');
         if (preflight.blocked) {
           return applyMacroSyncResult(
