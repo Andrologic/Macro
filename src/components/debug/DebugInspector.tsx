@@ -137,6 +137,21 @@ export const DebugInspector: React.FC<DebugInspectorProps> = ({ className }) => 
     for (const message of conversationMessages) {
       if (message.role !== 'assistant') continue;
 
+      if (message.tool_traces && message.tool_traces.length > 0) {
+        message.tool_traces.forEach((toolTrace, index) => {
+          const details = [toolTrace.tool_name, toolTrace.detail].filter(Boolean).join(' ');
+          events.push({
+            id: `${message.id}-tool-trace-${index}`,
+            type: toolTrace.status === 'running' ? 'tool' : 'tool_done',
+            tool: toolTrace.tool_name,
+            details,
+            timestamp: message.timestamp,
+            messageId: message.id,
+          });
+        });
+        continue;
+      }
+
       const lines = message.content.split('\n');
       lines.forEach((line, index) => {
         const normalized = line.trim();

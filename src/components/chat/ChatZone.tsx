@@ -785,6 +785,7 @@ const ChatZone: React.FC = () => {
                             {message.role === 'assistant' ? (
                               <MarkdownRenderer
                                 content={message.content}
+                                toolTraces={mode === 'Debug' ? undefined : message.tool_traces}
                                 isStreaming={
                                   isStreaming &&
                                   message === currentMessages[currentMessages.length - 1]

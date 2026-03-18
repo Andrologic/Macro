@@ -15,7 +15,7 @@ import type {
   ChatCompletionResponseDto,
 } from '../contracts/dtos';
 import type { ServiceProvider } from '../contracts/serviceProvider';
-import type { AIModel, AIProvider, ChatMessage, Conversation, ProjectGroup, Task } from '../../types';
+import type { AIModel, AIProvider, ChatMessage, Conversation, ProjectGroup, Task, ToolTrace } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
 import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
@@ -71,6 +71,25 @@ const toConversationDto = (conversation: tauriIpc.DbConversation): Conversation 
   is_unread: false,
 });
 
+const parseToolTraces = (raw: string | null): ToolTrace[] | undefined => {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    const traces = parsed.filter(
+      (trace): trace is ToolTrace =>
+        !!trace &&
+        typeof trace === 'object' &&
+        typeof (trace as ToolTrace).tool_call_id === 'string' &&
+        typeof (trace as ToolTrace).tool_name === 'string' &&
+        ((trace as ToolTrace).status === 'running' || (trace as ToolTrace).status === 'done')
+    );
+    return traces.length > 0 ? traces : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const toMessageDto = (message: tauriIpc.DbMessage): ChatMessage => ({
   id: message.id,
   task_id: '',
@@ -78,6 +97,8 @@ const toMessageDto = (message: tauriIpc.DbMessage): ChatMessage => ({
   role: message.role === 'user' ? 'user' : 'assistant',
   content: message.content,
   timestamp: message.created_at,
+  tool_traces: parseToolTraces(message.tool_traces_json),
+  hidden_context: message.hidden_context ?? undefined,
 });
 
 const toProviderDto = (provider: tauriIpc.DbProviderConfig): AIProvider => ({
