@@ -72,6 +72,19 @@ const isPlanVisibleForSelection = (
   return planProjectIds.length === 0 || planProjectIds.some((projectId) => scopedProjectIdSet.has(projectId));
 };
 
+const filterPlansForDisplay = (
+  plans: ArchitectPlanSummary[],
+  scopedProjectIds: string[],
+  showArchived: boolean
+): ArchitectPlanSummary[] =>
+  plans.filter((plan) => {
+    if (!isPlanVisibleForSelection(plan, scopedProjectIds)) {
+      return false;
+    }
+
+    return showArchived ? plan.status === 'archived' : plan.status !== 'archived' && plan.status !== 'deleted';
+  });
+
 const trimToNull = (value?: string | null): string | null => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed.length > 0 ? trimmed : null;
@@ -297,17 +310,14 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setIsLoading(true);
     setError(null);
     try {
-      const result = await listArchitectPlans(targetBranch, showArchived, showArchived);
-      const fullResult = showArchived ? result : await listArchitectPlans(targetBranch, true, true);
-      const scopedPlans = result.plans.filter((plan) =>
-        isPlanVisibleForSelection(plan, scopedProjectIds)
-      );
+      const fullResult = await listArchitectPlans(targetBranch, true, true);
+      const scopedPlans = filterPlansForDisplay(fullResult.plans, scopedProjectIds, showArchived);
       const scopedFullPlans = fullResult.plans.filter((plan) =>
         isPlanVisibleForSelection(plan, scopedProjectIds)
       );
 
       // Auto-create a default plan when none exist
-      if (scopedFullPlans.length === 0 && !autoCreatingRef.current) {
+      if (!showArchived && scopedFullPlans.length === 0 && !autoCreatingRef.current) {
         autoCreatingRef.current = true;
         try {
           const created = await createArchitectPlan({
@@ -326,7 +336,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       }
 
       setPlans(scopedPlans);
-      const preferredActivePlanId = activeArchitectPlanId || result.activePlanId;
+      const preferredActivePlanId = activeArchitectPlanId || fullResult.activePlanId;
       const nextActivePlanId =
         preferredActivePlanId && scopedPlans.some((plan) => plan.id === preferredActivePlanId)
           ? preferredActivePlanId
@@ -603,10 +613,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         })
       );
       const wasActive = activePlanId === plan.id;
-      const refreshed = await listArchitectPlans(targetBranch, showArchived, showArchived);
-      const refreshedScopedPlans = refreshed.plans.filter((candidate) =>
-        isPlanVisibleForSelection(candidate, scopedProjectIds)
-      );
+      const refreshed = await listArchitectPlans(targetBranch, true, true);
+      const refreshedScopedPlans = filterPlansForDisplay(refreshed.plans, scopedProjectIds, showArchived);
       setPlans(refreshedScopedPlans);
       if (wasActive) {
         const nextPlanId =
@@ -649,6 +657,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const cleanup = await deletePlanAndCleanupBranches({
         branchName: targetBranch,
         planId: deletedPlanId,
+        hardDelete: planToDelete.status === 'archived' || planToDelete.status === 'deleted',
       });
       useTaskStore.getState().clearPlanRuntimeState({
         planId: deletedPlanId,
@@ -658,10 +667,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
       toast.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
 
-      const refreshed = await listArchitectPlans(targetBranch, showArchived, showArchived);
-      const refreshedScopedPlans = refreshed.plans.filter((candidate) =>
-        isPlanVisibleForSelection(candidate, scopedProjectIds)
-      );
+      const refreshed = await listArchitectPlans(targetBranch, true, true);
+      const refreshedScopedPlans = filterPlansForDisplay(refreshed.plans, scopedProjectIds, showArchived);
       setPlans(refreshedScopedPlans);
 
       const deletedWasActive = activePlanId === planToDelete.id;
@@ -798,37 +805,42 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-[360px] rounded-xl border border-border bg-popover shadow-2xl overflow-hidden z-30">
+        <div className="absolute right-0 mt-2 w-[440px] rounded-xl border border-border bg-popover shadow-2xl overflow-hidden z-30">
           <div className="px-3 py-2 border-b border-border bg-card/60">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-xs font-semibold text-foreground">
+              <div className="text-xs font-semibold text-foreground shrink-0">
                 {t('architect.planSelector.title', 'Architect plans')}
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 min-w-0 flex-1 justify-end">
                 <button
                   onClick={() => setShowArchived((current) => !current)}
+                  title={showArchived
+                    ? t('architect.planSelector.hideArchived', 'Hide archived')
+                    : t('architect.planSelector.showArchived', 'Show archived')}
                   className={cn(
-                    'h-7 px-2 rounded-md text-xs border flex items-center gap-1.5',
+                    'h-7 min-w-0 max-w-full shrink px-2 rounded-md text-xs border inline-flex items-center gap-1.5 whitespace-nowrap',
                     showArchived
                       ? 'border-primary/40 bg-primary/10 text-primary'
                       : 'border-border hover:bg-accent text-muted-foreground hover:text-foreground'
                   )}
                 >
                   <Icon name="archive" size={12} />
-                  {showArchived
-                    ? t('architect.planSelector.hideArchived', 'Hide archived')
-                    : t('architect.planSelector.showArchived', 'Show archived')}
+                  <span className="truncate">
+                    {showArchived
+                      ? t('architect.planSelector.hideArchived', 'Hide archived')
+                      : t('architect.planSelector.showArchived', 'Show archived')}
+                  </span>
                 </button>
                 <button
                   onClick={() => void handleCreatePlan()}
-                  className="h-7 px-2 rounded-md text-xs border border-border hover:bg-accent flex items-center gap-1.5"
+                  className="h-7 shrink-0 px-2 rounded-md text-xs border border-border hover:bg-accent flex items-center gap-1.5"
                 >
                   <Icon name="plus" size={12} />
                   {t('architect.planSelector.create', 'Create')}
                 </button>
                 <button
                   onClick={() => void loadPlans(false)}
-                  className="h-7 px-2 rounded-md text-xs border border-border hover:bg-accent flex items-center gap-1.5"
+                  className="h-7 shrink-0 px-2 rounded-md text-xs border border-border hover:bg-accent flex items-center gap-1.5"
                 >
                   <Icon name="rotate-ccw" size={12} className={cn(isLoading && 'animate-spin')} />
                   {t('architect.planSelector.refresh', 'Refresh')}
@@ -941,7 +953,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          if (plan.status === 'archived' || plan.status === 'deleted') {
+                          if (plan.status === 'archived') {
                             void handleRestorePlan(plan);
                             return;
                           }
@@ -949,12 +961,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         }}
                         disabled={isMissingProjects}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
-                        title={plan.status === 'archived' || plan.status === 'deleted'
-                          ? t('architect.planSelector.restorePlan', 'Restore plan')
+                        title={plan.status === 'archived'
+                          ? t('architect.planSelector.unarchivePlan', 'Unarchive plan')
                           : t('architect.planSelector.archivePlan', 'Archive plan')}
                       >
                         <Icon
-                          name={plan.status === 'archived' || plan.status === 'deleted' ? 'rotate-ccw' : 'archive'}
+                          name={plan.status === 'archived' ? 'rotate-ccw' : 'archive'}
                           size={11}
                           className="text-muted-foreground"
                         />
@@ -1027,13 +1039,18 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           planToDelete
             ? t('architect.planSelector.deleteDialogDescription', {
               title: getArchitectPlanDisplayName(planToDelete),
-              defaultValue: `This will mark "${getArchitectPlanDisplayName(planToDelete)}" as deleted and clean its plan branches/worktrees. The plan metadata is kept for recovery.`,
+              defaultValue:
+                planToDelete.status === 'archived' || planToDelete.status === 'deleted'
+                  ? `This will permanently remove "${getArchitectPlanDisplayName(planToDelete)}" from plan storage.`
+                  : `This will mark "${getArchitectPlanDisplayName(planToDelete)}" as deleted and clean its plan branches/worktrees. The plan metadata is kept for recovery.`,
             })
             : t('architect.planSelector.deleteDialogFallback', 'This action cannot be undone.')
         }
         confirmLabel={isDeleting
           ? t('architect.planSelector.deleting', 'Deleting...')
-          : t('architect.planSelector.deletePermanently', 'Delete and clean')}
+          : (planToDelete?.status === 'archived' || planToDelete?.status === 'deleted'
+            ? t('architect.planSelector.purgePlan', 'Purge permanently')
+            : t('architect.planSelector.deletePermanently', 'Delete and clean'))}
         cancelLabel={t('common.cancel', 'Cancel')}
         confirmVariant="error"
         onCancel={() => {
