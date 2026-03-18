@@ -142,7 +142,6 @@ pub fn run() {
 
     tracing::info!("Starting Macro application");
     tracing::info!("Workspace path: {:?}", config.workspace_path);
-    tracing::info!("Database path: {:?}", config.db_path);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
