@@ -3,7 +3,7 @@ pub mod repository;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tauri::{AppHandle, Manager};
 use thiserror::Error;
@@ -20,7 +20,11 @@ pub enum DbError {
 
 pub type DbResult<T> = Result<T, DbError>;
 
-/// Initialize the database connection pool
+fn app_db_path(app_dir: &Path) -> PathBuf {
+    app_dir.join("macro.db")
+}
+
+/// Initialize the desktop database connection pool in the app data directory.
 pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     let app_dir = app_handle
         .path()
@@ -30,7 +34,7 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     // Create the directory if it doesn't exist
     std::fs::create_dir_all(&app_dir).map_err(|e| DbError::Migration(e.to_string()))?;
 
-    let db_path = app_dir.join("macro.db");
+    let db_path = app_db_path(&app_dir);
 
     create_pool(&db_path).await
 }
@@ -438,4 +442,16 @@ async fn insert_default_providers(pool: &SqlitePool) -> DbResult<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::app_db_path;
+    use std::path::Path;
+
+    #[test]
+    fn app_db_path_is_rooted_in_app_data_dir() {
+        let app_dir = Path::new("/tmp/macro-app-data");
+        assert_eq!(app_db_path(app_dir), app_dir.join("macro.db"));
+    }
 }
