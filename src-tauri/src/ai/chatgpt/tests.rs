@@ -6,8 +6,9 @@ use super::session::{
 };
 use super::stream::build_responses_request;
 use super::types::{
-    auth_flow_error_from_persist, AiChatMessage, AiChatMessageContent, ModelsCacheEntry,
-    PersistChatGptSessionError, PkceCodes, CHATGPT_CALLBACK_PORT, CHATGPT_CANCEL_PATH,
+    auth_flow_error_from_persist, AiChatMessage, AiChatMessageContent, AiChatRequest,
+    ModelsCacheEntry, PersistChatGptSessionError, PkceCodes, CHATGPT_CALLBACK_PORT,
+    CHATGPT_CANCEL_PATH,
 };
 use crate::secrets::ChatGptSecret;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -95,23 +96,34 @@ fn build_provider_auth_metadata_uses_fallbacks() {
 
 #[test]
 fn build_responses_request_maps_system_and_history() {
-    let request = build_responses_request(
-        "gpt-5",
-        &[
+    let request = build_responses_request(&AiChatRequest {
+        request_id: "req-1".to_string(),
+        provider_id: "chatgpt".to_string(),
+        model_id: "gpt-5".to_string(),
+        messages: vec![
             AiChatMessage {
                 role: "system".to_string(),
                 content: AiChatMessageContent::Text("Follow instructions".to_string()),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             },
             AiChatMessage {
                 role: "user".to_string(),
                 content: AiChatMessageContent::Text("Hello".to_string()),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             },
             AiChatMessage {
                 role: "assistant".to_string(),
                 content: AiChatMessageContent::Text("Hi".to_string()),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             },
         ],
-    )
+        tools: Vec::new(),
+        tool_choice: Some("auto".to_string()),
+        parallel_tool_calls: Some(false),
+    })
     .expect("request");
 
     assert_eq!(request.model, "gpt-5");
@@ -120,6 +132,67 @@ fn build_responses_request_maps_system_and_history() {
     assert!(request.tools.is_empty());
     assert!(!request.store);
     assert!(request.stream);
+}
+
+#[test]
+fn build_responses_request_flattens_tools_and_maps_tool_outputs() {
+    let request = build_responses_request(&AiChatRequest {
+        request_id: "req-2".to_string(),
+        provider_id: "chatgpt".to_string(),
+        model_id: "gpt-5".to_string(),
+        messages: vec![
+            AiChatMessage {
+                role: "assistant".to_string(),
+                content: AiChatMessageContent::Text(String::new()),
+                tool_calls: vec![super::types::AiToolCall {
+                    id: "call_1".to_string(),
+                    kind: "function".to_string(),
+                    function: super::types::AiToolCallFunction {
+                        name: "read".to_string(),
+                        arguments: r#"{"path":"README.md"}"#.to_string(),
+                    },
+                }],
+                tool_call_id: None,
+            },
+            AiChatMessage {
+                role: "tool".to_string(),
+                content: AiChatMessageContent::Text("FILE: README.md".to_string()),
+                tool_calls: Vec::new(),
+                tool_call_id: Some("call_1".to_string()),
+            },
+        ],
+        tools: vec![json!({
+            "type": "function",
+            "function": {
+                "name": "read",
+                "description": "Read a workspace file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    },
+                    "required": ["path"]
+                }
+            }
+        })],
+        tool_choice: Some("auto".to_string()),
+        parallel_tool_calls: Some(false),
+    })
+    .expect("request");
+
+    assert_eq!(request.tools.len(), 1);
+    assert_eq!(request.tools[0]["name"], "read");
+    assert_eq!(request.input.len(), 2);
+
+    let serialized_input = request
+        .input
+        .iter()
+        .map(|item| serde_json::to_value(item).expect("serialize input item"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(serialized_input[0]["type"], "function_call");
+    assert_eq!(serialized_input[1]["type"], "function_call_output");
+    assert_eq!(serialized_input[1]["call_id"], "call_1");
 }
 
 #[test]

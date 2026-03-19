@@ -114,10 +114,12 @@ export interface StreamingChatOptions {
   }>;
   allowedToolIds?: string[];
   showToolTraces?: boolean;
+  guidedToolRetry?: {
+    requiredToolNames: string[];
+    retrySystemPrompt: string;
+    maxRetries?: number;
+  };
 }
-
-const TOOL_CALL_OPEN_TAG = '<tool_call>';
-const TOOL_CALL_CLOSE_TAG = '</tool_call>';
 
 const emptyStreamCompletionResult = (visibleContent = ''): StreamCompletionResult => ({
   visibleContent,
@@ -225,65 +227,7 @@ const buildToolContextBlock = (
   return `<tool_context ${attrs}>\n${result}\n</tool_context>`;
 };
 
-const createInlineToolCallFilter = () => {
-  let pending = '';
-  let insideToolCall = false;
-
-  const emitSafeOutsideText = (): string => {
-    const safeLength = Math.max(0, pending.length - (TOOL_CALL_OPEN_TAG.length - 1));
-    if (safeLength === 0) return '';
-    const visible = pending.slice(0, safeLength);
-    pending = pending.slice(safeLength);
-    return visible;
-  };
-
-  return {
-    push(chunk: string): string {
-      if (!chunk) return '';
-      pending += chunk;
-      let visible = '';
-
-      while (pending.length > 0) {
-        const lowerPending = pending.toLowerCase();
-        if (insideToolCall) {
-          const closeIndex = lowerPending.indexOf(TOOL_CALL_CLOSE_TAG);
-          if (closeIndex === -1) {
-            const keepLength = Math.min(pending.length, TOOL_CALL_CLOSE_TAG.length - 1);
-            pending = pending.slice(-keepLength);
-            return visible;
-          }
-          pending = pending.slice(closeIndex + TOOL_CALL_CLOSE_TAG.length);
-          insideToolCall = false;
-          continue;
-        }
-
-        const openIndex = lowerPending.indexOf(TOOL_CALL_OPEN_TAG);
-        if (openIndex === -1) {
-          visible += emitSafeOutsideText();
-          return visible;
-        }
-
-        visible += pending.slice(0, openIndex);
-        pending = pending.slice(openIndex + TOOL_CALL_OPEN_TAG.length);
-        insideToolCall = true;
-      }
-
-      return visible;
-    },
-    flush(): string {
-      if (insideToolCall) {
-        pending = '';
-        return '';
-      }
-      const visible = pending;
-      pending = '';
-      return visible;
-    },
-  };
-};
-
 const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate'>) => {
-  const inlineToolCallFilter = createInlineToolCallFilter();
   let visibleContent = '';
   const toolTraces = new Map<string, ToolTrace>();
   const toolTraceOrder: string[] = [];
@@ -323,10 +267,10 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
 
   return {
     appendProviderDelta(chunk: string) {
-      appendVisibleChunk(inlineToolCallFilter.push(chunk), true);
+      appendVisibleChunk(chunk, true);
     },
     flushProviderDelta() {
-      appendVisibleChunk(inlineToolCallFilter.flush(), true);
+      // Provider deltas are appended directly.
     },
     appendSystemChunk(chunk: string, markToolsDone = false) {
       appendVisibleChunk(chunk, markToolsDone);
@@ -366,8 +310,8 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
 
 export const __testables = {
   buildToolContextBlock,
-  createInlineToolCallFilter,
   formatToolTraceDetail,
+  shouldRetryMissingRequiredTool,
 };
 
 // Tool definitions for the LLM
@@ -1195,13 +1139,97 @@ const clearTauriListeners = () => {
   }
 };
 
+interface StreamingTurnResult {
+  content: string;
+  toolCalls: ToolCall[];
+}
+
+const getValidToolCalls = (toolCalls: ToolCall[]): ToolCall[] =>
+  toolCalls.filter((toolCall) => toolCall.id && toolCall.function.name);
+
+function shouldRetryMissingRequiredTool(
+  policy: StreamingChatOptions['guidedToolRetry'],
+  toolCalls: ToolCall[],
+  retryCount: number
+): boolean {
+  if (!policy || retryCount >= (policy.maxRetries ?? 1)) {
+    return false;
+  }
+
+  const requiredToolNames = new Set(policy.requiredToolNames);
+  if (requiredToolNames.size === 0) {
+    return false;
+  }
+
+  return !toolCalls.some((toolCall) => requiredToolNames.has(toolCall.function.name));
+}
+
+const collectAllowedTools = (params: {
+  allowedTools: Set<string>;
+  enableWebSearch: boolean;
+  enableWebFetch: boolean;
+  webSearchOptions?: WebSearchOptions;
+}): unknown[] => {
+  const { allowedTools, enableWebSearch, enableWebFetch, webSearchOptions } = params;
+  const tools: unknown[] = [];
+
+  if (allowedTools.has('list')) tools.push(LIST_TOOL);
+  if (allowedTools.has('read')) tools.push(READ_WORKSPACE_TOOL);
+  if (allowedTools.has('write')) tools.push(WRITE_WORKSPACE_TOOL);
+  if (allowedTools.has('edit')) tools.push(EDIT_WORKSPACE_TOOL);
+  if (allowedTools.has('glob')) tools.push(GLOB_WORKSPACE_TOOL);
+  if (allowedTools.has('grep')) tools.push(GREP_WORKSPACE_TOOL);
+  if (allowedTools.has('read_file')) tools.push(READ_FILE_TOOL);
+  if (allowedTools.has('mark_source_passage')) tools.push(MARK_SOURCE_PASSAGE_TOOL);
+  if (allowedTools.has('read_sources')) tools.push(READ_SOURCES_TOOL);
+  if (allowedTools.has('edit_source_passage')) tools.push(EDIT_SOURCE_PASSAGE_TOOL);
+  if (allowedTools.has('git_status')) tools.push(GIT_STATUS_TOOL);
+  if (allowedTools.has('git_diff')) tools.push(GIT_DIFF_TOOL);
+  if (allowedTools.has('git_log')) tools.push(GIT_LOG_TOOL);
+  if (allowedTools.has('git_branch_list')) tools.push(GIT_BRANCH_LIST_TOOL);
+  if (allowedTools.has('git_checkout')) tools.push(GIT_CHECKOUT_TOOL);
+  if (allowedTools.has('git_commit')) tools.push(GIT_COMMIT_TOOL);
+  if (allowedTools.has('git_add')) tools.push(GIT_ADD_TOOL);
+  if (allowedTools.has('git_reset')) tools.push(GIT_RESET_TOOL);
+  if (allowedTools.has('git_merge')) tools.push(GIT_MERGE_TOOL);
+  if (allowedTools.has('git_stash')) tools.push(GIT_STASH_TOOL);
+  if (allowedTools.has('git_get_tree')) tools.push(GIT_GET_TREE_TOOL);
+  if (allowedTools.has('terminal_create_session')) tools.push(TERMINAL_CREATE_SESSION_TOOL);
+  if (allowedTools.has('terminal_run')) tools.push(TERMINAL_RUN_TOOL);
+  if (allowedTools.has('terminal_read')) tools.push(TERMINAL_READ_TOOL);
+  if (allowedTools.has('terminal_kill')) tools.push(TERMINAL_KILL_TOOL);
+  if (
+    allowedTools.has('web_search') &&
+    enableWebSearch &&
+    (webSearchOptions?.tavilyApiKey || webSearchOptions?.braveApiKey)
+  ) {
+    tools.push(WEB_SEARCH_TOOL);
+  }
+  if (allowedTools.has('web_fetch') && enableWebFetch) tools.push(WEB_FETCH_TOOL);
+  if (allowedTools.has('need_add')) tools.push(ADD_NEED_TOOL);
+  if (allowedTools.has('strategy_generate')) tools.push(GENERATE_PLAN_TOOL);
+  if (allowedTools.has('plan_create')) tools.push(CREATE_PLAN_TOOL);
+  if (allowedTools.has('plan_list')) tools.push(LIST_PLANS_TOOL);
+  if (allowedTools.has('plan_get')) tools.push(GET_PLAN_TOOL);
+  if (allowedTools.has('plan_update')) tools.push(UPDATE_PLAN_TOOL);
+  if (allowedTools.has('plan_delete')) tools.push(DELETE_PLAN_TOOL);
+  if (allowedTools.has('plan_restore')) tools.push(RESTORE_PLAN_TOOL);
+  if (allowedTools.has('plan_set_active')) tools.push(SET_ACTIVE_PLAN_TOOL);
+  if (allowedTools.has('strategy_get')) tools.push(GET_STRATEGY_TOOL);
+  if (allowedTools.has('strategy_update')) tools.push(UPDATE_STRATEGY_TOOL);
+  if (allowedTools.has('strategy_delete')) tools.push(DELETE_STRATEGY_TOOL);
+
+  return tools;
+};
+
 const streamChatGptTurnViaTauri = async (params: {
   providerId: string;
   modelId: string;
   messages: StreamMessage[];
+  tools: unknown[];
   signal?: AbortSignal;
   onDelta: (delta: string) => void;
-}): Promise<string> => {
+}): Promise<StreamingTurnResult> => {
   if (!tauriIpc.isTauriAvailable()) {
     throw new Error('ChatGPT provider requires the desktop backend.');
   }
@@ -1213,7 +1241,7 @@ const streamChatGptTurnViaTauri = async (params: {
 
   let fullContent = '';
 
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
 
     const finish = (fn: () => void) => {
@@ -1253,7 +1281,12 @@ const streamChatGptTurnViaTauri = async (params: {
             if (params.signal) {
               params.signal.removeEventListener('abort', signalHandler);
             }
-            finish(() => resolve(fullContent));
+            finish(() =>
+              resolve({
+                content: event.payload.output_text || fullContent,
+                toolCalls: event.payload.tool_calls || [],
+              })
+            );
           }),
           listen<tauriIpc.AiStreamErrorEvent>('ai:error', (event) => {
             if (event.payload.request_id !== requestId) return;
@@ -1273,7 +1306,12 @@ const streamChatGptTurnViaTauri = async (params: {
           messages: params.messages.map((message) => ({
             role: message.role,
             content: message.content,
+            ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
+            ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
           })),
+          tools: params.tools,
+          toolChoice: 'auto',
+          parallelToolCalls: false,
         });
       } catch (error) {
         if (params.signal) {
@@ -1305,6 +1343,12 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
   } = options;
 
   const allowedTools = new Set(allowedToolIds ?? []);
+  const tools = collectAllowedTools({
+    allowedTools,
+    enableWebSearch,
+    enableWebFetch,
+    webSearchOptions,
+  });
   const streamAccumulator = createStreamAccumulator({
     onToken,
     onToolTracesUpdate,
@@ -1313,6 +1357,8 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
   const readEvidenceBySource = new Map<string, string>();
   const MAX_TURNS = 10;
   let turnCount = 0;
+  let guidedRetryCount = 0;
+  let enforceGuidedToolRetry = Boolean(options.guidedToolRetry);
 
   const normalizeSourceKey = (value?: string): string =>
     (value || '')
@@ -1344,49 +1390,49 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         return;
       }
 
-      const turnContent = await streamChatGptTurnViaTauri({
+      const shouldBufferTurnOutput = enforceGuidedToolRetry;
+      let streamedTurnContent = '';
+      const turnResult = await streamChatGptTurnViaTauri({
         providerId,
         modelId,
         messages: currentMessages,
+        tools,
         signal: options.signal,
         onDelta: (delta) => {
-          streamAccumulator.appendProviderDelta(delta);
+          streamedTurnContent += delta;
+          if (!shouldBufferTurnOutput) {
+            streamAccumulator.appendProviderDelta(delta);
+          }
         },
       });
-      streamAccumulator.flushProviderDelta();
 
-      const toolCalls: ToolCall[] = [];
-      const inlineToolRegex = /<tool_call>\s*(?=\{)([\s\S]*?)\s*<\/tool_call>/gi;
-      let match: RegExpExecArray | null;
+      const turnContent = turnResult.content || streamedTurnContent;
+      const validToolCalls = getValidToolCalls(turnResult.toolCalls);
 
-      while ((match = inlineToolRegex.exec(turnContent)) !== null) {
-        try {
-          const parsed = JSON.parse(match[1].trim());
-          if (parsed.name) {
-            toolCalls.push({
-              id: `call_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-              type: 'function',
-              function: {
-                name: parsed.name,
-                arguments: typeof parsed.arguments === 'string'
-                  ? parsed.arguments
-                  : JSON.stringify(parsed.arguments || {}),
-              },
-            });
-          }
-        } catch {
-          console.warn('Failed to parse inline JSON tool call', match[1]);
-        }
+      if (shouldRetryMissingRequiredTool(options.guidedToolRetry, validToolCalls, guidedRetryCount)) {
+        guidedRetryCount += 1;
+        currentMessages.push({
+          role: 'system',
+          content: options.guidedToolRetry?.retrySystemPrompt || '',
+        });
+        turnCount += 1;
+        continue;
       }
 
-      if (turnContent.trim().length > 0) {
+      enforceGuidedToolRetry = false;
+      if (shouldBufferTurnOutput && turnContent) {
+        streamAccumulator.appendProviderDelta(turnContent);
+      }
+      streamAccumulator.flushProviderDelta();
+
+      if (turnContent.trim().length > 0 || validToolCalls.length > 0) {
         currentMessages.push({
           role: 'assistant',
           content: turnContent,
+          ...(validToolCalls.length > 0 ? { tool_calls: validToolCalls } : {}),
         });
       }
 
-      const validToolCalls = toolCalls.filter((toolCall) => toolCall.id && toolCall.function.name);
       if (validToolCalls.length === 0) {
         break;
       }
@@ -1590,14 +1636,48 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
       }
 
       if (toolResults.length > 0) {
-        const textResults = toolResults.map((toolResult) =>
-          `[Tool Result for ${validToolCalls.find((toolCall) => toolCall.id === toolResult.tool_call_id)?.function.name}]:\n${toolResult.content}`
-        ).join('\n\n');
-
-        currentMessages.push({
-          role: 'user',
-          content: `Here are the results of the tools you called:\n\n${textResults}\n\nPlease continue your task using these results.`,
+        const hasToolErrors = toolResults.some((result) => {
+          const content = result.content.trim();
+          return (
+            /^Error executing/i.test(content) ||
+            /^Missing\s+/i.test(content) ||
+            /^No match found/i.test(content) ||
+            /^File not found/i.test(content) ||
+            /^Cannot\s+/i.test(content)
+          );
         });
+        const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
+
+        currentMessages.push(
+          ...toolResults.map((result) => ({
+            role: 'tool' as const,
+            content: result.content,
+            tool_call_id: result.tool_call_id,
+          }))
+        );
+
+        const guardSystemMessages: StreamMessage[] = [];
+        if (hasToolErrors) {
+          guardSystemMessages.push({
+            role: 'system',
+            content:
+              'One or more tool calls failed. Do not fabricate file contents or command outputs. ' +
+              'State the exact failure and ask for a corrected path/context when needed.',
+          });
+        }
+        if (hasFileReadResults) {
+          guardSystemMessages.push({
+            role: 'system',
+            content:
+              'For file analysis tasks, use ONLY the exact tool outputs provided in this conversation. ' +
+              'Do not invent code symbols, structs, handlers, routes, or data not present in tool output. ' +
+              'If uncertain, say that the information is not present in the file content you received.',
+          });
+        }
+
+        if (guardSystemMessages.length > 0) {
+          currentMessages.push(...guardSystemMessages);
+        }
       }
 
       turnCount++;
@@ -1685,131 +1765,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     stream: true,
   };
 
-  // Expose only explicitly allowed tools. Web search also requires provider keys.
-  const tools: unknown[] = [];
-  if (allowedTools.has('mark_source_passage')) {
-    tools.push(MARK_SOURCE_PASSAGE_TOOL);
-  }
-  if (allowedTools.has('read_sources')) {
-    tools.push(READ_SOURCES_TOOL);
-  }
-  if (allowedTools.has('edit_source_passage')) {
-    tools.push(EDIT_SOURCE_PASSAGE_TOOL);
-  }
-  if (allowedTools.has('read_file')) {
-    tools.push(READ_FILE_TOOL);
-  }
-  if (allowedTools.has('list')) {
-    tools.push(LIST_TOOL);
-  }
-  if (allowedTools.has('read')) {
-    tools.push(READ_WORKSPACE_TOOL);
-  }
-  if (allowedTools.has('write')) {
-    tools.push(WRITE_WORKSPACE_TOOL);
-  }
-  if (allowedTools.has('edit')) {
-    tools.push(EDIT_WORKSPACE_TOOL);
-  }
-  if (allowedTools.has('glob')) {
-    tools.push(GLOB_WORKSPACE_TOOL);
-  }
-  if (allowedTools.has('grep')) {
-    tools.push(GREP_WORKSPACE_TOOL);
-  }
-  if (allowedTools.has('git_status')) {
-    tools.push(GIT_STATUS_TOOL);
-  }
-  if (allowedTools.has('git_log')) {
-    tools.push(GIT_LOG_TOOL);
-  }
-  if (allowedTools.has('git_branch_list')) {
-    tools.push(GIT_BRANCH_LIST_TOOL);
-  }
-  if (allowedTools.has('git_diff')) {
-    tools.push(GIT_DIFF_TOOL);
-  }
-  if (allowedTools.has('git_get_tree')) {
-    tools.push(GIT_GET_TREE_TOOL);
-  }
-  if (allowedTools.has('git_add')) {
-    tools.push(GIT_ADD_TOOL);
-  }
-  if (allowedTools.has('git_commit')) {
-    tools.push(GIT_COMMIT_TOOL);
-  }
-  if (allowedTools.has('git_checkout')) {
-    tools.push(GIT_CHECKOUT_TOOL);
-  }
-  if (allowedTools.has('git_merge')) {
-    tools.push(GIT_MERGE_TOOL);
-  }
-  if (allowedTools.has('git_reset')) {
-    tools.push(GIT_RESET_TOOL);
-  }
-  if (allowedTools.has('git_stash')) {
-    tools.push(GIT_STASH_TOOL);
-  }
-  if (allowedTools.has('terminal_create_session')) {
-    tools.push(TERMINAL_CREATE_SESSION_TOOL);
-  }
-  if (allowedTools.has('terminal_run')) {
-    tools.push(TERMINAL_RUN_TOOL);
-  }
-  if (allowedTools.has('terminal_read')) {
-    tools.push(TERMINAL_READ_TOOL);
-  }
-  if (allowedTools.has('terminal_kill')) {
-    tools.push(TERMINAL_KILL_TOOL);
-  }
-  if (
-    allowedTools.has('web_search') &&
-    enableWebSearch &&
-    (webSearchOptions?.tavilyApiKey || webSearchOptions?.braveApiKey)
-  ) {
-    tools.push(WEB_SEARCH_TOOL);
-  }
-  if (allowedTools.has('web_fetch') && enableWebFetch) {
-    tools.push(WEB_FETCH_TOOL);
-  }
-  if (allowedTools.has('need_add')) {
-    tools.push(ADD_NEED_TOOL);
-  }
-  if (allowedTools.has('strategy_generate')) {
-    tools.push(GENERATE_PLAN_TOOL);
-  }
-  if (allowedTools.has('plan_create')) {
-    tools.push(CREATE_PLAN_TOOL);
-  }
-  if (allowedTools.has('plan_list')) {
-    tools.push(LIST_PLANS_TOOL);
-  }
-  if (allowedTools.has('plan_get')) {
-    tools.push(GET_PLAN_TOOL);
-  }
-  if (allowedTools.has('plan_update')) {
-    tools.push(UPDATE_PLAN_TOOL);
-  }
-  if (allowedTools.has('plan_delete')) {
-    tools.push(DELETE_PLAN_TOOL);
-  }
-  if (allowedTools.has('plan_restore')) {
-    tools.push(RESTORE_PLAN_TOOL);
-  }
-  if (allowedTools.has('plan_set_active')) {
-    tools.push(SET_ACTIVE_PLAN_TOOL);
-  }
-  if (allowedTools.has('strategy_get')) {
-    tools.push(GET_STRATEGY_TOOL);
-  }
-  if (allowedTools.has('strategy_update')) {
-    tools.push(UPDATE_STRATEGY_TOOL);
-  }
-  if (allowedTools.has('strategy_delete')) {
-    tools.push(DELETE_STRATEGY_TOOL);
-  }
+  const tools = collectAllowedTools({
+    allowedTools,
+    enableWebSearch,
+    enableWebFetch,
+    webSearchOptions,
+  });
   if (tools.length > 0) {
     requestBody.tools = tools;
+    requestBody.tool_choice = 'auto';
+    requestBody.parallel_tool_calls = false;
   }
 
   // Storage for the entire conversation (mutated across loop turns)
@@ -1817,6 +1782,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   const readEvidenceBySource = new Map<string, string>();
   const MAX_TURNS = 10;
   let turnCount = 0;
+  let guidedRetryCount = 0;
+  let enforceGuidedToolRetry = Boolean(options.guidedToolRetry);
 
   const normalizeSourceKey = (value?: string): string =>
     (value || '')
@@ -1896,19 +1863,25 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       let isThinking = false;
       let toolCalls: ToolCall[] = [];
       let turnContent = ''; // The text generated *in this specific turn*
+      const shouldBufferTurnOutput = enforceGuidedToolRetry;
+      const appendTurnChunk = (chunk: string) => {
+        if (!chunk) return;
+        turnContent += chunk;
+        if (!shouldBufferTurnOutput) {
+          streamAccumulator.appendProviderDelta(chunk);
+        }
+      };
 
       const startThinking = () => {
         if (!isThinking) {
-          turnContent += '<think>';
-          streamAccumulator.appendProviderDelta('<think>');
+          appendTurnChunk('<think>');
           isThinking = true;
         }
       };
 
       const endThinking = () => {
         if (isThinking) {
-          turnContent += '</think>';
-          streamAccumulator.appendProviderDelta('</think>');
+          appendTurnChunk('</think>');
           isThinking = false;
         }
       };
@@ -1958,8 +1931,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
               if (typeof reasoning === 'string' && reasoning.length > 0) {
                 startThinking();
-                turnContent += reasoning;
-                streamAccumulator.appendProviderDelta(reasoning);
+                appendTurnChunk(reasoning);
               }
 
               // Handle tool calls
@@ -1987,9 +1959,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
               if (delta?.content) {
                 endThinking();
-                const token = delta.content;
-                turnContent += token;
-                streamAccumulator.appendProviderDelta(token);
+                appendTurnChunk(delta.content);
               }
             } catch (e) {
               // Skip malformed JSON - some providers send non-JSON lines
@@ -2000,57 +1970,32 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       }
 
       endThinking();
-      streamAccumulator.flushProviderDelta();
-
-      // Parse inline JSON tool calls (e.g. from local models like Ollama)
-      // <tool_call> {"name": "list", "arguments": { "path": "src" }} </tool_call>
-      // Note: We use [\s\S]*? to handle multiline JSON strings
-      const inlineToolRegex = /<tool_call>\s*(?=\{)([\s\S]*?)\s*<\/tool_call>/gi;
-      let match: RegExpExecArray | null;
-      const inlineToolCallIds = new Set<string>();
-
-      while ((match = inlineToolRegex.exec(turnContent)) !== null) {
-        try {
-          const parsed = JSON.parse(match[1].trim());
-          if (parsed.name) {
-            const toolCallId = `call_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-            inlineToolCallIds.add(toolCallId);
-            toolCalls.push({
-              id: toolCallId,
-              type: 'function',
-              function: {
-                name: parsed.name,
-                arguments:
-                  typeof parsed.arguments === 'string'
-                    ? parsed.arguments
-                    : JSON.stringify(parsed.arguments || {}),
-              },
-            });
-          }
-        } catch {
-          console.warn('Failed to parse inline JSON tool call', match[1]);
-        }
-      }
 
       // Handle tool calls if any
-      const validToolCalls = toolCalls.filter((toolCall) => toolCall.id && toolCall.function.name);
-      const usedInlineTools =
-        validToolCalls.length > 0 &&
-        validToolCalls.every((toolCall) => inlineToolCallIds.has(toolCall.id));
+      const validToolCalls = getValidToolCalls(toolCalls);
+
+      if (shouldRetryMissingRequiredTool(options.guidedToolRetry, validToolCalls, guidedRetryCount)) {
+        guidedRetryCount += 1;
+        currentMessages.push({
+          role: 'system',
+          content: options.guidedToolRetry?.retrySystemPrompt || '',
+        });
+        turnCount += 1;
+        continue;
+      }
+
+      enforceGuidedToolRetry = false;
+      if (shouldBufferTurnOutput && turnContent) {
+        streamAccumulator.appendProviderDelta(turnContent);
+      }
+      streamAccumulator.flushProviderDelta();
 
       if (turnContent.trim().length > 0 || validToolCalls.length > 0) {
-        currentMessages.push(
-          usedInlineTools
-            ? {
-              role: 'assistant',
-              content: turnContent,
-            }
-            : {
-              role: 'assistant',
-              content: turnContent,
-              ...(validToolCalls.length > 0 ? { tool_calls: validToolCalls } : {}),
-            }
-        );
+        currentMessages.push({
+          role: 'assistant',
+          content: turnContent,
+          ...(validToolCalls.length > 0 ? { tool_calls: validToolCalls } : {}),
+        });
       }
 
       if (validToolCalls.length > 0) {
@@ -2305,18 +2250,13 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             }
           }
 
-          if (usedInlineTools) {
-            const textResults = toolResults.map(tr =>
-              `[Tool Result for ${validToolCalls.find(tc => tc.id === tr.tool_call_id)?.function.name}]:\n${tr.content}`
-            ).join('\n\n');
-
-            currentMessages.push({
-              role: 'user',
-              content: `Here are the results of the tools you called:\n\n${textResults}\n\nPlease continue your task using these results.`
-            });
-          } else {
-            currentMessages.push(...toolResults.map(tr => ({ role: 'tool' as const, content: tr.content, tool_call_id: tr.tool_call_id })));
-          }
+          currentMessages.push(
+            ...toolResults.map((result) => ({
+              role: 'tool' as const,
+              content: result.content,
+              tool_call_id: result.tool_call_id,
+            }))
+          );
 
           const guardSystemMessages: StreamMessage[] = [];
           if (hasToolErrors) {
@@ -2400,17 +2340,18 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
 
   if (providerType === 'chatgpt') {
     try {
-      const content = await streamChatGptTurnViaTauri({
+      const turn = await streamChatGptTurnViaTauri({
         providerId,
         modelId,
         messages,
+        tools: [],
         signal: options.signal,
         onDelta: () => {
           // No-op for metadata generation.
         },
       });
-      onComplete(emptyStreamCompletionResult(content));
-      return content;
+      onComplete(emptyStreamCompletionResult(turn.content));
+      return turn.content;
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       onError(err);

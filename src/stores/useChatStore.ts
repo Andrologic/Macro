@@ -536,7 +536,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const sanitizeAssistantContentForModel = (content: string): string => {
     return content
-      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
       .split('\n')
       .filter((line) => {
         const trimmed = line.trim();
@@ -1477,8 +1476,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const prepareMessagesForRequest = async (
     conversationId: string,
     allowedToolIds: string[],
-    messageWithImagesId?: string,
-    providerType?: string
+    messageWithImagesId?: string
   ) => {
     const appState = useAppStore.getState();
     const taskState = useTaskStore.getState();
@@ -1609,11 +1607,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (allowedToolIds.includes('edit_source_passage')) {
       systemInstructions.push(
         'Use edit_source_passage only when the user asks to update, reclassify, or delete saved source passages.'
-      );
-    }
-    if (providerType === 'chatgpt' && allowedToolIds.length > 0) {
-      systemInstructions.push(
-        'This provider does not support native tool calls. When you need a tool, emit exactly one inline tag in the form <tool_call>{"name":"tool_name","arguments":{...}}</tool_call> with valid JSON and no markdown code fence inside the tag.'
       );
     }
     if (useAppStore.getState().mode === 'Debug') {
@@ -1784,6 +1777,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const getAllowedToolIdsForCurrentMode = async (): Promise<string[]> => {
+    if (!useProviderStore.getState().selectedSupportsNativeToolCalling()) {
+      return [];
+    }
+
     const mode = useAppStore.getState().mode;
     const modePolicy = await getModePolicyForCurrentMode();
     const toolsState = useToolsStore.getState();
@@ -1805,6 +1802,46 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .map((tool) => tool.id);
 
     return enabledTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId));
+  };
+
+  const buildGuidedToolRetryPolicy = (params: {
+    userContent: string;
+    allowedToolIds: string[];
+    fileToolContext: Array<{ title: string; source: string; path?: string; snippet?: string }>;
+  }) => {
+    if (!useProviderStore.getState().selectedSupportsNativeToolCalling()) {
+      return undefined;
+    }
+
+    if (params.fileToolContext.length > 0 && params.allowedToolIds.includes('read_file')) {
+      return {
+        requiredToolNames: ['read_file'],
+        retrySystemPrompt:
+          'You must call read_file before answering about attached files or document context. ' +
+          'Do not summarize, infer, or quote file contents until read_file has been used with the exact file name or path. ' +
+          'If the filename is ambiguous, say so only after attempting the appropriate tool call.',
+        maxRetries: 1,
+      };
+    }
+
+    const debugLikeQuestion =
+      useAppStore.getState().mode === 'Debug' &&
+      (params.allowedToolIds.includes('list') || params.allowedToolIds.includes('read')) &&
+      /\b(file|files|path|paths|directory|folder|cwd|workspace|readme|package\.json|current directory|content|contents|fichier|fichiers|chemin|dossier|répertoire|contenu)\b/i.test(
+        params.userContent
+      );
+
+    if (debugLikeQuestion) {
+      return {
+        requiredToolNames: ['list', 'read'],
+        retrySystemPrompt:
+          'In Debug mode, you must call list or read before answering questions about files, paths, directories, current working directory, or file contents. ' +
+          'Do not invent filenames, paths, or source contents. Use the appropriate workspace tool first, then answer from the exact tool output.',
+        maxRetries: 1,
+      };
+    }
+
+    return undefined;
   };
 
   const prepareMetadataMessages = (firstUserContent: string) => [
@@ -2693,8 +2730,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const messagesForRequest = await prepareMessagesForRequest(
         conversationId,
         allowedToolIds,
-        userMessage.id,
-        providerConfig.providerType
+        userMessage.id
       );
       const fileToolContext = useCitationsStore
         .getState()
@@ -2707,6 +2743,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           snippet: c.snippet,
         }));
       const { enableWebSearch, enableWebFetch, webSearchOptions } = getStreamingWebSearchConfig();
+      const guidedToolRetry = buildGuidedToolRetryPolicy({
+        userContent: content,
+        allowedToolIds,
+        fileToolContext,
+      });
 
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-assistant`,
@@ -2736,6 +2777,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: messagesForRequest,
           fileToolContext,
           allowedToolIds,
+          guidedToolRetry,
           showToolTraces,
           enableWebSearch,
           enableWebFetch,
@@ -2902,8 +2944,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const messagesForRequest = await prepareMessagesForRequest(
         conversationId,
         allowedToolIds,
-        messageId,
-        providerConfig.providerType
+        messageId
       );
       const fileToolContext = useCitationsStore
         .getState()
@@ -2916,6 +2957,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           snippet: c.snippet,
         }));
       const { enableWebSearch, enableWebFetch, webSearchOptions } = getStreamingWebSearchConfig();
+      const guidedToolRetry = buildGuidedToolRetryPolicy({
+        userContent: newContent,
+        allowedToolIds,
+        fileToolContext,
+      });
 
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-assistant`,
@@ -2945,6 +2991,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: messagesForRequest,
           fileToolContext,
           allowedToolIds,
+          guidedToolRetry,
           showToolTraces,
           enableWebSearch,
           enableWebFetch,
