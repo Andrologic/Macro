@@ -255,6 +255,17 @@ export type AiChatMessageContent = string | AiChatMessagePart[];
 export interface AiChatMessage {
   role: string;
   content: AiChatMessageContent;
+  tool_calls?: AiToolCall[];
+  tool_call_id?: string;
+}
+
+export interface AiToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
 }
 
 export interface AiStreamChunkEvent {
@@ -264,6 +275,8 @@ export interface AiStreamChunkEvent {
 
 export interface AiStreamDoneEvent {
   request_id: string;
+  output_text: string;
+  tool_calls: AiToolCall[];
 }
 
 export interface AiStreamErrorEvent {
@@ -696,6 +709,9 @@ export async function aiStreamChat(params: {
   providerId: string;
   modelId: string;
   messages: AiChatMessage[];
+  tools?: unknown[];
+  toolChoice?: string;
+  parallelToolCalls?: boolean;
 }): Promise<void> {
   return invoke('ai_stream_chat', {
     request: {
@@ -703,6 +719,9 @@ export async function aiStreamChat(params: {
       provider_id: params.providerId,
       model_id: params.modelId,
       messages: params.messages,
+      tools: params.tools ?? [],
+      tool_choice: params.toolChoice ?? 'auto',
+      parallel_tool_calls: params.parallelToolCalls ?? false,
     },
   });
 }

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useToolsStore } from '../../stores/useToolsStore';
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import { useChatStore } from '../../stores/useChatStore';
+import { useProviderStore } from '../../stores/useProviderStore';
 import { Icon, IconName } from '../ui/Icon';
 import { Input } from '../ui/Input';
 import { Switch } from '../ui/Switch';
@@ -31,6 +32,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     removeCitation,
   } = useCitationsStore();
   const { selectedConversationId, createConversation } = useChatStore();
+  const nativeToolsSupported = useProviderStore((state) => state.selectedSupportsNativeToolCalling());
   const [activeTab, setActiveTab] = useState<'context' | 'tools' | 'sources'>('context');
   const [isDragging, setIsDragging] = useState(false);
   const [isAddingUrl, setIsAddingUrl] = useState(false);
@@ -573,6 +575,11 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
         {/* Tools Tab */}
         {activeTab === 'tools' && (
           <div className="space-y-4">
+            {!nativeToolsSupported && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                Les outils sont indisponibles pour le provider ou le modèle actuellement sélectionné. Sélectionnez un modèle compatible avec le tool calling natif pour les activer.
+              </div>
+            )}
             {/* Built-in Tools */}
             <div>
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
@@ -583,14 +590,14 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                   chatTools.map((tool) => (
                     (() => {
                       const webSearchLockedByKey = tool.id === 'web_search' && !hasSelectedWebSearchKey;
-                      const switchDisabled = webSearchLockedByKey;
+                      const switchDisabled = webSearchLockedByKey || !nativeToolsSupported;
 
                       return (
                     <div
                       key={tool.id}
                       className={cn(
                         'relative group flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-accent transition-colors',
-                        webSearchLockedByKey && 'opacity-50'
+                        switchDisabled && 'opacity-50'
                       )}
                     >
                       <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
@@ -604,7 +611,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                       </div>
                       <div className="flex items-center shrink-0">
                         <Switch
-                          checked={webSearchLockedByKey ? false : isChatToolEnabled(tool.id)}
+                          checked={isChatToolEnabled(tool.id)}
                           disabled={switchDisabled}
                           onCheckedChange={() => {
                             if (switchDisabled) return;
@@ -616,6 +623,13 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                         <div className="pointer-events-none absolute -top-2 right-2 hidden group-hover:block z-10">
                           <div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">
                             Ajoutez une clé API dans Paramètres &gt; Outils &gt; Web Search
+                          </div>
+                        </div>
+                      )}
+                      {!webSearchLockedByKey && !nativeToolsSupported && (
+                        <div className="pointer-events-none absolute -top-2 right-2 hidden group-hover:block z-10">
+                          <div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">
+                            Le modèle sélectionné ne supporte pas les tool calls natifs.
                           </div>
                         </div>
                       )}

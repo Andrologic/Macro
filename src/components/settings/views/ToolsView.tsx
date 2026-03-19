@@ -7,6 +7,7 @@ import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';
 import { cn } from '../../../utils/cn';
 import { useAppStore } from '../../../stores/useAppStore';
+import { useProviderStore } from '../../../stores/useProviderStore';
 import { getToolModePolicy } from '../../../services/toolModePolicy';
 import {
   WebSearchSettings,
@@ -24,6 +25,7 @@ export const ToolsView: React.FC = () => {
         isToolEnabled,
     } = useToolsStore();
     const mode = useAppStore((state) => state.mode);
+    const nativeToolsSupported = useProviderStore((state) => state.selectedSupportsNativeToolCalling());
 
     const chatPolicy = useMemo(() => getToolModePolicy('Chat'), []);
     const architectPolicy = useMemo(() => getToolModePolicy('Architect'), []);
@@ -73,10 +75,15 @@ export const ToolsView: React.FC = () => {
                <div className="mb-4 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
                  {mode === 'Chat'
                    ? 'Chat mode: user-selected tools from the Chat toolbox are respected before execution.'
-                                     : mode === 'Debug'
-                                         ? 'Debug mode: all globally enabled tools are available for testing (no chat-mode restriction).'
-                                         : 'Architect/Implement: enabled tools may run automatically when the model needs them; usage is shown inline in chat.'}
+                                      : mode === 'Debug'
+                                          ? 'Debug mode: all globally enabled tools are available for testing (no chat-mode restriction).'
+                                          : 'Architect/Implement: enabled tools may run automatically when the model needs them; usage is shown inline in chat.'}
                </div>
+               {!nativeToolsSupported && (
+                 <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                   Le provider ou le modèle actuellement sélectionné ne supporte pas le tool calling natif. Les outils restent configurables ici, mais ils ne seront pas injectés tant qu’un modèle compatible n’est pas sélectionné.
+                 </div>
+               )}
              <div className="mb-6">
                 <Input 
                    placeholder="Search tools & servers..." 
@@ -226,16 +233,17 @@ export const ToolsView: React.FC = () => {
                         (() => {
                             const webSearchLockedByKey =
                                 tool.id === 'web_search' && !hasSelectedWebSearchKey;
+                            const switchDisabled = webSearchLockedByKey || !nativeToolsSupported;
 
                             return (
                         <div
                             key={tool.id}
                             className={cn(
                                 'relative group flex items-start justify-between p-4 bg-card border border-border rounded-xl',
-                                webSearchLockedByKey && 'cursor-help'
+                                switchDisabled && 'cursor-help'
                             )}
                         >
-                            <div className={cn('flex gap-4', webSearchLockedByKey && 'opacity-50')}>
+                            <div className={cn('flex gap-4', switchDisabled && 'opacity-50')}>
                                 <div className="p-2 bg-primary/10 rounded-lg text-primary h-fit">
                                     <Icon name={(tool.icon as any) || 'tool'} size={18} />
                                 </div>
@@ -263,19 +271,26 @@ export const ToolsView: React.FC = () => {
                                 </div>
                             </div>
                             <Switch 
-                                checked={webSearchLockedByKey ? false : isToolEnabled(tool.id)} 
-                                disabled={webSearchLockedByKey}
+                                checked={isToolEnabled(tool.id)} 
+                                disabled={switchDisabled}
                                 onCheckedChange={() => {
-                                    if (webSearchLockedByKey) return;
+                                    if (switchDisabled) return;
                                     void toggleTool(tool.id);
                                 }} 
-                                className={cn(webSearchLockedByKey && 'opacity-50')}
+                                className={cn(switchDisabled && 'opacity-50')}
                                 id={tool.id}
                             />
                             {webSearchLockedByKey && (
                                 <div className="pointer-events-none absolute -top-2 right-3 hidden group-hover:block z-10">
                                     <div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">
                                         Add an API key in Web Search settings to enable this tool.
+                                    </div>
+                                </div>
+                            )}
+                            {!webSearchLockedByKey && !nativeToolsSupported && (
+                                <div className="pointer-events-none absolute -top-2 right-3 hidden group-hover:block z-10">
+                                    <div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">
+                                        Select a model with native tool calling support to use this tool.
                                     </div>
                                 </div>
                             )}
