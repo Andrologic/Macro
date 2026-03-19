@@ -21,7 +21,6 @@ import {
 import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
 import { getScopedProjectIds } from '../../services/globalProjects';
 import { useAppStore } from '../../stores/useAppStore';
-import { useChatStore } from '../../stores/useChatStore';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
@@ -117,7 +116,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [showArchived, setShowArchived] = useState(false);
   const [planReviewTarget, setPlanReviewTarget] = useState<{ planId: string; branchName: string } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const conversationToastShownRef = useRef<Set<string>>(new Set());
   const autoCreatingRef = useRef(false);
   const lastEffectIdRef = useRef<string | null | undefined>(undefined);
   const targetBranch = getGitFlowBaseBranch();
@@ -412,36 +410,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           });
           const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
           useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
-          const conversationId = plan.conversationId;
-          const hasSharedConversation = Boolean(
-            conversationId &&
-            scopedFullPlans.some((candidate) => candidate.id !== plan.id && candidate.conversationId === conversationId)
-          );
-          const appStoreForConversation = useAppStore.getState();
-          const fallbackProjectId =
-            resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
-            getArchitectPlanProjectIds(plan)[0] ||
-            scopedProjectIds[0] ||
-            appStoreForConversation.selectedProjectId ||
-            appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
-            null;
-          const ensuredConversation = await useChatStore
-            .getState()
-            .ensureArchitectConversationForPlan({
-              plan,
-              targetBranch,
-              fallbackProjectId: fallbackProjectId ?? undefined,
-              fallbackGroupId: appStoreForConversation.selectedGroupId ?? undefined,
-              sharedConversation: hasSharedConversation,
-            });
-          if (ensuredConversation.createdConversation && !conversationToastShownRef.current.has(plan.id)) {
-            toast.success(
-              hasSharedConversation
-                ? t('architect.planSelector.toastDedicatedConversation', 'Dedicated conversation created for this plan')
-                : t('architect.planSelector.toastConversationCreated', 'Conversation created for this plan')
-            );
-            conversationToastShownRef.current.add(plan.id);
-          }
         }
       } else if (hydrateActive && !refreshState.nextActivePlanId) {
         clearActivePlanSelection();
@@ -506,37 +474,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       });
       const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
       useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
-      const conversationId = plan.conversationId;
-      const plansSnapshot = await listArchitectPlans(targetBranch, true, true);
-      const hasSharedConversation = Boolean(
-        conversationId &&
-        plansSnapshot.plans.some((candidate) => candidate.id !== plan.id && candidate.conversationId === conversationId)
-      );
-      const appStoreForConversation = useAppStore.getState();
-      const fallbackProjectId =
-        resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
-        getArchitectPlanProjectIds(plan)[0] ||
-        scopedProjectIds[0] ||
-        appStoreForConversation.selectedProjectId ||
-        appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
-        null;
-      const ensuredConversation = await useChatStore
-        .getState()
-        .ensureArchitectConversationForPlan({
-          plan,
-          targetBranch,
-          fallbackProjectId: fallbackProjectId ?? undefined,
-          fallbackGroupId: appStoreForConversation.selectedGroupId ?? undefined,
-          sharedConversation: hasSharedConversation,
-        });
-      if (ensuredConversation.createdConversation && !conversationToastShownRef.current.has(plan.id)) {
-        toast.success(
-          hasSharedConversation
-            ? t('architect.planSelector.toastDedicatedConversation', 'Dedicated conversation created for this plan')
-            : t('architect.planSelector.toastConversationCreated', 'Conversation created for this plan')
-        );
-        conversationToastShownRef.current.add(plan.id);
-      }
       setIsOpen(false);
     } catch (activationError) {
       if (openReplicaRepair(activationError, () => activatePlan(planId))) {

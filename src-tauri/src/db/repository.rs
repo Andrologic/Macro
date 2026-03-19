@@ -105,13 +105,45 @@ pub async fn create_conversation(
     })
 }
 
-pub async fn update_conversation_metadata(
+fn truncate_last_message(content: &str) -> String {
+    if content.len() > 100 {
+        format!("{}...", &content[..100])
+    } else {
+        content.to_string()
+    }
+}
+
+pub async fn refresh_conversation_metadata(
     pool: &SqlitePool,
-    id: &str,
-    last_message: Option<&str>,
-    message_count: i32,
+    conversation_id: &str,
+    updated_at_override: Option<&str>,
 ) -> DbResult<()> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let count: i32 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
+        .bind(conversation_id)
+        .fetch_one(pool)
+        .await?;
+
+    let latest_row = sqlx::query(
+        r#"
+        SELECT content, created_at
+        FROM messages
+        WHERE conversation_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(conversation_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let last_message = latest_row
+        .as_ref()
+        .map(|row| truncate_last_message(&row.get::<String, _>("content")));
+    let fallback_updated_at = chrono::Utc::now().to_rfc3339();
+    let updated_at = updated_at_override
+        .map(str::to_string)
+        .or_else(|| latest_row.as_ref().map(|row| row.get::<String, _>("created_at")))
+        .unwrap_or(fallback_updated_at);
 
     sqlx::query(
         r#"
@@ -120,10 +152,10 @@ pub async fn update_conversation_metadata(
         WHERE id = ?
         "#,
     )
-    .bind(last_message)
-    .bind(message_count)
-    .bind(&now)
-    .bind(id)
+    .bind(last_message.as_deref())
+    .bind(count)
+    .bind(&updated_at)
+    .bind(conversation_id)
     .execute(pool)
     .await?;
 
@@ -395,6 +427,44 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
     Ok(messages)
 }
 
+pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, conversation_id, role, content, created_at, token_count, tool_traces_json, hidden_context
+        FROM messages
+        ORDER BY created_at ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let messages = rows
+        .into_iter()
+        .map(|row| Message {
+            id: row.get("id"),
+            conversation_id: row.get("conversation_id"),
+            role: row.get("role"),
+            content: row.get("content"),
+            created_at: row.get("created_at"),
+            token_count: row.get("token_count"),
+            tool_traces_json: row.get("tool_traces_json"),
+            hidden_context: row.get("hidden_context"),
+        })
+        .collect();
+
+    Ok(messages)
+}
+
+pub async fn get_chat_snapshot(pool: &SqlitePool) -> DbResult<ChatSnapshot> {
+    let conversations = list_conversations(pool).await?;
+    let messages = list_all_messages(pool).await?;
+
+    Ok(ChatSnapshot {
+        conversations,
+        messages,
+    })
+}
+
 pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbResult<Message> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -425,25 +495,7 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
     .execute(pool)
     .await?;
 
-    // Update conversation metadata
-    let count: i32 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
-        .bind(&input.conversation_id)
-        .fetch_one(pool)
-        .await?;
-
-    let truncated_content = if input.content.len() > 100 {
-        format!("{}...", &input.content[..100])
-    } else {
-        input.content.clone()
-    };
-
-    update_conversation_metadata(
-        pool,
-        &input.conversation_id,
-        Some(&truncated_content),
-        count,
-    )
-    .await?;
+    refresh_conversation_metadata(pool, &input.conversation_id, Some(&now)).await?;
 
     Ok(Message {
         id,
@@ -455,6 +507,63 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         tool_traces_json: input.tool_traces_json,
         hidden_context: input.hidden_context,
     })
+}
+
+pub async fn import_messages(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    messages: Vec<ImportMessageInput>,
+) -> DbResult<Vec<Message>> {
+    let mut transaction = pool.begin().await?;
+    let mut inserted = Vec::new();
+    let mut last_created_at: Option<String> = None;
+
+    for message in messages {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO messages (
+                id,
+                conversation_id,
+                role,
+                content,
+                created_at,
+                token_count,
+                tool_traces_json,
+                hidden_context
+            )
+            VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)
+            ON CONFLICT(id) DO NOTHING
+            "#,
+        )
+        .bind(&message.id)
+        .bind(conversation_id)
+        .bind(&message.role)
+        .bind(&message.content)
+        .bind(&message.created_at)
+        .execute(&mut *transaction)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            continue;
+        }
+
+        last_created_at = Some(message.created_at.clone());
+        inserted.push(Message {
+            id: message.id,
+            conversation_id: conversation_id.to_string(),
+            role: message.role,
+            content: message.content,
+            created_at: message.created_at,
+            token_count: None,
+            tool_traces_json: None,
+            hidden_context: None,
+        });
+    }
+
+    transaction.commit().await?;
+    refresh_conversation_metadata(pool, conversation_id, last_created_at.as_deref()).await?;
+
+    Ok(inserted)
 }
 
 pub async fn update_message_content(
