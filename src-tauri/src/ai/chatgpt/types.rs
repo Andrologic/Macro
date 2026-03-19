@@ -51,12 +51,33 @@ pub struct AiChatRequest {
     pub provider_id: String,
     pub model_id: String,
     pub messages: Vec<AiChatMessage>,
+    #[serde(default)]
+    pub tools: Vec<Value>,
+    pub tool_choice: Option<String>,
+    pub parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiChatMessage {
     pub role: String,
     pub content: AiChatMessageContent,
+    #[serde(default)]
+    pub tool_calls: Vec<AiToolCall>,
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: AiToolCallFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiToolCallFunction {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +109,8 @@ pub struct AiStreamChunkEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct AiStreamDoneEvent {
     pub request_id: String,
+    pub output_text: String,
+    pub tool_calls: Vec<AiToolCall>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,6 +198,15 @@ pub(super) enum ResponsesMessageItem {
     Message {
         role: String,
         content: Vec<ResponsesContentItem>,
+    },
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    FunctionCallOutput {
+        call_id: String,
+        output: String,
     },
 }
 

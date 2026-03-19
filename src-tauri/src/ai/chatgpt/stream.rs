@@ -1,8 +1,8 @@
 use super::session::{ensure_fresh_secret, force_refresh_secret};
 use super::types::{
-    extract_response_error, AiChatMessage, AiChatMessageContent, AiChatRequest, AiStreamChunkEvent,
-    AiStreamDoneEvent, AiStreamErrorEvent, ChatGptResponsesRequest, ResponsesContentItem,
-    ResponsesMessageItem, DEFAULT_ORIGINATOR,
+    extract_response_error, AiChatMessageContent, AiChatRequest, AiStreamChunkEvent,
+    AiStreamDoneEvent, AiStreamErrorEvent, AiToolCall, AiToolCallFunction, ChatGptResponsesRequest,
+    ResponsesContentItem, ResponsesMessageItem, DEFAULT_ORIGINATOR,
 };
 use crate::ai::AiState;
 use crate::db::models::ProviderConfig;
@@ -66,7 +66,7 @@ async fn stream_chat_inner(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Provider {} not found.", request.provider_id))?;
-    let body = build_responses_request(&request.model_id, &request.messages)?;
+    let body = build_responses_request(&request)?;
     let client = reqwest::Client::new();
 
     let mut secret = ensure_fresh_secret(&pool, &request.provider_id).await?;
@@ -117,6 +117,8 @@ async fn stream_chat_inner(
                 "ai:done",
                 AiStreamDoneEvent {
                     request_id: request.request_id,
+                    output_text: String::new(),
+                    tool_calls: Vec::new(),
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -172,15 +174,7 @@ fn process_sse_event(
         return Ok(false);
     }
     if payload == "[DONE]" {
-        app_handle
-            .emit(
-                "ai:done",
-                AiStreamDoneEvent {
-                    request_id: request_id.to_string(),
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        return Ok(true);
+        return Ok(false);
     }
 
     let value: Value = serde_json::from_str(&payload)
@@ -206,11 +200,15 @@ fn process_sse_event(
             Ok(false)
         }
         "response.completed" => {
+            let output_text = extract_completed_output_text(&value);
+            let tool_calls = extract_completed_tool_calls(&value)?;
             app_handle
                 .emit(
                     "ai:done",
                     AiStreamDoneEvent {
                         request_id: request_id.to_string(),
+                        output_text,
+                        tool_calls,
                     },
                 )
                 .map_err(|error| error.to_string())?;
@@ -222,30 +220,80 @@ fn process_sse_event(
     }
 }
 
-pub(super) fn build_responses_request(
-    model_id: &str,
-    messages: &[AiChatMessage],
-) -> Result<ChatGptResponsesRequest, String> {
+fn normalize_tool_definition(raw_tool: &Value) -> Result<Value, String> {
+    if !raw_tool.is_object() {
+        return Err("Tool definitions must be JSON objects.".to_string());
+    }
+
+    if raw_tool.get("function").is_some() {
+        let function = raw_tool
+            .get("function")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "Invalid function tool definition.".to_string())?;
+        let name = function
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Tool definition is missing function.name.".to_string())?;
+        let description = function
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let parameters = function
+            .get("parameters")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
+
+        return Ok(serde_json::json!({
+            "type": "function",
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        }));
+    }
+
+    Ok(raw_tool.clone())
+}
+
+pub(super) fn build_responses_request(request: &AiChatRequest) -> Result<ChatGptResponsesRequest, String> {
     let mut instructions = Vec::new();
     let mut input = Vec::new();
 
-    for message in messages {
+    for message in &request.messages {
         match message.role.as_str() {
             "system" => instructions.push(content_to_plain_text(&message.content)),
-            "assistant" => input.push(ResponsesMessageItem::Message {
-                role: "assistant".to_string(),
-                content: build_response_content_items(&message.content, true)?,
-            }),
+            "assistant" => {
+                let text = content_to_plain_text(&message.content);
+                if !text.trim().is_empty() {
+                    input.push(ResponsesMessageItem::Message {
+                        role: "assistant".to_string(),
+                        content: build_response_content_items(&message.content, true)?,
+                    });
+                }
+                for tool_call in &message.tool_calls {
+                    if tool_call.kind != "function" {
+                        continue;
+                    }
+                    input.push(ResponsesMessageItem::FunctionCall {
+                        call_id: tool_call.id.clone(),
+                        name: tool_call.function.name.clone(),
+                        arguments: tool_call.function.arguments.clone(),
+                    });
+                }
+            }
             "user" => input.push(ResponsesMessageItem::Message {
                 role: "user".to_string(),
                 content: build_response_content_items(&message.content, false)?,
             }),
-            "tool" => input.push(ResponsesMessageItem::Message {
-                role: "user".to_string(),
-                content: vec![ResponsesContentItem::InputText {
-                    text: content_to_plain_text(&message.content),
-                }],
-            }),
+            "tool" => {
+                let call_id = message
+                    .tool_call_id
+                    .clone()
+                    .ok_or_else(|| "Tool message is missing tool_call_id.".to_string())?;
+                input.push(ResponsesMessageItem::FunctionCallOutput {
+                    call_id,
+                    output: content_to_plain_text(&message.content),
+                });
+            }
             _ => input.push(ResponsesMessageItem::Message {
                 role: "user".to_string(),
                 content: vec![ResponsesContentItem::InputText {
@@ -259,18 +307,89 @@ pub(super) fn build_responses_request(
         return Err("No chat messages were provided.".to_string());
     }
 
+    let tools = request
+        .tools
+        .iter()
+        .map(normalize_tool_definition)
+        .collect::<Result<Vec<_>, _>>()?;
+
     Ok(ChatGptResponsesRequest {
-        model: model_id.to_string(),
+        model: request.model_id.clone(),
         instructions: instructions.join("\n\n").trim().to_string(),
         input,
-        tools: Vec::new(),
-        tool_choice: "auto".to_string(),
-        parallel_tool_calls: false,
+        tools,
+        tool_choice: request
+            .tool_choice
+            .clone()
+            .unwrap_or_else(|| "auto".to_string()),
+        parallel_tool_calls: request.parallel_tool_calls.unwrap_or(false),
         reasoning: None,
         store: false,
         stream: true,
         include: Vec::new(),
     })
+}
+
+fn extract_completed_items<'a>(payload: &'a Value) -> Option<&'a Vec<Value>> {
+    payload
+        .get("response")
+        .and_then(|response| response.get("output"))
+        .and_then(Value::as_array)
+        .or_else(|| payload.get("output").and_then(Value::as_array))
+}
+
+fn extract_completed_output_text(payload: &Value) -> String {
+    extract_completed_items(payload)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+        .flat_map(|item| {
+            item.get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|content| content.get("type").and_then(Value::as_str) == Some("output_text"))
+        .filter_map(|content| content.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn extract_completed_tool_calls(payload: &Value) -> Result<Vec<AiToolCall>, String> {
+    let Some(items) = extract_completed_items(payload) else {
+        return Ok(Vec::new());
+    };
+
+    let mut tool_calls = Vec::new();
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            continue;
+        }
+
+        let call_id = item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Function call item is missing call_id.".to_string())?;
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Function call item is missing name.".to_string())?;
+        let arguments = item
+            .get("arguments")
+            .and_then(Value::as_str)
+            .unwrap_or("{}");
+
+        tool_calls.push(AiToolCall {
+            id: call_id.to_string(),
+            kind: "function".to_string(),
+            function: AiToolCallFunction {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            },
+        });
+    }
+
+    Ok(tool_calls)
 }
 
 fn build_response_content_items(
