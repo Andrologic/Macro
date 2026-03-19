@@ -96,6 +96,8 @@ const ChatZone: React.FC = () => {
     createConversation,
     ensureConversationForCurrentMode,
     getConversationMessages,
+    hydrationStatus,
+    restoreStatus,
     isLoading,
     isStreaming,
     stopStreaming,
@@ -123,18 +125,6 @@ const ChatZone: React.FC = () => {
   // Lexical composer ref
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
 
-  // Ensure mode-scoped conversation is selected when project/task context changes.
-  // Mode switches are handled via a cross-store subscription in useChatStore.
-  useEffect(() => {
-    if (isLoading) return;
-    void ensureConversationForCurrentMode();
-  }, [
-    selectedGroupId,
-    selectedTaskId,
-    isLoading,
-    ensureConversationForCurrentMode,
-  ]);
-
   const [editingValue, setEditingValue] = useState('');
   const [editingImages, setEditingImages] = useState<MessageImageAttachment[]>([]);
   const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
@@ -145,6 +135,11 @@ const ChatZone: React.FC = () => {
   const currentMessages = selectedConversationId
     ? getConversationMessages(selectedConversationId)
     : [];
+  const isConversationPending =
+    hydrationStatus === 'idle' ||
+    hydrationStatus === 'hydrating' ||
+    restoreStatus === 'idle' ||
+    restoreStatus === 'resolving';
 
   const promptHistory = useMemo(() => {
     return currentMessages
@@ -168,6 +163,7 @@ const ChatZone: React.FC = () => {
       !selectedTask.is_blocked &&
       selectedTask.status !== 'Completed' &&
       selectedTask.status !== 'InReview' &&
+      !isConversationPending &&
       currentMessages.length === 0
   );
   const isImplementComposerLocked =
@@ -175,6 +171,7 @@ const ChatZone: React.FC = () => {
     implementExecutionMode === 'semi_auto' &&
     Boolean(selectedTask) &&
     currentMessages.length === 0;
+  const isComposerDisabled = isConversationPending || isImplementComposerLocked;
 
   const implementProgress = useMemo(() => {
     const total = tasks.length;
@@ -298,7 +295,7 @@ const ChatZone: React.FC = () => {
   };
 
   const handleStartExecution = async (notesOverride?: string) => {
-    if (mode !== 'Implement' || !selectedTask || isLoading || isStreaming) return;
+    if (mode !== 'Implement' || !selectedTask || isLoading || isStreaming || isConversationPending) return;
     if (!selectedProviderId || !selectedModelId) return;
     if (startingExecutionRef.current) return;
 
@@ -349,12 +346,13 @@ const ChatZone: React.FC = () => {
   useEffect(() => {
     if (implementExecutionMode !== 'full_auto') return;
     if (!canStartImplementExecution) return;
-    if (isLoading || isStreaming) return;
+    if (isLoading || isStreaming || isConversationPending) return;
     if (!selectedProviderId || !selectedModelId) return;
     void handleStartExecution();
   }, [
     canStartImplementExecution,
     implementExecutionMode,
+    isConversationPending,
     isLoading,
     isStreaming,
     selectedConversationId,
@@ -483,7 +481,7 @@ const ChatZone: React.FC = () => {
   };
 
   const handleSend = async () => {
-    if (isImplementComposerLocked) return;
+    if (isComposerDisabled) return;
     const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isLoading) return;
     const conversationId = await ensureConversation();
@@ -496,7 +494,7 @@ const ChatZone: React.FC = () => {
   };
 
   const handleChoiceClick = async (choiceText: string, taskId?: string) => {
-    if (isLoading || isStreaming) return;
+    if (isLoading || isStreaming || isConversationPending) return;
     const conversationId = await ensureConversation();
     if (selectedTask?.status === 'AwaitingResponse') {
       await retryTask(selectedTask.id);
@@ -509,7 +507,7 @@ const ChatZone: React.FC = () => {
   };
 
   const handleGenerateStrategy = async () => {
-    if (mode !== 'Architect' || !activeArchitectPlanId || isLoading || isStreaming) return;
+    if (mode !== 'Architect' || !activeArchitectPlanId || isLoading || isStreaming || isConversationPending) return;
     if (!hasExistingStrategy && activePlanNeedsCount === 0) return;
 
     const conversationId = await ensureConversation();
@@ -553,7 +551,9 @@ const ChatZone: React.FC = () => {
     await editMessage(messageId, content);
   };
 
-  const canSend = Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0;
+  const canSend =
+    !isConversationPending &&
+    (Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0);
 
   const handleDebugRefresh = async () => {
     if (isStreaming) {
@@ -683,7 +683,20 @@ const ChatZone: React.FC = () => {
 
         {/* Conversation Content */}
         <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-12 pt-8 pb-4">
-          {selectedConversationId && currentMessages.length > 0 ? (
+          {isConversationPending ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center space-y-4">
+                <div className="w-16 h-16 mx-auto rounded-xl bg-card border border-border flex items-center justify-center">
+                  <Icon name="loader" size={24} className="text-muted-foreground animate-spin" />
+                </div>
+                <div>
+                  <p className="text-muted-foreground text-sm">
+                    {t('chat.loadingConversation', 'Restoring conversation...')}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : selectedConversationId && currentMessages.length > 0 ? (
             <div className="max-w-4xl mx-auto space-y-6">
               {currentMessages.map((message) => {
                 const isEditing = editingMessageId === message.id;
@@ -1003,21 +1016,23 @@ const ChatZone: React.FC = () => {
                 <ModelDropdown />
               </div>
               {mode === 'Architect' && (
-                <button
-                  type="button"
-                  onClick={() => void handleGenerateStrategy()}
-                  disabled={
-                    !activeArchitectPlanId ||
+              <button
+                type="button"
+                onClick={() => void handleGenerateStrategy()}
+                disabled={
+                  !activeArchitectPlanId ||
+                  isConversationPending ||
+                  isLoading ||
+                  isStreaming ||
+                  (!hasExistingStrategy && activePlanNeedsCount === 0)
+                }
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
+                  !activeArchitectPlanId ||
+                    isConversationPending ||
                     isLoading ||
                     isStreaming ||
                     (!hasExistingStrategy && activePlanNeedsCount === 0)
-                  }
-                  className={cn(
-                    'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
-                    !activeArchitectPlanId ||
-                      isLoading ||
-                      isStreaming ||
-                      (!hasExistingStrategy && activePlanNeedsCount === 0)
                       ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
                       : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
                   )}
@@ -1094,9 +1109,11 @@ const ChatZone: React.FC = () => {
             >
               <ComposerEditor
                 ref={composerEditorRef}
-                editable={!isLoading && !!selectedProviderId && !!selectedModelId && !isImplementComposerLocked}
+                editable={!isLoading && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
                 placeholder={
-                  isImplementComposerLocked
+                  isConversationPending
+                    ? t('chat.loadingConversation', 'Restoring conversation...')
+                    : isImplementComposerLocked
                     ? t('implement.startExecutionFirst', 'Start execution to begin the task conversation')
                     : !selectedProviderId || !selectedModelId
                     ? t('chat.selectProvider')
@@ -1126,10 +1143,10 @@ const ChatZone: React.FC = () => {
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={isLoading || !canSend || !selectedProviderId || !selectedModelId || isImplementComposerLocked}
+                  disabled={isLoading || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled}
                   className={cn(
                     'rounded-lg px-3 h-9 flex items-center transition-colors',
-                    isLoading || !canSend || !selectedProviderId || !selectedModelId || isImplementComposerLocked
+                    isLoading || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled
                       ? 'bg-muted text-muted-foreground cursor-not-allowed'
                       : 'bg-primary hover:bg-primary/90 text-primary-foreground'
                   )}

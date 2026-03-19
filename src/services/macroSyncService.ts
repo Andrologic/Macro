@@ -713,8 +713,18 @@ export const createMacroSyncService = (
               planId: appState.activeArchitectPlanId,
               conversationId: params.conversationId,
             });
-          } catch {
-            // Keep stream-end metadata commits functional even if chat transcript sync is unavailable.
+          } catch (error) {
+            console.warn(
+              JSON.stringify({
+                scope: 'macro_sync_service',
+                event: 'architect_plan_chat_sync_failed',
+                at: new Date().toISOString(),
+                planId: appState.activeArchitectPlanId,
+                conversationId: params.conversationId,
+                trigger: params.trigger,
+                error: dependencies.toServiceError(error).message,
+              })
+            );
           }
         }
 

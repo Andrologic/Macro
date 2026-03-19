@@ -221,8 +221,10 @@ const App: React.FC = () => {
       const startTime = performance.now();
       console.log('[Init] Starting prioritized initialization...');
 
-      // CRITICAL: App bootstrap - blocks UI rendering
+      // CRITICAL: Restore app context, task context, and chat state in order.
       await initWithTracking('App Bootstrap', initializeApp, 'critical');
+      await initWithTracking('Task Store', initializeTasks, 'critical');
+      await initWithTracking('Chat Store', initializeChat, 'critical');
       setInitStatus((prev) => ({ ...prev, critical: true }));
 
       // HIGH: Auth session - parallel with UI rendering
@@ -234,8 +236,6 @@ const App: React.FC = () => {
 
       // NORMAL: Core data - can load in background
       const normalPriorityInit = Promise.all([
-        initWithTracking('Chat Store', initializeChat, 'normal'),
-        initWithTracking('Task Store', initializeTasks, 'normal'),
         initWithTracking('Shortcuts', initializeShortcuts, 'normal'),
       ]).then(() => {
         setInitStatus((prev) => ({ ...prev, normal: true }));
