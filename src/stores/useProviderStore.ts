@@ -27,7 +27,22 @@ const computeIsFreeModel = (model: AIModel): boolean => {
   return isFreePricing(model.pricing);
 };
 
-const normalizeDbModel = (model: tauriIpc.DbAiModel): AIModel => {
+const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'openai', 'openrouter']);
+
+const supportsNativeToolCallingForProviderType = (providerType?: string | null): boolean =>
+  !!providerType && NATIVE_TOOL_CALLING_PROVIDER_TYPES.has(providerType);
+
+const applyNativeToolCallingToProviderConfig = (config: ProviderConfig): ProviderConfig => ({
+  ...config,
+  nativeToolCalling: supportsNativeToolCallingForProviderType(config.providerType),
+});
+
+const applyNativeToolCallingToProvider = (provider: AIProvider, providerType?: string): AIProvider => ({
+  ...provider,
+  nativeToolCalling: supportsNativeToolCallingForProviderType(providerType),
+});
+
+const normalizeDbModel = (model: tauriIpc.DbAiModel, providerType?: string): AIModel => {
   const normalized: AIModel = {
     id: model.model_id,
     name: model.name,
@@ -44,6 +59,7 @@ const normalizeDbModel = (model: tauriIpc.DbAiModel): AIModel => {
     first_seen_at: model.first_seen_at,
     last_seen_at: model.last_seen_at,
     db_id: model.id,
+    nativeToolCalling: supportsNativeToolCallingForProviderType(providerType),
   };
   return { ...normalized, isFree: computeIsFreeModel(normalized) };
 };
@@ -129,30 +145,31 @@ const mergeLocalProviderConfig = async (
     const localApiKey = localProvider.apiKey?.trim();
     const localBaseUrl = localProvider.baseUrl?.trim();
 
-    return {
+    return applyNativeToolCallingToProviderConfig({
       ...provider,
       apiKey: hasExistingApiKey ? provider.apiKey : localApiKey || provider.apiKey,
       baseUrl: localBaseUrl || provider.baseUrl,
-    };
+    });
   });
 };
 
-const normalizeDbProviderConfig = (config: tauriIpc.DbProviderConfig): ProviderConfig => ({
-  id: config.id,
-  name: config.name,
-  providerType: config.provider_type,
-  baseUrl: config.base_url,
-  apiKey: config.api_key || undefined,
-  isEnabled: config.is_enabled,
-  isLocal: config.is_local,
-  authStatus:
-    (config.auth_status as ProviderConfig['authStatus']) ??
-    (config.provider_type === 'chatgpt' ? 'unauthenticated' : undefined),
-  authSource: config.auth_source ?? undefined,
-  planType: config.plan_type ?? undefined,
-  accountLabel: config.account_label ?? undefined,
-  tokenExpiresAt: config.token_expires_at ?? undefined,
-});
+const normalizeDbProviderConfig = (config: tauriIpc.DbProviderConfig): ProviderConfig =>
+  applyNativeToolCallingToProviderConfig({
+    id: config.id,
+    name: config.name,
+    providerType: config.provider_type,
+    baseUrl: config.base_url,
+    apiKey: config.api_key || undefined,
+    isEnabled: config.is_enabled,
+    isLocal: config.is_local,
+    authStatus:
+      (config.auth_status as ProviderConfig['authStatus']) ??
+      (config.provider_type === 'chatgpt' ? 'unauthenticated' : undefined),
+    authSource: config.auth_source ?? undefined,
+    planType: config.plan_type ?? undefined,
+    accountLabel: config.account_label ?? undefined,
+    tokenExpiresAt: config.token_expires_at ?? undefined,
+  });
 
 const toProviderStatus = (
   config: ProviderConfig,
@@ -235,6 +252,8 @@ interface ProviderStore {
   cancelChatGptAuth: (providerId: string) => Promise<void>;
   disconnectProviderAuth: (providerId: string) => Promise<ProviderConfig>;
   testConnection: (providerId: string) => Promise<{ success: boolean; message: string }>;
+  supportsNativeToolCalling: (providerId?: string | null, modelId?: string | null) => boolean;
+  selectedSupportsNativeToolCalling: () => boolean;
 }
 
 export const useProviderStore = create<ProviderStore>((set, get) => ({
@@ -250,6 +269,28 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   connectionStatus: {},
   authErrorsByProvider: {},
   authRequestIdsByProvider: {},
+
+  supportsNativeToolCalling: (providerId?: string | null, modelId?: string | null) => {
+    if (!providerId) return false;
+
+    const state = get();
+    const providerConfig = state.providerConfigs.find((provider) => provider.id === providerId);
+    if (!providerConfig?.nativeToolCalling) {
+      return false;
+    }
+
+    if (!modelId) {
+      return true;
+    }
+
+    const model = (state.modelsByProvider[providerId] || []).find((entry) => entry.id === modelId);
+    return model ? model.nativeToolCalling !== false : true;
+  },
+
+  selectedSupportsNativeToolCalling: () => {
+    const state = get();
+    return state.supportsNativeToolCalling(state.selectedProviderId, state.selectedModelId);
+  },
 
   initialize: async () => {
     const { loadProviderConfigs, loadProviderModels, scanModelsForProvider, testConnection } = get();
@@ -347,14 +388,19 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               ? getFirstEnabledModelId(get().modelsByProvider[nextSelectedProviderId] || [])
               : null;
         
-        const providers: AIProvider[] = providerConfigs.map((c) => ({
-          id: c.id,
-          name: c.name,
-          status: toProviderStatus(c),
-          baseUrl: c.baseUrl,
-          isLocal: c.isLocal,
-          isEnabled: c.isEnabled,
-        }));
+        const providers: AIProvider[] = providerConfigs.map((c) =>
+          applyNativeToolCallingToProvider(
+            {
+              id: c.id,
+              name: c.name,
+              status: toProviderStatus(c),
+              baseUrl: c.baseUrl,
+              isLocal: c.isLocal,
+              isEnabled: c.isEnabled,
+            },
+            c.providerType
+          )
+        );
 
         set({
           providerConfigs,
@@ -369,7 +415,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         }
       } else {
         // Fallback mock providers for development without Tauri
-        const mockConfigs: ProviderConfig[] = [
+        const mockConfigs = [
           { id: 'openai', name: 'OpenAI', providerType: 'openai', baseUrl: 'https://api.openai.com/v1', isEnabled: true, isLocal: false },
           { id: 'chatgpt', name: 'ChatGPT', providerType: 'chatgpt', baseUrl: 'https://chatgpt.com/backend-api', isEnabled: true, isLocal: false, authStatus: 'unauthenticated' },
           { id: 'zai', name: 'z.ai', providerType: 'openai', baseUrl: 'https://api.z.ai/api/coding/paas/v4', isEnabled: true, isLocal: false },
@@ -377,8 +423,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           { id: 'openrouter', name: 'OpenRouter', providerType: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', isEnabled: true, isLocal: false },
           { id: 'ollama', name: 'Ollama', providerType: 'ollama', baseUrl: 'http://localhost:11434/v1', isEnabled: true, isLocal: true },
           { id: 'lmstudio', name: 'LM Studio', providerType: 'lmstudio', baseUrl: 'http://localhost:1234/v1', isEnabled: true, isLocal: true },
-        ];
-        const providerConfigs = await mergeLocalProviderConfig(mockConfigs);
+        ] satisfies ProviderConfig[];
+        const providerConfigs = await mergeLocalProviderConfig(
+          mockConfigs.map(applyNativeToolCallingToProviderConfig)
+        );
         const currentSelectedProviderId = get().selectedProviderId;
         const currentSelectedModelId = get().selectedModelId;
         const currentSelectedProvider = providerConfigs.find(
@@ -396,14 +444,19 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               ? getFirstEnabledModelId(get().modelsByProvider[nextSelectedProviderId] || [])
               : null;
         
-        const providers: AIProvider[] = providerConfigs.map((c) => ({
-          id: c.id,
-          name: c.name,
-          status: toProviderStatus(c),
-          baseUrl: c.baseUrl,
-          isLocal: c.isLocal,
-          isEnabled: c.isEnabled,
-        }));
+        const providers: AIProvider[] = providerConfigs.map((c) =>
+          applyNativeToolCallingToProvider(
+            {
+              id: c.id,
+              name: c.name,
+              status: toProviderStatus(c),
+              baseUrl: c.baseUrl,
+              isLocal: c.isLocal,
+              isEnabled: c.isEnabled,
+            },
+            c.providerType
+          )
+        );
 
         set({
           providerConfigs,
@@ -429,12 +482,13 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   loadProviderModels: async (providerId: string) => {
-    const { modelsByProvider } = get();
+    const { modelsByProvider, providerConfigs } = get();
+    const providerType = providerConfigs.find((provider) => provider.id === providerId)?.providerType;
     if (tauriIpc.isTauriAvailable()) {
       set({ isLoadingModels: true });
       try {
         const models = await tauriIpc.listProviderModels(providerId);
-        const normalized = models.map(normalizeDbModel);
+        const normalized = models.map((model) => normalizeDbModel(model, providerType));
         set((state) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
           isLoadingModels: false,
@@ -481,7 +535,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         const updated = tauriIpc.isTauriAvailable()
           ? await tauriIpc.aiSyncProviderModels(providerId)
           : [];
-        const normalized = updated.map(normalizeDbModel);
+        const normalized = updated.map((model) => normalizeDbModel(model, config.providerType));
         set((state) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
           connectionStatus: { ...state.connectionStatus, [providerId]: 'online' },
@@ -561,7 +615,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           })),
         });
 
-        const normalized = updated.map(normalizeDbModel);
+        const normalized = updated.map((model) => normalizeDbModel(model, config.providerType));
         set((state) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
           connectionStatus: { ...state.connectionStatus, [providerId]: 'online' },
@@ -598,6 +652,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             request: m.pricing?.request,
           },
           isEnabled: true,
+          nativeToolCalling: supportsNativeToolCallingForProviderType(config.providerType),
         } satisfies AIModel;
         return { ...normalized, isFree: computeIsFreeModel(normalized) };
       });
@@ -675,7 +730,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   addManualModel: async (providerId: string, modelId: string, name: string) => {
     if (tauriIpc.isTauriAvailable()) {
       const updated = await tauriIpc.registerManualModel({ providerId, modelId, name });
-      const normalized = updated.map(normalizeDbModel);
+      const providerType = get().providerConfigs.find((provider) => provider.id === providerId)?.providerType;
+      const normalized = updated.map((model) => normalizeDbModel(model, providerType));
       set((state) => ({
         modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
       }));
@@ -694,6 +750,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             isEnabled: true,
             isManual: true,
             isFree: modelId.endsWith(':free'),
+            nativeToolCalling: supportsNativeToolCallingForProviderType(
+              get().providerConfigs.find((provider) => provider.id === providerId)?.providerType
+            ),
           },
         ],
       },
@@ -804,16 +863,19 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       // Update local state
       set((state) => ({
         providerConfigs: state.providerConfigs.map((c) =>
-          c.id === id ? { ...c, ...updates } : c
+          c.id === id ? applyNativeToolCallingToProviderConfig({ ...c, ...updates }) : c
         ),
         providers: state.providers.map((p) =>
           p.id === id
-            ? {
-                ...p,
-                name: updates.name ?? p.name,
-                baseUrl: updates.baseUrl ?? p.baseUrl,
-                isEnabled: updates.isEnabled ?? p.isEnabled,
-              }
+            ? applyNativeToolCallingToProvider(
+                {
+                  ...p,
+                  name: updates.name ?? p.name,
+                  baseUrl: updates.baseUrl ?? p.baseUrl,
+                  isEnabled: updates.isEnabled ?? p.isEnabled,
+                },
+                get().providerConfigs.find((provider) => provider.id === id)?.providerType
+              )
             : p
         ),
       }));
@@ -848,7 +910,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           isLocal: config.isLocal,
         });
 
-        const newConfig: ProviderConfig = {
+        const newConfig: ProviderConfig = applyNativeToolCallingToProviderConfig({
           id: created.id,
           name: created.name,
           providerType: created.provider_type,
@@ -856,16 +918,19 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           apiKey: created.api_key || undefined,
           isEnabled: created.is_enabled,
           isLocal: created.is_local,
-        };
+        });
 
-        const newProvider: AIProvider = {
-          id: created.id,
-          name: created.name,
-          status: 'offline',
-          baseUrl: created.base_url,
-          isLocal: created.is_local,
-          isEnabled: created.is_enabled,
-        };
+        const newProvider: AIProvider = applyNativeToolCallingToProvider(
+          {
+            id: created.id,
+            name: created.name,
+            status: 'offline',
+            baseUrl: created.base_url,
+            isLocal: created.is_local,
+            isEnabled: created.is_enabled,
+          },
+          created.provider_type
+        );
 
         set((state) => ({
           providerConfigs: [...state.providerConfigs, newConfig],
@@ -880,15 +945,18 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       } else {
         // Mock creation for development
         const id = `provider_${Date.now()}`;
-        const newConfig: ProviderConfig = { id, ...config };
-        const newProvider: AIProvider = {
-          id,
-          name: config.name,
-          status: 'offline',
-          baseUrl: config.baseUrl,
-          isLocal: config.isLocal,
-          isEnabled: config.isEnabled,
-        };
+        const newConfig: ProviderConfig = applyNativeToolCallingToProviderConfig({ id, ...config });
+        const newProvider: AIProvider = applyNativeToolCallingToProvider(
+          {
+            id,
+            name: config.name,
+            status: 'offline',
+            baseUrl: config.baseUrl,
+            isLocal: config.isLocal,
+            isEnabled: config.isEnabled,
+          },
+          config.providerType
+        );
 
         set((state) => ({
           providerConfigs: [...state.providerConfigs, newConfig],

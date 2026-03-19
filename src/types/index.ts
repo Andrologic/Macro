@@ -328,6 +328,7 @@ export interface AIProvider {
   baseUrl?: string;
   isLocal?: boolean;
   isEnabled?: boolean;
+  nativeToolCalling?: boolean;
 }
 
 export interface AIModel {
@@ -345,6 +346,7 @@ export interface AIModel {
   isFree?: boolean;
   isEnabled?: boolean;
   isManual?: boolean;
+  nativeToolCalling?: boolean;
   first_seen_at?: string;
   last_seen_at?: string;
   db_id?: string;
@@ -358,6 +360,7 @@ export interface ProviderConfig {
   apiKey?: string;
   isEnabled: boolean;
   isLocal: boolean;
+  nativeToolCalling?: boolean;
   authStatus?: 'authenticated' | 'unauthenticated' | 'authorizing' | 'refreshing' | 'expired' | 'error';
   authSource?: string;
   planType?: string;

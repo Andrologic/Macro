@@ -63,15 +63,50 @@ describe('streamingChat tool rendering helpers', () => {
     expect(block).toContain('const ok = true;');
   });
 
-  it('filters inline tool calls out of visible streamed text', () => {
-    const filter = __testables.createInlineToolCallFilter();
+  it('retries once when a required native tool was not used', () => {
+    expect(
+      __testables.shouldRetryMissingRequiredTool(
+        {
+          requiredToolNames: ['read_file'],
+          retrySystemPrompt: 'Use read_file first.',
+          maxRetries: 1,
+        },
+        [],
+        0
+      )
+    ).toBe(true);
 
-    const first = filter.push('Avant <tool_call>{"name":"read","arguments":{"path":"src/app.ts"}}');
-    const second = filter.push('</tool_call> apres');
-    const flushed = filter.flush();
+    expect(
+      __testables.shouldRetryMissingRequiredTool(
+        {
+          requiredToolNames: ['read_file'],
+          retrySystemPrompt: 'Use read_file first.',
+          maxRetries: 1,
+        },
+        [
+          {
+            id: 'call_1',
+            type: 'function',
+            function: {
+              name: 'read_file',
+              arguments: '{"file":"README.md"}',
+            },
+          },
+        ],
+        0
+      )
+    ).toBe(false);
 
-    expect(first).toBe('Avant ');
-    expect(second).toBe('');
-    expect(flushed).toBe(' apres');
+    expect(
+      __testables.shouldRetryMissingRequiredTool(
+        {
+          requiredToolNames: ['read_file'],
+          retrySystemPrompt: 'Use read_file first.',
+          maxRetries: 1,
+        },
+        [],
+        1
+      )
+    ).toBe(false);
   });
 });
