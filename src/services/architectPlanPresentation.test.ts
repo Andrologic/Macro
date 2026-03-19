@@ -14,7 +14,7 @@ import {
 } from './architectPlanPresentation';
 
 describe('architectPlanPresentation', () => {
-  it('uses identifier-first presentation for canonical plans', () => {
+  it('uses llm-name-first presentation for canonical plans', () => {
     const plan = {
       id: '1710000000000',
       slug: '1710000000000',
@@ -23,11 +23,11 @@ describe('architectPlanPresentation', () => {
     };
 
     expect(isCanonicalArchitectPlan(plan)).toBe(true);
-    expect(getArchitectPlanPrimaryName(plan)).toBe('1710000000000');
-    expect(getArchitectPlanSecondaryLabel(plan)).toBe('Checkout refresh');
-    expect(getArchitectPlanDisplayName(plan)).toBe('1710000000000 - Checkout refresh');
+    expect(getArchitectPlanPrimaryName(plan)).toBe('Checkout refresh');
+    expect(getArchitectPlanSecondaryLabel(plan)).toBe('1710000000000');
+    expect(getArchitectPlanDisplayName(plan)).toBe('Checkout refresh - 1710000000000');
     expect(getArchitectPlanEditableName(plan)).toBe('Checkout refresh');
-    expect(getArchitectPlanConversationTitle(plan)).toBe('Plan - 1710000000000 - Checkout refresh');
+    expect(getArchitectPlanConversationTitle(plan)).toBe('Plan - Checkout refresh - 1710000000000');
   });
 
   it('keeps legacy title-first presentation for legacy plans', () => {

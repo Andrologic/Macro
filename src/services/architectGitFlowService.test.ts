@@ -177,6 +177,15 @@ const buildPlan = () => ({
 const getExpectedWorktreePath = (projectId: string, repoPath: string, branchName: string) =>
   `${repoPath}/.macro/worktrees/task${toBranchWorktreeKey(projectId, branchName)}`;
 
+const getProjectGroups = () => [
+  {
+    id: 'group-main',
+    name: 'Main',
+    isOpen: true,
+    projects: Array.from(projectPaths.values()),
+  },
+];
+
 let architectGitFlowService: ReturnType<typeof createArchitectGitFlowService>;
 
 describe('architectGitFlowService', () => {
@@ -255,7 +264,9 @@ describe('architectGitFlowService', () => {
         gitWorktreeRemove: gitWorktreeRemoveMock,
       },
       getAppState: () => ({
+        selectedGroupId: 'group-main',
         selectedProjectId: 'web',
+        projectGroups: getProjectGroups(),
         getProjectById: (projectId: string) => projectPaths.get(projectId),
       }),
       getArchitectPlan: getArchitectPlanMock,
@@ -650,6 +661,103 @@ describe('architectGitFlowService', () => {
         cleanupError: null,
       },
     ]);
+  });
+
+  it('ignores stale expected project ids during delete cleanup when a real repository remains', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      projectId: 'web',
+      projectIds: ['web'],
+      expectedProjectIds: ['web', 'session-project-ghost'],
+      nodes: [buildPlan().nodes[0]],
+      predictedBranches: [buildPlan().predictedBranches[0]],
+    };
+    worktreeStatusByPath.clear();
+    worktreeStatusByPath.set(
+      getExpectedWorktreePath('web', '/repos/web', 'feature/checkout/checkout-web'),
+      createGitStatus({ branch: 'feature/checkout/checkout-web' })
+    );
+    gitBranchListMock.mockImplementation(async () =>
+      createGitBranches(['develop', 'plan/checkout', 'feature/checkout/checkout-web'])
+    );
+
+    const result = await architectGitFlowService.deletePlanAndCleanupBranches({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    });
+
+    expect(deleteArchitectPlanMock).toHaveBeenCalledWith({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+      hardDelete: undefined,
+    });
+    expect(result.repositories.map((repository) => repository.projectId)).toEqual(['web']);
+    expect(result.deletedWorktreeKeys).toEqual([
+      toBranchWorktreeKey('web', 'feature/checkout/checkout-web'),
+    ]);
+  });
+
+  it('keeps plan review blocked when a registered project has no repository path', async () => {
+    projectPaths.set('api', {
+      id: 'api',
+      name: 'API',
+      mountName: 'api',
+      path: '   ',
+    });
+    currentPlan = {
+      ...buildPlan(),
+      expectedProjectIds: ['web', 'api'],
+    };
+
+    await expect(architectGitFlowService.loadPlanReview({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    })).rejects.toThrow('Unable to resolve repository path for project api.');
+  });
+
+  it('falls back to getProjectById when projectGroups are temporarily stale', async () => {
+    const staleGroupsService = createArchitectGitFlowService({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitMerge: gitMergeMock,
+        gitBranchList: gitBranchListMock,
+        gitBranchDelete: gitBranchDeleteMock,
+        gitCheckout: gitCheckoutMock,
+        gitBranchCreate: gitBranchCreateMock,
+        gitWorktreeRemove: gitWorktreeRemoveMock,
+      },
+      getAppState: () => ({
+        selectedGroupId: 'group-main',
+        selectedProjectId: 'web',
+        projectGroups: [],
+        getProjectById: (projectId: string) => projectPaths.get(projectId),
+      }),
+      getArchitectPlan: getArchitectPlanMock,
+      updateArchitectPlan: updateArchitectPlanMock,
+      archiveArchitectPlan: archiveArchitectPlanMock,
+      deleteArchitectPlan: deleteArchitectPlanMock,
+      getGitFlowBaseBranch: () => 'develop',
+      toPlanIntegrationBranch: (slug: string) => `plan/${slug}`,
+      toPlanScopedFeatureBranch: (slug: string, branchName: string) => `feature/${slug}/${branchName.split('/').pop()}`,
+    });
+
+    const review = await staleGroupsService.loadPlanReview({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    });
+
+    expect(review.repositories.map((repository) => repository.repoPath)).toEqual(['/repos/web', '/repos/api']);
+  });
+
+  it('keeps explicit single-project git operations strict for unknown project ids', async () => {
+    await expect(architectGitFlowService.mergeFeatureBranchIntoPlanBranch({
+      projectId: 'session-project-ghost',
+      branchName: 'feature/ghost',
+      planBranchName: 'plan/checkout',
+    })).rejects.toThrow('Unable to resolve repository path for project session-project-ghost.');
   });
 
   it('refuses soft delete when cleanup preflight detects a dirty worktree', async () => {

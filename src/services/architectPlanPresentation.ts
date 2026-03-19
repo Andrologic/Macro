@@ -53,7 +53,7 @@ export const getArchitectPlanPrimaryName = (plan: ArchitectPlanPresentationShape
   }
 
   if (isCanonicalArchitectPlan(plan)) {
-    return plan.id;
+    return label || plan.id;
   }
 
   return trimToNull(plan.title) || plan.id;
@@ -66,11 +66,11 @@ export const getArchitectPlanSecondaryLabel = (
     return null;
   }
 
-  if (!isCanonicalArchitectPlan(plan)) {
-    return null;
+  if (isCanonicalArchitectPlan(plan)) {
+    return plan.id;
   }
 
-  return trimToNull(plan.label);
+  return null;
 };
 
 export const getArchitectPlanDisplayName = (plan: ArchitectPlanPresentationShape): string => {
