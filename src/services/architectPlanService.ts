@@ -2368,6 +2368,7 @@ export const updateArchitectPlan = async (input: {
   status?: ArchitectPlanStatus;
   projectId?: string;
   projectIds?: string[];
+  expectedProjectIds?: string[];
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
   setActive?: boolean;
@@ -2415,6 +2416,10 @@ export const updateArchitectPlan = async (input: {
     nodes: nextNodes,
     predictedBranches: nextPredictedBranches,
   });
+  const expectedProjectIds = normalizeExpectedProjectIds(
+    input.expectedProjectIds !== undefined ? input.expectedProjectIds : existing.expectedProjectIds,
+    projectIds
+  );
 
   const nextResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...existing,
@@ -2428,7 +2433,7 @@ export const updateArchitectPlan = async (input: {
     status: input.status || existing.status,
     projectId: projectIds[0],
     projectIds,
-    expectedProjectIds: existing.expectedProjectIds,
+    expectedProjectIds,
     nodes: nextNodes,
     predictedBranches: nextPredictedBranches,
     updatedAt: new Date().toISOString(),

@@ -150,6 +150,28 @@ describe('architectPlanService', () => {
     expect(cleared.label).toBeUndefined();
   });
 
+  it('allows explicitly expanding expected project ids on update', async () => {
+    const created = await createArchitectPlan({
+      branchName,
+      planId: '1710000000011',
+      projectIds: ['web'],
+    });
+
+    const updated = await updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      projectIds: ['web', 'api'],
+      expectedProjectIds: ['web', 'api'],
+    });
+
+    expect(updated.projectIds).toEqual(['web', 'api']);
+    expect(updated.expectedProjectIds).toEqual(['web', 'api']);
+
+    const reloaded = await getArchitectPlan(branchName, created.id);
+    expect(reloaded?.projectIds).toEqual(['web', 'api']);
+    expect(reloaded?.expectedProjectIds).toEqual(['web', 'api']);
+  });
+
   it('preserves legacy title rename behavior and uses stored slugs for branch naming', async () => {
     const legacyPlan: ArchitectPlanRecord = {
       id: 'legacy-plan',

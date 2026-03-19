@@ -4,7 +4,6 @@ import {
   archiveArchitectPlan,
   createArchitectPlan,
   getArchitectPlan,
-  getArchitectPlanChatMessages,
   getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
@@ -31,18 +30,16 @@ import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { cn } from '../../utils/cn';
 import {
   DEFAULT_NEW_PLAN_LABEL,
-  getNextDefaultNewPlanLabel,
   getArchitectPlanDisplayName,
   getArchitectPlanEditableName,
   getArchitectPlanPrimaryName,
   getArchitectPlanSecondaryLabel,
-  isDefaultNewPlanBaseLabel,
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
 import { toServiceError } from '../../services/contracts/errors';
+import { ensureScopedBlankPlan } from '../../services/architectAutoPlan';
 import {
   computePlanSelectorRefreshState,
-  isPlanVisibleForSelection,
   type PlanSelectorMutationCheck,
   type PlanSelectorRefreshState,
 } from './planSelectorState';
@@ -65,32 +62,6 @@ const formatRelativeDate = (iso: string, unknownLabel: string): string => {
   if (Number.isNaN(date.getTime())) return unknownLabel;
   return date.toLocaleDateString();
 };
-
-const trimToNull = (value?: string | null): string | null => {
-  const trimmed = typeof value === 'string' ? value.trim() : '';
-  return trimmed.length > 0 ? trimmed : null;
-};
-
-const isDraftPlaceholderCandidate = (plan: ArchitectPlanSummary): boolean => {
-  if (plan.status !== 'draft') {
-    return false;
-  }
-
-  const editableName = getArchitectPlanEditableName(plan);
-  return isDefaultNewPlanBaseLabel(editableName) || (isCanonicalArchitectPlan(plan) && !editableName);
-};
-
-const isPlanBlankDraft = (
-  plan: NonNullable<Awaited<ReturnType<typeof getArchitectPlan>>>,
-  needs: Awaited<ReturnType<typeof getArchitectPlanNeeds>>,
-  chatMessages: Awaited<ReturnType<typeof getArchitectPlanChatMessages>>
-): boolean =>
-  plan.status === 'draft' &&
-  !trimToNull(plan.description) &&
-  (plan.nodes?.length || 0) === 0 &&
-  (plan.predictedBranches?.length || 0) === 0 &&
-  needs.length === 0 &&
-  chatMessages.length === 0;
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const { t } = useTranslation();
@@ -116,7 +87,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [showArchived, setShowArchived] = useState(false);
   const [planReviewTarget, setPlanReviewTarget] = useState<{ planId: string; branchName: string } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const autoCreatingRef = useRef(false);
   const lastEffectIdRef = useRef<string | null | undefined>(undefined);
   const targetBranch = getGitFlowBaseBranch();
 
@@ -261,112 +231,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
   };
 
-  const ensureScopedBlankPlan = async (): Promise<ArchitectPlanSummary | null> => {
-    const fullResult = await listArchitectPlans(targetBranch, true, true);
-    const scopedFullPlans = fullResult.plans.filter((plan) =>
-      isPlanVisibleForSelection(plan, scopedProjectIds)
-    );
-    const draftCandidates = scopedFullPlans.filter(isDraftPlaceholderCandidate);
-    const nextLabels = [...scopedFullPlans];
-    const blankCandidates: ArchitectPlanSummary[] = [];
-
-    let blankPlan: ArchitectPlanSummary | null = null;
-
-    for (const candidate of draftCandidates) {
-      const plan = await getArchitectPlan(targetBranch, candidate.id);
-      if (!plan || plan.status === 'deleted') {
-        continue;
-      }
-
-      const [needs, chatMessages] = await Promise.all([
-        getArchitectPlanNeeds(targetBranch, candidate.id),
-        getArchitectPlanChatMessages(targetBranch, candidate.id),
-      ]);
-
-      if (isPlanBlankDraft(plan, needs, chatMessages)) {
-        blankCandidates.push(candidate);
-        if (!blankPlan || new Date(candidate.updatedAt).getTime() > new Date(blankPlan.updatedAt).getTime()) {
-          blankPlan = candidate;
-        }
-        continue;
-      }
-
-      const nextLabel = getNextDefaultNewPlanLabel(nextLabels);
-      await updateArchitectPlan({
-        branchName: targetBranch,
-        planId: candidate.id,
-        label: nextLabel,
-      });
-      nextLabels.push({
-        ...candidate,
-        label: nextLabel,
-      });
-    }
-
-    if (blankPlan) {
-      for (const candidate of blankCandidates) {
-        if (candidate.id === blankPlan.id) {
-          continue;
-        }
-
-        const nextLabel = getNextDefaultNewPlanLabel(nextLabels);
-        await updateArchitectPlan({
-          branchName: targetBranch,
-          planId: candidate.id,
-          label: nextLabel,
-        });
-        nextLabels.push({
-          ...candidate,
-          label: nextLabel,
-        });
-      }
-
-      if (!isDefaultNewPlanBaseLabel(blankPlan.label)) {
-        await updateArchitectPlan({
-          branchName: targetBranch,
-          planId: blankPlan.id,
-          label: DEFAULT_NEW_PLAN_LABEL,
-        });
-        return {
-          ...blankPlan,
-          label: DEFAULT_NEW_PLAN_LABEL,
-        };
-      }
-
-      return blankPlan;
-    }
-
-    return null;
-  };
-
   const loadPlans = async (hydrateActive = false) => {
     setIsLoading(true);
     setError(null);
     try {
       const fullResult = await listArchitectPlans(targetBranch, true, true);
-      const scopedFullPlans = fullResult.plans.filter((plan) =>
-        isPlanVisibleForSelection(plan, scopedProjectIds)
-      );
-
-      // Auto-create a default plan when none exist
-      if (!showArchived && scopedFullPlans.length === 0 && !autoCreatingRef.current) {
-        autoCreatingRef.current = true;
-        try {
-          const created = await createArchitectPlan({
-            branchName: targetBranch,
-            label: DEFAULT_NEW_PLAN_LABEL,
-            projectId: scopedProjectIds[0] || undefined,
-            projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
-            status: 'draft',
-            setActive: true,
-          });
-          await activatePlan(created.id);
-          return;
-        } finally {
-          autoCreatingRef.current = false;
-        }
-      }
-
       const refreshState = computePlanSelectorRefreshState({
         plans: fullResult.plans,
         scopedProjectIds,
@@ -493,7 +362,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setFormError(null);
     setIsLoading(true);
     try {
-      const existingBlankPlan = await ensureScopedBlankPlan();
+      const existingBlankPlan = await ensureScopedBlankPlan({
+        branchName: targetBranch,
+        scopedProjectIds,
+      });
       if (existingBlankPlan) {
         await loadPlans(false);
         await activatePlan(existingBlankPlan.id);
