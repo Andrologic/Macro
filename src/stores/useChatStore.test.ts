@@ -90,6 +90,7 @@ const providerState = {
   selectedModelId: 'model-1' as string | null,
   loadProviderModels: mock(async (providerId: string) => providerState.modelsByProvider[providerId] ?? []),
   scanModelsForProvider: mock(async (providerId: string) => providerState.modelsByProvider[providerId] ?? []),
+  selectedSupportsNativeToolCalling: () => false,
   selectModel: mock((modelId: string) => {
     providerState.selectedModelId = modelId;
   }),
@@ -140,6 +141,9 @@ const updateArchitectPlanMock = mock(async (params: {
   branchName: string;
   planId: string;
   conversationId?: string;
+  title?: string;
+  label?: string;
+  description?: string;
 }) => {
   const existing = architectPlans.get(params.planId);
   if (!existing) {
@@ -148,11 +152,22 @@ const updateArchitectPlanMock = mock(async (params: {
   const updated = {
     ...existing,
     conversationId: params.conversationId ?? existing.conversationId,
+    title: params.title ?? existing.title,
+    label: params.label ?? existing.label,
+    description: params.description ?? existing.description,
     updatedAt: '2026-03-19T01:00:00.000Z',
   };
   architectPlans.set(params.planId, updated);
   return updated;
 });
+
+const sendChatNonStreamingMock = mock(
+  async () =>
+    JSON.stringify({
+      title: 'Checkout refresh',
+      description: 'Refresh checkout state and cart recovery.',
+    })
+);
 
 const getLocalProjectContextStateMock = mock(async (_groupId: string) => ({
   architectConversationId: 'project-architect-conversation',
@@ -183,6 +198,8 @@ mock.module('./useCitationsStore', () => ({
     getState: () => ({
       clearCitations: () => undefined,
       citations: [],
+      getConversationContextCitations: () => [],
+      getConversationSourceCitations: () => [],
     }),
   },
 }));
@@ -232,11 +249,15 @@ mock.module('./useTerminalStore', () => ({
 mock.module('../services/streamingChat', () => ({
   streamChat: mock(async () => ({ usage: null })),
   cancelStream: mock(() => undefined),
-  sendChatNonStreaming: mock(async () => ({ content: '', usage: null })),
+  sendChatNonStreaming: sendChatNonStreamingMock,
 }));
 
 mock.module('../services/webSearchSettings', () => ({
-  getStreamingWebSearchConfig: () => null,
+  getStreamingWebSearchConfig: () => ({
+    enableWebSearch: false,
+    enableWebFetch: false,
+    webSearchOptions: undefined,
+  }),
 }));
 
 mock.module('../services/toolModePolicy', () => ({
@@ -296,6 +317,7 @@ mock.module('../services/architectPlanService', () => ({
 mock.module('../services/architectPlanPresentation', () => ({
   getArchitectPlanConversationTitle: (plan: ArchitectPlanRecord) => plan.label ?? plan.title,
   getArchitectPlanDisplayName: (plan: ArchitectPlanRecord) => plan.label ?? plan.title,
+  isDefaultNewPlanFamilyLabel: (value?: string | null) => /^new plan(?:\s+\d+)?$/i.test(value ?? ''),
   isCanonicalArchitectPlan: () => true,
 }));
 
@@ -431,6 +453,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     getArchitectPlanMock.mockClear();
     listArchitectPlansMock.mockClear();
     updateArchitectPlanMock.mockClear();
+    sendChatNonStreamingMock.mockClear();
     getLocalProjectContextStateMock.mockClear();
     syncArchitectPlanChatFromConversationMock.mockClear();
     getChatSnapshotMock.mockClear();
@@ -807,5 +830,58 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       useChatStore.getState().getConversationMessages('plan-conv').map((message: { id: string }) => message.id)
     ).toEqual(['m-1', 'm-2']);
     expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
+  });
+
+  it('renames an auto-created canonical plan after the first message', async () => {
+    const plan = createPlan({
+      id: '1710000000000',
+      slug: '1710000000000',
+      title: '1710000000000',
+      label: 'new plan',
+      description: '',
+      conversationId: 'plan-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('plan-conv'),
+          title: 'Plan - new plan',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'plan-conv',
+      content: 'On doit refondre le flux checkout et restaurer le panier.',
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(1);
+    expect(updateArchitectPlanMock).toHaveBeenCalledWith({
+      branchName: 'develop',
+      planId: '1710000000000',
+      label: 'Checkout refresh',
+      description: 'Refresh checkout state and cart recovery.',
+    });
+    expect(architectPlans.get('1710000000000')?.label).toBe('Checkout refresh');
+    expect(architectPlans.get('1710000000000')?.description).toBe(
+      'Refresh checkout state and cart recovery.'
+    );
+    expect(useChatStore.getState().conversations[0]?.title).toBe('Checkout refresh');
   });
 });

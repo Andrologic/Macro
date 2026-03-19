@@ -38,6 +38,7 @@ import {
   getGlobalProjectById,
   getFocusedProjectIdForGroup,
   getProjectGroupByProjectId,
+  getScopedProjectIds,
 } from '../services/globalProjects';
 import {
   countProjectsInRegistry,
@@ -47,6 +48,7 @@ import {
   resolveCanonicalProjectGroup,
   reconcileRememberedProjects,
 } from '../services/projectRegistry';
+import { ensureProjectGroupPlan } from '../services/architectAutoPlan';
 import type { NormalizeProjectRegistryResult } from '../services/projectRegistry';
 import type {
   MacroSyncNextAction,
@@ -434,6 +436,65 @@ const restoreProjectContext = async (
   });
 };
 
+const hydrateArchitectPlanInStore = async (input: {
+  plan: Awaited<ReturnType<typeof getArchitectPlan>>;
+  needs: Awaited<ReturnType<typeof getArchitectPlanNeeds>>;
+}): Promise<void> => {
+  const { useNeedsStore } = await import('./useNeedsStore');
+  const plan = input.plan;
+  if (!plan || plan.status === 'deleted') {
+    return;
+  }
+
+  useAppStore.setState({
+    activeArchitectPlanId: plan.id,
+    activePlanContext: {
+      id: plan.id,
+      slug: plan.slug,
+      title: plan.title,
+      label: plan.label,
+      description: plan.description,
+      status: plan.status,
+      targetBranch: plan.targetBranch,
+    },
+    planNodes: plan.nodes || [],
+    predictedBranches: plan.predictedBranches || [],
+  });
+  useNeedsStore.getState().replaceNeedsForPlan(plan.id, input.needs);
+};
+
+const ensureAutoPlanForSelection = async (input: {
+  groupId: string | null;
+  projectId: string | null;
+}): Promise<void> => {
+  if (!input.groupId && !input.projectId) {
+    return;
+  }
+
+  const appState = useAppStore.getState();
+  const scopedProjectIds = getScopedProjectIds(
+    appState.projectGroups,
+    input.groupId,
+    input.projectId
+  );
+  if (scopedProjectIds.length === 0) {
+    return;
+  }
+
+  const ensuredPlan = await ensureProjectGroupPlan({
+    branchName: getGitFlowBaseBranch(),
+    scopedProjectIds,
+  });
+  if (!ensuredPlan) {
+    return;
+  }
+
+  await hydrateArchitectPlanInStore({
+    plan: ensuredPlan.plan,
+    needs: ensuredPlan.needs,
+  });
+};
+
 const pruneLegacyWorkspaceMocks = (groups: ProjectGroup[]): ProjectGroup[] => {
   return groups
     .map((group) => ({
@@ -727,6 +788,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (groupId && get().projectSwitchPolicy === 'resume_per_project') {
         await restoreProjectContext(groupId, nextFocusProjectId);
       }
+
+      await ensureAutoPlanForSelection({
+        groupId,
+        projectId: nextFocusProjectId,
+      });
     })();
   },
 
@@ -841,6 +907,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
           selectedProjectId: nextProjectId,
           mode: get().mode,
         });
+        await ensureAutoPlanForSelection({
+          groupId: nextGroupId,
+          projectId: nextProjectId,
+        });
         return;
       }
 
@@ -875,6 +945,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (nextGroupId && get().projectSwitchPolicy === 'resume_per_project') {
         await restoreProjectContext(nextGroupId, nextProjectId);
       }
+
+      await ensureAutoPlanForSelection({
+        groupId: nextGroupId,
+        projectId: nextProjectId,
+      });
     } catch (error) {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
@@ -1797,6 +1872,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         await restoreProjectContext(restoredGroupId, preferredFocusProjectId);
       }
 
+      await ensureAutoPlanForSelection({
+        groupId: restoredGroupId,
+        projectId: preferredFocusProjectId,
+      });
+
       logProjectRegistryAction('succeeded', {
         action: 'create_project',
         projectId: newProject.id,
@@ -2047,6 +2127,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if ((resolvedGroupId || resolvedProjectId) && storedProjectSwitchPolicy === 'resume_per_project') {
         await restoreProjectContext(resolvedGroupId || resolvedProjectId!);
       }
+
+      await ensureAutoPlanForSelection({
+        groupId: useAppStore.getState().selectedGroupId,
+        projectId: useAppStore.getState().selectedProjectId,
+      });
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
