@@ -17,8 +17,6 @@ import { canUseRemoteKernel, getRemoteToolModePolicy } from '../services/remoteK
 import * as tauriIpc from '../services/tauriIpc';
 import {
   type ArchitectPlanRecord,
-  createArchitectPlan,
-  deleteArchitectPlan,
   getArchitectPlan,
   getArchitectPlanChatMessages,
   getArchitectPlanProjectIds,
@@ -27,9 +25,7 @@ import {
   listArchitectPlans,
   resolvePlanProjectContextId,
   resolveTargetBranch,
-  restoreArchitectPlan,
   saveArchitectPlanNeeds,
-  setActiveArchitectPlan,
   toPlanIntegrationBranch,
   toPlanScopedFeatureBranch,
   updateArchitectPlan,
@@ -305,7 +301,11 @@ interface ChatStore {
     fallbackProjectId?: string;
     fallbackGroupId?: string;
     sharedConversation?: boolean;
-  }) => Promise<string | null>;
+  }) => Promise<{
+    conversationId: string | null;
+    restoredTranscript: boolean;
+    createdConversation: boolean;
+  }>;
   ensureConversationForCurrentMode: () => Promise<string | null>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
   deleteConversation: (
@@ -639,25 +639,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return getGitFlowBaseBranch();
     };
 
-    const resolveArchitectPlanStatus = (
-      rawStatus: unknown,
-      fallback: 'draft' | 'validated' | 'in_progress' | 'completed' | 'archived' | 'deleted' = 'draft'
-    ): 'draft' | 'validated' | 'in_progress' | 'completed' | 'archived' | 'deleted' => {
-      const normalizedStatus = typeof rawStatus === 'string' ? rawStatus.trim().toLowerCase() : '';
-      const allowedStatuses = new Set([
-        'draft',
-        'validated',
-        'in_progress',
-        'completed',
-        'archived',
-        'deleted',
-      ]);
-
-      return allowedStatuses.has(normalizedStatus as typeof fallback)
-        ? (normalizedStatus as typeof fallback)
-        : fallback;
-    };
-
     const hydratePlanContext = async (targetBranch: string, planId: string): Promise<void> => {
       const plan = await getArchitectPlan(targetBranch, planId);
       if (!plan || plan.status === 'deleted') return;
@@ -692,8 +673,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const planNeeds = await getArchitectPlanNeeds(targetBranch, plan.id);
       useNeedsStore.getState().replaceNeedsForPlan(plan.id, planNeeds);
 
-      const plansIndex = await listArchitectPlans(targetBranch, true);
-      let conversationId: string | undefined = plan.conversationId;
+      const plansIndex = await listArchitectPlans(targetBranch, true, true);
+      const conversationId = plan.conversationId;
       const hasSharedConversation = Boolean(
         conversationId &&
         plansIndex.plans.some(
@@ -701,32 +682,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
         )
       );
 
-      if (!conversationId || hasSharedConversation) {
-        const fallbackGroupId = appStore.selectedGroupId;
-        const fallbackGroupProjectId = getFocusedProjectForGroup(
-          appStore.projectGroups,
-          fallbackGroupId,
-          appStore.selectedProjectId
-        )?.id ?? null;
-        const fallbackProjectId =
-          resolvePlanProjectContextId(plan, appStore.selectedProjectId) ||
-          fallbackGroupProjectId ||
-          appStore.selectedProjectId ||
-          appStore.projectGroups.flatMap((group) => group.projects)[0]?.id ||
-          null;
-        const ensuredConversationId = await get().ensureArchitectConversationForPlan({
-          plan,
-          targetBranch,
-          fallbackProjectId: fallbackProjectId ?? undefined,
-          fallbackGroupId: fallbackGroupId ?? undefined,
-          sharedConversation: hasSharedConversation,
-        });
-        conversationId = ensuredConversationId ?? undefined;
-      }
-
-      if (conversationId) {
-        get().selectConversation(conversationId);
-      }
+      const fallbackGroupId = appStore.selectedGroupId;
+      const fallbackGroupProjectId = getFocusedProjectForGroup(
+        appStore.projectGroups,
+        fallbackGroupId,
+        appStore.selectedProjectId
+      )?.id ?? null;
+      const fallbackProjectId =
+        resolvePlanProjectContextId(plan, appStore.selectedProjectId) ||
+        fallbackGroupProjectId ||
+        appStore.selectedProjectId ||
+        appStore.projectGroups.flatMap((group) => group.projects)[0]?.id ||
+        null;
+      await get().ensureArchitectConversationForPlan({
+        plan,
+        targetBranch,
+        fallbackProjectId: fallbackProjectId ?? undefined,
+        fallbackGroupId: fallbackGroupId ?? undefined,
+        sharedConversation: hasSharedConversation,
+      });
     };
 
     const allowedNodeTypes = new Set<PlanNodeType>(['spec', 'feature', 'task', 'milestone']);
@@ -1019,50 +993,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (normalizedToolName === 'plan_create') {
-      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
-      const appState = useAppStore.getState();
-      const scopedProjectIds = getScopedProjectIds(
-        appState.projectGroups,
-        appState.selectedGroupId,
-        appState.selectedProjectId
-      );
-      const fallbackProjectId =
-        scopedProjectIds[0] ||
-        appState.selectedProjectId ||
-        appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
-        undefined;
-      const titleAlias = typeof args.title === 'string' ? args.title.trim() : '';
-      const label = typeof args.label === 'string' ? args.label.trim() : titleAlias;
-      const description = typeof args.description === 'string' ? args.description : '';
-      const setActive = args.set_active !== false;
-      const plan = await createArchitectPlan({
-        branchName: targetBranch,
-        label: label || undefined,
-        description,
-        status: resolveArchitectPlanStatus(args.status, 'draft'),
-        projectId: fallbackProjectId,
-        projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
-        setActive,
-      });
-
-      if (setActive) {
-        await hydratePlanContext(targetBranch, plan.id);
-      }
-
-      return JSON.stringify(
-        {
-          plan_id: plan.id,
-          plan_slug: plan.slug,
-          plan_title: plan.title,
-          plan_label: plan.label ?? null,
-          display_name: getArchitectPlanDisplayName(plan),
-          target_branch: plan.targetBranch,
-          status: plan.status,
-          active: setActive,
-        },
-        null,
-        2
-      );
+      return 'plan_create is disabled in Architect chat. Ask the user to create a plan from the plan selector, then continue on the active plan.';
     }
 
     if (normalizedToolName === 'plan_list') {
@@ -1135,6 +1066,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!existingPlan || existingPlan.status === 'deleted') {
         return `Plan ${planId} is unavailable.`;
       }
+      if (args.status !== undefined) {
+        return 'plan_update cannot modify plan status in Architect chat.';
+      }
+      if (args.set_active !== undefined) {
+        return 'plan_update cannot change the active plan in Architect chat. Ask the user to select the plan from the plan selector instead.';
+      }
 
       const isCanonicalPlan = isCanonicalArchitectPlan(existingPlan);
       const titleAlias = typeof args.title === 'string' ? args.title.trim() : undefined;
@@ -1149,13 +1086,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ...(shouldPassTitleAlias ? { title: titleAlias } : {}),
         ...(label !== undefined ? { label } : {}),
         ...(typeof args.description === 'string' ? { description: args.description } : {}),
-        ...(args.status !== undefined
-          ? { status: resolveArchitectPlanStatus(args.status, existingPlan.status) }
-          : {}),
-        setActive: args.set_active === true,
       });
 
-      if (args.set_active === true || resolveActivePlanId() === updatedPlan.id) {
+      if (resolveActivePlanId() === updatedPlan.id) {
         await hydratePlanContext(targetBranch, updatedPlan.id);
       }
 
@@ -1176,89 +1109,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (normalizedToolName === 'plan_delete') {
-      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
-      if (!planId) {
-        return 'Missing plan_id for plan_delete.';
-      }
-      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
-      const wasActive = resolveActivePlanId() === planId;
-      await deleteArchitectPlan({
-        branchName: targetBranch,
-        planId,
-        hardDelete: args.hard_delete === true,
-      });
-
-      if (wasActive) {
-        const appStore = useAppStore.getState();
-        const refreshed = await listArchitectPlans(targetBranch, false, false);
-        const nextActivePlanId =
-          refreshed.activePlanId &&
-          refreshed.plans.some((plan) => plan.id === refreshed.activePlanId)
-            ? refreshed.activePlanId
-            : refreshed.plans[0]?.id ?? null;
-
-        if (nextActivePlanId) {
-          await hydratePlanContext(targetBranch, nextActivePlanId);
-        } else {
-          appStore.setActiveArchitectPlanId(null);
-          appStore.setPlanNodes([]);
-          appStore.setPredictedBranches([]);
-          appStore.setActivePlanContext(null);
-        }
-      }
-
-      return JSON.stringify(
-        {
-          plan_id: planId,
-          deleted: true,
-          hard_delete: args.hard_delete === true,
-          active_plan_id: resolveActivePlanId(),
-        },
-        null,
-        2
-      );
+      return 'plan_delete is disabled in Architect chat. Ask the user to delete or archive the plan from the plan selector if needed.';
     }
 
     if (normalizedToolName === 'plan_restore') {
-      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
-      if (!planId) {
-        return 'Missing plan_id for plan_restore.';
-      }
-      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
-      const restoredPlan = await restoreArchitectPlan(targetBranch, planId);
-
-      return JSON.stringify(
-        {
-          id: restoredPlan.id,
-          slug: restoredPlan.slug,
-          title: restoredPlan.title,
-          label: restoredPlan.label ?? null,
-          display_name: getArchitectPlanDisplayName(restoredPlan),
-          status: restoredPlan.status,
-          target_branch: restoredPlan.targetBranch,
-        },
-        null,
-        2
-      );
+      return 'plan_restore is disabled in Architect chat. Ask the user to restore the plan from the plan selector if needed.';
     }
 
     if (normalizedToolName === 'plan_set_active') {
-      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
-      if (!planId) {
-        return 'Missing plan_id for plan_set_active.';
-      }
-      const targetBranch = resolveArchitectTargetBranch(args.target_branch);
-      await setActiveArchitectPlan(targetBranch, planId);
-      await hydratePlanContext(targetBranch, planId);
-
-      return JSON.stringify(
-        {
-          active_plan_id: planId,
-          target_branch: targetBranch,
-        },
-        null,
-        2
-      );
+      return 'plan_set_active is disabled in Architect chat. Ask the user to select the plan from the plan selector.';
     }
 
     if (normalizedToolName === 'strategy_generate') {
@@ -1817,6 +1676,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         'In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).'
       );
       systemInstructions.push(
+        'In Architect mode, never call `plan_create`. The AI may only inspect, update, or activate existing plans. If no suitable plan exists, ask the user to create one from the plan selector before continuing.'
+      );
+      systemInstructions.push(
+        'In Architect mode, never call `plan_delete` or `plan_restore`. If a plan should be removed, archived, or restored, ask the user to do it from the plan selector.'
+      );
+      systemInstructions.push(
+        'In Architect mode, `plan_update` may only change the optional label/title alias and description. Never use it to change plan status or activate a plan.'
+      );
+      systemInstructions.push(
+        'In Architect mode, never call `plan_set_active`. If another plan should become active, ask the user to select it from the plan selector.'
+      );
+      systemInstructions.push(
         'Git workflow for plans is strict: each new plan gets a generated identifier and uses that identifier as its canonical slug. Integration branch is `plan/<plan-id>` from `develop`; strategy branches must be `feature/<plan-id>/<feature-slug>` and merge into the plan branch in dependency order. Optional labels must never change git branch identity.'
       );
       const activePlanContext = useAppStore.getState().activePlanContext;
@@ -2341,6 +2212,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       let conversation = existingConversation && !sharedConversation
         ? existingConversation
         : null;
+      let createdConversation = false;
+      let restoredTranscript = false;
 
       if (!conversation) {
         conversation = await get().createConversation(
@@ -2349,47 +2222,56 @@ export const useChatStore = create<ChatStore>((set, get) => {
           fallbackProjectId ?? null,
           fallbackGroupId ?? null
         );
+        createdConversation = true;
       }
 
       const localMessages = get().getConversationMessages(conversation.id);
-      if (localMessages.length === 0 && transcript.length > 0 && tauriIpc.isTauriAvailable()) {
+      if (localMessages.length === 0 && transcript.length > 0) {
         const restoredMessages: ChatMessage[] = [];
         for (const message of transcript) {
-          try {
-            const dbMessage = await tauriIpc.createMessage(conversation.id, message.role, message.content);
-            restoredMessages.push({
-              id: dbMessage.id,
-              task_id: '',
-              conversation_id: dbMessage.conversation_id,
-              role: dbMessage.role as 'user' | 'assistant',
-              content: dbMessage.content,
-              timestamp: dbMessage.created_at,
-            });
-          } catch {
-            restoredMessages.push({
-              id: message.id,
-              task_id: '',
-              conversation_id: conversation.id,
-              role: message.role,
-              content: message.content,
-              timestamp: message.createdAt,
-            });
+          if (tauriIpc.isTauriAvailable()) {
+            try {
+              const dbMessage = await tauriIpc.createMessage(conversation.id, message.role, message.content);
+              restoredMessages.push({
+                id: dbMessage.id,
+                task_id: '',
+                conversation_id: dbMessage.conversation_id,
+                role: dbMessage.role as 'user' | 'assistant',
+                content: dbMessage.content,
+                timestamp: dbMessage.created_at,
+              });
+              continue;
+            } catch {
+              // Fall through to local-only restoration.
+            }
           }
+
+          restoredMessages.push({
+            id: message.id,
+            task_id: '',
+            conversation_id: conversation.id,
+            role: message.role,
+            content: message.content,
+            timestamp: message.createdAt,
+          });
         }
 
-        set((state) => ({
-          messages: [...state.messages, ...restoredMessages],
-          conversations: state.conversations.map((candidate) =>
-            candidate.id === conversation!.id
-              ? {
-                  ...candidate,
-                  last_message: restoredMessages[restoredMessages.length - 1]?.content ?? candidate.last_message,
-                  message_count: restoredMessages.length,
-                  updated_at: new Date().toISOString(),
-                }
-              : candidate
-          ),
-        }));
+        if (restoredMessages.length > 0) {
+          restoredTranscript = true;
+          set((state) => ({
+            messages: [...state.messages, ...restoredMessages],
+            conversations: state.conversations.map((candidate) =>
+              candidate.id === conversation!.id
+                ? {
+                    ...candidate,
+                    last_message: restoredMessages[restoredMessages.length - 1]?.content ?? candidate.last_message,
+                    message_count: restoredMessages.length,
+                    updated_at: new Date().toISOString(),
+                  }
+                : candidate
+            ),
+          }));
+        }
       }
 
       if (conversation.id !== plan.conversationId) {
@@ -2405,7 +2287,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       get().selectConversation(conversation.id);
-      return conversation.id;
+      return {
+        conversationId: conversation.id,
+        restoredTranscript,
+        createdConversation,
+      };
     },
 
     ensureConversationForCurrentMode: async () => {
@@ -2441,6 +2327,41 @@ export const useChatStore = create<ChatStore>((set, get) => {
         void applySelectionForContext(mode, debugFallback);
 
         return debugFallback;
+      }
+
+      if (mode === 'Architect' && appState.activeArchitectPlanId) {
+        try {
+          const targetBranch = resolveTargetBranch(appState.activePlanContext?.targetBranch);
+          const activePlan = await getArchitectPlan(targetBranch, appState.activeArchitectPlanId);
+          if (activePlan && activePlan.status !== 'deleted') {
+            const plansSnapshot = await listArchitectPlans(targetBranch, true, true);
+            const conversationId = activePlan.conversationId;
+            const hasSharedConversation = Boolean(
+              conversationId &&
+              plansSnapshot.plans.some(
+                (candidate) => candidate.id !== activePlan.id && candidate.conversationId === conversationId
+              )
+            );
+            const fallbackProjectId =
+              resolvePlanProjectContextId(activePlan, selectedProjectId) ||
+              getArchitectPlanProjectIds(activePlan)[0] ||
+              selectedProjectId ||
+              appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
+              null;
+            const ensured = await get().ensureArchitectConversationForPlan({
+              plan: activePlan,
+              targetBranch,
+              fallbackProjectId: fallbackProjectId ?? undefined,
+              fallbackGroupId: selectedGroupId ?? undefined,
+              sharedConversation: hasSharedConversation,
+            });
+            if (ensured.conversationId) {
+              return ensured.conversationId;
+            }
+          }
+        } catch {
+          // Fall back to project-scoped Architect conversation selection below.
+        }
       }
 
       const localProjectContext = selectedGroupId

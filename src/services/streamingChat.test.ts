@@ -33,6 +33,8 @@ describe('streamingChat Architect tool contracts', () => {
 
     expect(properties.label).toBeDefined();
     expect(String(properties.title.description).toLowerCase()).toContain('legacy alias');
+    expect(properties.status).toBeUndefined();
+    expect(properties.set_active).toBeUndefined();
     expect(String(UPDATE_PLAN_TOOL.function.description)).toContain('never rename the canonical id or slug');
   });
 });
