@@ -666,6 +666,7 @@ describe('architectGitFlowService', () => {
   it('ignores stale expected project ids during delete cleanup when a real repository remains', async () => {
     currentPlan = {
       ...buildPlan(),
+      status: 'archived',
       projectId: 'web',
       projectIds: ['web'],
       expectedProjectIds: ['web', 'session-project-ghost'],
@@ -689,7 +690,7 @@ describe('architectGitFlowService', () => {
     expect(deleteArchitectPlanMock).toHaveBeenCalledWith({
       branchName: 'feature/implement',
       planId: 'plan-1',
-      hardDelete: undefined,
+      hardDelete: true,
     });
     expect(result.repositories.map((repository) => repository.projectId)).toEqual(['web']);
     expect(result.deletedWorktreeKeys).toEqual([
@@ -760,7 +761,22 @@ describe('architectGitFlowService', () => {
     })).rejects.toThrow('Unable to resolve repository path for project session-project-ghost.');
   });
 
-  it('refuses soft delete when cleanup preflight detects a dirty worktree', async () => {
+  it('requires the plan to be archived before deleting it', async () => {
+    await expect(architectGitFlowService.deletePlanAndCleanupBranches({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    })).rejects.toThrow('Archive the plan before deleting it.');
+
+    expect(deleteArchitectPlanMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses archived delete when cleanup preflight detects a dirty worktree', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      status: 'archived',
+    };
+
     worktreeStatusByPath.set(
       getExpectedWorktreePath('web', '/repos/web', 'feature/checkout/checkout-web'),
       createGitStatus({
@@ -779,7 +795,12 @@ describe('architectGitFlowService', () => {
     expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
   });
 
-  it('soft deletes only after cleanup succeeds', async () => {
+  it('deletes an archived plan only after cleanup succeeds', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      status: 'archived',
+    };
+
     const result = await architectGitFlowService.deletePlanAndCleanupBranches({
       branchName: 'feature/implement',
       planId: 'plan-1',
@@ -788,7 +809,7 @@ describe('architectGitFlowService', () => {
     expect(deleteArchitectPlanMock).toHaveBeenCalledWith({
       branchName: 'feature/implement',
       planId: 'plan-1',
-      hardDelete: undefined,
+      hardDelete: true,
     });
     expect(result.deletedBranches).toEqual([
       'feature/checkout/checkout-web',

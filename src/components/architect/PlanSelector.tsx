@@ -611,6 +611,16 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
   const handleConfirmDeletePlan = async () => {
     if (!planToDelete) return;
+    if (planToDelete.status !== 'archived' && planToDelete.status !== 'deleted') {
+      const message = t(
+        'architect.planSelector.archiveBeforeDelete',
+        'Archive the plan before deleting it.'
+      );
+      setError(message);
+      toast.error(message);
+      setPlanToDelete(null);
+      return;
+    }
 
     setError(null);
     setIsDeleting(true);
@@ -620,7 +630,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const cleanup = await deletePlanAndCleanupBranches({
         branchName: targetBranch,
         planId: deletedPlanId,
-        hardDelete: planToDelete.status === 'archived' || planToDelete.status === 'deleted',
       });
       useTaskStore.getState().clearPlanRuntimeState({
         planId: deletedPlanId,
@@ -846,6 +855,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const primaryName = getArchitectPlanPrimaryName(plan);
               const secondaryLabel = getArchitectPlanSecondaryLabel(plan);
               const secondaryText = secondaryLabel || (!isCanonicalPlan ? plan.id : null);
+              const canDeletePlan = plan.status === 'archived' || plan.status === 'deleted';
               const renameLabel = isCanonicalPlan
                 ? t('architect.planSelector.editPlanLabel', 'Edit plan label')
                 : t('architect.planSelector.renamePlan', 'Rename plan');
@@ -935,17 +945,19 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                           className="text-muted-foreground"
                         />
                       </button>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setPlanToDelete(plan);
-                        }}
-                        className="w-6 h-6 rounded border border-red-500/30 hover:bg-red-500/10 flex items-center justify-center"
-                        title={t('architect.planSelector.deletePlan', 'Delete plan')}
-                      >
-                        <Icon name="trash" size={11} className="text-red-500" />
-                      </button>
+                      {canDeletePlan && (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setPlanToDelete(plan);
+                          }}
+                          className="w-6 h-6 rounded border border-red-500/30 hover:bg-red-500/10 flex items-center justify-center"
+                          title={t('architect.planSelector.deletePlan', 'Delete plan')}
+                        >
+                          <Icon name="trash" size={11} className="text-red-500" />
+                        </button>
+                      )}
                     </div>
                   </div>
                   <div className="mt-1.5 text-[11px] text-muted-foreground flex items-center gap-2">
@@ -1006,7 +1018,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               defaultValue:
                 planToDelete.status === 'archived' || planToDelete.status === 'deleted'
                   ? `This will permanently remove "${getArchitectPlanDisplayName(planToDelete)}" from plan storage.`
-                  : `This will mark "${getArchitectPlanDisplayName(planToDelete)}" as deleted and clean its plan branches/worktrees. The plan metadata is kept for recovery.`,
+                  : `Archive "${getArchitectPlanDisplayName(planToDelete)}" before deleting it.`,
             })
             : t('architect.planSelector.deleteDialogFallback', 'This action cannot be undone.')
         }
@@ -1014,7 +1026,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           ? t('architect.planSelector.deleting', 'Deleting...')
           : (planToDelete?.status === 'archived' || planToDelete?.status === 'deleted'
             ? t('architect.planSelector.purgePlan', 'Purge permanently')
-            : t('architect.planSelector.deletePermanently', 'Delete and clean'))}
+            : t('architect.planSelector.archiveFirstShort', 'Archive first'))}
         cancelLabel={t('common.cancel', 'Cancel')}
         confirmVariant="error"
         onCancel={() => {
