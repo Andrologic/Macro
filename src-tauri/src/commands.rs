@@ -1009,6 +1009,18 @@ pub async fn db_list_conversations(pool: State<'_, DbPool>) -> CommandResult<Vec
 }
 
 #[tauri::command]
+pub async fn db_get_chat_snapshot(pool: State<'_, DbPool>) -> CommandResult<ChatSnapshot> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::get_chat_snapshot(pool)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_get_conversation(
     pool: State<'_, DbPool>,
     id: String,
@@ -1157,6 +1169,22 @@ pub async fn db_create_message(
     )
     .await
     .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_import_messages(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    messages: Vec<ImportMessageInput>,
+) -> CommandResult<Vec<Message>> {
+    let pool_guard = pool.lock().await;
+    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })?;
+
+    repository::import_messages(pool, &conversation_id, messages)
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]

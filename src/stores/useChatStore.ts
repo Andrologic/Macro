@@ -26,6 +26,7 @@ import {
   resolvePlanProjectContextId,
   resolveTargetBranch,
   saveArchitectPlanNeeds,
+  syncArchitectPlanChatFromConversation,
   toPlanIntegrationBranch,
   toPlanScopedFeatureBranch,
   updateArchitectPlan,
@@ -268,11 +269,25 @@ const saveMessageImagesToStorage = (imagesByMessageId: Record<string, MessageIma
   }
 };
 
+type ChatHydrationStatus = 'idle' | 'hydrating' | 'ready' | 'error';
+type ChatRestoreStatus = 'idle' | 'resolving' | 'ready' | 'error';
+type ChatContextKey = string;
+
+interface ArchitectTranscriptState {
+  dbCount: number;
+  metadataCount: number;
+  relation: 'equal' | 'db_prefix' | 'metadata_prefix' | 'diverged';
+}
+
 interface ChatStore {
   messages: ChatMessage[];
   conversations: Conversation[];
   selectedConversationId: string | null;
   selectedConversationIdsByMode: Partial<Record<AppMode, string | null>>;
+  hydrationStatus: ChatHydrationStatus;
+  restoreStatus: ChatRestoreStatus;
+  activeContextKey: ChatContextKey | null;
+  selectionRequestId: number;
   isLoading: boolean;
   isStreaming: boolean;
   lastError: string | null;
@@ -336,11 +351,145 @@ interface ChatStore {
   initialize: () => Promise<void>;
 }
 
+interface TranscriptComparableMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
+const mapDbConversationToConversation = (conversation: tauriIpc.DbConversation): Conversation => ({
+  id: conversation.id,
+  title: conversation.title,
+  description: conversation.description || '',
+  task_id: conversation.task_id,
+  group_id: conversation.group_id,
+  project_id: conversation.project_id,
+  last_message: conversation.last_message || '',
+  message_count: conversation.message_count,
+  updated_at: conversation.updated_at,
+  is_unread: false,
+});
+
+const mapDbMessageToChatMessage = (
+  message: tauriIpc.DbMessage,
+  conversationById: Map<string, Conversation>
+): ChatMessage => {
+  const taskId = conversationById.get(message.conversation_id)?.task_id ?? '';
+  if (message.role === 'assistant') {
+    const parsed = parseMessageQuickReplies(message.content);
+    return {
+      id: message.id,
+      task_id: taskId,
+      conversation_id: message.conversation_id,
+      role: message.role as 'user' | 'assistant',
+      content: parsed.content,
+      timestamp: message.created_at,
+      choices: parsed.choices,
+      allow_free_response: parsed.allowFreeResponse,
+    };
+  }
+
+  return {
+    id: message.id,
+    task_id: taskId,
+    conversation_id: message.conversation_id,
+    role: message.role as 'user' | 'assistant',
+    content: message.content,
+    timestamp: message.created_at,
+  };
+};
+
+const buildChatContextKey = (appState: Pick<
+  ReturnType<typeof useAppStore.getState>,
+  'mode' | 'selectedGroupId' | 'selectedProjectId' | 'selectedTaskId' | 'activeArchitectPlanId' | 'activePlanContext'
+>): ChatContextKey => {
+  return [
+    appState.mode,
+    appState.selectedGroupId || 'none',
+    appState.selectedProjectId || 'none',
+    appState.selectedTaskId || 'none',
+    appState.activeArchitectPlanId || 'none',
+    appState.activePlanContext?.targetBranch || 'none',
+  ].join('::');
+};
+
+const toComparableChatMessage = (message: ChatMessage): TranscriptComparableMessage => ({
+  id: message.id,
+  role: message.role,
+  content: message.content,
+  createdAt: message.timestamp,
+});
+
+const getStrictTranscriptFingerprint = (message: TranscriptComparableMessage): string => {
+  const trimmedId = message.id.trim();
+  if (trimmedId.length > 0) {
+    return `id:${trimmedId}`;
+  }
+  return `f:${message.role}:${message.content}:${message.createdAt}`;
+};
+
+const getSemanticTranscriptFingerprint = (message: TranscriptComparableMessage): string =>
+  `s:${message.role}:${message.content}`;
+
+const compareTranscriptSequence = (
+  dbMessages: TranscriptComparableMessage[],
+  metadataMessages: TranscriptComparableMessage[],
+  fingerprintFor: (message: TranscriptComparableMessage) => string
+): ArchitectTranscriptState => {
+  const sharedLength = Math.min(dbMessages.length, metadataMessages.length);
+
+  for (let index = 0; index < sharedLength; index += 1) {
+    if (fingerprintFor(dbMessages[index]!) !== fingerprintFor(metadataMessages[index]!)) {
+      return {
+        dbCount: dbMessages.length,
+        metadataCount: metadataMessages.length,
+        relation: 'diverged',
+      };
+    }
+  }
+
+  if (dbMessages.length === metadataMessages.length) {
+    return {
+      dbCount: dbMessages.length,
+      metadataCount: metadataMessages.length,
+      relation: 'equal',
+    };
+  }
+
+  return {
+    dbCount: dbMessages.length,
+    metadataCount: metadataMessages.length,
+    relation: dbMessages.length < metadataMessages.length ? 'db_prefix' : 'metadata_prefix',
+  };
+};
+
+const compareArchitectTranscriptState = (
+  dbMessages: TranscriptComparableMessage[],
+  metadataMessages: TranscriptComparableMessage[]
+): ArchitectTranscriptState => {
+  const strictState = compareTranscriptSequence(
+    dbMessages,
+    metadataMessages,
+    getStrictTranscriptFingerprint
+  );
+  if (strictState.relation !== 'diverged') {
+    return strictState;
+  }
+
+  return compareTranscriptSequence(
+    dbMessages,
+    metadataMessages,
+    getSemanticTranscriptFingerprint
+  );
+};
+
 export const useChatStore = create<ChatStore>((set, get) => {
   let aiSelections = { ...EMPTY_AI_CONTEXT_SELECTIONS };
   let aiSelectionsLoaded = false;
   let providerSelectionUnsubscribe: (() => void) | null = null;
-  let modeSelectionUnsubscribe: (() => void) | null = null;
+  let contextSelectionUnsubscribe: (() => void) | null = null;
+  let hydrationPromise: Promise<void> | null = null;
 
   const persistAiSelections = () => {
     if (!aiSelectionsLoaded) return;
@@ -507,6 +656,40 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const pruneConversationSelections = (conversations: Conversation[]) => {
+    const existingConversationIds = new Set(conversations.map((conversation) => conversation.id));
+    const nextConversationSelections: Record<string, PersistedAISelection> = {};
+
+    Object.entries(aiSelections.conversationSelections).forEach(([conversationId, selection]) => {
+      if (existingConversationIds.has(conversationId)) {
+        nextConversationSelections[conversationId] = selection;
+      }
+    });
+
+    if (
+      Object.keys(nextConversationSelections).length !==
+      Object.keys(aiSelections.conversationSelections).length
+    ) {
+      aiSelections = {
+        ...aiSelections,
+        conversationSelections: nextConversationSelections,
+      };
+      persistAiSelections();
+    }
+  };
+
+  const waitForHydration = async (): Promise<void> => {
+    if (get().hydrationStatus !== 'hydrating' || !hydrationPromise) {
+      return;
+    }
+
+    try {
+      await hydrationPromise;
+    } catch {
+      // A failed hydration already updates store state.
+    }
+  };
+
   const ensureProviderSelectionSync = () => {
     if (providerSelectionUnsubscribe) return;
 
@@ -525,11 +708,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const ensureModeSelectionSync = () => {
-    if (modeSelectionUnsubscribe) return;
+  const ensureContextSelectionSync = () => {
+    if (contextSelectionUnsubscribe) return;
 
-    modeSelectionUnsubscribe = useAppStore.subscribe((nextState, previousState) => {
-      if (nextState.mode === previousState.mode) return;
+    contextSelectionUnsubscribe = useAppStore.subscribe((nextState, previousState) => {
+      if (buildChatContextKey(nextState) === buildChatContextKey(previousState)) {
+        return;
+      }
       void get().ensureConversationForCurrentMode();
     });
   };
@@ -1700,7 +1885,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ];
   };
 
-  const recalcConversation = (conversationId: string, messages: ChatMessage[]) => {
+  const recalcConversation = (
+    conversationId: string,
+    messages: ChatMessage[],
+    updatedAt?: string
+  ) => {
     const conversationMessages = messages.filter(
       (message) => message.conversation_id === conversationId
     );
@@ -1708,7 +1897,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return {
       message_count: conversationMessages.length,
       last_message: lastMessage?.content ?? '',
-      updated_at: new Date().toISOString(),
+      updated_at: updatedAt ?? new Date().toISOString(),
     };
   };
 
@@ -1963,11 +2152,588 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .catch(console.error);
   };
 
+  const logArchitectTranscriptEvent = (
+    level: 'info' | 'warn',
+    event: string,
+    payload: Record<string, unknown>
+  ) => {
+    const entry = {
+      event,
+      at: new Date().toISOString(),
+      ...payload,
+    };
+
+    if (level === 'warn') {
+      console.warn(JSON.stringify(entry));
+      return;
+    }
+
+    console.info(JSON.stringify(entry));
+  };
+
+  const applyConversationSelection = (
+    conversationId: string,
+    mode: AppMode = useAppStore.getState().mode
+  ): boolean => {
+    const appState = useAppStore.getState();
+    const state = get();
+    const conversation = state.conversations.find((candidate) => candidate.id === conversationId);
+    if (!conversation) {
+      return false;
+    }
+
+    if (
+      !isConversationAllowedForMode(
+        conversation,
+        mode,
+        appState.selectedGroupId,
+        appState.selectedProjectId,
+        appState.selectedTaskId
+      )
+    ) {
+      return false;
+    }
+
+    set((current) => ({
+      selectedConversationId: conversationId,
+      selectedConversationIdsByMode: {
+        ...current.selectedConversationIdsByMode,
+        [mode]: conversationId,
+      },
+      conversations: current.conversations.map((candidate) =>
+        candidate.id === conversationId
+          ? { ...candidate, is_unread: false }
+          : candidate
+      ),
+    }));
+    return true;
+  };
+
+  const clearConversationSelection = (mode: AppMode) => {
+    set((current) => ({
+      selectedConversationId: null,
+      selectedConversationIdsByMode: {
+        ...current.selectedConversationIdsByMode,
+        [mode]: null,
+      },
+    }));
+  };
+
+  const createConversationRecord = async (params: {
+    title: string;
+    taskId: string | null;
+    projectId: string | null;
+    groupId?: string | null;
+    selectConversation?: boolean;
+  }): Promise<Conversation> => {
+    const { title, taskId, projectId, groupId, selectConversation = true } = params;
+    let newConversation: Conversation;
+    const mode = useAppStore.getState().mode;
+
+    if (tauriIpc.isTauriAvailable()) {
+      try {
+        const dbConversation = await tauriIpc.createConversation({
+          title,
+          taskId,
+          groupId,
+          projectId,
+        });
+        newConversation = mapDbConversationToConversation(dbConversation);
+      } catch (error) {
+        console.error('Failed to create conversation in DB:', error);
+        newConversation = {
+          id: `conv-${Date.now()}`,
+          title,
+          description: '',
+          task_id: taskId,
+          group_id: groupId ?? null,
+          project_id: projectId,
+          last_message: '',
+          message_count: 0,
+          updated_at: new Date().toISOString(),
+          is_unread: true,
+        };
+      }
+    } else {
+      newConversation = {
+        id: `conv-${Date.now()}`,
+        title,
+        description: '',
+        task_id: taskId,
+        group_id: groupId ?? null,
+        project_id: projectId,
+        last_message: '',
+        message_count: 0,
+        updated_at: new Date().toISOString(),
+        is_unread: true,
+      };
+    }
+
+    set((state) => ({
+      conversations: [newConversation, ...state.conversations],
+      ...(selectConversation
+        ? {
+            selectedConversationId: newConversation.id,
+            selectedConversationIdsByMode: {
+              ...state.selectedConversationIdsByMode,
+              [mode]: newConversation.id,
+            },
+          }
+        : {}),
+    }));
+
+    if (selectConversation) {
+      persistSelectionForContext(mode, newConversation.id);
+      void applySelectionForContext(mode, newConversation.id);
+    }
+
+    return newConversation;
+  };
+
+  const appendImportedMessagesToState = (
+    conversationId: string,
+    importedMessages: tauriIpc.DbMessage[] | TranscriptComparableMessage[]
+  ): number => {
+    if (importedMessages.length === 0) {
+      return 0;
+    }
+
+    const state = get();
+    const existingMessageIds = new Set(state.messages.map((message) => message.id));
+    const conversationById = new Map(state.conversations.map((conversation) => [conversation.id, conversation]));
+    const normalizedMessages = importedMessages
+      .map((message) => {
+        if ('conversation_id' in message) {
+          return mapDbMessageToChatMessage(message, conversationById);
+        }
+        return {
+          id: message.id,
+          task_id: conversationById.get(conversationId)?.task_id ?? '',
+          conversation_id: conversationId,
+          role: message.role,
+          content: message.content,
+          timestamp: message.createdAt,
+        } satisfies ChatMessage;
+      })
+      .filter((message) => !existingMessageIds.has(message.id));
+
+    if (normalizedMessages.length === 0) {
+      return 0;
+    }
+
+    const mergedMessages = [...state.messages, ...normalizedMessages];
+    const latestImportedTimestamp =
+      normalizedMessages[normalizedMessages.length - 1]?.timestamp ?? new Date().toISOString();
+    const conversationMeta = recalcConversation(
+      conversationId,
+      mergedMessages,
+      latestImportedTimestamp
+    );
+
+    set({
+      messages: mergedMessages,
+      conversations: state.conversations.map((conversation) =>
+        conversation.id === conversationId
+          ? { ...conversation, ...conversationMeta }
+          : conversation
+      ),
+    });
+
+    return normalizedMessages.length;
+  };
+
+  const importTranscriptSuffix = async (
+    conversationId: string,
+    transcript: TranscriptComparableMessage[]
+  ): Promise<number> => {
+    if (transcript.length === 0) {
+      return 0;
+    }
+
+    if (tauriIpc.isTauriAvailable()) {
+      try {
+        const imported = await tauriIpc.importMessages(
+          conversationId,
+          transcript.map((message) => ({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            created_at: message.createdAt,
+          }))
+        );
+        return appendImportedMessagesToState(conversationId, imported);
+      } catch (error) {
+        console.error('Failed to import architect transcript into DB:', error);
+      }
+    }
+
+    return appendImportedMessagesToState(conversationId, transcript);
+  };
+
+  const syncArchitectMetadataFromDb = async (params: {
+    branchName: string;
+    planId: string;
+    conversationId: string;
+    reason: ArchitectTranscriptState['relation'];
+  }) => {
+    try {
+      await syncArchitectPlanChatFromConversation({
+        branchName: params.branchName,
+        planId: params.planId,
+        conversationId: params.conversationId,
+      });
+      logArchitectTranscriptEvent('info', 'architect_transcript_metadata_synced', params);
+    } catch (error) {
+      logArchitectTranscriptEvent('warn', 'architect_transcript_metadata_sync_failed', {
+        ...params,
+        error: toServiceError(error).message,
+      });
+    }
+  };
+
+  const reconcileArchitectPlanConversation = async (params: {
+    plan: ArchitectPlanRecord;
+    targetBranch: string;
+    fallbackProjectId?: string;
+    fallbackGroupId?: string;
+    sharedConversation?: boolean;
+  }): Promise<{
+    conversationId: string | null;
+    restoredTranscript: boolean;
+    createdConversation: boolean;
+  }> => {
+    const {
+      plan,
+      targetBranch,
+      fallbackProjectId,
+      fallbackGroupId,
+      sharedConversation = false,
+    } = params;
+    const existingConversation = plan.conversationId
+      ? get().conversations.find((conversation) => conversation.id === plan.conversationId) ?? null
+      : null;
+    const transcript = await getArchitectPlanChatMessages(targetBranch, plan.id).catch(() => []);
+
+    let conversation = existingConversation && !sharedConversation
+      ? existingConversation
+      : null;
+    let createdConversation = false;
+    let restoredTranscript = false;
+
+    if (!conversation) {
+      conversation = await createConversationRecord({
+        title: getArchitectPlanConversationTitle(plan),
+        taskId: null,
+        projectId: fallbackProjectId ?? null,
+        groupId: fallbackGroupId ?? null,
+        selectConversation: false,
+      });
+      createdConversation = true;
+    }
+
+    const localMessages = getOrderedConversationMessages(conversation.id).map(toComparableChatMessage);
+    const transcriptMessages = transcript.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      createdAt: message.createdAt,
+    }));
+    const transcriptState = compareArchitectTranscriptState(localMessages, transcriptMessages);
+
+    if (transcriptState.relation === 'db_prefix') {
+      const importedCount = await importTranscriptSuffix(
+        conversation.id,
+        transcriptMessages.slice(localMessages.length)
+      );
+      restoredTranscript = importedCount > 0;
+      if (importedCount > 0) {
+        logArchitectTranscriptEvent('info', 'architect_transcript_restored_suffix', {
+          planId: plan.id,
+          conversationId: conversation.id,
+          importedCount,
+          dbCount: transcriptState.dbCount,
+          metadataCount: transcriptState.metadataCount,
+        });
+      }
+    } else if (transcriptState.relation === 'metadata_prefix') {
+      await syncArchitectMetadataFromDb({
+        branchName: targetBranch,
+        planId: plan.id,
+        conversationId: conversation.id,
+        reason: transcriptState.relation,
+      });
+    } else if (transcriptState.relation === 'diverged') {
+      logArchitectTranscriptEvent('warn', 'architect_transcript_diverged', {
+        planId: plan.id,
+        conversationId: conversation.id,
+        dbCount: transcriptState.dbCount,
+        metadataCount: transcriptState.metadataCount,
+      });
+      await syncArchitectMetadataFromDb({
+        branchName: targetBranch,
+        planId: plan.id,
+        conversationId: conversation.id,
+        reason: transcriptState.relation,
+      });
+    }
+
+    if (conversation.id !== plan.conversationId) {
+      try {
+        await updateArchitectPlan({
+          branchName: targetBranch,
+          planId: plan.id,
+          conversationId: conversation.id,
+        });
+      } catch {
+        // Keep local conversation even if metadata cannot be rewritten right now.
+      }
+    }
+
+    return {
+      conversationId: conversation.id,
+      restoredTranscript,
+      createdConversation,
+    };
+  };
+
+  const hydrateChatSnapshot = async (): Promise<void> => {
+    let conversations: Conversation[] = [];
+    let messages: ChatMessage[] = [];
+
+    if (tauriIpc.isTauriAvailable()) {
+      try {
+        const snapshot = await tauriIpc.getChatSnapshot();
+        conversations = snapshot.conversations.map(mapDbConversationToConversation);
+        const conversationById = new Map(
+          conversations.map((conversation) => [conversation.id, conversation])
+        );
+        messages = snapshot.messages.map((message) =>
+          mapDbMessageToChatMessage(message, conversationById)
+        );
+      } catch (snapshotError) {
+        console.warn('Falling back to legacy chat hydration path:', snapshotError);
+        const dbConversations = await tauriIpc.listConversations();
+        conversations = dbConversations.map(mapDbConversationToConversation);
+        const conversationById = new Map(
+          conversations.map((conversation) => [conversation.id, conversation])
+        );
+        for (const conversation of dbConversations) {
+          const dbMessages = await tauriIpc.listMessages(conversation.id);
+          messages.push(
+            ...dbMessages.map((message) => mapDbMessageToChatMessage(message, conversationById))
+          );
+        }
+      }
+    }
+
+    pruneConversationSelections(conversations);
+
+    const loadedImages = loadMessageImagesFromStorage();
+    const existingMessageIds = new Set(messages.map((message) => message.id));
+    const prunedImages: Record<string, MessageImageAttachment[]> = {};
+    Object.entries(loadedImages).forEach(([messageId, items]) => {
+      if (existingMessageIds.has(messageId) && Array.isArray(items) && items.length > 0) {
+        prunedImages[messageId] = items;
+      }
+    });
+    saveMessageImagesToStorage(prunedImages);
+
+    set({
+      conversations,
+      messages,
+      messageImagesByMessageId: prunedImages,
+      selectedConversationId: null,
+      selectedConversationIdsByMode: {},
+      hydrationStatus: 'ready',
+      restoreStatus: 'idle',
+      activeContextKey: null,
+      selectionRequestId: 0,
+      isLoading: false,
+      lastError: null,
+    });
+  };
+
+  const resolveConversationForCurrentContext = async (
+    requestId: number,
+    contextKey: ChatContextKey
+  ): Promise<string | null> => {
+    const isCurrentRequest = () => {
+      const state = get();
+      return state.selectionRequestId === requestId && state.activeContextKey === contextKey;
+    };
+
+    const appState = useAppStore.getState();
+    const { mode, selectedGroupId, selectedProjectId, selectedTaskId } = appState;
+    let state = get();
+
+    if (mode === 'Debug') {
+      return getFallbackConversationIdForMode(
+        state.conversations,
+        'Debug',
+        selectedGroupId,
+        selectedProjectId,
+        selectedTaskId
+      );
+    }
+
+    if (mode === 'Architect' && appState.activeArchitectPlanId) {
+      try {
+        const targetBranch = resolveTargetBranch(appState.activePlanContext?.targetBranch);
+        const activePlan = await getArchitectPlan(targetBranch, appState.activeArchitectPlanId);
+        if (!isCurrentRequest()) return null;
+        if (activePlan && activePlan.status !== 'deleted') {
+          const conversationId = activePlan.conversationId;
+          let hasSharedConversation = false;
+          if (conversationId) {
+            const plansSnapshot = await listArchitectPlans(targetBranch, true, true);
+            if (!isCurrentRequest()) return null;
+            hasSharedConversation = plansSnapshot.plans.some(
+              (candidate) =>
+                candidate.id !== activePlan.id && candidate.conversationId === conversationId
+            );
+          }
+          const fallbackProjectId =
+            resolvePlanProjectContextId(activePlan, selectedProjectId) ||
+            getArchitectPlanProjectIds(activePlan)[0] ||
+            selectedProjectId ||
+            appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
+            null;
+          const ensuredConversation = await reconcileArchitectPlanConversation({
+            plan: activePlan,
+            targetBranch,
+            fallbackProjectId: fallbackProjectId ?? undefined,
+            fallbackGroupId: selectedGroupId ?? undefined,
+            sharedConversation: hasSharedConversation,
+          });
+          if (!isCurrentRequest()) return null;
+          if (ensuredConversation.conversationId) {
+            return ensuredConversation.conversationId;
+          }
+        }
+      } catch (error) {
+        logArchitectTranscriptEvent('warn', 'architect_conversation_resolution_failed', {
+          planId: appState.activeArchitectPlanId,
+          error: toServiceError(error).message,
+        });
+      }
+    }
+
+    const localProjectContext = selectedGroupId
+      ? await getLocalProjectContextState(selectedGroupId)
+      : null;
+    if (!isCurrentRequest()) return null;
+    state = get();
+
+    const localContextConversationId =
+      mode === 'Architect'
+        ? localProjectContext?.architectConversationId
+        : mode === 'Implement'
+          ? localProjectContext?.implementConversationId
+          : null;
+    const localContextConversation = localContextConversationId
+      ? state.conversations.find((conversation) => conversation.id === localContextConversationId)
+      : null;
+
+    if (
+      localContextConversation &&
+      isConversationAllowedForMode(
+        localContextConversation,
+        mode,
+        selectedGroupId,
+        selectedProjectId,
+        selectedTaskId
+      )
+    ) {
+      return localContextConversation.id;
+    }
+
+    const rememberedId = state.selectedConversationIdsByMode[mode] ?? null;
+    const rememberedConversation = rememberedId
+      ? state.conversations.find((conversation) => conversation.id === rememberedId)
+      : null;
+
+    if (
+      rememberedConversation &&
+      isConversationAllowedForMode(
+        rememberedConversation,
+        mode,
+        selectedGroupId,
+        selectedProjectId,
+        selectedTaskId
+      )
+    ) {
+      return rememberedConversation.id;
+    }
+
+    const fallbackConversationId = getFallbackConversationIdForMode(
+      state.conversations,
+      mode,
+      selectedGroupId,
+      selectedProjectId,
+      selectedTaskId
+    );
+    if (fallbackConversationId) {
+      return fallbackConversationId;
+    }
+
+    if (mode === 'Architect' && selectedGroupId) {
+      const globalProject = getGlobalProjectById(appState.projectGroups, selectedGroupId);
+      const fallbackProjectId =
+        getFocusedProjectForGroup(
+          appState.projectGroups,
+          selectedGroupId,
+          selectedProjectId,
+          localProjectContext
+        )?.id ??
+        globalProject?.primarySubProjectId ??
+        selectedProjectId ??
+        null;
+      const title = globalProject ? `Architect - ${globalProject.name}` : 'Architect Session';
+      const created = await createConversationRecord({
+        title,
+        taskId: null,
+        projectId: fallbackProjectId,
+        groupId: selectedGroupId,
+        selectConversation: false,
+      });
+      if (!isCurrentRequest()) return null;
+      return created.id;
+    }
+
+    if (mode === 'Implement' && selectedTaskId) {
+      const task = useTaskStore.getState().getTaskById(selectedTaskId);
+      const projectId =
+        task?.project_id ??
+        getFocusedProjectForGroup(
+          appState.projectGroups,
+          selectedGroupId,
+          selectedProjectId,
+          localProjectContext
+        )?.id ??
+        selectedProjectId;
+      const created = await createConversationRecord({
+        title: task ? `Task - ${task.title}` : 'Task Session',
+        taskId: selectedTaskId,
+        projectId: projectId ?? null,
+        groupId: selectedGroupId,
+        selectConversation: false,
+      });
+      if (!isCurrentRequest()) return null;
+      return created.id;
+    }
+
+    return null;
+  };
+
   return {
     messages: [],
     conversations: [],
     selectedConversationId: null,
     selectedConversationIdsByMode: {},
+    hydrationStatus: 'idle',
+    restoreStatus: 'idle',
+    activeContextKey: null,
+    selectionRequestId: 0,
     isLoading: false,
     isStreaming: false,
     lastError: null,
@@ -2128,111 +2894,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
               : null,
         })),
       }));
+      void get().ensureConversationForCurrentMode();
     },
 
     selectConversation: (conversationId) => {
-      set((state) => {
-        const appState = useAppStore.getState();
-        const conversation = state.conversations.find((conv) => conv.id === conversationId);
-        if (!conversation) {
-          return {};
-        }
-
-        if (
-          !isConversationAllowedForMode(
-            conversation,
-            appState.mode,
-            appState.selectedGroupId,
-            appState.selectedProjectId,
-            appState.selectedTaskId
-          )
-        ) {
-          return {};
-        }
-
-        const updatedConversations = state.conversations.map((conv) =>
-          conv.id === conversationId ? { ...conv, is_unread: false } : conv
-        );
-        return {
-          selectedConversationId: conversationId,
-          selectedConversationIdsByMode: {
-            ...state.selectedConversationIdsByMode,
-            [appState.mode]: conversationId,
-          },
-          conversations: updatedConversations,
-        };
-      });
-
-      const appState = useAppStore.getState();
-      void applySelectionForContext(appState.mode, conversationId);
-    },
-
-    createConversation: async (title, taskId, projectId, groupId) => {
-      let newConversation: Conversation;
       const mode = useAppStore.getState().mode;
-
-      if (tauriIpc.isTauriAvailable()) {
-        try {
-          const dbConv = await tauriIpc.createConversation({
-            title,
-            taskId,
-            groupId,
-            projectId,
-          });
-          newConversation = {
-            id: dbConv.id,
-            title: dbConv.title,
-            description: dbConv.description || '',
-            task_id: dbConv.task_id,
-            group_id: dbConv.group_id,
-            project_id: dbConv.project_id,
-            last_message: dbConv.last_message || '',
-            message_count: dbConv.message_count,
-            updated_at: dbConv.updated_at,
-            is_unread: true,
-          };
-        } catch (error) {
-          console.error('Failed to create conversation in DB:', error);
-          // Fallback to local creation
-          newConversation = {
-            id: `conv-${Date.now()}`,
-            title,
-            description: '',
-            task_id: taskId,
-            group_id: groupId ?? null,
-            project_id: projectId,
-            last_message: '',
-            message_count: 0,
-            updated_at: new Date().toISOString(),
-            is_unread: true,
-          };
-        }
-      } else {
-        newConversation = {
-          id: `conv-${Date.now()}`,
-          title,
-          description: '',
-          task_id: taskId,
-          group_id: groupId ?? null,
-          project_id: projectId,
-          last_message: '',
-          message_count: 0,
-          updated_at: new Date().toISOString(),
-          is_unread: true,
-        };
+      const applied = applyConversationSelection(conversationId, mode);
+      if (!applied) {
+        return;
       }
-
-      set((state) => ({
-        conversations: [newConversation, ...state.conversations],
-        selectedConversationId: newConversation.id,
-        selectedConversationIdsByMode: {
-          ...state.selectedConversationIdsByMode,
-          [mode]: newConversation.id,
-        },
-      }));
-      persistSelectionForContext(mode, newConversation.id);
-      return newConversation;
+      persistSelectionForContext(mode, conversationId);
+      void applySelectionForContext(mode, conversationId);
     },
+
+    createConversation: async (title, taskId, projectId, groupId) =>
+      createConversationRecord({
+        title,
+        taskId,
+        projectId,
+        groupId,
+      }),
 
     ensureArchitectConversationForPlan: async ({
       plan,
@@ -2241,290 +2922,76 @@ export const useChatStore = create<ChatStore>((set, get) => {
       fallbackGroupId,
       sharedConversation = false,
     }) => {
-      const existingConversation = plan.conversationId
-        ? get().conversations.find((conversation) => conversation.id === plan.conversationId) ?? null
-        : null;
-      const transcript = await getArchitectPlanChatMessages(targetBranch, plan.id).catch(() => []);
+      const ensuredConversation = await reconcileArchitectPlanConversation({
+        plan,
+        targetBranch,
+        fallbackProjectId,
+        fallbackGroupId,
+        sharedConversation,
+      });
 
-      let conversation = existingConversation && !sharedConversation
-        ? existingConversation
-        : null;
-      let createdConversation = false;
-      let restoredTranscript = false;
-
-      if (!conversation) {
-        conversation = await get().createConversation(
-          getArchitectPlanConversationTitle(plan),
-          null,
-          fallbackProjectId ?? null,
-          fallbackGroupId ?? null
-        );
-        createdConversation = true;
-      }
-
-      const localMessages = get().getConversationMessages(conversation.id);
-      if (localMessages.length === 0 && transcript.length > 0) {
-        const restoredMessages: ChatMessage[] = [];
-        for (const message of transcript) {
-          if (tauriIpc.isTauriAvailable()) {
-            try {
-              const dbMessage = await tauriIpc.createMessage(conversation.id, message.role, message.content);
-              restoredMessages.push({
-                id: dbMessage.id,
-                task_id: '',
-                conversation_id: dbMessage.conversation_id,
-                role: dbMessage.role as 'user' | 'assistant',
-                content: dbMessage.content,
-                timestamp: dbMessage.created_at,
-              });
-              continue;
-            } catch {
-              // Fall through to local-only restoration.
-            }
-          }
-
-          restoredMessages.push({
-            id: message.id,
-            task_id: '',
-            conversation_id: conversation.id,
-            role: message.role,
-            content: message.content,
-            timestamp: message.createdAt,
-          });
-        }
-
-        if (restoredMessages.length > 0) {
-          restoredTranscript = true;
-          set((state) => ({
-            messages: [...state.messages, ...restoredMessages],
-            conversations: state.conversations.map((candidate) =>
-              candidate.id === conversation!.id
-                ? {
-                    ...candidate,
-                    last_message: restoredMessages[restoredMessages.length - 1]?.content ?? candidate.last_message,
-                    message_count: restoredMessages.length,
-                    updated_at: new Date().toISOString(),
-                  }
-                : candidate
-            ),
-          }));
+      if (ensuredConversation.conversationId) {
+        const mode = useAppStore.getState().mode;
+        if (applyConversationSelection(ensuredConversation.conversationId, mode)) {
+          persistSelectionForContext(mode, ensuredConversation.conversationId);
+          await applySelectionForContext(mode, ensuredConversation.conversationId);
         }
       }
 
-      if (conversation.id !== plan.conversationId) {
-        try {
-          await updateArchitectPlan({
-            branchName: targetBranch,
-            planId: plan.id,
-            conversationId: conversation.id,
-          });
-        } catch {
-          // Keep local conversation even if metadata cannot be rewritten right now.
-        }
-      }
-
-      get().selectConversation(conversation.id);
-      return {
-        conversationId: conversation.id,
-        restoredTranscript,
-        createdConversation,
-      };
+      return ensuredConversation;
     },
 
     ensureConversationForCurrentMode: async () => {
+      await waitForHydration();
+
       const appState = useAppStore.getState();
-      const state = get();
       const mode = appState.mode;
-      const selectedGroupId = appState.selectedGroupId;
-      const selectedProjectId = appState.selectedProjectId;
-      const selectedTaskId = appState.selectedTaskId;
+      const contextKey = buildChatContextKey(appState);
+      const requestId = get().selectionRequestId + 1;
 
-      if (mode === 'Debug') {
-        const debugFallback = getFallbackConversationIdForMode(
-          state.conversations,
-          'Debug',
-          selectedGroupId,
-          selectedProjectId,
-          selectedTaskId
-        );
+      set({
+        selectionRequestId: requestId,
+        activeContextKey: contextKey,
+        restoreStatus: 'resolving',
+        lastError: null,
+      });
 
-        if (
-          state.selectedConversationId !== debugFallback ||
-          state.selectedConversationIdsByMode.Debug !== debugFallback
-        ) {
-          set((current) => ({
-            selectedConversationId: debugFallback,
-            selectedConversationIdsByMode: {
-              ...current.selectedConversationIdsByMode,
-              Debug: debugFallback,
-            },
-          }));
+      const isCurrentRequest = () => {
+        const state = get();
+        return state.selectionRequestId === requestId && state.activeContextKey === contextKey;
+      };
+
+      try {
+        const conversationId = await resolveConversationForCurrentContext(requestId, contextKey);
+        if (!isCurrentRequest()) {
+          return get().selectedConversationId;
         }
 
-        void applySelectionForContext(mode, debugFallback);
-
-        return debugFallback;
-      }
-
-      if (mode === 'Architect' && appState.activeArchitectPlanId) {
-        try {
-          const targetBranch = resolveTargetBranch(appState.activePlanContext?.targetBranch);
-          const activePlan = await getArchitectPlan(targetBranch, appState.activeArchitectPlanId);
-          if (activePlan && activePlan.status !== 'deleted') {
-            const plansSnapshot = await listArchitectPlans(targetBranch, true, true);
-            const conversationId = activePlan.conversationId;
-            const hasSharedConversation = Boolean(
-              conversationId &&
-              plansSnapshot.plans.some(
-                (candidate) => candidate.id !== activePlan.id && candidate.conversationId === conversationId
-              )
-            );
-            const fallbackProjectId =
-              resolvePlanProjectContextId(activePlan, selectedProjectId) ||
-              getArchitectPlanProjectIds(activePlan)[0] ||
-              selectedProjectId ||
-              appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
-              null;
-            const ensured = await get().ensureArchitectConversationForPlan({
-              plan: activePlan,
-              targetBranch,
-              fallbackProjectId: fallbackProjectId ?? undefined,
-              fallbackGroupId: selectedGroupId ?? undefined,
-              sharedConversation: hasSharedConversation,
-            });
-            if (ensured.conversationId) {
-              return ensured.conversationId;
-            }
+        if (conversationId && applyConversationSelection(conversationId, mode)) {
+          persistSelectionForContext(mode, conversationId);
+          await applySelectionForContext(mode, conversationId);
+          if (isCurrentRequest()) {
+            set({ restoreStatus: 'ready', lastError: null });
           }
-        } catch {
-          // Fall back to project-scoped Architect conversation selection below.
+          return conversationId;
         }
-      }
 
-      const localProjectContext = selectedGroupId
-        ? await getLocalProjectContextState(selectedGroupId)
-        : null;
-      const localContextConversationId =
-        mode === 'Architect'
-          ? localProjectContext?.architectConversationId
-          : mode === 'Implement'
-            ? localProjectContext?.implementConversationId
-            : null;
-      const localContextConversation = localContextConversationId
-        ? state.conversations.find((conversation) => conversation.id === localContextConversationId)
-        : null;
-
-      if (
-        localContextConversation &&
-        isConversationAllowedForMode(
-          localContextConversation,
-          mode,
-          selectedGroupId,
-          selectedProjectId,
-          selectedTaskId
-        )
-      ) {
-        if (state.selectedConversationId !== localContextConversation.id) {
-          get().selectConversation(localContextConversation.id);
-        } else {
-          void applySelectionForContext(mode, localContextConversation.id);
+        clearConversationSelection(mode);
+        await applySelectionForContext(mode, null);
+        if (isCurrentRequest()) {
+          set({ restoreStatus: 'ready', lastError: null });
         }
-        return localContextConversation.id;
-      }
-
-      const rememberedId = state.selectedConversationIdsByMode[mode] ?? null;
-      const rememberedConversation = rememberedId
-        ? state.conversations.find((conversation) => conversation.id === rememberedId)
-        : null;
-
-      if (
-        rememberedConversation &&
-        isConversationAllowedForMode(
-          rememberedConversation,
-          mode,
-          selectedGroupId,
-          selectedProjectId,
-          selectedTaskId
-        )
-      ) {
-        if (state.selectedConversationId !== rememberedConversation.id) {
-          get().selectConversation(rememberedConversation.id);
-        } else {
-          void applySelectionForContext(mode, rememberedConversation.id);
+        return null;
+      } catch (error) {
+        const normalized = toServiceError(error);
+        if (isCurrentRequest()) {
+          set({
+            restoreStatus: 'error',
+            lastError: normalized.message,
+          });
         }
-        return rememberedConversation.id;
+        return null;
       }
-
-      const fallbackConversationId = getFallbackConversationIdForMode(
-        state.conversations,
-        mode,
-        selectedGroupId,
-        selectedProjectId,
-        selectedTaskId
-      );
-
-      if (fallbackConversationId) {
-        if (state.selectedConversationId !== fallbackConversationId) {
-          get().selectConversation(fallbackConversationId);
-        } else {
-          void applySelectionForContext(mode, fallbackConversationId);
-        }
-        return fallbackConversationId;
-      }
-
-      if (mode === 'Architect' && selectedGroupId) {
-        const globalProject = getGlobalProjectById(appState.projectGroups, selectedGroupId);
-        const fallbackProjectId =
-          getFocusedProjectForGroup(
-            appState.projectGroups,
-            selectedGroupId,
-            selectedProjectId,
-            localProjectContext
-          )?.id ??
-          globalProject?.primarySubProjectId ??
-          selectedProjectId ??
-          null;
-        const project = globalProject;
-        const title = project ? `Architect - ${project.name}` : 'Architect Session';
-        const created = await get().createConversation(
-          title,
-          null,
-          fallbackProjectId,
-          selectedGroupId
-        );
-        return created.id;
-      }
-
-      if (mode === 'Implement' && selectedTaskId) {
-        const task = useTaskStore.getState().getTaskById(selectedTaskId);
-        const title = task ? `Task - ${task.title}` : 'Task Session';
-        const projectId =
-          task?.project_id ??
-          getFocusedProjectForGroup(
-            appState.projectGroups,
-            selectedGroupId,
-            selectedProjectId,
-            localProjectContext
-          )?.id ??
-          selectedProjectId;
-        const created = await get().createConversation(
-          title,
-          selectedTaskId,
-          projectId ?? null,
-          selectedGroupId
-        );
-        return created.id;
-      }
-
-      set((current) => ({
-        selectedConversationId: null,
-        selectedConversationIdsByMode: {
-          ...current.selectedConversationIdsByMode,
-          [mode]: null,
-        },
-      }));
-      void applySelectionForContext(mode, null);
-      return null;
     },
 
     renameConversation: async (conversationId, title) => {
@@ -2646,8 +3113,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     getConversationMessages: (conversationId) => {
-      const state = get();
-      return state.messages.filter((msg) => msg.conversation_id === conversationId);
+      return getOrderedConversationMessages(conversationId);
     },
 
     sendMessage: async ({ conversationId, content, taskId, images }) => {
@@ -3053,136 +3519,49 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     initialize: async () => {
-      set({ isLoading: true, lastError: null });
+      set({
+        isLoading: true,
+        lastError: null,
+        hydrationStatus: 'hydrating',
+        restoreStatus: 'idle',
+        activeContextKey: null,
+        selectionRequestId: 0,
+      });
       try {
         aiSelections = normalizeAIContextSelections(
           await loadPreference<PersistedAIContextSelections>(PREF_KEYS.AI_CONTEXT_SELECTIONS)
         );
         aiSelectionsLoaded = true;
         ensureProviderSelectionSync();
-        ensureModeSelectionSync();
+        ensureContextSelectionSync();
 
-        // Try to load from Tauri DB if available
-        if (tauriIpc.isTauriAvailable()) {
-          const dbConversations = await tauriIpc.listConversations();
-          const conversations: Conversation[] = dbConversations.map((c) => ({
-            id: c.id,
-            title: c.title,
-            description: c.description || '',
-            task_id: c.task_id,
-            group_id: c.group_id,
-            project_id: c.project_id,
-            last_message: c.last_message || '',
-            message_count: c.message_count,
-            updated_at: c.updated_at,
-            is_unread: false,
-          }));
+        hydrationPromise = hydrateChatSnapshot();
+        await hydrationPromise;
+        hydrationPromise = null;
 
-          const existingConversationIds = new Set(conversations.map((conversation) => conversation.id));
-          const nextConversationSelections: Record<string, PersistedAISelection> = {};
-          Object.entries(aiSelections.conversationSelections).forEach(([conversationId, selection]) => {
-            if (existingConversationIds.has(conversationId)) {
-              nextConversationSelections[conversationId] = selection;
-            }
-          });
-          if (
-            Object.keys(nextConversationSelections).length !==
-            Object.keys(aiSelections.conversationSelections).length
-          ) {
-            aiSelections = {
-              ...aiSelections,
-              conversationSelections: nextConversationSelections,
-            };
-            persistAiSelections();
-          }
-
-          const conversationById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
-
-          // Load messages for all conversations
-          const allMessages: ChatMessage[] = [];
-          for (const conv of dbConversations) {
-            const dbMessages = await tauriIpc.listMessages(conv.id);
-            allMessages.push(
-              ...dbMessages.map((m) => ({
-                ...(m.role === 'assistant'
-                  ? (() => {
-                    const parsed = parseMessageQuickReplies(m.content);
-                    return {
-                      id: m.id,
-                      task_id: conversationById.get(m.conversation_id)?.task_id ?? '',
-                      conversation_id: m.conversation_id,
-                      role: m.role as 'user' | 'assistant',
-                      content: parsed.content,
-                      timestamp: m.created_at,
-                      choices: parsed.choices,
-                      allow_free_response: parsed.allowFreeResponse,
-                    };
-                  })()
-                  : {
-                    id: m.id,
-                    task_id: conversationById.get(m.conversation_id)?.task_id ?? '',
-                    conversation_id: m.conversation_id,
-                    role: m.role as 'user' | 'assistant',
-                    content: m.content,
-                    timestamp: m.created_at,
-                  }),
-              }))
-            );
-          }
-
-          set({
-            conversations,
-            messages: allMessages,
-            messageImagesByMessageId: (() => {
-              const loaded = loadMessageImagesFromStorage();
-              const existingMessageIds = new Set(allMessages.map((m) => m.id));
-              const pruned: Record<string, MessageImageAttachment[]> = {};
-              Object.entries(loaded).forEach(([messageId, items]) => {
-                if (existingMessageIds.has(messageId) && Array.isArray(items) && items.length > 0) {
-                  pruned[messageId] = items;
-                }
-              });
-              saveMessageImagesToStorage(pruned);
-              return pruned;
-            })(),
-            selectedConversationId: null,
-            selectedConversationIdsByMode: {},
-            isLoading: false,
-          });
-
-          const appState = useAppStore.getState();
-          void applySelectionForContext(appState.mode, null);
-        } else {
-          // Development mode without Tauri - start with empty state
-          set({
-            conversations: [],
-            messages: [],
-            messageImagesByMessageId: loadMessageImagesFromStorage(),
-            selectedConversationId: null,
-            selectedConversationIdsByMode: {},
-            isLoading: false,
-          });
-
-          const appState = useAppStore.getState();
-          void applySelectionForContext(appState.mode, null);
-        }
+        await get().ensureConversationForCurrentMode();
       } catch (error) {
+        hydrationPromise = null;
         const normalized = toServiceError(error);
         console.error('Failed to initialize chat store:', normalized.message);
-        // Fallback to empty state
+        const messageImagesByMessageId = loadMessageImagesFromStorage();
         set({
           conversations: [],
           messages: [],
-          messageImagesByMessageId: loadMessageImagesFromStorage(),
+          messageImagesByMessageId,
           selectedConversationId: null,
           selectedConversationIdsByMode: {},
+          hydrationStatus: 'error',
+          restoreStatus: 'error',
+          activeContextKey: null,
+          selectionRequestId: 0,
           isLoading: false,
           lastError: normalized.message,
         });
 
         aiSelectionsLoaded = true;
         ensureProviderSelectionSync();
-        ensureModeSelectionSync();
+        ensureContextSelectionSync();
       }
     },
   };

@@ -44,6 +44,18 @@ export interface DbMessage {
   hidden_context: string | null;
 }
 
+export interface DbImportMessageInput {
+  id: string;
+  role: string;
+  content: string;
+  created_at: string;
+}
+
+export interface DbChatSnapshot {
+  conversations: DbConversation[];
+  messages: DbMessage[];
+}
+
 export interface DbProviderConfig {
   id: string;
   name: string;
@@ -409,6 +421,10 @@ export async function listConversations(): Promise<DbConversation[]> {
   return invoke<DbConversation[]>('db_list_conversations');
 }
 
+export async function getChatSnapshot(): Promise<DbChatSnapshot> {
+  return invoke<DbChatSnapshot>('db_get_chat_snapshot');
+}
+
 export async function getConversation(id: string): Promise<DbConversation | null> {
   return invoke<DbConversation | null>('db_get_conversation', { id });
 }
@@ -474,6 +490,16 @@ export async function createMessage(
     tokenCount: options?.tokenCount ?? null,
     toolTracesJson: options?.toolTraces ? JSON.stringify(options.toolTraces) : null,
     hiddenContext: options?.hiddenContext ?? null,
+  });
+}
+
+export async function importMessages(
+  conversationId: string,
+  messages: DbImportMessageInput[]
+): Promise<DbMessage[]> {
+  return invoke<DbMessage[]>('db_import_messages', {
+    conversationId,
+    messages,
   });
 }
 

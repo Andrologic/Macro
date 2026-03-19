@@ -353,11 +353,9 @@ const restoreProjectContext = async (
 
   const context = await getLocalProjectContextState(groupId);
   const { useTaskStore } = await import('./useTaskStore');
-  const { useChatStore } = await import('./useChatStore');
   const { useNeedsStore } = await import('./useNeedsStore');
 
   const taskStore = useTaskStore.getState();
-  const chatStore = useChatStore.getState();
 
   let restoredTaskId: string | null = null;
   const contextTaskId = context?.lastTaskId;
@@ -434,30 +432,6 @@ const restoreProjectContext = async (
     selectedProjectId: nextFocusProjectId,
     mode: useAppStore.getState().mode,
   });
-
-  const mode = useAppStore.getState().mode;
-  const hasConversationsLoaded = chatStore.conversations.length > 0;
-
-  if (
-    hasConversationsLoaded &&
-    mode === 'Architect' &&
-    context?.architectConversationId &&
-    chatStore.conversations.some((conversation) => conversation.id === context.architectConversationId)
-  ) {
-    chatStore.selectConversation(context.architectConversationId);
-  }
-  if (
-    hasConversationsLoaded &&
-    mode === 'Implement' &&
-    context?.implementConversationId &&
-    chatStore.conversations.some((conversation) => conversation.id === context.implementConversationId)
-  ) {
-    chatStore.selectConversation(context.implementConversationId);
-  }
-
-  if (hasConversationsLoaded) {
-    await chatStore.ensureConversationForCurrentMode();
-  }
 };
 
 const pruneLegacyWorkspaceMocks = (groups: ProjectGroup[]): ProjectGroup[] => {
@@ -752,9 +726,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       if (groupId && get().projectSwitchPolicy === 'resume_per_project') {
         await restoreProjectContext(groupId, nextFocusProjectId);
-      } else {
-        const { useChatStore } = await import('./useChatStore');
-        await useChatStore.getState().ensureConversationForCurrentMode();
       }
     })();
   },
@@ -903,9 +874,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       if (nextGroupId && get().projectSwitchPolicy === 'resume_per_project') {
         await restoreProjectContext(nextGroupId, nextProjectId);
-      } else {
-        const { useChatStore } = await import('./useChatStore');
-        await useChatStore.getState().ensureConversationForCurrentMode();
       }
     } catch (error) {
       const normalized = toServiceError(error);

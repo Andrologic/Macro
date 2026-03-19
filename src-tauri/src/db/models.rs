@@ -28,6 +28,12 @@ pub struct Message {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatSnapshot {
+    pub conversations: Vec<Conversation>,
+    pub messages: Vec<Message>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub id: String,
     pub name: String,
@@ -120,6 +126,14 @@ pub struct CreateMessageInput {
     pub token_count: Option<i32>,
     pub tool_traces_json: Option<String>,
     pub hidden_context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportMessageInput {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
