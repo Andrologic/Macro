@@ -33,7 +33,6 @@ import { cn } from '../../utils/cn';
 import {
   DEFAULT_NEW_PLAN_LABEL,
   getNextDefaultNewPlanLabel,
-  getArchitectPlanConversationTitle,
   getArchitectPlanDisplayName,
   getArchitectPlanEditableName,
   getArchitectPlanPrimaryName,
@@ -413,41 +412,35 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           });
           const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
           useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
-          let conversationId: string | undefined = plan.conversationId;
+          const conversationId = plan.conversationId;
           const hasSharedConversation = Boolean(
             conversationId &&
             scopedFullPlans.some((candidate) => candidate.id !== plan.id && candidate.conversationId === conversationId)
           );
-          if (!conversationId || hasSharedConversation) {
-            const appStoreForConversation = useAppStore.getState();
-            const fallbackProjectId =
-              resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
-              getArchitectPlanProjectIds(plan)[0] ||
-              scopedProjectIds[0] ||
-              appStoreForConversation.selectedProjectId ||
-              appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
-              null;
-            const ensuredConversationId = await useChatStore
-              .getState()
-              .ensureArchitectConversationForPlan({
-                plan,
-                targetBranch,
-                fallbackProjectId: fallbackProjectId ?? undefined,
-                fallbackGroupId: appStoreForConversation.selectedGroupId ?? undefined,
-                sharedConversation: hasSharedConversation,
-              });
-            conversationId = ensuredConversationId ?? undefined;
-            if (!conversationToastShownRef.current.has(plan.id)) {
-              toast.success(
-                hasSharedConversation
-                  ? t('architect.planSelector.toastDedicatedConversation', 'Dedicated conversation created for this plan')
-                  : t('architect.planSelector.toastConversationCreated', 'Conversation created for this plan')
-              );
-              conversationToastShownRef.current.add(plan.id);
-            }
-          }
-          if (conversationId) {
-            useChatStore.getState().selectConversation(conversationId);
+          const appStoreForConversation = useAppStore.getState();
+          const fallbackProjectId =
+            resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
+            getArchitectPlanProjectIds(plan)[0] ||
+            scopedProjectIds[0] ||
+            appStoreForConversation.selectedProjectId ||
+            appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
+            null;
+          const ensuredConversation = await useChatStore
+            .getState()
+            .ensureArchitectConversationForPlan({
+              plan,
+              targetBranch,
+              fallbackProjectId: fallbackProjectId ?? undefined,
+              fallbackGroupId: appStoreForConversation.selectedGroupId ?? undefined,
+              sharedConversation: hasSharedConversation,
+            });
+          if (ensuredConversation.createdConversation && !conversationToastShownRef.current.has(plan.id)) {
+            toast.success(
+              hasSharedConversation
+                ? t('architect.planSelector.toastDedicatedConversation', 'Dedicated conversation created for this plan')
+                : t('architect.planSelector.toastConversationCreated', 'Conversation created for this plan')
+            );
+            conversationToastShownRef.current.add(plan.id);
           }
         }
       } else if (hydrateActive && !refreshState.nextActivePlanId) {
@@ -513,41 +506,36 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       });
       const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
       useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
-      let conversationId = plan.conversationId;
+      const conversationId = plan.conversationId;
       const plansSnapshot = await listArchitectPlans(targetBranch, true, true);
       const hasSharedConversation = Boolean(
         conversationId &&
         plansSnapshot.plans.some((candidate) => candidate.id !== plan.id && candidate.conversationId === conversationId)
       );
-      if (!conversationId || hasSharedConversation) {
-        const appStoreForConversation = useAppStore.getState();
-        const fallbackProjectId =
-          resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
-          getArchitectPlanProjectIds(plan)[0] ||
-          scopedProjectIds[0] ||
-          appStoreForConversation.selectedProjectId ||
-          appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
-          null;
-        const created = await useChatStore
-          .getState()
-          .createConversation(getArchitectPlanConversationTitle(plan), null, fallbackProjectId);
-        conversationId = created.id;
-        await updateArchitectPlan({
-          branchName: targetBranch,
-          planId: plan.id,
-          conversationId,
+      const appStoreForConversation = useAppStore.getState();
+      const fallbackProjectId =
+        resolvePlanProjectContextId(plan, appStoreForConversation.selectedProjectId) ||
+        getArchitectPlanProjectIds(plan)[0] ||
+        scopedProjectIds[0] ||
+        appStoreForConversation.selectedProjectId ||
+        appStoreForConversation.projectGroups.flatMap((group) => group.projects)[0]?.id ||
+        null;
+      const ensuredConversation = await useChatStore
+        .getState()
+        .ensureArchitectConversationForPlan({
+          plan,
+          targetBranch,
+          fallbackProjectId: fallbackProjectId ?? undefined,
+          fallbackGroupId: appStoreForConversation.selectedGroupId ?? undefined,
+          sharedConversation: hasSharedConversation,
         });
-        if (!conversationToastShownRef.current.has(plan.id)) {
-          toast.success(
-            hasSharedConversation
-              ? t('architect.planSelector.toastDedicatedConversation', 'Dedicated conversation created for this plan')
-              : t('architect.planSelector.toastConversationCreated', 'Conversation created for this plan')
-          );
-          conversationToastShownRef.current.add(plan.id);
-        }
-      }
-      if (conversationId) {
-        useChatStore.getState().selectConversation(conversationId);
+      if (ensuredConversation.createdConversation && !conversationToastShownRef.current.has(plan.id)) {
+        toast.success(
+          hasSharedConversation
+            ? t('architect.planSelector.toastDedicatedConversation', 'Dedicated conversation created for this plan')
+            : t('architect.planSelector.toastConversationCreated', 'Conversation created for this plan')
+        );
+        conversationToastShownRef.current.add(plan.id);
       }
       setIsOpen(false);
     } catch (activationError) {

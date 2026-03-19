@@ -1026,7 +1026,7 @@ export const UPDATE_PLAN_TOOL = {
   type: 'function',
   function: {
     name: 'plan_update',
-    description: 'Update the optional label/title alias, description, status, or active flag for an existing plan. For new plans, label changes never rename the canonical id or slug used for git branches.',
+    description: 'Update the optional label/title alias or description for an existing plan. For new plans, label changes never rename the canonical id or slug used for git branches.',
     parameters: {
       type: 'object',
       properties: {
@@ -1034,9 +1034,7 @@ export const UPDATE_PLAN_TOOL = {
         label: { type: 'string', description: 'Optional secondary label for the plan.' },
         title: { type: 'string', description: 'Legacy alias. For new plans this updates the optional secondary label.' },
         description: { type: 'string' },
-        status: { type: 'string', enum: ['draft', 'validated', 'in_progress', 'completed', 'archived', 'deleted'] },
         target_branch: { type: 'string' },
-        set_active: { type: 'boolean' },
       },
       required: ['plan_id'],
     },

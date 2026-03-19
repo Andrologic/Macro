@@ -25,10 +25,12 @@ describe('toolModePolicy', () => {
     expect(policy.allowedToolIds.includes('write')).toBe(true);
     expect(policy.allowedToolIds.includes('edit')).toBe(true);
     expect(policy.allowedToolIds.includes('git_status')).toBe(true);
-    expect(policy.allowedToolIds.includes('plan_create')).toBe(true);
+    expect(policy.allowedToolIds.includes('plan_create')).toBe(false);
     expect(policy.allowedToolIds.includes('plan_list')).toBe(true);
     expect(policy.allowedToolIds.includes('plan_update')).toBe(true);
-    expect(policy.allowedToolIds.includes('plan_delete')).toBe(true);
+    expect(policy.allowedToolIds.includes('plan_delete')).toBe(false);
+    expect(policy.allowedToolIds.includes('plan_restore')).toBe(false);
+    expect(policy.allowedToolIds.includes('plan_set_active')).toBe(false);
     expect(policy.allowedToolIds.includes('strategy_get')).toBe(true);
     expect(policy.allowedToolIds.includes('strategy_update')).toBe(true);
     expect(policy.allowedToolIds.includes('strategy_delete')).toBe(true);
