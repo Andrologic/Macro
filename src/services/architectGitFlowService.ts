@@ -1131,6 +1131,8 @@ export const cleanupPlanBranches = async (
   return cleanupPlanBranchesInternal(plan, explicitRepoPath, options);
 };
 
+const PLAN_DELETE_REQUIRES_ARCHIVE_MESSAGE = 'Archive the plan before deleting it.';
+
 export const deletePlanAndCleanupBranches = async (params: {
   branchName: string;
   planId: string;
@@ -1144,6 +1146,10 @@ export const deletePlanAndCleanupBranches = async (params: {
   const plan = await getArchitectPlan(params.branchName, params.planId);
   if (!plan) {
     throw new Error(`Plan ${params.planId} is unavailable.`);
+  }
+
+  if (plan.status !== 'archived' && plan.status !== 'deleted') {
+    throw new Error(PLAN_DELETE_REQUIRES_ARCHIVE_MESSAGE);
   }
 
   if (plan.status === 'deleted') {
@@ -1165,7 +1171,7 @@ export const deletePlanAndCleanupBranches = async (params: {
   await deleteArchitectPlan({
     branchName: params.branchName,
     planId: params.planId,
-    hardDelete: params.hardDelete,
+    hardDelete: params.hardDelete ?? true,
   });
 
   return {
@@ -1789,6 +1795,10 @@ export const createArchitectGitFlowService = (
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
 
+    if (plan.status !== 'archived' && plan.status !== 'deleted') {
+      throw new Error(PLAN_DELETE_REQUIRES_ARCHIVE_MESSAGE);
+    }
+
     if (plan.status === 'deleted') {
       await deps.deleteArchitectPlan({
         branchName: params.branchName,
@@ -1808,7 +1818,7 @@ export const createArchitectGitFlowService = (
     await deps.deleteArchitectPlan({
       branchName: params.branchName,
       planId: params.planId,
-      hardDelete: params.hardDelete,
+      hardDelete: params.hardDelete ?? true,
     });
 
     return {
