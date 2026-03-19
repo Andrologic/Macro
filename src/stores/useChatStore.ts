@@ -34,6 +34,7 @@ import {
 import {
   getArchitectPlanConversationTitle,
   getArchitectPlanDisplayName,
+  isDefaultNewPlanFamilyLabel,
   isCanonicalArchitectPlan,
 } from '../services/architectPlanPresentation';
 import { normalizeArchitectToolId } from '../services/architectToolNames';
@@ -2072,8 +2073,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
     baseUrl: string;
     apiKey?: string;
     modelId: string;
+    architectPlan?: {
+      planId: string;
+      targetBranch: string;
+    };
   }) => {
-    const { conversationId, firstUserContent, providerId, providerType, baseUrl, apiKey, modelId } = params;
+    const {
+      conversationId,
+      firstUserContent,
+      providerId,
+      providerType,
+      baseUrl,
+      apiKey,
+      modelId,
+      architectPlan,
+    } = params;
 
     if (metadataGenerationInFlight.has(conversationId)) return;
     metadataGenerationInFlight.add(conversationId);
@@ -2110,6 +2124,74 @@ export const useChatStore = create<ChatStore>((set, get) => {
             description: metadata.description,
           })
           .catch(console.error);
+      }
+
+      if (architectPlan) {
+        try {
+          const plan = await getArchitectPlan(architectPlan.targetBranch, architectPlan.planId);
+          const shouldAdoptMetadata = Boolean(
+            plan &&
+            plan.status !== 'deleted' &&
+            plan.conversationId === conversationId &&
+            isCanonicalArchitectPlan(plan) &&
+            isDefaultNewPlanFamilyLabel(plan.label) &&
+            plan.nodes.length === 0 &&
+            plan.predictedBranches.length === 0
+          );
+
+          if (shouldAdoptMetadata && plan) {
+            const nextDescription = plan.description.trim() || metadata.description;
+            const updatedPlan = await updateArchitectPlan({
+              branchName: architectPlan.targetBranch,
+              planId: plan.id,
+              label: metadata.title,
+              description: nextDescription,
+            });
+
+            const conversationMetadata = {
+              title: getArchitectPlanConversationTitle(updatedPlan),
+              description: nextDescription,
+            };
+            updateConversationMetadataLocally(conversationId, conversationMetadata);
+
+            if (tauriIpc.isTauriAvailable()) {
+              tauriIpc
+                .updateConversationDetails({
+                  id: conversationId,
+                  title: conversationMetadata.title,
+                  description: conversationMetadata.description,
+                })
+                .catch(console.error);
+            }
+
+            const appState = useAppStore.getState();
+            if (
+              appState.activeArchitectPlanId === updatedPlan.id &&
+              resolveTargetBranch(appState.activePlanContext?.targetBranch) ===
+                architectPlan.targetBranch
+            ) {
+              appState.setPlanNodes(updatedPlan.nodes || []);
+              appState.setPredictedBranches(updatedPlan.predictedBranches || []);
+              appState.setActivePlanContext({
+                id: updatedPlan.id,
+                slug: updatedPlan.slug,
+                title: updatedPlan.title,
+                label: updatedPlan.label,
+                description: updatedPlan.description,
+                status: updatedPlan.status,
+                targetBranch: updatedPlan.targetBranch,
+              });
+
+              const planNeeds = await getArchitectPlanNeeds(
+                architectPlan.targetBranch,
+                updatedPlan.id
+              );
+              useNeedsStore.getState().replaceNeedsForPlan(updatedPlan.id, planNeeds);
+            }
+          }
+        } catch (error) {
+          console.warn('Failed to sync architect plan metadata from first message:', error);
+        }
       }
     } catch {
       const metadata = {
@@ -3175,6 +3257,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       get().clearComposerContextRefs();
 
       if (userMessageCountBeforeSend === 0) {
+        const appState = useAppStore.getState();
+        const architectPlan =
+          modeAtSend === 'Architect' && appState.activeArchitectPlanId
+            ? {
+                planId: appState.activeArchitectPlanId,
+                targetBranch: resolveTargetBranch(appState.activePlanContext?.targetBranch),
+              }
+            : undefined;
+
         void maybeGenerateConversationMetadata({
           conversationId,
           firstUserContent: content,
@@ -3183,6 +3274,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           baseUrl: providerConfig.baseUrl,
           apiKey: providerConfig.apiKey,
           modelId: selectedModelId,
+          architectPlan,
         });
       }
 
