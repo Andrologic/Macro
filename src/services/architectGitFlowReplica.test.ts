@@ -325,7 +325,9 @@ describe('architectGitFlowService replica integration', () => {
         gitWorktreeRemove: gitWorktreeRemoveMock,
       },
       getAppState: () => ({
+        selectedGroupId: 'group-main',
         selectedProjectId: 'web',
+        projectGroups: appState.projectGroups,
         getProjectById: (projectId: string) =>
           appState.projectGroups.flatMap((group) => group.projects).find((project) => project.id === projectId) || null,
       }),
@@ -368,5 +370,70 @@ describe('architectGitFlowService replica integration', () => {
     );
     expect(persistedPlan.projectIds).toEqual(['web']);
     expect(persistedPlan.predictedBranches).toHaveLength(1);
+  });
+
+  it('ignores stale expectedProjectIds when they are the only remaining metadata noise', async () => {
+    const basePlan = buildStoredPlan();
+    const noisyExpectedOnlyPlan = {
+      ...basePlan,
+      projectIds: ['web'],
+      nodes: basePlan.nodes.map((node) => ({
+        ...node,
+        projectIds: ['web'],
+      })),
+      predictedBranches: basePlan.predictedBranches.filter((branch) => branch.projectId === 'web'),
+      expectedProjectIds: ['web', 'session-project-ghost'],
+    };
+    seedReplica(noisyExpectedOnlyPlan);
+
+    const { planService, gitFlowService } = await loadIntegrationModules();
+    const service = gitFlowService.createArchitectGitFlowService({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitMerge: gitMergeMock,
+        gitBranchList: gitBranchListMock,
+        gitBranchDelete: gitBranchDeleteMock,
+        gitCheckout: gitCheckoutMock,
+        gitBranchCreate: gitBranchCreateMock,
+        gitWorktreeRemove: gitWorktreeRemoveMock,
+      },
+      getAppState: () => ({
+        selectedGroupId: 'group-main',
+        selectedProjectId: 'web',
+        projectGroups: appState.projectGroups,
+        getProjectById: (projectId: string) =>
+          appState.projectGroups.flatMap((group) => group.projects).find((project) => project.id === projectId) || null,
+      }),
+      getArchitectPlan: planService.getArchitectPlan,
+      archiveArchitectPlan: async (branchName: string, planId: string) => {
+        const plan = await planService.getArchitectPlan(branchName, planId);
+        return {
+          ...plan!,
+          status: 'archived',
+        };
+      },
+      updateArchitectPlan: async (params: { branchName: string; planId: string; status?: string }) => {
+        const plan = await planService.getArchitectPlan(params.branchName, params.planId);
+        return {
+          ...plan!,
+          status: params.status ?? plan?.status ?? 'validated',
+        };
+      },
+      deleteArchitectPlan: async () => undefined,
+      getGitFlowBaseBranch: () => 'develop',
+      toPlanIntegrationBranch: (slug: string) => `plan/${slug}`,
+      toPlanScopedFeatureBranch: (slug: string, branchName: string) => `feature/${slug}/${branchName.split('/').pop()}`,
+    });
+
+    const review = await service.loadPlanReview({
+      branchName: 'develop',
+      planId: 'plan-1',
+    });
+
+    expect(review.repositories.map((repository: { projectId: string }) => repository.projectId)).toEqual(['web']);
+    expect(gitStatusMock).toHaveBeenCalledWith('/repos/web');
   });
 });
