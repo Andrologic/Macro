@@ -42,6 +42,12 @@ import {
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
 import { toServiceError } from '../../services/contracts/errors';
+import {
+  computePlanSelectorRefreshState,
+  isPlanVisibleForSelection,
+  type PlanSelectorMutationCheck,
+  type PlanSelectorRefreshState,
+} from './planSelectorState';
 
 interface PlanSelectorProps {
   className?: string;
@@ -61,29 +67,6 @@ const formatRelativeDate = (iso: string, unknownLabel: string): string => {
   if (Number.isNaN(date.getTime())) return unknownLabel;
   return date.toLocaleDateString();
 };
-
-const isPlanVisibleForSelection = (
-  plan: ArchitectPlanSummary,
-  scopedProjectIds: string[]
-): boolean => {
-  if (scopedProjectIds.length === 0) return true;
-  const scopedProjectIdSet = new Set(scopedProjectIds);
-  const planProjectIds = getArchitectPlanProjectIds(plan);
-  return planProjectIds.length === 0 || planProjectIds.some((projectId) => scopedProjectIdSet.has(projectId));
-};
-
-const filterPlansForDisplay = (
-  plans: ArchitectPlanSummary[],
-  scopedProjectIds: string[],
-  showArchived: boolean
-): ArchitectPlanSummary[] =>
-  plans.filter((plan) => {
-    if (!isPlanVisibleForSelection(plan, scopedProjectIds)) {
-      return false;
-    }
-
-    return showArchived ? plan.status === 'archived' : plan.status !== 'archived' && plan.status !== 'deleted';
-  });
 
 const trimToNull = (value?: string | null): string | null => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -193,6 +176,59 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const message = toServiceError(value).message.trim();
       return message && message !== 'Unknown error' ? message : fallback;
     })();
+
+  const clearActivePlanSelection = () => {
+    setActivePlanId(null);
+    setActiveArchitectPlanId(null);
+    setPlanNodes([]);
+    setPredictedBranches([]);
+    setActivePlanContext(null);
+  };
+
+  const applyRefreshedPlanSelectorState = async (params: {
+    refreshState: PlanSelectorRefreshState;
+    hydrateActive?: boolean;
+  }): Promise<PlanSelectorRefreshState> => {
+    const { refreshState } = params;
+    setPlans(refreshState.visiblePlans);
+    setActivePlanId(refreshState.nextActivePlanId);
+    setActiveArchitectPlanId(refreshState.nextActivePlanId);
+
+    if (params.hydrateActive) {
+      if (!refreshState.nextActivePlanId) {
+        clearActivePlanSelection();
+      } else if (refreshState.nextActivePlanId !== activePlanId) {
+        await activatePlan(refreshState.nextActivePlanId);
+      }
+    }
+
+    return refreshState;
+  };
+
+  const refreshPlanSelectorAfterMutation = async (params: {
+    mutation: PlanSelectorMutationCheck;
+    refreshTasks?: boolean;
+  }): Promise<PlanSelectorRefreshState> => {
+    if (params.refreshTasks) {
+      await useTaskStore.getState().refreshFromPlan();
+    }
+
+    const refreshed = await listArchitectPlans(targetBranch, true, true);
+    const refreshState = computePlanSelectorRefreshState({
+      plans: refreshed.plans,
+      scopedProjectIds,
+      showArchived,
+      preferredActivePlanId: activeArchitectPlanId || refreshed.activePlanId,
+      mutation: params.mutation,
+    });
+
+    return applyRefreshedPlanSelectorState({
+      refreshState,
+      hydrateActive:
+        refreshState.nextActivePlanId !== activePlanId ||
+        (refreshState.nextActivePlanId === null && activePlanId !== null),
+    });
+  };
 
   const performReplicaRepair = async (strategy: 'newest' | 'oldest'): Promise<void> => {
     if (!replicaRepair) return;
@@ -311,7 +347,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     try {
       const fullResult = await listArchitectPlans(targetBranch, true, true);
-      const scopedPlans = filterPlansForDisplay(fullResult.plans, scopedProjectIds, showArchived);
       const scopedFullPlans = fullResult.plans.filter((plan) =>
         isPlanVisibleForSelection(plan, scopedProjectIds)
       );
@@ -335,17 +370,18 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         }
       }
 
-      setPlans(scopedPlans);
-      const preferredActivePlanId = activeArchitectPlanId || fullResult.activePlanId;
-      const nextActivePlanId =
-        preferredActivePlanId && scopedPlans.some((plan) => plan.id === preferredActivePlanId)
-          ? preferredActivePlanId
-          : scopedPlans[0]?.id ?? null;
-      setActivePlanId(nextActivePlanId);
-      setActiveArchitectPlanId(nextActivePlanId);
+      const refreshState = computePlanSelectorRefreshState({
+        plans: fullResult.plans,
+        scopedProjectIds,
+        showArchived,
+        preferredActivePlanId: activeArchitectPlanId || fullResult.activePlanId,
+      });
+      setPlans(refreshState.visiblePlans);
+      setActivePlanId(refreshState.nextActivePlanId);
+      setActiveArchitectPlanId(refreshState.nextActivePlanId);
 
-      if (hydrateActive && nextActivePlanId) {
-        const plan = await getArchitectPlan(targetBranch, nextActivePlanId);
+      if (hydrateActive && refreshState.nextActivePlanId) {
+        const plan = await getArchitectPlan(targetBranch, refreshState.nextActivePlanId);
         if (plan && plan.status !== 'deleted') {
           const appStore = useAppStore.getState();
           const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
@@ -414,6 +450,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             useChatStore.getState().selectConversation(conversationId);
           }
         }
+      } else if (hydrateActive && !refreshState.nextActivePlanId) {
+        clearActivePlanSelection();
       }
     } catch (loadError) {
       if (openReplicaRepair(loadError, () => loadPlans(hydrateActive), { toastOnError: false })) {
@@ -612,28 +650,28 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           defaultValue: `Plan "${planDisplayName}" archived`,
         })
       );
-      const wasActive = activePlanId === plan.id;
-      const refreshed = await listArchitectPlans(targetBranch, true, true);
-      const refreshedScopedPlans = filterPlansForDisplay(refreshed.plans, scopedProjectIds, showArchived);
-      setPlans(refreshedScopedPlans);
-      if (wasActive) {
-        const nextPlanId =
-          refreshed.activePlanId && refreshedScopedPlans.some((candidate) => candidate.id === refreshed.activePlanId)
-            ? refreshed.activePlanId
-            : refreshedScopedPlans[0]?.id || null;
-        setActivePlanId(nextPlanId);
-        setActiveArchitectPlanId(nextPlanId);
-        if (nextPlanId) {
-          await activatePlan(nextPlanId);
-        } else {
-          setPlanNodes([]);
-          setPredictedBranches([]);
-          setActivePlanContext(null);
-        }
-      }
+      await refreshPlanSelectorAfterMutation({
+        mutation: {
+          type: 'archive',
+          planId: plan.id,
+        },
+      });
     } catch (archiveError) {
       if (openReplicaRepair(archiveError, () => handleArchivePlan(plan))) {
         return;
+      }
+      try {
+        const verification = await refreshPlanSelectorAfterMutation({
+          mutation: {
+            type: 'archive',
+            planId: plan.id,
+          },
+        });
+        if (verification.mutationApplied) {
+          return;
+        }
+      } catch {
+        // Fall through to surface the original archive error.
       }
       const message = resolveOperationMessage(
         archiveError,
@@ -663,35 +701,36 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         planId: deletedPlanId,
         deletedWorktreeKeys: cleanup.deletedWorktreeKeys,
       });
-      await useTaskStore.getState().refreshFromPlan();
-
       toast.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
-
-      const refreshed = await listArchitectPlans(targetBranch, true, true);
-      const refreshedScopedPlans = filterPlansForDisplay(refreshed.plans, scopedProjectIds, showArchived);
-      setPlans(refreshedScopedPlans);
-
-      const deletedWasActive = activePlanId === planToDelete.id;
-      if (deletedWasActive) {
-        const nextPlanId =
-          refreshed.activePlanId && refreshedScopedPlans.some((candidate) => candidate.id === refreshed.activePlanId)
-            ? refreshed.activePlanId
-            : refreshedScopedPlans[0]?.id || null;
-        setActivePlanId(nextPlanId);
-        setActiveArchitectPlanId(nextPlanId);
-
-        if (nextPlanId) {
-          await activatePlan(nextPlanId);
-        } else {
-          setPlanNodes([]);
-          setPredictedBranches([]);
-          setActivePlanContext(null);
-        }
-      }
+      await refreshPlanSelectorAfterMutation({
+        mutation: {
+          type: 'delete',
+          planId: deletedPlanId,
+        },
+        refreshTasks: true,
+      });
     } catch (deleteError) {
       if (openReplicaRepair(deleteError, () => handleConfirmDeletePlan())) {
         keepDeleteDialogOpen = true;
         return;
+      }
+      try {
+        const verification = await refreshPlanSelectorAfterMutation({
+          mutation: {
+            type: 'delete',
+            planId: planToDelete.id,
+          },
+        });
+        if (verification.mutationApplied) {
+          useTaskStore.getState().clearPlanRuntimeState({
+            planId: planToDelete.id,
+            deletedWorktreeKeys: [],
+          });
+          void useTaskStore.getState().refreshFromPlan().catch(() => undefined);
+          return;
+        }
+      } catch {
+        // Fall through to surface the original delete error.
       }
       const message = resolveOperationMessage(
         deleteError,
