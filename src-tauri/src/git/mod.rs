@@ -195,6 +195,7 @@ impl GitState {
         repo: &Repository,
         task_id: &str,
         branch_name: &str,
+        from_ref: Option<&str>,
     ) -> Result<PathBuf> {
         if let Some(existing) = self.get_worktree(task_id) {
             return Ok(existing);
@@ -219,13 +220,23 @@ impl GitState {
         }
 
         if repo.find_branch(branch_name, BranchType::Local).is_err() {
-            let head_commit = repo
-                .head()
-                .and_then(|head| head.peel_to_commit())
-                .map_err(|_| BackendError::Git {
-                    message: "Cannot create branch without an initial commit".to_string(),
-                })?;
-            repo.branch(branch_name, &head_commit, false)?;
+            let branch_commit = if let Some(from_ref) = from_ref.map(str::trim).filter(|value| !value.is_empty()) {
+                repo.revparse_single(from_ref)
+                    .and_then(|object| object.peel_to_commit())
+                    .map_err(|_| BackendError::Git {
+                        message: format!(
+                            "Cannot create branch '{}' from reference '{}'",
+                            branch_name, from_ref
+                        ),
+                    })?
+            } else {
+                repo.head()
+                    .and_then(|head| head.peel_to_commit())
+                    .map_err(|_| BackendError::Git {
+                        message: "Cannot create branch without an initial commit".to_string(),
+                    })?
+            };
+            repo.branch(branch_name, &branch_commit, false)?;
         }
 
         let reference = repo
@@ -443,7 +454,7 @@ mod tests {
         let state = GitState::new();
 
         let worktree_path = state
-            .ensure_task_worktree(&repo, "123", "task-123")
+            .ensure_task_worktree(&repo, "123", "task-123", None)
             .expect("worktree");
 
         assert!(worktree_path.ends_with(Path::new(".macro/worktrees/task123")));
@@ -457,7 +468,7 @@ mod tests {
         let state = GitState::new();
 
         let worktree_path = state
-            .ensure_task_worktree(&repo, "456", "task-456")
+            .ensure_task_worktree(&repo, "456", "task-456", None)
             .expect("worktree");
 
         assert!(worktree_path.exists());
@@ -477,7 +488,7 @@ mod tests {
         let state = GitState::new();
 
         let worktree_path = state
-            .ensure_task_worktree(&repo, "789", "task-789")
+            .ensure_task_worktree(&repo, "789", "task-789", None)
             .expect("worktree");
 
         fs::write(worktree_path.join("README.md"), "dirty").expect("write dirty file");

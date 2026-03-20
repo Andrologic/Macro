@@ -107,9 +107,54 @@ const useProviderStoreMock = {
   subscribe: () => () => undefined,
 };
 
+const taskStoreState = {
+  tasks: [] as Array<Record<string, unknown>>,
+  lastError: null as string | null,
+  currentTask: null as Record<string, unknown> | null,
+  refreshFromPlan: mock(async () => undefined),
+  clearPlanRuntimeState: mock(() => undefined),
+  getTaskById: (taskId: string) =>
+    (taskStoreState.tasks.find((task) => task.id === taskId) as Record<string, unknown> | undefined),
+  finalizeManualFeatureDraft: mock(async (params: {
+    taskId: string;
+    title: string;
+    description: string;
+    featureSlug: string;
+  }) => {
+    taskStoreState.tasks = taskStoreState.tasks.map((task) =>
+      task.id === params.taskId
+        ? {
+            ...task,
+            title: params.title,
+            description: params.description,
+            draft: false,
+            feature_slug: params.featureSlug,
+            assigned_branch: `feature/${params.featureSlug}`,
+            branch_name: `feature/${params.featureSlug}`,
+            status: 'Pending',
+          }
+        : task
+    );
+  }),
+  startTask: mock(async (taskId: string) => {
+    taskStoreState.tasks = taskStoreState.tasks.map((task) =>
+      task.id === taskId
+        ? {
+            ...task,
+            status: 'InProgress',
+          }
+        : task
+    );
+  }),
+  deleteManualFeatureDraft: mock(async (taskId: string) => {
+    taskStoreState.tasks = taskStoreState.tasks.filter((task) => task.id !== taskId);
+  }),
+};
+
 const architectPlans = new Map<string, ArchitectPlanRecord>();
 const architectPlanMessages = new Map<string, Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: string }>>();
 let tauriAvailable = false;
+let gitBranchesByRepo: Record<string, { local: Array<{ name: string; is_head: boolean; commit: string }>; remote: Array<{ name: string; is_head: boolean; commit: string }>; current: string | null }> = {};
 let chatSnapshotConversations: Array<{
   id: string;
   title: string;
@@ -178,6 +223,10 @@ const getChatSnapshotMock = mock(async () => ({
   conversations: chatSnapshotConversations,
   messages: chatSnapshotMessages,
 }));
+const updateConversationDetailsMock = mock(async () => undefined);
+const gitBranchListMock = mock(async (repoPath: string) => (
+  gitBranchesByRepo[repoPath] ?? { local: [], remote: [], current: null }
+));
 const deleteConversationMock = mock(async (_conversationId: string) => undefined);
 const deleteConversationsMock = mock(async (_conversationIds: string[]) => undefined);
 const importMessagesMock = mock(
@@ -224,11 +273,7 @@ mock.module('./useAppStore', () => ({
 
 mock.module('./useTaskStore', () => ({
   useTaskStore: {
-    getState: () => ({
-      currentTask: null,
-      refreshFromPlan: async () => undefined,
-      clearPlanRuntimeState: () => undefined,
-    }),
+    getState: () => taskStoreState,
   },
 }));
 
@@ -290,8 +335,10 @@ mock.module('../services/tauriIpc', () => ({
   }),
   deleteConversation: deleteConversationMock,
   deleteConversations: deleteConversationsMock,
+  gitBranchList: gitBranchListMock,
   getChatSnapshot: getChatSnapshotMock,
   importMessages: importMessagesMock,
+  updateConversationDetails: updateConversationDetailsMock,
 }));
 
 mock.module('../services/architectPlanService', () => ({
@@ -419,6 +466,34 @@ const createPlan = (overrides: Partial<ArchitectPlanRecord> = {}): ArchitectPlan
   ...overrides,
 });
 
+const createManualFeatureTask = (overrides: Record<string, unknown> = {}) => ({
+  id: 'manual-task-1',
+  plan_id: '',
+  project_id: 'project-1',
+  project_ids: ['project-1'],
+  title: 'New feature',
+  description: '',
+  status: 'Pending',
+  dependencies: [],
+  estimated_changes: [],
+  task_source: 'standalone',
+  standalone_kind: 'manual_feature',
+  draft: true,
+  base_branch: 'develop',
+  feature_slug: null,
+  conversation_id: 'manual-conv',
+  assigned_branch: '',
+  branch_name: '',
+  branch_id: null,
+  branch_task_index: -1,
+  sequence_index: 0,
+  blocked_by: [],
+  is_blocked: false,
+  is_ready: false,
+  execution_targets: [],
+  ...overrides,
+});
+
 describe('useChatStore ensureArchitectConversationForPlan', () => {
   let localStorageMock: LocalStorageMock;
 
@@ -450,6 +525,15 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     architectPlans.clear();
     architectPlanMessages.clear();
+    gitBranchesByRepo = {};
+    taskStoreState.tasks = [];
+    taskStoreState.currentTask = null;
+    taskStoreState.lastError = null;
+    taskStoreState.refreshFromPlan.mockClear();
+    taskStoreState.clearPlanRuntimeState.mockClear();
+    taskStoreState.finalizeManualFeatureDraft.mockClear();
+    taskStoreState.startTask.mockClear();
+    taskStoreState.deleteManualFeatureDraft.mockClear();
     tauriAvailable = false;
     chatSnapshotConversations = [];
     chatSnapshotMessages = [];
@@ -461,6 +545,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     getLocalProjectContextStateMock.mockClear();
     syncArchitectPlanChatFromConversationMock.mockClear();
     getChatSnapshotMock.mockClear();
+    updateConversationDetailsMock.mockClear();
+    gitBranchListMock.mockClear();
     deleteConversationMock.mockClear();
     deleteConversationsMock.mockClear();
     importMessagesMock.mockClear();
@@ -889,6 +975,170 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'Refresh checkout state and cart recovery.'
     );
     expect(useChatStore.getState().conversations[0]?.title).toBe('Checkout refresh');
+  });
+
+  it('finalizes a manual feature draft before the first assistant response', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [createManualFeatureTask()];
+
+    sendChatNonStreamingMock.mockImplementationOnce(async () =>
+      JSON.stringify({
+        title: 'Quick export',
+        description: 'Add a quick CSV export from the table.',
+        featureSlug: 'quick-export',
+      })
+    );
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          task_id: 'manual-task-1',
+          title: 'New feature',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'manual-conv',
+      content: 'Ajoute un export CSV rapide depuis le tableau.',
+      taskId: 'manual-task-1',
+    });
+
+    expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(1);
+    expect(taskStoreState.finalizeManualFeatureDraft).toHaveBeenCalledWith({
+      taskId: 'manual-task-1',
+      conversationId: 'manual-conv',
+      title: 'Quick export',
+      description: 'Add a quick CSV export from the table.',
+      featureSlug: 'quick-export',
+    });
+    expect(taskStoreState.startTask).toHaveBeenCalledWith('manual-task-1');
+    expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
+      draft: false,
+      status: 'InProgress',
+      feature_slug: 'quick-export',
+      branch_name: 'feature/quick-export',
+    });
+    expect(
+      useChatStore.getState().conversations.find((conversation: Conversation) => conversation.id === 'manual-conv')
+    ).toMatchObject({
+      title: 'Quick export',
+      description: 'Add a quick CSV export from the table.',
+    });
+  });
+
+  it('deletes the linked manual feature draft when deleting its empty implement conversation', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [createManualFeatureTask()];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          task_id: 'manual-task-1',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().deleteConversation('manual-conv', { mode: 'implement' });
+
+    expect(taskStoreState.deleteManualFeatureDraft).toHaveBeenCalledWith('manual-task-1');
+    expect(useChatStore.getState().conversations).toHaveLength(0);
+    expect(taskStoreState.tasks).toHaveLength(0);
+  });
+
+  it('requests a different manual feature slug when the first branch name is already taken', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [createManualFeatureTask()];
+    gitBranchesByRepo = {
+      '/repos/web': {
+        local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
+        remote: [],
+        current: 'develop',
+      },
+    };
+
+    sendChatNonStreamingMock
+      .mockImplementationOnce(async () =>
+        JSON.stringify({
+          title: 'Quick export',
+          description: 'Add a quick CSV export from the table.',
+          featureSlug: 'quick-export',
+        })
+      )
+      .mockImplementationOnce(async () =>
+        JSON.stringify({
+          title: 'Quick export',
+          description: 'Add a quick CSV export from the table.',
+          featureSlug: 'quick-export-fast',
+        })
+      );
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          task_id: 'manual-task-1',
+          title: 'New feature',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'manual-conv',
+      content: 'Ajoute un export CSV rapide depuis le tableau.',
+      taskId: 'manual-task-1',
+    });
+
+    expect(gitBranchListMock).toHaveBeenCalledWith('/repos/web');
+    expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(2);
+    expect(taskStoreState.finalizeManualFeatureDraft).toHaveBeenCalledWith({
+      taskId: 'manual-task-1',
+      conversationId: 'manual-conv',
+      title: 'Quick export',
+      description: 'Add a quick CSV export from the table.',
+      featureSlug: 'quick-export-fast',
+    });
+    expect(updateConversationDetailsMock).toHaveBeenCalledWith({
+      id: 'manual-conv',
+      title: 'Quick export',
+      description: 'Add a quick CSV export from the table.',
+    });
   });
 
   it('deletes multiple chat conversations in a single batch and recalculates selection once', async () => {

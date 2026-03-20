@@ -3,10 +3,10 @@ pub mod metadata;
 use crate::core::error::{BackendError, Result};
 use chrono::Utc;
 use metadata::{
-    CreateProjectRequest, ImportGitRepoRequest, PlanDto, ProjectDto, ProjectGroupDto,
-    ProjectMetadataDto, ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto,
-    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceState, WorkspaceTaskCatalogDto,
-    WorkspaceTaskPlanSummaryDto,
+    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, PlanDto, ProjectDto,
+    ProjectGroupDto, ProjectMetadataDto, ProjectRegistryDiagnosticsDto,
+    ProjectRegistryRepairReportDto, WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceState,
+    WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -64,15 +64,25 @@ pub async fn list_tasks(
     metadata_root: &PathBuf,
 ) -> Result<WorkspaceTaskCatalogDto> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
+    let manual_tasks = state
+        .manual_features
+        .iter()
+        .map(manual_feature_to_task_value)
+        .collect::<Vec<_>>();
     let Some(plan) = state.current_plan else {
         return Ok(WorkspaceTaskCatalogDto {
-            tasks: Vec::new(),
+            tasks: manual_tasks.clone(),
             plans: Vec::new(),
-            has_standalone_tasks: false,
-            source: "empty".to_string(),
+            has_standalone_tasks: !manual_tasks.is_empty(),
+            source: if manual_tasks.is_empty() {
+                "empty".to_string()
+            } else {
+                "fallback".to_string()
+            },
         });
     };
 
+    let fallback_tasks = merge_task_lists(plan.tasks.clone(), manual_tasks);
     let task_count = plan.tasks.len();
     let completed_task_count = plan
         .tasks
@@ -108,8 +118,10 @@ pub async fn list_tasks(
         Vec::new()
     };
 
-    let has_standalone_tasks = !is_executable_plan && task_count > 0;
-    let source = if is_executable_plan {
+    let has_standalone_tasks = !state.manual_features.is_empty() || (!is_executable_plan && task_count > 0);
+    let source = if is_executable_plan && has_standalone_tasks {
+        "mixed".to_string()
+    } else if is_executable_plan {
         "architect".to_string()
     } else if has_standalone_tasks {
         "fallback".to_string()
@@ -118,7 +130,7 @@ pub async fn list_tasks(
     };
 
     Ok(WorkspaceTaskCatalogDto {
-        tasks: plan.tasks,
+        tasks: fallback_tasks,
         plans,
         has_standalone_tasks,
         source,
@@ -142,6 +154,244 @@ pub async fn get_metadata(
         metadata_path: metadata_path.to_string_lossy().to_string(),
         project_count,
     })
+}
+
+pub async fn create_manual_feature_draft(
+    workspace_path: &PathBuf,
+    metadata_root: &PathBuf,
+    task_id: &str,
+    conversation_id: &str,
+    project_ids: &[String],
+    base_branch: Option<&str>,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> Result<ManualFeatureDto> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let valid_project_ids = collect_valid_project_ids(&state.project_groups);
+    let normalized_project_ids = sanitize_project_id_list(project_ids, &valid_project_ids);
+    if normalized_project_ids.is_empty() {
+        return Err(BackendError::Validation(
+            "Manual feature draft requires at least one valid project".to_string(),
+        ));
+    }
+
+    let normalized_task_id = task_id.trim();
+    if normalized_task_id.is_empty() {
+        return Err(BackendError::Validation(
+            "Manual feature draft requires a task id".to_string(),
+        ));
+    }
+    if state
+        .manual_features
+        .iter()
+        .any(|feature| feature.id == normalized_task_id)
+    {
+        return Err(BackendError::Validation(format!(
+            "Manual feature {} already exists",
+            normalized_task_id
+        )));
+    }
+
+    let normalized_conversation_id = conversation_id.trim();
+    if normalized_conversation_id.is_empty() {
+        return Err(BackendError::Validation(
+            "Manual feature draft requires a conversation id".to_string(),
+        ));
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let feature = ManualFeatureDto {
+        id: normalized_task_id.to_string(),
+        conversation_id: normalized_conversation_id.to_string(),
+        draft: true,
+        title: title
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("New feature")
+            .to_string(),
+        description: description
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("")
+            .to_string(),
+        status: "Pending".to_string(),
+        feature_slug: None,
+        branch_name: None,
+        base_branch: normalize_base_branch(base_branch),
+        project_ids: normalized_project_ids,
+        execution_targets: Vec::new(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    state.manual_features.insert(0, feature.clone());
+    let (sanitized_state, _) =
+        persist_sanitized_state(workspace_path, metadata_root, state, "create_manual_feature_draft")
+            .await?;
+
+    sanitized_state
+        .manual_features
+        .iter()
+        .find(|candidate| candidate.id == feature.id)
+        .cloned()
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Unknown manual feature id: {}", feature.id))
+        })
+}
+
+pub async fn finalize_manual_feature(
+    workspace_path: &PathBuf,
+    metadata_root: &PathBuf,
+    task_id: &str,
+    conversation_id: Option<&str>,
+    title: &str,
+    description: &str,
+    feature_slug: &str,
+) -> Result<ManualFeatureDto> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let project_groups = state.project_groups.clone();
+    let feature = state
+        .manual_features
+        .iter_mut()
+        .find(|candidate| candidate.id == task_id.trim())
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Unknown manual feature id: {}", task_id))
+        })?;
+
+    let normalized_title = title.trim();
+    let normalized_description = description.trim();
+    let normalized_feature_slug = slugify(feature_slug);
+    if normalized_title.is_empty() || normalized_description.is_empty() || normalized_feature_slug.is_empty() {
+        return Err(BackendError::Validation(
+            "Manual feature finalization requires title, description and feature slug".to_string(),
+        ));
+    }
+
+    if let Some(next_conversation_id) = conversation_id.map(str::trim).filter(|value| !value.is_empty()) {
+        feature.conversation_id = next_conversation_id.to_string();
+    }
+
+    let branch_name = format!("feature/{}", normalized_feature_slug);
+    feature.draft = false;
+    feature.title = normalized_title.to_string();
+    feature.description = normalized_description.to_string();
+    feature.feature_slug = Some(normalized_feature_slug);
+    feature.branch_name = Some(branch_name.clone());
+    feature.execution_targets =
+        build_manual_feature_execution_targets(&feature.project_ids, &branch_name, &project_groups);
+    feature.updated_at = Utc::now().to_rfc3339();
+
+    let (sanitized_state, _) =
+        persist_sanitized_state(workspace_path, metadata_root, state, "finalize_manual_feature")
+            .await?;
+
+    sanitized_state
+        .manual_features
+        .iter()
+        .find(|candidate| candidate.id == task_id.trim())
+        .cloned()
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Unknown manual feature id: {}", task_id))
+        })
+}
+
+pub async fn delete_manual_feature_draft(
+    workspace_path: &PathBuf,
+    metadata_root: &PathBuf,
+    task_id: &str,
+) -> Result<()> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let initial_len = state.manual_features.len();
+    state.manual_features.retain(|feature| {
+        !(feature.id == task_id.trim() && feature.draft)
+    });
+    if state.manual_features.len() == initial_len {
+        return Err(BackendError::Validation(format!(
+            "Unknown manual feature draft: {}",
+            task_id
+        )));
+    }
+
+    persist_sanitized_state(workspace_path, metadata_root, state, "delete_manual_feature_draft")
+        .await?;
+    Ok(())
+}
+
+pub async fn update_standalone_task_status(
+    workspace_path: &PathBuf,
+    metadata_root: &PathBuf,
+    task_id: &str,
+    status: &str,
+) -> Result<()> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let normalized_task_id = task_id.trim();
+    let normalized_status = status.trim();
+    if normalized_task_id.is_empty() || normalized_status.is_empty() {
+        return Err(BackendError::Validation(
+            "Task status update requires a task id and status".to_string(),
+        ));
+    }
+
+    if let Some(feature) = state
+        .manual_features
+        .iter_mut()
+        .find(|candidate| candidate.id == normalized_task_id)
+    {
+        feature.status = normalized_status.to_string();
+        feature.updated_at = Utc::now().to_rfc3339();
+        persist_sanitized_state(
+            workspace_path,
+            metadata_root,
+            state,
+            "update_manual_feature_status",
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let Some(plan) = state.current_plan.as_mut() else {
+        return Err(BackendError::Validation(format!(
+            "Unknown standalone task id: {}",
+            normalized_task_id
+        )));
+    };
+
+    let mut updated = false;
+    for task in plan.tasks.iter_mut() {
+        let Some(task_object) = task.as_object_mut() else {
+            continue;
+        };
+        if task_object
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(|value| value == normalized_task_id)
+            .unwrap_or(false)
+        {
+            task_object.insert(
+                "status".to_string(),
+                Value::String(normalized_status.to_string()),
+            );
+            updated = true;
+            break;
+        }
+    }
+
+    if !updated {
+        return Err(BackendError::Validation(format!(
+            "Unknown standalone task id: {}",
+            normalized_task_id
+        )));
+    }
+
+    plan.updated_at = Utc::now().to_rfc3339();
+    persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "update_standalone_task_status",
+    )
+    .await?;
+    Ok(())
 }
 
 pub async fn create_project(
@@ -564,6 +814,209 @@ pub async fn remove_project(
     close_project(workspace_path, metadata_root, project_id).await
 }
 
+fn merge_task_lists(mut legacy_tasks: Vec<Value>, manual_tasks: Vec<Value>) -> Vec<Value> {
+    let mut merged = manual_tasks;
+    merged.append(&mut legacy_tasks);
+    merged
+}
+
+fn collect_valid_project_ids(groups: &[ProjectGroupDto]) -> HashSet<String> {
+    groups
+        .iter()
+        .flat_map(|group| group.projects.iter())
+        .map(|project| project.id.clone())
+        .collect()
+}
+
+fn sanitize_project_id_list(
+    project_ids: &[String],
+    valid_project_ids: &HashSet<String>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    project_ids
+        .iter()
+        .map(|project_id| project_id.trim().to_string())
+        .filter(|project_id| !project_id.is_empty())
+        .filter(|project_id| valid_project_ids.contains(project_id))
+        .filter(|project_id| seen.insert(project_id.clone()))
+        .collect()
+}
+
+fn normalize_base_branch(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .unwrap_or("develop")
+        .to_string()
+}
+
+fn normalized_project_id(project_id: &str) -> String {
+    let normalized = project_id
+        .to_lowercase()
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if normalized.is_empty() {
+        "project".to_string()
+    } else {
+        normalized.chars().take(16).collect()
+    }
+}
+
+fn stable_hash(value: &str) -> String {
+    let mut hash: u32 = 2166136261;
+    for byte in value.as_bytes() {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(16777619);
+    }
+    format!("{:08x}", hash)
+}
+
+fn to_branch_worktree_key(project_id: &str, branch_name: &str) -> String {
+    let normalized_branch = branch_name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(32)
+        .collect::<String>();
+    let branch_component = if normalized_branch.is_empty() {
+        "work".to_string()
+    } else {
+        normalized_branch
+    };
+    format!(
+        "branch-{}-{}-{}",
+        normalized_project_id(project_id),
+        branch_component,
+        stable_hash(&format!("{}:{}", project_id, branch_name))
+    )
+}
+
+fn build_manual_feature_execution_targets(
+    project_ids: &[String],
+    branch_name: &str,
+    project_groups: &[ProjectGroupDto],
+) -> Vec<WorkspaceTaskExecutionTargetDto> {
+    project_ids
+        .iter()
+        .map(|project_id| WorkspaceTaskExecutionTargetDto {
+            project_id: project_id.clone(),
+            branch_name: branch_name.to_string(),
+            worktree_key: to_branch_worktree_key(project_id, branch_name),
+            repo_path: find_project_by_id(project_groups, project_id).map(|project| project.path.clone()),
+        })
+        .collect()
+}
+
+fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
+    let project_id = feature
+        .project_ids
+        .first()
+        .cloned()
+        .or_else(|| {
+            feature
+                .execution_targets
+                .first()
+                .map(|target| target.project_id.clone())
+        })
+        .unwrap_or_default();
+
+    let mut task = serde_json::Map::new();
+    task.insert("id".to_string(), Value::String(feature.id.clone()));
+    task.insert("plan_id".to_string(), Value::String(format!("manual:{}", feature.id)));
+    task.insert("project_id".to_string(), Value::String(project_id));
+    task.insert(
+        "project_ids".to_string(),
+        Value::Array(
+            feature
+                .project_ids
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    task.insert("title".to_string(), Value::String(feature.title.clone()));
+    task.insert(
+        "description".to_string(),
+        Value::String(feature.description.clone()),
+    );
+    task.insert("status".to_string(), Value::String(feature.status.clone()));
+    task.insert("dependencies".to_string(), Value::Array(Vec::new()));
+    task.insert("estimated_changes".to_string(), Value::Array(Vec::new()));
+    task.insert("draft".to_string(), Value::Bool(feature.draft));
+    task.insert(
+        "standalone_kind".to_string(),
+        Value::String("manual_feature".to_string()),
+    );
+    task.insert(
+        "base_branch".to_string(),
+        Value::String(feature.base_branch.clone()),
+    );
+    task.insert(
+        "conversation_id".to_string(),
+        Value::String(feature.conversation_id.clone()),
+    );
+
+    if let Some(feature_slug) = feature.feature_slug.as_ref() {
+        task.insert(
+            "feature_slug".to_string(),
+            Value::String(feature_slug.clone()),
+        );
+    }
+    if let Some(branch_name) = feature.branch_name.as_ref() {
+        task.insert(
+            "assigned_branch".to_string(),
+            Value::String(branch_name.clone()),
+        );
+        task.insert(
+            "branch_name".to_string(),
+            Value::String(branch_name.clone()),
+        );
+    }
+    if !feature.execution_targets.is_empty() {
+        task.insert(
+            "execution_targets".to_string(),
+            Value::Array(
+                feature
+                    .execution_targets
+                    .iter()
+                    .map(|target| {
+                        let mut value = serde_json::Map::new();
+                        value.insert(
+                            "projectId".to_string(),
+                            Value::String(target.project_id.clone()),
+                        );
+                        value.insert(
+                            "branchName".to_string(),
+                            Value::String(target.branch_name.clone()),
+                        );
+                        value.insert(
+                            "worktreeKey".to_string(),
+                            Value::String(target.worktree_key.clone()),
+                        );
+                        if let Some(repo_path) = target.repo_path.as_ref() {
+                            value.insert(
+                                "repoPath".to_string(),
+                                Value::String(repo_path.clone()),
+                            );
+                        }
+                        Value::Object(value)
+                    })
+                    .collect(),
+            ),
+        );
+    }
+
+    Value::Object(task)
+}
+
 fn workspace_state_path(metadata_root: &Path) -> PathBuf {
     metadata_root.join(WORKSPACE_STATE_FILE)
 }
@@ -620,6 +1073,8 @@ async fn load_state(
             current_plan_project_ids_removed = repair_report.current_plan_project_ids_removed,
             current_plan_tasks_removed = repair_report.current_plan_tasks_removed,
             current_plan_task_targets_removed = repair_report.current_plan_task_targets_removed,
+            manual_features_removed = repair_report.manual_features_removed,
+            manual_feature_targets_removed = repair_report.manual_feature_targets_removed,
             plan_nodes_removed = repair_report.plan_nodes_removed,
             predicted_branches_removed = repair_report.predicted_branches_removed
         );
@@ -747,6 +1202,14 @@ fn sanitize_workspace_state(
         }
     }
 
+    let initial_manual_feature_count = state.manual_features.len();
+    let (sanitized_manual_features, removed_manual_feature_targets) =
+        sanitize_manual_features(&state.manual_features, &valid_project_ids);
+    state.manual_features = sanitized_manual_features;
+    repair_report.manual_features_removed =
+        initial_manual_feature_count.saturating_sub(state.manual_features.len());
+    repair_report.manual_feature_targets_removed = removed_manual_feature_targets;
+
     let initial_plan_node_count = state.plan_nodes.len();
     state.plan_nodes.retain(|node| {
         node.project_id
@@ -871,6 +1334,47 @@ fn sanitize_plan_tasks(
     (sanitized_tasks, removed_tasks, removed_targets)
 }
 
+fn sanitize_manual_features(
+    features: &[ManualFeatureDto],
+    valid_project_ids: &HashSet<String>,
+) -> (Vec<ManualFeatureDto>, usize) {
+    let mut removed_targets = 0usize;
+    let mut sanitized_features = Vec::with_capacity(features.len());
+
+    for feature in features {
+        let project_ids = sanitize_project_id_list(&feature.project_ids, valid_project_ids);
+        let initial_target_len = feature.execution_targets.len();
+        let execution_targets = feature
+            .execution_targets
+            .iter()
+            .filter(|target| valid_project_ids.contains(&target.project_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        removed_targets += initial_target_len.saturating_sub(execution_targets.len());
+
+        let fallback_project_ids = if !project_ids.is_empty() {
+            project_ids.clone()
+        } else {
+            execution_targets
+                .iter()
+                .map(|target| target.project_id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        if fallback_project_ids.is_empty() {
+            continue;
+        }
+
+        sanitized_features.push(ManualFeatureDto {
+            project_ids: fallback_project_ids,
+            execution_targets,
+            ..feature.clone()
+        });
+    }
+
+    (sanitized_features, removed_targets)
+}
+
 async fn persist_sanitized_state(
     workspace_path: &PathBuf,
     metadata_root: &PathBuf,
@@ -892,6 +1396,8 @@ async fn persist_sanitized_state(
             current_plan_project_ids_removed = repair_report.current_plan_project_ids_removed,
             current_plan_tasks_removed = repair_report.current_plan_tasks_removed,
             current_plan_task_targets_removed = repair_report.current_plan_task_targets_removed,
+            manual_features_removed = repair_report.manual_features_removed,
+            manual_feature_targets_removed = repair_report.manual_feature_targets_removed,
             plan_nodes_removed = repair_report.plan_nodes_removed,
             predicted_branches_removed = repair_report.predicted_branches_removed
         );
@@ -1361,6 +1867,7 @@ mod tests {
                     status: "pending".to_string(),
                 },
             ],
+            manual_features: Vec::new(),
         };
 
         let (sanitized, report) = sanitize_workspace_state(&workspace_path, state);
@@ -1409,6 +1916,7 @@ mod tests {
             current_plan: None,
             plan_nodes: Vec::new(),
             predicted_branches: Vec::new(),
+            manual_features: Vec::new(),
         };
 
         let (sanitized, report) = sanitize_workspace_state(&workspace_path, state);

@@ -29,6 +29,11 @@ export interface CatalogedImplementTask extends DerivedImplementTask {
   plan_title: string | null;
   plan_status: ArchitectPlanStatus | null;
   plan_target_branch: string | null;
+  draft: boolean;
+  standalone_kind: 'legacy' | 'manual_feature';
+  base_branch: string | null;
+  feature_slug: string | null;
+  conversation_id: string | null;
 }
 
 export interface ImplementTaskCatalog {
@@ -92,12 +97,23 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       branch_task_index?: number;
       sequence_index?: number;
       execution_targets?: TaskExecutionTarget[];
+      draft?: boolean;
+      standalone_kind?: 'legacy' | 'manual_feature';
+      base_branch?: string | null;
+      feature_slug?: string | null;
+      conversation_id?: string | null;
     };
-    const assignedBranch = normalizeBranchName(raw.assigned_branch || raw.branch_name);
+    const isDraft = raw.draft === true;
+    const assignedBranch =
+      isDraft && !(raw.assigned_branch || raw.branch_name)
+        ? ''
+        : normalizeBranchName(raw.assigned_branch || raw.branch_name);
     const projectIds = normalizeProjectIds(task.project_ids, task.project_id);
     const executionTargets = raw.execution_targets && raw.execution_targets.length > 0
       ? raw.execution_targets
-      : buildFallbackExecutionTargets(projectIds, assignedBranch);
+      : isDraft || !assignedBranch
+        ? []
+        : buildFallbackExecutionTargets(projectIds, assignedBranch);
 
     return {
       ...task,
@@ -113,6 +129,11 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       is_ready: false,
       sequence_index: typeof raw.sequence_index === 'number' ? raw.sequence_index : index,
       execution_targets: executionTargets,
+      draft: isDraft,
+      standalone_kind: raw.standalone_kind === 'manual_feature' ? 'manual_feature' : 'legacy',
+      base_branch: typeof raw.base_branch === 'string' ? raw.base_branch : null,
+      feature_slug: typeof raw.feature_slug === 'string' ? raw.feature_slug : null,
+      conversation_id: typeof raw.conversation_id === 'string' ? raw.conversation_id : null,
       task_source: 'standalone' as const,
       plan_title: null,
       plan_status: null,
@@ -139,7 +160,7 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
     }
 
     const isBlocked = blockedByTaskIds.length > 0;
-    const isReady = !isBlocked && status !== 'Completed' && status !== 'Failed';
+    const isReady = !task.draft && !isBlocked && status !== 'Completed' && status !== 'Failed';
     return {
       ...task,
       status,
@@ -166,6 +187,11 @@ export const deriveImplementTasksFromArchitectPlan = (
     plan_title: plan.title,
     plan_status: plan.status,
     plan_target_branch: plan.targetBranch,
+    draft: false,
+    standalone_kind: 'legacy' as const,
+    base_branch: null,
+    feature_slug: null,
+    conversation_id: null,
   }));
 };
 

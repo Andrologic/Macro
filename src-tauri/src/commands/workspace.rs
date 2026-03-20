@@ -2,8 +2,9 @@ use crate::core::error::{BackendError, Result};
 use crate::git::GitState;
 use crate::workspace;
 use crate::workspace::metadata::{
-    CreateProjectRequest, ImportGitRepoRequest, ProjectDto, ProjectGroupDto, WorkspaceBootstrapDto,
-    ProjectRegistryDiagnosticsDto, WorkspaceMetadataDto, WorkspaceTaskCatalogDto,
+    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, ProjectDto, ProjectGroupDto,
+    ProjectRegistryDiagnosticsDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
+    WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
@@ -246,4 +247,84 @@ pub async fn workspace_remove_project(
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     workspace::remove_project(&workspace_path, &metadata_root, &project_id).await
+}
+
+#[tauri::command]
+pub async fn workspace_create_manual_feature_draft(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+    conversation_id: String,
+    group_id: Option<String>,
+    project_ids: Vec<String>,
+    base_branch: Option<String>,
+    title: Option<String>,
+    description: Option<String>,
+) -> Result<ManualFeatureDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let _ = group_id;
+    workspace::create_manual_feature_draft(
+        &workspace_path,
+        &metadata_root,
+        &task_id,
+        &conversation_id,
+        &project_ids,
+        base_branch.as_deref(),
+        title.as_deref(),
+        description.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn workspace_finalize_manual_feature(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+    conversation_id: Option<String>,
+    title: String,
+    description: String,
+    feature_slug: String,
+) -> Result<ManualFeatureDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::finalize_manual_feature(
+        &workspace_path,
+        &metadata_root,
+        &task_id,
+        conversation_id.as_deref(),
+        &title,
+        &description,
+        &feature_slug,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn workspace_delete_manual_feature_draft(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+) -> Result<()> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::delete_manual_feature_draft(&workspace_path, &metadata_root, &task_id).await
+}
+
+#[tauri::command]
+pub async fn workspace_update_standalone_task_status(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+    status: String,
+) -> Result<()> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::update_standalone_task_status(&workspace_path, &metadata_root, &task_id, &status)
+        .await
 }

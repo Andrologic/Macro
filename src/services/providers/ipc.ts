@@ -176,7 +176,8 @@ export const getGitTreeForProject = async (projectId: string): Promise<GitTreeDt
 export const gitWorktreeCreate = async (
   projectId: string,
   taskId: string,
-  branchName: string
+  branchName: string,
+  fromRef?: string | null
 ): Promise<string> => {
   const project = useAppStore.getState().getProjectById(projectId);
   if (!project) throw { code: 'PROJECT_NOT_FOUND', message: `Unknown project: ${projectId}` };
@@ -185,6 +186,7 @@ export const gitWorktreeCreate = async (
     repoPath: project.path,
     taskId,
     branchName,
+    fromRef: fromRef ?? null,
   });
 };
 
