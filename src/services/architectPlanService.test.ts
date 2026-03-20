@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
 import {
+  archiveArchitectPlan,
   createArchitectPlan,
   getArchitectPlan,
   listArchitectPlans,
@@ -150,10 +151,33 @@ describe('architectPlanService', () => {
     expect(cleared.label).toBeUndefined();
   });
 
-  it('allows explicitly expanding expected project ids on update', async () => {
+  it('refuses to archive canonical plans still named new plan', async () => {
     const created = await createArchitectPlan({
       branchName,
       planId: '1710000000011',
+      label: 'new plan',
+    });
+
+    await expect(archiveArchitectPlan(branchName, created.id)).rejects.toThrow(
+      'Rename the plan before archiving it.'
+    );
+
+    const reloaded = await getArchitectPlan(branchName, created.id);
+    expect(reloaded?.status).toBe('draft');
+
+    await expect(
+      updateArchitectPlan({
+        branchName,
+        planId: created.id,
+        status: 'archived',
+      })
+    ).rejects.toThrow('Rename the plan before archiving it.');
+  });
+
+  it('allows explicitly expanding expected project ids on update', async () => {
+    const created = await createArchitectPlan({
+      branchName,
+      planId: '1710000000012',
       projectIds: ['web'],
     });
 
