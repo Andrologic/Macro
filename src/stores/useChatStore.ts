@@ -331,6 +331,7 @@ interface ChatStore {
       typedProjectName?: string;
     }
   ) => Promise<void>;
+  deleteChatConversations: (conversationIds: string[]) => Promise<void>;
   markAsRead: (conversationId: string) => void;
   getConversationByTask: (taskId: string) => Conversation | undefined;
   getConversationMessages: (conversationId: string) => ChatMessage[];
@@ -1966,6 +1967,93 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return scoped[0]?.id ?? null;
   };
 
+  type ConversationRemovalSnapshot = Pick<
+    ChatStore,
+    | 'conversations'
+    | 'messages'
+    | 'messageImagesByMessageId'
+    | 'selectedConversationId'
+    | 'selectedConversationIdsByMode'
+  >;
+
+  const buildConversationRemovalSnapshot = (): ConversationRemovalSnapshot => {
+    const state = get();
+    return {
+      conversations: state.conversations,
+      messages: state.messages,
+      messageImagesByMessageId: state.messageImagesByMessageId,
+      selectedConversationId: state.selectedConversationId,
+      selectedConversationIdsByMode: state.selectedConversationIdsByMode,
+    };
+  };
+
+  const buildConversationRemovalState = (
+    state: ConversationRemovalSnapshot,
+    conversationIds: string[]
+  ): ConversationRemovalSnapshot => {
+    const idsToRemove = new Set(conversationIds);
+    const appState = useAppStore.getState();
+    const nextConversations = state.conversations.filter(
+      (conversation) => !idsToRemove.has(conversation.id)
+    );
+    const nextMessages = state.messages.filter(
+      (message) => !idsToRemove.has(message.conversation_id)
+    );
+    const remainingMessageIds = new Set(nextMessages.map((message) => message.id));
+    const nextImages = Object.fromEntries(
+      Object.entries(state.messageImagesByMessageId).filter(([messageId]) =>
+        remainingMessageIds.has(messageId)
+      )
+    );
+    saveMessageImagesToStorage(nextImages);
+
+    const nextByMode = { ...state.selectedConversationIdsByMode };
+    (Object.keys(nextByMode) as AppMode[]).forEach((modeKey) => {
+      if (nextByMode[modeKey] && idsToRemove.has(nextByMode[modeKey]!)) {
+        nextByMode[modeKey] = null;
+      }
+    });
+
+    const fallbackForCurrentMode = getFallbackConversationIdForMode(
+      nextConversations,
+      appState.mode,
+      appState.selectedGroupId,
+      appState.selectedProjectId,
+      appState.selectedTaskId
+    );
+
+    const nextSelectedConversationId =
+      state.selectedConversationId && idsToRemove.has(state.selectedConversationId)
+        ? fallbackForCurrentMode
+        : state.selectedConversationId;
+
+    nextByMode[appState.mode] =
+      nextSelectedConversationId &&
+      nextConversations.some((conversation) => conversation.id === nextSelectedConversationId)
+        ? nextSelectedConversationId
+        : fallbackForCurrentMode;
+
+    return {
+      conversations: nextConversations,
+      messages: nextMessages,
+      messageImagesByMessageId: nextImages,
+      selectedConversationId: nextSelectedConversationId,
+      selectedConversationIdsByMode: nextByMode,
+    };
+  };
+
+  const applyLocalConversationRemoval = (conversationIds: string[]) => {
+    if (conversationIds.length === 0) {
+      return;
+    }
+    set((state) => buildConversationRemovalState(state, conversationIds));
+  };
+
+  const restoreConversationRemovalSnapshot = (snapshot: ConversationRemovalSnapshot) => {
+    saveMessageImagesToStorage(snapshot.messageImagesByMessageId);
+    set(snapshot);
+  };
+
   const getAllowedToolIdsForCurrentMode = async (): Promise<string[]> => {
     if (!useProviderStore.getState().selectedSupportsNativeToolCalling()) {
       return [];
@@ -3127,55 +3215,42 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await tauriIpc.deleteConversation(conversationId);
       }
       removeConversationSelection(conversationId);
-      set((state) => {
-        const appState = useAppStore.getState();
-        const newConversations = state.conversations.filter((c) => c.id !== conversationId);
-        const newMessages = state.messages.filter((m) => m.conversation_id !== conversationId);
-        const removedMessageIds = new Set(
-          state.messages
-            .filter((m) => m.conversation_id === conversationId)
-            .map((m) => m.id)
-        );
-        const nextImages = { ...state.messageImagesByMessageId };
-        removedMessageIds.forEach((id) => {
-          delete nextImages[id];
-        });
-        saveMessageImagesToStorage(nextImages);
+      applyLocalConversationRemoval([conversationId]);
+    },
 
-        const nextByMode = { ...state.selectedConversationIdsByMode };
-        (Object.keys(nextByMode) as AppMode[]).forEach((modeKey) => {
-          if (nextByMode[modeKey] === conversationId) {
-            nextByMode[modeKey] = null;
-          }
-        });
+    deleteChatConversations: async (conversationIds) => {
+      const uniqueIds = Array.from(new Set(conversationIds));
+      if (uniqueIds.length === 0) {
+        return;
+      }
 
-        const fallbackForCurrentMode = getFallbackConversationIdForMode(
-          newConversations,
-          appState.mode,
-          appState.selectedGroupId,
-          appState.selectedProjectId,
-          appState.selectedTaskId
-        );
-
-        const newSelectedId =
-          state.selectedConversationId === conversationId
-            ? fallbackForCurrentMode
-            : state.selectedConversationId;
-
-        nextByMode[appState.mode] =
-          newSelectedId &&
-            newConversations.some((conversation) => conversation.id === newSelectedId)
-            ? newSelectedId
-            : fallbackForCurrentMode;
-
-        return {
-          conversations: newConversations,
-          messages: newMessages,
-          messageImagesByMessageId: nextImages,
-          selectedConversationId: newSelectedId,
-          selectedConversationIdsByMode: nextByMode,
-        };
+      const conversationsById = new Map(
+        get().conversations.map((conversation) => [conversation.id, conversation])
+      );
+      uniqueIds.forEach((conversationId) => {
+        const conversation = conversationsById.get(conversationId);
+        if (!conversation) {
+          throw new Error('Conversation introuvable.');
+        }
+        if (conversation.task_id || conversation.group_id || conversation.project_id) {
+          throw new Error('La suppression groupée est réservée aux conversations Chat.');
+        }
       });
+
+      const snapshot = buildConversationRemovalSnapshot();
+      applyLocalConversationRemoval(uniqueIds);
+
+      try {
+        if (tauriIpc.isTauriAvailable()) {
+          await tauriIpc.deleteConversations(uniqueIds);
+        }
+        uniqueIds.forEach((conversationId) => {
+          removeConversationSelection(conversationId);
+        });
+      } catch (error) {
+        restoreConversationRemovalSnapshot(snapshot);
+        throw error;
+      }
     },
 
     markAsRead: (conversationId) =>
