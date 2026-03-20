@@ -374,6 +374,29 @@ export interface WorkspaceMetadataDto {
   project_count: number;
 }
 
+export interface WorkspaceManualFeatureExecutionTargetDto {
+  projectId: string;
+  branchName: string;
+  worktreeKey: string;
+  repoPath?: string | null;
+}
+
+export interface WorkspaceManualFeatureDto {
+  id: string;
+  conversationId: string;
+  draft: boolean;
+  title: string;
+  description: string;
+  status: string;
+  featureSlug: string | null;
+  branchName: string | null;
+  baseBranch: string;
+  projectIds: string[];
+  executionTargets: WorkspaceManualFeatureExecutionTargetDto[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ToolValidationResultDto {
   allowed: boolean;
   reason?: string | null;
@@ -918,11 +941,13 @@ export async function gitWorktreeCreate(params: {
   repoPath: string;
   taskId: string;
   branchName: string;
+  fromRef?: string | null;
 }): Promise<string> {
   return invoke<string>('git_worktree_create', {
     repoPath: params.repoPath,
     taskId: params.taskId,
     branchName: params.branchName,
+    fromRef: params.fromRef ?? null,
   });
 }
 
@@ -1124,6 +1149,56 @@ export async function workspaceCloseProject(params: {
 
 export async function workspaceGetProjectRegistryDiagnostics(): Promise<ProjectRegistryDiagnosticsDto> {
   return invoke<ProjectRegistryDiagnosticsDto>('workspace_get_project_registry_diagnostics');
+}
+
+export async function workspaceCreateManualFeatureDraft(params: {
+  taskId: string;
+  conversationId: string;
+  groupId?: string | null;
+  projectIds: string[];
+  baseBranch?: string | null;
+  title?: string | null;
+  description?: string | null;
+}): Promise<WorkspaceManualFeatureDto> {
+  return invoke<WorkspaceManualFeatureDto>('workspace_create_manual_feature_draft', {
+    taskId: params.taskId,
+    conversationId: params.conversationId,
+    groupId: params.groupId ?? null,
+    projectIds: params.projectIds,
+    baseBranch: params.baseBranch ?? null,
+    title: params.title ?? null,
+    description: params.description ?? null,
+  });
+}
+
+export async function workspaceFinalizeManualFeature(params: {
+  taskId: string;
+  conversationId?: string | null;
+  title: string;
+  description: string;
+  featureSlug: string;
+}): Promise<WorkspaceManualFeatureDto> {
+  return invoke<WorkspaceManualFeatureDto>('workspace_finalize_manual_feature', {
+    taskId: params.taskId,
+    conversationId: params.conversationId ?? null,
+    title: params.title,
+    description: params.description,
+    featureSlug: params.featureSlug,
+  });
+}
+
+export async function workspaceDeleteManualFeatureDraft(taskId: string): Promise<void> {
+  return invoke('workspace_delete_manual_feature_draft', { taskId });
+}
+
+export async function workspaceUpdateStandaloneTaskStatus(params: {
+  taskId: string;
+  status: string;
+}): Promise<void> {
+  return invoke('workspace_update_standalone_task_status', {
+    taskId: params.taskId,
+    status: params.status,
+  });
 }
 
 // ============ Provider Models ============

@@ -14,6 +14,8 @@ pub struct WorkspaceState {
     pub plan_nodes: Vec<PlanNodeDto>,
     #[serde(default)]
     pub predicted_branches: Vec<PredictedBranchDto>,
+    #[serde(default)]
+    pub manual_features: Vec<ManualFeatureDto>,
 }
 
 impl Default for WorkspaceState {
@@ -24,6 +26,7 @@ impl Default for WorkspaceState {
             current_plan: None,
             plan_nodes: Vec::new(),
             predicted_branches: Vec::new(),
+            manual_features: Vec::new(),
         }
     }
 }
@@ -78,6 +81,48 @@ pub struct WorkspaceTaskCatalogDto {
     #[serde(rename = "hasStandaloneTasks")]
     pub has_standalone_tasks: bool,
     pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceTaskExecutionTargetDto {
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    #[serde(rename = "branchName")]
+    pub branch_name: String,
+    #[serde(rename = "worktreeKey")]
+    pub worktree_key: String,
+    #[serde(default, rename = "repoPath")]
+    pub repo_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualFeatureDto {
+    pub id: String,
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    #[serde(default)]
+    pub draft: bool,
+    pub title: String,
+    pub description: String,
+    pub status: String,
+    #[serde(default, rename = "featureSlug")]
+    pub feature_slug: Option<String>,
+    #[serde(default, rename = "branchName")]
+    pub branch_name: Option<String>,
+    #[serde(default = "default_manual_feature_base_branch", rename = "baseBranch")]
+    pub base_branch: String,
+    #[serde(default, rename = "projectIds")]
+    pub project_ids: Vec<String>,
+    #[serde(default, rename = "executionTargets")]
+    pub execution_targets: Vec<WorkspaceTaskExecutionTargetDto>,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+}
+
+fn default_manual_feature_base_branch() -> String {
+    "develop".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +233,8 @@ pub struct ProjectRegistryRepairReportDto {
     pub current_plan_project_ids_removed: usize,
     pub current_plan_tasks_removed: usize,
     pub current_plan_task_targets_removed: usize,
+    pub manual_features_removed: usize,
+    pub manual_feature_targets_removed: usize,
     pub plan_nodes_removed: usize,
     pub predicted_branches_removed: usize,
 }
@@ -204,6 +251,8 @@ impl ProjectRegistryRepairReportDto {
             || self.current_plan_project_ids_removed > 0
             || self.current_plan_tasks_removed > 0
             || self.current_plan_task_targets_removed > 0
+            || self.manual_features_removed > 0
+            || self.manual_feature_targets_removed > 0
             || self.plan_nodes_removed > 0
             || self.predicted_branches_removed > 0
     }
