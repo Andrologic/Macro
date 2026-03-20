@@ -3569,6 +3569,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
 
+      if (modeAtSend === 'Implement' && resolvedTaskId && taskBeforeSend && !taskBeforeSend.draft) {
+        if (taskBeforeSend.status === 'Pending') {
+          await useTaskStore.getState().startTask(resolvedTaskId);
+        } else if (
+          taskBeforeSend.status === 'AwaitingResponse' ||
+          taskBeforeSend.status === 'Failed'
+        ) {
+          await useTaskStore.getState().retryTask(resolvedTaskId);
+        }
+      }
+
       const userMessageCountBeforeSend = getOrderedConversationMessages(conversationId).filter(
         (message) => message.role === 'user'
       ).length;
@@ -3742,6 +3753,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
 
             persistAssistantStreamResult(conversationId, result);
+            const taskAfterStream = resolvedTaskId
+              ? useTaskStore.getState().getTaskById(resolvedTaskId)
+              : undefined;
+            if (modeAtSend === 'Implement' && resolvedTaskId && taskAfterStream?.status === 'InProgress') {
+              void useTaskStore.getState().markTaskAwaitingResponse(resolvedTaskId);
+            }
             void syncMacroMetadataAfterStreamService({
               mode: modeAtSend,
               conversationId,
@@ -3801,6 +3818,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!target) return;
 
       const conversationId = target.conversation_id;
+      const taskBeforeEdit = target.task_id
+        ? useTaskStore.getState().getTaskById(target.task_id)
+        : undefined;
+
+      if (modeAtEdit === 'Implement' && target.task_id && taskBeforeEdit && !taskBeforeEdit.draft) {
+        if (taskBeforeEdit.status === 'Pending') {
+          await useTaskStore.getState().startTask(target.task_id);
+        } else if (
+          taskBeforeEdit.status === 'AwaitingResponse' ||
+          taskBeforeEdit.status === 'Failed'
+        ) {
+          await useTaskStore.getState().retryTask(target.task_id);
+        }
+      }
 
       if (tauriIpc.isTauriAvailable()) {
         tauriIpc.deleteMessagesAfter(conversationId, messageId).catch(console.error);
@@ -3954,6 +3985,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
               return { conversations, isLoading: false, isStreaming: false, abortController: null };
             });
             persistAssistantStreamResult(conversationId, result);
+            const taskAfterStream = target.task_id
+              ? useTaskStore.getState().getTaskById(target.task_id)
+              : undefined;
+            if (modeAtEdit === 'Implement' && target.task_id && taskAfterStream?.status === 'InProgress') {
+              void useTaskStore.getState().markTaskAwaitingResponse(target.task_id);
+            }
             void syncMacroMetadataAfterStreamService({
               mode: modeAtEdit,
               conversationId,
