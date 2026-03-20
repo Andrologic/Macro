@@ -50,6 +50,13 @@ pub(crate) fn command_error(message: impl Into<String>) -> CommandError {
     }
 }
 
+async fn get_pool(pool: &State<'_, DbPool>) -> CommandResult<SqlitePool> {
+    let pool_guard = pool.lock().await;
+    pool_guard.as_ref().cloned().ok_or_else(|| CommandError {
+        message: "Database not initialized".to_string(),
+    })
+}
+
 #[tauri::command]
 pub async fn tool_get_mode_policy(mode: String) -> CommandResult<ToolModePolicyResult> {
     Ok(get_mode_policy(&mode))
@@ -1099,12 +1106,21 @@ pub async fn db_delete_conversation_by_id(
     pool: State<'_, DbPool>,
     id: String,
 ) -> CommandResult<()> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::delete_conversation(pool, &id)
+    repository::delete_conversation(&pool, &id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_delete_conversations_by_ids(
+    pool: State<'_, DbPool>,
+    ids: Vec<String>,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_conversations(&pool, &ids)
         .await
         .map_err(Into::into)
 }

@@ -6,6 +6,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
+import { toast } from '../ui/Toaster';
 import { cn } from '../../utils/cn';
 import type { Conversation } from '../../types';
 
@@ -38,9 +39,11 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   onPin,
   isPinned,
 }) => {
+  const { t } = useTranslation();
   const [showMenu, setShowMenu] = useState(false);
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const { renameConversation, deleteConversation } = useChatStore();
   const getProjectById = useAppStore((state) => state.getProjectById);
@@ -63,6 +66,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   };
 
   const handleDelete = async (typedProjectName?: string) => {
+    setIsDeleting(true);
     try {
       if (deleteKind === 'architect') {
         await deleteConversation(conversation.id, {
@@ -81,6 +85,8 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Suppression impossible.';
       setDeleteError(message);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -187,10 +193,13 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
 
           {/* Menu button */}
           <button
+            type="button"
             onClick={(e) => {
+              if (isDeleting) return;
               e.stopPropagation();
               setShowMenu(!showMenu);
             }}
+            disabled={isDeleting}
             className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
           >
             <Icon name="more-vertical" size={12} className="text-muted-foreground" />
@@ -210,38 +219,49 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             onClick={(e) => e.stopPropagation()}
           >
             <button
+              type="button"
               onClick={() => {
+                if (isDeleting) return;
                 onPin?.();
                 setShowMenu(false);
               }}
+              disabled={isDeleting}
               className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="pin" size={12} />
               {isPinned ? 'Unpin' : 'Pin'}
             </button>
             <button 
+              type="button"
               onClick={() => {
+                if (isDeleting) return;
                 setShowMenu(false);
                 setIsRenameOpen(true);
               }}
+              disabled={isDeleting}
               className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="edit" size={12} />
               Rename
             </button>
             <button 
+              type="button"
               onClick={handleExport}
+              disabled={isDeleting}
               className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="download" size={12} />
               Export
             </button>
             <button 
+              type="button"
               onClick={() => {
+                if (isDeleting) return;
                 setShowMenu(false);
                 setDeleteError(null);
                 setIsDeleteOpen(true);
               }}
+              disabled={isDeleting}
               className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 flex items-center gap-2"
             >
               <Icon name="trash" size={12} />
@@ -283,13 +303,18 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               ? 'Confirm deletion of this task conversation.'
               : 'Are you sure you want to delete this conversation?')
         }
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
+        confirmLabel={
+          isDeleting
+            ? t('chat.deletingConversation', 'Deleting...')
+            : t('common.delete', 'Delete')
+        }
+        cancelLabel={t('common.cancel', 'Cancel')}
         confirmVariant="error"
         inputPlaceholder={deleteKind === 'architect' ? 'Project name' : undefined}
         requireInput={deleteKind === 'architect'}
         initialValue=""
         onCancel={() => setIsDeleteOpen(false)}
+        isSubmitting={isDeleting}
         onConfirm={(value) => {
           void handleDelete(value);
         }}
@@ -305,15 +330,17 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     selectedConversationId,
     selectConversation,
     createConversation,
-    deleteConversation,
+    deleteChatConversations,
   } = useChatStore();
-  const { clearConversationCitations } = useCitationsStore();
+  const { clearConversationCitationsBulk } = useCitationsStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
   const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
 
   // Use real conversations from store (filter to chat-only conversations with no project_id)
   const chatConversations = useMemo(
@@ -409,20 +436,36 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   };
 
   const handleDeleteSelected = async () => {
-    if (selectedIds.size === 0) return;
+    if (selectedIds.size === 0 || isBulkDeleting) return;
     const ids = Array.from(selectedIds);
+    setIsBulkDeleting(true);
+    setBulkDeleteError(null);
 
-    for (const conversationId of ids) {
-      try {
-        await deleteConversation(conversationId, { mode: 'chat' });
-        clearConversationCitations(conversationId);
-      } catch {
-        // Ignore individual failures to allow best-effort bulk deletion
-      }
+    try {
+      await deleteChatConversations(ids);
+      clearConversationCitationsBulk(ids);
+      setSelectedIds(new Set());
+      setPinnedIds((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
+      setArchivedIds((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
+      setIsBulkDeleteOpen(false);
+      toast.success(
+        t('toast.chatConversationsDeleted', {
+          count: ids.length,
+          defaultValue: '{{count}} conversations deleted',
+        })
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : t('toast.chatDeleteFailed', 'Failed to delete conversations');
+      setBulkDeleteError(message);
+      toast.error(t('toast.chatDeleteFailed', 'Failed to delete conversations'), {
+        description: message,
+      });
+    } finally {
+      setIsBulkDeleting(false);
     }
-
-    setSelectedIds(new Set());
-    setIsBulkDeleteOpen(false);
   };
 
   const handleNewChat = () => {
@@ -442,6 +485,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
         </h1>
         <button
           onClick={handleNewChat}
+          disabled={isBulkDeleting}
           className="p-1 hover:bg-accent rounded-md transition-colors"
           title={t('chat.newChat', 'New Chat')}
         >
@@ -452,8 +496,9 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-2 min-w-0">
         <button
           onClick={handleToggleSelectAll}
+          type="button"
           className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors min-w-0 shrink"
-          disabled={visibleConversationIds.length === 0}
+          disabled={visibleConversationIds.length === 0 || isBulkDeleting}
         >
           <Icon name={isAllVisibleSelected ? 'square' : 'check-square'} size={12} />
           <span className="truncate">{t('common.selectAll', 'Tout sélectionner')}</span>
@@ -462,7 +507,8 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
         <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={handleArchiveSelected}
-            disabled={selectedIds.size === 0}
+            type="button"
+            disabled={selectedIds.size === 0 || isBulkDeleting}
             className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             title={t('common.archive', 'Archiver')}
           >
@@ -470,8 +516,12 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             <span className="hidden 2xl:inline">{t('common.archive', 'Archiver')}</span>
           </button>
           <button
-            onClick={() => setIsBulkDeleteOpen(true)}
-            disabled={selectedIds.size === 0}
+            type="button"
+            onClick={() => {
+              setBulkDeleteError(null);
+              setIsBulkDeleteOpen(true);
+            }}
+            disabled={selectedIds.size === 0 || isBulkDeleting}
             className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             title={t('common.delete', 'Delete')}
           >
@@ -581,14 +631,26 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
         isOpen={isBulkDeleteOpen}
         title={t('chat.deleteConversation', 'Delete conversation')}
         description={
-          selectedIds.size > 1
-            ? `${t('common.areYouSure', 'Are you sure?')} ${selectedIds.size} conversations will be deleted.`
-            : t('chat.deleteConversation', 'Delete this conversation?')
+          bulkDeleteError ||
+          (selectedIds.size > 1
+            ? t('chat.deleteConversationCount', {
+              count: selectedIds.size,
+              defaultValue: '{{count}} conversations will be deleted.',
+            })
+            : t('chat.deleteConversation', 'Delete this conversation?'))
         }
-        confirmLabel={t('common.delete', 'Delete')}
+        confirmLabel={
+          isBulkDeleting
+            ? t('chat.deletingConversations', 'Deleting...')
+            : t('common.delete', 'Delete')
+        }
         cancelLabel={t('common.cancel', 'Cancel')}
         confirmVariant="error"
-        onCancel={() => setIsBulkDeleteOpen(false)}
+        isSubmitting={isBulkDeleting}
+        onCancel={() => {
+          setBulkDeleteError(null);
+          setIsBulkDeleteOpen(false);
+        }}
         onConfirm={() => {
           void handleDeleteSelected();
         }}
