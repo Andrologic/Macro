@@ -228,6 +228,11 @@ export interface Task {
   dependencies: string[];
   estimated_changes: FileChange[];
   code_diff?: CodeDiff;
+  draft?: boolean;
+  standalone_kind?: 'legacy' | 'manual_feature';
+  base_branch?: string | null;
+  feature_slug?: string | null;
+  conversation_id?: string | null;
 }
 
 export interface GitNode {

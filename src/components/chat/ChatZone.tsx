@@ -28,7 +28,7 @@ import { getFocusedProjectForGroup, getGlobalProjectById } from '../../services/
 const buildImplementKickoffPrompt = (params: {
   title: string;
   description?: string;
-  projectId: string;
+  projectScope: string;
   branchName: string;
   dependencies: string[];
   estimatedChanges: Array<{ operation: string; path: string }>;
@@ -60,7 +60,7 @@ const buildImplementKickoffPrompt = (params: {
     'TASK CONTEXT',
     `- Title: ${params.title}`,
     `- Description: ${params.description || 'No description provided.'}`,
-    `- Project ID: ${params.projectId}`,
+    `- Project Scope: ${params.projectScope}`,
     `- Branch: ${params.branchName}`,
     `- Dependencies: ${dependencyContext}`,
     '- Estimated file changes:',
@@ -157,9 +157,39 @@ const ChatZone: React.FC = () => {
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId]
   );
+  const isManualFeatureDraftTask = selectedTask?.draft === true;
+  const selectedTaskProjectIds = useMemo(() => {
+    if (!selectedTask) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        [
+          ...(selectedTask.execution_targets?.map((target) => target.projectId) ?? []),
+          ...(selectedTask.project_ids ?? []),
+          selectedTask.project_id,
+        ].filter((projectId): projectId is string => typeof projectId === 'string' && projectId.trim().length > 0)
+      )
+    );
+  }, [selectedTask]);
+  const selectedTaskProjectSummary = useMemo(() => {
+    if (selectedTaskProjectIds.length === 0) {
+      return t('implement.noRepositorySelected', 'No repository');
+    }
+
+    if (selectedTaskProjectIds.length === 1) {
+      return selectedTaskProjectIds[0]!;
+    }
+
+    return t('implement.multiProjectTask', '{{count}} repositories', {
+      count: selectedTaskProjectIds.length,
+    });
+  }, [selectedTaskProjectIds, t]);
   const canStartImplementExecution = Boolean(
     mode === 'Implement' &&
       selectedTask &&
+      !selectedTask.draft &&
       !selectedTask.is_blocked &&
       selectedTask.status !== 'Completed' &&
       selectedTask.status !== 'InReview' &&
@@ -170,6 +200,7 @@ const ChatZone: React.FC = () => {
     mode === 'Implement' &&
     implementExecutionMode === 'semi_auto' &&
     Boolean(selectedTask) &&
+    !selectedTask?.draft &&
     currentMessages.length === 0;
   const isComposerDisabled = isConversationPending || isImplementComposerLocked;
 
@@ -296,6 +327,7 @@ const ChatZone: React.FC = () => {
 
   const handleStartExecution = async (notesOverride?: string) => {
     if (mode !== 'Implement' || !selectedTask || isLoading || isStreaming || isConversationPending) return;
+    if (selectedTask.draft) return;
     if (!selectedProviderId || !selectedModelId) return;
     if (startingExecutionRef.current) return;
 
@@ -320,7 +352,7 @@ const ChatZone: React.FC = () => {
       const content = buildImplementKickoffPrompt({
         title: selectedTask.title,
         description: selectedTask.description,
-        projectId: selectedTask.project_id,
+        projectScope: selectedTaskProjectSummary,
         branchName: selectedTask.branch_name,
         dependencies: selectedTask.dependencies,
         estimatedChanges: selectedTask.estimated_changes,
@@ -1054,7 +1086,7 @@ const ChatZone: React.FC = () => {
               )}
             </div>
 
-            {mode === 'Implement' && selectedTask && currentMessages.length === 0 && (
+            {mode === 'Implement' && selectedTask && !isManualFeatureDraftTask && currentMessages.length === 0 && (
               <div className="rounded-xl border border-border bg-card/70 p-3 space-y-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="space-y-1">
@@ -1071,7 +1103,7 @@ const ChatZone: React.FC = () => {
                       </span>
                       <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/60 px-2 py-1">
                         <Icon name="folder" size={10} />
-                        {selectedTask.project_id}
+                        {selectedTaskProjectSummary}
                       </span>
                     </div>
                   </div>

@@ -35,6 +35,10 @@ import {
 } from '../services/implementTaskCatalog';
 import { getScopedProjectIds } from '../services/globalProjects';
 import {
+  removeManualFeatureMetadata,
+  syncManualFeatureMetadataFromTask,
+} from '../services/manualFeatureMetadataService';
+import {
   buildPlanFinalizationFailureState,
   buildPlanFinalizationRefreshState,
   buildPlanFinalizationSuccessState,
@@ -65,6 +69,10 @@ const normalizeBranchName = (value?: string): string => {
 };
 
 const getExecutionTargets = (task: CatalogedImplementTask): TaskExecutionTarget[] => {
+  if (task.draft) {
+    return [];
+  }
+
   if (task.execution_targets?.length) {
     return task.execution_targets;
   }
@@ -83,6 +91,28 @@ const getExecutionTargets = (task: CatalogedImplementTask): TaskExecutionTarget[
 const getPrimaryExecutionTarget = (task: CatalogedImplementTask): TaskExecutionTarget | null => {
   return getExecutionTargets(task)[0] || null;
 };
+
+const getPreferredExecutionTarget = (
+  task: CatalogedImplementTask,
+  preferredProjectId?: string | null
+): TaskExecutionTarget | null => {
+  const executionTargets = getExecutionTargets(task);
+  if (executionTargets.length === 0) {
+    return null;
+  }
+
+  if (preferredProjectId) {
+    const matchingTarget = executionTargets.find((target) => target.projectId === preferredProjectId);
+    if (matchingTarget) {
+      return matchingTarget;
+    }
+  }
+
+  return executionTargets[0] || null;
+};
+
+const isManualStandaloneTask = (task: CatalogedImplementTask): boolean =>
+  task.task_source === 'standalone' && task.standalone_kind === 'manual_feature';
 
 const ALLOWED_STATUS_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   Pending: ['InProgress', 'Failed'],
@@ -237,6 +267,23 @@ interface TaskStore {
   initialize: () => Promise<void>;
   refreshFromPlan: () => Promise<void>;
   activateTask: (taskId: string) => Promise<void>;
+  createManualFeatureDraft: (params: {
+    taskId: string;
+    conversationId: string;
+    groupId?: string | null;
+    projectIds: string[];
+    baseBranch?: string | null;
+    title?: string | null;
+    description?: string | null;
+  }) => Promise<void>;
+  finalizeManualFeatureDraft: (params: {
+    taskId: string;
+    conversationId?: string | null;
+    title: string;
+    description: string;
+    featureSlug: string;
+  }) => Promise<void>;
+  deleteManualFeatureDraft: (taskId: string) => Promise<void>;
   startTask: (taskId: string) => Promise<void>;
   startReview: (taskId: string) => Promise<void>;
   requestTaskChanges: (taskId: string) => Promise<void>;
@@ -287,6 +334,11 @@ const persistTaskStatusToArchitectPlan = async (
       plan_title: plan.title,
       plan_status: plan.status,
       plan_target_branch: plan.targetBranch,
+      draft: false,
+      standalone_kind: 'legacy',
+      base_branch: null,
+      feature_slug: null,
+      conversation_id: null,
     })),
     plan.predictedBranches || [],
     task.id,
@@ -325,6 +377,21 @@ const persistTaskStatusToArchitectPlan = async (
   } catch (error) {
     const normalized = toServiceError(error);
     setError(normalized.message);
+  }
+};
+
+const syncManualFeatureTaskMetadata = async (
+  task: CatalogedImplementTask | undefined,
+  setError?: (message: string | null) => void
+): Promise<void> => {
+  if (!task || !isManualStandaloneTask(task)) {
+    return;
+  }
+  try {
+    await syncManualFeatureMetadataFromTask(task);
+  } catch (error) {
+    const normalized = toServiceError(error);
+    setError?.(normalized.message);
   }
 };
 
@@ -409,7 +476,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
 
     const branchName = task.assigned_branch;
-    const primaryTarget = getPrimaryExecutionTarget(task);
+    const preferredTarget = getPreferredExecutionTarget(task, appState.selectedProjectId);
+    const primaryTarget = preferredTarget || getPrimaryExecutionTarget(task);
     const knownWorktree = primaryTarget ? get().branchWorktrees[primaryTarget.worktreeKey] : null;
     if (knownWorktree) {
       set({
@@ -422,6 +490,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
     const projectPath = primaryTarget?.projectId
       ? appState.getProjectById(primaryTarget.projectId)?.path ?? null
+      : task.project_id
+        ? appState.getProjectById(task.project_id)?.path ?? null
       : null;
 
     set({
@@ -429,6 +499,86 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       activeRepositoryPath: projectPath,
     });
     await syncWorkspaceRoot(projectPath);
+  },
+
+  createManualFeatureDraft: async (params) => {
+    set({ lastError: null });
+    try {
+      if (!tauriIpc.isTauriAvailable()) {
+        throw new Error('Manual features require the desktop runtime.');
+      }
+
+      await tauriIpc.workspaceCreateManualFeatureDraft({
+        taskId: params.taskId,
+        conversationId: params.conversationId,
+        groupId: params.groupId ?? null,
+        projectIds: params.projectIds,
+        baseBranch: params.baseBranch ?? null,
+        title: params.title ?? null,
+        description: params.description ?? null,
+      });
+
+      await get().refreshFromPlan();
+      await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
+        set({ lastError: message });
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      throw normalized;
+    }
+  },
+
+  finalizeManualFeatureDraft: async (params) => {
+    set({ lastError: null });
+    try {
+      if (!tauriIpc.isTauriAvailable()) {
+        throw new Error('Manual features require the desktop runtime.');
+      }
+
+      await tauriIpc.workspaceFinalizeManualFeature({
+        taskId: params.taskId,
+        conversationId: params.conversationId ?? null,
+        title: params.title,
+        description: params.description,
+        featureSlug: params.featureSlug,
+      });
+
+      await get().refreshFromPlan();
+      await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
+        set({ lastError: message });
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      throw normalized;
+    }
+  },
+
+  deleteManualFeatureDraft: async (taskId) => {
+    set({ lastError: null });
+    const existingTask = get().getTaskById(taskId);
+
+    try {
+      if (!tauriIpc.isTauriAvailable()) {
+        throw new Error('Manual features require the desktop runtime.');
+      }
+
+      await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
+      if (existingTask && isManualStandaloneTask(existingTask)) {
+        try {
+          await removeManualFeatureMetadata(existingTask);
+        } catch (error) {
+          const normalized = toServiceError(error);
+          set({ lastError: normalized.message });
+        }
+      }
+      await get().refreshFromPlan();
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      throw normalized;
+    }
   },
 
   startTask: async (taskId) => {
@@ -482,10 +632,16 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
 
     const createdWorktrees: Record<string, string> = {};
+    const fromRef =
+      isManualStandaloneTask(task) && !task.draft
+        ? (task.base_branch || getGitFlowBaseBranch())
+        : null;
     for (const target of executionTargets) {
       let worktreePath = get().branchWorktrees[target.worktreeKey] || null;
       if (!worktreePath) {
-        worktreePath = await useGitStore.getState().createWorktree(target.projectId, target.worktreeKey, target.branchName);
+        worktreePath = await useGitStore
+          .getState()
+          .createWorktree(target.projectId, target.worktreeKey, target.branchName, fromRef);
         if (!worktreePath) {
           set({
             lastError: tTask(
@@ -500,7 +656,9 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       createdWorktrees[target.worktreeKey] = worktreePath;
     }
 
-    const primaryTarget = executionTargets[0];
+    const primaryTarget =
+      executionTargets.find((target) => target.projectId === appState.selectedProjectId) ||
+      executionTargets[0];
     const primaryWorktree = createdWorktrees[primaryTarget.worktreeKey] || get().branchWorktrees[primaryTarget.worktreeKey] || null;
 
     set((state) => ({
@@ -799,10 +957,27 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
 
     if (currentTask.task_source === 'standalone') {
-      set({
-        tasks: updateStandaloneTaskStatuses(get().tasks, taskId, status),
-        lastError: null,
-      });
+      try {
+        if (!tauriIpc.isTauriAvailable()) {
+          set({
+            tasks: updateStandaloneTaskStatuses(get().tasks, taskId, status),
+            lastError: null,
+          });
+          return;
+        }
+
+        await tauriIpc.workspaceUpdateStandaloneTaskStatus({
+          taskId,
+          status,
+        });
+        await get().refreshFromPlan();
+        await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
+          set({ lastError: message });
+        });
+      } catch (error) {
+        const normalized = toServiceError(error);
+        set({ lastError: normalized.message });
+      }
       return;
     }
 

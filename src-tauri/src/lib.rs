@@ -255,6 +255,10 @@ pub fn run() {
             commands::workspace::workspace_remove_project_group,
             commands::workspace::workspace_remove_project,
             commands::workspace::workspace_close_project,
+            commands::workspace::workspace_create_manual_feature_draft,
+            commands::workspace::workspace_finalize_manual_feature,
+            commands::workspace::workspace_delete_manual_feature_draft,
+            commands::workspace::workspace_update_standalone_task_status,
             // Tool policy validation command
             commands::tool_get_mode_policy,
             commands::tool_validate_execution,

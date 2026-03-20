@@ -129,7 +129,6 @@ export const resolveProjectExecutionContext = (
     cleanString(task?.project_id) ||
     conversationProjectId ||
     focusedProjectId ||
-    globalProject?.primarySubProjectId ||
     scopedProjectIds[0] ||
     null;
   const project = projectId ? projectById.get(projectId) || null : null;

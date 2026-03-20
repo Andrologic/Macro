@@ -22,7 +22,12 @@ export interface ServiceProvider {
   listMessages: (conversationId?: string) => Promise<MessagesDto>;
   listTasks: () => Promise<TaskCatalogDto>;
   getGitTreeForProject: (projectId: string) => Promise<GitTreeDto>;
-  gitWorktreeCreate: (projectId: string, taskId: string, branchName: string) => Promise<string>;
+  gitWorktreeCreate: (
+    projectId: string,
+    taskId: string,
+    branchName: string,
+    fromRef?: string | null
+  ) => Promise<string>;
   gitWorktreeRemove: (projectId: string, taskId: string) => Promise<void>;
   getFileContent: (path: string) => Promise<FileContentDto>;
   listCommits: (projectId?: string) => Promise<CommitsDto>;

@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
+import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
 import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import { getArchitectPlanDisplayName } from '../../services/architectPlanPresentation';
+import { getGitFlowBaseBranch } from '../../services/architectPlanService';
 import { taskMatchesProjectId } from '../../services/implementTaskCatalog';
 import { getScopedProjectIds } from '../../services/globalProjects';
 import {
@@ -97,12 +99,14 @@ const TaskItem: React.FC<TaskItemProps> = ({
 }) => {
   const { t } = useTranslation();
   const status = statusConfig[task.status] || statusConfig.Pending;
-  const canStart = !isBusy && task.is_ready && (task.status === 'Pending' || task.status === 'Blocked');
+  const isDraft = task.draft === true;
+  const showPlanLabel = task.task_source === 'architect' && planLabel.trim().length > 0;
+  const canStart = !isDraft && !isBusy && task.is_ready && (task.status === 'Pending' || task.status === 'Blocked');
   const canReview =
-    !isBusy && !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
-  const canAwaitingResponse = !isBusy && !task.is_blocked && task.status === 'InProgress';
-  const canFail = !isBusy && !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
-  const canRetry = !isBusy && !task.is_blocked && (task.status === 'Failed' || task.status === 'AwaitingResponse');
+    !isDraft && !isBusy && !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
+  const canAwaitingResponse = !isDraft && !isBusy && !task.is_blocked && task.status === 'InProgress';
+  const canFail = !isDraft && !isBusy && !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
+  const canRetry = !isDraft && !isBusy && !task.is_blocked && (task.status === 'Failed' || task.status === 'AwaitingResponse');
   const lockTooltip = task.is_blocked
     ? t('implement.blockedBy', 'Blocked by: {{tasks}}', {
       tasks: task.blocked_by.join(', '),
@@ -149,30 +153,27 @@ const TaskItem: React.FC<TaskItemProps> = ({
           )}
 
           <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-            {task.status !== 'Blocked' && (
+            {isDraft ? (
+              <span className="text-xs px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400">
+                {t('implement.manualFeatureDraft', 'Draft')}
+              </span>
+            ) : task.status !== 'Blocked' && (
               <span className={cn('text-xs px-1.5 py-0.5 rounded', status.bgColor, status.color)}>
                 {statusLabel}
               </span>
             )}
 
-            <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/60 px-1.5 py-0.5 text-xs text-muted-foreground">
-              <Icon name={task.task_source === 'architect' ? 'layers' : 'zap'} size={10} />
-              {planLabel}
-            </span>
+            {showPlanLabel && (
+              <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/60 px-1.5 py-0.5 text-xs text-muted-foreground">
+                <Icon name="layers" size={10} />
+                {planLabel}
+              </span>
+            )}
 
-            <span className="text-xs text-muted-foreground inline-flex items-center gap-1 leading-none">
-              <Icon name="git-branch" size={10} />
-              {task.branch_name}
-            </span>
-
-            {task.branch_task_index >= 0 && (
-              <span
-                className="text-xs text-muted-foreground font-mono inline-flex items-center leading-none"
-                title={t('implement.sequenceHintHelp', 'Execution order in branch')}
-              >
-                {t('implement.sequenceHint', '#{{step}}', {
-                  step: task.branch_task_index + 1,
-                })}
+            {!isDraft && task.branch_name && (
+              <span className="text-xs text-muted-foreground inline-flex items-center gap-1 leading-none">
+                <Icon name="git-branch" size={10} />
+                {task.branch_name}
               </span>
             )}
 
@@ -306,13 +307,17 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     projectGroups,
     implementExecutionMode,
     setImplementExecutionMode,
+    setSelectedTask,
   } = useAppStore();
   const getProjectById = useAppStore((state) => state.getProjectById);
+  const createConversation = useChatStore((state) => state.createConversation);
+  const selectConversation = useChatStore((state) => state.selectConversation);
   const tasks = useTaskStore((state) => state.tasks);
   const planSummaries = useTaskStore((state) => state.planSummaries);
   const hasStandaloneTasks = useTaskStore((state) => state.hasStandaloneTasks);
   const finalizingPlanId = useTaskStore((state) => state.finalizingPlanId);
   const activateTask = useTaskStore((state) => state.activateTask);
+  const createManualFeatureDraft = useTaskStore((state) => state.createManualFeatureDraft);
   const startTask = useTaskStore((state) => state.startTask);
   const startReview = useTaskStore((state) => state.startReview);
   const markTaskAwaitingResponse = useTaskStore((state) => state.markTaskAwaitingResponse);
@@ -342,6 +347,51 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     }
   };
 
+  const handleCreateManualFeature = async () => {
+    if (pendingTaskId || !selectedGroupId) return;
+    const selectedGroup = projectGroups.find((group) => group.id === selectedGroupId);
+    const projectIds = selectedGroup?.projects.map((project) => project.id) ?? [];
+    const conversationProjectId =
+      (selectedProjectId && projectIds.includes(selectedProjectId) ? selectedProjectId : null) ||
+      selectedGroup?.projects[0]?.id ||
+      null;
+
+    if (projectIds.length === 0) {
+      toast.error(t('implement.manualFeatureMissingProjects', 'No repository is available for this global project.'));
+      return;
+    }
+
+    const taskId = `manual-feature-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setPendingTaskId(taskId);
+
+    try {
+      setSelectedTask(taskId);
+      const conversation = await createConversation(
+        t('implement.manualFeatureUntitled', 'New feature'),
+        taskId,
+        conversationProjectId,
+        selectedGroupId
+      );
+      await createManualFeatureDraft({
+        taskId,
+        conversationId: conversation.id,
+        groupId: selectedGroupId,
+        projectIds,
+        baseBranch: getGitFlowBaseBranch(),
+        title: t('implement.manualFeatureUntitled', 'New feature'),
+        description: '',
+      });
+      await activateTask(taskId);
+      selectConversation(conversation.id);
+    } catch (error) {
+      setSelectedTask(null);
+      const message = error instanceof Error ? error.message : t('implement.manualFeatureCreateFailed', 'Failed to create manual feature.');
+      toast.error(message);
+    } finally {
+      setPendingTaskId((current) => (current === taskId ? null : current));
+    }
+  };
+
   const confirmFailTask = (task: ImplementTask): boolean => {
     return window.confirm(
       t('implement.confirmFailTask', 'Mark task "{{title}}" as failed?', { title: task.title })
@@ -357,7 +407,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     Failed: t('implement.failed', 'Failed'),
     Blocked: t('tasks.blocked', 'Blocked'),
   };
-  const standalonePlanLabel = t('implement.standaloneTask', 'Standalone');
+  const standalonePlanLabel = t('implement.planFilterStandalone', 'No plan / standalone');
 
   const buildMultiRepoPresentation = (
     task: ImplementTask,
@@ -518,6 +568,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     return scopedTasks.filter((task) => task.plan_id === planFilter);
   }, [planFilter, scopedTasks]);
 
+  const draftTasks = useMemo(
+    () => filteredTasks.filter((task) => task.draft),
+    [filteredTasks]
+  );
+
   const getTaskPlanLabel = (task: ImplementTask): string => {
     if (task.task_source === 'standalone') {
       return standalonePlanLabel;
@@ -528,7 +583,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const readyTasks = useMemo(() => {
     return [...filteredTasks]
-      .filter((task) => !task.is_blocked && task.status !== 'Completed')
+      .filter((task) => !task.draft && !task.is_blocked && task.status !== 'Completed')
       .sort((a, b) => {
         const byStatus = readyStatusOrder[a.status] - readyStatusOrder[b.status];
         if (byStatus !== 0) return byStatus;
@@ -538,15 +593,19 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const blockedTasks = useMemo(() => {
     return [...filteredTasks]
-      .filter((task) => task.is_blocked)
+      .filter((task) => !task.draft && task.is_blocked)
       .sort((a, b) => a.sequence_index - b.sequence_index);
   }, [filteredTasks]);
 
-  const completedCount = filteredTasks.filter((task) => task.status === 'Completed').length;
-  const inProgressCount = filteredTasks.filter((task) =>
+  const progressTasks = useMemo(
+    () => filteredTasks.filter((task) => !task.draft),
+    [filteredTasks]
+  );
+  const completedCount = progressTasks.filter((task) => task.status === 'Completed').length;
+  const inProgressCount = progressTasks.filter((task) =>
     task.status === 'InProgress' || task.status === 'AwaitingResponse' || task.status === 'InReview'
   ).length;
-  const totalCount = filteredTasks.length;
+  const totalCount = progressTasks.length;
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
   if (!selectedGroupId) {
@@ -565,10 +624,26 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   return (
     <aside className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}>
       <div className="h-12 border-b border-border flex items-center justify-between gap-3 px-4">
-        <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-          <Icon name="list-todo" size={16} className="text-primary" />
-          {t('implement.tasks', 'Tasks')}
-        </h1>
+        <div className="flex min-w-0 items-center gap-2">
+          <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <Icon name="list-todo" size={16} className="text-primary" />
+            {t('implement.tasks', 'Tasks')}
+          </h1>
+          <button
+            type="button"
+            onClick={() => void handleCreateManualFeature()}
+            disabled={Boolean(pendingTaskId)}
+            className={cn(
+              'inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors',
+              pendingTaskId
+                ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
+                : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
+            )}
+            title={t('implement.createManualFeature', 'Create manual feature')}
+          >
+            <Icon name={pendingTaskId ? 'loader' : 'plus'} size={12} className={pendingTaskId ? 'animate-spin' : undefined} />
+          </button>
+        </div>
         <div className="inline-flex shrink-0 items-center rounded-lg border border-border bg-muted/60 p-0.5">
           <button
             type="button"
@@ -698,6 +773,40 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
         {filteredTasks.length > 0 && (
           <>
+            {draftTasks.length > 0 && (
+              <section className="space-y-1">
+                <div className="px-1 pb-1 flex items-center justify-between">
+                  <h2 className="text-xs font-semibold uppercase tracking-wide text-sky-400">
+                    {t('implement.manualFeatureDrafts', 'Draft features')}
+                  </h2>
+                  <span className="text-xs text-muted-foreground">{draftTasks.length}</span>
+                </div>
+
+                {draftTasks.map((task) => (
+                  <MemoizedTaskItem
+                    key={task.id}
+                    task={task}
+                    isSelected={selectedTaskId === task.id}
+                    isBusy={pendingTaskId === task.id}
+                    planLabel={getTaskPlanLabel(task)}
+                    statusLabel={statusLabels[task.status]}
+                    multiRepoPresentation={null}
+                    onSelect={() => void activateTask(task.id)}
+                    onStart={() => void runTaskAction(task.id, () => startTask(task.id))}
+                    onReview={() => void runTaskAction(task.id, () => startReview(task.id))}
+                    onAwaitingResponse={() =>
+                      void runTaskAction(task.id, () => markTaskAwaitingResponse(task.id))
+                    }
+                    onFail={() => {
+                      if (!confirmFailTask(task)) return;
+                      void runTaskAction(task.id, () => markTaskFailed(task.id));
+                    }}
+                    onRetry={() => void runTaskAction(task.id, () => retryTask(task.id))}
+                  />
+                ))}
+              </section>
+            )}
+
             <section className="space-y-1">
               <div className="px-1 pb-1 flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wide text-foreground/80">
@@ -785,15 +894,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             </section>
           </>
         )}
-      </div>
-
-      <div className="h-10 border-t border-border flex items-center justify-between px-4 bg-card">
-        <span className="text-xs text-muted-foreground">
-          {t('implement.taskCount', '{{count}} tasks', { count: filteredTasks.length })}
-        </span>
-        <span className="text-xs text-muted-foreground">
-          {t('implement.completedCount', '{{count}} completed', { count: completedCount })}
-        </span>
       </div>
 
       {planReviewTarget && (
