@@ -216,6 +216,25 @@ pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> DbResult<()> {
     Ok(())
 }
 
+pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    let placeholders = vec!["?"; ids.len()].join(", ");
+    let query = format!("DELETE FROM conversations WHERE id IN ({})", placeholders);
+
+    let mut tx = pool.begin().await?;
+    let mut statement = sqlx::query(&query);
+    for id in ids {
+        statement = statement.bind(id);
+    }
+    statement.execute(&mut *tx).await?;
+    tx.commit().await?;
+
+    Ok(())
+}
+
 pub async fn toggle_pin_conversation(pool: &SqlitePool, id: &str) -> DbResult<bool> {
     let row = sqlx::query("SELECT is_pinned FROM conversations WHERE id = ?")
         .bind(id)
