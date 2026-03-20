@@ -463,6 +463,10 @@ export async function deleteConversation(id: string): Promise<void> {
   return invoke('db_delete_conversation_by_id', { id });
 }
 
+export async function deleteConversations(ids: string[]): Promise<void> {
+  return invoke('db_delete_conversations_by_ids', { ids });
+}
+
 export async function togglePinConversation(id: string): Promise<boolean> {
   return invoke<boolean>('db_toggle_pin_conversation', { id });
 }

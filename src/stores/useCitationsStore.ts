@@ -58,6 +58,7 @@ interface CitationsState {
   }) => boolean;
   removeCitation: (id: string) => void;
   clearConversationCitations: (conversationId: string) => void;
+  clearConversationCitationsBulk: (conversationIds: string[]) => void;
   pruneConversationSourceCitations: (conversationId: string, keepMessageIds: string[]) => void;
   getConversationCitations: (conversationId: string) => Citation[];
   getConversationContextCitations: (conversationId: string) => Citation[];
@@ -210,6 +211,14 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
   clearConversationCitations: (conversationId) => {
     set((state) => ({
       citations: state.citations.filter((c) => c.conversationId !== conversationId),
+    }));
+  },
+
+  clearConversationCitationsBulk: (conversationIds) => {
+    if (conversationIds.length === 0) return;
+    const ids = new Set(conversationIds);
+    set((state) => ({
+      citations: state.citations.filter((citation) => !ids.has(citation.conversationId)),
     }));
   },
 
