@@ -22,12 +22,14 @@ import {
   Terminal,
   MessageSquare,
   MessageCircle,
+  Bell,
   Check,
   X,
   Loader2,
   Code2,
   Layers,
   AlertCircle,
+  TriangleAlert,
   Clock,
   MoreHorizontal,
   MoreVertical,
@@ -117,12 +119,14 @@ export type IconName =
   | 'terminal'
   | 'message-square'
   | 'message-circle'
+  | 'bell'
   | 'check'
   | 'x'
   | 'loader'
   | 'code'
   | 'layers'
   | 'alert-circle'
+  | 'triangle-alert'
   | 'clock'
   | 'more-horizontal'
   | 'more-vertical'
@@ -218,12 +222,14 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'terminal': Terminal,
   'message-square': MessageSquare,
   'message-circle': MessageCircle,
+  'bell': Bell,
   'check': Check,
   'x': X,
   'loader': Loader2,
   'code': Code2,
   'layers': Layers,
   'alert-circle': AlertCircle,
+  'triangle-alert': TriangleAlert,
   'clock': Clock,
   'more-horizontal': MoreHorizontal,
   'more-vertical': MoreVertical,

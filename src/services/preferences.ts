@@ -46,6 +46,7 @@ export const PREF_KEYS = {
   ARCHITECT_PLAN_BRANCH_TEMPLATE: "architectPlanBranchTemplate",
   ARCHITECT_FEATURE_BRANCH_TEMPLATE: "architectFeatureBranchTemplate",
   METADATA_AUTO_PUSH: "metadataAutoPush",
+  NOTIFICATION_CENTER_ITEMS: "notificationCenterItems",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -88,6 +89,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE]: 'plan/{planSlug}',
   [PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE]: 'feature/{planSlug}/{featureSlug}',
   [PREF_KEYS.METADATA_AUTO_PUSH]: false,
+  [PREF_KEYS.NOTIFICATION_CENTER_ITEMS]: [],
 };
 
 // Store instance (singleton)

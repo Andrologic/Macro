@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
 import { toast } from '../ui/Toaster';
 import { useAppStore } from '../../stores/useAppStore';
+import { hasUnreadNotifications, useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
 import { toServiceError } from '../../services/contracts/errors';
 import * as tauriIpc from '../../services/tauriIpc';
 import {
@@ -14,6 +16,8 @@ import { openConflictAssistant } from '../../services/conflictAssistantService';
 import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { commitMacroMetadata, getMacroSyncDescription, pullMacroMetadata, pushMacroMetadata, refreshMacroSyncStatus } from '../../services/macroSyncService';
 import { getFocusedProjectForGroup, getGlobalProjectById, getSubProjectsForGroup } from '../../services/globalProjects';
+import { NotificationCenterPopover } from './NotificationCenterPopover';
+import { cn } from '../../utils/cn';
 
 type MacroConflictContext = 'commit' | 'pull' | 'push' | 'refresh';
 
@@ -98,6 +102,7 @@ const toCodeStatusSnapshot = (status: tauriIpc.GitStatusDto): CodeStatusSnapshot
 };
 
 export const Footer: React.FC = () => {
+  const { t } = useTranslation();
   const isTauriRuntime = tauriIpc.isTauriAvailable();
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
@@ -109,6 +114,9 @@ export const Footer: React.FC = () => {
   const metadataSyncNextAction = useAppStore((state) => state.metadataSyncNextAction);
   const metadataConflictFiles = useAppStore((state) => state.metadataConflictFiles);
   const metadataSyncRepositories = useAppStore((state) => state.metadataSyncRepositories);
+  const notificationItems = useNotificationCenterStore((state) => state.items);
+  const isNotificationCenterOpen = useNotificationCenterStore((state) => state.isCenterOpen);
+  const setNotificationCenterOpen = useNotificationCenterStore((state) => state.setCenterOpen);
 
   const [codeStatus, setCodeStatus] = useState<CodeStatusSnapshot>(DEFAULT_CODE_STATUS);
   const [codeAction, setCodeAction] = useState<'pull' | 'push' | null>(null);
@@ -119,6 +127,7 @@ export const Footer: React.FC = () => {
 
   const lastConflictToastAtRef = useRef(0);
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
+  const notificationCenterButtonRef = useRef<HTMLButtonElement>(null);
 
   const selectedGlobalProject = useMemo(
     () => getGlobalProjectById(projectGroups, selectedGroupId),
@@ -519,6 +528,10 @@ export const Footer: React.FC = () => {
     metadataSyncReason,
     metadataSyncRepositories,
   ]);
+  const hasUnreadNotificationDot = useMemo(
+    () => hasUnreadNotifications(notificationItems),
+    [notificationItems]
+  );
 
   const controlsDisabled = !isTauriRuntime;
 
@@ -641,6 +654,35 @@ export const Footer: React.FC = () => {
                 Resolve
               </Button>
             )}
+
+            <Button
+              ref={notificationCenterButtonRef}
+              type="button"
+              size="sm"
+              variant="ghost"
+              aria-haspopup="dialog"
+              aria-expanded={isNotificationCenterOpen}
+              aria-label={
+                isNotificationCenterOpen
+                  ? t('notifications.closeCenter', 'Close notifications')
+                  : t('notifications.openCenter', 'Open notifications')
+              }
+              title={
+                isNotificationCenterOpen
+                  ? t('notifications.closeCenter', 'Close notifications')
+                  : t('notifications.openCenter', 'Open notifications')
+              }
+              className={cn(
+                'relative h-6 w-6 px-0 text-[11px]',
+                isNotificationCenterOpen && 'bg-accent text-foreground hover:bg-accent'
+              )}
+              onClick={() => setNotificationCenterOpen(!isNotificationCenterOpen)}
+            >
+              <Icon name="bell" size={12} />
+              {hasUnreadNotificationDot && (
+                <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full border border-card bg-primary" />
+              )}
+            </Button>
           </div>
         </div>
       </footer>
@@ -669,6 +711,12 @@ export const Footer: React.FC = () => {
           </div>
         </div>
       )}
+
+      <NotificationCenterPopover
+        isOpen={isNotificationCenterOpen}
+        anchorRef={notificationCenterButtonRef}
+        onClose={() => setNotificationCenterOpen(false)}
+      />
     </>
   );
 };

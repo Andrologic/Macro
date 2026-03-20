@@ -101,6 +101,144 @@
     @apply card hover:border-border/70 hover:shadow-[0_0_20px_-4px_rgba(99,102,241,0.3)] transition-all duration-200;
   }
 
+  /* Toast styles */
+  [data-sonner-toaster].macro-toaster {
+    --border-radius: calc(var(--radius) + 6px);
+    font-family: inherit;
+  }
+
+  [data-sonner-toaster].macro-toaster [data-sonner-toast].macro-toast[data-styled='true'] {
+    --macro-toast-accent: rgb(var(--muted-foreground) / 0.82);
+    --macro-toast-icon-bg: rgb(var(--accent) / 0.86);
+    --macro-toast-icon-border: rgb(var(--border) / 0.86);
+    align-items: center;
+    gap: 12px;
+    width: min(428px, calc(100vw - 1.5rem));
+    padding: 14px 16px 14px 14px;
+    border-radius: calc(var(--radius) + 6px);
+    border: 1px solid rgb(var(--border) / 0.82);
+    background: rgb(var(--card) / 0.98);
+    color: rgb(var(--foreground));
+    box-shadow:
+      0 18px 38px -30px rgb(0 0 0 / 0.55),
+      0 0 0 1px rgb(var(--background) / 0.18);
+  }
+
+  [data-sonner-toaster].macro-toaster [data-sonner-toast].macro-toast.macro-toast-default[data-styled='true'] {
+    --macro-toast-accent: rgb(var(--muted-foreground) / 0.82);
+  }
+
+  [data-sonner-toaster].macro-toaster [data-sonner-toast].macro-toast.macro-toast-success[data-styled='true'],
+  [data-sonner-toaster].macro-toaster [data-sonner-toast].macro-toast.macro-toast-info[data-styled='true'],
+  [data-sonner-toaster].macro-toaster [data-sonner-toast].macro-toast.macro-toast-loading[data-styled='true'] {
+    --macro-toast-accent: rgb(var(--primary) / 0.82);
+    --macro-toast-icon-bg: rgb(var(--primary) / 0.12);
+    --macro-toast-icon-border: rgb(var(--primary) / 0.2);
+  }
+
+  [data-sonner-toaster].macro-toaster [data-sonner-toast].macro-toast.macro-toast-warning[data-styled='true'] {
+    --macro-toast-accent: rgb(var(--foreground) / 0.84);
+    --macro-toast-icon-bg: rgb(var(--secondary) / 0.92);
+    --macro-toast-icon-border: rgb(var(--border) / 0.92);
+  }
+
+  [data-sonner-toaster].macro-toaster [data-sonner-toast].macro-toast.macro-toast-error[data-styled='true'] {
+    --macro-toast-accent: rgb(var(--destructive) / 0.9);
+    --macro-toast-icon-bg: rgb(var(--destructive) / 0.12);
+    --macro-toast-icon-border: rgb(var(--destructive) / 0.18);
+  }
+
+  [data-sonner-toaster].macro-toaster [data-content].macro-toast-content {
+    gap: 4px;
+    justify-content: center;
+    min-width: 0;
+    padding-right: 34px;
+  }
+
+  [data-sonner-toaster].macro-toaster [data-title].macro-toast-title {
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: -0.01em;
+  }
+
+  [data-sonner-toaster].macro-toaster [data-description].macro-toast-description {
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: rgb(var(--muted-foreground) / 0.96);
+  }
+
+  [data-sonner-toaster].macro-toaster [data-icon].macro-toast-icon {
+    height: 24px;
+    width: 24px;
+    margin: 0;
+    flex-shrink: 0;
+    justify-content: center;
+    align-items: center;
+    border-radius: 9999px;
+    border: 1px solid var(--macro-toast-icon-border);
+    background: var(--macro-toast-icon-bg);
+    color: var(--macro-toast-accent);
+  }
+
+  [data-sonner-toaster].macro-toaster [data-icon].macro-toast-icon svg {
+    height: 14px;
+    width: 14px;
+  }
+
+  [data-sonner-toaster].macro-toaster [data-close-button].macro-toast-close {
+    left: auto;
+    right: 12px;
+    top: 50%;
+    height: 20px;
+    width: 20px;
+    transform: translateY(-50%);
+    border: 0;
+    border-radius: 9999px;
+    background: transparent;
+    color: rgb(var(--muted-foreground) / 0.82);
+    box-shadow: none;
+    opacity: 0.82;
+  }
+
+  [data-sonner-toaster].macro-toaster [data-close-button].macro-toast-close:hover {
+    background: rgb(var(--accent) / 0.86);
+    color: rgb(var(--foreground) / 0.92);
+    opacity: 1;
+  }
+
+  [data-sonner-toaster].macro-toaster [data-close-button].macro-toast-close:focus-visible {
+    box-shadow:
+      0 0 0 1px rgb(var(--card)),
+      0 0 0 3px rgb(var(--ring) / 0.3);
+    opacity: 1;
+  }
+
+  [data-sonner-toaster].macro-toaster [data-button].macro-toast-action,
+  [data-sonner-toaster].macro-toaster [data-button].macro-toast-cancel {
+    height: 26px;
+    border-radius: 9999px;
+    border: 1px solid rgb(var(--border) / 0.82);
+    background: rgb(var(--accent) / 0.8);
+    color: rgb(var(--foreground));
+    font-size: 0.75rem;
+    font-weight: 500;
+    backdrop-filter: blur(10px);
+  }
+
+  [data-sonner-toaster].macro-toaster [data-button].macro-toast-action:hover,
+  [data-sonner-toaster].macro-toaster [data-button].macro-toast-cancel:hover {
+    border-color: rgb(var(--border));
+    background: rgb(var(--accent) / 0.95);
+  }
+
+  [data-sonner-toaster].macro-toaster [data-button].macro-toast-action:focus-visible,
+  [data-sonner-toaster].macro-toaster [data-button].macro-toast-cancel:focus-visible {
+    box-shadow:
+      0 0 0 1px rgb(var(--card)),
+      0 0 0 3px rgb(var(--ring) / 0.3);
+  }
+
   /* Input styles */
   .input {
     @apply w-full px-4 py-2.5 bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-transparent transition-all duration-200;

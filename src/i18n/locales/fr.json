@@ -419,6 +419,17 @@
     "copied": "Copié dans le presse-papiers",
     "loggedOut": "Vous avez été déconnecté"
   },
+  "notifications": {
+    "centerTitle": "Notifications",
+    "openCenter": "Ouvrir les notifications",
+    "closeCenter": "Fermer les notifications",
+    "clearAll": "Tout effacer",
+    "remove": "Supprimer la notification",
+    "emptyTitle": "Aucune notification",
+    "emptySubtitle": "Les notifications d'information, d'avertissement et d'erreur apparaissent ici.",
+    "allRead": "Tout est lu",
+    "unreadCount": "{{count}} non lues"
+  },
   "models": {
     "noProviders": "Aucun fournisseur configuré. Ajoutez d'abord un fournisseur.",
     "total": "total",
