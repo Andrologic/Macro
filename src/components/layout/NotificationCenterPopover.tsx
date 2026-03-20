@@ -1,13 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNotificationCenterStore, type NotificationCenterItem } from '../../stores/useNotificationCenterStore';
 import { cn } from '../../utils/cn';
-import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
 import {
   calculateNotificationCenterPosition,
-  countUnreadNotificationItems,
   formatNotificationRelativeTime,
   type NotificationCenterPosition,
 } from './notificationCenterUtils';
@@ -23,7 +21,7 @@ const getNotificationItemTone = (item: NotificationCenterItem) => {
     return {
       icon: 'alert-circle' as const,
       iconClass: 'text-destructive',
-      bubbleClass: 'border-destructive/20 bg-destructive/10',
+      bubbleClass: 'border-destructive/30 bg-card',
     };
   }
 
@@ -31,14 +29,14 @@ const getNotificationItemTone = (item: NotificationCenterItem) => {
     return {
       icon: 'triangle-alert' as const,
       iconClass: 'text-foreground/85',
-      bubbleClass: 'border-border bg-secondary/80',
+      bubbleClass: 'border-border bg-secondary',
     };
   }
 
   return {
     icon: 'circle-dot' as const,
     iconClass: 'text-primary',
-    bubbleClass: 'border-primary/20 bg-primary/10',
+    bubbleClass: 'border-border bg-card',
   };
 };
 
@@ -51,7 +49,6 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
   const items = useNotificationCenterStore((state) => state.items);
   const clearAll = useNotificationCenterStore((state) => state.clearAll);
   const removeItem = useNotificationCenterStore((state) => state.removeItem);
-  const unreadCount = useMemo(() => countUnreadNotificationItems(items), [items]);
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<NotificationCenterPosition | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -158,38 +155,31 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
         maxHeight: `${position.maxHeight}px`,
         transform: 'translateY(-100%)',
       }}
-      className="z-[94] flex flex-col overflow-hidden rounded-xl border border-border bg-popover/98 text-popover-foreground shadow-2xl backdrop-blur-sm animate-in fade-in zoom-in-95 duration-100"
+      className="z-[94] flex flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl animate-in fade-in zoom-in-95 duration-100"
     >
-      <div className="flex items-center justify-between gap-3 border-b border-border/80 px-4 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-foreground">
+          <h2 className="text-base font-semibold tracking-[-0.01em] text-foreground">
             {t('notifications.centerTitle', 'Notifications')}
           </h2>
-          <p className="text-[11px] text-muted-foreground">
-            {items.length > 0
-              ? unreadCount > 0
-                ? t('notifications.unreadCount', '{{count}} unread', { count: unreadCount })
-                : t('notifications.allRead', 'All caught up')
-              : t('notifications.emptySubtitle', 'Info, warning, and error notifications appear here.')}
-          </p>
         </div>
 
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-[11px]"
-          disabled={items.length === 0}
-          onClick={() => clearAll()}
-        >
-          {t('notifications.clearAll', 'Clear all')}
-        </Button>
+        {items.length > 0 && (
+          <button
+            type="button"
+            className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[11px] font-medium text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+            onClick={() => clearAll()}
+          >
+            <Icon name="trash" size={12} />
+            <span>{t('notifications.clearAll', 'Clear all')}</span>
+          </button>
+        )}
       </div>
 
       <div className="min-h-0 overflow-y-auto p-2">
         {items.length === 0 ? (
           <div className="flex min-h-40 flex-col items-center justify-center gap-3 px-4 py-6 text-center">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-background/70">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-card">
               <Icon name="bell" size={16} className="text-muted-foreground" />
             </div>
             <div className="space-y-1">
@@ -209,7 +199,7 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
               return (
                 <div
                   key={item.id}
-                  className="group flex items-start gap-3 rounded-lg border border-border/70 bg-background/35 px-3 py-3 transition-colors hover:bg-background/50"
+                  className="group flex items-start gap-3 rounded-lg border border-border bg-card px-3 py-3 transition-colors hover:bg-secondary"
                 >
                   <div
                     className={cn(
