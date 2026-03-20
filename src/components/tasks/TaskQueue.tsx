@@ -71,42 +71,29 @@ interface MultiRepoTaskPresentation {
 interface TaskItemProps {
   task: ImplementTask;
   isSelected: boolean;
-  isBusy: boolean;
   planLabel: string;
   statusLabel: string;
   multiRepoPresentation: MultiRepoTaskPresentation | null;
+  isAssistantRunning: boolean;
   onSelect: () => void;
-  onStart: () => void;
-  onReview: () => void;
-  onAwaitingResponse: () => void;
-  onFail: () => void;
-  onRetry: () => void;
 }
 
 const TaskItem: React.FC<TaskItemProps> = ({
   task,
   isSelected,
-  isBusy,
   planLabel,
   statusLabel,
   multiRepoPresentation,
+  isAssistantRunning,
   onSelect,
-  onStart,
-  onReview,
-  onAwaitingResponse,
-  onFail,
-  onRetry,
 }) => {
   const { t } = useTranslation();
-  const status = statusConfig[task.status] || statusConfig.Pending;
   const isDraft = task.draft === true;
   const showPlanLabel = task.task_source === 'architect' && planLabel.trim().length > 0;
-  const canStart = !isDraft && !isBusy && task.is_ready && (task.status === 'Pending' || task.status === 'Blocked');
-  const canReview =
-    !isDraft && !isBusy && !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
-  const canAwaitingResponse = !isDraft && !isBusy && !task.is_blocked && task.status === 'InProgress';
-  const canFail = !isDraft && !isBusy && !task.is_blocked && (task.status === 'InProgress' || task.status === 'AwaitingResponse');
-  const canRetry = !isDraft && !isBusy && !task.is_blocked && (task.status === 'Failed' || task.status === 'AwaitingResponse');
+  const isAwaitingUserReply = !isDraft && !isAssistantRunning && task.status === 'AwaitingResponse';
+  const status = isAssistantRunning
+    ? { icon: 'loader' as IconName, color: 'text-amber-500', bgColor: 'bg-amber-500/10' }
+    : statusConfig[task.status] || statusConfig.Pending;
   const lockTooltip = task.is_blocked
     ? t('implement.blockedBy', 'Blocked by: {{tasks}}', {
       tasks: task.blocked_by.join(', '),
@@ -126,7 +113,13 @@ const TaskItem: React.FC<TaskItemProps> = ({
       }}
       className={cn(
         'w-full text-left px-3 py-3 rounded-lg border transition-all duration-200 group cursor-pointer',
-        isSelected ? 'bg-primary/10 border-primary/30' : 'border-transparent hover:bg-accent'
+        isSelected
+          ? 'bg-primary/10 border-primary/30'
+          : isAssistantRunning
+            ? 'border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10'
+            : isAwaitingUserReply
+              ? 'border-blue-500/30 bg-blue-500/5 hover:bg-blue-500/10'
+              : 'border-transparent hover:bg-accent'
       )}
     >
       <div className="flex items-start gap-3">
@@ -135,7 +128,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
             <Icon
               name={status.icon}
               size={14}
-              className={cn(status.color, task.status === 'InProgress' && 'animate-spin')}
+              className={cn(status.color, isAssistantRunning && 'animate-spin')}
             />
           </div>
           {task.is_blocked && task.blocked_by.length > 0 && (
@@ -156,6 +149,16 @@ const TaskItem: React.FC<TaskItemProps> = ({
             {isDraft ? (
               <span className="text-xs px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400">
                 {t('implement.manualFeatureDraft', 'Draft')}
+              </span>
+            ) : isAssistantRunning ? (
+              <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-500">
+                <Icon name="loader" size={10} className="animate-spin" />
+                {t('implement.aiRunning', 'AI running')}
+              </span>
+            ) : isAwaitingUserReply ? (
+              <span className="inline-flex items-center gap-1 rounded bg-blue-500/10 px-1.5 py-0.5 text-xs font-medium text-blue-500">
+                <Icon name="message-circle" size={10} />
+                {t('implement.awaitingYourReply', 'Awaiting your reply')}
               </span>
             ) : task.status !== 'Blocked' && (
               <span className={cn('text-xs px-1.5 py-0.5 rounded', status.bgColor, status.color)}>
@@ -215,82 +218,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
           )}
 
         </div>
-
-        <div className="shrink-0 flex items-center gap-1">
-          {isBusy && (
-            <span
-              className="p-1.5 rounded-lg bg-muted text-muted-foreground"
-              title={t('implement.taskActionInProgress', 'Updating task status...')}
-            >
-              <Icon name="loader" size={12} className="animate-spin" />
-            </span>
-          )}
-          {canStart && (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                void onStart();
-              }}
-              className="p-1.5 rounded-lg bg-primary/10 text-primary opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-primary/20"
-              title={t('implement.startTask', 'Start task')}
-            >
-              <Icon name="play" size={12} />
-            </button>
-          )}
-          {canAwaitingResponse && (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                void onAwaitingResponse();
-              }}
-              className="p-1.5 rounded-lg bg-blue-500/10 text-blue-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-blue-500/20"
-              title={t('implement.markAwaitingResponse', 'Mark awaiting response')}
-            >
-              <Icon name="message-circle" size={12} />
-            </button>
-          )}
-          {canRetry && (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                void onRetry();
-              }}
-              className="p-1.5 rounded-lg bg-amber-500/10 text-amber-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-amber-500/20"
-              title={t('implement.retryTask', 'Retry task')}
-            >
-              <Icon name="refresh-cw" size={12} />
-            </button>
-          )}
-          {canFail && (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                void onFail();
-              }}
-              className="p-1.5 rounded-lg bg-red-500/10 text-red-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-red-500/20"
-              title={t('implement.markFailed', 'Mark failed')}
-            >
-              <Icon name="x" size={12} />
-            </button>
-          )}
-          {canReview && (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                void onReview();
-              }}
-              className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-emerald-500/20"
-              title={t('implement.startReview', 'Send to review')}
-            >
-              <Icon name="git-compare" size={12} />
-            </button>
-          )}
-        </div>
       </div>
     </div>
   );
@@ -311,6 +238,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   } = useAppStore();
   const getProjectById = useAppStore((state) => state.getProjectById);
   const createConversation = useChatStore((state) => state.createConversation);
+  const conversations = useChatStore((state) => state.conversations);
+  const isStreaming = useChatStore((state) => state.isStreaming);
+  const selectedConversationId = useChatStore((state) => state.selectedConversationId);
   const selectConversation = useChatStore((state) => state.selectConversation);
   const tasks = useTaskStore((state) => state.tasks);
   const planSummaries = useTaskStore((state) => state.planSummaries);
@@ -318,11 +248,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const finalizingPlanId = useTaskStore((state) => state.finalizingPlanId);
   const activateTask = useTaskStore((state) => state.activateTask);
   const createManualFeatureDraft = useTaskStore((state) => state.createManualFeatureDraft);
-  const startTask = useTaskStore((state) => state.startTask);
-  const startReview = useTaskStore((state) => state.startReview);
-  const markTaskAwaitingResponse = useTaskStore((state) => state.markTaskAwaitingResponse);
-  const markTaskFailed = useTaskStore((state) => state.markTaskFailed);
-  const retryTask = useTaskStore((state) => state.retryTask);
   const taskError = useTaskStore((state) => state.lastError);
   const reviewCurrentTaskId = useFileChangesStore((state) => state.currentTaskId);
   const liveReviewSummary = useFileChangesStore((state) => state.reviewSummary);
@@ -336,16 +261,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     lastErrorToastRef.current = taskError;
     toast.error(taskError);
   }, [taskError]);
-
-  const runTaskAction = async (taskId: string, action: () => Promise<void>) => {
-    if (pendingTaskId) return;
-    setPendingTaskId(taskId);
-    try {
-      await action();
-    } finally {
-      setPendingTaskId((current) => (current === taskId ? null : current));
-    }
-  };
 
   const handleCreateManualFeature = async () => {
     if (pendingTaskId || !selectedGroupId) return;
@@ -390,12 +305,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     } finally {
       setPendingTaskId((current) => (current === taskId ? null : current));
     }
-  };
-
-  const confirmFailTask = (task: ImplementTask): boolean => {
-    return window.confirm(
-      t('implement.confirmFailTask', 'Mark task "{{title}}" as failed?', { title: task.title })
-    );
   };
 
   const statusLabels: Record<TaskStatus, string> = {
@@ -607,6 +516,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   ).length;
   const totalCount = progressTasks.length;
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
+  const streamingTaskId = useMemo(() => {
+    if (!isStreaming || !selectedConversationId) {
+      return null;
+    }
+
+    return (
+      conversations.find((conversation) => conversation.id === selectedConversationId)?.task_id ??
+      null
+    );
+  }, [conversations, isStreaming, selectedConversationId]);
 
   if (!selectedGroupId) {
     return (
@@ -787,21 +706,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     key={task.id}
                     task={task}
                     isSelected={selectedTaskId === task.id}
-                    isBusy={pendingTaskId === task.id}
                     planLabel={getTaskPlanLabel(task)}
                     statusLabel={statusLabels[task.status]}
                     multiRepoPresentation={null}
+                    isAssistantRunning={streamingTaskId === task.id}
                     onSelect={() => void activateTask(task.id)}
-                    onStart={() => void runTaskAction(task.id, () => startTask(task.id))}
-                    onReview={() => void runTaskAction(task.id, () => startReview(task.id))}
-                    onAwaitingResponse={() =>
-                      void runTaskAction(task.id, () => markTaskAwaitingResponse(task.id))
-                    }
-                    onFail={() => {
-                      if (!confirmFailTask(task)) return;
-                      void runTaskAction(task.id, () => markTaskFailed(task.id));
-                    }}
-                    onRetry={() => void runTaskAction(task.id, () => retryTask(task.id))}
                   />
                 ))}
               </section>
@@ -826,7 +735,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   key={task.id}
                   task={task}
                   isSelected={selectedTaskId === task.id}
-                  isBusy={pendingTaskId === task.id}
                   planLabel={getTaskPlanLabel(task)}
                   statusLabel={statusLabels[task.status]}
                   multiRepoPresentation={buildMultiRepoPresentation(
@@ -835,17 +743,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                       ? liveReviewSummary
                       : null
                   )}
+                  isAssistantRunning={streamingTaskId === task.id}
                   onSelect={() => void activateTask(task.id)}
-                  onStart={() => void runTaskAction(task.id, () => startTask(task.id))}
-                  onReview={() => void runTaskAction(task.id, () => startReview(task.id))}
-                  onAwaitingResponse={() =>
-                    void runTaskAction(task.id, () => markTaskAwaitingResponse(task.id))
-                  }
-                  onFail={() => {
-                    if (!confirmFailTask(task)) return;
-                    void runTaskAction(task.id, () => markTaskFailed(task.id));
-                  }}
-                  onRetry={() => void runTaskAction(task.id, () => retryTask(task.id))}
                 />
               ))}
             </section>
@@ -869,7 +768,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   key={task.id}
                   task={task}
                   isSelected={selectedTaskId === task.id}
-                  isBusy={pendingTaskId === task.id}
                   planLabel={getTaskPlanLabel(task)}
                   statusLabel={statusLabels[task.status]}
                   multiRepoPresentation={buildMultiRepoPresentation(
@@ -878,17 +776,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                       ? liveReviewSummary
                       : null
                   )}
+                  isAssistantRunning={streamingTaskId === task.id}
                   onSelect={() => void activateTask(task.id)}
-                  onStart={() => void runTaskAction(task.id, () => startTask(task.id))}
-                  onReview={() => void runTaskAction(task.id, () => startReview(task.id))}
-                  onAwaitingResponse={() =>
-                    void runTaskAction(task.id, () => markTaskAwaitingResponse(task.id))
-                  }
-                  onFail={() => {
-                    if (!confirmFailTask(task)) return;
-                    void runTaskAction(task.id, () => markTaskFailed(task.id));
-                  }}
-                  onRetry={() => void runTaskAction(task.id, () => retryTask(task.id))}
                 />
               ))}
             </section>
