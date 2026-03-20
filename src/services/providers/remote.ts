@@ -228,7 +228,8 @@ export const getGitTreeForProject = async (projectId: string): Promise<GitTreeDt
 export const gitWorktreeCreate = async (
   _projectId: string,
   _taskId: string,
-  _branchName: string
+  _branchName: string,
+  _fromRef?: string | null
 ): Promise<string> => notReady();
 export const gitWorktreeRemove = async (_projectId: string, _taskId: string): Promise<void> => notReady();
 export const getFileContent = async (_path: string): Promise<FileContentDto> => notReady();

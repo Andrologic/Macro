@@ -98,7 +98,8 @@ export const getGitTreeForProject = async (
 export const gitWorktreeCreate = async (
   _projectId: string,
   _taskId: string,
-  _branchName: string
+  _branchName: string,
+  _fromRef?: string | null
 ): Promise<string> => {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);

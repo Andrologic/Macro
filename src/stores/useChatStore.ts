@@ -52,6 +52,8 @@ import { parseMessageQuickReplies } from '../services/chatQuickReplies';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
+const MANUAL_FEATURE_MAX_SLUG_LENGTH = 64;
+const MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT = 4;
 const metadataGenerationInFlight = new Set<string>();
 
 const createTokenBatcher = (appendChunk: (chunk: string) => void) => {
@@ -105,7 +107,7 @@ const getConversationFallbackDescription = (content: string): string => {
   return cleaned.slice(0, METADATA_MAX_DESCRIPTION_LENGTH);
 };
 
-const extractMetadataFromModelOutput = (raw: string): { title: string; description: string } => {
+const extractJsonObjectFromModelOutput = (raw: string): Record<string, unknown> => {
   const noThinking = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   const firstBrace = noThinking.indexOf('{');
   const lastBrace = noThinking.lastIndexOf('}');
@@ -113,7 +115,11 @@ const extractMetadataFromModelOutput = (raw: string): { title: string; descripti
     throw new Error('No JSON object found');
   }
 
-  const parsed = JSON.parse(noThinking.slice(firstBrace, lastBrace + 1)) as {
+  return JSON.parse(noThinking.slice(firstBrace, lastBrace + 1)) as Record<string, unknown>;
+};
+
+const extractMetadataFromModelOutput = (raw: string): { title: string; description: string } => {
+  const parsed = extractJsonObjectFromModelOutput(raw) as {
     title?: unknown;
     description?: unknown;
   };
@@ -133,6 +139,77 @@ const extractMetadataFromModelOutput = (raw: string): { title: string; descripti
   }
 
   return { title, description };
+};
+
+const normalizeManualFeatureSlugInput = (value: string): string => {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/^refs\/heads\//, '')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '');
+  const leaf = normalized.split('/').filter(Boolean).pop() || normalized;
+  return (
+    leaf
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+/, '')
+      .replace(/-+$/, '')
+      .slice(0, MANUAL_FEATURE_MAX_SLUG_LENGTH) || 'work'
+  );
+};
+
+const extractManualFeatureMetadataFromModelOutput = (raw: string): {
+  title: string;
+  description: string;
+  featureSlug: string;
+} => {
+  const parsed = extractJsonObjectFromModelOutput(raw) as {
+    title?: unknown;
+    description?: unknown;
+    featureSlug?: unknown;
+  };
+
+  if (
+    typeof parsed.title !== 'string' ||
+    typeof parsed.description !== 'string' ||
+    typeof parsed.featureSlug !== 'string'
+  ) {
+    throw new Error('Invalid manual feature metadata shape');
+  }
+
+  const title = parsed.title.replace(/\s+/g, ' ').trim().slice(0, METADATA_MAX_TITLE_LENGTH);
+  const description = parsed.description
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, METADATA_MAX_DESCRIPTION_LENGTH);
+  const featureSlug = normalizeManualFeatureSlugInput(parsed.featureSlug);
+
+  if (!title || !description || !featureSlug) {
+    throw new Error('Empty manual feature metadata values');
+  }
+
+  return { title, description, featureSlug };
+};
+
+const buildManualFeatureFallbackMetadata = (content: string) => {
+  const title = getConversationFallbackTitle(content);
+  const description = getConversationFallbackDescription(content);
+  const featureSlug = normalizeManualFeatureSlugInput(title || content);
+  return { title, description, featureSlug };
+};
+
+const normalizeComparableBranchName = (value: string): string =>
+  value
+    .trim()
+    .replace(/^refs\/heads\//, '')
+    .replace(/^refs\/remotes\//, '');
+
+const branchNameMatchesCandidate = (existingBranchName: string, candidateBranchName: string): boolean => {
+  const normalizedExisting = normalizeComparableBranchName(existingBranchName);
+  return (
+    normalizedExisting === candidateBranchName ||
+    normalizedExisting.endsWith(`/${candidateBranchName}`)
+  );
 };
 
 const MESSAGE_IMAGES_STORAGE_KEY = 'macro_chat_message_images';
@@ -2135,6 +2212,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
   ];
 
+  const prepareManualFeatureMetadataMessages = (
+    firstUserContent: string,
+    unavailableBranchNames: string[] = []
+  ) => {
+    const unavailableBranchSummary =
+      unavailableBranchNames.length > 0
+        ? ` These branch names are already taken and must not be reused: ${unavailableBranchNames.join(', ')}. Return a different featureSlug.`
+        : '';
+
+    return [
+      {
+        role: 'system' as const,
+        content:
+          'Generate concise metadata for a standalone implementation feature. Return ONLY valid JSON with keys: title, description, featureSlug. ' +
+          'title: 3-7 words, specific and action-oriented. description: one clear sentence under 180 characters. ' +
+          'featureSlug: lowercase kebab-case branch slug without the "feature/" prefix.' +
+          unavailableBranchSummary,
+      },
+      {
+        role: 'user' as const,
+        content: firstUserContent,
+      },
+    ];
+  };
+
   const updateConversationMetadataLocally = (
     conversationId: string,
     metadata: { title: string; description: string }
@@ -2151,6 +2253,165 @@ export const useChatStore = create<ChatStore>((set, get) => {
           : conversation
       ),
     }));
+  };
+
+  const finalizeManualFeatureDraftIfNeeded = async (params: {
+    conversationId: string;
+    taskId: string;
+    firstUserContent: string;
+    providerId: string;
+    providerType: string;
+    baseUrl: string;
+    apiKey?: string;
+    modelId: string;
+    }) => {
+    const taskStore = useTaskStore.getState();
+    const task = taskStore.getTaskById(params.taskId);
+    if (
+      !task ||
+      task.task_source !== 'standalone' ||
+      task.standalone_kind !== 'manual_feature' ||
+      task.draft !== true
+    ) {
+      return;
+    }
+
+    const appState = useAppStore.getState();
+    const projectIds = Array.from(
+      new Set(
+        [
+          ...(task.project_ids || []),
+          task.project_id,
+        ].filter((projectId): projectId is string => typeof projectId === 'string' && projectId.trim().length > 0)
+      )
+    );
+
+    const findConflictingProjectsForBranchName = async (branchName: string): Promise<string[]> => {
+      if (!tauriIpc.isTauriAvailable()) {
+        return [];
+      }
+
+      const projectIdsToCheck = projectIds.length > 0
+        ? projectIds
+        : (appState.selectedGroupId
+          ? getScopedProjectIds(appState.projectGroups, appState.selectedGroupId, null)
+          : []);
+
+      const conflictResults = await Promise.all(
+        projectIdsToCheck.map(async (projectId) => {
+          const repoPath = appState.getProjectById(projectId)?.path?.trim();
+          if (!repoPath) {
+            return null;
+          }
+
+          const branches = await tauriIpc.gitBranchList(repoPath);
+          const branchTaken = [...branches.local, ...branches.remote].some((branch) =>
+            branchNameMatchesCandidate(branch.name, branchName)
+          );
+
+          return branchTaken ? projectId : null;
+        })
+      );
+
+      return conflictResults.filter((projectId): projectId is string => Boolean(projectId));
+    };
+
+    const requestManualFeatureMetadata = async (unavailableBranchNames: string[]) => {
+      const output = await sendChatNonStreaming({
+        providerId: params.providerId,
+        providerType: params.providerType,
+        baseUrl: params.baseUrl,
+        apiKey: params.apiKey,
+        modelId: params.modelId,
+        messages: prepareManualFeatureMetadataMessages(
+          params.firstUserContent,
+          unavailableBranchNames
+        ),
+        onComplete: () => { },
+        onError: () => { },
+      });
+      return extractManualFeatureMetadataFromModelOutput(output);
+    };
+
+    const resolveAvailableFallbackSlug = async (baseSlug: string): Promise<string> => {
+      const normalizedBaseSlug = normalizeManualFeatureSlugInput(baseSlug);
+
+      for (let suffix = 0; suffix < 50; suffix += 1) {
+        const candidateSlug =
+          suffix === 0 ? normalizedBaseSlug : normalizeManualFeatureSlugInput(`${normalizedBaseSlug}-${suffix + 1}`);
+        const candidateBranchName = `feature/${candidateSlug}`;
+        const conflictingProjectIds = await findConflictingProjectsForBranchName(candidateBranchName);
+        if (conflictingProjectIds.length === 0) {
+          return candidateSlug;
+        }
+      }
+
+      return `work-${Date.now().toString(36)}`;
+    };
+
+    let metadata = buildManualFeatureFallbackMetadata(params.firstUserContent);
+    let unavailableBranchNames: string[] = [];
+
+    for (let attempt = 0; attempt < MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT; attempt += 1) {
+      if (attempt === 0) {
+        try {
+          metadata = await requestManualFeatureMetadata(unavailableBranchNames);
+        } catch {
+          metadata = buildManualFeatureFallbackMetadata(params.firstUserContent);
+        }
+      } else {
+        try {
+          metadata = await requestManualFeatureMetadata(unavailableBranchNames);
+        } catch {
+          metadata = {
+            ...metadata,
+            featureSlug: await resolveAvailableFallbackSlug(metadata.featureSlug),
+          };
+        }
+      }
+
+      const branchName = `feature/${metadata.featureSlug}`;
+      const conflictingProjectIds = await findConflictingProjectsForBranchName(branchName);
+      if (conflictingProjectIds.length === 0) {
+        break;
+      }
+
+      unavailableBranchNames = Array.from(new Set([...unavailableBranchNames, branchName]));
+      if (attempt === MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT - 1) {
+        metadata = {
+          ...metadata,
+          featureSlug: await resolveAvailableFallbackSlug(metadata.featureSlug),
+        };
+        break;
+      }
+    }
+
+    updateConversationMetadataLocally(params.conversationId, metadata);
+
+    if (tauriIpc.isTauriAvailable()) {
+      await tauriIpc.updateConversationDetails({
+        id: params.conversationId,
+        title: metadata.title,
+        description: metadata.description,
+      });
+    }
+
+    await taskStore.finalizeManualFeatureDraft({
+      taskId: params.taskId,
+      conversationId: params.conversationId,
+      title: metadata.title,
+      description: metadata.description,
+      featureSlug: metadata.featureSlug,
+    });
+    await taskStore.startTask(params.taskId);
+
+    const refreshedTask = useTaskStore.getState().getTaskById(params.taskId);
+    if (!refreshedTask || refreshedTask.draft || refreshedTask.status !== 'InProgress') {
+      const failureMessage =
+        useTaskStore.getState().lastError ||
+        'Failed to initialize the manual feature execution context.';
+      throw new Error(failureMessage);
+    }
   };
 
   const maybeGenerateConversationMetadata = async (params: {
@@ -2855,7 +3116,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           selectedProjectId,
           localProjectContext
         )?.id ??
-        globalProject?.primarySubProjectId ??
         selectedProjectId ??
         null;
       const title = globalProject ? `Architect - ${globalProject.name}` : 'Architect Session';
@@ -3180,6 +3440,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!conversation) {
         throw new Error('Conversation introuvable.');
       }
+      const linkedTask = conversation.task_id
+        ? useTaskStore.getState().getTaskById(conversation.task_id)
+        : undefined;
 
       if (conversation.task_id) {
         if (confirmation?.mode !== 'implement') {
@@ -3209,6 +3472,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       } else if (confirmation && confirmation.mode !== 'chat') {
         throw new Error('Type de confirmation invalide pour une conversation Chat.');
+      }
+
+      if (
+        linkedTask &&
+        linkedTask.task_source === 'standalone' &&
+        linkedTask.standalone_kind === 'manual_feature' &&
+        linkedTask.draft
+      ) {
+        await useTaskStore.getState().deleteManualFeatureDraft(linkedTask.id);
       }
 
       if (tauriIpc.isTauriAvailable()) {
@@ -3282,6 +3554,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         get().conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null;
       const resolvedTaskId =
         taskId ?? conversationTaskId ?? useAppStore.getState().selectedTaskId ?? '';
+      const taskBeforeSend = resolvedTaskId
+        ? useTaskStore.getState().getTaskById(resolvedTaskId)
+        : undefined;
 
       if (!selectedProviderId || !selectedModelId) {
         set({ lastError: 'Select a provider and model before sending a message.' });
@@ -3332,25 +3607,49 @@ export const useChatStore = create<ChatStore>((set, get) => {
       get().clearComposerContextRefs();
 
       if (userMessageCountBeforeSend === 0) {
-        const appState = useAppStore.getState();
-        const architectPlan =
-          modeAtSend === 'Architect' && appState.activeArchitectPlanId
-            ? {
-                planId: appState.activeArchitectPlanId,
-                targetBranch: resolveTargetBranch(appState.activePlanContext?.targetBranch),
-              }
-            : undefined;
+        const isManualFeatureDraft =
+          taskBeforeSend?.task_source === 'standalone' &&
+          taskBeforeSend.standalone_kind === 'manual_feature' &&
+          taskBeforeSend.draft === true;
 
-        void maybeGenerateConversationMetadata({
-          conversationId,
-          firstUserContent: content,
-          providerId: selectedProviderId,
-          providerType: providerConfig.providerType,
-          baseUrl: providerConfig.baseUrl,
-          apiKey: providerConfig.apiKey,
-          modelId: selectedModelId,
-          architectPlan,
-        });
+        if (isManualFeatureDraft && resolvedTaskId) {
+          try {
+            await finalizeManualFeatureDraftIfNeeded({
+              conversationId,
+              taskId: resolvedTaskId,
+              firstUserContent: content,
+              providerId: selectedProviderId,
+              providerType: providerConfig.providerType,
+              baseUrl: providerConfig.baseUrl,
+              apiKey: providerConfig.apiKey,
+              modelId: selectedModelId,
+            });
+          } catch (error) {
+            const normalized = toServiceError(error);
+            set({ lastError: normalized.message });
+            return;
+          }
+        } else {
+          const appState = useAppStore.getState();
+          const architectPlan =
+            modeAtSend === 'Architect' && appState.activeArchitectPlanId
+              ? {
+                  planId: appState.activeArchitectPlanId,
+                  targetBranch: resolveTargetBranch(appState.activePlanContext?.targetBranch),
+                }
+              : undefined;
+
+          void maybeGenerateConversationMetadata({
+            conversationId,
+            firstUserContent: content,
+            providerId: selectedProviderId,
+            providerType: providerConfig.providerType,
+            baseUrl: providerConfig.baseUrl,
+            apiKey: providerConfig.apiKey,
+            modelId: selectedModelId,
+            architectPlan,
+          });
+        }
       }
 
       try {
