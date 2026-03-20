@@ -436,6 +436,17 @@
     "copied": "Copied to clipboard",
     "loggedOut": "You have been logged out"
   },
+  "notifications": {
+    "centerTitle": "Notifications",
+    "openCenter": "Open notifications",
+    "closeCenter": "Close notifications",
+    "clearAll": "Clear all",
+    "remove": "Remove notification",
+    "emptyTitle": "No notifications",
+    "emptySubtitle": "Info, warning, and error notifications appear here.",
+    "allRead": "All caught up",
+    "unreadCount": "{{count}} unread"
+  },
   "models": {
     "noProviders": "No providers configured yet. Add a provider first.",
     "total": "total",
