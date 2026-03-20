@@ -1,7 +1,10 @@
 import type { PlanNode, PredictedBranch } from '../types';
 import type { Need } from '../types';
 import * as tauriIpc from './tauriIpc';
-import { isCanonicalArchitectPlan } from './architectPlanPresentation';
+import {
+  isCanonicalArchitectPlan,
+  isDefaultNewPlanFamilyLabel,
+} from './architectPlanPresentation';
 import {
   getArchitectGitNamingSettings,
   normalizeFeatureSlugInput,
@@ -137,6 +140,14 @@ export interface ArchitectPlanReplicaDivergence {
   reason: 'content_diverged' | 'missing_replica';
   replicas: ArchitectPlanReplica[];
 }
+
+const assertPlanCanBeArchived = (
+  plan: Pick<ArchitectPlanRecord, 'id' | 'slug' | 'title' | 'label'>
+): void => {
+  if (isCanonicalArchitectPlan(plan) && isDefaultNewPlanFamilyLabel(plan.label)) {
+    throw new Error('Rename the plan before archiving it.');
+  }
+};
 
 export class ArchitectPlanReplicaDivergenceError extends Error {
   readonly code = 'ARCHITECT_PLAN_REPLICA_DIVERGENCE';
@@ -2387,6 +2398,10 @@ export const updateArchitectPlan = async (input: {
   const existing = replicaSet.canonical.plan;
   const isCanonicalPlan = isCanonicalArchitectPlan(existing);
 
+  if (input.status === 'archived') {
+    assertPlanCanBeArchived(existing);
+  }
+
   if (!isCanonicalPlan && input.title && input.title.trim().toLowerCase() !== existing.title.trim().toLowerCase()) {
     const idx = await readAggregatedIndex(normalizedBranch, registrySnapshot);
     const normalizedTitle = input.title.trim().toLowerCase();
@@ -2593,6 +2608,7 @@ export const archiveArchitectPlan = async (branchName: string, planId: string): 
   });
   if (!replicaSet) throw new Error(`Plan not found: ${safeId}`);
   assertPlanReplicaSetWritable(replicaSet, 'archive');
+  assertPlanCanBeArchived(replicaSet.canonical.plan);
   const now = new Date().toISOString();
   const archivedResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...replicaSet.canonical.plan,

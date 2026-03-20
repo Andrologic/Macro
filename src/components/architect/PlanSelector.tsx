@@ -34,6 +34,7 @@ import {
   getArchitectPlanEditableName,
   getArchitectPlanPrimaryName,
   getArchitectPlanSecondaryLabel,
+  isDefaultNewPlanFamilyLabel,
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
 import { toServiceError } from '../../services/contracts/errors';
@@ -728,6 +729,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const secondaryLabel = getArchitectPlanSecondaryLabel(plan);
               const secondaryText = secondaryLabel || (!isCanonicalPlan ? plan.id : null);
               const canDeletePlan = plan.status === 'archived' || plan.status === 'deleted';
+              const canArchivePlan =
+                plan.status === 'archived' ||
+                !(isCanonicalPlan && isDefaultNewPlanFamilyLabel(plan.label));
               const renameLabel = isCanonicalPlan
                 ? t('architect.planSelector.editPlanLabel', 'Edit plan label')
                 : t('architect.planSelector.renamePlan', 'Rename plan');
@@ -803,13 +807,21 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                             void handleRestorePlan(plan);
                             return;
                           }
+                          if (!canArchivePlan) {
+                            return;
+                          }
                           void handleArchivePlan(plan);
                         }}
-                        disabled={isMissingProjects}
+                        disabled={isMissingProjects || !canArchivePlan}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
                         title={plan.status === 'archived'
                           ? t('architect.planSelector.unarchivePlan', 'Unarchive plan')
-                          : t('architect.planSelector.archivePlan', 'Archive plan')}
+                          : !canArchivePlan
+                            ? t(
+                                'architect.planSelector.renameBeforeArchivePlan',
+                                'Rename the plan before archiving it'
+                              )
+                            : t('architect.planSelector.archivePlan', 'Archive plan')}
                       >
                         <Icon
                           name={plan.status === 'archived' ? 'rotate-ccw' : 'archive'}
