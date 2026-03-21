@@ -19,6 +19,7 @@ pub const MACRO_BRANCH_NAME: &str = "@macro";
 const MACRO_WORKTREE_NAME: &str = "macro-metadata";
 const MACRO_WORKTREE_DIR_NAME: &str = "macro-metadata-worktree";
 const LEGACY_METADATA_DIR_NAME: &str = ".macro";
+const TASK_WORKTREE_GITIGNORE_RULE: &str = "/.macro/";
 
 fn ensure_metadata_branch_exists(repo: &Repository) -> Result<()> {
     if repo
@@ -126,6 +127,43 @@ fn ensure_metadata_gitignore_override(worktree_path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn ensure_task_worktree_gitignore_rule(workdir: &Path) -> Result<()> {
+    let gitignore_path = workdir.join(".gitignore");
+    let mut content = if gitignore_path.exists() {
+        fs::read_to_string(&gitignore_path).map_err(|e| BackendError::Io {
+            message: e.to_string(),
+            source: e,
+        })?
+    } else {
+        String::new()
+    };
+
+    let has_existing_rule = content.lines().any(|line| {
+        matches!(
+            line.trim_end_matches('\r').trim(),
+            ".macro" | "/.macro" | "/.macro/"
+        )
+    });
+
+    if has_existing_rule {
+        return Ok(());
+    }
+
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+
+    content.push_str(TASK_WORKTREE_GITIGNORE_RULE);
+    content.push('\n');
+
+    fs::write(&gitignore_path, content).map_err(|e| BackendError::Io {
+        message: e.to_string(),
+        source: e,
+    })?;
+
+    Ok(())
+}
+
 #[derive(Clone)]
 /// Shared Git state with repository/worktree caches.
 pub struct GitState {
@@ -197,13 +235,15 @@ impl GitState {
         branch_name: &str,
         from_ref: Option<&str>,
     ) -> Result<PathBuf> {
-        if let Some(existing) = self.get_worktree(task_id) {
-            return Ok(existing);
-        }
-
         let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
             message: "Bare repositories are not supported for worktrees".to_string(),
         })?;
+
+        ensure_task_worktree_gitignore_rule(workdir)?;
+
+        if let Some(existing) = self.get_worktree(task_id) {
+            return Ok(existing);
+        }
 
         let worktree_root = workdir.join(".macro").join("worktrees");
         std::fs::create_dir_all(&worktree_root).map_err(|e| BackendError::Io {
@@ -459,6 +499,72 @@ mod tests {
 
         assert!(worktree_path.ends_with(Path::new(".macro/worktrees/task123")));
         assert!(worktree_path.join(".git").exists());
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore"),
+            format!("{TASK_WORKTREE_GITIGNORE_RULE}\n")
+        );
+    }
+
+    #[test]
+    fn test_ensure_task_worktree_appends_gitignore_rule() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+
+        fs::write(temp.path().join(".gitignore"), "node_modules").expect("write gitignore");
+
+        state
+            .ensure_task_worktree(&repo, "124", "task-124", None)
+            .expect("worktree");
+
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore"),
+            format!("node_modules\n{TASK_WORKTREE_GITIGNORE_RULE}\n")
+        );
+    }
+
+    #[test]
+    fn test_ensure_task_worktree_reuses_existing_gitignore_rule_variants() {
+        for (index, existing_rule) in [".macro", "/.macro", "/.macro/"].iter().enumerate() {
+            let temp = TempDir::new().expect("temp dir");
+            let repo = init_repo(temp.path());
+            let state = GitState::new();
+
+            fs::write(
+                temp.path().join(".gitignore"),
+                format!("node_modules\n{}\n", existing_rule),
+            )
+            .expect("write gitignore");
+
+            state
+                .ensure_task_worktree(&repo, &format!("reuse-{index}"), &format!("task-reuse-{index}"), None)
+                .expect("worktree");
+
+            assert_eq!(
+                fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore"),
+                format!("node_modules\n{}\n", existing_rule)
+            );
+        }
+    }
+
+    #[test]
+    fn test_ensure_task_worktree_is_idempotent_for_gitignore() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+
+        let first_path = state
+            .ensure_task_worktree(&repo, "125", "task-125", None)
+            .expect("first worktree");
+        let second_path = state
+            .ensure_task_worktree(&repo, "125", "task-125", None)
+            .expect("second worktree");
+
+        assert_eq!(first_path, second_path);
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore"),
+            format!("{TASK_WORKTREE_GITIGNORE_RULE}\n")
+        );
     }
 
     #[test]
