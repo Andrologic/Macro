@@ -27,6 +27,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({
     getRepository,
     getChange,
     markAsReviewed,
+    markAsUnreviewed,
     loadChangeContext,
     startEditingChange,
     updateEditingBuffer,
@@ -108,10 +109,18 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({
           </div>
           <div className="flex items-center gap-2">
             {change.reviewed && !change.isEditing && (
-              <span className="flex items-center gap-1.5 px-2 py-1 rounded bg-emerald-500/10 text-emerald-500 text-xs">
+              <button
+                type="button"
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  markAsUnreviewed(repositoryId, changeId);
+                }}
+                className="flex items-center gap-1.5 px-2 py-1 rounded bg-emerald-500/10 text-emerald-500 text-xs"
+                title="Right-click to invalidate"
+              >
                 <Icon name="check" size={12} />
-                {t('implement.reviewed', 'Reviewed')}
-              </span>
+                {t('implement.validated', 'Validated')}
+              </button>
             )}
             <button onClick={onClose} className="p-2 hover:bg-accent rounded-full transition-colors">
               <Icon name="x" size={18} className="text-muted-foreground" />
@@ -129,8 +138,8 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({
           <div className="flex-1 overflow-auto p-4 space-y-4">
             <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm text-muted-foreground">
               {t(
-                'implement.manualEditNotice',
-                'Manual edits are allowed here, but the file will need to be reviewed again before commit.'
+                'implement.manualEditNeedsValidationNotice',
+                'Manual edits are allowed here, but the file will need to be validated again before commit.'
               )}
             </div>
             <CodeViewer
@@ -224,7 +233,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({
             </span>
             {!change.canEdit && (
               <span className="text-red-400">
-                {t('implement.deletedChangeReadOnly', 'Deleted files are read-only in this review flow.')}
+                {t('implement.deletedChangeReadOnlyValidation', 'Deleted files are read-only in this validation flow.')}
               </span>
             )}
           </div>
@@ -310,7 +319,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({
                   className="px-4 py-2 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:bg-primary/90 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Icon name="check" size={14} />
-                  {t('implement.markReviewed', 'Mark as reviewed')}
+                  {t('implement.markValidated', 'Validate file')}
                 </button>
               )
             )}

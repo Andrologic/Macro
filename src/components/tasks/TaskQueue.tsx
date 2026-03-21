@@ -311,7 +311,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     Pending: t('tasks.pending', 'Pending'),
     InProgress: t('tasks.inProgress', 'In Progress'),
     AwaitingResponse: t('implement.awaitingResponse', 'Awaiting response'),
-    InReview: t('implement.inReview', 'In Review'),
+    InReview: t('implement.inReview', 'Validation'),
     Completed: t('tasks.completed', 'Completed'),
     Failed: t('implement.failed', 'Failed'),
     Blocked: t('tasks.blocked', 'Blocked'),
@@ -368,7 +368,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
     if (reviewSummary && task.status === 'InReview') {
       const resolvedCount = reviewSummary.stateCounts.committed + reviewSummary.stateCounts.no_changes;
-      progressLabel = t('implement.taskReviewProgress', '{{resolved}}/{{total}} repositories resolved', {
+      progressLabel = t('implement.taskValidationProgress', '{{resolved}}/{{total}} subprojects resolved', {
         resolved: resolvedCount,
         total: reviewSummary.repositoryCount,
       });
@@ -378,7 +378,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           repository: repositoryLabelForSummary(nextRepositoryDescriptor),
         });
       } else if (reviewSummary.nextAction === 'review_repository' && nextRepositoryDescriptor) {
-        nextActionLabel = t('implement.taskNextActionReviewRepository', 'Next: review {{repository}}', {
+        nextActionLabel = t('implement.taskNextActionValidateRepository', 'Next: validate {{repository}}', {
           repository: repositoryLabelForSummary(nextRepositoryDescriptor),
         });
       } else if (reviewSummary.nextAction === 'complete_without_code_changes') {
@@ -390,8 +390,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         nextActionLabel = t('implement.taskNextActionCompleteTask', 'Next: task completion');
       } else {
         nextActionLabel = t(
-          'implement.taskNextActionReviewAllRepositories',
-          'Next: review and resolve the remaining repositories'
+          'implement.taskNextActionValidateAllRepositories',
+          'Next: validate and resolve the remaining subprojects'
         );
       }
     } else if (task.status === 'InProgress') {
@@ -400,8 +400,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       nextActionLabel = t('implement.taskNextActionAwaitingResponse', 'Next: answer the pending request');
     } else if (task.status === 'InReview') {
       nextActionLabel = t(
-        'implement.taskNextActionReviewRepositories',
-        'Next: review and commit each repository'
+        'implement.taskNextActionValidateRepositories',
+        'Next: validate and commit each subproject'
       );
     } else if (task.status === 'Completed') {
       nextActionLabel = t('implement.taskNextActionCompleted', 'Task completed across repositories');
