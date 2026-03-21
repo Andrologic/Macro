@@ -299,6 +299,10 @@ impl GitState {
 
     pub fn ensure_macro_metadata_worktree(&self, repo: &Repository) -> Result<PathBuf> {
         ensure_metadata_branch_exists(repo)?;
+        let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
+            message: "Bare repositories are not supported for worktrees".to_string(),
+        })?;
+        ensure_task_worktree_gitignore_rule(workdir)?;
 
         let git_dir = repo.path();
         let worktree_path = git_dir.join(MACRO_WORKTREE_DIR_NAME);
@@ -564,6 +568,25 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore"),
             format!("{TASK_WORKTREE_GITIGNORE_RULE}\n")
+        );
+    }
+
+    #[test]
+    fn test_ensure_macro_metadata_worktree_applies_gitignore_rule_retroactively() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+
+        fs::write(temp.path().join(".gitignore"), "node_modules").expect("write gitignore");
+
+        let worktree_path = state
+            .ensure_macro_metadata_worktree(&repo)
+            .expect("metadata worktree");
+
+        assert!(worktree_path.join(".git").exists());
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore"),
+            format!("node_modules\n{TASK_WORKTREE_GITIGNORE_RULE}\n")
         );
     }
 
