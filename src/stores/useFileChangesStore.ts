@@ -505,6 +505,7 @@ interface FileChangesState {
   openDiffModal: (repositoryId: string, changeId: string) => void;
   closeDiffModal: () => void;
   markAsReviewed: (repositoryId: string, changeId: string) => void;
+  markAsUnreviewed: (repositoryId: string, changeId: string) => void;
   markAllAsReviewed: (repositoryId?: string) => void;
   startEditingChange: (repositoryId: string, changeId: string) => Promise<void>;
   updateEditingBuffer: (repositoryId: string, changeId: string, content: string) => void;
@@ -790,6 +791,28 @@ export const createFileChangesStore = (
     }));
   },
 
+  markAsUnreviewed: (repositoryId, changeId) => {
+    set((state) => ({
+      ...(() => {
+        const repositories = updateRepositoryState(state.repositories, repositoryId, (repository) => {
+          const changes = updateChangeEntry(repository.changes, changeId, (change) => ({
+            ...change,
+            reviewed: false,
+          }));
+          return {
+            ...repository,
+            changes,
+            stats: computeStats(changes),
+          };
+        });
+        return {
+          repositories,
+          ...deriveReviewState(repositories, state.selectedRepositoryId),
+        };
+      })(),
+    }));
+  },
+
   markAllAsReviewed: (repositoryId) => {
     const targetRepositoryId = repositoryId || get().selectedRepositoryId;
     if (!targetRepositoryId) return;
@@ -955,7 +978,7 @@ export const createFileChangesStore = (
     const task = ensureReviewTask(deps);
     if (task.status !== 'InReview') {
       throw new Error(
-        tChanges('implement.errors.commitRequiresActiveTaskStatus', 'Task must be in review before commit.')
+        tChanges('implement.errors.commitRequiresValidationStage', 'Task must be in validation before commit.')
       );
     }
 
@@ -987,7 +1010,7 @@ export const createFileChangesStore = (
 
     if (reviewedPaths.length !== repository.changes.length) {
       throw new Error(
-        tChanges('implement.errors.commitNeedsReview', 'Review all file changes before committing this task.')
+        tChanges('implement.errors.commitNeedsValidation', 'Validate all file changes before committing this task.')
       );
     }
 

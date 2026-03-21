@@ -302,7 +302,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
 
     if (counts.InReview > 0) {
       badges.push({
-        label: `${counts.InReview} ${t('implement.inReview', 'In Review')}`,
+        label: `${counts.InReview} ${t('implement.inReview', 'Validation')}`,
         variant: 'warning',
       });
     }
