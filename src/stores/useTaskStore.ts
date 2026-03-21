@@ -697,7 +697,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       set({
         lastError: tTask(
           'implement.errors.completeRequiresActiveStatus',
-          'Task can only be completed from In Review.'
+          'Task can only be completed from Validation.'
         ),
       });
       return;

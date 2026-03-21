@@ -26,7 +26,7 @@ const statusLabels: Record<TaskStatus, string> = {
   Pending: 'To Do',
   InProgress: 'In Progress',
   AwaitingResponse: 'Waiting',
-  InReview: 'In Review',
+  InReview: 'Validation',
   Completed: 'Done',
   Failed: 'Failed',
   Blocked: 'Blocked',
