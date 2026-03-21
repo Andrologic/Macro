@@ -511,9 +511,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     [filteredTasks]
   );
   const completedCount = progressTasks.filter((task) => task.status === 'Completed').length;
-  const inProgressCount = progressTasks.filter((task) =>
-    task.status === 'InProgress' || task.status === 'AwaitingResponse' || task.status === 'InReview'
-  ).length;
   const totalCount = progressTasks.length;
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
   const streamingTaskId = useMemo(() => {
@@ -596,6 +593,27 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       </div>
 
       <div className="px-4 py-3 border-b border-border">
+        <div className="mb-3">
+          <Select
+            value={planFilter}
+            onChange={(event) => setPlanFilter(event.target.value)}
+            className="h-9 py-1.5 text-xs"
+          >
+            <option value={ALL_PLANS_FILTER}>
+              {t('implement.planFilterAll', 'All plans')}
+            </option>
+            {availablePlanSummaries.map((plan) => (
+              <option key={plan.id} value={plan.id}>
+                {planLabelsById.get(plan.id) || plan.title}
+              </option>
+            ))}
+            {hasScopedStandaloneTasks && (
+              <option value={STANDALONE_FILTER}>
+                {t('implement.planFilterStandalone', 'No plan / standalone')}
+              </option>
+            )}
+          </Select>
+        </div>
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs text-muted-foreground">{t('architect.progress', 'Progress')}</span>
           <span className="text-xs font-medium text-foreground">
@@ -607,34 +625,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             className="h-full bg-primary rounded-full transition-all duration-500"
             style={{ width: `${progressPercent}%` }}
           />
-        </div>
-        <div className="mt-3 flex items-center gap-2">
-          <div className="min-w-0 flex-1">
-            <Select
-              value={planFilter}
-              onChange={(event) => setPlanFilter(event.target.value)}
-              className="h-9 py-1.5 text-xs"
-            >
-              <option value={ALL_PLANS_FILTER}>
-                {t('implement.planFilterAll', 'All plans')}
-              </option>
-              {availablePlanSummaries.map((plan) => (
-                <option key={plan.id} value={plan.id}>
-                  {planLabelsById.get(plan.id) || plan.title}
-                </option>
-              ))}
-              {hasScopedStandaloneTasks && (
-                <option value={STANDALONE_FILTER}>
-                  {t('implement.planFilterStandalone', 'No plan / standalone')}
-                </option>
-              )}
-            </Select>
-          </div>
-          {inProgressCount > 0 && (
-            <span className="shrink-0 rounded-full bg-amber-500/10 px-2 py-1 text-[11px] text-amber-500">
-              {t('implement.activeCount', '{{count}} active', { count: inProgressCount })}
-            </span>
-          )}
         </div>
         {visibleReadyPlans.length > 0 && (
           <div className="mt-3 space-y-2">
