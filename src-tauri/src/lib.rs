@@ -258,6 +258,10 @@ pub fn run() {
             commands::workspace::workspace_create_manual_feature_draft,
             commands::workspace::workspace_finalize_manual_feature,
             commands::workspace::workspace_delete_manual_feature_draft,
+            commands::workspace::workspace_rename_manual_feature,
+            commands::workspace::workspace_archive_manual_feature,
+            commands::workspace::workspace_restore_manual_feature,
+            commands::workspace::workspace_delete_manual_feature,
             commands::workspace::workspace_update_standalone_task_status,
             // Tool policy validation command
             commands::tool_get_mode_policy,
