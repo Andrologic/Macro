@@ -316,6 +316,64 @@ pub async fn workspace_delete_manual_feature_draft(
 }
 
 #[tauri::command]
+pub async fn workspace_rename_manual_feature(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+    title: String,
+) -> Result<ManualFeatureDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::rename_manual_feature(&workspace_path, &metadata_root, &task_id, &title).await
+}
+
+#[tauri::command]
+pub async fn workspace_archive_manual_feature(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+    reason: Option<String>,
+    merged_at: Option<String>,
+) -> Result<ManualFeatureDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::archive_manual_feature(
+        &workspace_path,
+        &metadata_root,
+        &task_id,
+        reason.as_deref(),
+        merged_at.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn workspace_restore_manual_feature(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+) -> Result<ManualFeatureDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::restore_manual_feature(&workspace_path, &metadata_root, &task_id).await
+}
+
+#[tauri::command]
+pub async fn workspace_delete_manual_feature(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+) -> Result<()> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::delete_manual_feature(&workspace_path, &metadata_root, &task_id).await
+}
+
+#[tauri::command]
 pub async fn workspace_update_standalone_task_status(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,

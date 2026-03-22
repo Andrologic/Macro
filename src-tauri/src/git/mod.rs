@@ -356,7 +356,7 @@ impl GitState {
         self.ensure_macro_metadata_worktree(&repo)
     }
 
-    pub fn remove_task_worktree(&self, repo: &Repository, task_id: &str) -> Result<()> {
+    pub fn remove_task_worktree(&self, repo: &Repository, task_id: &str, force: bool) -> Result<()> {
         let worktree_name = format!("task{}", task_id);
         let worktree = match repo.find_worktree(&worktree_name) {
             Ok(wt) => wt,
@@ -374,7 +374,7 @@ impl GitState {
                     ),
                 })?;
             let statuses = worktree_repo.statuses(Some(&mut get_status_options()))?;
-            if !statuses.is_empty() {
+            if !force && !statuses.is_empty() {
                 return Err(BackendError::GitRepositoryNotClean {
                     message: format!(
                         "Worktree {} has uncommitted changes",
@@ -603,7 +603,7 @@ mod tests {
         assert!(worktree_path.exists());
 
         state
-            .remove_task_worktree(&repo, "456")
+            .remove_task_worktree(&repo, "456", false)
             .expect("remove worktree");
 
         assert!(!worktree_path.exists());
@@ -623,7 +623,7 @@ mod tests {
         fs::write(worktree_path.join("README.md"), "dirty").expect("write dirty file");
 
         let err = state
-            .remove_task_worktree(&repo, "789")
+            .remove_task_worktree(&repo, "789", false)
             .expect_err("dirty worktree should fail");
 
         match err {
@@ -633,6 +633,26 @@ mod tests {
 
         assert!(worktree_path.exists());
         assert!(repo.find_worktree("task789").is_ok());
+    }
+
+    #[test]
+    fn test_remove_task_worktree_force_removes_dirty_worktree() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+
+        let worktree_path = state
+            .ensure_task_worktree(&repo, "790", "task-790", None)
+            .expect("worktree");
+
+        fs::write(worktree_path.join("README.md"), "dirty").expect("write dirty file");
+
+        state
+            .remove_task_worktree(&repo, "790", true)
+            .expect("force remove worktree");
+
+        assert!(!worktree_path.exists());
+        assert!(repo.find_worktree("task790").is_err());
     }
 
     #[test]

@@ -34,6 +34,9 @@ export interface CatalogedImplementTask extends DerivedImplementTask {
   base_branch: string | null;
   feature_slug: string | null;
   conversation_id: string | null;
+  archived_at: string | null;
+  archive_reason: string | null;
+  merged_at: string | null;
 }
 
 export interface ImplementTaskCatalog {
@@ -102,6 +105,9 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       base_branch?: string | null;
       feature_slug?: string | null;
       conversation_id?: string | null;
+      archived_at?: string | null;
+      archive_reason?: string | null;
+      merged_at?: string | null;
     };
     const isDraft = raw.draft === true;
     const assignedBranch =
@@ -127,6 +133,7 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       blocked_by: [],
       is_blocked: false,
       is_ready: false,
+      needs_revalidation: false,
       sequence_index: typeof raw.sequence_index === 'number' ? raw.sequence_index : index,
       execution_targets: executionTargets,
       draft: isDraft,
@@ -134,6 +141,9 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       base_branch: typeof raw.base_branch === 'string' ? raw.base_branch : null,
       feature_slug: typeof raw.feature_slug === 'string' ? raw.feature_slug : null,
       conversation_id: typeof raw.conversation_id === 'string' ? raw.conversation_id : null,
+      archived_at: typeof raw.archived_at === 'string' ? raw.archived_at : null,
+      archive_reason: typeof raw.archive_reason === 'string' ? raw.archive_reason : null,
+      merged_at: typeof raw.merged_at === 'string' ? raw.merged_at : null,
       task_source: 'standalone' as const,
       plan_title: null,
       plan_status: null,
@@ -161,6 +171,12 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
 
     const isBlocked = blockedByTaskIds.length > 0;
     const isReady = !task.draft && !isBlocked && status !== 'Completed' && status !== 'Failed';
+    const needsRevalidation =
+      blockedByTaskIds.length > 0 &&
+      (status === 'Completed' ||
+        status === 'InProgress' ||
+        status === 'AwaitingResponse' ||
+        status === 'InReview');
     return {
       ...task,
       status,
@@ -168,6 +184,7 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       blocked_by: blockedBy,
       is_blocked: isBlocked,
       is_ready: isReady,
+      needs_revalidation: needsRevalidation,
     };
   });
 };
@@ -192,6 +209,9 @@ export const deriveImplementTasksFromArchitectPlan = (
     base_branch: null,
     feature_slug: null,
     conversation_id: null,
+    archived_at: null,
+    archive_reason: null,
+    merged_at: null,
   }));
 };
 

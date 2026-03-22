@@ -114,12 +114,132 @@ const getPreferredExecutionTarget = (
 const isManualStandaloneTask = (task: CatalogedImplementTask): boolean =>
   task.task_source === 'standalone' && task.standalone_kind === 'manual_feature';
 
+const isTaskArchived = (task: Pick<CatalogedImplementTask, 'archived_at'>): boolean =>
+  Boolean(task.archived_at);
+
+export interface TaskLifecycleCapabilities {
+  isPublished: boolean;
+  canRename: boolean;
+  canDelete: boolean;
+  canArchive: boolean;
+  canRestore: boolean;
+  canReopen: boolean;
+  deleteBlockReason: string | null;
+}
+
+const resolveTaskRepositoryPath = (
+  projectId: string,
+  explicitRepoPath?: string | null
+): string | null =>
+  explicitRepoPath || useAppStore.getState().getProjectById(projectId)?.path || null;
+
+const getExecutionTargetsWithRepoPaths = (
+  task: CatalogedImplementTask
+): Array<TaskExecutionTarget & { repoPath: string }> =>
+  getExecutionTargets(task)
+    .map((target) => {
+      const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
+      return repoPath ? { ...target, repoPath } : null;
+    })
+    .filter((target): target is TaskExecutionTarget & { repoPath: string } => Boolean(target));
+
+const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promise<boolean> => {
+  if (!tauriIpc.isTauriAvailable() || !isManualStandaloneTask(task) || task.draft || !task.branch_name) {
+    return false;
+  }
+
+  const branchName = normalizeBranchName(task.branch_name);
+  const executionTargets = getExecutionTargetsWithRepoPaths(task);
+  for (const target of executionTargets) {
+    try {
+      const branches = await tauriIpc.gitBranchList(target.repoPath);
+      if ((branches.remote || []).some((branch) => branch.name === `origin/${branchName}`)) {
+        return true;
+      }
+    } catch {
+      // Ignore publication checks for missing or unavailable repositories.
+    }
+  }
+
+  return false;
+};
+
+const resolveStandaloneStartRef = async (
+  task: CatalogedImplementTask,
+  repoPath: string
+): Promise<string | null> => {
+  if (!isManualStandaloneTask(task) || task.draft) {
+    return null;
+  }
+
+  const branchName = task.branch_name ? normalizeBranchName(task.branch_name) : '';
+  if (tauriIpc.isTauriAvailable() && branchName) {
+    try {
+      const branches = await tauriIpc.gitBranchList(repoPath);
+      if ((branches.remote || []).some((branch) => branch.name === `origin/${branchName}`)) {
+        return `origin/${branchName}`;
+      }
+    } catch {
+      // Fall back to the configured base branch if the repository is unavailable.
+    }
+  }
+
+  return task.base_branch || getGitFlowBaseBranch();
+};
+
+const buildStandalonePublicationMap = async (
+  tasks: CatalogedImplementTask[]
+): Promise<Record<string, boolean>> => {
+  const standaloneTasks = tasks.filter((task) => isManualStandaloneTask(task));
+  const entries = await Promise.all(
+    standaloneTasks.map(async (task) => [task.id, await hasPublishedStandaloneBranch(task)] as const)
+  );
+  return Object.fromEntries(entries);
+};
+
+export const getTaskLifecycleCapabilities = (
+  task: CatalogedImplementTask,
+  published = false
+): TaskLifecycleCapabilities => {
+  if (isManualStandaloneTask(task)) {
+    const archived = isTaskArchived(task);
+    return {
+      isPublished: published,
+      canRename: true,
+      canDelete: !published,
+      canArchive: !task.draft && !archived,
+      canRestore: archived,
+      canReopen: !archived && task.status === 'Completed',
+      deleteBlockReason: published
+        ? tTask(
+          'implement.actions.deleteBlockedPublished',
+          'This feature branch has already been pushed. Archive it instead.'
+        )
+        : null,
+    };
+  }
+
+  return {
+    isPublished: false,
+    canRename: true,
+    canDelete: false,
+    canArchive: false,
+    canRestore: false,
+    canReopen:
+      task.task_source === 'architect' &&
+      !isTaskArchived(task) &&
+      task.status === 'Completed' &&
+      (task.plan_status === 'validated' || task.plan_status === 'in_progress'),
+    deleteBlockReason: null,
+  };
+};
+
 const ALLOWED_STATUS_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   Pending: ['InProgress', 'Failed'],
   InProgress: ['AwaitingResponse', 'InReview', 'Failed'],
   AwaitingResponse: ['InProgress', 'InReview', 'Failed'],
   InReview: ['InProgress', 'Completed', 'Failed'],
-  Completed: [],
+  Completed: ['Pending'],
   Failed: ['Pending', 'InProgress'],
   Blocked: ['Pending'],
 };
@@ -298,6 +418,7 @@ interface TaskStore {
   tasks: CatalogedImplementTask[];
   planSummaries: ImplementTaskPlanSummary[];
   hasStandaloneTasks: boolean;
+  publishedStandaloneTasks: Record<string, boolean>;
   isLoading: boolean;
   finalizingPlanId: string | null;
   blockedPlanFinalization: BlockedPlanFinalizationState | null;
@@ -327,6 +448,11 @@ interface TaskStore {
     featureSlug: string;
   }) => Promise<void>;
   deleteManualFeatureDraft: (taskId: string) => Promise<void>;
+  renameTask: (taskId: string, title: string) => Promise<void>;
+  archiveTask: (taskId: string, options?: { reason?: string | null; mergedAt?: string | null }) => Promise<void>;
+  restoreTask: (taskId: string) => Promise<void>;
+  deleteTask: (taskId: string) => Promise<void>;
+  reopenTask: (taskId: string) => Promise<void>;
   startTask: (taskId: string) => Promise<void>;
   startReview: (taskId: string) => Promise<void>;
   requestTaskChanges: (taskId: string) => Promise<void>;
@@ -382,6 +508,9 @@ const persistTaskStatusToArchitectPlan = async (
       base_branch: null,
       feature_slug: null,
       conversation_id: null,
+      archived_at: null,
+      archive_reason: null,
+      merged_at: null,
     })),
     plan.predictedBranches || [],
     task.id,
@@ -442,6 +571,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   tasks: [],
   planSummaries: [],
   hasStandaloneTasks: false,
+  publishedStandaloneTasks: {},
   isLoading: false,
   finalizingPlanId: null,
   blockedPlanFinalization: null,
@@ -463,10 +593,12 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   refreshFromPlan: async () => {
     try {
       const catalog = await services.listTasks();
+      const publishedStandaloneTasks = await buildStandalonePublicationMap(catalog.tasks);
       set({
         tasks: catalog.tasks,
         planSummaries: catalog.plans,
         hasStandaloneTasks: catalog.hasStandaloneTasks,
+        publishedStandaloneTasks,
         source: catalog.source,
         ...buildPlanFinalizationRefreshState(),
         isLoading: false,
@@ -502,7 +634,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       }
     } catch (error) {
       const normalized = toServiceError(error);
-      set({ isLoading: false, lastError: normalized.message });
+      set({ isLoading: false, lastError: normalized.message, publishedStandaloneTasks: {} });
     }
   },
 
@@ -624,6 +756,314 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
   },
 
+  renameTask: async (taskId, title) => {
+    set({ lastError: null });
+    const task = get().getTaskById(taskId);
+    const nextTitle = title.trim();
+    if (!task) {
+      set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
+      return;
+    }
+    if (!nextTitle) {
+      set({ lastError: tTask('implement.errors.renameTaskEmpty', 'Task title cannot be empty.') });
+      return;
+    }
+
+    try {
+      if (isManualStandaloneTask(task)) {
+        if (!tauriIpc.isTauriAvailable()) {
+          set({
+            tasks: get().tasks.map((candidate) =>
+              candidate.id === taskId ? { ...candidate, title: nextTitle } : candidate
+            ),
+          });
+          return;
+        }
+
+        await tauriIpc.workspaceRenameManualFeature({ taskId, title: nextTitle });
+        await get().refreshFromPlan();
+        await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
+          set({ lastError: message });
+        });
+        return;
+      }
+
+      const targetBranch = resolveTargetBranch(task.plan_target_branch || getGitFlowBaseBranch());
+      const plan = await getArchitectPlan(targetBranch, task.plan_id);
+      if (!plan || plan.status === 'deleted') {
+        set({
+          lastError: tTask('implement.errors.unknownTaskPlan', 'Cannot update plan metadata for task {{taskId}}.', {
+            taskId,
+          }),
+        });
+        return;
+      }
+
+      const nextPlanNodes = (plan.nodes || []).map((node) =>
+        node.id === taskId ? { ...node, title: nextTitle } : node
+      );
+      await updateArchitectPlan({
+        branchName: targetBranch,
+        planId: plan.id,
+        nodes: nextPlanNodes,
+        setActive: false,
+      });
+
+      const appState = useAppStore.getState();
+      if (appState.activeArchitectPlanId === plan.id) {
+        appState.setPlanNodes(nextPlanNodes);
+      }
+
+      await get().refreshFromPlan();
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      throw normalized;
+    }
+  },
+
+  archiveTask: async (taskId, options) => {
+    set({ lastError: null });
+    const task = get().getTaskById(taskId);
+    if (!task) {
+      set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
+      return;
+    }
+    if (!isManualStandaloneTask(task) || task.draft) {
+      set({
+        lastError: tTask(
+          'implement.errors.archiveUnsupportedTask',
+          'Only standalone features can be archived from Implement.'
+        ),
+      });
+      return;
+    }
+
+    try {
+      const executionTargets = getExecutionTargetsWithRepoPaths(task);
+      for (const target of executionTargets) {
+        await tauriIpc.gitWorktreeRemove({
+          repoPath: target.repoPath,
+          taskId: target.worktreeKey,
+          force: true,
+        });
+
+        const branches = await tauriIpc.gitBranchList(target.repoPath);
+        if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
+          await tauriIpc.gitBranchDelete({
+            repoPath: target.repoPath,
+            branchName: target.branchName,
+            force: true,
+          });
+        }
+      }
+
+      const removedKeys = new Set(getExecutionTargets(task).map((target) => target.worktreeKey));
+      const removedPaths = new Set(
+        Array.from(removedKeys)
+          .map((key) => get().branchWorktrees[key])
+          .filter((value): value is string => Boolean(value))
+      );
+      set((state) => ({
+        branchWorktrees: Object.fromEntries(
+          Object.entries(state.branchWorktrees).filter(([key]) => !removedKeys.has(key))
+        ),
+        activeBranchName:
+          state.activeBranchName === task.assigned_branch ? null : state.activeBranchName,
+        activeRepositoryPath:
+          state.activeRepositoryPath && removedPaths.has(state.activeRepositoryPath)
+            ? null
+            : state.activeRepositoryPath,
+      }));
+
+      if (
+        get().activeBranchName === null &&
+        get().activeRepositoryPath === null
+      ) {
+        await syncWorkspaceRoot(null);
+      }
+
+      if (useAppStore.getState().selectedTaskId === task.id) {
+        useAppStore.getState().setSelectedTask(null);
+      }
+
+      await tauriIpc.workspaceArchiveManualFeature({
+        taskId,
+        reason: options?.reason ?? null,
+        mergedAt: options?.mergedAt ?? null,
+      });
+      await get().refreshFromPlan();
+      await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
+        set({ lastError: message });
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      throw normalized;
+    }
+  },
+
+  restoreTask: async (taskId) => {
+    set({ lastError: null });
+    const task = get().getTaskById(taskId);
+    if (!task) {
+      set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
+      return;
+    }
+    if (!isManualStandaloneTask(task) || !isTaskArchived(task)) {
+      set({
+        lastError: tTask(
+          'implement.errors.restoreUnsupportedTask',
+          'Only archived standalone features can be restored.'
+        ),
+      });
+      return;
+    }
+
+    try {
+      await tauriIpc.workspaceRestoreManualFeature(taskId);
+      await get().refreshFromPlan();
+      await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
+        set({ lastError: message });
+      });
+      useAppStore.getState().setSelectedTask(taskId);
+      await get().activateTask(taskId);
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      throw normalized;
+    }
+  },
+
+  deleteTask: async (taskId) => {
+    set({ lastError: null });
+    const task = get().getTaskById(taskId);
+    if (!task) {
+      set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
+      return;
+    }
+    if (!isManualStandaloneTask(task)) {
+      set({
+        lastError: tTask(
+          'implement.errors.deleteUnsupportedTask',
+          'Only standalone features can be deleted from Implement.'
+        ),
+      });
+      return;
+    }
+
+    try {
+      if (!task.draft) {
+        const published = await hasPublishedStandaloneBranch(task);
+        set((state) => ({
+          publishedStandaloneTasks: {
+            ...state.publishedStandaloneTasks,
+            [task.id]: published,
+          },
+        }));
+        if (published) {
+          set({
+            lastError: tTask(
+              'implement.actions.deleteBlockedPublished',
+              'This feature branch has already been pushed. Archive it instead.'
+            ),
+          });
+          return;
+        }
+      }
+
+      const executionTargets = getExecutionTargetsWithRepoPaths(task);
+      for (const target of executionTargets) {
+        await tauriIpc.gitWorktreeRemove({
+          repoPath: target.repoPath,
+          taskId: target.worktreeKey,
+          force: true,
+        });
+
+        const branches = await tauriIpc.gitBranchList(target.repoPath);
+        if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
+          await tauriIpc.gitBranchDelete({
+            repoPath: target.repoPath,
+            branchName: target.branchName,
+            force: true,
+          });
+        }
+      }
+
+      const removedKeys = new Set(getExecutionTargets(task).map((target) => target.worktreeKey));
+      const removedPaths = new Set(
+        Array.from(removedKeys)
+          .map((key) => get().branchWorktrees[key])
+          .filter((value): value is string => Boolean(value))
+      );
+      set((state) => ({
+        branchWorktrees: Object.fromEntries(
+          Object.entries(state.branchWorktrees).filter(([key]) => !removedKeys.has(key))
+        ),
+        activeBranchName:
+          state.activeBranchName === task.assigned_branch ? null : state.activeBranchName,
+        activeRepositoryPath:
+          state.activeRepositoryPath && removedPaths.has(state.activeRepositoryPath)
+            ? null
+            : state.activeRepositoryPath,
+      }));
+      if (get().activeBranchName === null && get().activeRepositoryPath === null) {
+        await syncWorkspaceRoot(null);
+      }
+
+      if (task.draft) {
+        await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
+      } else {
+        await tauriIpc.workspaceDeleteManualFeature(taskId);
+      }
+
+      try {
+        await removeManualFeatureMetadata(task);
+      } catch (error) {
+        const normalized = toServiceError(error);
+        set({ lastError: normalized.message });
+      }
+
+      await get().refreshFromPlan();
+      if (useAppStore.getState().selectedTaskId === task.id) {
+        useAppStore.getState().setSelectedTask(null);
+      }
+
+      if (task.conversation_id) {
+        const { useChatStore } = await import('./useChatStore');
+        await useChatStore.getState().deleteConversation(task.conversation_id, { mode: 'implement' });
+      }
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      throw normalized;
+    }
+  },
+
+  reopenTask: async (taskId) => {
+    const task = get().getTaskById(taskId);
+    if (!task) {
+      set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
+      return;
+    }
+
+    const capabilities = getTaskLifecycleCapabilities(
+      task,
+      get().publishedStandaloneTasks[task.id] ?? false
+    );
+    if (!capabilities.canReopen) {
+      set({
+        lastError: tTask(
+          'implement.errors.reopenUnsupportedTask',
+          'This task cannot be reopened.'
+        ),
+      });
+      return;
+    }
+
+    await get().setTaskStatus(taskId, 'Pending');
+  },
+
   startTask: async (taskId) => {
     const task = get().tasks.find((candidate) => candidate.id === taskId);
     if (!task) {
@@ -675,13 +1115,11 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
 
     const createdWorktrees: Record<string, string> = {};
-    const fromRef =
-      isManualStandaloneTask(task) && !task.draft
-        ? (task.base_branch || getGitFlowBaseBranch())
-        : null;
     for (const target of executionTargets) {
       let worktreePath = get().branchWorktrees[target.worktreeKey] || null;
       if (!worktreePath) {
+        const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
+        const fromRef = repoPath ? await resolveStandaloneStartRef(task, repoPath) : null;
         worktreePath = await useGitStore
           .getState()
           .createWorktree(target.projectId, target.worktreeKey, target.branchName, fromRef);
@@ -875,6 +1313,14 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
 
     await get().setTaskStatus(taskId, 'Completed');
+
+    if (isManualStandaloneTask(task) && !task.draft) {
+      await get().archiveTask(taskId, {
+        reason: 'merged',
+        mergedAt: new Date().toISOString(),
+      });
+      return;
+    }
 
     if (task.task_source === 'architect' && task.plan_target_branch) {
       try {

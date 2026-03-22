@@ -2169,6 +2169,7 @@ pub async fn git_worktree_remove(
     git_state: State<'_, GitState>,
     repo_path: String,
     task_id: String,
+    force: Option<bool>,
 ) -> Result<()> {
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
@@ -2180,7 +2181,7 @@ pub async fn git_worktree_remove(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        git_state.remove_task_worktree(&repo, &task_id)
+        git_state.remove_task_worktree(&repo, &task_id, force.unwrap_or(false))
     })
     .await
     .map_err(to_join_error)?
