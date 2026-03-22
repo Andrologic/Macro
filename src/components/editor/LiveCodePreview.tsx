@@ -106,7 +106,11 @@ export const LiveCodePreview: React.FC<LiveCodePreviewProps> = ({ className }) =
         </h1>
         <div className="flex items-center gap-1">
           <span className="text-xs text-muted-foreground">
-            {modifiedFiles.length} fichier{modifiedFiles.length > 1 ? 's' : ''}
+            {t('implement.fileCount', {
+              count: modifiedFiles.length,
+              defaultValue_one: '{{count}} file',
+              defaultValue_other: '{{count}} files',
+            })}
           </span>
         </div>
       </div>
@@ -123,7 +127,7 @@ export const LiveCodePreview: React.FC<LiveCodePreviewProps> = ({ className }) =
           )}
         >
           <Icon name="git-compare" size={12} className="inline mr-1.5" />
-          Diff
+          {t('implement.diffTab', 'Diff')}
         </button>
         <button
           onClick={() => setViewMode('preview')}
@@ -135,7 +139,7 @@ export const LiveCodePreview: React.FC<LiveCodePreviewProps> = ({ className }) =
           )}
         >
           <Icon name="eye" size={12} className="inline mr-1.5" />
-          Preview
+          {t('implement.previewTab', 'Preview')}
         </button>
       </div>
 
@@ -208,7 +212,7 @@ export const LiveCodePreview: React.FC<LiveCodePreviewProps> = ({ className }) =
           title={t('implement.actionsInChangesPanel', 'Use the Changes panel for validation and commit actions.')}
         >
           <Icon name="rotate-ccw" size={12} />
-          Revert
+          {t('implement.revert', 'Revert')}
         </button>
         <div className="flex items-center gap-2">
           <button
@@ -217,7 +221,7 @@ export const LiveCodePreview: React.FC<LiveCodePreviewProps> = ({ className }) =
             title={t('implement.actionsInChangesPanel', 'Use the Changes panel for validation and commit actions.')}
           >
             <Icon name="plus-square" size={12} />
-            Stage
+            {t('implement.stage', 'Stage')}
           </button>
           <button
             disabled

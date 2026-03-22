@@ -87,6 +87,7 @@ interface FolderTreeItemProps {
   node: FolderNode;
   depth: number;
   selectedChangeId: string | null;
+  invalidateTooltip: string;
   onFileClick: (changeId: string) => void;
   onFileInvalidate: (changeId: string) => void;
 }
@@ -103,6 +104,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
   node,
   depth,
   selectedChangeId,
+  invalidateTooltip,
   onFileClick,
   onFileInvalidate,
 }) => {
@@ -141,6 +143,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
                 node={child}
                 depth={depth + 1}
                 selectedChangeId={selectedChangeId}
+                invalidateTooltip={invalidateTooltip}
                 onFileClick={onFileClick}
                 onFileInvalidate={onFileInvalidate}
               />
@@ -173,7 +176,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
             : 'bg-primary/[0.035] hover:bg-primary/[0.06]'
       )}
       style={{ paddingLeft: `${depth * 12 + 8}px` }}
-      title={change.reviewed ? 'Right-click to invalidate' : undefined}
+      title={change.reviewed ? invalidateTooltip : undefined}
     >
       <span
         className={cn(
@@ -611,6 +614,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         node={node}
                         depth={0}
                         selectedChangeId={repository.selectedChangeId}
+                        invalidateTooltip={t('implement.rightClickToInvalidate', 'Right-click to invalidate')}
                         onFileClick={(changeId) => {
                           selectRepository(repository.id);
                           openDiffModal(repository.id, changeId);

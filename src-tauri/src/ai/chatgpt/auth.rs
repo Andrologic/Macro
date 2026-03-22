@@ -1,16 +1,19 @@
 use super::session::{build_token_claims, persist_chatgpt_session, resolve_token_expiry_rfc3339};
 use super::types::{
-    auth_flow_error_from_persist, extract_response_error, AiAuthCancelledEvent, AiAuthErrorEvent,
-    AiAuthStartedEvent, AiAuthSuccessEvent, AuthFlowError, BrowserAuthCallbackQuery,
-    BrowserAuthServerState, PkceCodes, TokenResponse, AUTH_TIMEOUT_SECONDS,
-    CALLBACK_BIND_RETRY_ATTEMPTS, CALLBACK_BIND_RETRY_DELAY_MS, CHATGPT_AUTHORIZE_URL,
-    CHATGPT_BROWSER_SOURCE, CHATGPT_CALLBACK_BIND_HOST, CHATGPT_CALLBACK_PATH,
-    CHATGPT_CALLBACK_PORT, CHATGPT_CALLBACK_PUBLIC_HOST, CHATGPT_CANCEL_PATH, CHATGPT_CLIENT_ID,
-    CHATGPT_TOKEN_URL, DEFAULT_ORIGINATOR, HTML_CANCELLED, HTML_SUCCESS,
+    auth_flow_error_from_persist, build_auth_cancelled_html, build_auth_failure_html,
+    build_auth_success_html, extract_response_error, resolve_browser_language,
+    AiAuthCancelledEvent, AiAuthErrorEvent, AiAuthStartedEvent, AiAuthSuccessEvent,
+    AuthFlowError, BrowserAuthCallbackQuery, BrowserAuthServerState, PkceCodes,
+    TokenResponse, AUTH_TIMEOUT_SECONDS, CALLBACK_BIND_RETRY_ATTEMPTS,
+    CALLBACK_BIND_RETRY_DELAY_MS, CHATGPT_AUTHORIZE_URL, CHATGPT_BROWSER_SOURCE,
+    CHATGPT_CALLBACK_BIND_HOST, CHATGPT_CALLBACK_PATH, CHATGPT_CALLBACK_PORT,
+    CHATGPT_CALLBACK_PUBLIC_HOST, CHATGPT_CANCEL_PATH, CHATGPT_CLIENT_ID,
+    CHATGPT_TOKEN_URL, DEFAULT_ORIGINATOR,
 };
 use crate::ai::{AiState, AuthTask};
 use crate::secrets::ChatGptSecret;
 use axum::extract::{Query, State};
+use axum::http::HeaderMap;
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
@@ -425,9 +428,15 @@ fn build_callback_redirect_uri() -> String {
 }
 
 async fn handle_browser_callback(
+    headers: HeaderMap,
     State(state): State<BrowserAuthServerState>,
     Query(query): Query<BrowserAuthCallbackQuery>,
 ) -> Html<String> {
+    let language = resolve_browser_language(
+        headers
+            .get("accept-language")
+            .and_then(|value| value.to_str().ok()),
+    );
     let has_error = query.error.is_some();
     let has_code = query
         .code
@@ -481,19 +490,27 @@ async fn handle_browser_callback(
     }
 
     match result {
-        Ok(_) => Html(HTML_SUCCESS.to_string()),
-        Err(error) => Html(build_failure_html(&error.message)),
+        Ok(_) => Html(build_auth_success_html(language)),
+        Err(error) => Html(build_auth_failure_html(language, &error.message)),
     }
 }
 
-async fn handle_browser_cancel(State(state): State<BrowserAuthServerState>) -> Html<String> {
+async fn handle_browser_cancel(
+    headers: HeaderMap,
+    State(state): State<BrowserAuthServerState>,
+) -> Html<String> {
+    let language = resolve_browser_language(
+        headers
+            .get("accept-language")
+            .and_then(|value| value.to_str().ok()),
+    );
     info!("received ChatGPT local callback cancellation request");
     let _ = state.result_sender.lock().await.take();
     if let Some(sender) = state.shutdown_sender.lock().await.take() {
         let _ = sender.send(());
     }
 
-    Html(HTML_CANCELLED.to_string())
+    Html(build_auth_cancelled_html(language))
 }
 
 async fn exchange_authorization_code(
@@ -588,20 +605,6 @@ pub(super) fn build_authorize_url(
         .append_pair("state", state)
         .append_pair("originator", DEFAULT_ORIGINATOR);
     Ok(url)
-}
-
-fn build_failure_html(message: &str) -> String {
-    format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\" /><title>Macro - ChatGPT Authorization Failed</title></head><body><h1>Authorization failed</h1><p>{}</p></body></html>",
-        html_escape(message)
-    )
-}
-
-fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 pub(super) fn build_oauth_form_body(params: &[(&str, &str)]) -> String {

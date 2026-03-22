@@ -244,8 +244,11 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
         planTitle: review.plan.title,
         repositories: blockedRepositories,
       }));
-      toast.success('AI conflict assistant started', {
-        description: 'Switched to Debug mode and posted the plan finalization blockers.',
+      toast.success(t('implement.aiConflictAssistantStarted', 'AI conflict assistant started'), {
+        description: t(
+          'implement.planFinalizationAssistantDescription',
+          'Switched to Debug mode and posted the plan finalization blockers.'
+        ),
       });
     } catch (assistantError) {
       setError(toServiceError(assistantError).message);
@@ -267,7 +270,7 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
               <span>{review?.repositories.length ?? 0} {t('implement.repositories', 'repositories')}</span>
               {review?.plan.status && (
                 <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground uppercase">
-                  {review.plan.status}
+                  {t(`architect.status.${review.plan.status}`, review.plan.status)}
                 </span>
               )}
             </div>
@@ -313,7 +316,7 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
                     <div className="text-sm font-medium text-foreground">{task.title}</div>
                     <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
                       <span className={cn('px-1.5 py-0.5 rounded', taskStatusClasses[task.status] || taskStatusClasses.pending)}>
-                        {task.status}
+                        {t(`architect.nodeStatus.${task.status}`, task.status)}
                       </span>
                       <span className="inline-flex items-center gap-1">
                         <Icon name="git-branch" size={10} />
@@ -505,7 +508,11 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
               {replicaRepair.divergence.replicas.map((replica) => (
                 <div key={replica.scopeKey} className="rounded-md border border-border px-3 py-2">
                   <div className="text-foreground">{replica.repoPath || replica.scopeKey}</div>
-                  <div>{replica.missing ? 'Missing replica' : replica.updatedAt || 'Unknown date'}</div>
+                  <div>
+                    {replica.missing
+                      ? t('architect.planSelector.replicaMissing', 'Missing replica')
+                      : replica.updatedAt || t('architect.planSelector.unknownDate', 'Unknown date')}
+                  </div>
                 </div>
               ))}
             </div>
@@ -528,7 +535,9 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
                 onClick={() => void performReplicaRepair('oldest')}
                 className="px-3 py-2 rounded-md border border-border hover:bg-accent text-sm"
               >
-                {isRepairingReplica ? 'Repairing...' : 'Keep oldest'}
+                {isRepairingReplica
+                  ? t('architect.planSelector.repairing', 'Repairing...')
+                  : t('architect.planSelector.keepOldestReplica', 'Keep oldest')}
               </button>
               <button
                 type="button"
@@ -536,7 +545,9 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
                 onClick={() => void performReplicaRepair('newest')}
                 className="px-3 py-2 rounded-md bg-primary text-primary-foreground text-sm hover:opacity-90"
               >
-                {isRepairingReplica ? 'Repairing...' : 'Keep newest'}
+                {isRepairingReplica
+                  ? t('architect.planSelector.repairing', 'Repairing...')
+                  : t('architect.planSelector.keepNewestReplica', 'Keep newest')}
               </button>
             </div>
           </div>

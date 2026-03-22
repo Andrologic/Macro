@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useGitStore } from '../../stores/useGitStore';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/Tabs';
@@ -15,6 +16,7 @@ interface RightPanelProps {
 }
 
 export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
+  const { t } = useTranslation();
   const { currentPlan, projectGroups, selectedGroupId } = useAppStore();
   const [panelView, setPanelView] = useState<PanelView>('tree');
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(null);
@@ -44,7 +46,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
       >
         <div className="text-center">
           <Icon name="git-branch" size={48} className="text-muted-foreground mx-auto mb-4" />
-          <p className="text-muted-foreground text-sm">No plan selected</p>
+          <p className="text-muted-foreground text-sm">{t('architect.noActivePlan', 'No active plan')}</p>
         </div>
       </aside>
     );
@@ -64,10 +66,13 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
               size={16}
               className="text-primary"
             />
-            {selectedGlobalProject?.name || 'Global Project'}
+            {selectedGlobalProject?.name || t('project.globalProject', 'Global Project')}
           </h1>
           <p className="text-[11px] text-muted-foreground truncate">
-            {activeProjects.length} {activeProjects.length === 1 ? 'subproject' : 'subprojects'}
+            {t('project.subprojectCount', {
+              count: activeProjects.length,
+              defaultValue: '{{count}} subprojects',
+            })}
           </p>
         </div>
       </div>
@@ -82,7 +87,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
           )}
         >
           <Icon name="git-branch" size={14} className="mr-2" />
-          Git Tree
+          {t('git.gitTree', 'Git Tree')}
         </button>
         <button
           onClick={() => setPanelView('graph')}
@@ -92,7 +97,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
           )}
         >
           <Icon name="git-commit" size={14} className="mr-2" />
-          Graph
+          {t('architect.graphView', 'Graph')}
         </button>
       </div>
 
@@ -161,7 +166,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
               (acc, tree) => acc + tree.modified_files_count,
               0
             )}{' '}
-            total changes
+            {t('git.totalChanges', 'total changes')}
           </span>
         </div>
       </div>

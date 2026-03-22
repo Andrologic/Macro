@@ -28,6 +28,7 @@ import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { PlanFormModal } from './PlanFormModal';
 import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { cn } from '../../utils/cn';
+import { formatDate } from '../../i18n/format';
 import {
   DEFAULT_NEW_PLAN_LABEL,
   getArchitectPlanDisplayName,
@@ -61,7 +62,7 @@ const statusClassName: Record<string, string> = {
 const formatRelativeDate = (iso: string, unknownLabel: string): string => {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return unknownLabel;
-  return date.toLocaleDateString();
+  return formatDate(date);
 };
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {

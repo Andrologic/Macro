@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
@@ -34,6 +35,7 @@ const statusOrder: TaskStatus[] = [
 export const UnifiedTaskList: React.FC<UnifiedTaskListProps> = ({
   className,
 }) => {
+  const { t } = useTranslation();
   const { tasks, isLoading, lastError } = useTaskStore();
   const getProjectById = useAppStore((state) => state.getProjectById);
   const setSelectedTask = useAppStore((state) => state.setSelectedTask);
@@ -76,7 +78,7 @@ export const UnifiedTaskList: React.FC<UnifiedTaskListProps> = ({
   if (tasks.length === 0) {
     return (
       <div className={cn('flex items-center justify-center h-32', className)}>
-        <div className="text-xs text-muted-foreground">No tasks yet</div>
+        <div className="text-xs text-muted-foreground">{t('tasks.noTasks', 'No tasks yet')}</div>
       </div>
     );
   }
@@ -90,10 +92,10 @@ export const UnifiedTaskList: React.FC<UnifiedTaskListProps> = ({
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Icon name="folder" size={12} className="text-muted-foreground" />
               <span className="truncate">
-                {project?.name ?? 'Unknown project'}
+                {project?.name ?? t('project.unknownProject', 'Unknown project')}
               </span>
               <span className="text-muted-foreground/70">•</span>
-              <span>{projectTasks.length} tasks</span>
+              <span>{t('implement.taskCount', '{{count}} tasks', { count: projectTasks.length })}</span>
             </div>
 
             <div className="grid grid-cols-1 gap-2">
@@ -139,7 +141,19 @@ export const UnifiedTaskList: React.FC<UnifiedTaskListProps> = ({
                               statusColors[task.status]
                             )}
                           >
-                            {task.status}
+                            {task.status === 'Pending'
+                              ? t('tasks.pending', 'Pending')
+                              : task.status === 'InProgress'
+                                ? t('tasks.inProgress', 'In Progress')
+                                : task.status === 'AwaitingResponse'
+                                  ? t('implement.awaitingResponse', 'Awaiting response')
+                                  : task.status === 'InReview'
+                                    ? t('implement.inReview', 'In review')
+                                    : task.status === 'Completed'
+                                      ? t('tasks.completed', 'Completed')
+                                      : task.status === 'Failed'
+                                        ? t('implement.failed', 'Failed')
+                                        : t('tasks.blocked', 'Blocked')}
                           </span>
                           {conversation && conversation.message_count > 0 && (
                             <span className="text-[10px] text-muted-foreground flex items-center gap-1">

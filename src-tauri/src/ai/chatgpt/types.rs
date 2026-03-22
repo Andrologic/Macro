@@ -21,30 +21,6 @@ pub(super) const AUTH_TIMEOUT_SECONDS: u64 = 180;
 pub(super) const CALLBACK_BIND_RETRY_ATTEMPTS: u32 = 10;
 pub(super) const CALLBACK_BIND_RETRY_DELAY_MS: u64 = 200;
 
-pub(super) const HTML_SUCCESS: &str = r#"<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Macro - ChatGPT Authorization Successful</title>
-  </head>
-  <body>
-    <h1>Authorization successful</h1>
-    <p>You can close this window and return to Macro.</p>
-  </body>
-</html>"#;
-
-pub(super) const HTML_CANCELLED: &str = r#"<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Macro - ChatGPT Authorization Cancelled</title>
-  </head>
-  <body>
-    <h1>Authorization cancelled</h1>
-    <p>You can close this window and return to Macro.</p>
-  </body>
-</html>"#;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiChatRequest {
     pub request_id: String,
@@ -246,6 +222,121 @@ impl AuthFlowError {
             message: message.into(),
         }
     }
+}
+
+fn auth_copy(
+    language: &str,
+) -> (&'static str, &'static str, &'static str, &'static str, &'static str, &'static str) {
+    match language {
+        "fr" => (
+            "Macro - Autorisation ChatGPT réussie",
+            "Autorisation réussie",
+            "Vous pouvez fermer cette fenêtre et revenir dans Macro.",
+            "Macro - Autorisation ChatGPT annulée",
+            "Autorisation annulée",
+            "Macro - Autorisation ChatGPT échouée",
+        ),
+        "es" => (
+            "Macro - Autorización de ChatGPT correcta",
+            "Autorización completada",
+            "Puedes cerrar esta ventana y volver a Macro.",
+            "Macro - Autorización de ChatGPT cancelada",
+            "Autorización cancelada",
+            "Macro - Error de autorización de ChatGPT",
+        ),
+        "de" => (
+            "Macro - ChatGPT-Autorisierung erfolgreich",
+            "Autorisierung erfolgreich",
+            "Du kannst dieses Fenster schließen und zu Macro zurückkehren.",
+            "Macro - ChatGPT-Autorisierung abgebrochen",
+            "Autorisierung abgebrochen",
+            "Macro - ChatGPT-Autorisierung fehlgeschlagen",
+        ),
+        "ja" => (
+            "Macro - ChatGPT 認証に成功しました",
+            "認証に成功しました",
+            "このウィンドウを閉じて Macro に戻ってください。",
+            "Macro - ChatGPT 認証がキャンセルされました",
+            "認証がキャンセルされました",
+            "Macro - ChatGPT 認証に失敗しました",
+        ),
+        "ko" => (
+            "Macro - ChatGPT 인증 성공",
+            "인증이 완료되었습니다",
+            "이 창을 닫고 Macro로 돌아가세요.",
+            "Macro - ChatGPT 인증 취소됨",
+            "인증이 취소되었습니다",
+            "Macro - ChatGPT 인증 실패",
+        ),
+        _ => (
+            "Macro - ChatGPT Authorization Successful",
+            "Authorization successful",
+            "You can close this window and return to Macro.",
+            "Macro - ChatGPT Authorization Cancelled",
+            "Authorization cancelled",
+            "Macro - ChatGPT Authorization Failed",
+        ),
+    }
+}
+
+pub(super) fn resolve_browser_language(accept_language: Option<&str>) -> &'static str {
+    let Some(value) = accept_language else {
+        return "en";
+    };
+
+    let normalized = value
+        .split(',')
+        .find_map(|entry| entry.split(';').next())
+        .map(str::trim)
+        .unwrap_or("en")
+        .to_ascii_lowercase();
+
+    match normalized.as_str() {
+        value if value.starts_with("fr") => "fr",
+        value if value.starts_with("es") => "es",
+        value if value.starts_with("de") => "de",
+        value if value.starts_with("ja") => "ja",
+        value if value.starts_with("ko") => "ko",
+        _ => "en",
+    }
+}
+
+pub(super) fn build_auth_success_html(language: &str) -> String {
+    let (title, heading, body, _, _, _) = auth_copy(language);
+    format!(
+        "<!doctype html><html lang=\"{language}\"><head><meta charset=\"utf-8\" /><title>{title}</title></head><body><h1>{heading}</h1><p>{body}</p></body></html>"
+    )
+}
+
+pub(super) fn build_auth_cancelled_html(language: &str) -> String {
+    let (_, _, body, title, heading, _) = auth_copy(language);
+    format!(
+        "<!doctype html><html lang=\"{language}\"><head><meta charset=\"utf-8\" /><title>{title}</title></head><body><h1>{heading}</h1><p>{body}</p></body></html>"
+    )
+}
+
+pub(super) fn build_auth_failure_html(language: &str, message: &str) -> String {
+    let (_, _, _, _, _, title) = auth_copy(language);
+    let heading = match language {
+        "fr" => "Échec de l'autorisation",
+        "es" => "La autorización ha fallado",
+        "de" => "Autorisierung fehlgeschlagen",
+        "ja" => "認証に失敗しました",
+        "ko" => "인증에 실패했습니다",
+        _ => "Authorization failed",
+    };
+
+    format!(
+        "<!doctype html><html lang=\"{language}\"><head><meta charset=\"utf-8\" /><title>{title}</title></head><body><h1>{heading}</h1><p>{}</p></body></html>",
+        html_escape(message)
+    )
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[derive(Debug, Clone)]

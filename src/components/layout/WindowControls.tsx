@@ -1,4 +1,5 @@
 import { Icon } from '../ui/Icon';
+import i18n from '../../i18n';
 import { useTauriWindow } from '../../hooks/useTauriWindow';
 
 export function WindowControls() {
@@ -23,7 +24,7 @@ export function WindowControls() {
       <button
         onClick={minimize}
         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-accent transition-colors group active:scale-[0.98]"
-        title="Minimize"
+        title={i18n.t('window.minimize', 'Minimize')}
         data-tauri-drag-region="false"
       >
         <Icon
@@ -37,7 +38,7 @@ export function WindowControls() {
       <button
         onClick={handleMaximize}
         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-accent transition-colors group active:scale-[0.98]"
-        title={isMaximized ? 'Restore' : 'Maximize'}
+        title={isMaximized ? i18n.t('window.restore', 'Restore') : i18n.t('window.maximize', 'Maximize')}
         data-tauri-drag-region="false"
       >
         <Icon
@@ -51,7 +52,7 @@ export function WindowControls() {
       <button
         onClick={close}
         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-accent transition-colors group active:scale-[0.98]"
-        title="Close"
+        title={i18n.t('common.close', 'Close')}
         data-tauri-drag-region="false"
       >
         <Icon

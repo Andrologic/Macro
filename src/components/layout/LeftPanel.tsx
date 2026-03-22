@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
@@ -10,6 +11,7 @@ interface LeftPanelProps {
 }
 
 export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
+  const { t } = useTranslation();
   const { projectGroups, toggleProjectGroup, selectedGroupId, setSelectedGroup, openProjectModal } =
     useAppStore();
   const [searchQuery, setSearchQuery] = useState('');
@@ -47,7 +49,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
       <div className="h-12 border-b border-border flex items-center justify-between px-4">
         <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
           <Icon name="layers" size={16} className="text-primary" />
-          Projects
+          {t('project.projects', 'Projects')}
         </h1>
         <button
           onClick={() => openProjectModal(null)}
@@ -61,7 +63,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
         <SearchBar
           value={searchQuery}
           onChange={setSearchQuery}
-          placeholder="Search projects..."
+          placeholder={t('project.searchPlaceholder', 'Search projects...')}
         />
       </div>
 
@@ -69,9 +71,9 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
         {hasNoResults ? (
           <div className="flex flex-col items-center justify-center h-48 px-4 text-center">
             <Icon name="search" size={32} className="text-muted-foreground/70 mb-3" />
-            <p className="text-sm text-muted-foreground">No projects found</p>
+            <p className="text-sm text-muted-foreground">{t('project.noProjectsFound', 'No projects found')}</p>
             <p className="text-xs text-muted-foreground/70 mt-1">
-              Try a different search term
+              {t('project.tryDifferentSearch', 'Try a different search term')}
             </p>
           </div>
         ) : (
@@ -161,7 +163,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
         <div className="flex items-center gap-2">
           <Icon name="code" size={14} className="text-muted-foreground" />
           <span className="text-xs text-muted-foreground">
-            {projectCount} projects
+            {t('project.count', '{{count}} projects', { count: projectCount })}
           </span>
         </div>
       </div>

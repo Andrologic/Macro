@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import type { ConflictResolutionEntry } from '../../services/conflictResolution';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
@@ -29,14 +30,16 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
   description,
   repositories,
   error,
-  retryLabel = 'Retry',
+  retryLabel,
   retryDisabled = false,
   retryLoading = false,
   onRetry,
   onUseAiAssistant,
   onDismiss,
-  dismissLabel = 'Close',
+  dismissLabel,
 }) => {
+  const { t } = useTranslation();
+
   return (
     <div className="rounded-xl border border-red-500/20 bg-red-500/5">
       <div className="border-b border-red-500/10 px-4 py-3">
@@ -69,7 +72,8 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
 
             {repository.worktreePath && (
               <div className="mt-3 text-xs text-muted-foreground">
-                Worktree: <span className="break-all text-foreground/90">{repository.worktreePath}</span>
+                {t('conflicts.panel.worktree', 'Worktree')}:{' '}
+                <span className="break-all text-foreground/90">{repository.worktreePath}</span>
               </div>
             )}
 
@@ -79,13 +83,14 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
 
             {repository.nextStep && (
               <div className="mt-2 text-xs text-muted-foreground">
-                Next step: <span className="text-foreground/90">{repository.nextStep}</span>
+                {t('conflicts.panel.nextStep', 'Next step')}:{' '}
+                <span className="text-foreground/90">{repository.nextStep}</span>
               </div>
             )}
 
             <div className="mt-3 rounded-md border border-border bg-background/70 px-3 py-2">
               <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Conflicted files
+                {t('conflicts.panel.conflictedFiles', 'Conflicted files')}
               </div>
               <div className="mt-2 space-y-1">
                 {repository.conflictFiles.length > 0 ? (
@@ -95,7 +100,9 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
                     </div>
                   ))
                 ) : (
-                  <div className="text-xs text-muted-foreground">No conflict file list reported.</div>
+                  <div className="text-xs text-muted-foreground">
+                    {t('conflicts.panel.noConflictFiles', 'No conflict file list reported.')}
+                  </div>
                 )}
               </div>
             </div>
@@ -107,7 +114,7 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
         <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
           {onDismiss && (
             <Button variant="ghost" size="sm" onClick={onDismiss}>
-              {dismissLabel}
+              {dismissLabel || t('conflicts.panel.close', 'Close')}
             </Button>
           )}
           {onRetry && (
@@ -118,12 +125,12 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
               isLoading={retryLoading}
               onClick={onRetry}
             >
-              {retryLabel}
+              {retryLabel || t('conflicts.panel.retry', 'Retry')}
             </Button>
           )}
           {onUseAiAssistant && (
             <Button variant="primary" size="sm" onClick={onUseAiAssistant}>
-              Use AI Assistant
+              {t('conflicts.panel.useAiAssistant', 'Use AI Assistant')}
             </Button>
           )}
         </div>
