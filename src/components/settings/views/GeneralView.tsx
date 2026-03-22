@@ -12,6 +12,8 @@ export const GeneralView: React.FC = () => {
     const setProjectSwitchPolicy = useAppStore((state) => state.setProjectSwitchPolicy);
     const metadataAutoPush = useAppStore((state) => state.metadataAutoPush);
     const setMetadataAutoPush = useAppStore((state) => state.setMetadataAutoPush);
+    const implementExecutionMode = useAppStore((state) => state.implementExecutionMode);
+    const setImplementExecutionMode = useAppStore((state) => state.setImplementExecutionMode);
     
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -111,6 +113,21 @@ export const GeneralView: React.FC = () => {
                             </p>
                         </div>
                         <Switch checked={metadataAutoPush} onCheckedChange={setMetadataAutoPush} />
+                    </div>
+                    <div className="h-px bg-border/50" />
+                    <div className="flex items-center justify-between gap-4">
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium text-foreground">
+                                {t('settings.autoLaunchAfterValidation') || 'Lancer auto après validation'}
+                            </label>
+                            <p className="text-xs text-muted-foreground">
+                                {t('settings.autoLaunchAfterValidationDesc') || "Lance l'exécution des tâches directement après la validation du plan."}
+                            </p>
+                        </div>
+                        <Switch
+                            checked={implementExecutionMode === 'full_auto'}
+                            onCheckedChange={(checked) => setImplementExecutionMode(checked ? 'full_auto' : 'semi_auto')}
+                        />
                     </div>
                 </div>
             </section>

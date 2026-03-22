@@ -232,8 +232,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedProjectId,
     selectedTaskId,
     projectGroups,
-    implementExecutionMode,
-    setImplementExecutionMode,
     setSelectedTask,
   } = useAppStore();
   const getProjectById = useAppStore((state) => state.getProjectById);
@@ -545,6 +543,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             <Icon name="list-todo" size={16} className="text-primary" />
             {t('implement.tasks', 'Tasks')}
           </h1>
+        </div>
+        <div className="flex shrink-0 items-center">
           <button
             type="button"
             onClick={() => void handleCreateManualFeature()}
@@ -555,39 +555,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                 ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
                 : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
             )}
-            title={t('implement.createManualFeature', 'Create manual feature')}
+            title={t('implement.createStandaloneTask', 'Créer une tâche indépendante')}
           >
             <Icon name={pendingTaskId ? 'loader' : 'plus'} size={12} className={pendingTaskId ? 'animate-spin' : undefined} />
-          </button>
-        </div>
-        <div className="inline-flex shrink-0 items-center rounded-lg border border-border bg-muted/60 p-0.5">
-          <button
-            type="button"
-            onClick={() => setImplementExecutionMode('semi_auto')}
-            className={cn(
-              'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors',
-              implementExecutionMode === 'semi_auto'
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:text-foreground'
-            )}
-            title={t('implement.executionModeSemiAuto', 'Semi-auto')}
-          >
-            <Icon name="pause" size={11} />
-            {t('implement.executionModeSemiAuto', 'Semi-auto')}
-          </button>
-          <button
-            type="button"
-            onClick={() => setImplementExecutionMode('full_auto')}
-            className={cn(
-              'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors',
-              implementExecutionMode === 'full_auto'
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:text-foreground'
-            )}
-            title={t('implement.executionModeFullAuto', 'Full-auto')}
-          >
-            <Icon name="play" size={11} />
-            {t('implement.executionModeFullAuto', 'Full-auto')}
           </button>
         </div>
       </div>
