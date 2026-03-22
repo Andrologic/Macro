@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
+import { getAutoLaunchCandidateTask, useTaskStore } from '../../stores/useTaskStore';
 import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/architectPlanService';
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { getScopedProjectIds } from '../../services/globalProjects';
@@ -137,6 +138,10 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     setActivePlanContext,
     setPlanNodes,
     setPredictedBranches,
+    setMode,
+    implementExecutionMode,
+    armPendingAutoLaunch,
+    clearPendingAutoLaunch,
   } = useAppStore();
   const isAiStreaming = useChatStore((state) => state.isStreaming);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
@@ -183,6 +188,26 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       setPlanNodes(plan.nodes || []);
       setPredictedBranches(plan.predictedBranches || []);
       setActivePlanContext({ ...activePlanContext, status: 'validated' });
+      await useTaskStore.getState().refreshFromPlan();
+
+      const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
+      const autoLaunchTask = getAutoLaunchCandidateTask(
+        useTaskStore.getState().tasks,
+        plan.id,
+        scopedProjectIds
+      );
+
+      setMode('Implement');
+      if (autoLaunchTask) {
+        await useTaskStore.getState().activateTask(autoLaunchTask.id);
+        if (implementExecutionMode === 'full_auto') {
+          armPendingAutoLaunch(plan.id, autoLaunchTask.id);
+        } else {
+          clearPendingAutoLaunch();
+        }
+      } else {
+        clearPendingAutoLaunch();
+      }
 
       const createdCount = (provision.createdPlanBranch ? 1 : 0) + provision.createdFeatureBranches.length;
       toast.success(
