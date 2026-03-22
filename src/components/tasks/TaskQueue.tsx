@@ -2,7 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
-import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
+import {
+  getTaskLifecycleCapabilities,
+  useTaskStore,
+  type ImplementTask,
+} from '../../stores/useTaskStore';
 import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import { getArchitectPlanDisplayName } from '../../services/architectPlanPresentation';
 import { getGitFlowBaseBranch } from '../../services/architectPlanService';
@@ -16,6 +20,7 @@ import {
 } from '../../services/implementMultiRepoSummary';
 import { Icon, IconName } from '../ui/Icon';
 import { Select } from '../ui/Select';
+import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
 import { toast } from '../ui/Toaster';
 import { PlanReviewModal } from '../plan/PlanReviewModal';
@@ -68,6 +73,17 @@ interface MultiRepoTaskPresentation {
   nextActionLabel: string;
 }
 
+type TaskActionKey = 'rename' | 'delete' | 'archive' | 'restore' | 'reopen';
+
+interface TaskActionDescriptor {
+  key: TaskActionKey;
+  label: string;
+  icon: IconName;
+  disabled?: boolean;
+  title?: string;
+  destructive?: boolean;
+}
+
 interface TaskItemProps {
   task: ImplementTask;
   isSelected: boolean;
@@ -76,6 +92,8 @@ interface TaskItemProps {
   multiRepoPresentation: MultiRepoTaskPresentation | null;
   isAssistantRunning: boolean;
   onSelect: () => void;
+  actions: TaskActionDescriptor[];
+  onAction: (action: TaskActionKey) => void;
 }
 
 const TaskItem: React.FC<TaskItemProps> = ({
@@ -86,8 +104,11 @@ const TaskItem: React.FC<TaskItemProps> = ({
   multiRepoPresentation,
   isAssistantRunning,
   onSelect,
+  actions,
+  onAction,
 }) => {
   const { t } = useTranslation();
+  const [showMenu, setShowMenu] = useState(false);
   const isDraft = task.draft === true;
   const showPlanLabel = task.task_source === 'architect' && planLabel.trim().length > 0;
   const isAwaitingUserReply = !isDraft && !isAssistantRunning && task.status === 'AwaitingResponse';
@@ -99,6 +120,20 @@ const TaskItem: React.FC<TaskItemProps> = ({
       tasks: task.blocked_by.join(', '),
     })
     : '';
+  const isArchived = Boolean(task.archived_at);
+
+  useEffect(() => {
+    if (!showMenu) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowMenu(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showMenu]);
 
   return (
     <div
@@ -112,7 +147,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         }
       }}
       className={cn(
-        'w-full text-left px-3 py-3 rounded-lg border transition-all duration-200 group cursor-pointer',
+        'relative w-full text-left px-3 py-3 rounded-lg border transition-all duration-200 group cursor-pointer',
         isSelected
           ? 'bg-primary/10 border-primary/30'
           : isAssistantRunning
@@ -139,7 +174,21 @@ const TaskItem: React.FC<TaskItemProps> = ({
         </div>
 
         <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-medium text-foreground leading-tight">{task.title}</h3>
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="text-sm font-medium text-foreground leading-tight">{task.title}</h3>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setShowMenu((current) => !current);
+              }}
+              onMouseDown={(event) => event.stopPropagation()}
+              className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
+              title={t('implement.taskActions', 'Task actions')}
+            >
+              <Icon name="more-vertical" size={12} />
+            </button>
+          </div>
 
           {task.description && (
             <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{task.description}</p>
@@ -149,6 +198,11 @@ const TaskItem: React.FC<TaskItemProps> = ({
             {isDraft ? (
               <span className="text-xs px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400">
                 {t('implement.manualFeatureDraft', 'Draft')}
+              </span>
+            ) : isArchived ? (
+              <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+                <Icon name="archive" size={10} />
+                {t('common.archived', 'Archived')}
               </span>
             ) : isAssistantRunning ? (
               <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-500">
@@ -188,6 +242,19 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 })}
               </span>
             )}
+
+            {task.needs_revalidation && (
+              <span
+                title={t(
+                  'implement.needsRevalidationHint',
+                  'A prerequisite was reopened. Revalidation is recommended.'
+                )}
+                className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-500"
+              >
+                <Icon name="alert-circle" size={10} />
+                {t('implement.needsRevalidation', 'Revalidate')}
+              </span>
+            )}
           </div>
 
           {multiRepoPresentation && (
@@ -219,6 +286,46 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
         </div>
       </div>
+
+      {showMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setShowMenu(false)}
+          />
+          <div
+            className="absolute right-2 top-10 z-50 min-w-40 rounded-lg border border-border bg-card py-1 shadow-lg"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {actions.map((action) => (
+              <button
+                key={action.key}
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (action.disabled) {
+                    return;
+                  }
+                  setShowMenu(false);
+                  onAction(action.key);
+                }}
+                disabled={action.disabled}
+                title={action.title}
+                className={cn(
+                  'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm',
+                  action.destructive
+                    ? 'text-red-500 hover:bg-red-500/10'
+                    : 'text-foreground hover:bg-accent',
+                  action.disabled && 'cursor-not-allowed opacity-50 hover:bg-transparent'
+                )}
+              >
+                <Icon name={action.icon} size={12} />
+                <span>{action.label}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 };
@@ -243,16 +350,25 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const tasks = useTaskStore((state) => state.tasks);
   const planSummaries = useTaskStore((state) => state.planSummaries);
   const hasStandaloneTasks = useTaskStore((state) => state.hasStandaloneTasks);
+  const publishedStandaloneTasks = useTaskStore((state) => state.publishedStandaloneTasks);
   const finalizingPlanId = useTaskStore((state) => state.finalizingPlanId);
   const activateTask = useTaskStore((state) => state.activateTask);
   const createManualFeatureDraft = useTaskStore((state) => state.createManualFeatureDraft);
+  const renameTask = useTaskStore((state) => state.renameTask);
+  const archiveTask = useTaskStore((state) => state.archiveTask);
+  const restoreTask = useTaskStore((state) => state.restoreTask);
+  const deleteTask = useTaskStore((state) => state.deleteTask);
+  const reopenTask = useTaskStore((state) => state.reopenTask);
   const taskError = useTaskStore((state) => state.lastError);
   const reviewCurrentTaskId = useFileChangesStore((state) => state.currentTaskId);
   const liveReviewSummary = useFileChangesStore((state) => state.reviewSummary);
   const lastErrorToastRef = useRef<string | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const [planFilter, setPlanFilter] = useState<string>(ALL_PLANS_FILTER);
+  const [showArchived, setShowArchived] = useState(false);
   const [planReviewTarget, setPlanReviewTarget] = useState<{ planId: string; branchName: string } | null>(null);
+  const [renameTarget, setRenameTarget] = useState<ImplementTask | null>(null);
+  const [confirmTarget, setConfirmTarget] = useState<{ task: ImplementTask; action: 'archive' | 'delete' } | null>(null);
 
   useEffect(() => {
     if (!taskError || taskError === lastErrorToastRef.current) return;
@@ -475,11 +591,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     return scopedTasks.filter((task) => task.plan_id === planFilter);
   }, [planFilter, scopedTasks]);
 
-  const draftTasks = useMemo(
-    () => filteredTasks.filter((task) => task.draft),
-    [filteredTasks]
-  );
-
   const getTaskPlanLabel = (task: ImplementTask): string => {
     if (task.task_source === 'standalone') {
       return standalonePlanLabel;
@@ -488,24 +599,123 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     return planLabelsById.get(task.plan_id) || task.plan_title || standalonePlanLabel;
   };
 
+  const buildTaskActions = (task: ImplementTask): TaskActionDescriptor[] => {
+    const capabilities = getTaskLifecycleCapabilities(
+      task,
+      publishedStandaloneTasks[task.id] ?? false
+    );
+    const archived = Boolean(task.archived_at);
+    const actions: TaskActionDescriptor[] = [
+      {
+        key: 'rename',
+        label: t('common.rename', 'Rename'),
+        icon: 'edit',
+      },
+    ];
+
+    if (capabilities.canReopen) {
+      actions.push({
+        key: 'reopen',
+        label: t('implement.reopenTask', 'Reopen'),
+        icon: 'rotate-ccw',
+      });
+    }
+
+    if (archived && capabilities.canRestore) {
+      actions.push({
+        key: 'restore',
+        label: t('implement.restoreTask', 'Restore'),
+        icon: 'rotate-ccw',
+      });
+    }
+
+    if (!archived && capabilities.canArchive) {
+      actions.push({
+        key: 'archive',
+        label: t('common.archive', 'Archive'),
+        icon: 'archive',
+      });
+    }
+
+    if (task.task_source === 'standalone') {
+      actions.push({
+        key: 'delete',
+        label: t('common.delete', 'Delete'),
+        icon: 'trash',
+        destructive: true,
+        disabled: !capabilities.canDelete,
+        title: capabilities.deleteBlockReason || undefined,
+      });
+    }
+
+    return actions;
+  };
+
+  const handleTaskAction = async (task: ImplementTask, action: TaskActionKey) => {
+    if (action === 'rename') {
+      setRenameTarget(task);
+      return;
+    }
+    if (action === 'archive' || action === 'delete') {
+      setConfirmTarget({ task, action });
+      return;
+    }
+
+    setPendingTaskId(task.id);
+    try {
+      if (action === 'restore') {
+        await restoreTask(task.id);
+      } else if (action === 'reopen') {
+        await reopenTask(task.id);
+      }
+    } finally {
+      setPendingTaskId((current) => (current === task.id ? null : current));
+    }
+  };
+
+  const visibleTasks = useMemo(() => {
+    if (showArchived) {
+      return filteredTasks;
+    }
+    return filteredTasks.filter((task) => !task.archived_at);
+  }, [filteredTasks, showArchived]);
+
+  const draftTasks = useMemo(
+    () => visibleTasks.filter((task) => task.draft),
+    [visibleTasks]
+  );
+
   const readyTasks = useMemo(() => {
-    return [...filteredTasks]
-      .filter((task) => !task.draft && !task.is_blocked && task.status !== 'Completed')
+    return [...visibleTasks]
+      .filter((task) => !task.draft && !task.archived_at && !task.is_blocked && task.status !== 'Completed')
       .sort((a, b) => {
         const byStatus = readyStatusOrder[a.status] - readyStatusOrder[b.status];
         if (byStatus !== 0) return byStatus;
         return a.sequence_index - b.sequence_index;
       });
-  }, [filteredTasks]);
+  }, [visibleTasks]);
 
   const blockedTasks = useMemo(() => {
-    return [...filteredTasks]
-      .filter((task) => !task.draft && task.is_blocked)
+    return [...visibleTasks]
+      .filter((task) => !task.draft && !task.archived_at && task.is_blocked)
       .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [filteredTasks]);
+  }, [visibleTasks]);
+
+  const completedTasks = useMemo(() => {
+    return [...visibleTasks]
+      .filter((task) => !task.draft && !task.archived_at && task.status === 'Completed')
+      .sort((a, b) => a.sequence_index - b.sequence_index);
+  }, [visibleTasks]);
+
+  const archivedTasks = useMemo(() => {
+    if (!showArchived) return [];
+    return [...filteredTasks]
+      .filter((task) => Boolean(task.archived_at))
+      .sort((a, b) => a.sequence_index - b.sequence_index);
+  }, [filteredTasks, showArchived]);
 
   const progressTasks = useMemo(
-    () => filteredTasks.filter((task) => !task.draft),
+    () => filteredTasks.filter((task) => !task.draft && !task.archived_at),
     [filteredTasks]
   );
   const completedCount = progressTasks.filter((task) => task.status === 'Completed').length;
@@ -545,6 +755,28 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           </h1>
         </div>
         <div className="flex shrink-0 items-center">
+          <button
+            type="button"
+            onClick={() => setShowArchived((current) => !current)}
+            className={cn(
+              'mr-2 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-xs transition-colors',
+              showArchived
+                ? 'border-border bg-accent text-foreground'
+                : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
+            )}
+            title={
+              showArchived
+                ? t('implement.hideArchived', 'Hide archived')
+                : t('implement.showArchived', 'Show archived')
+            }
+          >
+            <Icon name="archive" size={12} />
+            <span className="hidden xl:inline">
+              {showArchived
+                ? t('implement.hideArchived', 'Hide archived')
+                : t('implement.showArchived', 'Show archived')}
+            </span>
+          </button>
           <button
             type="button"
             onClick={() => void handleCreateManualFeature()}
@@ -639,7 +871,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-3">
-        {filteredTasks.length === 0 && (
+        {visibleTasks.length === 0 && (
           <div className="flex flex-col items-center justify-center h-48 text-center">
             <Icon name="check-circle" size={32} className="text-muted-foreground/50 mb-3" />
             <p className="text-sm text-muted-foreground">
@@ -650,7 +882,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           </div>
         )}
 
-        {filteredTasks.length > 0 && (
+        {visibleTasks.length > 0 && (
           <>
             {draftTasks.length > 0 && (
               <section className="space-y-1">
@@ -671,6 +903,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     multiRepoPresentation={null}
                     isAssistantRunning={streamingTaskId === task.id}
                     onSelect={() => void activateTask(task.id)}
+                    actions={buildTaskActions(task)}
+                    onAction={(action) => void handleTaskAction(task, action)}
                   />
                 ))}
               </section>
@@ -705,6 +939,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   )}
                   isAssistantRunning={streamingTaskId === task.id}
                   onSelect={() => void activateTask(task.id)}
+                  actions={buildTaskActions(task)}
+                  onAction={(action) => void handleTaskAction(task, action)}
                 />
               ))}
             </section>
@@ -738,9 +974,83 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   )}
                   isAssistantRunning={streamingTaskId === task.id}
                   onSelect={() => void activateTask(task.id)}
+                  actions={buildTaskActions(task)}
+                  onAction={(action) => void handleTaskAction(task, action)}
                 />
               ))}
             </section>
+
+            <section className="space-y-1 pt-1 border-t border-border/60">
+              <div className="px-1 pb-1 flex items-center justify-between">
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-emerald-500">
+                  {t('implement.completedTasks', 'Completed tasks')}
+                </h2>
+                <span className="text-xs text-muted-foreground">{completedTasks.length}</span>
+              </div>
+
+              {completedTasks.length === 0 && (
+                <div className="px-2 py-3 text-xs text-muted-foreground rounded border border-dashed border-border">
+                  {t('implement.noCompletedTasks', 'No completed task in the active queue.')}
+                </div>
+              )}
+
+              {completedTasks.map((task) => (
+                <MemoizedTaskItem
+                  key={task.id}
+                  task={task}
+                  isSelected={selectedTaskId === task.id}
+                  planLabel={getTaskPlanLabel(task)}
+                  statusLabel={statusLabels[task.status]}
+                  multiRepoPresentation={buildMultiRepoPresentation(
+                    task,
+                    reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
+                      ? liveReviewSummary
+                      : null
+                  )}
+                  isAssistantRunning={streamingTaskId === task.id}
+                  onSelect={() => void activateTask(task.id)}
+                  actions={buildTaskActions(task)}
+                  onAction={(action) => void handleTaskAction(task, action)}
+                />
+              ))}
+            </section>
+
+            {showArchived && (
+              <section className="space-y-1 pt-1 border-t border-border/60">
+                <div className="px-1 pb-1 flex items-center justify-between">
+                  <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {t('implement.archivedTasks', 'Archived tasks')}
+                  </h2>
+                  <span className="text-xs text-muted-foreground">{archivedTasks.length}</span>
+                </div>
+
+                {archivedTasks.length === 0 && (
+                  <div className="px-2 py-3 text-xs text-muted-foreground rounded border border-dashed border-border">
+                    {t('implement.noArchivedTasks', 'No archived task for this filter.')}
+                  </div>
+                )}
+
+                {archivedTasks.map((task) => (
+                  <MemoizedTaskItem
+                    key={task.id}
+                    task={task}
+                    isSelected={selectedTaskId === task.id}
+                    planLabel={getTaskPlanLabel(task)}
+                    statusLabel={statusLabels[task.status]}
+                    multiRepoPresentation={buildMultiRepoPresentation(
+                      task,
+                      reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
+                        ? liveReviewSummary
+                        : null
+                    )}
+                    isAssistantRunning={streamingTaskId === task.id}
+                    onSelect={() => void activateTask(task.id)}
+                    actions={buildTaskActions(task)}
+                    onAction={(action) => void handleTaskAction(task, action)}
+                  />
+                ))}
+              </section>
+            )}
           </>
         )}
       </div>
@@ -753,6 +1063,84 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           onClose={() => setPlanReviewTarget(null)}
         />
       )}
+
+      <ConfirmPromptModal
+        isOpen={Boolean(renameTarget)}
+        title={t('implement.renameTaskTitle', 'Rename task')}
+        description={t('implement.renameTaskDescription', 'Choose a new title for this task.')}
+        confirmLabel={t('common.rename', 'Rename')}
+        cancelLabel={t('common.cancel', 'Cancel')}
+        initialValue={renameTarget?.title || ''}
+        inputPlaceholder={t('implement.taskTitle', 'Task title')}
+        requireInput
+        isSubmitting={pendingTaskId === renameTarget?.id}
+        onCancel={() => {
+          if (!pendingTaskId) {
+            setRenameTarget(null);
+          }
+        }}
+        onConfirm={(value) => {
+          if (!renameTarget) return;
+          void (async () => {
+            setPendingTaskId(renameTarget.id);
+            try {
+              await renameTask(renameTarget.id, value || '');
+              setRenameTarget(null);
+            } finally {
+              setPendingTaskId((current) => (current === renameTarget.id ? null : current));
+            }
+          })();
+        }}
+      />
+
+      <ConfirmPromptModal
+        isOpen={Boolean(confirmTarget)}
+        title={
+          confirmTarget?.action === 'archive'
+            ? t('implement.archiveTaskTitle', 'Archive task')
+            : t('implement.deleteTaskTitle', 'Delete task')
+        }
+        description={
+          confirmTarget?.action === 'archive'
+            ? t(
+              'implement.archiveTaskDescription',
+              'Archive this task, remove its worktree and local branch, and keep its conversation history.'
+            )
+            : t(
+              'implement.deleteTaskDescription',
+              'Delete this standalone feature, discard local changes, remove its worktree and local branch, and delete its conversation.'
+            )
+        }
+        confirmLabel={
+          confirmTarget?.action === 'archive'
+            ? t('common.archive', 'Archive')
+            : t('common.delete', 'Delete')
+        }
+        cancelLabel={t('common.cancel', 'Cancel')}
+        confirmVariant={confirmTarget?.action === 'delete' ? 'error' : 'primary'}
+        isSubmitting={pendingTaskId === confirmTarget?.task.id}
+        onCancel={() => {
+          if (!pendingTaskId) {
+            setConfirmTarget(null);
+          }
+        }}
+        onConfirm={() => {
+          if (!confirmTarget) return;
+          void (async () => {
+            setPendingTaskId(confirmTarget.task.id);
+            try {
+              if (confirmTarget.action === 'archive') {
+                await archiveTask(confirmTarget.task.id);
+              } else {
+                await deleteTask(confirmTarget.task.id);
+              }
+              setConfirmTarget(null);
+            } finally {
+              setPendingTaskId((current) => (current === confirmTarget.task.id ? null : current));
+            }
+          })();
+        }}
+      />
     </aside>
   );
 };

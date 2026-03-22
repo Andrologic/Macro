@@ -153,6 +153,10 @@ const buildTask = (overrides: Partial<ImplementTask> = {}): ImplementTask => ({
   base_branch: null,
   feature_slug: null,
   conversation_id: null,
+  archived_at: null,
+  archive_reason: null,
+  merged_at: null,
+  needs_revalidation: false,
   ...overrides,
 });
 

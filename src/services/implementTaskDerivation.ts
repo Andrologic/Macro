@@ -93,6 +93,7 @@ export interface DerivedImplementTask extends Task {
   blocked_by: string[];
   is_blocked: boolean;
   is_ready: boolean;
+  needs_revalidation: boolean;
   sequence_index: number;
   execution_targets: TaskExecutionTarget[];
 }
@@ -322,6 +323,13 @@ const finalizeTaskStatus = (status: TaskStatus, blockedByTaskIds: string[]): Tas
   return status;
 };
 
+const shouldFlagTaskForRevalidation = (status: TaskStatus, blockedByTaskIds: string[]): boolean =>
+  blockedByTaskIds.length > 0 &&
+  (status === 'Completed' ||
+    status === 'InProgress' ||
+    status === 'AwaitingResponse' ||
+    status === 'InReview');
+
 const buildExecutionTargets = (
   node: PlanNode,
   predictedBranches: PredictedBranch[],
@@ -407,6 +415,7 @@ export const deriveImplementTasksFromStrategy = (params: {
       blocked_by: [],
       is_blocked: false,
       is_ready: status !== 'Completed' && status !== 'Failed' && status !== 'InReview',
+      needs_revalidation: false,
       sequence_index: sequenceOrder.get(node.id) ?? Number.MAX_SAFE_INTEGER,
       execution_targets: executionTargets,
     };
@@ -425,6 +434,7 @@ export const deriveImplementTasksFromStrategy = (params: {
     const status = finalizeTaskStatus(task.status, blockedByTaskIds);
     const isBlocked = blockedByTaskIds.length > 0;
     const isReady = !isBlocked && status !== 'Completed' && status !== 'Failed' && status !== 'InReview';
+    const needsRevalidation = shouldFlagTaskForRevalidation(status, blockedByTaskIds);
 
     return {
       ...task,
@@ -433,6 +443,7 @@ export const deriveImplementTasksFromStrategy = (params: {
       blocked_by: blockedBy,
       is_blocked: isBlocked,
       is_ready: isReady,
+      needs_revalidation: needsRevalidation,
     };
   });
 
