@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Icon } from '../ui/Icon';
 import type { MessageImageAttachment } from '../../stores/useChatStore';
 
@@ -9,6 +10,7 @@ interface ImagePreviewModalProps {
 }
 
 export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ isOpen, image, onClose }) => {
+  const { t } = useTranslation();
   const openedAtRef = useRef<number>(0);
 
   useEffect(() => {
@@ -56,7 +58,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ isOpen, im
             type="button"
             onClick={onClose}
             className="p-1.5 hover:bg-accent rounded-md transition-colors"
-            title="Close"
+            title={t('common.close', 'Close')}
           >
             <Icon name="x" size={16} className="text-muted-foreground" />
           </button>
@@ -65,7 +67,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ isOpen, im
         <div className="p-3 md:p-4 flex items-center justify-center bg-background/40">
           <img
             src={image.dataUrl}
-            alt="Preview"
+            alt={t('implement.previewTab', 'Preview')}
             className="max-w-full max-h-[80vh] object-contain rounded-md border border-border"
           />
         </div>

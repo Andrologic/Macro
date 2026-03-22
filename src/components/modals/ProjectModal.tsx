@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
@@ -18,6 +19,7 @@ const inferProjectNameFromPath = (value: string): string => {
 };
 
 export const ProjectModal: React.FC = () => {
+  const { t } = useTranslation();
   const {
     projectModalOpen,
     projectModalGroupId,
@@ -66,20 +68,22 @@ export const ProjectModal: React.FC = () => {
       ? allProjects.find((project) => normalizeProjectPath(project.path) === normalizedRequestedPath) ?? null
       : null;
   const submitLabel = isSubmitting
-    ? 'Saving...'
+    ? t('project.saving', 'Saving...')
     : isAttachingToExistingGroup
-      ? 'Add subproject'
-      : 'Create project';
+      ? t('project.addSubproject', 'Add subproject')
+      : t('project.createProject', 'Create project');
   const destinationSummary = isAttachingToExistingGroup
-    ? targetGroup?.name || 'Choose a global project'
-    : globalProjectName.trim() || 'New global project';
+    ? targetGroup?.name || t('project.chooseGlobalProject', 'Choose a global project')
+    : globalProjectName.trim() || t('project.newGlobalProject', 'New global project');
 
   const handleBrowsePath = async () => {
     const selectedPath = await open({
       directory: true,
       multiple: false,
       defaultPath: subProjectPath || undefined,
-      title: isAttachingToExistingGroup ? 'Select Subproject Folder' : 'Select Project Folder',
+      title: isAttachingToExistingGroup
+        ? t('project.browseSubprojectFolder', 'Select Subproject Folder')
+        : t('project.browseProjectFolder', 'Select Project Folder'),
     });
 
     if (!selectedPath || Array.isArray(selectedPath)) return;
@@ -104,17 +108,17 @@ export const ProjectModal: React.FC = () => {
     const trimmedSubProjectPath = subProjectPath.trim();
 
     if (isAttachingToExistingGroup && !targetGroupId) {
-      setError('Choose an existing global project first');
+      setError(t('project.chooseExistingGlobalProjectFirst', 'Choose an existing global project first'));
       return;
     }
 
     if (!isAttachingToExistingGroup && !trimmedGlobalProjectName) {
-      setError('Global project name is required');
+      setError(t('project.globalProjectRequired', 'Global project name is required'));
       return;
     }
 
     if (!trimmedSubProjectName) {
-      setError('Subproject name is required');
+      setError(t('project.subprojectRequired', 'Subproject name is required'));
       return;
     }
 
@@ -124,12 +128,21 @@ export const ProjectModal: React.FC = () => {
         (project) => project.name.trim().toLowerCase() === trimmedSubProjectName.toLowerCase()
       )
     ) {
-      setError('A subproject with this name already exists in this global project');
+      setError(
+        t(
+          'project.duplicateSubprojectName',
+          'A subproject with this name already exists in this global project'
+        )
+      );
       return;
     }
 
     if (duplicatePathProject) {
-      setError(`This folder is already attached to "${duplicatePathProject.name}"`);
+      setError(
+        t('project.folderAlreadyAttachedNamed', 'This folder is already attached to "{{name}}"', {
+          name: duplicatePathProject.name,
+        })
+      );
       return;
     }
 
@@ -144,7 +157,7 @@ export const ProjectModal: React.FC = () => {
       });
       closeProjectModal();
     } catch (submitError: unknown) {
-      setError(toServiceError(submitError).message || 'Failed to save project');
+      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
     } finally {
       setIsSubmitting(false);
     }
@@ -159,9 +172,14 @@ export const ProjectModal: React.FC = () => {
               <Icon name="layers" size={16} className="text-primary" />
             </div>
             <div>
-              <div className="text-sm font-semibold text-foreground">Add Project</div>
+              <div className="text-sm font-semibold text-foreground">
+                {t('project.addProjectTitle', 'Add Project')}
+              </div>
               <div className="text-xs text-muted-foreground">
-                Create a global project or add a subproject to one that already exists.
+                {t(
+                  'project.addProjectDescription',
+                  'Create a global project or add a subproject to one that already exists.'
+                )}
               </div>
             </div>
           </div>
@@ -189,7 +207,7 @@ export const ProjectModal: React.FC = () => {
                     : 'text-muted-foreground hover:text-foreground'
                 )}
               >
-                New global project
+                {t('project.newGlobalProject', 'New global project')}
               </button>
               <button
                 type="button"
@@ -207,7 +225,7 @@ export const ProjectModal: React.FC = () => {
                     : 'text-muted-foreground hover:text-foreground'
                 )}
               >
-                Existing project
+                {t('project.existingProject', 'Existing project')}
               </button>
             </div>
 
@@ -215,7 +233,7 @@ export const ProjectModal: React.FC = () => {
               {isAttachingToExistingGroup ? (
                 <div>
                   <label className="block text-sm text-muted-foreground mb-2">
-                    Global project <span className="text-red-400">*</span>
+                    {t('project.globalProject', 'Global project')} <span className="text-red-400">*</span>
                   </label>
                   <GroupCombobox
                     projectGroups={projectGroups.map((group) => ({ id: group.id, name: group.name }))}
@@ -224,13 +242,13 @@ export const ProjectModal: React.FC = () => {
                       setTargetGroupId(groupId);
                       setError('');
                     }}
-                    placeholder="Choose a global project..."
+                    placeholder={t('project.chooseGlobalProject', 'Choose a global project...')}
                   />
                 </div>
               ) : (
                 <div>
                   <label className="block text-sm text-muted-foreground mb-2">
-                    Global project name <span className="text-red-400">*</span>
+                    {t('project.globalProjectName', 'Global project name')} <span className="text-red-400">*</span>
                   </label>
                   <input
                     type="text"
@@ -239,7 +257,7 @@ export const ProjectModal: React.FC = () => {
                       setGlobalProjectName(event.target.value);
                       setError('');
                     }}
-                    placeholder="e.g. Mobile App Suite"
+                    placeholder={t('project.globalProjectPlaceholder', 'e.g. Mobile App Suite')}
                     className="w-full bg-muted border border-border rounded-xl px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
                   />
                 </div>
@@ -247,7 +265,9 @@ export const ProjectModal: React.FC = () => {
 
               <div>
                 <label className="block text-sm text-muted-foreground mb-2">
-                  {isAttachingToExistingGroup ? 'Subproject name' : 'First subproject name'}{' '}
+                  {isAttachingToExistingGroup
+                    ? t('project.subprojectName', 'Subproject name')
+                    : t('project.firstSubprojectName', 'First subproject name')}{' '}
                   <span className="text-red-400">*</span>
                 </label>
                 <input
@@ -257,13 +277,19 @@ export const ProjectModal: React.FC = () => {
                     setSubProjectName(event.target.value);
                     setError('');
                   }}
-                  placeholder={isAttachingToExistingGroup ? 'e.g. iOS App' : 'e.g. Backend API'}
+                  placeholder={
+                    isAttachingToExistingGroup
+                      ? t('project.subprojectPlaceholder', 'e.g. iOS App')
+                      : t('project.firstSubprojectPlaceholder', 'e.g. Backend API')
+                  }
                   className="w-full bg-muted border border-border rounded-xl px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
                 />
               </div>
 
               <div>
-                <label className="block text-sm text-muted-foreground mb-2">Local folder</label>
+                <label className="block text-sm text-muted-foreground mb-2">
+                  {t('project.localFolder', 'Local folder')}
+                </label>
                 <div className="flex gap-2">
                   <input
                     type="text"
@@ -272,7 +298,7 @@ export const ProjectModal: React.FC = () => {
                       setSubProjectPath(event.target.value);
                       setError('');
                     }}
-                    placeholder="e.g. C:/dev/mobile-suite/backend"
+                    placeholder={t('project.localFolderPlaceholder', 'e.g. C:/dev/mobile-suite/backend')}
                     className="flex-1 bg-muted border border-border rounded-xl px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
                   />
                   <button
@@ -282,18 +308,28 @@ export const ProjectModal: React.FC = () => {
                     }}
                     className="shrink-0 px-3 py-2.5 bg-accent rounded-xl text-sm text-muted-foreground hover:bg-accent/80 transition-colors"
                   >
-                    Browse
+                    {t('common.browse', 'Browse')}
                   </button>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span>Target: {destinationSummary}</span>
+                  <span>
+                    {t('project.targetSummary', 'Target')}: {destinationSummary}
+                  </span>
                   {targetGroup && isAttachingToExistingGroup && (
-                    <span>| {targetGroup.projects.length} repo{targetGroup.projects.length > 1 ? 's' : ''} already attached</span>
+                    <span>
+                      |{' '}
+                      {t('project.attachedReposCount', {
+                        count: targetGroup.projects.length,
+                        defaultValue: '{{count}} repos already attached',
+                      })}
+                    </span>
                   )}
                 </div>
                 {duplicatePathProject && (
                   <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                    This folder is already attached to {duplicatePathProject.name}.
+                    {t('project.folderAlreadyAttached', 'This folder is already attached to {{name}}.', {
+                      name: duplicatePathProject.name,
+                    })}
                   </div>
                 )}
               </div>
@@ -314,7 +350,7 @@ export const ProjectModal: React.FC = () => {
             size="sm"
             onClick={closeProjectModal}
           >
-            Cancel
+            {t('common.cancel', 'Cancel')}
           </Button>
           <Button
             size="sm"

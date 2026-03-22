@@ -1,9 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 
 export const ModelDropdown: React.FC = () => {
+  const { t } = useTranslation();
   const {
     selectedProviderId,
     selectedModelId,
@@ -57,7 +59,7 @@ export const ModelDropdown: React.FC = () => {
           <Icon name="loader" size={12} className="animate-spin text-muted-foreground" />
         ) : (
           <span className="text-xs text-muted-foreground truncate max-w-[140px]">
-            {selectedModel?.name ?? 'Select Model'}
+            {selectedModel?.name ?? t('chat.selectModel', 'Select a model')}
           </span>
         )}
         <Icon name="chevron-down" size={10} className="text-muted-foreground" />
@@ -91,8 +93,8 @@ export const ModelDropdown: React.FC = () => {
           {enabledModels.length === 0 && (
             <div className="px-3 py-2 text-sm text-muted-foreground">
               {selectedProviderId
-                ? 'No enabled models. Enable models in Settings.'
-                : 'Select a provider first'}
+                ? t('chat.noEnabledModels', 'No enabled models. Enable models in Settings.')
+                : t('chat.selectProviderFirst', 'Select a provider first')}
             </div>
           )}
         </div>
