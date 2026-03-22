@@ -1033,7 +1033,7 @@ const ChatZone: React.FC = () => {
 
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                {mode !== 'Architect' && (
+                {mode === 'Implement' && (
                   <div className="inline-flex items-center rounded-lg border border-border bg-muted/60 p-0.5">
                     <button
                       type="button"

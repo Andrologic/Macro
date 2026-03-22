@@ -1882,7 +1882,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const appMode = appState.mode;
-    const agentType = appMode === 'Architect' ? 'plan' : appState.agentType;
+    const agentType =
+      appMode === 'Architect'
+        ? 'plan'
+        : appMode === 'Implement'
+          ? appState.agentType
+          : null;
     let modePrompt = '';
 
     switch (appMode) {
