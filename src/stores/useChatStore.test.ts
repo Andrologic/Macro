@@ -514,6 +514,33 @@ const createManualFeatureTask = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const createImplementTask = (overrides: Record<string, unknown> = {}) => ({
+  id: 'task-1',
+  plan_id: 'plan-1',
+  project_id: 'project-1',
+  project_ids: ['project-1'],
+  title: 'Implement checkout',
+  description: 'Ship the checkout flow.',
+  status: 'Pending',
+  dependencies: [],
+  estimated_changes: [],
+  task_source: 'architect',
+  draft: false,
+  base_branch: 'develop',
+  feature_slug: 'implement-checkout',
+  conversation_id: null,
+  assigned_branch: 'feature/implement-checkout',
+  branch_name: 'feature/implement-checkout',
+  branch_id: null,
+  branch_task_index: 0,
+  sequence_index: 0,
+  blocked_by: [],
+  is_blocked: false,
+  is_ready: true,
+  execution_targets: [],
+  ...overrides,
+});
+
 describe('useChatStore ensureArchitectConversationForPlan', () => {
   let localStorageMock: LocalStorageMock;
 
@@ -997,6 +1024,126 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'Refresh checkout state and cart recovery.'
     );
     expect(useChatStore.getState().conversations[0]?.title).toBe('Checkout refresh');
+  });
+
+  it('reuses the same implement conversation for the selected task', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    taskStoreState.tasks = [createImplementTask()];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-latest'),
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+          updated_at: '2026-03-19T00:05:00.000Z',
+        },
+        {
+          ...createConversation('implement-older'),
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+          updated_at: '2026-03-19T00:01:00.000Z',
+        },
+      ],
+      messages: [],
+      selectedConversationId: null,
+      selectedConversationIdsByMode: {},
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
+    const conversation = await useChatStore.getState().createConversation('New Conversation', null, null);
+
+    expect(ensuredId).toBe('implement-latest');
+    expect(conversation.id).toBe('implement-latest');
+    expect(useChatStore.getState().conversations).toHaveLength(2);
+    expect(useChatStore.getState().selectedConversationId).toBe('implement-latest');
+    expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe('implement-latest');
+  });
+
+  it('creates a task-scoped implement conversation when none exists yet', async () => {
+    const originalNow = Date.now;
+    Date.now = () => 1773910000000;
+
+    try {
+      appState.mode = 'Implement';
+      appState.selectedTaskId = 'task-1';
+      taskStoreState.tasks = [createImplementTask()];
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [],
+        messages: [],
+        selectedConversationId: null,
+        selectedConversationIdsByMode: {},
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      const conversation = await useChatStore.getState().createConversation('New Conversation', null, null);
+
+      expect(conversation.id).toBe('conv-1773910000000');
+      expect(conversation.task_id).toBe('task-1');
+      expect(conversation.project_id).toBe('project-1');
+      expect(conversation.title).toBe('Task - Implement checkout');
+      expect(useChatStore.getState().selectedConversationId).toBe('conv-1773910000000');
+      expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe('conv-1773910000000');
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it('recreates a fresh implement conversation after deleting the previous one', async () => {
+    const originalNow = Date.now;
+    Date.now = () => 1773920000000;
+
+    try {
+      appState.mode = 'Implement';
+      appState.selectedTaskId = 'task-1';
+      taskStoreState.tasks = [createImplementTask()];
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [
+          {
+            ...createConversation('implement-conv'),
+            task_id: 'task-1',
+            title: 'Task - Implement checkout',
+          },
+        ],
+        messages: [],
+        selectedConversationId: 'implement-conv',
+        selectedConversationIdsByMode: { Implement: 'implement-conv' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().deleteConversation('implement-conv', { mode: 'implement' });
+      const recreatedId = await useChatStore.getState().ensureConversationForCurrentMode();
+
+      expect(recreatedId).toBe('conv-1773920000000');
+      expect(useChatStore.getState().conversations).toHaveLength(1);
+      expect(useChatStore.getState().conversations[0]?.task_id).toBe('task-1');
+      expect(useChatStore.getState().selectedConversationId).toBe('conv-1773920000000');
+      expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe('conv-1773920000000');
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   it('finalizes a manual feature draft before the first assistant response', async () => {

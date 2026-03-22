@@ -246,6 +246,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const {
     repositories,
     reviewSummary,
+    currentTaskLoadState,
+    currentTaskLoadMessage,
     selectedRepositoryId,
     selectedDiffTarget,
     isDiffModalOpen,
@@ -265,9 +267,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   } = useFileChangesStore();
 
   useEffect(() => {
-    if (!selectedGroupId || !selectedTaskId) return;
+    if (!selectedGroupId || !selectedTaskId) {
+      resetReviewState();
+      return;
+    }
     void loadCurrentChanges();
-  }, [selectedGroupId, selectedTaskId, loadCurrentChanges]);
+  }, [selectedGroupId, selectedTaskId, loadCurrentChanges, resetReviewState]);
 
   useEffect(() => {
     if (repositories.length === 0) return;
@@ -334,6 +339,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     lastError || '',
     translate
   );
+  const mappingError = currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree'
+    ? currentTaskLoadMessage
+    : null;
   const commitTargetRepository = commitTargetRepositoryId
     ? repositories.find((repository) => repository.id === commitTargetRepositoryId) ?? null
     : null;
@@ -483,17 +491,22 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             {t('implement.loadingRepositoryChanges', 'Loading repository changes...')}
           </div>
         )}
+        {!isLoading && mappingError && (
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+            {mappingError}
+          </div>
+        )}
         {!isLoading && displayError && (
           <div className="px-4 py-8 text-center text-sm text-destructive">
             {displayError}
           </div>
         )}
-        {!isLoading && !displayError && repositories.length === 0 && (
+        {!isLoading && !mappingError && !displayError && repositories.length === 0 && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('implement.noPendingChanges', 'No pending file changes for this task yet.')}
           </div>
         )}
-        {!isLoading && !displayError && repositories.map((repository) => {
+        {!isLoading && !mappingError && !displayError && repositories.map((repository) => {
           const project = getProjectById(repository.projectId);
           const repositorySummary = repositorySummaryById.get(repository.id);
           const isExpanded =

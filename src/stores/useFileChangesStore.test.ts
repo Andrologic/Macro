@@ -1,10 +1,18 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { createFileChangesStore, resolveChangeFilePath } from './useFileChangesStore';
+import { toBranchWorktreeKey } from '../services/implementTaskDerivation';
 
 const repoAPath = 'C:/repos/project-a';
 const repoBPath = 'C:/repos/project-b';
 const worktreeAPath = 'C:/worktrees/project-a-feature';
 const worktreeBPath = 'C:/worktrees/project-b-feature';
+const worktreeKeyA = toBranchWorktreeKey('project-a', 'feature/task-a');
+const worktreeKeyB = toBranchWorktreeKey('project-b', 'feature/task-b');
+const missingWorktreeKey = toBranchWorktreeKey('project-b', 'feature/task-a');
+const repositoryIdA = `project-a::${worktreeKeyA}`;
+const repositoryIdB = `project-b::${worktreeKeyB}`;
+const changeIdA = `${repositoryIdA}::src/main.ts`;
+const changeIdB = `${repositoryIdB}::README.md`;
 
 const initialOriginalFiles: Record<string, Record<string, string>> = {
   [worktreeAPath]: {
@@ -16,9 +24,11 @@ const initialOriginalFiles: Record<string, Record<string, string>> = {
 };
 
 let currentFiles: Record<string, Record<string, string>> = {};
-let taskStatuses: Record<string, 'InReview' | 'Completed'> = {
+let taskStatuses: Record<string, 'Pending' | 'InReview' | 'Completed'> = {
   'task-1': 'InReview',
   'task-2': 'InReview',
+  'task-3': 'InReview',
+  'task-4': 'Pending',
 };
 
 const buildPatch = (repoPath: string, path: string): string => {
@@ -56,7 +66,7 @@ const buildPatch = (repoPath: string, path: string): string => {
   return patchLines.join('\n');
 };
 
-const gitStatusMock = mock(async (repoPath: string) => {
+const buildGitStatus = (repoPath: string) => {
   if (repoPath === worktreeAPath) {
     return {
       branch: 'feature/task-a',
@@ -103,7 +113,9 @@ const gitStatusMock = mock(async (repoPath: string) => {
     mergeInProgress: false,
     is_clean: true,
   };
-});
+};
+
+const gitStatusMock = mock(async (repoPath: string) => buildGitStatus(repoPath));
 
 const gitDiffMock = mock(async ({ repoPath, paths }: { repoPath: string; paths?: string[] }) => {
   return buildPatch(repoPath, paths?.[0] || '');
@@ -146,13 +158,13 @@ const tasksById = {
       {
         projectId: 'project-a',
         branchName: 'feature/task-a',
-        worktreeKey: 'project-a::feature-task-a',
+        worktreeKey: worktreeKeyA,
         planBranchName: 'plan/integration',
       },
       {
         projectId: 'project-b',
         branchName: 'feature/task-b',
-        worktreeKey: 'project-b::feature-task-b',
+        worktreeKey: worktreeKeyB,
         planBranchName: 'plan/integration',
       },
     ],
@@ -170,13 +182,49 @@ const tasksById = {
       {
         projectId: 'project-a',
         branchName: 'feature/task-a',
-        worktreeKey: 'project-a::feature-task-a',
+        worktreeKey: worktreeKeyA,
         planBranchName: 'plan/integration',
       },
       {
         projectId: 'project-b',
         branchName: 'feature/task-b',
-        worktreeKey: 'project-b::feature-task-b',
+        worktreeKey: worktreeKeyB,
+        planBranchName: 'plan/integration',
+      },
+    ],
+  },
+  'task-3': {
+    id: 'task-3',
+    title: 'Same branch without dedicated worktree',
+    description: 'Missing worktree mapping',
+    status: 'InReview' as const,
+    task_source: 'architect' as const,
+    project_id: 'project-b',
+    project_ids: ['project-b'],
+    assigned_branch: 'feature/task-a',
+    execution_targets: [
+      {
+        projectId: 'project-b',
+        branchName: 'feature/task-a',
+        worktreeKey: missingWorktreeKey,
+        planBranchName: 'plan/integration',
+      },
+    ],
+  },
+  'task-4': {
+    id: 'task-4',
+    title: 'Integrate GCC Compiler',
+    description: 'Pending task without worktree yet',
+    status: 'Pending' as const,
+    task_source: 'architect' as const,
+    project_id: 'project-b',
+    project_ids: ['project-b'],
+    assigned_branch: 'feature/task-a',
+    execution_targets: [
+      {
+        projectId: 'project-b',
+        branchName: 'feature/task-a',
+        worktreeKey: missingWorktreeKey,
         planBranchName: 'plan/integration',
       },
     ],
@@ -193,8 +241,8 @@ const taskStoreState = {
   activeRepositoryPath: worktreeAPath,
   activeBranchName: 'feature/task-a',
   branchWorktrees: {
-    'project-a::feature-task-a': worktreeAPath,
-    'project-b::feature-task-b': worktreeBPath,
+    [worktreeKeyA]: worktreeAPath,
+    [worktreeKeyB]: worktreeBPath,
   },
   getTaskById: (taskId: string) => {
     const task = tasksById[taskId as keyof typeof tasksById];
@@ -232,6 +280,8 @@ describe('useFileChangesStore', () => {
     taskStatuses = {
       'task-1': 'InReview',
       'task-2': 'InReview',
+      'task-3': 'InReview',
+      'task-4': 'Pending',
     };
     appStoreState.selectedTaskId = 'task-1';
 
@@ -276,17 +326,17 @@ describe('useFileChangesStore', () => {
     expect(repositories.map((repository: { stats: { total: number } }) => repository.stats.total)).toEqual([1, 1]);
     expect(reviewSummary.repositoryCount).toBe(2);
     expect(reviewSummary.nextAction).toBe('review_repository');
-    expect(reviewSummary.currentRepositoryId).toBe('project-a::project-a::feature-task-a');
+    expect(reviewSummary.currentRepositoryId).toBe(repositoryIdA);
   });
 
   it('clears stale diff state when switching to another task', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
 
-    store.openDiffModal('project-a::project-a::feature-task-a', 'project-a::project-a::feature-task-a::src/main.ts');
+    store.openDiffModal(repositoryIdA, changeIdA);
     expect(useFileChangesStore.getState().selectedDiffTarget).toEqual({
-      repositoryId: 'project-a::project-a::feature-task-a',
-      changeId: 'project-a::project-a::feature-task-a::src/main.ts',
+      repositoryId: repositoryIdA,
+      changeId: changeIdA,
     });
     expect(useFileChangesStore.getState().isDiffModalOpen).toBe(true);
 
@@ -295,29 +345,93 @@ describe('useFileChangesStore', () => {
 
     const nextState = useFileChangesStore.getState();
     expect(nextState.currentTaskId).toBe('task-2');
+    expect(nextState.currentTaskLoadState).toBe('ready');
     expect(nextState.selectedDiffTarget).toBeNull();
     expect(nextState.isDiffModalOpen).toBe(false);
+  });
+
+  it('does not reuse the active repository path when the dedicated worktree mapping is missing', async () => {
+    appStoreState.selectedTaskId = 'task-3';
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.currentTaskId).toBe('task-3');
+    expect(nextState.currentTaskLoadState).toBe('invalid_mapping');
+    expect(nextState.currentTaskLoadMessage).toBe('Make your first changes to this task to see them here.');
+    expect(nextState.currentTaskLoadMessage?.toLowerCase()).not.toContain('worktree');
+    expect(nextState.repositories).toHaveLength(0);
+    expect(gitStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('shows an awaiting-worktree state for a pending task that has not started yet', async () => {
+    appStoreState.selectedTaskId = 'task-4';
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.currentTaskId).toBe('task-4');
+    expect(nextState.currentTaskLoadState).toBe('awaiting_worktree');
+    expect(nextState.currentTaskLoadMessage).toBe('Make your first changes to this task to see them here.');
+    expect(nextState.currentTaskLoadMessage?.toLowerCase()).not.toContain('worktree');
+    expect(nextState.repositories).toHaveLength(0);
+    expect(gitStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores stale async results when a newer task selection has already won', async () => {
+    let releaseTaskOneStatuses: () => void = () => undefined;
+    const taskOneStatusGate = new Promise<void>((resolve) => {
+      releaseTaskOneStatuses = resolve;
+    });
+
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      if (appStoreState.selectedTaskId === 'task-1') {
+        await taskOneStatusGate;
+      }
+      return buildGitStatus(repoPath);
+    });
+
+    const firstLoad = useFileChangesStore.getState().loadCurrentChanges();
+    expect(useFileChangesStore.getState().currentTaskId).toBe('task-1');
+    expect(useFileChangesStore.getState().currentTaskLoadState).toBe('loading');
+    expect(useFileChangesStore.getState().repositories).toHaveLength(0);
+
+    appStoreState.selectedTaskId = 'task-3';
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    let state = useFileChangesStore.getState();
+    expect(state.currentTaskId).toBe('task-3');
+    expect(state.currentTaskLoadState).toBe('invalid_mapping');
+    expect(state.repositories).toHaveLength(0);
+
+    releaseTaskOneStatuses();
+    await firstLoad;
+
+    state = useFileChangesStore.getState();
+    expect(state.currentTaskId).toBe('task-3');
+    expect(state.currentTaskLoadState).toBe('invalid_mapping');
+    expect(state.repositories).toHaveLength(0);
   });
 
   it('completes the task only after the last repository commit', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
 
-    store.markAsReviewed('project-a::project-a::feature-task-a', 'project-a::project-a::feature-task-a::src/main.ts');
-    store.markAsReviewed('project-b::project-b::feature-task-b', 'project-b::project-b::feature-task-b::README.md');
+    store.markAsReviewed(repositoryIdA, changeIdA);
+    store.markAsReviewed(repositoryIdB, changeIdB);
 
     const firstCommit = await store.commitReviewedChanges(
-      'project-a::project-a::feature-task-a',
+      repositoryIdA,
       'feat: commit project a'
     );
     expect(firstCommit.taskCompleted).toBe(false);
     expect(completeTaskMock).not.toHaveBeenCalled();
-    expect(useFileChangesStore.getState().selectedRepositoryId).toBe('project-b::project-b::feature-task-b');
+    expect(useFileChangesStore.getState().selectedRepositoryId).toBe(repositoryIdB);
     expect(useFileChangesStore.getState().reviewSummary.hasCommittedRepositories).toBe(true);
-    expect(useFileChangesStore.getState().reviewSummary.currentRepositoryId).toBe('project-b::project-b::feature-task-b');
+    expect(useFileChangesStore.getState().reviewSummary.currentRepositoryId).toBe(repositoryIdB);
 
     const secondCommit = await store.commitReviewedChanges(
-      'project-b::project-b::feature-task-b',
+      repositoryIdB,
       'feat: commit project b'
     );
     expect(secondCommit.taskCompleted).toBe(true);

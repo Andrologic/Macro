@@ -2044,6 +2044,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return scoped[0]?.id ?? null;
   };
 
+  const getLatestConversationForTask = (
+    taskId: string,
+    conversations: Conversation[] = get().conversations
+  ): Conversation | null =>
+    conversations
+      .filter((conversation) => conversation.task_id === taskId)
+      .sort((a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      )[0] ?? null;
+
   type ConversationRemovalSnapshot = Pick<
     ChatStore,
     | 'conversations'
@@ -2658,27 +2668,64 @@ export const useChatStore = create<ChatStore>((set, get) => {
     selectConversation?: boolean;
   }): Promise<Conversation> => {
     const { title, taskId, projectId, groupId, selectConversation = true } = params;
+    const appState = useAppStore.getState();
+    const mode = appState.mode;
+    const effectiveTaskId =
+      mode === 'Implement'
+        ? appState.selectedTaskId ?? taskId
+        : taskId;
+    const linkedTask = effectiveTaskId
+      ? useTaskStore.getState().getTaskById(effectiveTaskId)
+      : undefined;
+    const resolvedTitle =
+      mode === 'Implement' && linkedTask?.title
+        ? `Task - ${linkedTask.title}`
+        : title.trim() || 'New Conversation';
+    const resolvedTaskId = mode === 'Implement' ? effectiveTaskId : taskId;
+    const resolvedProjectId =
+      mode === 'Implement'
+        ? projectId ?? linkedTask?.project_id ?? appState.selectedProjectId ?? null
+        : projectId;
+    const resolvedGroupId =
+      mode === 'Implement'
+        ? groupId ?? appState.selectedGroupId ?? null
+        : groupId ?? null;
+
+    if (mode === 'Implement' && !resolvedTaskId) {
+      throw new Error('Implement conversations must be linked to a task.');
+    }
+
+    if (mode === 'Implement' && resolvedTaskId) {
+      const existingConversation = getLatestConversationForTask(resolvedTaskId);
+      if (existingConversation) {
+        if (selectConversation && applyConversationSelection(existingConversation.id, mode)) {
+          persistSelectionForContext(mode, existingConversation.id);
+          void applySelectionForContext(mode, existingConversation.id);
+        }
+        return existingConversation;
+      }
+    }
+
     let newConversation: Conversation;
-    const mode = useAppStore.getState().mode;
 
     if (tauriIpc.isTauriAvailable()) {
       try {
         const dbConversation = await tauriIpc.createConversation({
-          title,
-          taskId,
-          groupId,
-          projectId,
+          title: resolvedTitle,
+          taskId: resolvedTaskId,
+          groupId: resolvedGroupId,
+          projectId: resolvedProjectId,
         });
         newConversation = mapDbConversationToConversation(dbConversation);
       } catch (error) {
         console.error('Failed to create conversation in DB:', error);
         newConversation = {
           id: `conv-${Date.now()}`,
-          title,
+          title: resolvedTitle,
           description: '',
-          task_id: taskId,
-          group_id: groupId ?? null,
-          project_id: projectId,
+          task_id: resolvedTaskId,
+          group_id: resolvedGroupId,
+          project_id: resolvedProjectId,
           last_message: '',
           message_count: 0,
           updated_at: new Date().toISOString(),
@@ -2688,11 +2735,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     } else {
       newConversation = {
         id: `conv-${Date.now()}`,
-        title,
+        title: resolvedTitle,
         description: '',
-        task_id: taskId,
-        group_id: groupId ?? null,
-        project_id: projectId,
+        task_id: resolvedTaskId,
+        group_id: resolvedGroupId,
+        project_id: resolvedProjectId,
         last_message: '',
         message_count: 0,
         updated_at: new Date().toISOString(),
@@ -2702,18 +2749,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     set((state) => ({
       conversations: [newConversation, ...state.conversations],
-      ...(selectConversation
-        ? {
-            selectedConversationId: newConversation.id,
-            selectedConversationIdsByMode: {
-              ...state.selectedConversationIdsByMode,
-              [mode]: newConversation.id,
-            },
-          }
-        : {}),
     }));
 
-    if (selectConversation) {
+    if (selectConversation && applyConversationSelection(newConversation.id, mode)) {
       persistSelectionForContext(mode, newConversation.id);
       void applySelectionForContext(mode, newConversation.id);
     }
@@ -3533,12 +3571,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       })),
 
     getConversationByTask: (taskId) => {
-      const state = get();
-      return state.conversations
-        .filter((conv) => conv.task_id === taskId)
-        .sort((a, b) =>
-          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-        )[0];
+      return getLatestConversationForTask(taskId) ?? undefined;
     },
 
     getConversationMessages: (conversationId) => {
