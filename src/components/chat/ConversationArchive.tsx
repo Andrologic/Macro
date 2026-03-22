@@ -8,6 +8,7 @@ import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { toast } from '../ui/Toaster';
 import { cn } from '../../utils/cn';
+import { formatDate } from '../../i18n/format';
 import type { Conversation } from '../../types';
 
 interface ConversationArchiveProps {
@@ -141,7 +142,11 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               onToggleCheck();
             }}
             className="mt-1 h-4 w-4 rounded border border-border bg-background flex items-center justify-center shrink-0 hover:border-primary/60 transition-colors"
-            aria-label={isChecked ? 'Deselect conversation' : 'Select conversation'}
+            aria-label={
+              isChecked
+                ? t('chat.deselectConversation', 'Deselect conversation')
+                : t('chat.selectConversation', 'Select conversation')
+            }
           >
             {isChecked && <Icon name="check" size={11} className="text-primary" />}
           </button>
@@ -182,7 +187,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             {/* Meta */}
             <div className="flex items-center gap-2 mt-1.5">
               <span className="text-xs text-muted-foreground/70">
-                {new Date(conversation.updated_at).toLocaleDateString()}
+                {formatDate(conversation.updated_at)}
               </span>
               <span className="text-xs text-muted-foreground/70 flex items-center gap-1">
                 <Icon name="message-square" size={8} />
@@ -229,7 +234,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="pin" size={12} />
-              {isPinned ? 'Unpin' : 'Pin'}
+              {isPinned ? t('chat.unpinConversation', 'Unpin') : t('chat.pinConversation', 'Pin')}
             </button>
             <button 
               type="button"
@@ -242,7 +247,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="edit" size={12} />
-              Rename
+              {t('common.rename', 'Rename')}
             </button>
             <button 
               type="button"
@@ -251,7 +256,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="download" size={12} />
-              Export
+              {t('common.export', 'Export')}
             </button>
             <button 
               type="button"
@@ -265,7 +270,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 flex items-center gap-2"
             >
               <Icon name="trash" size={12} />
-              Delete
+              {t('common.delete', 'Delete')}
             </button>
           </div>
         </>
@@ -273,12 +278,12 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
 
       <ConfirmPromptModal
         isOpen={isRenameOpen}
-        title="Rename conversation"
-        description="Choose a new title for this conversation."
-        confirmLabel="Rename"
-        cancelLabel="Cancel"
+        title={t('chat.renameConversationTitle', 'Rename conversation')}
+        description={t('chat.renameConversationDescription', 'Choose a new title for this conversation.')}
+        confirmLabel={t('common.rename', 'Rename')}
+        cancelLabel={t('common.cancel', 'Cancel')}
         initialValue={conversation.title}
-        inputPlaceholder="Conversation name"
+        inputPlaceholder={t('chat.conversationName', 'Conversation name')}
         requireInput
         onCancel={() => setIsRenameOpen(false)}
         onConfirm={(value) => {
@@ -290,18 +295,20 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
         isOpen={isDeleteOpen}
         title={
           deleteKind === 'architect'
-            ? 'Delete Architect conversation'
+            ? t('chat.deleteArchitectConversation', 'Delete Architect conversation')
             : deleteKind === 'implement'
-              ? 'Delete Implement conversation'
-              : 'Delete conversation'
+              ? t('chat.deleteImplementConversation', 'Delete Implement conversation')
+              : t('chat.deleteConversationTitle', 'Delete conversation')
         }
         description={
           deleteError ||
           (deleteKind === 'architect'
-            ? `Type ${architectProjectName} to confirm deletion.`
+            ? t('chat.typeProjectNameToDelete', 'Type {{name}} to confirm deletion.', {
+                name: architectProjectName,
+              })
             : deleteKind === 'implement'
-              ? 'Confirm deletion of this task conversation.'
-              : 'Are you sure you want to delete this conversation?')
+              ? t('chat.confirmImplementDeletion', 'Confirm deletion of this task conversation.')
+              : t('chat.deleteConversationConfirm', 'Are you sure you want to delete this conversation?'))
         }
         confirmLabel={
           isDeleting
@@ -310,7 +317,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
         }
         cancelLabel={t('common.cancel', 'Cancel')}
         confirmVariant="error"
-        inputPlaceholder={deleteKind === 'architect' ? 'Project name' : undefined}
+        inputPlaceholder={deleteKind === 'architect' ? t('project.name', 'Project name') : undefined}
         requireInput={deleteKind === 'architect'}
         initialValue=""
         onCancel={() => setIsDeleteOpen(false)}

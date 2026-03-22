@@ -17,6 +17,12 @@ const CONTEXT_LABELS = {
   full: 'Full file context',
 } as const;
 
+const STATUS_LABELS = {
+  added: 'Added',
+  modified: 'Modified',
+  deleted: 'Deleted',
+} as const;
+
 export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({
   repositoryId,
   changeId,
@@ -97,7 +103,9 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({
               <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5 flex-wrap">
                 <span className="text-emerald-500">+{change.additions}</span>
                 <span className="text-red-400">-{change.deletions}</span>
-                <span className="capitalize">{change.status}</span>
+                <span className="capitalize">
+                  {t(`implement.changeStatus.${change.status}`, STATUS_LABELS[change.status])}
+                </span>
                 <span className="px-2 py-0.5 rounded-full bg-background/80 border border-border">
                   {t(`implement.context.${change.contextMode}`, CONTEXT_LABELS[change.contextMode])}
                 </span>
@@ -116,7 +124,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({
                   markAsUnreviewed(repositoryId, changeId);
                 }}
                 className="flex items-center gap-1.5 px-2 py-1 rounded bg-emerald-500/10 text-emerald-500 text-xs"
-                title="Right-click to invalidate"
+                title={t('implement.rightClickToInvalidate', 'Right-click to invalidate')}
               >
                 <Icon name="check" size={12} />
                 {t('implement.validated', 'Validated')}

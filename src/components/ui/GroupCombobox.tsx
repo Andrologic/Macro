@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import i18n from '../../i18n';
 import { cn } from '../../utils/cn';
 import { Icon } from './Icon';
 
@@ -17,7 +18,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
   onSelect,
   onCreateGroup,
   className,
-  placeholder = 'Select a group...',
+  placeholder = i18n.t('project.selectGroupPlaceholder', 'Select a group...'),
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -146,7 +147,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
             )}
           >
             <Icon name="x" size={14} />
-            <span>No Group</span>
+            <span>{i18n.t('project.noGroup', 'No Group')}</span>
           </button>
 
           {/* Existing groups */}
@@ -180,14 +181,14 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
                 )}
               >
                 <Icon name="plus" size={14} />
-                <span>Create "{query}"</span>
+                <span>{i18n.t('project.createGroupOption', 'Create "{{name}}"', { name: query })}</span>
               </button>
             </>
           )}
 
           {filteredGroups.length === 0 && !showCreateOption && (
             <div className="px-3 py-2 text-sm text-muted-foreground">
-              No groups found
+              {i18n.t('project.noGroupsFound', 'No groups found')}
             </div>
           )}
         </div>

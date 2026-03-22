@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { TaskStatus } from '../../types';
@@ -22,17 +23,8 @@ const statusColors: Record<TaskStatus, string> = {
   Blocked: 'bg-orange-500/10 text-orange-500 border-orange-500/20',
 };
 
-const statusLabels: Record<TaskStatus, string> = {
-  Pending: 'To Do',
-  InProgress: 'In Progress',
-  AwaitingResponse: 'Waiting',
-  InReview: 'Validation',
-  Completed: 'Done',
-  Failed: 'Failed',
-  Blocked: 'Blocked',
-};
-
 export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
+  const { t } = useTranslation();
   const { currentPlan, setSelectedTask } = useAppStore();
   const { selectedConversationId, selectConversation, getConversationByTask } =
     useChatStore();
@@ -90,11 +82,21 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
     return getConversationByTask(taskId);
   };
 
+  const statusLabels: Record<TaskStatus, string> = {
+    Pending: t('tasks.pending', 'Pending'),
+    InProgress: t('tasks.inProgress', 'In Progress'),
+    AwaitingResponse: t('implement.awaitingResponse', 'Awaiting response'),
+    InReview: t('implement.inReview', 'In review'),
+    Completed: t('tasks.completed', 'Completed'),
+    Failed: t('implement.failed', 'Failed'),
+    Blocked: t('tasks.blocked', 'Blocked'),
+  };
+
   return (
     <div className="h-full flex flex-col bg-card">
       {/* Header with sort options */}
       <div className="h-12 border-b border-border flex items-center justify-between px-4">
-        <h2 className="text-sm font-semibold text-foreground">Tasks</h2>
+        <h2 className="text-sm font-semibold text-foreground">{t('tasks.tasks', 'Tasks')}</h2>
         <div className="flex items-center gap-1">
           <Select
             value={sortOption}
@@ -102,9 +104,9 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
             fullWidth={false}
             className="text-xs rounded-md px-2 py-1"
           >
-            <option value="updated">Updated</option>
-            <option value="created">Created</option>
-            <option value="status">Status</option>
+            <option value="updated">{t('tasks.sort.updated', 'Updated')}</option>
+            <option value="created">{t('tasks.sort.created', 'Created')}</option>
+            <option value="status">{t('common.status', 'Status')}</option>
           </Select>
         </div>
       </div>
@@ -114,7 +116,7 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
         {sortedTasks.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full px-8 text-center">
             <Icon name="check" size={32} className="text-muted-foreground mb-3" />
-            <p className="text-sm text-muted-foreground">No tasks for this project</p>
+            <p className="text-sm text-muted-foreground">{t('tasks.noTasksForProject', 'No tasks for this project')}</p>
           </div>
         ) : (
           <div className="p-2 space-y-1">
@@ -212,11 +214,13 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
         <div className="flex items-center gap-2">
           <Icon name="list" size={14} className="text-muted-foreground" />
           <span className="text-xs text-muted-foreground">
-            {sortedTasks.filter((t) => t.status !== 'Completed').length} active
+            {t('implement.activeCount', '{{count}} active', {
+              count: sortedTasks.filter((task) => task.status !== 'Completed').length,
+            })}
           </span>
         </div>
         <span className="text-xs text-muted-foreground/70">
-          {sortedTasks.length} total
+          {sortedTasks.length} {t('models.total', 'total')}
         </span>
       </div>
     </div>
