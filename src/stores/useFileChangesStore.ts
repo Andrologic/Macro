@@ -10,12 +10,19 @@ import {
   selectReviewRepositoryId,
   type ReviewTaskSummary,
 } from '../services/implementMultiRepoSummary';
+import { toBranchWorktreeKey } from '../services/implementTaskDerivation';
 import { useAppStore } from './useAppStore';
 import { mergeFeatureBranchIntoPlanBranch } from '../services/architectGitFlowService';
 import { getGitFlowBaseBranch } from '../services/architectPlanService';
 
 export type FileChangeContextMode = 'default' | 'expanded' | 'full';
 export type ReviewRepositoryCommitState = 'idle' | 'committing' | 'committed' | 'no_changes';
+export type FileChangesTaskLoadState =
+  | 'idle'
+  | 'loading'
+  | 'ready'
+  | 'awaiting_worktree'
+  | 'invalid_mapping';
 
 const FILE_CHANGE_CONTEXT_LINES: Record<FileChangeContextMode, number> = {
   default: 3,
@@ -290,7 +297,7 @@ const getExecutionTargets = (
   return [{
     projectId: task.project_id,
     branchName: task.assigned_branch,
-    worktreeKey: `${task.project_id}::${normalizeBranchName(task.assigned_branch)}`,
+    worktreeKey: toBranchWorktreeKey(task.project_id, task.assigned_branch),
     planBranchName: task.task_source === 'standalone' ? deps.getGitFlowBaseBranch() : undefined,
   }];
 };
@@ -314,21 +321,53 @@ const ensureReviewTask = (deps: FileChangesStoreDependencies): FileChangesTaskLi
 const resolveRepositoryWorktreePath = (
   deps: FileChangesStoreDependencies,
   target: TaskExecutionTarget,
-  task: FileChangesTaskLike
+  _task: FileChangesTaskLike
 ): string | null => {
   const taskState = deps.getTaskState();
-  const worktreePath = taskState.branchWorktrees[target.worktreeKey];
-  if (worktreePath) {
-    return worktreePath;
-  }
-
-  if (taskState.activeBranchName === task.assigned_branch && taskState.activeRepositoryPath) {
-    return taskState.activeRepositoryPath;
-  }
-
-  const appState = deps.getAppState();
-  return appState.getProjectById(target.projectId)?.path ?? null;
+  return taskState.branchWorktrees[target.worktreeKey] ?? null;
 };
+
+const buildFirstChangesMessage = (): string =>
+  tChanges(
+    'implement.changesAppearAfterFirstEdit',
+    'Make your first changes to this task to see them here.'
+  );
+
+const buildMissingWorktreeMessage = (
+  _task: FileChangesTaskLike,
+  _targets: TaskExecutionTarget[]
+): string => buildFirstChangesMessage();
+
+const buildAwaitingWorktreeMessage = (task: FileChangesTaskLike): string => {
+  if (task.status === 'Blocked') {
+    return tChanges(
+      'implement.worktreeBlockedTask',
+      'Unblock this task to see its changes here.'
+    );
+  }
+
+  if (task.status === 'Failed') {
+    return tChanges(
+      'implement.worktreeFailedTask',
+      'Retry this task to continue. Its changes will appear here.'
+    );
+  }
+
+  if (task.status === 'Completed') {
+    return tChanges(
+      'implement.worktreeCompletedTask',
+      'This task is complete. New changes will appear here if work resumes.'
+    );
+  }
+
+  return buildFirstChangesMessage();
+};
+
+const shouldTreatMissingWorktreeAsPending = (task: FileChangesTaskLike): boolean =>
+  task.status === 'Pending' ||
+  task.status === 'Blocked' ||
+  task.status === 'Failed' ||
+  task.status === 'Completed';
 
 const loadFileChangeEntry = async (
   deps: FileChangesStoreDependencies,
@@ -487,6 +526,9 @@ const deriveReviewState = (
 
 interface FileChangesState {
   currentTaskId: string | null;
+  currentTaskLoadState: FileChangesTaskLoadState;
+  currentTaskLoadMessage: string | null;
+  loadRequestId: number;
   repositories: ReviewRepositoryState[];
   selectedRepositoryId: string | null;
   reviewSummary: ReviewTaskSummary;
@@ -536,6 +578,9 @@ export const createFileChangesStore = (
 
   return create<FileChangesState>((set, get) => ({
     currentTaskId: null,
+    currentTaskLoadState: 'idle',
+    currentTaskLoadMessage: null,
+    loadRequestId: 0,
     repositories: [],
     selectedRepositoryId: null,
     reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
@@ -548,62 +593,103 @@ export const createFileChangesStore = (
     executionRecords: {},
 
   loadCurrentChanges: async () => {
-    set({ isLoading: true, lastError: null });
+    const previousState = get();
+    const task = resolveSelectedTask(deps);
+    const nextLoadRequestId = previousState.loadRequestId + 1;
+
+    const resetLoadState = {
+      repositories: [],
+      selectedRepositoryId: null,
+      reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
+      selectedDiffTarget: null,
+      isDiffModalOpen: false,
+      lastCommitHash: null,
+    } satisfies Partial<FileChangesState>;
+
+    const isStaleRequest = (requestId: number, taskId: string | null): boolean => {
+      const latestState = get();
+      if (latestState.loadRequestId !== requestId) {
+        return true;
+      }
+      const selectedTask = resolveSelectedTask(deps);
+      return (selectedTask?.id ?? null) !== taskId;
+    };
 
     if (!deps.tauri.isTauriAvailable()) {
       set({
+        ...resetLoadState,
         currentTaskId: null,
-        repositories: [],
-        selectedRepositoryId: null,
-        reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
-        selectedDiffTarget: null,
-        isDiffModalOpen: false,
+        currentTaskLoadState: 'idle',
+        currentTaskLoadMessage: null,
         isLoading: false,
+        loadRequestId: nextLoadRequestId,
         executionRecords: {},
       });
       return;
     }
 
-    const task = resolveSelectedTask(deps);
     if (!task) {
       set({
+        ...resetLoadState,
         currentTaskId: null,
-        repositories: [],
-        selectedRepositoryId: null,
-        reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
-        selectedDiffTarget: null,
-        isDiffModalOpen: false,
+        currentTaskLoadState: 'idle',
+        currentTaskLoadMessage: null,
         isLoading: false,
+        loadRequestId: nextLoadRequestId,
         executionRecords: {},
       });
       return;
     }
 
-    const previousState = get();
     const sameTask = previousState.currentTaskId === task.id;
-    const taskChanged = previousState.currentTaskId !== null && !sameTask;
-    if (taskChanged) {
-      set({
-        currentTaskId: null,
-        repositories: [],
-        selectedRepositoryId: null,
-        reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
-        selectedDiffTarget: null,
-        isDiffModalOpen: false,
-        executionRecords: {},
-      });
-    }
+    const previousRepositories = new Map(
+      (sameTask ? previousState.repositories : []).map((repository) => [repository.id, repository])
+    );
+    const executionRecords = sameTask ? previousState.executionRecords : {};
+    const previousSelectedRepositoryId = sameTask ? previousState.selectedRepositoryId : null;
+    const previousSelectedDiffTarget = sameTask ? previousState.selectedDiffTarget : null;
+    const previousIsDiffModalOpen = sameTask && previousState.isDiffModalOpen;
+
+    set({
+      ...resetLoadState,
+      currentTaskId: task.id,
+      currentTaskLoadState: 'loading',
+      currentTaskLoadMessage: null,
+      isLoading: true,
+      lastError: null,
+      loadRequestId: nextLoadRequestId,
+      executionRecords,
+    });
 
     try {
-      const previousRepositories = new Map(
-        (sameTask ? previousState.repositories : []).map((repository) => [repository.id, repository])
+      const executionTargets = getExecutionTargets(deps, task);
+      const unresolvedTargets = executionTargets.filter(
+        (target) => !resolveRepositoryWorktreePath(deps, target, task)
       );
-      const executionRecords = sameTask ? previousState.executionRecords : {};
-      const previousSelectedRepositoryId = sameTask ? previousState.selectedRepositoryId : null;
-      const previousSelectedDiffTarget = sameTask ? previousState.selectedDiffTarget : null;
-      const previousIsDiffModalOpen = sameTask && previousState.isDiffModalOpen;
+
+      if (unresolvedTargets.length > 0) {
+        if (isStaleRequest(nextLoadRequestId, task.id)) {
+          return;
+        }
+
+        set({
+          ...resetLoadState,
+          currentTaskId: task.id,
+          currentTaskLoadState: shouldTreatMissingWorktreeAsPending(task)
+            ? 'awaiting_worktree'
+            : 'invalid_mapping',
+          currentTaskLoadMessage: shouldTreatMissingWorktreeAsPending(task)
+            ? buildAwaitingWorktreeMessage(task)
+            : buildMissingWorktreeMessage(task, unresolvedTargets),
+          isLoading: false,
+          lastError: null,
+          executionRecords: {},
+        });
+        return;
+      }
+
       const repositories = await Promise.all(
-        getExecutionTargets(deps, task).map((target) => {
+        executionTargets.map((target) => {
           const repositoryId = buildRepositoryId(target);
           return loadRepositoryState({
             deps,
@@ -614,6 +700,10 @@ export const createFileChangesStore = (
           });
         })
       );
+
+      if (isStaleRequest(nextLoadRequestId, task.id)) {
+        return;
+      }
 
       const derivedReviewState = deriveReviewState(repositories, previousSelectedRepositoryId);
       const selectedDiffTarget =
@@ -627,6 +717,8 @@ export const createFileChangesStore = (
 
       set({
         currentTaskId: task.id,
+        currentTaskLoadState: 'ready',
+        currentTaskLoadMessage: null,
         repositories,
         selectedRepositoryId: derivedReviewState.selectedRepositoryId,
         reviewSummary: derivedReviewState.reviewSummary,
@@ -642,13 +734,16 @@ export const createFileChangesStore = (
         repositories.find((repository) => repository.id === derivedReviewState.selectedRepositoryId) || repositories[0]
       );
     } catch (error) {
+      if (isStaleRequest(nextLoadRequestId, task.id)) {
+        return;
+      }
+
       set({
+        ...resetLoadState,
+        currentTaskId: task.id,
+        currentTaskLoadState: 'invalid_mapping',
+        currentTaskLoadMessage: null,
         isLoading: false,
-        repositories: [],
-        selectedRepositoryId: null,
-        reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
-        selectedDiffTarget: null,
-        isDiffModalOpen: false,
         executionRecords: {},
         lastError:
           error instanceof Error
@@ -661,6 +756,9 @@ export const createFileChangesStore = (
   resetReviewState: () => {
     set({
       currentTaskId: null,
+      currentTaskLoadState: 'idle',
+      currentTaskLoadMessage: null,
+      loadRequestId: get().loadRequestId + 1,
       repositories: [],
       selectedRepositoryId: null,
       reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
