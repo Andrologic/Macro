@@ -202,7 +202,11 @@ const ChatZone: React.FC = () => {
     Boolean(selectedTask) &&
     !selectedTask?.draft &&
     currentMessages.length === 0;
-  const isComposerDisabled = isConversationPending || isImplementComposerLocked;
+  const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask;
+  const isComposerDisabled =
+    isConversationPending ||
+    isImplementComposerLocked ||
+    isImplementTaskSelectionMissing;
 
   const implementProgress = useMemo(() => {
     const total = tasks.length;
@@ -317,10 +321,11 @@ const ChatZone: React.FC = () => {
     });
   }, [selectedConversationId, currentMessages.length, scrollContainerRef]);
 
-  const ensureConversation = async () => {
+  const ensureConversation = async (): Promise<string | null> => {
     if (selectedConversationId) return selectedConversationId;
     const ensured = await ensureConversationForCurrentMode();
     if (ensured) return ensured;
+    if (mode === 'Implement') return null;
     const conversation = await createConversation('New Conversation', null, null);
     return conversation.id;
   };
@@ -336,6 +341,7 @@ const ChatZone: React.FC = () => {
 
     try {
       conversationId = await ensureConversation();
+      if (!conversationId) return;
       if (executionKickoffByConversationRef.current[conversationId]) return;
 
       executionKickoffByConversationRef.current[conversationId] = true;
@@ -517,6 +523,7 @@ const ChatZone: React.FC = () => {
     const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isLoading) return;
     const conversationId = await ensureConversation();
+    if (!conversationId) return;
     const content = text;
     const imagesForMessage = composerImages;
     composerEditorRef.current?.clear();
@@ -528,6 +535,7 @@ const ChatZone: React.FC = () => {
   const handleChoiceClick = async (choiceText: string, taskId?: string) => {
     if (isLoading || isStreaming || isConversationPending) return;
     const conversationId = await ensureConversation();
+    if (!conversationId) return;
     if (selectedTask?.status === 'AwaitingResponse') {
       await retryTask(selectedTask.id);
     }
@@ -543,6 +551,7 @@ const ChatZone: React.FC = () => {
     if (!hasExistingStrategy && activePlanNeedsCount === 0) return;
 
     const conversationId = await ensureConversation();
+    if (!conversationId) return;
     const content = hasExistingStrategy
       ? 'User requested to regenerate the strategy. Reassess all identified needs for the active plan and call `strategy_generate` with a complete replacement strategy (full nodes and dependencies).'
       : 'User requested to generate the strategy now. Based on all identified needs for the active plan, call `strategy_generate` with a complete initial strategy (full nodes and dependencies).';
@@ -962,6 +971,18 @@ const ChatZone: React.FC = () => {
                 <div>
                   {selectedConversationId ? (
                     <p className="text-muted-foreground text-sm">{t('chat.typeMessage')}</p>
+                  ) : mode === 'Implement' ? (
+                    <p className="text-muted-foreground text-sm">
+                      {selectedTask
+                        ? t(
+                            'implement.startConversationFromBrief',
+                            'Use the task briefing below to start the task conversation.'
+                          )
+                        : t(
+                            'implement.selectTaskToStart',
+                            'Select a task to start implementation.'
+                          )}
+                    </p>
                   ) : (
                     <div>
                       <p className="text-muted-foreground text-sm mb-1">{t('chat.selectProvider')}</p>
@@ -1145,6 +1166,8 @@ const ChatZone: React.FC = () => {
                 placeholder={
                   isConversationPending
                     ? t('chat.loadingConversation', 'Restoring conversation...')
+                    : isImplementTaskSelectionMissing
+                    ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
                     : isImplementComposerLocked
                     ? t('implement.startExecutionFirst', 'Start execution to begin the task conversation')
                     : !selectedProviderId || !selectedModelId
