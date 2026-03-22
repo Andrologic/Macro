@@ -217,6 +217,9 @@ pub async fn create_manual_feature_draft(
         status: "Pending".to_string(),
         feature_slug: None,
         branch_name: None,
+        archived_at: None,
+        archive_reason: None,
+        merged_at: None,
         base_branch: normalize_base_branch(base_branch),
         project_ids: normalized_project_ids,
         execution_targets: Vec::new(),
@@ -277,6 +280,9 @@ pub async fn finalize_manual_feature(
     feature.description = normalized_description.to_string();
     feature.feature_slug = Some(normalized_feature_slug);
     feature.branch_name = Some(branch_name.clone());
+    feature.archived_at = None;
+    feature.archive_reason = None;
+    feature.merged_at = None;
     feature.execution_targets =
         build_manual_feature_execution_targets(&feature.project_ids, &branch_name, &project_groups);
     feature.updated_at = Utc::now().to_rfc3339();
@@ -313,6 +319,177 @@ pub async fn delete_manual_feature_draft(
     }
 
     persist_sanitized_state(workspace_path, metadata_root, state, "delete_manual_feature_draft")
+        .await?;
+    Ok(())
+}
+
+pub async fn rename_manual_feature(
+    workspace_path: &PathBuf,
+    metadata_root: &PathBuf,
+    task_id: &str,
+    title: &str,
+) -> Result<ManualFeatureDto> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let normalized_task_id = task_id.trim();
+    let normalized_title = title.trim();
+    if normalized_task_id.is_empty() || normalized_title.is_empty() {
+        return Err(BackendError::Validation(
+            "Manual feature rename requires a task id and title".to_string(),
+        ));
+    }
+
+    let feature = state
+        .manual_features
+        .iter_mut()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Unknown manual feature id: {}",
+                normalized_task_id
+            ))
+        })?;
+
+    feature.title = normalized_title.to_string();
+    feature.updated_at = Utc::now().to_rfc3339();
+
+    let (sanitized_state, _) =
+        persist_sanitized_state(workspace_path, metadata_root, state, "rename_manual_feature")
+            .await?;
+
+    sanitized_state
+        .manual_features
+        .iter()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .cloned()
+        .ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Unknown manual feature id: {}",
+                normalized_task_id
+            ))
+        })
+}
+
+pub async fn archive_manual_feature(
+    workspace_path: &PathBuf,
+    metadata_root: &PathBuf,
+    task_id: &str,
+    reason: Option<&str>,
+    merged_at: Option<&str>,
+) -> Result<ManualFeatureDto> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let normalized_task_id = task_id.trim();
+    if normalized_task_id.is_empty() {
+        return Err(BackendError::Validation(
+            "Manual feature archive requires a task id".to_string(),
+        ));
+    }
+
+    let feature = state
+        .manual_features
+        .iter_mut()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Unknown manual feature id: {}",
+                normalized_task_id
+            ))
+        })?;
+
+    let now = Utc::now().to_rfc3339();
+    feature.archived_at = Some(now.clone());
+    feature.archive_reason = reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if let Some(next_merged_at) = merged_at.map(str::trim).filter(|value| !value.is_empty()) {
+        feature.merged_at = Some(next_merged_at.to_string());
+    }
+    feature.updated_at = now;
+
+    let (sanitized_state, _) =
+        persist_sanitized_state(workspace_path, metadata_root, state, "archive_manual_feature")
+            .await?;
+
+    sanitized_state
+        .manual_features
+        .iter()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .cloned()
+        .ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Unknown manual feature id: {}",
+                normalized_task_id
+            ))
+        })
+}
+
+pub async fn restore_manual_feature(
+    workspace_path: &PathBuf,
+    metadata_root: &PathBuf,
+    task_id: &str,
+) -> Result<ManualFeatureDto> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let normalized_task_id = task_id.trim();
+    if normalized_task_id.is_empty() {
+        return Err(BackendError::Validation(
+            "Manual feature restore requires a task id".to_string(),
+        ));
+    }
+
+    let feature = state
+        .manual_features
+        .iter_mut()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Unknown manual feature id: {}",
+                normalized_task_id
+            ))
+        })?;
+
+    feature.archived_at = None;
+    feature.archive_reason = None;
+    if !feature.draft {
+        feature.status = "Pending".to_string();
+    }
+    feature.updated_at = Utc::now().to_rfc3339();
+
+    let (sanitized_state, _) =
+        persist_sanitized_state(workspace_path, metadata_root, state, "restore_manual_feature")
+            .await?;
+
+    sanitized_state
+        .manual_features
+        .iter()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .cloned()
+        .ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Unknown manual feature id: {}",
+                normalized_task_id
+            ))
+        })
+}
+
+pub async fn delete_manual_feature(
+    workspace_path: &PathBuf,
+    metadata_root: &PathBuf,
+    task_id: &str,
+) -> Result<()> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let initial_len = state.manual_features.len();
+    let normalized_task_id = task_id.trim();
+    state
+        .manual_features
+        .retain(|feature| feature.id != normalized_task_id);
+    if state.manual_features.len() == initial_len {
+        return Err(BackendError::Validation(format!(
+            "Unknown manual feature: {}",
+            normalized_task_id
+        )));
+    }
+
+    persist_sanitized_state(workspace_path, metadata_root, state, "delete_manual_feature")
         .await?;
     Ok(())
 }
@@ -963,6 +1140,24 @@ fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
         "conversation_id".to_string(),
         Value::String(feature.conversation_id.clone()),
     );
+    if let Some(archived_at) = feature.archived_at.as_ref() {
+        task.insert(
+            "archived_at".to_string(),
+            Value::String(archived_at.clone()),
+        );
+    }
+    if let Some(archive_reason) = feature.archive_reason.as_ref() {
+        task.insert(
+            "archive_reason".to_string(),
+            Value::String(archive_reason.clone()),
+        );
+    }
+    if let Some(merged_at) = feature.merged_at.as_ref() {
+        task.insert(
+            "merged_at".to_string(),
+            Value::String(merged_at.clone()),
+        );
+    }
 
     if let Some(feature_slug) = feature.feature_slug.as_ref() {
         task.insert(

@@ -233,6 +233,10 @@ export interface Task {
   base_branch?: string | null;
   feature_slug?: string | null;
   conversation_id?: string | null;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  merged_at?: string | null;
+  needs_revalidation?: boolean;
 }
 
 export interface GitNode {

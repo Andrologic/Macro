@@ -390,6 +390,9 @@ export interface WorkspaceManualFeatureDto {
   status: string;
   featureSlug: string | null;
   branchName: string | null;
+  archivedAt: string | null;
+  archiveReason: string | null;
+  mergedAt: string | null;
   baseBranch: string;
   projectIds: string[];
   executionTargets: WorkspaceManualFeatureExecutionTargetDto[];
@@ -954,10 +957,12 @@ export async function gitWorktreeCreate(params: {
 export async function gitWorktreeRemove(params: {
   repoPath: string;
   taskId: string;
+  force?: boolean;
 }): Promise<void> {
   return invoke('git_worktree_remove', {
     repoPath: params.repoPath,
     taskId: params.taskId,
+    force: params.force ?? null,
   });
 }
 
@@ -1189,6 +1194,36 @@ export async function workspaceFinalizeManualFeature(params: {
 
 export async function workspaceDeleteManualFeatureDraft(taskId: string): Promise<void> {
   return invoke('workspace_delete_manual_feature_draft', { taskId });
+}
+
+export async function workspaceRenameManualFeature(params: {
+  taskId: string;
+  title: string;
+}): Promise<WorkspaceManualFeatureDto> {
+  return invoke<WorkspaceManualFeatureDto>('workspace_rename_manual_feature', {
+    taskId: params.taskId,
+    title: params.title,
+  });
+}
+
+export async function workspaceArchiveManualFeature(params: {
+  taskId: string;
+  reason?: string | null;
+  mergedAt?: string | null;
+}): Promise<WorkspaceManualFeatureDto> {
+  return invoke<WorkspaceManualFeatureDto>('workspace_archive_manual_feature', {
+    taskId: params.taskId,
+    reason: params.reason ?? null,
+    mergedAt: params.mergedAt ?? null,
+  });
+}
+
+export async function workspaceRestoreManualFeature(taskId: string): Promise<WorkspaceManualFeatureDto> {
+  return invoke<WorkspaceManualFeatureDto>('workspace_restore_manual_feature', { taskId });
+}
+
+export async function workspaceDeleteManualFeature(taskId: string): Promise<void> {
+  return invoke('workspace_delete_manual_feature', { taskId });
 }
 
 export async function workspaceUpdateStandaloneTaskStatus(params: {

@@ -109,6 +109,12 @@ pub struct ManualFeatureDto {
     pub feature_slug: Option<String>,
     #[serde(default, rename = "branchName")]
     pub branch_name: Option<String>,
+    #[serde(default, rename = "archivedAt")]
+    pub archived_at: Option<String>,
+    #[serde(default, rename = "archiveReason")]
+    pub archive_reason: Option<String>,
+    #[serde(default, rename = "mergedAt")]
+    pub merged_at: Option<String>,
     #[serde(default = "default_manual_feature_base_branch", rename = "baseBranch")]
     pub base_branch: String,
     #[serde(default, rename = "projectIds")]
