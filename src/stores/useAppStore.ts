@@ -545,6 +545,8 @@ interface AppStore {
   isProjectSwitching: boolean;
   metadataAutoPush: boolean;
   implementExecutionMode: ImplementExecutionMode;
+  pendingAutoLaunchPlanId: string | null;
+  pendingAutoLaunchTaskId: string | null;
   metadataSyncState: MetadataSyncState;
   metadataSyncError: string | null;
   metadataSyncReason: MacroSyncReason | null;
@@ -580,6 +582,8 @@ interface AppStore {
   setProjectSwitchPolicy: (policy: ProjectSwitchPolicy) => Promise<void>;
   setMetadataAutoPush: (enabled: boolean) => void;
   setImplementExecutionMode: (mode: ImplementExecutionMode) => void;
+  armPendingAutoLaunch: (planId: string, taskId: string) => void;
+  clearPendingAutoLaunch: (params?: { planId?: string | null; taskId?: string | null }) => void;
   setMetadataSyncStatus: (params: {
     state: MetadataSyncState;
     error?: string | null;
@@ -698,6 +702,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isProjectSwitching: false,
   metadataAutoPush: false,
   implementExecutionMode: 'semi_auto',
+  pendingAutoLaunchPlanId: null,
+  pendingAutoLaunchTaskId: null,
   metadataSyncState: 'clean',
   metadataSyncError: null,
   metadataSyncReason: null,
@@ -713,7 +719,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   predictedBranches: [],
 
   setMode: (mode) => {
-    set({ mode });
+    set({
+      mode,
+      ...(mode === 'Implement'
+        ? {}
+        : {
+            pendingAutoLaunchPlanId: null,
+            pendingAutoLaunchTaskId: null,
+          }),
+    });
     void savePreference(PREF_KEYS.LAST_ACTIVE_MODE, mode);
     const { selectedGroupId, selectedProjectId } = get();
     void persistSessionContext({
@@ -769,6 +783,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       selectedGroupId: groupId,
       selectedProjectId: nextFocusProjectId,
       selectedTaskId: null,
+      pendingAutoLaunchPlanId: null,
+      pendingAutoLaunchTaskId: null,
       activeArchitectPlanId: null,
       activePlanContext: null,
       planNodes: [],
@@ -813,8 +829,41 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   setImplementExecutionMode: (mode) => {
     const normalized: ImplementExecutionMode = mode === 'full_auto' ? 'full_auto' : 'semi_auto';
-    set({ implementExecutionMode: normalized });
+    set({
+      implementExecutionMode: normalized,
+      ...(normalized === 'full_auto'
+        ? {}
+        : {
+            pendingAutoLaunchPlanId: null,
+            pendingAutoLaunchTaskId: null,
+          }),
+    });
     void savePreference(PREF_KEYS.IMPLEMENT_EXECUTION_MODE, normalized);
+  },
+
+  armPendingAutoLaunch: (planId, taskId) => {
+    set({
+      pendingAutoLaunchPlanId: planId,
+      pendingAutoLaunchTaskId: taskId,
+    });
+  },
+
+  clearPendingAutoLaunch: (params) => {
+    set((state) => {
+      if (params?.planId && state.pendingAutoLaunchPlanId !== params.planId) {
+        return {};
+      }
+      if (params?.taskId && state.pendingAutoLaunchTaskId !== params.taskId) {
+        return {};
+      }
+      if (!state.pendingAutoLaunchPlanId && !state.pendingAutoLaunchTaskId) {
+        return {};
+      }
+      return {
+        pendingAutoLaunchPlanId: null,
+        pendingAutoLaunchTaskId: null,
+      };
+    });
   },
 
   setMetadataSyncStatus: ({ state, error, reason, nextAction, conflictFiles, repositories }) => {
@@ -889,6 +938,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         set({
           selectedGroupId: nextGroupId,
           selectedProjectId: nextProjectId,
+          pendingAutoLaunchPlanId: null,
+          pendingAutoLaunchTaskId: null,
           recentProjects: nextRecentProjects,
           macroEnabledProjects: nextMacroEnabledProjects,
         });
@@ -918,6 +969,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedGroupId: nextGroupId,
         selectedProjectId: nextProjectId,
         selectedTaskId: null,
+        pendingAutoLaunchPlanId: null,
+        pendingAutoLaunchTaskId: null,
         activeArchitectPlanId: null,
         activePlanContext: null,
         planNodes: [],
@@ -960,7 +1013,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  setSelectedTask: (taskId) => set({ selectedTaskId: taskId }),
+  setSelectedTask: (taskId) =>
+    set((state) => ({
+      selectedTaskId: taskId,
+      ...(taskId && state.pendingAutoLaunchTaskId === taskId
+        ? {}
+        : {
+            pendingAutoLaunchPlanId: null,
+            pendingAutoLaunchTaskId: null,
+          }),
+    })),
 
   setEnabledModes: (modes) => set({ enabledModes: modes }),
 

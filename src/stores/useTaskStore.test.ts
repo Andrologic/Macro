@@ -5,6 +5,7 @@ import {
   buildPlanFinalizationSuccessState,
   toBlockedPlanFinalizationState,
 } from './taskStorePlanFinalizationState';
+import { getAutoLaunchCandidateTask, type ImplementTask } from './useTaskStore';
 
 const { clearPlanRuntimeStateSnapshot } = await import('./planRuntimeState');
 
@@ -120,5 +121,61 @@ describe('taskStorePlanFinalizationState', () => {
       blockedPlanFinalization: null,
       lastError: null,
     });
+  });
+});
+
+const buildTask = (overrides: Partial<ImplementTask> = {}): ImplementTask => ({
+  id: 'task-1',
+  plan_id: 'plan-1',
+  project_id: 'project-1',
+  project_ids: ['project-1'],
+  title: 'Task 1',
+  description: 'Task description',
+  status: 'Pending',
+  dependencies: [],
+  estimated_changes: [],
+  assigned_branch: 'feature/plan-1/task-1',
+  branch_name: 'feature/plan-1/task-1',
+  branch_id: null,
+  branch_task_index: 0,
+  blocked_by_task_ids: [],
+  blocked_by: [],
+  is_blocked: false,
+  is_ready: true,
+  sequence_index: 0,
+  execution_targets: [],
+  task_source: 'architect',
+  plan_title: 'Plan 1',
+  plan_status: 'validated',
+  plan_target_branch: 'develop',
+  draft: false,
+  standalone_kind: 'legacy',
+  base_branch: null,
+  feature_slug: null,
+  conversation_id: null,
+  ...overrides,
+});
+
+describe('getAutoLaunchCandidateTask', () => {
+  it('returns the first eligible task for the plan using task queue ordering', () => {
+    const candidate = getAutoLaunchCandidateTask([
+      buildTask({ id: 'completed', status: 'Completed', sequence_index: 0 }),
+      buildTask({ id: 'failed', status: 'Failed', sequence_index: 1 }),
+      buildTask({ id: 'in-progress', status: 'InProgress', sequence_index: 4 }),
+      buildTask({ id: 'pending', status: 'Pending', sequence_index: 2 }),
+    ], 'plan-1');
+
+    expect(candidate?.id).toBe('in-progress');
+  });
+
+  it('prefers tasks inside the current scope and ignores in-review or draft tasks', () => {
+    const candidate = getAutoLaunchCandidateTask([
+      buildTask({ id: 'other-project', project_id: 'project-2', project_ids: ['project-2'], sequence_index: 0 }),
+      buildTask({ id: 'draft', draft: true, sequence_index: 1 }),
+      buildTask({ id: 'review', status: 'InReview', sequence_index: 2 }),
+      buildTask({ id: 'scoped', sequence_index: 3 }),
+    ], 'plan-1', ['project-1']);
+
+    expect(candidate?.id).toBe('scoped');
   });
 });

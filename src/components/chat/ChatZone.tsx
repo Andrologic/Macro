@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
@@ -81,7 +81,9 @@ const ChatZone: React.FC = () => {
     mode,
     agentType,
     setAgentType,
-    implementExecutionMode,
+    pendingAutoLaunchPlanId,
+    pendingAutoLaunchTaskId,
+    clearPendingAutoLaunch,
     selectedGroupId,
     selectedProjectId,
     selectedTaskId,
@@ -198,7 +200,6 @@ const ChatZone: React.FC = () => {
   );
   const isImplementComposerLocked =
     mode === 'Implement' &&
-    implementExecutionMode === 'semi_auto' &&
     Boolean(selectedTask) &&
     !selectedTask?.draft &&
     currentMessages.length === 0;
@@ -207,6 +208,14 @@ const ChatZone: React.FC = () => {
     isConversationPending ||
     isImplementComposerLocked ||
     isImplementTaskSelectionMissing;
+  const isAutoLaunchArmedForSelection = Boolean(
+    mode === 'Implement' &&
+      pendingAutoLaunchPlanId &&
+      pendingAutoLaunchTaskId &&
+      selectedTask &&
+      selectedTask.id === pendingAutoLaunchTaskId &&
+      selectedTask.plan_id === pendingAutoLaunchPlanId
+  );
 
   const implementProgress = useMemo(() => {
     const total = tasks.length;
@@ -294,6 +303,7 @@ const ChatZone: React.FC = () => {
   const pendingConversationJumpRef = useRef<string | null>(null);
   const executionKickoffByConversationRef = useRef<Record<string, boolean>>({});
   const startingExecutionRef = useRef(false);
+  const attemptedAutoLaunchTaskIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (selectedConversationId && selectedConversationId !== previousConversationIdRef.current) {
@@ -321,28 +331,42 @@ const ChatZone: React.FC = () => {
     });
   }, [selectedConversationId, currentMessages.length, scrollContainerRef]);
 
-  const ensureConversation = async (): Promise<string | null> => {
+  const ensureConversation = useCallback(async (): Promise<string | null> => {
     if (selectedConversationId) return selectedConversationId;
     const ensured = await ensureConversationForCurrentMode();
     if (ensured) return ensured;
     if (mode === 'Implement') return null;
     const conversation = await createConversation('New Conversation', null, null);
     return conversation.id;
-  };
+  }, [
+    createConversation,
+    ensureConversationForCurrentMode,
+    mode,
+    selectedConversationId,
+  ]);
 
-  const handleStartExecution = async (notesOverride?: string) => {
-    if (mode !== 'Implement' || !selectedTask || isLoading || isStreaming || isConversationPending) return;
-    if (selectedTask.draft) return;
-    if (!selectedProviderId || !selectedModelId) return;
-    if (startingExecutionRef.current) return;
+  useEffect(() => {
+    if (pendingAutoLaunchTaskId !== attemptedAutoLaunchTaskIdRef.current) {
+      attemptedAutoLaunchTaskIdRef.current = null;
+    }
+  }, [pendingAutoLaunchTaskId]);
+
+  const handleStartExecution = useCallback(async (params?: {
+    notesOverride?: string;
+    trigger?: 'manual' | 'auto';
+  }): Promise<boolean> => {
+    if (mode !== 'Implement' || !selectedTask || isLoading || isStreaming || isConversationPending) return false;
+    if (selectedTask.draft) return false;
+    if (!selectedProviderId || !selectedModelId) return false;
+    if (startingExecutionRef.current) return false;
 
     startingExecutionRef.current = true;
     let conversationId: string | null = null;
 
     try {
       conversationId = await ensureConversation();
-      if (!conversationId) return;
-      if (executionKickoffByConversationRef.current[conversationId]) return;
+      if (!conversationId) return false;
+      if (executionKickoffByConversationRef.current[conversationId]) return false;
 
       executionKickoffByConversationRef.current[conversationId] = true;
 
@@ -351,7 +375,7 @@ const ChatZone: React.FC = () => {
         const latestTask = useTaskStore.getState().getTaskById(selectedTask.id);
         if (!latestTask || latestTask.is_blocked || latestTask.status === 'Failed') {
           delete executionKickoffByConversationRef.current[conversationId];
-          return;
+          return false;
         }
       }
 
@@ -362,7 +386,7 @@ const ChatZone: React.FC = () => {
         branchName: selectedTask.branch_name,
         dependencies: selectedTask.dependencies,
         estimatedChanges: selectedTask.estimated_changes,
-        notes: notesOverride ?? kickoffNotes,
+        notes: params?.notesOverride ?? kickoffNotes,
       });
 
       setKickoffNotes('');
@@ -371,6 +395,13 @@ const ChatZone: React.FC = () => {
         content,
         taskId: selectedTask.id,
       });
+      if (selectedTask.id === pendingAutoLaunchTaskId) {
+        clearPendingAutoLaunch({
+          planId: selectedTask.plan_id,
+          taskId: selectedTask.id,
+        });
+      }
+      return true;
     } catch (error) {
       if (conversationId) {
         delete executionKickoffByConversationRef.current[conversationId];
@@ -379,24 +410,42 @@ const ChatZone: React.FC = () => {
     } finally {
       startingExecutionRef.current = false;
     }
-  };
-
-  useEffect(() => {
-    if (implementExecutionMode !== 'full_auto') return;
-    if (!canStartImplementExecution) return;
-    if (isLoading || isStreaming || isConversationPending) return;
-    if (!selectedProviderId || !selectedModelId) return;
-    void handleStartExecution();
   }, [
-    canStartImplementExecution,
-    implementExecutionMode,
+    clearPendingAutoLaunch,
+    ensureConversation,
     isConversationPending,
     isLoading,
     isStreaming,
-    selectedConversationId,
+    kickoffNotes,
+    mode,
+    pendingAutoLaunchTaskId,
+    selectedModelId,
+    selectedProviderId,
+    selectedTask,
+    selectedTaskProjectSummary,
+    sendMessage,
+    startTask,
+  ]);
+
+  useEffect(() => {
+    if (!isAutoLaunchArmedForSelection) return;
+    if (!canStartImplementExecution) return;
+    if (isLoading || isStreaming || isConversationPending) return;
+    if (!selectedProviderId || !selectedModelId) return;
+    if (attemptedAutoLaunchTaskIdRef.current === pendingAutoLaunchTaskId) return;
+    attemptedAutoLaunchTaskIdRef.current = pendingAutoLaunchTaskId;
+    void handleStartExecution({ trigger: 'auto' }).catch(() => undefined);
+  }, [
+    canStartImplementExecution,
+    isAutoLaunchArmedForSelection,
+    isConversationPending,
+    isLoading,
+    isStreaming,
+    pendingAutoLaunchTaskId,
     selectedProviderId,
     selectedModelId,
     selectedTask?.id,
+    handleStartExecution,
   ]);
 
   const readClipboardImage = (file: File): Promise<{ dataUrl: string; width?: number; height?: number }> => {
@@ -1130,7 +1179,7 @@ const ChatZone: React.FC = () => {
                   </div>
                   <button
                     type="button"
-                    onClick={() => void handleStartExecution()}
+                    onClick={() => void handleStartExecution({ trigger: 'manual' })}
                     disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId}
                     className={cn(
                       'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors shrink-0',
@@ -1140,7 +1189,7 @@ const ChatZone: React.FC = () => {
                     )}
                   >
                     <Icon name="play" size={14} />
-                    {implementExecutionMode === 'full_auto'
+                    {isAutoLaunchArmedForSelection
                       ? t('implement.executionStartingAuto', 'Auto-start armed')
                       : t('implement.startExecution', 'Start execution')}
                   </button>
@@ -1151,7 +1200,7 @@ const ChatZone: React.FC = () => {
                   rows={3}
                   placeholder={t('implement.executionNotesPlaceholder', 'Optional guidance for this task kickoff')}
                   className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary/50"
-                  disabled={implementExecutionMode === 'full_auto'}
+                  disabled={isAutoLaunchArmedForSelection}
                 />
               </div>
             )}
