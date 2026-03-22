@@ -1,10 +1,12 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { useEditorStore } from '../../stores/useEditorStore';
 import { DiffViewer } from '../editor/DiffViewer';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
 
 export const DiffModal: React.FC = () => {
+  const { t } = useTranslation();
   const { isOpen, codeDiff, closeDiffViewer } = useEditorStore();
 
   if (!isOpen || !codeDiff) return null;
@@ -15,7 +17,7 @@ export const DiffModal: React.FC = () => {
         <header className="h-12 px-4 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Icon name="code" size={16} className="text-primary" />
-            <span className="text-sm text-foreground">Review Diff</span>
+            <span className="text-sm text-foreground">{t('git.reviewDiff', 'Review Diff')}</span>
           </div>
           <button
             onClick={closeDiffViewer}
@@ -31,10 +33,10 @@ export const DiffModal: React.FC = () => {
 
         <footer className="h-12 border-t border-border px-4 flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={closeDiffViewer}>
-            Close
+            {t('common.close', 'Close')}
           </Button>
           <Button variant="success" size="sm">
-            Accept changes
+            {t('git.acceptChanges', 'Accept changes')}
           </Button>
         </footer>
       </div>

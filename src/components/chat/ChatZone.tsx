@@ -244,7 +244,7 @@ const ChatZone: React.FC = () => {
     if (mode === 'Architect') {
       return {
         icon: 'compass' as const,
-        title: `Architect - ${selectedGlobalProjectName || 'Select a project'}`,
+        title: `${t('header.architect', 'Architect')} - ${selectedGlobalProjectName || t('header.selectProject', 'Select Project')}`,
         subtitle:
           currentConversation?.title ||
           (focusedProjectName && focusedProjectName !== selectedGlobalProjectName
@@ -256,7 +256,7 @@ const ChatZone: React.FC = () => {
     if (mode === 'Implement') {
       return {
         icon: 'check-square' as const,
-        title: `Implement - ${selectedTask?.title || 'Select a task'}`,
+        title: `${t('header.implement', 'Implement')} - ${selectedTask?.title || t('implement.selectTaskShort', 'Select a task')}`,
         subtitle: projectScopeLabel || currentConversation?.title || null,
       };
     }
@@ -264,14 +264,14 @@ const ChatZone: React.FC = () => {
     if (mode === 'Debug') {
       return {
         icon: 'terminal' as const,
-        title: currentConversation?.title || 'Debug Session',
+        title: currentConversation?.title || t('chat.debugSession', 'Debug Session'),
         subtitle: projectScopeLabel || null,
       };
     }
 
     return {
       icon: 'message-square' as const,
-      title: currentConversation?.title || 'New Conversation',
+      title: currentConversation?.title || t('chat.newConversation', 'New Conversation'),
       subtitle: null,
     };
   }, [
@@ -281,6 +281,7 @@ const ChatZone: React.FC = () => {
     projectScopeLabel,
     selectedGlobalProjectName,
     selectedTask?.title,
+    t,
   ]);
 
   const activePlanNeedsCount = useMemo(() => {
@@ -336,13 +337,14 @@ const ChatZone: React.FC = () => {
     const ensured = await ensureConversationForCurrentMode();
     if (ensured) return ensured;
     if (mode === 'Implement') return null;
-    const conversation = await createConversation('New Conversation', null, null);
+    const conversation = await createConversation(t('chat.newConversation', 'New Conversation'), null, null);
     return conversation.id;
   }, [
     createConversation,
     ensureConversationForCurrentMode,
     mode,
     selectedConversationId,
+    t,
   ]);
 
   useEffect(() => {
@@ -649,7 +651,7 @@ const ChatZone: React.FC = () => {
     if (isStreaming) {
       stopStreaming();
     }
-    await createConversation('Debug Session', null, null);
+    await createConversation(t('chat.debugSession', 'Debug Session'), null, null);
     composerEditorRef.current?.clear();
     setInputValue('');
     setComposerImages([]);
@@ -837,15 +839,15 @@ const ChatZone: React.FC = () => {
                                       onMouseDown={preventImageMouseDown}
                                       onClick={(event) => openImagePreview(event, image)}
                                       className="w-full h-full cursor-zoom-in"
-                                      title="Open image"
+                                      title={t('chat.openImage', 'Open image')}
                                     >
-                                      <img src={image.dataUrl} alt="Attached" className="w-full h-full object-cover" />
+                                      <img src={image.dataUrl} alt={t('chat.attachedImage', 'Attached image')} className="w-full h-full object-cover" />
                                     </button>
                                     <button
                                       type="button"
                                       onClick={() => removeEditingImage(image.id)}
                                       className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/90 border border-border flex items-center justify-center hover:bg-accent transition-colors"
-                                      title="Remove image"
+                                      title={t('chat.removeImage', 'Remove image')}
                                     >
                                       <Icon name="x" size={11} className="text-muted-foreground" />
                                     </button>
@@ -910,9 +912,9 @@ const ChatZone: React.FC = () => {
                                     onMouseDown={preventImageMouseDown}
                                     onClick={(event) => openImagePreview(event, image)}
                                     className="relative w-14 h-14 rounded-md border border-border overflow-hidden bg-muted/30 hover:opacity-90 transition-opacity"
-                                    title="Open image"
+                                    title={t('chat.openImage', 'Open image')}
                                   >
-                                    <img src={image.dataUrl} alt="Attached" className="w-full h-full object-cover" />
+                                    <img src={image.dataUrl} alt={t('chat.attachedImage', 'Attached image')} className="w-full h-full object-cover" />
                                   </button>
                                 ))}
                               </div>
@@ -1063,15 +1065,15 @@ const ChatZone: React.FC = () => {
                       onMouseDown={preventImageMouseDown}
                       onClick={(event) => openImagePreview(event, image)}
                       className="w-full h-full cursor-zoom-in"
-                      title="Open image"
+                      title={t('chat.openImage', 'Open image')}
                     >
-                      <img src={image.dataUrl} alt="Pasted" className="w-full h-full object-cover" />
+                      <img src={image.dataUrl} alt={t('chat.pastedImage', 'Pasted image')} className="w-full h-full object-cover" />
                     </button>
                     <button
                       type="button"
                       onClick={() => removeComposerImage(image.id)}
                       className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/90 border border-border flex items-center justify-center hover:bg-accent transition-colors"
-                      title="Remove image"
+                      title={t('chat.removeImage', 'Remove image')}
                     >
                       <Icon name="x" size={11} className="text-muted-foreground" />
                     </button>

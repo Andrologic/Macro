@@ -20,6 +20,7 @@ import { NotificationCenterPopover } from './NotificationCenterPopover';
 import { cn } from '../../utils/cn';
 
 type MacroConflictContext = 'commit' | 'pull' | 'push' | 'refresh';
+type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
 
 interface CodeStatusSnapshot {
   branch: string;
@@ -28,26 +29,19 @@ interface CodeStatusSnapshot {
 }
 
 const DEFAULT_CODE_STATUS: CodeStatusSnapshot = {
-  branch: 'detached',
+  branch: '',
   isClean: true,
   changedCount: 0,
 };
 
-const formatGitOutput = (output: string | null | undefined): string => {
+const formatGitOutput = (output: string | null | undefined, t: TranslateFn): string => {
   const normalized = (output || '').trim();
-  if (!normalized) return 'Done.';
+  if (!normalized) return t('footer.sync.done', 'Done.');
   const lines = normalized
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
   return lines.slice(-2).join(' | ');
-};
-
-const macroStateLabel: Record<tauriIpc.MacroSyncState, string> = {
-  clean: '@macro clean',
-  pending: '@macro pending',
-  failed: '@macro failed',
-  conflict: '@macro conflict',
 };
 
 const macroStateClass: Record<tauriIpc.MacroSyncState, string> = {
@@ -57,45 +51,53 @@ const macroStateClass: Record<tauriIpc.MacroSyncState, string> = {
   conflict: 'text-red-400',
 };
 
-const formatMacroHint = (snapshot: tauriIpc.MacroBranchSyncDto | null): string => {
+const formatMacroHint = (snapshot: tauriIpc.MacroBranchSyncDto | null, t: TranslateFn): string => {
   if (!snapshot) {
     return '';
   }
 
   switch (snapshot.reason) {
     case 'dirty':
-      return 'commit required';
+      return t('footer.sync.hintCommitRequired', 'commit required');
     case 'ahead':
-      return snapshot.ahead > 0 ? `ahead ${snapshot.ahead}` : 'push required';
+      return snapshot.ahead > 0
+        ? t('footer.sync.hintAhead', 'ahead {{count}}', { count: snapshot.ahead })
+        : t('footer.sync.hintPushRequired', 'push required');
     case 'behind':
-      return snapshot.behind > 0 ? `behind ${snapshot.behind}` : 'pull required';
+      return snapshot.behind > 0
+        ? t('footer.sync.hintBehind', 'behind {{count}}', { count: snapshot.behind })
+        : t('footer.sync.hintPullRequired', 'pull required');
     case 'diverged':
-      return [snapshot.ahead > 0 ? `ahead ${snapshot.ahead}` : '', snapshot.behind > 0 ? `behind ${snapshot.behind}` : '']
-        .filter(Boolean)
-        .join(', ') || 'diverged';
+      return [
+        snapshot.ahead > 0 ? t('footer.sync.hintAhead', 'ahead {{count}}', { count: snapshot.ahead }) : '',
+        snapshot.behind > 0 ? t('footer.sync.hintBehind', 'behind {{count}}', { count: snapshot.behind }) : '',
+      ].filter(Boolean).join(', ') || t('footer.sync.hintDiverged', 'diverged');
     case 'missing_origin':
-      return 'origin missing';
+      return t('footer.sync.hintOriginMissing', 'origin missing');
     case 'missing_upstream':
-      return 'upstream missing';
+      return t('footer.sync.hintUpstreamMissing', 'upstream missing');
     case 'auth_required':
-      return 'auth required';
+      return t('footer.sync.hintAuthRequired', 'auth required');
     case 'network_error':
-      return 'network issue';
+      return t('footer.sync.hintNetworkIssue', 'network issue');
     case 'merge_conflict':
-      return 'resolve conflicts';
+      return t('footer.sync.hintResolveConflicts', 'resolve conflicts');
     default:
       return '';
   }
 };
 
-const toCodeStatusSnapshot = (status: tauriIpc.GitStatusDto): CodeStatusSnapshot => {
+const toCodeStatusSnapshot = (
+  status: tauriIpc.GitStatusDto,
+  detachedLabel: string
+): CodeStatusSnapshot => {
   const changedCount =
     status.staged_files.length +
     status.unstaged_files.length +
     status.untracked_files.length;
 
   return {
-    branch: status.branch || 'detached',
+    branch: status.branch || detachedLabel,
     isClean: status.is_clean,
     changedCount,
   };
@@ -103,6 +105,10 @@ const toCodeStatusSnapshot = (status: tauriIpc.GitStatusDto): CodeStatusSnapshot
 
 export const Footer: React.FC = () => {
   const { t } = useTranslation();
+  const translate = useCallback<TranslateFn>(
+    (key, fallback, options) => String(t(key, { defaultValue: fallback, ...(options || {}) })),
+    [t]
+  );
   const isTauriRuntime = tauriIpc.isTauriAvailable();
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
@@ -128,6 +134,15 @@ export const Footer: React.FC = () => {
   const lastConflictToastAtRef = useRef(0);
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
   const notificationCenterButtonRef = useRef<HTMLButtonElement>(null);
+  const macroStateLabel = useMemo<Record<tauriIpc.MacroSyncState, string>>(
+    () => ({
+      clean: t('footer.sync.macroClean', '@macro clean'),
+      pending: t('footer.sync.macroPending', '@macro pending'),
+      failed: t('footer.sync.macroFailed', '@macro failed'),
+      conflict: t('footer.sync.macroConflict', '@macro conflict'),
+    }),
+    [t]
+  );
 
   const selectedGlobalProject = useMemo(
     () => getGlobalProjectById(projectGroups, selectedGroupId),
@@ -160,18 +175,24 @@ export const Footer: React.FC = () => {
 
       const description =
         context === 'pull'
-          ? '@macro pull reported merge conflicts. Resolve files then re-run sync.'
-          : '@macro has unresolved conflicts. Resolve manually or launch AI guidance.';
-      toast.error('@macro conflict detected', { description });
+          ? t(
+            'footer.sync.macroConflictPullDescription',
+            '@macro pull reported merge conflicts. Resolve files then re-run sync.'
+          )
+          : t(
+            'footer.sync.macroConflictGenericDescription',
+            '@macro has unresolved conflicts. Resolve manually or launch AI guidance.'
+          );
+      toast.error(t('footer.sync.macroConflictDetected', '@macro conflict detected'), { description });
       lastConflictToastAtRef.current = now;
     },
-    []
+    [t]
   );
 
   const refreshCodeStatus = useCallback(async () => {
     if (!isTauriRuntime) {
       setCodeStatus({
-        branch: 'desktop only',
+        branch: t('footer.sync.branchDesktopOnly', 'desktop only'),
         isClean: true,
         changedCount: 0,
       });
@@ -180,7 +201,7 @@ export const Footer: React.FC = () => {
 
     if (!repoPath) {
       setCodeStatus({
-        branch: 'no project',
+        branch: t('footer.sync.branchNoProject', 'no project'),
         isClean: true,
         changedCount: 0,
       });
@@ -189,15 +210,15 @@ export const Footer: React.FC = () => {
 
     try {
       const status = await tauriIpc.gitStatus(repoPath);
-      setCodeStatus(toCodeStatusSnapshot(status));
+      setCodeStatus(toCodeStatusSnapshot(status, t('footer.sync.branchDetached', 'detached')));
     } catch {
       setCodeStatus({
-        branch: 'unavailable',
+        branch: t('footer.sync.branchUnavailable', 'unavailable'),
         isClean: false,
         changedCount: 0,
       });
     }
-  }, [isTauriRuntime, repoPath]);
+  }, [isTauriRuntime, repoPath, t]);
 
   const refreshMacroStatus = useCallback(
     async (ensure = false) => {
@@ -270,12 +291,12 @@ export const Footer: React.FC = () => {
     setCodeAction('pull');
     try {
       const result = await tauriIpc.gitPull({ repoPath });
-      toast.success('Code pull complete', {
-        description: formatGitOutput(result.output),
+      toast.success(t('footer.sync.codePullComplete', 'Code pull complete'), {
+        description: formatGitOutput(result.output, translate),
       });
     } catch (error) {
       const message = toServiceError(error).message;
-      toast.error('Code pull failed', { description: message });
+      toast.error(t('footer.sync.codePullFailed', 'Code pull failed'), { description: message });
     } finally {
       await refreshCodeStatus();
       setCodeAction(null);
@@ -290,12 +311,12 @@ export const Footer: React.FC = () => {
     setCodeAction('push');
     try {
       const result = await tauriIpc.gitPush({ repoPath });
-      toast.success('Code push complete', {
-        description: formatGitOutput(result.output),
+      toast.success(t('footer.sync.codePushComplete', 'Code push complete'), {
+        description: formatGitOutput(result.output, translate),
       });
     } catch (error) {
       const message = toServiceError(error).message;
-      toast.error('Code push failed', { description: message });
+      toast.error(t('footer.sync.codePushFailed', 'Code push failed'), { description: message });
     } finally {
       await refreshCodeStatus();
       setCodeAction(null);
@@ -319,16 +340,16 @@ export const Footer: React.FC = () => {
       if (result.state === 'conflict') {
         presentConflictIfNeeded(result, 'pull');
       } else if (result.state === 'failed') {
-        toast.error('@macro pull failed', {
-          description: getMacroSyncDescription(result) || 'Unknown metadata sync error.',
+        toast.error(t('footer.sync.macroPullFailed', '@macro pull failed'), {
+          description: getMacroSyncDescription(result) || t('footer.sync.macroUnknownSyncError', 'Unknown metadata sync error.'),
         });
       } else if (result.state === 'pending') {
-        toast.info('@macro pull blocked', {
-          description: getMacroSyncDescription(result) || 'Metadata sync still requires another action first.',
+        toast.info(t('footer.sync.macroPullBlocked', '@macro pull blocked'), {
+          description: getMacroSyncDescription(result) || t('footer.sync.macroSyncRequiresAction', 'Metadata sync still requires another action first.'),
         });
       } else {
-        toast.success('@macro pull complete', {
-          description: formatGitOutput(result.output),
+        toast.success(t('footer.sync.macroPullComplete', '@macro pull complete'), {
+          description: formatGitOutput(result.output, translate),
         });
       }
       return result;
@@ -356,16 +377,16 @@ export const Footer: React.FC = () => {
       if (result.state === 'conflict') {
         presentConflictIfNeeded(result, 'commit');
       } else if (result.committed) {
-        toast.success('@macro commit complete', {
-          description: formatGitOutput(result.output),
+        toast.success(t('footer.sync.macroCommitComplete', '@macro commit complete'), {
+          description: formatGitOutput(result.output, translate),
         });
       } else if (result.state === 'failed') {
-        toast.error('@macro commit failed', {
-          description: getMacroSyncDescription(result) || 'Metadata commit failed.',
+        toast.error(t('footer.sync.macroCommitFailed', '@macro commit failed'), {
+          description: getMacroSyncDescription(result) || t('footer.sync.macroCommitFailedDescription', 'Metadata commit failed.'),
         });
       } else {
-        toast.info('@macro commit not needed', {
-          description: formatGitOutput(result.output) || 'Metadata branch is already up to date.',
+        toast.info(t('footer.sync.macroCommitNotNeeded', '@macro commit not needed'), {
+          description: formatGitOutput(result.output, translate) || t('footer.sync.macroAlreadyUpToDate', 'Metadata branch is already up to date.'),
         });
       }
       return result;
@@ -391,19 +412,19 @@ export const Footer: React.FC = () => {
       if (result.state === 'conflict') {
         presentConflictIfNeeded(result, 'push');
       } else if (result.state === 'failed') {
-        toast.error('@macro push failed', {
-          description: getMacroSyncDescription(result) || 'Unknown metadata sync error.',
+        toast.error(t('footer.sync.macroPushFailed', '@macro push failed'), {
+          description: getMacroSyncDescription(result) || t('footer.sync.macroUnknownSyncError', 'Unknown metadata sync error.'),
         });
       } else if (result.state === 'pending') {
-        toast.info('@macro push partially complete', {
+        toast.info(t('footer.sync.macroPushPartiallyComplete', '@macro push partially complete'), {
           description:
             getMacroSyncDescription(result) ||
-            formatGitOutput(result.output) ||
-            'Metadata sync still has pending local or remote differences.',
+            formatGitOutput(result.output, translate) ||
+            t('footer.sync.macroPendingDifferences', 'Metadata sync still has pending local or remote differences.'),
         });
       } else {
-        toast.success('@macro push complete', {
-          description: formatGitOutput(result.output),
+        toast.success(t('footer.sync.macroPushComplete', '@macro push complete'), {
+          description: formatGitOutput(result.output, translate),
         });
       }
       return result;
@@ -431,13 +452,16 @@ export const Footer: React.FC = () => {
 
     try {
       await openConflictAssistant(prompt);
-      toast.success('AI conflict assistant started', {
-        description: 'Switched to Debug mode and posted the conflict context.',
+      toast.success(t('footer.sync.aiConflictAssistantStarted', 'AI conflict assistant started'), {
+        description: t(
+          'footer.sync.aiConflictAssistantDescription',
+          'Switched to Debug mode and posted the conflict context.'
+        ),
       });
       setShowConflictModal(false);
     } catch (error) {
       const message = toServiceError(error).message;
-      toast.error('Failed to start AI assistant', { description: message });
+      toast.error(t('footer.sync.aiConflictAssistantStartFailed', 'Failed to start AI assistant'), { description: message });
     }
   };
 
@@ -466,11 +490,13 @@ export const Footer: React.FC = () => {
   };
 
   const metadataLabel =
-    macroStateLabel[metadataSyncState as tauriIpc.MacroSyncState] || '@macro unknown';
+    macroStateLabel[metadataSyncState as tauriIpc.MacroSyncState] || t('footer.sync.macroUnknown', '@macro unknown');
   const metadataLabelClass =
     macroStateClass[metadataSyncState as tauriIpc.MacroSyncState] || 'text-muted-foreground';
   const codeStateClass = codeStatus.isClean ? 'text-emerald-400' : 'text-amber-400';
-  const codeStateLabel = codeStatus.isClean ? 'clean' : `${codeStatus.changedCount} changes`;
+  const codeStateLabel = codeStatus.isClean
+    ? t('footer.sync.clean', 'clean')
+    : t('footer.sync.codeChanges', '{{count}} changes', { count: codeStatus.changedCount });
   const macroConflictEntries = useMemo<ConflictResolutionEntry[]>(() => {
     const repositories = metadataSyncRepositories.length > 0
       ? metadataSyncRepositories
@@ -499,19 +525,24 @@ export const Footer: React.FC = () => {
     focusedProject?.id,
   ]);
   const macroHint = useMemo(() => {
-    const baseHint = formatMacroHint(macroSnapshot);
+    const baseHint = formatMacroHint(macroSnapshot, translate);
     if (metadataSyncRepositories.length <= 1) {
       return baseHint;
     }
-    return [baseHint, `${metadataSyncRepositories.length} repos`].filter(Boolean).join(' | ');
-  }, [macroSnapshot, metadataSyncRepositories.length]);
+    return [
+      baseHint,
+      t('footer.sync.repositoriesCount', '{{count}} repos', { count: metadataSyncRepositories.length }),
+    ].filter(Boolean).join(' | ');
+  }, [macroSnapshot, metadataSyncRepositories.length, t, translate]);
   const macroTooltip = useMemo(() => {
     const description = getMacroSyncDescription(macroSnapshot ?? {
       error: metadataSyncError,
       reason: metadataSyncReason,
     });
     const nextAction = metadataSyncNextAction
-      ? `Next action: ${metadataSyncNextAction.replace(/_/g, ' ')}.`
+      ? t('footer.sync.nextAction', 'Next action: {{action}}.', {
+        action: metadataSyncNextAction.replace(/_/g, ' '),
+      })
       : null;
     const repositorySummary = metadataSyncRepositories
       .map((repository) => {
@@ -527,6 +558,7 @@ export const Footer: React.FC = () => {
     metadataSyncNextAction,
     metadataSyncReason,
     metadataSyncRepositories,
+    t,
   ]);
   const hasUnreadNotificationDot = useMemo(
     () => hasUnreadNotifications(notificationItems),
@@ -543,7 +575,7 @@ export const Footer: React.FC = () => {
             <span className="flex items-center gap-1 min-w-0" title={selectedGlobalProject?.name || undefined}>
               <Icon name="layers" size={12} className="text-primary shrink-0" />
               <span className="truncate text-foreground">
-                {selectedGlobalProject?.name || 'No global project'}
+                {selectedGlobalProject?.name || t('project.noGroup', 'No global project')}
               </span>
             </span>
             <span className="flex items-center gap-1 min-w-0" title={codeStatus.branch}>
@@ -571,7 +603,7 @@ export const Footer: React.FC = () => {
               size="sm"
               variant="ghost"
               className="h-6 px-2 text-[11px]"
-              title="Refresh code and @macro sync status"
+              title={t('footer.sync.refreshTitle', 'Refresh code and @macro sync status')}
               disabled={controlsDisabled || isRefreshing || !!codeAction || !!macroAction}
               onClick={() => void refreshFooterStatus({ showBusy: true })}
             >
@@ -589,7 +621,9 @@ export const Footer: React.FC = () => {
               disabled={controlsDisabled || !repoPath || !!codeAction}
               onClick={() => void handleCodePull()}
             >
-              {codeAction === 'pull' ? 'Pulling...' : 'Pull'}
+              {codeAction === 'pull'
+                ? t('footer.sync.pulling', 'Pulling...')
+                : t('footer.sync.pull', 'Pull')}
             </Button>
 
             <Button
@@ -599,7 +633,9 @@ export const Footer: React.FC = () => {
               disabled={controlsDisabled || !repoPath || !!codeAction}
               onClick={() => void handleCodePush()}
             >
-              {codeAction === 'push' ? 'Pushing...' : 'Push'}
+              {codeAction === 'push'
+                ? t('footer.sync.pushing', 'Pushing...')
+                : t('footer.sync.push', 'Push')}
             </Button>
           </div>
 
@@ -621,7 +657,9 @@ export const Footer: React.FC = () => {
               disabled={controlsDisabled || !!macroAction}
               onClick={() => void handleMacroCommit()}
             >
-              {macroAction === 'commit' ? '@macro committing...' : '@macro commit'}
+              {macroAction === 'commit'
+                ? t('footer.sync.macroCommitting', '@macro committing...')
+                : t('footer.sync.macroCommit', '@macro commit')}
             </Button>
 
             <Button
@@ -631,7 +669,9 @@ export const Footer: React.FC = () => {
               disabled={controlsDisabled || !!macroAction}
               onClick={() => void handleMacroPull()}
             >
-              {macroAction === 'pull' ? '@macro pulling...' : '@macro pull'}
+              {macroAction === 'pull'
+                ? t('footer.sync.macroPulling', '@macro pulling...')
+                : t('footer.sync.macroPull', '@macro pull')}
             </Button>
 
             <Button
@@ -641,7 +681,9 @@ export const Footer: React.FC = () => {
               disabled={controlsDisabled || !!macroAction}
               onClick={() => void handleMacroPush()}
             >
-              {macroAction === 'push' ? '@macro pushing...' : '@macro push'}
+              {macroAction === 'push'
+                ? t('footer.sync.macroPushing', '@macro pushing...')
+                : t('footer.sync.macroPush', '@macro push')}
             </Button>
 
             {metadataSyncState === 'conflict' && (
@@ -651,7 +693,7 @@ export const Footer: React.FC = () => {
                 className="h-6 px-2 text-[11px]"
                 onClick={() => setShowConflictModal(true)}
               >
-                Resolve
+                {t('footer.sync.resolve', 'Resolve')}
               </Button>
             )}
 
@@ -696,15 +738,18 @@ export const Footer: React.FC = () => {
 
           <div className="relative w-full max-w-3xl rounded-xl border border-border bg-card p-4 shadow-2xl">
             <ConflictResolutionPanel
-              title="@macro sync conflict"
-              description="Resolve the reported metadata blockers, then retry the same @macro sync step explicitly."
+              title={t('footer.sync.macroConflictTitle', '@macro sync conflict')}
+              description={t(
+                'footer.sync.macroConflictDescription',
+                'Resolve the reported metadata blockers, then retry the same @macro sync step explicitly.'
+              )}
               repositories={macroConflictEntries}
               error={metadataSyncError}
-              retryLabel="Retry sync"
+              retryLabel={t('footer.sync.retrySync', 'Retry sync')}
               retryDisabled={Boolean(macroAction)}
               retryLoading={Boolean(macroAction) || isRefreshing}
               onDismiss={() => setShowConflictModal(false)}
-              dismissLabel="Close"
+              dismissLabel={t('common.close', 'Close')}
               onRetry={() => void handleRetryMacroSync()}
               onUseAiAssistant={() => void openAiConflictAssistant()}
             />

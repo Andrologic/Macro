@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { CodeViewer } from '../ui/CodeViewer';
 import type { CodeDiff } from '../../types';
 import { Icon } from '../ui/Icon';
@@ -8,6 +9,8 @@ interface DiffViewerProps {
 }
 
 export const DiffViewer: React.FC<DiffViewerProps> = ({ diff }) => {
+  const { t } = useTranslation();
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -20,12 +23,12 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({ diff }) => {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div>
-          <div className="text-xs text-muted-foreground mb-2">Before</div>
-          <CodeViewer code={diff.old_content || '// empty'} language={diff.language as any} />
+          <div className="text-xs text-muted-foreground mb-2">{t('diffViewer.before', 'Before')}</div>
+          <CodeViewer code={diff.old_content || t('diffViewer.empty', '// empty')} language={diff.language as any} />
         </div>
         <div>
-          <div className="text-xs text-muted-foreground mb-2">After</div>
-          <CodeViewer code={diff.new_content || '// empty'} language={diff.language as any} />
+          <div className="text-xs text-muted-foreground mb-2">{t('diffViewer.after', 'After')}</div>
+          <CodeViewer code={diff.new_content || t('diffViewer.empty', '// empty')} language={diff.language as any} />
         </div>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import * as tauriIpc from '../../services/tauriIpc';
@@ -155,6 +156,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
 };
 
 export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ className }) => {
+  const { t } = useTranslation();
   const openFileViewer = useCodeFileStore((state) => state.openFileViewer);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
@@ -184,7 +186,7 @@ export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ 
 
   const loadTree = useCallback(async () => {
     if (!tauriIpc.isTauriAvailable()) {
-      setLastError('Tauri runtime required to browse the workspace tree.');
+      setLastError(t('debug.workspaceExplorerTauriRequired', 'Tauri runtime required to browse the workspace tree.'));
       setFilePaths([]);
       return;
     }
@@ -226,7 +228,7 @@ export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ 
     } finally {
       setIsLoading(false);
     }
-  }, [activeRootPath]);
+  }, [activeRootPath, t]);
 
   useEffect(() => {
     void loadTree();
@@ -271,7 +273,7 @@ export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ 
         <div className="min-w-0 flex-1">
           <h1 className="text-sm font-semibold text-foreground flex items-center gap-2 min-w-0">
             <Icon name="folder-open" size={16} className="text-primary shrink-0" />
-            <span className="truncate">{activeProject?.name || 'Explorer'}</span>
+            <span className="truncate">{activeProject?.name || t('debug.workspaceExplorer', 'Explorer')}</span>
           </h1>
         </div>
         <div className="flex items-center gap-2">
@@ -291,7 +293,7 @@ export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ 
           <button
             onClick={() => void loadTree()}
             className="p-1 rounded hover:bg-accent transition-colors"
-            title="Refresh tree"
+            title={t('debug.refreshTree', 'Refresh tree')}
           >
             <Icon name="refresh-cw" size={14} className="text-muted-foreground" />
           </button>
@@ -299,13 +301,15 @@ export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ 
       </div>
 
       <div className="px-4 py-2 border-b border-border bg-muted/20">
-        <p className="text-[11px] text-muted-foreground">Explorer root (selected project)</p>
+        <p className="text-[11px] text-muted-foreground">
+          {t('debug.workspaceExplorerRoot', 'Explorer root (selected project)')}
+        </p>
         <p className="text-xs font-mono text-foreground truncate">{activeRootPath}</p>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
         {isLoading && (
-          <div className="px-2 py-4 text-sm text-muted-foreground">Loading files…</div>
+          <div className="px-2 py-4 text-sm text-muted-foreground">{t('debug.loadingFiles', 'Loading files…')}</div>
         )}
 
         {!isLoading && lastError && (
@@ -313,7 +317,7 @@ export const DebugWorkspaceExplorer: React.FC<DebugWorkspaceExplorerProps> = ({ 
         )}
 
         {!isLoading && !lastError && tree.length === 0 && (
-          <div className="px-2 py-4 text-sm text-muted-foreground">No files found.</div>
+          <div className="px-2 py-4 text-sm text-muted-foreground">{t('debug.noFilesFound', 'No files found.')}</div>
         )}
 
         {!isLoading && !lastError && tree.map((node) => (

@@ -1,85 +1,79 @@
-/**
- * i18n Configuration
- *
- * Internationalization setup with react-i18next.
- * Supports language detection and persistence.
- */
-
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
+import {
+  DEFAULT_LANGUAGE,
+  SUPPORTED_LANGUAGE_CODES,
+  SUPPORTED_LANGUAGES,
+  resolveSupportedLanguage,
+  type SupportedLanguage,
+} from "./languages";
+import { resources } from "./resources";
 
-// Import translation resources
-import en from "./locales/en.json";
-import fr from "./locales/fr.json";
+const syncDocumentLanguage = (language: string | null | undefined) => {
+  if (typeof document === "undefined") {
+    return;
+  }
 
-// Supported languages
-export const SUPPORTED_LANGUAGES = {
-  en: { nativeName: "English", flag: "🇬🇧" },
-  fr: { nativeName: "Français", flag: "🇫🇷" },
-  // Future languages can be added here:
-  // es: { nativeName: "Español", flag: "🇪🇸" },
-  // de: { nativeName: "Deutsch", flag: "🇩🇪" },
-  // ja: { nativeName: "日本語", flag: "🇯🇵" },
-  // zh: { nativeName: "中文", flag: "🇨🇳" },
-} as const;
-
-export type SupportedLanguage = keyof typeof SUPPORTED_LANGUAGES;
-
-// Translation resources
-const resources = {
-  en: { translation: en },
-  fr: { translation: fr },
+  document.documentElement.lang = resolveSupportedLanguage(language, DEFAULT_LANGUAGE);
 };
 
-// Initialize i18next
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
     resources,
-    fallbackLng: "en",
-    supportedLngs: Object.keys(SUPPORTED_LANGUAGES),
-
-    // Language detection options
+    fallbackLng: DEFAULT_LANGUAGE,
+    supportedLngs: SUPPORTED_LANGUAGE_CODES,
+    nonExplicitSupportedLngs: true,
+    load: "languageOnly",
+    lowerCaseLng: true,
+    cleanCode: true,
     detection: {
       order: ["localStorage", "navigator", "htmlTag"],
       lookupLocalStorage: "macro_language",
       caches: ["localStorage"],
     },
-
     interpolation: {
-      escapeValue: false, // React already escapes
+      escapeValue: false,
     },
-
-    // React specific options
     react: {
-      useSuspense: false, // Disable suspense to avoid loading states
+      useSuspense: false,
     },
   });
 
-// Helper to change language and persist
+i18n.on("languageChanged", (language) => {
+  syncDocumentLanguage(language);
+});
+syncDocumentLanguage(i18n.resolvedLanguage || i18n.language);
+
 export async function changeLanguage(lang: SupportedLanguage): Promise<void> {
   await i18n.changeLanguage(lang);
-  
-  // Show toast notification
+
   try {
     const { toast } = await import("../components/ui/Toaster");
     const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
     toast.success(i18n.t("toast.languageChanged", { language: languageName }));
   } catch {
-    // Toast not available
+    // Toast not available.
   }
 
-  // Also save to Tauri store if available
   try {
     const { savePreference, PREF_KEYS } = await import(
       "../services/preferences"
     );
     await savePreference(PREF_KEYS.LANGUAGE, lang);
   } catch {
-    // Fallback already handled by i18next localStorage detection
+    // localStorage persistence remains as fallback.
   }
 }
+
+export {
+  DEFAULT_LANGUAGE,
+  SUPPORTED_LANGUAGE_CODES,
+  SUPPORTED_LANGUAGES,
+  resolveSupportedLanguage,
+};
+export type { SupportedLanguage };
 
 export default i18n;

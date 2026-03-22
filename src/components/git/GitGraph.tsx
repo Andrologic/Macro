@@ -1,6 +1,8 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
+import { formatDate } from '../../i18n/format';
 import { GitCommit, CommitStatus } from '../../types';
 
 interface GitGraphProps {
@@ -20,11 +22,13 @@ export const GitGraph: React.FC<GitGraphProps> = ({
   selectedCommitId,
   onCommitClick,
 }) => {
+  const { t } = useTranslation();
+
   if (commits.length === 0) {
     return (
       <div className="flex-1 items-center justify-center text-muted-foreground">
         <Icon name="git-commit" size={48} className="text-muted-foreground mx-auto mb-4" />
-        <p className="text-sm">No commits in this branch</p>
+        <p className="text-sm">{t('git.noCommitsInBranch', 'No commits in this branch')}</p>
       </div>
     );
   }
@@ -39,14 +43,11 @@ export const GitGraph: React.FC<GitGraphProps> = ({
         {commits.map((commit, index) => {
           const config = statusConfig[commit.status];
           const isSelected = selectedCommitId === commit.id;
-          
-          // Vertical layout: Y increases for older commits (smaller Y = top = newest)
           const x = 50;
           const y = 60 + (commits.length - 1 - index) * 80;
 
           return (
             <g key={commit.id}>
-              {/* Vertical line to next (older) commit */}
               {index < commits.length - 1 && (
                 <line
                   x1={x}
@@ -58,7 +59,6 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                 />
               )}
 
-              {/* Commit circle */}
               <circle
                 cx={x}
                 cy={y}
@@ -74,7 +74,6 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                 }}
               />
 
-              {/* Hash label (next to circle) */}
               <text
                 x={x + 35}
                 y={y + 4}
@@ -89,7 +88,6 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                 {commit.hash.substring(0, 7)}
               </text>
 
-              {/* Message (next to hash) */}
               <text
                 x={x + 100}
                 y={y + 4}
@@ -104,11 +102,10 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                 }}
               >
                 {commit.message.length > 50
-                  ? commit.message.substring(0, 50) + '...'
+                  ? `${commit.message.substring(0, 50)}...`
                   : commit.message}
               </text>
 
-              {/* Task badge (when selected) */}
               {isSelected && commit.task_id && (
                 <rect
                   x={x + 35}
@@ -132,7 +129,6 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                 </text>
               )}
 
-              {/* Author & date (when selected) */}
               {isSelected && (
                 <text
                   x={x + 35}
@@ -141,7 +137,7 @@ export const GitGraph: React.FC<GitGraphProps> = ({
                   className="fill-muted-foreground pointer-events-none select-none"
                   style={{ fontSize: '9px' }}
                 >
-                  {commit.author} • {new Date(commit.date).toLocaleDateString('fr-FR', {
+                  {commit.author} • {formatDate(commit.date, {
                     day: 'numeric',
                     month: 'short',
                   })}
@@ -152,21 +148,20 @@ export const GitGraph: React.FC<GitGraphProps> = ({
         })}
       </svg>
 
-      {/* Legend */}
       <div className="absolute bottom-4 left-4 bg-card border border-border rounded-lg p-3">
-        <div className="text-xs font-medium text-foreground mb-2">Légende</div>
+        <div className="text-xs font-medium text-foreground mb-2">{t('git.legend', 'Legend')}</div>
         <div className="flex gap-4">
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded-full bg-emerald-500" />
-            <span className="text-xs text-muted-foreground">Fait</span>
+            <span className="text-xs text-muted-foreground">{t('git.done', 'Done')}</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded-full bg-primary" />
-            <span className="text-xs text-muted-foreground">Planifié</span>
+            <span className="text-xs text-muted-foreground">{t('git.planned', 'Planned')}</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded-full bg-amber-500 animate-pulse-slow" />
-            <span className="text-xs text-muted-foreground">En cours</span>
+            <span className="text-xs text-muted-foreground">{t('git.inProgress', 'In progress')}</span>
           </div>
         </div>
       </div>

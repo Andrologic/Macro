@@ -20,11 +20,13 @@
     "install:tauri": "bun install && cd src-tauri && cargo build --release",
     "clean": "rm -rf dist node_modules src-tauri/target bun.lockb bun.lock .vite",
     "clean:cache": "rm -rf node_modules/.vite ~/.bun/install/cache",
+    "i18n:audit": "node dev/i18n/audit.mjs",
+    "i18n:generate": "python dev/i18n/generate_locales.py",
     "typecheck": "bunx tsc --noEmit",
     "lint": "bunx eslint . --ext .ts,.tsx",
     "update": "bun update",
     "test": "bun test",
-    "ci": "bun install --frozen-lockfile && bun run typecheck && bun run lint && bun run build"
+    "ci": "bun install --frozen-lockfile && bun run typecheck && bun run lint && bun run i18n:audit && bun run build"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",

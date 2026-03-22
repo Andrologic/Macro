@@ -1,5 +1,6 @@
 import React from 'react';
 import { Icon } from './Icon';
+import i18n from '../../i18n';
 import { cn } from '../../utils/cn';
 
 interface SearchBarProps {
@@ -13,7 +14,7 @@ interface SearchBarProps {
 export const SearchBar: React.FC<SearchBarProps> = ({
   value,
   onChange,
-  placeholder = 'Search...',
+  placeholder = i18n.t('common.searchPlaceholder', 'Search...'),
   className,
   showClear = true,
 }) => {
@@ -42,7 +43,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
         <button
           onClick={handleClear}
           className="flex-shrink-0 p-0.5 hover:bg-accent rounded transition-colors mx-1"
-          aria-label="Clear search"
+          aria-label={i18n.t('common.clearSearch', 'Clear search')}
         >
           <Icon name="x" size={14} className="text-muted-foreground hover:text-foreground" />
         </button>

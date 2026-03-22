@@ -1,9 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 
 export const ProviderDropdown: React.FC = () => {
+  const { t } = useTranslation();
   const { providerConfigs, selectedProviderId, selectProvider } = useProviderStore();
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -50,7 +52,7 @@ export const ProviderDropdown: React.FC = () => {
         <div className="flex items-center gap-2 min-w-0">
           <Icon name={selectedProvider?.isLocal ? 'hard-drive' : 'cloud'} size={12} className="text-muted-foreground shrink-0" />
           <span className="text-xs text-muted-foreground truncate">
-            {selectedProvider?.name ?? 'Select Provider'}
+            {selectedProvider?.name ?? t('chat.selectProvider', 'Select a provider')}
           </span>
         </div>
         <Icon name="chevron-down" size={10} className="text-muted-foreground shrink-0" />
@@ -84,7 +86,7 @@ export const ProviderDropdown: React.FC = () => {
 
           {enabledProviders.length === 0 && (
             <div className="px-3 py-2 text-sm text-muted-foreground">
-              No providers configured
+              {t('chat.noProvidersConfigured', 'No providers configured')}
             </div>
           )}
         </div>

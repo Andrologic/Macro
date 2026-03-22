@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import { MermaidRenderer } from './MermaidRenderer';
@@ -88,6 +89,7 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
   blockKey: _blockKey,
   children,
 }) => {
+  const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
 
   return (
@@ -103,7 +105,7 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
           className="text-primary/80 shrink-0"
         />
         <span className="text-xs font-medium text-primary/80">
-          Thinking...
+          {t('chat.thinking', 'Thinking...')}
         </span>
         {!isOpen && (
           <span className="text-xs text-muted-foreground/60 truncate flex-1">
@@ -129,13 +131,14 @@ const ToolCallBlock: React.FC<{ toolName: string; detail?: string; status: 'runn
   detail,
   status,
 }) => {
+  const { t } = useTranslation();
   return (
     <div className="my-2 rounded-lg border border-border bg-card/60 px-2.5 py-1.5">
       <div className="flex items-center gap-2 min-w-0">
         <div className="w-5 h-5 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
           <Icon name="tool" size={11} className="text-primary" />
         </div>
-        <span className="text-xs text-muted-foreground shrink-0">Tool</span>
+        <span className="text-xs text-muted-foreground shrink-0">{t('chat.tool', 'Tool')}</span>
         <span className="text-xs font-medium text-foreground truncate">{toolName}</span>
         {detail && (
           <span className="text-xs text-muted-foreground/80 font-mono truncate">
@@ -162,6 +165,7 @@ interface CodeBlockProps {
 }
 
 const CodeBlock: React.FC<CodeBlockProps> = ({ content, language = 'text', blockKey }) => {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   const normalizedLang = useMemo(() => {
@@ -212,7 +216,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ content, language = 'text', block
           )}
         >
           <Icon name={copied ? 'check' : 'copy'} size={12} />
-          {copied ? 'Copied!' : 'Copy'}
+          {copied ? t('chat.copied', 'Copied') : t('chat.copyCode', 'Copy code')}
         </button>
       </div>
 
