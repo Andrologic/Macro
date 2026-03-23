@@ -84,6 +84,11 @@ const gitMergeCheckMock = mock(async (_params: { repoPath: string }) => ({
   hasChanges: true,
 }));
 const gitMergeMock = mock(async (_params: { repoPath: string }) => 'merge-ok');
+const gitPullMock = mock(async (_params: { repoPath: string; branch?: string }) => ({
+  branch: _params.branch || 'develop',
+  remote: 'origin',
+  output: 'up to date',
+}));
 const gitBranchListMock = mock(async (_repoPath: string) => createGitBranches([
   'develop',
   'plan/checkout',
@@ -91,6 +96,7 @@ const gitBranchListMock = mock(async (_repoPath: string) => createGitBranches([
   'feature/checkout/checkout-api',
 ]));
 const gitBranchDeleteMock = mock(async (_params: { repoPath: string; branchName: string; force?: boolean }) => undefined);
+const gitBranchDeleteRemoteMock = mock(async (_params: { repoPath: string; branchName: string }) => undefined);
 const gitCheckoutMock = mock(async (_params: { repoPath: string; branchOrCommit: string }) => undefined);
 const gitBranchCreateMock = mock(async (_params: { repoPath: string; branchName: string; fromRef: string }) => undefined);
 const gitWorktreeRemoveMock = mock(async (_params: { repoPath: string; taskId: string }) => undefined);
@@ -230,6 +236,7 @@ describe('architectGitFlowService', () => {
 
     gitMergeMock.mockReset();
     gitMergeMock.mockImplementation(async ({ repoPath }: { repoPath: string }) => `merged:${repoPath}`);
+    gitPullMock.mockReset();
 
     gitBranchListMock.mockReset();
     gitBranchListMock.mockImplementation(async (repoPath: string) => createGitBranches([
@@ -239,6 +246,7 @@ describe('architectGitFlowService', () => {
     ]));
 
     gitBranchDeleteMock.mockReset();
+    gitBranchDeleteRemoteMock.mockReset();
     gitCheckoutMock.mockReset();
     gitBranchCreateMock.mockReset();
     gitWorktreeRemoveMock.mockReset();
@@ -257,8 +265,10 @@ describe('architectGitFlowService', () => {
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
         gitMerge: gitMergeMock,
+        gitPull: gitPullMock,
         gitBranchList: gitBranchListMock,
         gitBranchDelete: gitBranchDeleteMock,
+        gitBranchDeleteRemote: gitBranchDeleteRemoteMock,
         gitCheckout: gitCheckoutMock,
         gitBranchCreate: gitBranchCreateMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
@@ -724,8 +734,10 @@ describe('architectGitFlowService', () => {
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
         gitMerge: gitMergeMock,
+        gitPull: gitPullMock,
         gitBranchList: gitBranchListMock,
         gitBranchDelete: gitBranchDeleteMock,
+        gitBranchDeleteRemote: gitBranchDeleteRemoteMock,
         gitCheckout: gitCheckoutMock,
         gitBranchCreate: gitBranchCreateMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
