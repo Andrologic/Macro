@@ -178,6 +178,48 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.defaultWorkspacePath).toBe('projects/macro-web');
   });
 
+  it('returns an empty execution context in chat mode even when a project is selected', () => {
+    const context = resolveProjectExecutionContext({
+      mode: 'Chat',
+      projects,
+      projectGroups,
+      selectedGroupId: 'macro-suite',
+      selectedProjectId: 'macro-api',
+      selectedTaskId: 'task-1',
+      conversations: [
+        {
+          id: 'conv-1',
+          title: 'Chat',
+          description: '',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-05T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      conversationId: 'conv-1',
+    });
+
+    expect(context).toEqual({
+      groupId: null,
+      groupName: null,
+      projectIds: [],
+      projectMounts: [],
+      focusedProjectId: null,
+      virtualRootEnabled: false,
+      workspacePathsByProjectId: {},
+      defaultWorkspacePath: null,
+      projectId: null,
+      projectName: null,
+      taskId: null,
+      branchName: null,
+      workspacePath: null,
+    });
+  });
+
   it('falls back to the primary subproject of the selected global project when no focus repo is set', () => {
     const context = resolveProjectExecutionContext({
       mode: 'Architect',

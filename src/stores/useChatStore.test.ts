@@ -1104,6 +1104,40 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     }
   });
 
+  it('keeps chat conversations detached from task and project context', async () => {
+    appState.mode = 'Chat';
+    appState.selectedGroupId = 'group-1';
+    appState.selectedProjectId = 'project-1';
+    appState.selectedTaskId = 'task-1';
+    taskStoreState.tasks = [createImplementTask()];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [],
+      messages: [],
+      selectedConversationId: null,
+      selectedConversationIdsByMode: {},
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    const conversation = await useChatStore.getState().createConversation(
+      'New Conversation',
+      'task-1',
+      'project-1',
+      'group-1'
+    );
+
+    expect(conversation.task_id).toBeNull();
+    expect(conversation.project_id).toBeNull();
+    expect(conversation.group_id).toBeNull();
+    expect(useChatStore.getState().selectedConversationIdsByMode.Chat).toBe(conversation.id);
+  });
+
   it('recreates a fresh implement conversation after deleting the previous one', async () => {
     const originalNow = Date.now;
     Date.now = () => 1773920000000;
