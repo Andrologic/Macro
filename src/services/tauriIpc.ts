@@ -833,6 +833,18 @@ export async function gitBranchDelete(params: {
   });
 }
 
+export async function gitBranchDeleteRemote(params: {
+  repoPath: string;
+  branchName: string;
+  remote?: string;
+}): Promise<void> {
+  return invoke('git_branch_delete_remote', {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    remote: params.remote ?? null,
+  });
+}
+
 export async function gitCheckout(params: {
   repoPath: string;
   branchOrCommit: string;

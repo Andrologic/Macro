@@ -20,6 +20,7 @@ import {
   finalizePlanIntoBaseBranch,
   mergeFeatureBranchIntoPlanBranch,
 } from '../services/architectGitFlowService';
+import { shouldSyncTargetBranchBeforeFinish } from '../services/architectGitNaming';
 import {
   getArchitectPlan,
   getGitFlowBaseBranch,
@@ -90,6 +91,19 @@ const getExecutionTargets = (task: CatalogedImplementTask): TaskExecutionTarget[
 
 const getPrimaryExecutionTarget = (task: CatalogedImplementTask): TaskExecutionTarget | null => {
   return getExecutionTargets(task)[0] || null;
+};
+
+const getTaskIntegrationBranch = (
+  task: CatalogedImplementTask,
+  target: TaskExecutionTarget
+): string | null => {
+  if (target.planBranchName) {
+    return target.planBranchName;
+  }
+  if (task.task_source === 'architect') {
+    return null;
+  }
+  return resolveTargetBranch(task.base_branch || getGitFlowBaseBranch());
 };
 
 const getPreferredExecutionTarget = (
@@ -185,6 +199,42 @@ const resolveStandaloneStartRef = async (
   }
 
   return task.base_branch || getGitFlowBaseBranch();
+};
+
+const resolveTaskStartRef = async (
+  task: CatalogedImplementTask,
+  target: TaskExecutionTarget,
+  repoPath: string
+): Promise<string | null> => {
+  if (task.task_source === 'architect') {
+    return target.planBranchName || null;
+  }
+  return resolveStandaloneStartRef(task, repoPath);
+};
+
+const updateTaskRuntimeAfterCleanup = (
+  state: Pick<TaskStore, 'branchWorktrees' | 'activeBranchName' | 'activeRepositoryPath'>,
+  task: CatalogedImplementTask,
+  removedWorktreeKeys: string[]
+) => {
+  const removedKeySet = new Set(removedWorktreeKeys);
+  const removedPaths = new Set(
+    removedWorktreeKeys
+      .map((key) => state.branchWorktrees[key])
+      .filter((value): value is string => Boolean(value))
+  );
+
+  return {
+    branchWorktrees: Object.fromEntries(
+      Object.entries(state.branchWorktrees).filter(([key]) => !removedKeySet.has(key))
+    ),
+    activeBranchName:
+      state.activeBranchName === task.assigned_branch ? null : state.activeBranchName,
+    activeRepositoryPath:
+      state.activeRepositoryPath && removedPaths.has(state.activeRepositoryPath)
+        ? null
+        : state.activeRepositoryPath,
+  };
 };
 
 const buildStandalonePublicationMap = async (
@@ -456,6 +506,7 @@ interface TaskStore {
   startTask: (taskId: string) => Promise<void>;
   startReview: (taskId: string) => Promise<void>;
   requestTaskChanges: (taskId: string) => Promise<void>;
+  finishTask: (taskId: string, options?: CompleteTaskOptions) => Promise<void>;
   completeTask: (taskId: string, options?: CompleteTaskOptions) => Promise<void>;
   finalizePlan: (planId: string) => Promise<void>;
   markTaskAwaitingResponse: (taskId: string) => Promise<void>;
@@ -565,6 +616,56 @@ const syncManualFeatureTaskMetadata = async (
     const normalized = toServiceError(error);
     setError?.(normalized.message);
   }
+};
+
+const syncIntegrationBranchIfConfigured = async (
+  repoPath: string,
+  branchName: string
+): Promise<void> => {
+  if (!tauriIpc.isTauriAvailable() || !shouldSyncTargetBranchBeforeFinish()) {
+    return;
+  }
+
+  await tauriIpc.gitPull({
+    repoPath,
+    branch: branchName,
+  });
+};
+
+const cleanupTaskExecutionTargets = async (
+  executionTargets: Array<TaskExecutionTarget & { repoPath: string }>
+): Promise<string[]> => {
+  const removedWorktreeKeys: string[] = [];
+
+  for (const target of executionTargets) {
+    const branches = await tauriIpc.gitBranchList(target.repoPath);
+    const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
+    const remoteBranchNames = new Set((branches.remote || []).map((branch) => branch.name));
+
+    await tauriIpc.gitWorktreeRemove({
+      repoPath: target.repoPath,
+      taskId: target.worktreeKey,
+      force: false,
+    });
+    removedWorktreeKeys.push(target.worktreeKey);
+
+    if (localBranchNames.has(target.branchName)) {
+      await tauriIpc.gitBranchDelete({
+        repoPath: target.repoPath,
+        branchName: target.branchName,
+        force: false,
+      });
+    }
+
+    if (remoteBranchNames.has(`origin/${target.branchName}`)) {
+      await tauriIpc.gitBranchDeleteRemote({
+        repoPath: target.repoPath,
+        branchName: target.branchName,
+      });
+    }
+  }
+
+  return removedWorktreeKeys;
 };
 
 export const useTaskStore = create<TaskStore>((set, get) => ({
@@ -1119,7 +1220,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       let worktreePath = get().branchWorktrees[target.worktreeKey] || null;
       if (!worktreePath) {
         const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
-        const fromRef = repoPath ? await resolveStandaloneStartRef(task, repoPath) : null;
+        const fromRef = repoPath ? await resolveTaskStartRef(task, target, repoPath) : null;
         worktreePath = await useGitStore
           .getState()
           .createWorktree(target.projectId, target.worktreeKey, target.branchName, fromRef);
@@ -1164,7 +1265,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     await get().setTaskStatus(taskId, 'InProgress');
   },
 
-  completeTask: async (taskId, options) => {
+  finishTask: async (taskId, options) => {
     const task = get().tasks.find((candidate) => candidate.id === taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
@@ -1172,9 +1273,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
 
     const allowWithoutCodeChanges = options?.allowWithoutCodeChanges === true;
-    const skipIntegration = options?.skipIntegration === true;
 
-    if (task.status !== 'InReview') {
+    if (task.status !== 'InReview' && task.status !== 'InProgress') {
       set({
         lastError: tTask(
           'implement.errors.completeRequiresActiveStatus',
@@ -1192,113 +1292,119 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
 
     const repositories: TaskCompletionRepositoryRecord[] = [...(options?.repositories || [])];
-    const mergeTargetBranch = task.task_source === 'architect'
-      ? null
-      : getGitFlowBaseBranch();
+    const executionTargetsWithRepoPaths: Array<TaskExecutionTarget & { repoPath: string; worktreePath: string }> = [];
 
-    let mergedRepositoryCount = repositories.filter((repository) => Boolean(repository.mergeOutput)).length;
+    for (const target of executionTargets) {
+      const worktreePath = get().branchWorktrees[target.worktreeKey];
+      if (!worktreePath) {
+        set({
+          lastError: tTask(
+            'implement.errors.worktreeCreateFailed',
+            'Missing worktree for branch {{branchName}}',
+            { branchName: target.branchName }
+          ),
+        });
+        return;
+      }
 
-    if (!skipIntegration && tauriIpc.isTauriAvailable()) {
-      for (const target of executionTargets) {
-        const worktreePath = get().branchWorktrees[target.worktreeKey];
-        if (!worktreePath) {
+      const project = appState.getProjectById(target.projectId);
+      const repoPath = project?.path ?? target.repoPath ?? null;
+      if (!repoPath) {
+        set({
+          lastError: tTask(
+            'implement.errors.cannotResolveTaskProject',
+            'Cannot resolve project for task {{taskId}}',
+            { taskId: task.id }
+          ),
+        });
+        return;
+      }
+
+      executionTargetsWithRepoPaths.push({
+        ...target,
+        repoPath,
+        worktreePath,
+      });
+    }
+
+    let mergedRepositoryCount = 0;
+
+    try {
+      for (const target of executionTargetsWithRepoPaths) {
+        const integrationBranchName = getTaskIntegrationBranch(task, target);
+        if (!integrationBranchName) {
           set({
             lastError: tTask(
-              'implement.errors.worktreeCreateFailed',
-              'Missing worktree for branch {{branchName}}',
-              { branchName: target.branchName }
-            ),
-          });
-          return;
-        }
-
-        const project = appState.getProjectById(target.projectId);
-        const repoPath = project?.path ?? null;
-        if (!repoPath) {
-          set({
-            lastError: tTask(
-              'implement.errors.cannotResolveTaskProject',
-              'Cannot resolve project for task {{taskId}}',
+              'implement.errors.missingIntegrationBranch',
+              'Cannot determine the integration branch for task {{taskId}}.',
               { taskId: task.id }
             ),
           });
           return;
         }
 
-        try {
-          const integrationBranchName = target.planBranchName || mergeTargetBranch;
-          if (!integrationBranchName) {
-            set({
-              lastError: tTask(
-                'implement.errors.missingIntegrationBranch',
-                'Cannot determine the integration branch for task {{taskId}}.',
-                { taskId: task.id }
-              ),
-            });
-            return;
-          }
-
-          const status = await tauriIpc.gitStatus(worktreePath);
-          if (!status.is_clean) {
-            set({
-              lastError: tTask(
-                'implement.errors.repositoryNotCleanForComplete',
-                'Cannot complete task while repository has uncommitted changes. Commit or stash changes first.'
-              ),
-            });
-            return;
-          }
-
-          const diff = await tauriIpc.gitDiff({
-            repoPath,
-            base: integrationBranchName,
-            head: target.branchName,
-            contextLines: 0,
+        const status = await tauriIpc.gitStatus(target.worktreePath);
+        if (!status.is_clean) {
+          set({
+            lastError: tTask(
+              'implement.errors.repositoryNotCleanForComplete',
+              'Cannot complete task while repository has uncommitted changes. Commit or stash changes first.'
+            ),
           });
-          if (allowWithoutCodeChanges && diff.trim()) {
-            set({
-              lastError: tTask(
-                'implement.errors.completeWithoutCodeChangesHasDiff',
-                'Cannot complete without code changes because {{branchName}} still contains branch changes.',
-                { branchName: integrationBranchName }
-              ),
-            });
-            return;
-          }
-
-          if (!allowWithoutCodeChanges && !diff.trim()) {
-            repositories.push({
-              projectId: target.projectId,
-              repoPath,
-              branchName: target.branchName,
-              planBranchName: integrationBranchName,
-            });
-            continue;
-          }
-
-          const mergeOutput = allowWithoutCodeChanges || !diff.trim()
-            ? undefined
-            : await mergeFeatureBranchIntoPlanBranch({
-              projectId: target.projectId,
-              branchName: target.branchName,
-              planBranchName: integrationBranchName,
-              repoPath,
-            });
-          if (mergeOutput) {
-            mergedRepositoryCount += 1;
-          }
-          repositories.push({
-            projectId: target.projectId,
-            repoPath,
-            branchName: target.branchName,
-            planBranchName: integrationBranchName,
-            mergeOutput,
-          });
-        } catch (error) {
-          const normalized = toServiceError(error);
-          set({ lastError: normalized.message });
           return;
         }
+
+        if (!allowWithoutCodeChanges) {
+          await syncIntegrationBranchIfConfigured(target.repoPath, integrationBranchName);
+        }
+
+        const diff = await tauriIpc.gitDiff({
+          repoPath: target.repoPath,
+          base: integrationBranchName,
+          head: target.branchName,
+          contextLines: 0,
+        });
+
+        if (allowWithoutCodeChanges && diff.trim()) {
+          set({
+            lastError: tTask(
+              'implement.errors.completeWithoutCodeChangesHasDiff',
+              'Cannot complete without code changes because {{branchName}} still contains branch changes.',
+              { branchName: integrationBranchName }
+            ),
+          });
+          return;
+        }
+
+        if (!allowWithoutCodeChanges && !diff.trim()) {
+          repositories.push({
+            projectId: target.projectId,
+            repoPath: target.repoPath,
+            branchName: target.branchName,
+            planBranchName: integrationBranchName,
+          });
+          continue;
+        }
+
+        const mergeOutput = allowWithoutCodeChanges
+          ? undefined
+          : await mergeFeatureBranchIntoPlanBranch({
+            projectId: target.projectId,
+            branchName: target.branchName,
+            planBranchName: integrationBranchName,
+            repoPath: target.repoPath,
+          });
+        if (mergeOutput) {
+          mergedRepositoryCount += 1;
+        }
+
+        repositories.push({
+          projectId: target.projectId,
+          repoPath: target.repoPath,
+          branchName: target.branchName,
+          planBranchName: integrationBranchName,
+          mergeOutput,
+        });
       }
 
       if (!allowWithoutCodeChanges && mergedRepositoryCount === 0) {
@@ -1310,36 +1416,65 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         });
         return;
       }
-    }
 
-    await get().setTaskStatus(taskId, 'Completed');
+      const removedWorktreeKeys = tauriIpc.isTauriAvailable()
+        ? await cleanupTaskExecutionTargets(executionTargetsWithRepoPaths)
+        : [];
 
-    if (isManualStandaloneTask(task) && !task.draft) {
-      await get().archiveTask(taskId, {
-        reason: 'merged',
-        mergedAt: new Date().toISOString(),
-      });
-      return;
-    }
+      await get().setTaskStatus(taskId, 'Completed');
 
-    if (task.task_source === 'architect' && task.plan_target_branch) {
-      try {
-        await writeArchitectTaskExecution({
-          branchName: resolveTargetBranch(task.plan_target_branch),
-          planId: task.plan_id,
-          execution: {
-            taskId: task.id,
-            title: task.title,
-            completedAt: new Date().toISOString(),
-            summary: allowWithoutCodeChanges ? 'Completed without code changes.' : undefined,
-            repositories,
-          },
-        });
-      } catch (error) {
-        const normalized = toServiceError(error);
-        set({ lastError: normalized.message });
+      set((state) => ({
+        ...updateTaskRuntimeAfterCleanup(state, task, removedWorktreeKeys),
+      }));
+
+      if (get().activeBranchName === null && get().activeRepositoryPath === null) {
+        await syncWorkspaceRoot(null);
       }
+
+      const completedAt = new Date().toISOString();
+      if (isManualStandaloneTask(task) && !task.draft) {
+        await tauriIpc.workspaceArchiveManualFeature({
+          taskId,
+          reason: 'merged',
+          mergedAt: completedAt,
+        });
+        await get().refreshFromPlan();
+        await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
+          set({ lastError: message });
+        });
+        if (useAppStore.getState().selectedTaskId === taskId) {
+          useAppStore.getState().setSelectedTask(null);
+        }
+        return;
+      }
+
+      if (task.task_source === 'architect' && task.plan_target_branch) {
+        try {
+          await writeArchitectTaskExecution({
+            branchName: resolveTargetBranch(task.plan_target_branch),
+            planId: task.plan_id,
+            execution: {
+              taskId: task.id,
+              title: task.title,
+              completedAt,
+              summary: allowWithoutCodeChanges ? 'Completed without code changes.' : undefined,
+              repositories,
+            },
+          });
+        } catch (error) {
+          const normalized = toServiceError(error);
+          set({ lastError: normalized.message });
+        }
+      }
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      throw normalized;
     }
+  },
+
+  completeTask: async (taskId, options) => {
+    await get().finishTask(taskId, options);
   },
 
   finalizePlan: async (planId) => {

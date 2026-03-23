@@ -45,6 +45,7 @@ export const PREF_KEYS = {
   ARCHITECT_GIT_BASE_BRANCH: "architectGitBaseBranch",
   ARCHITECT_PLAN_BRANCH_TEMPLATE: "architectPlanBranchTemplate",
   ARCHITECT_FEATURE_BRANCH_TEMPLATE: "architectFeatureBranchTemplate",
+  ARCHITECT_SYNC_TARGET_BEFORE_FINISH: "architectSyncTargetBeforeFinish",
   METADATA_AUTO_PUSH: "metadataAutoPush",
   NOTIFICATION_CENTER_ITEMS: "notificationCenterItems",
 } as const;
@@ -88,6 +89,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'develop',
   [PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE]: 'plan/{planSlug}',
   [PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE]: 'feature/{planSlug}/{featureSlug}',
+  [PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH]: true,
   [PREF_KEYS.METADATA_AUTO_PUSH]: false,
   [PREF_KEYS.NOTIFICATION_CENTER_ITEMS]: [],
 };

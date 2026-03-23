@@ -24,7 +24,7 @@ const initialOriginalFiles: Record<string, Record<string, string>> = {
 };
 
 let currentFiles: Record<string, Record<string, string>> = {};
-let taskStatuses: Record<string, 'Pending' | 'InReview' | 'Completed'> = {
+let taskStatuses: Record<string, 'Pending' | 'InReview' | 'InProgress' | 'Completed'> = {
   'task-1': 'InReview',
   'task-2': 'InReview',
   'task-3': 'InReview',
@@ -140,10 +140,6 @@ const gitCommitMock = mock(async ({ repoPath }: { repoPath: string }) => {
   return repoPath === worktreeAPath ? 'hash-a' : 'hash-b';
 });
 
-const mergeFeatureBranchIntoPlanBranchMock = mock(async ({ projectId }: { projectId: string }) =>
-  `merged-${projectId}`
-);
-
 const tasksById = {
   'task-1': {
     id: 'task-1',
@@ -231,9 +227,9 @@ const tasksById = {
   },
 };
 
-const completeTaskMock = mock(async (taskId: string) => {
+const setTaskStatusMock = mock(async (taskId: string, status: string) => {
   if (taskId in taskStatuses) {
-    taskStatuses[taskId] = 'Completed';
+    taskStatuses[taskId] = status as typeof taskStatuses[string];
   }
 });
 
@@ -249,7 +245,8 @@ const taskStoreState = {
     if (!task) return undefined;
     return { ...task, status: taskStatuses[taskId] ?? task.status };
   },
-  completeTask: completeTaskMock,
+  setTaskStatus: setTaskStatusMock,
+  completeTask: async () => undefined,
 };
 
 const appStoreState = {
@@ -264,7 +261,6 @@ const appStoreState = {
   },
 };
 
-const setTaskStateMock = mock(() => undefined);
 let useFileChangesStore: ReturnType<typeof createFileChangesStore>;
 
 describe('useFileChangesStore', () => {
@@ -290,9 +286,7 @@ describe('useFileChangesStore', () => {
     fsWriteFileMock.mockClear();
     gitAddMock.mockClear();
     gitCommitMock.mockClear();
-    mergeFeatureBranchIntoPlanBranchMock.mockClear();
-    completeTaskMock.mockClear();
-    setTaskStateMock.mockClear();
+    setTaskStatusMock.mockClear();
 
     useFileChangesStore = createFileChangesStore({
       tauri: {
@@ -303,11 +297,10 @@ describe('useFileChangesStore', () => {
         gitAdd: gitAddMock,
         gitCommit: gitCommitMock,
       },
-      mergeFeatureBranchIntoPlanBranch: mergeFeatureBranchIntoPlanBranchMock,
       getGitFlowBaseBranch: () => 'develop',
       getAppState: () => appStoreState,
       getTaskState: () => taskStoreState,
-      setTaskState: setTaskStateMock,
+      setTaskState: () => undefined,
     });
 
     useFileChangesStore.getState().resetReviewState();
@@ -327,6 +320,49 @@ describe('useFileChangesStore', () => {
     expect(reviewSummary.repositoryCount).toBe(2);
     expect(reviewSummary.nextAction).toBe('review_repository');
     expect(reviewSummary.currentRepositoryId).toBe(repositoryIdA);
+  });
+
+  it('reads repository changes from the task worktrees and reloads external edits', async () => {
+    const store = useFileChangesStore.getState();
+
+    await store.loadCurrentChanges();
+
+    expect(gitStatusMock.mock.calls.map((call) => call[0])).toEqual([worktreeAPath, worktreeBPath]);
+    expect(gitStatusMock.mock.calls.map((call) => call[0])).not.toContain(repoAPath);
+    expect(gitStatusMock.mock.calls.map((call) => call[0])).not.toContain(repoBPath);
+
+    currentFiles[worktreeAPath]['src/main.ts'] = 'const value = 3;\nconsole.log(value);';
+
+    await store.loadCurrentChanges();
+
+    const refreshedRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(refreshedRepository?.worktreePath).toBe(worktreeAPath);
+    expect(refreshedRepository?.changes[0]?.modifiedContent).toContain('const value = 3;');
+  });
+
+  it('keeps the current repository list visible during silent refreshes', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    let releaseStatuses: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatuses = resolve;
+    });
+
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      await statusGate;
+      return buildGitStatus(repoPath);
+    });
+
+    const silentRefresh = store.loadCurrentChanges({ silent: true });
+
+    const stateWhileRefreshing = useFileChangesStore.getState();
+    expect(stateWhileRefreshing.currentTaskLoadState).toBe('ready');
+    expect(stateWhileRefreshing.isLoading).toBe(false);
+    expect(stateWhileRefreshing.repositories).toHaveLength(2);
+
+    releaseStatuses();
+    await silentRefresh;
   });
 
   it('clears stale diff state when switching to another task', async () => {
@@ -413,7 +449,7 @@ describe('useFileChangesStore', () => {
     expect(state.repositories).toHaveLength(0);
   });
 
-  it('completes the task only after the last repository commit', async () => {
+  it('returns the task to in-progress after the last repository commit', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
 
@@ -425,7 +461,7 @@ describe('useFileChangesStore', () => {
       'feat: commit project a'
     );
     expect(firstCommit.taskCompleted).toBe(false);
-    expect(completeTaskMock).not.toHaveBeenCalled();
+    expect(setTaskStatusMock).not.toHaveBeenCalled();
     expect(useFileChangesStore.getState().selectedRepositoryId).toBe(repositoryIdB);
     expect(useFileChangesStore.getState().reviewSummary.hasCommittedRepositories).toBe(true);
     expect(useFileChangesStore.getState().reviewSummary.currentRepositoryId).toBe(repositoryIdB);
@@ -434,8 +470,9 @@ describe('useFileChangesStore', () => {
       repositoryIdB,
       'feat: commit project b'
     );
-    expect(secondCommit.taskCompleted).toBe(true);
-    expect(completeTaskMock).toHaveBeenCalledTimes(1);
-    expect(mergeFeatureBranchIntoPlanBranchMock).toHaveBeenCalledTimes(2);
+    expect(secondCommit.taskCompleted).toBe(false);
+    expect(secondCommit.taskStatus).toBe('InProgress');
+    expect(setTaskStatusMock).toHaveBeenCalledTimes(1);
+    expect(setTaskStatusMock).toHaveBeenCalledWith('task-1', 'InProgress');
   });
 });
