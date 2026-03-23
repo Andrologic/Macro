@@ -12,7 +12,6 @@ import {
 } from '../services/implementMultiRepoSummary';
 import { toBranchWorktreeKey } from '../services/implementTaskDerivation';
 import { useAppStore } from './useAppStore';
-import { mergeFeatureBranchIntoPlanBranch } from '../services/architectGitFlowService';
 import { getGitFlowBaseBranch } from '../services/architectPlanService';
 
 export type FileChangeContextMode = 'default' | 'expanded' | 'full';
@@ -94,6 +93,10 @@ interface SelectedDiffTarget {
   changeId: string;
 }
 
+interface LoadCurrentChangesOptions {
+  silent?: boolean;
+}
+
 const EMPTY_STATS: ReviewRepositoryStats = {
   total: 0,
   reviewed: 0,
@@ -140,6 +143,7 @@ interface FileChangesTaskStoreState {
   activeBranchName: string | null;
   branchWorktrees: Record<string, string>;
   getTaskById: (taskId: string) => FileChangesTaskLike | undefined;
+  setTaskStatus: (taskId: string, status: TaskStatus) => Promise<void> | void;
   completeTask: (taskId: string, options?: {
     skipIntegration?: boolean;
     repositories?: TaskCompletionRepositoryRecord[];
@@ -153,7 +157,6 @@ type FileChangesSetTaskState = (partial: {
 
 export interface FileChangesStoreDependencies {
   tauri: FileChangesTauriDeps;
-  mergeFeatureBranchIntoPlanBranch: typeof mergeFeatureBranchIntoPlanBranch;
   getGitFlowBaseBranch: typeof getGitFlowBaseBranch;
   getAppState: () => FileChangesAppState;
   getTaskState: () => FileChangesTaskStoreState;
@@ -162,7 +165,6 @@ export interface FileChangesStoreDependencies {
 
 const defaultFileChangesStoreDependencies: FileChangesStoreDependencies = {
   tauri: tauriIpc,
-  mergeFeatureBranchIntoPlanBranch,
   getGitFlowBaseBranch,
   getAppState: () => useAppStore.getState(),
   getTaskState: () => useTaskStore.getState(),
@@ -454,11 +456,10 @@ const loadRepositoryState = async (params: {
     changes.some((change) => change.id === previousRepository.selectedChangeId)
     ? previousRepository.selectedChangeId
     : changes[0]?.id ?? null;
-  const commitState: ReviewRepositoryCommitState = committedRecord || previousRepository?.commitState === 'committed'
-    ? 'committed'
-    : changes.length === 0
-      ? 'no_changes'
-      : 'idle';
+  const hasCommittedSnapshot = Boolean(committedRecord || previousRepository?.commitState === 'committed');
+  const commitState: ReviewRepositoryCommitState = changes.length === 0
+    ? (hasCommittedSnapshot ? 'committed' : 'no_changes')
+    : 'idle';
 
   return {
     id: repositoryId,
@@ -540,7 +541,7 @@ interface FileChangesState {
   lastCommitHash: string | null;
   executionRecords: Record<string, TaskCompletionRepositoryRecord>;
 
-  loadCurrentChanges: () => Promise<void>;
+  loadCurrentChanges: (options?: LoadCurrentChangesOptions) => Promise<void>;
   resetReviewState: () => void;
   selectRepository: (repositoryId: string | null) => void;
   loadChangeContext: (repositoryId: string, changeId: string, contextMode: FileChangeContextMode) => Promise<void>;
@@ -553,7 +554,7 @@ interface FileChangesState {
   updateEditingBuffer: (repositoryId: string, changeId: string, content: string) => void;
   cancelEditingChange: (repositoryId: string, changeId: string) => void;
   saveEditedChange: (repositoryId: string, changeId: string) => Promise<void>;
-  commitReviewedChanges: (repositoryId: string, message: string) => Promise<CommitTaskChangesResult>;
+  commitReviewedChanges: (repositoryId: string, message?: string) => Promise<CommitTaskChangesResult>;
   setCommitMessageDraft: (repositoryId: string, message: string) => void;
   getRepository: (repositoryId: string) => ReviewRepositoryState | undefined;
   getSelectedRepository: () => ReviewRepositoryState | undefined;
@@ -592,7 +593,7 @@ export const createFileChangesStore = (
     lastCommitHash: null,
     executionRecords: {},
 
-  loadCurrentChanges: async () => {
+  loadCurrentChanges: async (options) => {
     const previousState = get();
     const task = resolveSelectedTask(deps);
     const nextLoadRequestId = previousState.loadRequestId + 1;
@@ -642,6 +643,7 @@ export const createFileChangesStore = (
     }
 
     const sameTask = previousState.currentTaskId === task.id;
+    const silentReload = sameTask && options?.silent === true;
     const previousRepositories = new Map(
       (sameTask ? previousState.repositories : []).map((repository) => [repository.id, repository])
     );
@@ -650,16 +652,25 @@ export const createFileChangesStore = (
     const previousSelectedDiffTarget = sameTask ? previousState.selectedDiffTarget : null;
     const previousIsDiffModalOpen = sameTask && previousState.isDiffModalOpen;
 
-    set({
-      ...resetLoadState,
-      currentTaskId: task.id,
-      currentTaskLoadState: 'loading',
-      currentTaskLoadMessage: null,
-      isLoading: true,
-      lastError: null,
-      loadRequestId: nextLoadRequestId,
-      executionRecords,
-    });
+    if (silentReload) {
+      set({
+        currentTaskId: task.id,
+        lastError: null,
+        loadRequestId: nextLoadRequestId,
+        executionRecords,
+      });
+    } else {
+      set({
+        ...resetLoadState,
+        currentTaskId: task.id,
+        currentTaskLoadState: 'loading',
+        currentTaskLoadMessage: null,
+        isLoading: true,
+        lastError: null,
+        loadRequestId: nextLoadRequestId,
+        executionRecords,
+      });
+    }
 
     try {
       const executionTargets = getExecutionTargets(deps, task);
@@ -1068,19 +1079,18 @@ export const createFileChangesStore = (
   },
 
   commitReviewedChanges: async (repositoryId, message) => {
-    const commitMessage = message.trim();
+    const task = ensureReviewTask(deps);
+    const repository = get().getRepository(repositoryId);
+    const commitMessage = (message || repository?.commitMessageDraft || toDefaultCommitMessage(task.title)).trim();
     if (!commitMessage) {
       throw new Error(tChanges('implement.errors.commitMessageRequired', 'Commit message is required.'));
     }
-
-    const task = ensureReviewTask(deps);
     if (task.status !== 'InReview') {
       throw new Error(
         tChanges('implement.errors.commitRequiresValidationStage', 'Task must be in validation before commit.')
       );
     }
 
-    const repository = get().getRepository(repositoryId);
     if (!repository) {
       throw new Error(
         tChanges('implement.errors.noActiveRepositoryPath', 'No active repository path found for this task.')
@@ -1155,19 +1165,11 @@ export const createFileChangesStore = (
         stageAll: false,
       });
 
-      const mergeOutput = await deps.mergeFeatureBranchIntoPlanBranch({
-        projectId: repository.projectId,
-        branchName: repository.branchName,
-        planBranchName: integrationBranchName,
-        repoPath: repository.repoPath,
-      });
-
       const executionRecord: TaskCompletionRepositoryRecord = {
         projectId: repository.projectId,
         repoPath: repository.repoPath,
         branchName: repository.branchName,
         planBranchName: integrationBranchName,
-        mergeOutput,
       };
 
       const currentState = get();
@@ -1219,13 +1221,9 @@ export const createFileChangesStore = (
 
       let taskCompleted = false;
       let taskStatus: TaskStatus | null = deps.getTaskState().getTaskById(task.id)?.status ?? null;
-      if (allRepositoriesResolved && completionRecords.some((record) => Boolean(record.mergeOutput))) {
-        await deps.getTaskState().completeTask(task.id, {
-          skipIntegration: true,
-          repositories: completionRecords,
-        });
+      if (allRepositoriesResolved) {
+        await deps.getTaskState().setTaskStatus(task.id, 'InProgress');
         taskStatus = deps.getTaskState().getTaskById(task.id)?.status ?? null;
-        taskCompleted = taskStatus === 'Completed';
       }
 
       return {

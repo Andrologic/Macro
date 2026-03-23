@@ -4,6 +4,7 @@ export interface ArchitectGitNamingSettings {
   baseBranch: string;
   planBranchTemplate: string;
   featureBranchTemplate: string;
+  syncTargetBeforeFinish: boolean;
 }
 
 const DEFAULT_SETTINGS: ArchitectGitNamingSettings = {
@@ -12,6 +13,7 @@ const DEFAULT_SETTINGS: ArchitectGitNamingSettings = {
   featureBranchTemplate: String(
     PREF_DEFAULTS[PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE] || 'feature/{planSlug}/{featureSlug}'
   ),
+  syncTargetBeforeFinish: Boolean(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH] ?? true),
 };
 
 const normalizeBranchName = (value: string, fallback: string): string => {
@@ -57,6 +59,18 @@ const readStoredValue = (key: string): string | null => {
   }
 };
 
+const readStoredBoolean = (key: string): boolean | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(`macro_${key}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'boolean' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
 export const getArchitectGitNamingSettings = (): ArchitectGitNamingSettings => {
   const baseBranch = normalizeBranchName(
     readStoredValue(PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH) || DEFAULT_SETTINGS.baseBranch,
@@ -70,8 +84,10 @@ export const getArchitectGitNamingSettings = (): ArchitectGitNamingSettings => {
     readStoredValue(PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE) || DEFAULT_SETTINGS.featureBranchTemplate,
     DEFAULT_SETTINGS.featureBranchTemplate
   );
+  const syncTargetBeforeFinish =
+    readStoredBoolean(PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH) ?? DEFAULT_SETTINGS.syncTargetBeforeFinish;
 
-  return { baseBranch, planBranchTemplate, featureBranchTemplate };
+  return { baseBranch, planBranchTemplate, featureBranchTemplate, syncTargetBeforeFinish };
 };
 
 export const validateArchitectGitNamingSettings = (settings: ArchitectGitNamingSettings): string[] => {
@@ -128,3 +144,6 @@ export const normalizeFeatureSlugInput = (value: string): string => {
   const leaf = normalized.split('/').filter(Boolean).pop() || normalized;
   return sanitizeSlug(leaf, 'work');
 };
+
+export const shouldSyncTargetBranchBeforeFinish = (): boolean =>
+  getArchitectGitNamingSettings().syncTargetBeforeFinish;

@@ -1894,6 +1894,60 @@ pub async fn git_branch_delete(
 }
 
 #[tauri::command]
+/// Delete a remote branch if it exists on the target remote.
+pub async fn git_branch_delete_remote(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    remote: Option<String>,
+) -> Result<()> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        validate_branch_name(&branch_name)?;
+        let remote_name = remote
+            .unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
+            .trim()
+            .to_string();
+        validate_remote_name(&remote_name)?;
+
+        let root = repo_root(&repo)?;
+        drop(repo);
+
+        let output = run_git_command(
+            &root,
+            &[
+                "push".to_string(),
+                remote_name.clone(),
+                "--delete".to_string(),
+                branch_name.clone(),
+            ],
+        )?;
+        if !output.success {
+            let details = command_output_text(&output);
+            let message = if details.is_empty() {
+                format!("git push --delete failed (exit code: {:?})", output.code)
+            } else {
+                details
+            };
+            return Err(BackendError::Git { message });
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
 /// Checkout an existing branch/commit or create a new branch.
 pub async fn git_checkout(
     workspace_root: State<'_, WorkspaceRoot>,

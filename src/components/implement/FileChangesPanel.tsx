@@ -15,7 +15,6 @@ import {
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { toast } from '../ui/Toaster';
-import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
 
 interface FileChangesPanelProps {
@@ -23,6 +22,8 @@ interface FileChangesPanelProps {
 }
 
 type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
+
+const CHANGE_PANEL_POLL_INTERVAL_MS = 1500;
 
 const STATUS_COLORS = {
   added: 'text-primary',
@@ -242,9 +243,16 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
   );
+  const selectedTaskWorktreeKey = useTaskStore((state) => {
+    if (!selectedTaskId) return '';
+    const task = state.tasks.find((candidate) => candidate.id === selectedTaskId);
+    if (!task?.execution_targets?.length) return '';
+    return task.execution_targets
+      .map((target) => `${target.worktreeKey}:${state.branchWorktrees[target.worktreeKey] ?? ''}`)
+      .join('|');
+  });
   const startReview = useTaskStore((state) => state.startReview);
-  const completeTask = useTaskStore((state) => state.completeTask);
-  const [commitTargetRepositoryId, setCommitTargetRepositoryId] = useState<string | null>(null);
+  const finishTask = useTaskStore((state) => state.finishTask);
   const [expandedRepositoryIds, setExpandedRepositoryIds] = useState<Record<string, boolean>>({});
   const {
     repositories,
@@ -275,7 +283,45 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       return;
     }
     void loadCurrentChanges();
-  }, [selectedGroupId, selectedTaskId, loadCurrentChanges, resetReviewState]);
+  }, [
+    currentTask?.status,
+    loadCurrentChanges,
+    resetReviewState,
+    selectedGroupId,
+    selectedTaskId,
+    selectedTaskWorktreeKey,
+  ]);
+
+  useEffect(() => {
+    if (!selectedGroupId || !selectedTaskId) {
+      return;
+    }
+
+    let disposed = false;
+    let refreshInFlight = false;
+
+    const refreshChanges = async () => {
+      if (disposed || refreshInFlight || isCommitting) {
+        return;
+      }
+
+      refreshInFlight = true;
+      try {
+        await loadCurrentChanges({ silent: true });
+      } finally {
+        refreshInFlight = false;
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void refreshChanges();
+    }, CHANGE_PANEL_POLL_INTERVAL_MS);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, [isCommitting, loadCurrentChanges, selectedGroupId, selectedTaskId]);
 
   useEffect(() => {
     if (repositories.length === 0) return;
@@ -300,18 +346,19 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const progressPercent = overallStats.total > 0 ? (overallStats.reviewed / overallStats.total) * 100 : 0;
   const isValidationStage = currentTask?.status === 'InReview';
   const canStartValidationStage = currentTask?.status === 'InProgress' || currentTask?.status === 'AwaitingResponse';
-  const allRepositoriesNoChanges = repositories.length > 0 && repositories.every(
-    (repository) => repository.commitState === 'no_changes'
-  );
   const hasPendingValidation = reviewSummary.stateCounts.pending_review > 0;
   const hasReadyToCommit = reviewSummary.stateCounts.ready_to_commit > 0;
   const hasAnyChangesToValidate = repositories.some(
     (repository) => repository.stats.total > 0 && repository.commitState !== 'committed'
   );
-  const canCompleteWithoutCodeChanges =
-    isValidationStage &&
-    allRepositoriesNoChanges &&
-    !isCommitting;
+  const canFinishTask =
+    !isCommitting &&
+    currentTask !== null &&
+    !currentTask.draft &&
+    currentTask.status !== 'Completed' &&
+    reviewSummary.stateCounts.pending_review === 0 &&
+    reviewSummary.stateCounts.ready_to_commit === 0 &&
+    reviewSummary.hasCommittedRepositories;
   const nextValidationRepositoryId =
     (selectedRepositoryId && repositorySummaryById.get(selectedRepositoryId)?.state === 'pending_review'
       ? selectedRepositoryId
@@ -345,31 +392,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const mappingError = currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree'
     ? currentTaskLoadMessage
     : null;
-  const commitTargetRepository = commitTargetRepositoryId
-    ? repositories.find((repository) => repository.id === commitTargetRepositoryId) ?? null
-    : null;
-
-  const handleCommitConfirm = async (message?: string) => {
-    if (isCommitting || !commitTargetRepositoryId || !commitTargetRepository) return;
-    const commitMessage = (message || '').trim() || commitTargetRepository.commitMessageDraft;
-    setCommitMessageDraft(commitTargetRepositoryId, commitMessage);
+  const handleCommit = async () => {
+    if (isCommitting || !nextCommitRepository) return;
+    const commitMessage = nextCommitRepository.commitMessageDraft;
+    setCommitMessageDraft(nextCommitRepository.id, commitMessage);
 
     try {
-      const result = await commitReviewedChanges(commitTargetRepositoryId, commitMessage);
-      if (result.taskCompleted) {
-        toast.success(
-          t('implement.commitSuccess', 'Committed {{hash}} and marked task complete', {
-            hash: result.hash,
-          })
-        );
-      } else {
-        toast.success(
-          t('implement.repositoryCommitSuccess', 'Committed {{hash}} for this repository.', {
-            hash: result.hash,
-          })
-        );
-      }
-      setCommitTargetRepositoryId(null);
+      const result = await commitReviewedChanges(nextCommitRepository.id, commitMessage);
+      toast.success(
+        t('implement.repositoryCommitSuccess', 'Committed {{hash}} for this repository.', {
+          hash: result.hash,
+        })
+      );
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
       toast.error(
@@ -402,27 +436,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const handleOpenCommit = () => {
     if (!nextCommitRepository) return;
     selectRepository(nextCommitRepository.id);
-    setCommitTargetRepositoryId(nextCommitRepository.id);
+    void handleCommit();
   };
 
-  const handleCompleteWithoutCodeChanges = async () => {
+  const handleFinishTask = async () => {
     if (!currentTask || isCommitting) return;
-    const confirmed = window.confirm(
-      t(
-        'implement.completeWithoutCodeChangesConfirm',
-        'Complete "{{title}}" without code changes?',
-        { title: currentTask.title }
-      )
-    );
-    if (!confirmed) return;
-
     try {
-      await completeTask(currentTask.id, { allowWithoutCodeChanges: true });
+      await finishTask(currentTask.id);
       resetReviewState();
-      toast.success(t('implement.completeWithoutCodeChangesSuccess', 'Task completed without code changes'));
+      toast.success(t('implement.taskFinished', 'Task finished'));
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
-      toast.error(messageText || t('implement.completeWithoutCodeChangesFailed', 'Failed to complete task'));
+      toast.error(messageText || t('implement.completeTaskFailed', 'Failed to complete task'));
     }
   };
 
@@ -594,7 +619,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                     )}
                     {!repositoryError && repository.commitState === 'committed' && (
                       <div className="px-2 py-8 text-center text-sm text-primary">
-                        {t('implement.repositoryCommittedHelp', 'This repository has already been committed and integrated.')}
+                        {t('implement.repositoryCommittedHelp', 'This repository has already been committed for this task.')}
                       </div>
                     )}
                     {!repositoryError && repository.commitState === 'no_changes' && (
@@ -673,13 +698,13 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             {t('implement.commitChangesGeneric', 'Commit')}
           </button>
         )}
-        {canCompleteWithoutCodeChanges && (
+        {canFinishTask && (
           <button
-            onClick={() => void handleCompleteWithoutCodeChanges()}
+            onClick={() => void handleFinishTask()}
             className="w-full py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center justify-center gap-2"
           >
-            <Icon name="check" size={14} />
-            {t('implement.completeWithoutCodeChanges', 'Complete without code changes')}
+            <Icon name="git-merge" size={14} />
+            {t('implement.finishTask', 'Finish task')}
           </button>
         )}
       </div>
@@ -691,24 +716,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           onClose={closeDiffModal}
         />
       )}
-
-      <ConfirmPromptModal
-        isOpen={!!commitTargetRepository}
-        title={t('implement.commitPromptTitleValidated', 'Commit validated changes')}
-        description={t(
-          'implement.commitPromptDescription',
-          'Provide a concise commit message for this repository.'
-        )}
-        confirmLabel={t('implement.commitConfirm', 'Commit')}
-        cancelLabel={t('common.cancel', 'Cancel')}
-        initialValue={commitTargetRepository?.commitMessageDraft || ''}
-        inputPlaceholder={t('implement.commitPromptPlaceholder', 'feat: update task implementation')}
-        requireInput
-        onCancel={() => setCommitTargetRepositoryId(null)}
-        onConfirm={(value) => {
-          void handleCommitConfirm(value);
-        }}
-      />
     </aside>
   );
 };
