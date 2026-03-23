@@ -7,6 +7,39 @@ import "./i18n"; // Initialize i18n before React renders
 import "./index.css";
 import "./styles/highlight.css";
 
+const installBenignTauriReloadWarningFilter = (): void => {
+  if (!import.meta.env.DEV || typeof window === "undefined") {
+    return;
+  }
+
+  type ConsoleMethod = (...args: unknown[]) => void;
+  type MacroWindow = Window & {
+    __MACRO_TAURI_WARNING_FILTER_INSTALLED__?: boolean;
+  };
+
+  const macroWindow = window as MacroWindow;
+  if (macroWindow.__MACRO_TAURI_WARNING_FILTER_INSTALLED__) {
+    return;
+  }
+
+  const tauriReloadWarningPattern =
+    /^\[TAURI\] Couldn't find callback id \d+\. This might happen when the app is reloaded while Rust is running an asynchronous operation\.$/;
+
+  const wrapConsoleMethod = (originalMethod: ConsoleMethod): ConsoleMethod => {
+    return (...args: unknown[]) => {
+      if (typeof args[0] === "string" && tauriReloadWarningPattern.test(args[0])) {
+        return;
+      }
+
+      originalMethod(...args);
+    };
+  };
+
+  console.warn = wrapConsoleMethod(console.warn.bind(console));
+  console.error = wrapConsoleMethod(console.error.bind(console));
+  macroWindow.__MACRO_TAURI_WARNING_FILTER_INSTALLED__ = true;
+};
+
 // =============================================================================
 // PERFORMANCE MONITORING WRAPPER
 // =============================================================================
@@ -26,6 +59,8 @@ const rootElement = document.getElementById("root") as HTMLElement;
 if (typeof performance !== 'undefined' && performance.mark) {
   performance.mark('react-render-start');
 }
+
+installBenignTauriReloadWarningFilter();
 
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
