@@ -102,8 +102,11 @@ const ChatZone: React.FC = () => {
     restoreStatus,
     isLoading,
     isStreaming,
+    sendState,
+    lastError,
     stopStreaming,
     sendMessage,
+    clearLastError,
     editMessage,
     getMessageImages,
     setMessageImages,
@@ -115,7 +118,6 @@ const ChatZone: React.FC = () => {
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const tasks = useTaskStore((state) => state.tasks);
   const startTask = useTaskStore((state) => state.startTask);
-  const retryTask = useTaskStore((state) => state.retryTask);
 
   const [inputValue, setInputValue] = useState('');
   const [kickoffNotes, setKickoffNotes] = useState('');
@@ -134,14 +136,17 @@ const ChatZone: React.FC = () => {
   const [draftBeforeHistory, setDraftBeforeHistory] = useState('');
 
   // Filter messages by selected conversation
-  const currentMessages = selectedConversationId
-    ? getConversationMessages(selectedConversationId)
-    : [];
+  const currentMessages = useMemo(
+    () => (selectedConversationId ? getConversationMessages(selectedConversationId) : []),
+    [getConversationMessages, selectedConversationId]
+  );
   const isConversationPending =
     hydrationStatus === 'idle' ||
     hydrationStatus === 'hydrating' ||
     restoreStatus === 'idle' ||
     restoreStatus === 'resolving';
+  const isPreparingSend = sendState === 'preparing';
+  const isBusySending = isLoading || isStreaming || isPreparingSend;
 
   const promptHistory = useMemo(() => {
     return currentMessages
@@ -159,6 +164,10 @@ const ChatZone: React.FC = () => {
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId]
   );
+  const implementTaskIdForSend =
+    mode === 'Implement'
+      ? selectedTask?.id ?? currentConversation?.task_id ?? null
+      : null;
   const isManualFeatureDraftTask = selectedTask?.draft === true;
   const selectedTaskProjectIds = useMemo(() => {
     if (!selectedTask) {
@@ -357,7 +366,7 @@ const ChatZone: React.FC = () => {
     notesOverride?: string;
     trigger?: 'manual' | 'auto';
   }): Promise<boolean> => {
-    if (mode !== 'Implement' || !selectedTask || isLoading || isStreaming || isConversationPending) return false;
+    if (mode !== 'Implement' || !selectedTask || isBusySending || isConversationPending) return false;
     if (selectedTask.draft) return false;
     if (!selectedProviderId || !selectedModelId) return false;
     if (startingExecutionRef.current) return false;
@@ -416,8 +425,7 @@ const ChatZone: React.FC = () => {
     clearPendingAutoLaunch,
     ensureConversation,
     isConversationPending,
-    isLoading,
-    isStreaming,
+    isBusySending,
     kickoffNotes,
     mode,
     pendingAutoLaunchTaskId,
@@ -432,7 +440,7 @@ const ChatZone: React.FC = () => {
   useEffect(() => {
     if (!isAutoLaunchArmedForSelection) return;
     if (!canStartImplementExecution) return;
-    if (isLoading || isStreaming || isConversationPending) return;
+    if (isBusySending || isConversationPending) return;
     if (!selectedProviderId || !selectedModelId) return;
     if (attemptedAutoLaunchTaskIdRef.current === pendingAutoLaunchTaskId) return;
     attemptedAutoLaunchTaskIdRef.current = pendingAutoLaunchTaskId;
@@ -441,8 +449,7 @@ const ChatZone: React.FC = () => {
     canStartImplementExecution,
     isAutoLaunchArmedForSelection,
     isConversationPending,
-    isLoading,
-    isStreaming,
+    isBusySending,
     pendingAutoLaunchTaskId,
     selectedProviderId,
     selectedModelId,
@@ -548,6 +555,9 @@ const ChatZone: React.FC = () => {
   };
 
   const removeComposerImage = (imageId: string) => {
+    if (lastError) {
+      clearLastError();
+    }
     setComposerImages((prev) => prev.filter((image) => image.id !== imageId));
   };
 
@@ -572,33 +582,49 @@ const ChatZone: React.FC = () => {
   const handleSend = async () => {
     if (isComposerDisabled) return;
     const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
-    if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isLoading) return;
+    if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
     const conversationId = await ensureConversation();
     if (!conversationId) return;
     const content = text;
-    const imagesForMessage = composerImages;
-    composerEditorRef.current?.clear();
-    setComposerImages([]);
-    setInputValue('');
-    await sendMessage({ conversationId, content, images: imagesForMessage });
+    const imagesForMessage = [...composerImages];
+
+    try {
+      const result = await sendMessage({
+        conversationId,
+        content,
+        taskId: implementTaskIdForSend,
+        images: imagesForMessage,
+      });
+      if (result.status === 'sent') {
+        composerEditorRef.current?.clear();
+        setComposerImages([]);
+        setInputValue('');
+      }
+    } catch {
+      // Keep the draft intact. The visible error feedback comes from the chat store.
+    }
   };
 
   const handleChoiceClick = async (choiceText: string, taskId?: string) => {
-    if (isLoading || isStreaming || isConversationPending) return;
+    if (isBusySending || isConversationPending) return;
     const conversationId = await ensureConversation();
     if (!conversationId) return;
-    if (selectedTask?.status === 'AwaitingResponse') {
-      await retryTask(selectedTask.id);
+    try {
+      await sendMessage({
+        conversationId,
+        content: choiceText,
+        taskId:
+          mode === 'Implement'
+            ? taskId ?? implementTaskIdForSend
+            : taskId ?? selectedTask?.id ?? null,
+      });
+    } catch {
+      // The store exposes the visible error state.
     }
-    await sendMessage({
-      conversationId,
-      content: choiceText,
-      taskId: taskId ?? selectedTask?.id ?? null,
-    });
   };
 
   const handleGenerateStrategy = async () => {
-    if (mode !== 'Architect' || !activeArchitectPlanId || isLoading || isStreaming || isConversationPending) return;
+    if (mode !== 'Architect' || !activeArchitectPlanId || isBusySending || isConversationPending) return;
     if (!hasExistingStrategy && activePlanNeedsCount === 0) return;
 
     const conversationId = await ensureConversation();
@@ -607,7 +633,11 @@ const ChatZone: React.FC = () => {
       ? 'User requested to regenerate the strategy. Reassess all identified needs for the active plan and call `strategy_generate` with a complete replacement strategy (full nodes and dependencies).'
       : 'User requested to generate the strategy now. Based on all identified needs for the active plan, call `strategy_generate` with a complete initial strategy (full nodes and dependencies).';
 
-    await sendMessage({ conversationId, content });
+    try {
+      await sendMessage({ conversationId, content });
+    } catch {
+      // The store exposes the visible error state.
+    }
   };
 
   const handleEditStart = (messageId: string, content: string) => {
@@ -659,7 +689,7 @@ const ChatZone: React.FC = () => {
     setDraftBeforeHistory('');
   };
 
-  const navigatePromptHistory = (direction: 'up' | 'down') => {
+  const navigatePromptHistory = useCallback((direction: 'up' | 'down') => {
     if (promptHistory.length === 0) return;
 
     if (direction === 'up') {
@@ -690,7 +720,7 @@ const ChatZone: React.FC = () => {
 
     setPromptHistoryIndex(null);
     composerEditorRef.current?.setText(draftBeforeHistory);
-  };
+  }, [draftBeforeHistory, promptHistory, promptHistoryIndex]);
 
   useEffect(() => {
     setPromptHistoryIndex(null);
@@ -1126,16 +1156,14 @@ const ChatZone: React.FC = () => {
                 disabled={
                   !activeArchitectPlanId ||
                   isConversationPending ||
-                  isLoading ||
-                  isStreaming ||
+                  isBusySending ||
                   (!hasExistingStrategy && activePlanNeedsCount === 0)
                 }
                 className={cn(
                   'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
                   !activeArchitectPlanId ||
                     isConversationPending ||
-                    isLoading ||
-                    isStreaming ||
+                    isBusySending ||
                     (!hasExistingStrategy && activePlanNeedsCount === 0)
                       ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
                       : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
@@ -1181,11 +1209,11 @@ const ChatZone: React.FC = () => {
                   </div>
                   <button
                     type="button"
-                    onClick={() => void handleStartExecution({ trigger: 'manual' })}
-                    disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId}
+                    onClick={() => void handleStartExecution({ trigger: 'manual' }).catch(() => undefined)}
+                    disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId || isBusySending}
                     className={cn(
                       'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors shrink-0',
-                      canStartImplementExecution && selectedProviderId && selectedModelId
+                      canStartImplementExecution && selectedProviderId && selectedModelId && !isBusySending
                         ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                         : 'bg-muted text-muted-foreground cursor-not-allowed'
                     )}
@@ -1207,13 +1235,19 @@ const ChatZone: React.FC = () => {
               </div>
             )}
 
+            {lastError && (
+              <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+                {lastError}
+              </div>
+            )}
+
             <div
               className="flex items-center gap-2 bg-card/80 border border-border rounded-xl px-2 py-1.5"
               onPasteCapture={handleComposerPaste}
             >
               <ComposerEditor
                 ref={composerEditorRef}
-                editable={!isLoading && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
+                editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
                 placeholder={
                   isConversationPending
                     ? t('chat.loadingConversation', 'Restoring conversation...')
@@ -1226,6 +1260,9 @@ const ChatZone: React.FC = () => {
                     : t('chat.typeMessage')
                 }
                 onTextChange={(text) => {
+                  if (lastError) {
+                    clearLastError();
+                  }
                   setInputValue(text);
                   if (promptHistoryIndex !== null) {
                     setPromptHistoryIndex(null);
@@ -1249,15 +1286,15 @@ const ChatZone: React.FC = () => {
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={isLoading || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled}
+                  disabled={isBusySending || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled}
                   className={cn(
                     'rounded-lg px-3 h-9 flex items-center transition-colors',
-                    isLoading || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled
+                    isBusySending || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled
                       ? 'bg-muted text-muted-foreground cursor-not-allowed'
                       : 'bg-primary hover:bg-primary/90 text-primary-foreground'
                   )}
                 >
-                  {isLoading ? (
+                  {isBusySending ? (
                     <Icon name="loader" size={14} className="animate-spin" />
                   ) : (
                     <Icon name="arrow-up" size={14} />
