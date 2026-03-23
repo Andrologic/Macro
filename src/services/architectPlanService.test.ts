@@ -1,13 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
-import {
-  archiveArchitectPlan,
-  createArchitectPlan,
-  getArchitectPlan,
-  listArchitectPlans,
-  toPlanIntegrationBranch,
-  updateArchitectPlan,
-} from './architectPlanService';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -38,6 +30,22 @@ const createLocalStorageMock = (): LocalStorageMock => {
 };
 
 const branchName = 'develop';
+let importCounter = 0;
+
+const registerArchitectPlanMocks = () => {
+  mock.restore();
+  const tauriModule = () => ({
+    isTauriAvailable: () => false,
+  });
+  mock.module('./tauriIpc', tauriModule);
+  mock.module('./tauriIpc.ts', tauriModule);
+};
+
+const loadArchitectPlanService = async () => {
+  registerArchitectPlanMocks();
+  importCounter += 1;
+  return import(`./architectPlanService.ts?local-test=${importCounter}`);
+};
 
 const seedLegacyPlan = (storage: LocalStorageMock, plan: ArchitectPlanRecord) => {
   const summary: ArchitectPlanSummary = {
@@ -73,22 +81,25 @@ const seedLegacyPlan = (storage: LocalStorageMock, plan: ArchitectPlanRecord) =>
 
 describe('architectPlanService', () => {
   let storage: LocalStorageMock;
+  let service: Awaited<ReturnType<typeof loadArchitectPlanService>>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     storage = createLocalStorageMock();
     (globalThis as { window?: unknown }).window = {
       localStorage: storage,
     };
     (globalThis as { localStorage?: unknown }).localStorage = storage;
+    service = await loadArchitectPlanService();
   });
 
   afterEach(() => {
+    mock.restore();
     delete (globalThis as { window?: unknown }).window;
     delete (globalThis as { localStorage?: unknown }).localStorage;
   });
 
   it('creates canonical plans without requiring a title and allows duplicate labels', async () => {
-    const created = await createArchitectPlan({
+    const created = await service.createArchitectPlan({
       branchName,
       planId: '1710000000000',
     });
@@ -98,12 +109,12 @@ describe('architectPlanService', () => {
     expect(created.title).toBe('1710000000000');
     expect(created.label).toBeUndefined();
 
-    const firstLabeled = await createArchitectPlan({
+    const firstLabeled = await service.createArchitectPlan({
       branchName,
       planId: '1710000000001',
       title: 'Checkout refresh',
     });
-    const secondLabeled = await createArchitectPlan({
+    const secondLabeled = await service.createArchitectPlan({
       branchName,
       planId: '1710000000002',
       label: 'Checkout refresh',
@@ -114,8 +125,8 @@ describe('architectPlanService', () => {
     expect(secondLabeled.title).toBe('1710000000002');
     expect(secondLabeled.label).toBe('Checkout refresh');
 
-    const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans.map((plan) => plan.id)).toEqual([
+    const listed = await service.listArchitectPlans(branchName, true, true);
+    expect(listed.plans.map((plan: ArchitectPlanSummary) => plan.id)).toEqual([
       '1710000000000',
       '1710000000001',
       '1710000000002',
@@ -123,13 +134,13 @@ describe('architectPlanService', () => {
   });
 
   it('treats title updates as label updates for canonical plans', async () => {
-    const created = await createArchitectPlan({
+    const created = await service.createArchitectPlan({
       branchName,
       planId: '1710000000010',
       title: 'Initial label',
     });
 
-    const updated = await updateArchitectPlan({
+    const updated = await service.updateArchitectPlan({
       branchName,
       planId: created.id,
       title: 'Renamed label',
@@ -140,7 +151,7 @@ describe('architectPlanService', () => {
     expect(updated.title).toBe('1710000000010');
     expect(updated.label).toBe('Renamed label');
 
-    const cleared = await updateArchitectPlan({
+    const cleared = await service.updateArchitectPlan({
       branchName,
       planId: created.id,
       label: '',
@@ -152,21 +163,21 @@ describe('architectPlanService', () => {
   });
 
   it('refuses to archive canonical plans still named new plan', async () => {
-    const created = await createArchitectPlan({
+    const created = await service.createArchitectPlan({
       branchName,
       planId: '1710000000011',
       label: 'new plan',
     });
 
-    await expect(archiveArchitectPlan(branchName, created.id)).rejects.toThrow(
+    await expect(service.archiveArchitectPlan(branchName, created.id)).rejects.toThrow(
       'Rename the plan before archiving it.'
     );
 
-    const reloaded = await getArchitectPlan(branchName, created.id);
+    const reloaded = await service.getArchitectPlan(branchName, created.id);
     expect(reloaded?.status).toBe('draft');
 
     await expect(
-      updateArchitectPlan({
+      service.updateArchitectPlan({
         branchName,
         planId: created.id,
         status: 'archived',
@@ -175,13 +186,13 @@ describe('architectPlanService', () => {
   });
 
   it('allows explicitly expanding expected project ids on update', async () => {
-    const created = await createArchitectPlan({
+    const created = await service.createArchitectPlan({
       branchName,
       planId: '1710000000012',
       projectIds: ['web'],
     });
 
-    const updated = await updateArchitectPlan({
+    const updated = await service.updateArchitectPlan({
       branchName,
       planId: created.id,
       projectIds: ['web', 'api'],
@@ -191,7 +202,7 @@ describe('architectPlanService', () => {
     expect(updated.projectIds).toEqual(['web', 'api']);
     expect(updated.expectedProjectIds).toEqual(['web', 'api']);
 
-    const reloaded = await getArchitectPlan(branchName, created.id);
+    const reloaded = await service.getArchitectPlan(branchName, created.id);
     expect(reloaded?.projectIds).toEqual(['web', 'api']);
     expect(reloaded?.expectedProjectIds).toEqual(['web', 'api']);
   });
@@ -214,18 +225,18 @@ describe('architectPlanService', () => {
 
     seedLegacyPlan(storage, legacyPlan);
 
-    const canonicalPlan = await createArchitectPlan({
+    const canonicalPlan = await service.createArchitectPlan({
       branchName,
       planId: '1710000000020',
       title: 'Checkout',
     });
 
-    const loadedLegacyPlan = await getArchitectPlan(branchName, legacyPlan.id);
+    const loadedLegacyPlan = await service.getArchitectPlan(branchName, legacyPlan.id);
     expect(loadedLegacyPlan).not.toBeNull();
     expect(loadedLegacyPlan?.slug).toBe('checkout');
     expect(loadedLegacyPlan?.title).toBe('Checkout');
 
-    const renamedLegacyPlan = await updateArchitectPlan({
+    const renamedLegacyPlan = await service.updateArchitectPlan({
       branchName,
       planId: legacyPlan.id,
       title: 'Checkout v2',
@@ -233,11 +244,11 @@ describe('architectPlanService', () => {
 
     expect(renamedLegacyPlan.slug).toBe('checkout');
     expect(renamedLegacyPlan.title).toBe('Checkout v2');
-    expect(toPlanIntegrationBranch(renamedLegacyPlan.slug)).toBe('plan/checkout');
-    expect(toPlanIntegrationBranch(canonicalPlan.slug)).toBe('plan/1710000000020');
+    expect(service.toPlanIntegrationBranch(renamedLegacyPlan.slug)).toBe('plan/checkout');
+    expect(service.toPlanIntegrationBranch(canonicalPlan.slug)).toBe('plan/1710000000020');
 
-    const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans.find((plan) => plan.id === legacyPlan.id)?.slug).toBe('checkout');
-    expect(listed.plans.find((plan) => plan.id === canonicalPlan.id)?.slug).toBe('1710000000020');
+    const listed = await service.listArchitectPlans(branchName, true, true);
+    expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === legacyPlan.id)?.slug).toBe('checkout');
+    expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === canonicalPlan.id)?.slug).toBe('1710000000020');
   });
 });

@@ -60,15 +60,27 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       ? webSearchSettings.tavilyApiKey.trim().length > 0
       : webSearchSettings.braveApiKey.trim().length > 0;
 
-  const contextCitations = selectedConversationId
-    ? getConversationContextCitations(selectedConversationId)
-    : [];
-  const interestingSourceCitations = selectedConversationId
-    ? getConversationInterestingSourceCitations(selectedConversationId)
-    : [];
-  const usedSourceCitations = selectedConversationId
-    ? getConversationUsedSourceCitations(selectedConversationId)
-    : [];
+  const contextCitations = useMemo(
+    () =>
+      selectedConversationId
+        ? getConversationContextCitations(selectedConversationId)
+        : [],
+    [getConversationContextCitations, selectedConversationId]
+  );
+  const interestingSourceCitations = useMemo(
+    () =>
+      selectedConversationId
+        ? getConversationInterestingSourceCitations(selectedConversationId)
+        : [],
+    [getConversationInterestingSourceCitations, selectedConversationId]
+  );
+  const usedSourceCitations = useMemo(
+    () =>
+      selectedConversationId
+        ? getConversationUsedSourceCitations(selectedConversationId)
+        : [],
+    [getConversationUsedSourceCitations, selectedConversationId]
+  );
   const fileCitations = contextCitations.filter((citation) => citation.type !== 'web');
   const webCitations = contextCitations.filter((citation) => citation.type === 'web');
   const sourceCitations = useMemo(
@@ -97,13 +109,13 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     if (isAddingUrl) urlInputRef.current?.focus();
   }, [isAddingUrl]);
 
-  const ensureConversation = async () => {
+  const ensureConversation = useCallback(async () => {
     if (selectedConversationId) return selectedConversationId;
     const conversation = await createConversation(t('chat.newChat', 'New Chat'), null, null);
     return conversation.id;
-  };
+  }, [createConversation, selectedConversationId, t]);
 
-  const handleFileSelect = async (files: FileList | null) => {
+  const handleFileSelect = useCallback(async (files: FileList | null) => {
     if (!files) return;
     const conversationId = await ensureConversation();
     for (const file of files) {
@@ -124,7 +136,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       }
     }
     if (fileInputRef.current) fileInputRef.current.value = '';
-  };
+  }, [addCitation, ensureConversation]);
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
     if (activeTab !== 'context') return;

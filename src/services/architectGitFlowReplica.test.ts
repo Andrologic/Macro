@@ -182,6 +182,11 @@ const gitMergeCheckMock = mock(async () => ({
   conflictFiles: [],
   hasChanges: true,
 }));
+const gitPullMock = mock(async () => ({
+  branch: 'develop',
+  remote: 'origin',
+  output: 'Already up to date.',
+}));
 const gitMergeMock = mock(async () => 'merge-ok');
 const gitBranchListMock = mock(async () => ({
   current: 'develop',
@@ -257,6 +262,7 @@ const registerModuleMocks = () => {
     gitStatus: gitStatusMock,
     gitDiff: gitDiffMock,
     gitMergeCheck: gitMergeCheckMock,
+    gitPull: gitPullMock,
     gitMerge: gitMergeMock,
     gitBranchList: gitBranchListMock,
     gitBranchDelete: gitBranchDeleteMock,
@@ -296,6 +302,7 @@ describe('architectGitFlowService replica integration', () => {
     gitStatusMock.mockClear();
     gitDiffMock.mockClear();
     gitMergeCheckMock.mockClear();
+    gitPullMock.mockClear();
     gitMergeMock.mockClear();
     gitBranchListMock.mockClear();
     gitBranchDeleteMock.mockClear();
@@ -317,6 +324,7 @@ describe('architectGitFlowService replica integration', () => {
         gitStatus: gitStatusMock,
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
+        gitPull: gitPullMock,
         gitMerge: gitMergeMock,
         gitBranchList: gitBranchListMock,
         gitBranchDelete: gitBranchDeleteMock,
@@ -360,6 +368,7 @@ describe('architectGitFlowService replica integration', () => {
     expect(result.plan.projectIds).toEqual(['web']);
     expect(result.plan.predictedBranches).toHaveLength(1);
     expect(gitStatusMock).toHaveBeenCalled();
+    expect(gitPullMock).toHaveBeenCalledTimes(1);
     expect(gitMergeCheckMock).toHaveBeenCalled();
     expect(gitMergeMock).toHaveBeenCalledTimes(1);
     expect(gitBranchDeleteMock).toHaveBeenCalled();
@@ -393,6 +402,7 @@ describe('architectGitFlowService replica integration', () => {
         gitStatus: gitStatusMock,
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
+        gitPull: gitPullMock,
         gitMerge: gitMergeMock,
         gitBranchList: gitBranchListMock,
         gitBranchDelete: gitBranchDeleteMock,
