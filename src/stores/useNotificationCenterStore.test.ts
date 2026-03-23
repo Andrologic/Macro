@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -36,31 +36,45 @@ Object.defineProperty(globalThis, 'localStorage', {
   writable: true,
 });
 
-const {
-  NOTIFICATION_CENTER_MAX_ITEMS,
-  NOTIFICATION_CENTER_STORAGE_KEY,
-  readNotificationCenterItemsFromStorage,
-  sanitizeNotificationCenterItems,
-  useNotificationCenterStore,
-} = await import('./useNotificationCenterStore');
+let importCounter = 0;
+
+const loadNotificationCenterStore = async () => {
+  mock.module('../services/preferences', () => ({
+    PREF_KEYS: {
+      NOTIFICATION_CENTER_ITEMS: 'notificationCenterItems',
+    },
+    savePreference: async (key: string, value: unknown) => {
+      localStorageMock.setItem(`macro_${key}`, JSON.stringify(value));
+    },
+  }));
+  importCounter += 1;
+  return import(`./useNotificationCenterStore.ts?notification-test=${importCounter}`);
+};
 
 describe('useNotificationCenterStore', () => {
+  let notificationStore: Awaited<ReturnType<typeof loadNotificationCenterStore>>;
+
   beforeEach(() => {
+    mock.restore();
     localStorageMock.clear();
-    useNotificationCenterStore.setState({
+  });
+
+  beforeEach(async () => {
+    notificationStore = await loadNotificationCenterStore();
+    notificationStore.useNotificationCenterStore.setState({
       items: [],
       isCenterOpen: false,
     });
   });
 
   it('adds info, warning, and error items with newest first', () => {
-    const store = useNotificationCenterStore.getState();
+    const store = notificationStore.useNotificationCenterStore.getState();
 
     store.addItem('info', 'Info toast', 'Helpful context');
     store.addItem('warning', 'Warning toast');
     store.addItem('error', 'Error toast', 'Action required');
 
-    const items = useNotificationCenterStore.getState().items;
+    const items = notificationStore.useNotificationCenterStore.getState().items;
     expect(items).toHaveLength(3);
     expect(items[0].level).toBe('error');
     expect(items[1].level).toBe('warning');
@@ -69,62 +83,74 @@ describe('useNotificationCenterStore', () => {
   });
 
   it('trims history to the configured maximum', () => {
-    const store = useNotificationCenterStore.getState();
+    const store = notificationStore.useNotificationCenterStore.getState();
 
-    for (let index = 0; index < NOTIFICATION_CENTER_MAX_ITEMS + 5; index += 1) {
+    for (let index = 0; index < notificationStore.NOTIFICATION_CENTER_MAX_ITEMS + 5; index += 1) {
       store.addItem('info', `Notification ${index}`);
     }
 
-    const items = useNotificationCenterStore.getState().items;
-    expect(items).toHaveLength(NOTIFICATION_CENTER_MAX_ITEMS);
-    expect(items[0].title).toBe(`Notification ${NOTIFICATION_CENTER_MAX_ITEMS + 4}`);
+    const items = notificationStore.useNotificationCenterStore.getState().items;
+    expect(items).toHaveLength(notificationStore.NOTIFICATION_CENTER_MAX_ITEMS);
+    expect(items[0].title).toBe(`Notification ${notificationStore.NOTIFICATION_CENTER_MAX_ITEMS + 4}`);
     expect(items.at(-1)?.title).toBe('Notification 5');
   });
 
   it('marks all items as read when the center opens', () => {
-    const store = useNotificationCenterStore.getState();
+    const store = notificationStore.useNotificationCenterStore.getState();
     store.addItem('info', 'Unread one');
     store.addItem('error', 'Unread two');
 
-    expect(useNotificationCenterStore.getState().items.every((item) => item.readAt === null)).toBe(true);
+    expect(
+      notificationStore.useNotificationCenterStore.getState().items.every(
+        (item: { readAt: string | null }) => item.readAt === null
+      )
+    ).toBe(true);
 
     store.setCenterOpen(true);
 
-    expect(useNotificationCenterStore.getState().isCenterOpen).toBe(true);
-    expect(useNotificationCenterStore.getState().items.every((item) => item.readAt !== null)).toBe(true);
+    expect(notificationStore.useNotificationCenterStore.getState().isCenterOpen).toBe(true);
+    expect(
+      notificationStore.useNotificationCenterStore.getState().items.every(
+        (item: { readAt: string | null }) => item.readAt !== null
+      )
+    ).toBe(true);
   });
 
   it('creates new items as read while the center is open', () => {
-    const store = useNotificationCenterStore.getState();
+    const store = notificationStore.useNotificationCenterStore.getState();
     store.setCenterOpen(true);
     store.addItem('warning', 'Already read');
 
-    const item = useNotificationCenterStore.getState().items[0];
+    const item = notificationStore.useNotificationCenterStore.getState().items[0];
     expect(item.readAt).toBe(item.createdAt);
   });
 
   it('removes a single item and clears the full list', () => {
-    const store = useNotificationCenterStore.getState();
+    const store = notificationStore.useNotificationCenterStore.getState();
     store.addItem('info', 'First');
     store.addItem('error', 'Second');
 
-    const secondId = useNotificationCenterStore.getState().items[0].id;
+    const secondId = notificationStore.useNotificationCenterStore.getState().items[0].id;
     store.removeItem(secondId);
 
-    expect(useNotificationCenterStore.getState().items.map((item) => item.title)).toEqual(['First']);
+    expect(
+      notificationStore.useNotificationCenterStore.getState().items.map(
+        (item: { title: string }) => item.title
+      )
+    ).toEqual(['First']);
 
     store.clearAll();
-    expect(useNotificationCenterStore.getState().items).toEqual([]);
+    expect(notificationStore.useNotificationCenterStore.getState().items).toEqual([]);
   });
 
   it('persists items to the dedicated preference storage key and hydrates them back', () => {
-    const store = useNotificationCenterStore.getState();
+    const store = notificationStore.useNotificationCenterStore.getState();
     store.addItem('info', 'Persisted', 'Saved locally');
 
-    const persistedRaw = localStorageMock.getItem(NOTIFICATION_CENTER_STORAGE_KEY);
+    const persistedRaw = localStorageMock.getItem(notificationStore.NOTIFICATION_CENTER_STORAGE_KEY);
     expect(persistedRaw).not.toBeNull();
 
-    const hydrated = readNotificationCenterItemsFromStorage();
+    const hydrated = notificationStore.readNotificationCenterItemsFromStorage();
     expect(hydrated).toHaveLength(1);
     expect(hydrated[0]).toMatchObject({
       level: 'info',
@@ -135,7 +161,7 @@ describe('useNotificationCenterStore', () => {
 
   it('sanitizes invalid stored payloads before hydration', () => {
     localStorageMock.setItem(
-      NOTIFICATION_CENTER_STORAGE_KEY,
+      notificationStore.NOTIFICATION_CENTER_STORAGE_KEY,
       JSON.stringify([
         {
           id: 'valid-1',
@@ -154,7 +180,11 @@ describe('useNotificationCenterStore', () => {
       ])
     );
 
-    expect(sanitizeNotificationCenterItems(JSON.parse(localStorageMock.getItem(NOTIFICATION_CENTER_STORAGE_KEY)!))).toEqual([
+    expect(
+      notificationStore.sanitizeNotificationCenterItems(
+        JSON.parse(localStorageMock.getItem(notificationStore.NOTIFICATION_CENTER_STORAGE_KEY)!)
+      )
+    ).toEqual([
       {
         id: 'valid-1',
         level: 'warning',

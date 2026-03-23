@@ -160,7 +160,7 @@ const seedReplica = (workspacePath: string, plan: ReturnType<typeof buildPlan>):
 const registerArchitectPlanMocks = () => {
   mock.restore();
 
-  mock.module('./tauriIpc', () => ({
+  const tauriModule = () => ({
     isTauriAvailable: () => true,
     workspaceGetActiveRoot: async () => '/repos/web',
     fsReadFileWithOptions: async ({
@@ -214,7 +214,25 @@ const registerArchitectPlanMocks = () => {
       path: string;
       workspacePath?: string | null;
     }) => listWorkspaceFiles(workspacePath, path),
-  }));
+    macroBranchCommitIfDirty: async () => ({
+      committed: false,
+      branch: 'develop',
+      ahead: 0,
+      behind: 0,
+      hasConflicts: false,
+      isDirty: false,
+      output: '',
+    }),
+    macroBranchPush: async () => ({
+      pushed: false,
+      branch: 'develop',
+      remote: 'origin',
+      output: '',
+    }),
+  });
+
+  mock.module('./tauriIpc', tauriModule);
+  mock.module('./tauriIpc.ts', tauriModule);
 
   mock.module('../stores/useAppStore', () => ({
     useAppStore: {
