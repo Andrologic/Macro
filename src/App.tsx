@@ -1,24 +1,15 @@
-import React, { useEffect, useState, useRef, Suspense, lazy } from 'react';
+import React, { useEffect, useRef, Suspense, lazy, useSyncExternalStore } from 'react';
 import { Header } from './components/layout/Header';
 import { Footer } from './components/layout/Footer';
 import { Toaster } from './components/ui/Toaster';
 import { useWindowRestoration } from './hooks/useWindowRestoration';
 import { useUiZoom } from './hooks/useUiZoom';
 import { PanelResizer } from './components/layout/PanelResizer';
-import { ModeRouter, preloadAllModes } from './components/layout/ModeRouter';
+import { ModeRouter } from './components/layout/ModeRouter';
+import { appBootstrap } from './services/appBootstrap';
 import { useAppStore } from './stores/useAppStore';
-import { useChatStore } from './stores/useChatStore';
-import { useTaskStore } from './stores/useTaskStore';
-import { useAIStore } from './stores/useAIStore';
-import { useAuthStore } from './stores/useAuthStore';
-import { useToolsStore } from './stores/useToolsStore';
-import { useProviderStore } from './stores/useProviderStore';
-import { useShortcutsStore } from './stores/useShortcutsStore';
 import { Skeleton } from './components/shared/Skeleton';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-type InitPriority = 'critical' | 'high' | 'normal' | 'low';
 
 // =============================================================================
 // LAZY LOADED MODALS - Code Splitting for Non-Critical UI
@@ -52,38 +43,12 @@ const App: React.FC = () => {
   useWindowRestoration();
   useUiZoom();
 
-  // ==========================================================================
-  // STORE INITIALIZATION FUNCTIONS
-  // ==========================================================================
-  
-  const initializeApp = useAppStore((state) => state.initialize);
-  const initializeChat = useChatStore((state) => state.initialize);
-  const initializeTasks = useTaskStore((state) => state.initialize);
-  const initializeAI = useAIStore((state) => state.initialize);
-  const initializeTools = useToolsStore((state) => state.loadSettings);
-  const initializeProviders = useProviderStore((state) => state.initialize);
-  const initializeShortcuts = useShortcutsStore((state) => state.initialize);
-  const checkSession = useAuthStore((state) => state.checkSession);
-
   useGlobalShortcuts();
-
-  // ==========================================================================
-  // INITIALIZATION STATE
-  // ==========================================================================
-  
-  const [initStatus, setInitStatus] = useState<{
-    critical: boolean;
-    high: boolean;
-    normal: boolean;
-    low: boolean;
-  }>({
-    critical: false,
-    high: false,
-    normal: false,
-    low: false,
-  });
-
-  const [, setInitErrors] = useState<Record<string, string>>({});
+  const initStatus = useSyncExternalStore(
+    appBootstrap.subscribe,
+    appBootstrap.getSnapshot,
+    appBootstrap.getSnapshot
+  );
 
   // ==========================================================================
   // PANEL STATE FROM STORE (persisted)
@@ -184,107 +149,9 @@ const App: React.FC = () => {
     }
   };
 
-  // ==========================================================================
-  // OPTIMIZED INITIALIZATION - Parallel with Priority
-  // ==========================================================================
-
   useEffect(() => {
-    /**
-     * Initialize stores with priority-based loading strategy
-     * 
-     * PERFORMANCE OPTIMIZATION:
-     * - Critical: App bootstrap (UI cannot render without it)
-     * - High: Auth session (needed for permissions but UI can show skeleton)
-     * - Normal: Chat, Tasks (can load in background)
-     * - Low: AI Providers, Tools (can be deferred)
-     */
-    
-    const initWithTracking = async (
-      name: string,
-      initFn: () => Promise<void>,
-      priority: InitPriority
-    ): Promise<void> => {
-      const startTime = performance.now();
-      try {
-        await initFn();
-        const duration = performance.now() - startTime;
-        console.log(`[Init] ${name} (${priority}) completed in ${duration.toFixed(2)}ms`);
-      } catch (error) {
-        const duration = performance.now() - startTime;
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        console.error(`[Init] ${name} (${priority}) failed after ${duration.toFixed(2)}ms:`, errorMessage);
-        setInitErrors((prev) => ({ ...prev, [name]: errorMessage }));
-      }
-    };
-
-    const runInitialization = async (): Promise<void> => {
-      const startTime = performance.now();
-      console.log('[Init] Starting prioritized initialization...');
-
-      // CRITICAL: Restore app context, task context, and chat state in order.
-      await initWithTracking('App Bootstrap', initializeApp, 'critical');
-      await initWithTracking('Task Store', initializeTasks, 'critical');
-      await initWithTracking('Chat Store', initializeChat, 'critical');
-      setInitStatus((prev) => ({ ...prev, critical: true }));
-
-      // HIGH: Auth session - parallel with UI rendering
-      const highPriorityInit = Promise.all([
-        initWithTracking('Auth Session', checkSession, 'high'),
-      ]).then(() => {
-        setInitStatus((prev) => ({ ...prev, high: true }));
-      });
-
-      // NORMAL: Core data - can load in background
-      const normalPriorityInit = Promise.all([
-        initWithTracking('Shortcuts', initializeShortcuts, 'normal'),
-      ]).then(() => {
-        setInitStatus((prev) => ({ ...prev, normal: true }));
-      });
-
-      // LOW: Configuration and providers - defer until idle
-      const lowPriorityInit = new Promise<void>((resolve) => {
-        const runLowPriority = async (): Promise<void> => {
-          await Promise.all([
-            initWithTracking('AI Store', initializeAI, 'low'),
-            initWithTracking('Tools Store', initializeTools, 'low'),
-            initWithTracking('Provider Store', initializeProviders, 'low'),
-          ]);
-          setInitStatus((prev) => ({ ...prev, low: true }));
-          resolve();
-        };
-
-        // Use requestIdleCallback if available, otherwise setTimeout
-        if ('requestIdleCallback' in window) {
-          window.requestIdleCallback(() => void runLowPriority(), { timeout: 2000 });
-        } else {
-          setTimeout(() => void runLowPriority(), 100);
-        }
-      });
-
-      // Wait for critical + high before considering app "ready"
-      await Promise.all([highPriorityInit, normalPriorityInit]);
-      
-      const totalDuration = performance.now() - startTime;
-      console.log(`[Init] App ready in ${totalDuration.toFixed(2)}ms`);
-
-      // Preload all mode components after app is ready
-      preloadAllModes();
-
-      // Low priority can continue in background
-      void lowPriorityInit;
-    };
-
-    void runInitialization();
-  }, [
-    initializeApp,
-    initializeChat,
-    initializeTasks,
-    initializeShortcuts,
-    initializeAI,
-    initializeTools,
-    initializeProviders,
-    checkSession,
-  ]);
+    void appBootstrap.ensureStarted();
+  }, []);
 
   // ==========================================================================
   // RENDER
