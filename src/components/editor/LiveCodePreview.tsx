@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
@@ -34,17 +34,20 @@ export const LiveCodePreview: React.FC<LiveCodePreviewProps> = ({ className }) =
   const tasks = useTaskStore((state) => state.tasks);
   const currentTask = tasks.find((task) => task.id === selectedTaskId);
 
-  const modifiedFiles: FileTab[] =
-    currentTask?.estimated_changes.map((change, index) => ({
-      id: `${currentTask.id}-${index}`,
-      path: change.path,
-      status:
-        change.operation === 'Delete'
-          ? 'deleted'
-          : change.operation === 'Modify'
-            ? 'modified'
-            : 'added',
-    })) ?? [];
+  const modifiedFiles: FileTab[] = useMemo(
+    () =>
+      currentTask?.estimated_changes.map((change, index) => ({
+        id: `${currentTask.id}-${index}`,
+        path: change.path,
+        status:
+          change.operation === 'Delete'
+            ? 'deleted'
+            : change.operation === 'Modify'
+              ? 'modified'
+              : 'added',
+      })) ?? [],
+    [currentTask]
+  );
 
   const [selectedFileId, setSelectedFileId] = useState<string | null>(modifiedFiles[0]?.id || null);
   const [viewMode, setViewMode] = useState<'diff' | 'preview'>('diff');
