@@ -93,6 +93,7 @@ const ChatZone: React.FC = () => {
     predictedBranches,
   } = useAppStore();
   const {
+    messages,
     conversations,
     selectedConversationId,
     createConversation,
@@ -138,7 +139,7 @@ const ChatZone: React.FC = () => {
   // Filter messages by selected conversation
   const currentMessages = useMemo(
     () => (selectedConversationId ? getConversationMessages(selectedConversationId) : []),
-    [getConversationMessages, selectedConversationId]
+    [getConversationMessages, messages, selectedConversationId]
   );
   const isConversationPending =
     hydrationStatus === 'idle' ||
