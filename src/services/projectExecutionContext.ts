@@ -66,6 +66,24 @@ const getExecutionTargets = (task: ExecutionTaskLike | null): TaskExecutionTarge
 export const resolveProjectExecutionContext = (
   input: ResolveProjectExecutionContextInput
 ): ProjectExecutionContext => {
+  if (input.mode === 'Chat') {
+    return {
+      groupId: null,
+      groupName: null,
+      projectIds: [],
+      projectMounts: [],
+      focusedProjectId: null,
+      virtualRootEnabled: false,
+      workspacePathsByProjectId: {},
+      defaultWorkspacePath: null,
+      projectId: null,
+      projectName: null,
+      taskId: null,
+      branchName: null,
+      workspacePath: null,
+    };
+  }
+
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
   const taskById = new Map((input.tasks || []).map((task) => [task.id, task]));
   const projectGroups = input.projectGroups || [];
