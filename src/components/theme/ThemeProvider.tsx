@@ -30,12 +30,22 @@ export function useTheme() {
 
 const THEME_CACHE_KEY = 'macro-theme-cache';
 const THEME_CACHE_VERSION = '2';
+let initialThemeSetupKey: string | null = null;
+let initialThemeSetupPromise: Promise<InitialThemeSetupResult> | null = null;
+let initialThemeSetupResult: InitialThemeSetupResult | null = null;
+const preloadingThemeIds = new Set<string>();
 
 interface CachedTheme {
   version: string;
   themeId: string;
   theme: Theme;
   timestamp: number;
+}
+
+interface InitialThemeSetupResult {
+  manifest: ThemeManifest | null;
+  theme: Theme;
+  themeId: string;
 }
 
 // =============================================================================
@@ -123,6 +133,66 @@ const applyDefaultTheme = (): void => {
   applyTheme(defaultTheme);
 };
 
+const ensureInitialThemeSetup = async (activeThemeId: string): Promise<InitialThemeSetupResult> => {
+  if (initialThemeSetupResult && initialThemeSetupKey === activeThemeId) {
+    return initialThemeSetupResult;
+  }
+
+  if (initialThemeSetupPromise && initialThemeSetupKey === activeThemeId) {
+    return initialThemeSetupPromise;
+  }
+
+  initialThemeSetupKey = activeThemeId;
+  initialThemeSetupPromise = (async () => {
+    const startTime = performance.now();
+    applyDefaultTheme();
+
+    let manifest: ThemeManifest | null = null;
+    let resolvedTheme = defaultTheme;
+    let resolvedThemeId = activeThemeId;
+
+    const cachedTheme = loadThemeFromCache(activeThemeId);
+    if (cachedTheme) {
+      resolvedTheme = cachedTheme;
+      applyTheme(cachedTheme);
+      console.log(`[ThemeProvider] Loaded from cache in ${(performance.now() - startTime).toFixed(2)}ms`);
+    }
+
+    try {
+      const manifestResponse = await fetch('/themes/manifest.json');
+      const manifestData: ThemeManifest = await manifestResponse.json();
+      manifest = manifestData;
+
+      const themeEntry = manifestData.themes.find((theme) => theme.id === activeThemeId)
+        || manifestData.themes[0];
+
+      if (themeEntry) {
+        resolvedThemeId = themeEntry.id;
+      }
+
+      if (themeEntry && !cachedTheme) {
+        const themeResponse = await fetch(themeEntry.path);
+        resolvedTheme = await themeResponse.json();
+        applyTheme(resolvedTheme);
+        saveThemeToCache(themeEntry.id, resolvedTheme);
+        console.log(`[ThemeProvider] Loaded from network in ${(performance.now() - startTime).toFixed(2)}ms`);
+      }
+    } catch (error) {
+      console.error('[ThemeProvider] Failed to load theme:', error);
+    }
+
+    const result = {
+      manifest,
+      theme: resolvedTheme,
+      themeId: resolvedThemeId,
+    };
+    initialThemeSetupResult = result;
+    return result;
+  })();
+
+  return initialThemeSetupPromise;
+};
+
 // =============================================================================
 // THEME PROVIDER COMPONENT
 // =============================================================================
@@ -130,70 +200,39 @@ const applyDefaultTheme = (): void => {
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [manifest, setManifest] = useState<ThemeManifest | null>(null);
   const [currentTheme, setCurrentTheme] = useState<Theme>(defaultTheme);
+  const [currentThemeId, setCurrentThemeId] = useState<string>('macro-dark');
   const [isLoading, setIsLoading] = useState(true);
   
   useDynamicAppIcon(currentTheme?.colors?.primary);
 
   const activeThemeId = useAppStore((state) => state.activeThemeId);
+  const [initialThemeId] = useState(() => activeThemeId);
 
   // ==========================================================================
   // INITIAL THEME SETUP - Critical path optimization
   // ==========================================================================
 
   useEffect(() => {
-    /**
-     * CRITICAL PATH OPTIMIZATION:
-     * 1. Apply default theme immediately (no flash of unstyled content)
-     * 2. Check for cached theme
-     * 3. Load manifest in background
-     * 4. Fetch actual theme if needed
-     */
-    
+    let cancelled = false;
+
     const setupTheme = async (): Promise<void> => {
-      const startTime = performance.now();
-      
-      // Step 1: Apply default theme immediately
-      applyDefaultTheme();
-      
-      // Step 2: Try to load from cache
-      const cachedTheme = loadThemeFromCache(activeThemeId);
-      if (cachedTheme) {
-        applyTheme(cachedTheme);
-        setCurrentTheme(cachedTheme);
-        setIsLoading(false);
-        console.log(`[ThemeProvider] Loaded from cache in ${(performance.now() - startTime).toFixed(2)}ms`);
+      const result = await ensureInitialThemeSetup(initialThemeId);
+      if (cancelled) {
+        return;
       }
 
-      // Step 3: Load manifest (non-blocking if cache hit)
-      try {
-        const manifestResponse = await fetch('/themes/manifest.json');
-        const manifestData: ThemeManifest = await manifestResponse.json();
-        setManifest(manifestData);
-
-        // Step 4: Load actual theme if not cached
-        const themeEntry = manifestData.themes.find((t) => t.id === activeThemeId) 
-          || manifestData.themes[0];
-        
-        if (themeEntry && !cachedTheme) {
-          const themeResponse = await fetch(themeEntry.path);
-          const theme: Theme = await themeResponse.json();
-          
-          applyTheme(theme);
-          setCurrentTheme(theme);
-          saveThemeToCache(activeThemeId, theme);
-          
-          console.log(`[ThemeProvider] Loaded from network in ${(performance.now() - startTime).toFixed(2)}ms`);
-        }
-      } catch (error) {
-        console.error('[ThemeProvider] Failed to load theme:', error);
-        // Keep default theme on error
-      } finally {
-        setIsLoading(false);
-      }
+      setManifest(result.manifest);
+      setCurrentTheme(result.theme);
+      setCurrentThemeId(result.themeId);
+      setIsLoading(false);
     };
 
     void setupTheme();
-  }, []); // Run once on mount
+
+    return () => {
+      cancelled = true;
+    };
+  }, [initialThemeId]);
 
   // ==========================================================================
   // THEME CHANGE HANDLER
@@ -207,6 +246,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     if (cachedTheme) {
       applyTheme(cachedTheme);
       setCurrentTheme(cachedTheme);
+      setCurrentThemeId(themeId);
       return;
     }
 
@@ -218,7 +258,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
         const theme: Theme = await response.json();
         applyTheme(theme);
         setCurrentTheme(theme);
-        saveThemeToCache(themeId, theme);
+        setCurrentThemeId(themeEntry.id);
+        saveThemeToCache(themeEntry.id, theme);
       } catch (error) {
         console.error(`[ThemeProvider] Failed to load theme ${themeId}:`, error);
       }
@@ -228,10 +269,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   // React to theme ID changes
   useEffect(() => {
     // Only handle changes after initial load
-    if (!isLoading && activeThemeId !== currentTheme?.name?.toLowerCase().replace(' ', '-')) {
+    if (!isLoading && activeThemeId !== currentThemeId) {
       void handleThemeChange(activeThemeId);
     }
-  }, [activeThemeId, isLoading, handleThemeChange]);
+  }, [activeThemeId, currentThemeId, isLoading, handleThemeChange]);
 
   // ==========================================================================
   // PRELOAD OTHER THEMES
@@ -243,28 +284,52 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
      */
     if (!manifest || isLoading) return;
 
+    let idleCallbackId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
     const preloadThemes = (): void => {
       manifest.themes.forEach((themeEntry) => {
-        if (themeEntry.id !== activeThemeId && !loadThemeFromCache(themeEntry.id)) {
-          // Preload theme file
+        if (
+          themeEntry.id !== activeThemeId &&
+          !loadThemeFromCache(themeEntry.id) &&
+          !preloadingThemeIds.has(themeEntry.id)
+        ) {
+          preloadingThemeIds.add(themeEntry.id);
           fetch(themeEntry.path)
             .then((res) => res.json())
             .then((theme: Theme) => {
+              if (cancelled) {
+                return;
+              }
               saveThemeToCache(themeEntry.id, theme);
               console.log(`[ThemeProvider] Preloaded theme: ${themeEntry.id}`);
             })
             .catch((err) => {
               console.warn(`[ThemeProvider] Failed to preload theme ${themeEntry.id}:`, err);
+            })
+            .finally(() => {
+              preloadingThemeIds.delete(themeEntry.id);
             });
         }
       });
     };
 
     if ('requestIdleCallback' in window) {
-      window.requestIdleCallback(() => preloadThemes(), { timeout: 5000 });
+      idleCallbackId = window.requestIdleCallback(() => preloadThemes(), { timeout: 5000 });
     } else {
-      setTimeout(() => preloadThemes(), 2000);
+      timeoutId = setTimeout(() => preloadThemes(), 2000);
     }
+
+    return () => {
+      cancelled = true;
+      if (idleCallbackId !== null && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleCallbackId);
+      }
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
   }, [manifest, isLoading, activeThemeId]);
 
   const contextValue: ThemeContextType = {
