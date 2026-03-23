@@ -30,6 +30,11 @@ interface PerformanceReport {
 
 const PERFORMANCE_STORAGE_KEY = 'macro-performance-metrics';
 const MAX_STORED_REPORTS = 50;
+let initialReactMountLogged = false;
+let initialDomReadyLogged = false;
+let initialWindowLoadLogged = false;
+let initialReportGenerated = false;
+let initialReportScheduled = false;
 
 // =============================================================================
 // UTILITY FUNCTIONS
@@ -174,33 +179,69 @@ export function usePerformanceMonitor() {
 
   // Auto-mark important milestones
   useEffect(() => {
+    let reportTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
     // Mark when component mounts (React render start)
-    mark('react-mount');
+    if (!initialReactMountLogged) {
+      initialReactMountLogged = true;
+      mark('react-mount');
+    }
+
+    const scheduleInitialReport = () => {
+      if (initialReportGenerated || initialReportScheduled) {
+        return;
+      }
+
+      initialReportScheduled = true;
+      reportTimeoutId = setTimeout(() => {
+        initialReportScheduled = false;
+        if (initialReportGenerated) {
+          return;
+        }
+
+        initialReportGenerated = true;
+        const report = generateReport();
+        console.log('[PerformanceMonitor] Report generated:', report);
+      }, 100);
+    };
+
+    const handleDomReady = () => {
+      if (initialDomReadyLogged) {
+        return;
+      }
+
+      initialDomReadyLogged = true;
+      mark('dom-ready');
+    };
+    const handleWindowLoad = () => {
+      if (!initialWindowLoadLogged) {
+        initialWindowLoadLogged = true;
+        mark('window-load');
+      }
+      scheduleInitialReport();
+    };
 
     // Mark when DOM is ready
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => mark('dom-ready'));
+      document.addEventListener('DOMContentLoaded', handleDomReady);
     } else {
-      mark('dom-ready');
+      handleDomReady();
     }
 
     // Mark when fully loaded
     if (document.readyState !== 'complete') {
-      window.addEventListener('load', () => {
-        mark('window-load');
-        
-        // Generate report after a short delay to capture all metrics
-        setTimeout(() => {
-          const report = generateReport();
-          console.log('[PerformanceMonitor] Report generated:', report);
-        }, 100);
-      });
+      window.addEventListener('load', handleWindowLoad);
     } else {
-      mark('window-load');
+      handleWindowLoad();
     }
 
     return () => {
-      // Cleanup
+      document.removeEventListener('DOMContentLoaded', handleDomReady);
+      window.removeEventListener('load', handleWindowLoad);
+      if (reportTimeoutId) {
+        clearTimeout(reportTimeoutId);
+        initialReportScheduled = false;
+      }
     };
   }, [mark, generateReport]);
 

@@ -5,6 +5,8 @@
  */
 
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
+import { getPageLifecycleSignal, isPageShuttingDown } from '../utils/pageLifecycle';
+import { createCombinedAbortSignal } from '../utils/abortSignals';
 
 export interface ProviderModel {
   id: string;
@@ -49,6 +51,16 @@ export async function fetchModelsFromProvider(
   options: FetchModelsOptions
 ): Promise<FetchModelsResult> {
   const { baseUrl, apiKey, providerId, timeout = 10000 } = options;
+  let didTimeout = false;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  if (isPageShuttingDown()) {
+    return {
+      success: false,
+      models: [],
+      error: 'Request cancelled.',
+    };
+  }
 
   // Use longer timeout for local providers (model loading can take time)
   const isLocalProvider = providerId === 'lmstudio' || providerId === 'ollama';
@@ -78,42 +90,76 @@ export async function fetchModelsFromProvider(
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
+    const { signal, dispose } = createCombinedAbortSignal([
+      controller.signal,
+      getPageLifecycleSignal(),
+    ]);
+    timeoutId = setTimeout(() => {
+      didTimeout = true;
+      controller.abort('timeout');
+    }, effectiveTimeout);
 
-    const response = await tauriFetch(`${baseUrl}/models`, {
-      method: 'GET',
-      headers,
-    });
+    try {
+      const response = await tauriFetch(`${baseUrl}/models`, {
+        method: 'GET',
+        headers,
+        connectTimeout: effectiveTimeout,
+        signal,
+      });
 
-    clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
+      timeoutId = null;
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unknown error');
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        return {
+          success: false,
+          models: [],
+          error: `Failed to fetch models: ${response.status} - ${errorText}`,
+        };
+      }
+
+      const data: ModelsListResponse = await response.json();
+      
+      // Normalize model data
+      const models = (data.data || []).map((model) => ({
+        id: model.id,
+        name: model.name || model.id,
+        created: model.created,
+        owned_by: model.owned_by,
+        description: model.description,
+        pricing: model.pricing,
+      }));
+
+      return {
+        success: true,
+        models,
+      };
+    } finally {
+      dispose();
+    }
+  } catch (error) {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+
+    const message = error instanceof Error ? error.message : 'Unknown error';
+
+    if (didTimeout) {
       return {
         success: false,
         models: [],
-        error: `Failed to fetch models: ${response.status} - ${errorText}`,
+        error: `Connection timeout. Make sure ${providerId} is running and accessible.`,
       };
     }
 
-    const data: ModelsListResponse = await response.json();
-    
-    // Normalize model data
-    const models = (data.data || []).map((model) => ({
-      id: model.id,
-      name: model.name || model.id,
-      created: model.created,
-      owned_by: model.owned_by,
-      description: model.description,
-      pricing: model.pricing,
-    }));
-
-    return {
-      success: true,
-      models,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    if (isPageShuttingDown() || message === 'Request cancelled') {
+      return {
+        success: false,
+        models: [],
+        error: 'Request cancelled.',
+      };
+    }
     
     // Provide helpful error messages for common issues
     if (message.includes('abort')) {
