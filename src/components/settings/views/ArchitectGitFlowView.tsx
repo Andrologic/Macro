@@ -12,6 +12,7 @@ const defaultSettings: ArchitectGitNamingSettings = {
   baseBranch: 'develop',
   planBranchTemplate: 'plan/{planSlug}',
   featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+  syncTargetBeforeFinish: true,
 };
 
 const renderTemplatePreview = (template: string, params: Record<string, string>): string => {
@@ -30,16 +31,18 @@ export const ArchitectGitFlowView: React.FC = () => {
 
   useEffect(() => {
     const loadSettings = async () => {
-      const [baseBranch, planTemplate, featureTemplate] = await Promise.all([
+      const [baseBranch, planTemplate, featureTemplate, syncTargetBeforeFinish] = await Promise.all([
         loadPreference<string>(PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH),
         loadPreference<string>(PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE),
         loadPreference<string>(PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE),
+        loadPreference<boolean>(PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH),
       ]);
 
       setSettings({
         baseBranch: baseBranch || defaultSettings.baseBranch,
         planBranchTemplate: planTemplate || defaultSettings.planBranchTemplate,
         featureBranchTemplate: featureTemplate || defaultSettings.featureBranchTemplate,
+        syncTargetBeforeFinish: syncTargetBeforeFinish ?? defaultSettings.syncTargetBeforeFinish,
       });
     };
 
@@ -74,6 +77,7 @@ export const ArchitectGitFlowView: React.FC = () => {
         PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE,
         settings.featureBranchTemplate.trim() || defaultSettings.featureBranchTemplate
       ),
+      savePreference(PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH, settings.syncTargetBeforeFinish),
     ]);
     setIsSaving(false);
     setSaveSuccess(true);
@@ -135,6 +139,31 @@ export const ArchitectGitFlowView: React.FC = () => {
             placeholder="feature/{planSlug}/{featureSlug}"
           />
         </div>
+
+        <label className="flex items-start gap-3 rounded-lg border border-border/50 bg-muted/10 px-3 py-3">
+          <input
+            type="checkbox"
+            checked={settings.syncTargetBeforeFinish}
+            onChange={(event) =>
+              setSettings((prev) => ({ ...prev, syncTargetBeforeFinish: event.target.checked }))
+            }
+            className="mt-0.5 h-4 w-4 rounded border-border bg-background"
+          />
+          <div className="space-y-1">
+            <div className="text-sm font-medium text-foreground">
+              {t(
+                'settings.architectGitFlow.syncTargetBeforeFinishLabel',
+                'Sync target branch before finishing'
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                'settings.architectGitFlow.syncTargetBeforeFinishHelp',
+                'Pull the latest target branch before finishing a task or finalizing a plan.'
+              )}
+            </p>
+          </div>
+        </label>
       </section>
 
       <section className="space-y-2 bg-muted/20 border border-border/50 rounded-xl p-3">

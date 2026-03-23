@@ -16,6 +16,7 @@ import {
   normalizeStrategyDependencies,
   toBranchWorktreeKey,
 } from './implementTaskDerivation';
+import { shouldSyncTargetBranchBeforeFinish } from './architectGitNaming';
 import { toServiceError } from './contracts/errors';
 import {
   buildValidProjectRegistrySnapshot,
@@ -178,9 +179,11 @@ type ArchitectGitFlowTauriDeps = Pick<
   | 'gitDiff'
   | 'gitMerge'
   | 'gitBranchDelete'
+  | 'gitBranchDeleteRemote'
   | 'gitCheckout'
   | 'gitBranchCreate'
   | 'gitWorktreeRemove'
+  | 'gitPull'
 > & {
   gitStatus: (repoPath: string) => Promise<ArchitectGitFlowGitStatus>;
   gitMergeCheck: (params: {
@@ -739,6 +742,7 @@ const cleanupPlanBranchesInternal = async (
 
     const branches = await tauriIpc.gitBranchList(target.repoPath);
     const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
+    const remoteBranchNames = new Set((branches.remote || []).map((branch) => branch.name));
     const branchCandidates = [...target.featureBranchNames, target.planBranchName].filter((name) => localBranchNames.has(name));
 
     if (branchCandidates.length > 0) {
@@ -786,6 +790,20 @@ const cleanupPlanBranchesInternal = async (
           branchName,
           force: false,
         });
+        if (remoteBranchNames.has(`origin/${branchName}`)) {
+          try {
+            await tauriIpc.gitBranchDeleteRemote({
+              repoPath: target.repoPath,
+              branchName,
+            });
+          } catch (error) {
+            if (!allowRetained) {
+              throw error;
+            }
+            cleanupError = cleanupError || toServiceError(error).message;
+            retainedBranches.push(`origin/${branchName}`);
+          }
+        }
         deletedBranches.push(branchName);
       } catch (error) {
         if (!allowRetained) {
@@ -1184,7 +1202,9 @@ export const deletePlanAndCleanupBranches = async (params: {
 };
 
 export const createArchitectGitFlowService = (
-  overrides: Partial<ArchitectGitFlowDependencies> = {}
+  overrides: (Partial<ArchitectGitFlowDependencies> & {
+    tauri?: Partial<ArchitectGitFlowTauriDeps>;
+  }) = {}
 ) => {
   const deps: ArchitectGitFlowDependencies = {
     ...defaultArchitectGitFlowDependencies,
@@ -1727,6 +1747,20 @@ export const createArchitectGitFlowService = (
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
     assertPlanReadyForFinalization(plan);
+
+    if (shouldSyncTargetBranchBeforeFinish()) {
+      const repositories = resolvePlanProjectRepoPathsWithDeps(plan, params.repoPath, {
+        logContext: 'finalize_sync',
+      });
+      await Promise.all(
+        repositories.map((repository) =>
+          deps.tauri.gitPull({
+            repoPath: repository.repoPath,
+            branch: plan.targetBranch || deps.getGitFlowBaseBranch(),
+          })
+        )
+      );
+    }
 
     const preflightRepositories = await preflightPlanRepositoriesWithDeps({
       plan,
