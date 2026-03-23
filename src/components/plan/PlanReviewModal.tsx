@@ -153,7 +153,7 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, loadReview, planId]);
+  }, [isOpen, loadReview, planId, t]);
 
   useEffect(() => {
     if (!isOpen) {
