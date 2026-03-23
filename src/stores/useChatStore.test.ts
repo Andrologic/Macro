@@ -1379,6 +1379,236 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
+  it('commits the first Implement reply on an existing awaiting-response thread before the stream completes', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    taskStoreState.tasks = [
+      createImplementTask({
+        status: 'AwaitingResponse',
+        conversation_id: 'implement-conv',
+      }),
+    ];
+
+    const { streamChat } = await import('../services/streamingChat');
+    (
+      streamChat as unknown as {
+        mockImplementationOnce: (implementation: () => Promise<never>) => void;
+      }
+    ).mockImplementationOnce(() => new Promise<never>(() => undefined));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    const result = await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'J’ai besoin du prochain lot de changements.',
+      taskId: 'task-1',
+    });
+
+    expect(result.status).toBe('sent');
+    expect(taskStoreState.retryTask).toHaveBeenCalledWith('task-1');
+    expect(taskStoreState.getTaskById('task-1')).toMatchObject({
+      status: 'InProgress',
+    });
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages('implement-conv')
+        .map((message: { role: string; content: string }) => ({
+          role: message.role,
+          content: message.content,
+        }))
+    ).toEqual([
+      { role: 'user', content: 'J’ai besoin du prochain lot de changements.' },
+      { role: 'assistant', content: '' },
+    ]);
+    expect(useChatStore.getState().sendState).toBe('streaming');
+    useChatStore.getState().stopStreaming();
+  });
+
+  it('rejects Implement sends when task preflight does not move the task into progress', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    taskStoreState.tasks = [createImplementTask({ status: 'Pending' })];
+    taskStoreState.startTask.mockImplementationOnce(async () => {
+      taskStoreState.lastError = 'Task worktree is not ready yet.';
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'implement-conv',
+        content: 'Lance le travail.',
+        taskId: 'task-1',
+      })
+    ).rejects.toThrow('Task worktree is not ready yet.');
+
+    expect(useChatStore.getState().getConversationMessages('implement-conv')).toHaveLength(0);
+    expect(useChatStore.getState().lastError).toBe('Task worktree is not ready yet.');
+    expect(useChatStore.getState().sendState).toBe('error');
+  });
+
+  it('rejects sends without a selected provider or model before committing any message', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+    providerState.selectedProviderId = null;
+    providerState.selectedModelId = null;
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'implement-conv',
+        content: 'Réponds à la demande du développeur.',
+        taskId: 'task-1',
+      })
+    ).rejects.toThrow('Select a provider and model before sending a message.');
+
+    expect(useChatStore.getState().getConversationMessages('implement-conv')).toHaveLength(0);
+    expect(useChatStore.getState().lastError).toBe('Select a provider and model before sending a message.');
+    expect(useChatStore.getState().sendState).toBe('error');
+  });
+
+  it('rejects concurrent sends while an Implement message is still preparing', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    taskStoreState.tasks = [createImplementTask({ status: 'Pending' })];
+
+    const releaseStartTaskRef: { current: (() => void) | null } = { current: null };
+    taskStoreState.startTask.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseStartTaskRef.current = () => {
+            taskStoreState.tasks = taskStoreState.tasks.map((task) =>
+              task.id === 'task-1'
+                ? {
+                    ...task,
+                    status: 'InProgress',
+                  }
+                : task
+            );
+            resolve();
+          };
+        })
+    );
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    const firstSend = useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Premier envoi.',
+      taskId: 'task-1',
+    });
+
+    await Promise.resolve();
+
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'implement-conv',
+        content: 'Deuxième envoi.',
+        taskId: 'task-1',
+      })
+    ).rejects.toThrow('A message is already being prepared.');
+
+    expect(useChatStore.getState().getConversationMessages('implement-conv')).toHaveLength(0);
+
+    if (releaseStartTaskRef.current) {
+      releaseStartTaskRef.current();
+    }
+    const result = await firstSend;
+
+    expect(result.status).toBe('sent');
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages('implement-conv')
+        .map((message: { role: string; content: string }) => ({
+          role: message.role,
+          content: message.content,
+        }))
+    ).toEqual([
+      { role: 'user', content: 'Premier envoi.' },
+      { role: 'assistant', content: '' },
+    ]);
+  });
+
   it('deletes multiple chat conversations in a single batch and recalculates selection once', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';

@@ -3,11 +3,11 @@ import { AppMode, ChatMessage, ContextRefKind, ContextReference, Conversation, P
 import { toServiceError } from '../services/contracts/errors';
 import { useProviderStore } from './useProviderStore';
 import { useCitationsStore } from './useCitationsStore';
-import { streamChat, cancelStream, sendChatNonStreaming, type StreamCompletionResult } from '../services/streamingChat';
+import { streamChat, cancelStream, sendChatNonStreaming, type StreamCompletionResult, type StreamMessage } from '../services/streamingChat';
 import { getStreamingWebSearchConfig } from '../services/webSearchSettings';
 import { useToolsStore } from './useToolsStore';
 import { useAppStore } from './useAppStore';
-import { useTaskStore } from './useTaskStore';
+import { useTaskStore, type ImplementTask } from './useTaskStore';
 import { getToolModePolicy as getLocalToolModePolicy } from '../services/toolModePolicy';
 import { executeWorkspaceTool } from '../services/workspaceToolExecutor';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
@@ -350,6 +350,14 @@ const saveMessageImagesToStorage = (imagesByMessageId: Record<string, MessageIma
 type ChatHydrationStatus = 'idle' | 'hydrating' | 'ready' | 'error';
 type ChatRestoreStatus = 'idle' | 'resolving' | 'ready' | 'error';
 type ChatContextKey = string;
+type ChatSendState = 'idle' | 'preparing' | 'streaming' | 'error';
+
+interface ChatSendResult {
+  status: 'sent';
+  conversationId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+}
 
 interface ArchitectTranscriptState {
   dbCount: number;
@@ -368,10 +376,12 @@ interface ChatStore {
   selectionRequestId: number;
   isLoading: boolean;
   isStreaming: boolean;
+  sendState: ChatSendState;
   lastError: string | null;
   abortController: AbortController | null;
   messageImagesByMessageId: Record<string, MessageImageAttachment[]>;
   addMessage: (message: ChatMessage) => void;
+  clearLastError: () => void;
   updateMessageContent: (messageId: string, content: string) => void;
   updateMessageFields: (
     messageId: string,
@@ -417,7 +427,7 @@ interface ChatStore {
     content: string;
     taskId?: string | null;
     images?: MessageImageAttachment[];
-  }) => Promise<void>;
+  }) => Promise<ChatSendResult>;
   stopStreaming: () => void;
   editMessage: (messageId: string, newContent: string) => Promise<void>;
   setMessageImages: (messageId: string, images: MessageImageAttachment[]) => void;
@@ -767,6 +777,47 @@ export const useChatStore = create<ChatStore>((set, get) => {
     } catch {
       // A failed hydration already updates store state.
     }
+  };
+
+  const buildSendError = (message: string): Error => new Error(message);
+
+  const assertImplementTaskReadyForSend = async (taskId: string): Promise<ImplementTask> => {
+    const taskStore = useTaskStore.getState();
+    const task = taskStore.getTaskById(taskId);
+
+    if (!task) {
+      throw buildSendError(`Unknown task: ${taskId}`);
+    }
+
+    if (task.draft) {
+      return task;
+    }
+
+    if (task.status === 'Pending') {
+      await taskStore.startTask(taskId);
+    } else if (task.status === 'AwaitingResponse' || task.status === 'Failed') {
+      await taskStore.retryTask(taskId);
+    }
+
+    const refreshedTask = useTaskStore.getState().getTaskById(taskId);
+    if (!refreshedTask) {
+      throw buildSendError(`Unknown task: ${taskId}`);
+    }
+
+    if (refreshedTask.draft) {
+      throw buildSendError(
+        useTaskStore.getState().lastError || 'Task is still in draft mode and cannot receive messages yet.'
+      );
+    }
+
+    if (refreshedTask.status !== 'InProgress') {
+      throw buildSendError(
+        useTaskStore.getState().lastError ||
+          `Task ${taskId} is not ready to receive a message (current status: ${refreshedTask.status}).`
+      );
+    }
+
+    return refreshedTask;
   };
 
   const ensureProviderSelectionSync = () => {
@@ -2585,6 +2636,241 @@ export const useChatStore = create<ChatStore>((set, get) => {
     get().updateMessageContent(messageId, result.visibleContent);
   };
 
+  const buildUserMessageForSend = async (params: {
+    conversationId: string;
+    taskId: string;
+    content: string;
+  }): Promise<ChatMessage> => {
+    let userMessage: ChatMessage = {
+      id: `msg-${Date.now()}`,
+      task_id: params.taskId,
+      conversation_id: params.conversationId,
+      role: 'user',
+      content: params.content,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (tauriIpc.isTauriAvailable()) {
+      try {
+        const dbMessage = await tauriIpc.createMessage(params.conversationId, 'user', params.content);
+        userMessage = {
+          id: dbMessage.id,
+          task_id: params.taskId,
+          conversation_id: dbMessage.conversation_id,
+          role: 'user',
+          content: dbMessage.content,
+          timestamp: dbMessage.created_at,
+        };
+      } catch (error) {
+        console.error('Failed to create user message in DB:', error);
+      }
+    }
+
+    return userMessage;
+  };
+
+  const prepareAssistantStreamLaunch = async (params: {
+    conversationId: string;
+    replyToMessageId: string;
+    userContent: string;
+  }) => {
+    try {
+      await ensureToolsLoaded();
+    } catch {
+      // Continue with currently available tool state (safe default is no tools)
+    }
+
+    const allowedToolIds = await getAllowedToolIdsForCurrentMode();
+    const showToolTraces = useAppStore.getState().mode === 'Debug';
+    const messagesForRequest = await prepareMessagesForRequest(
+      params.conversationId,
+      allowedToolIds,
+      params.replyToMessageId
+    );
+    const fileToolContext = useCitationsStore
+      .getState()
+      .getConversationContextCitations(params.conversationId)
+      .filter((c) => c.type === 'file' || c.type === 'document')
+      .map((c) => ({
+        title: c.title,
+        source: c.source,
+        path: c.path,
+        snippet: c.snippet,
+      }));
+    const { enableWebSearch, enableWebFetch, webSearchOptions } = getStreamingWebSearchConfig();
+    const guidedToolRetry = buildGuidedToolRetryPolicy({
+      userContent: params.userContent,
+      allowedToolIds,
+      fileToolContext,
+    });
+
+    return {
+      allowedToolIds,
+      showToolTraces,
+      messagesForRequest,
+      fileToolContext,
+      enableWebSearch,
+      enableWebFetch,
+      webSearchOptions,
+      guidedToolRetry,
+    };
+  };
+
+  const applyAssistantLaunchError = (
+    assistantMessageId: string,
+    error: unknown,
+    options?: { setSendState?: boolean }
+  ) => {
+    const normalized = toServiceError(error);
+    get().updateMessageContent(
+      assistantMessageId,
+      `Error: ${normalized.message}`
+    );
+    set({
+      lastError: normalized.message,
+      isLoading: false,
+      isStreaming: false,
+      abortController: null,
+      ...(options?.setSendState ? { sendState: 'error' as const } : {}),
+    });
+    return normalized;
+  };
+
+  const startAssistantStream = (params: {
+    assistantMessage: ChatMessage;
+    conversationId: string;
+    modeAtSend: AppMode;
+    resolvedTaskId: string;
+    selectedProviderId: string;
+    selectedModelId: string;
+    providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>;
+    messagesForRequest: StreamMessage[];
+    fileToolContext: Array<{ title: string; source: string; path?: string; snippet?: string }>;
+    allowedToolIds: string[];
+    guidedToolRetry?: {
+      requiredToolNames: string[];
+      retrySystemPrompt: string;
+      maxRetries?: number;
+    };
+    showToolTraces: boolean;
+    enableWebSearch: boolean;
+    enableWebFetch: boolean;
+    webSearchOptions: ReturnType<typeof getStreamingWebSearchConfig>['webSearchOptions'];
+  }) => {
+    const abortController = new AbortController();
+    set({
+      isLoading: true,
+      isStreaming: true,
+      sendState: 'streaming',
+      abortController,
+      lastError: null,
+    });
+    const tokenBatcher = createTokenBatcher((tokenChunk) => {
+      get().appendToMessage(params.assistantMessage.id, tokenChunk);
+    });
+
+    void (async () => {
+      try {
+        await streamChat({
+          providerId: params.selectedProviderId,
+          providerType: params.providerConfig.providerType,
+          baseUrl: params.providerConfig.baseUrl,
+          apiKey: params.providerConfig.apiKey,
+          modelId: params.selectedModelId,
+          messages: params.messagesForRequest,
+          fileToolContext: params.fileToolContext,
+          allowedToolIds: params.allowedToolIds,
+          guidedToolRetry: params.guidedToolRetry,
+          showToolTraces: params.showToolTraces,
+          enableWebSearch: params.enableWebSearch,
+          enableWebFetch: params.enableWebFetch,
+          webSearchOptions: params.webSearchOptions,
+          signal: abortController.signal,
+          onToken: (token) => {
+            tokenBatcher.push(token);
+          },
+          onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
+            get().updateMessageFields(params.assistantMessage.id, { tool_traces: toolTraces });
+          },
+          onComplete: (result) => {
+            tokenBatcher.flushNow();
+            applyStreamCompletion(params.assistantMessage.id, result);
+
+            set((state) => {
+              const conversations = state.conversations.map((conv) =>
+                conv.id === params.conversationId
+                  ? {
+                    ...conv,
+                    last_message:
+                      result.visibleContent.slice(0, 100) +
+                      (result.visibleContent.length > 100 ? '...' : ''),
+                    updated_at: new Date().toISOString(),
+                  }
+                  : conv
+              );
+              return {
+                conversations,
+                isLoading: false,
+                isStreaming: false,
+                sendState: 'idle',
+                abortController: null,
+              };
+            });
+
+            persistAssistantStreamResult(params.conversationId, result);
+            const taskAfterStream = params.resolvedTaskId
+              ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
+              : undefined;
+            if (
+              params.modeAtSend === 'Implement' &&
+              params.resolvedTaskId &&
+              taskAfterStream?.status === 'InProgress'
+            ) {
+              void useTaskStore.getState().markTaskAwaitingResponse(params.resolvedTaskId);
+            }
+            void syncMacroMetadataAfterStreamService({
+              mode: params.modeAtSend,
+              conversationId: params.conversationId,
+              trigger: 'send',
+            });
+            tokenBatcher.dispose();
+          },
+          onError: (error) => {
+            tokenBatcher.dispose();
+            get().updateMessageContent(
+              params.assistantMessage.id,
+              `Error: ${error.message}`
+            );
+            set({
+              isLoading: false,
+              isStreaming: false,
+              sendState: 'error',
+              lastError: error.message,
+              abortController: null,
+            });
+          },
+          onToolCall: (toolName, args) => {
+            return handleToolCall(params.conversationId, params.assistantMessage.id, toolName, args);
+          },
+        });
+      } catch (error) {
+        tokenBatcher.dispose();
+        const normalized = toServiceError(error);
+        get().updateMessageContent(
+          params.assistantMessage.id,
+          `Error: ${normalized.message}`
+        );
+        set({
+          isLoading: false,
+          isStreaming: false,
+          sendState: 'error',
+          lastError: normalized.message,
+          abortController: null,
+        });
+      }
+    })();
+  };
+
   const persistAssistantStreamResult = (
     conversationId: string,
     result: StreamCompletionResult
@@ -3023,6 +3309,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       activeContextKey: null,
       selectionRequestId: 0,
       isLoading: false,
+      sendState: 'idle',
       lastError: null,
     });
   };
@@ -3209,6 +3496,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     selectionRequestId: 0,
     isLoading: false,
     isStreaming: false,
+    sendState: 'idle',
     lastError: null,
     abortController: null,
     messageImagesByMessageId: {},
@@ -3232,6 +3520,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           conversations,
         };
       }),
+
+    clearLastError: () =>
+      set((state) => ({
+        lastError: null,
+        sendState: state.isStreaming ? 'streaming' : 'idle',
+      })),
 
     updateMessageContent: (messageId, content) =>
       set((state) => {
@@ -3584,85 +3878,49 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     sendMessage: async ({ conversationId, content, taskId, images }) => {
-      const { selectedProviderId, selectedModelId, providerConfigs } = useProviderStore.getState();
-      const modeAtSend = useAppStore.getState().mode;
-      persistSelectionForContext(modeAtSend, conversationId);
-
-      const conversationTaskId =
-        get().conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null;
-      const resolvedTaskId =
-        taskId ?? conversationTaskId ?? useAppStore.getState().selectedTaskId ?? '';
-      const taskBeforeSend = resolvedTaskId
-        ? useTaskStore.getState().getTaskById(resolvedTaskId)
-        : undefined;
-
-      if (!selectedProviderId || !selectedModelId) {
-        set({ lastError: 'Select a provider and model before sending a message.' });
-        return;
+      if (get().sendState === 'preparing') {
+        const error = buildSendError('A message is already being prepared.');
+        set({ sendState: 'error', lastError: error.message });
+        throw error;
       }
 
-      const providerConfig = providerConfigs.find((p) => p.id === selectedProviderId);
-      if (!providerConfig) {
-        set({ lastError: 'Provider configuration not found.' });
-        return;
-      }
+      set({ sendState: 'preparing', lastError: null });
 
-      if (modeAtSend === 'Implement' && resolvedTaskId && taskBeforeSend && !taskBeforeSend.draft) {
-        if (taskBeforeSend.status === 'Pending') {
-          await useTaskStore.getState().startTask(resolvedTaskId);
-        } else if (
-          taskBeforeSend.status === 'AwaitingResponse' ||
-          taskBeforeSend.status === 'Failed'
-        ) {
-          await useTaskStore.getState().retryTask(resolvedTaskId);
+      try {
+        const providerState = useProviderStore.getState();
+        const { selectedProviderId, selectedModelId, providerConfigs } = providerState;
+        const modeAtSend = useAppStore.getState().mode;
+        persistSelectionForContext(modeAtSend, conversationId);
+
+        if (!selectedProviderId || !selectedModelId) {
+          throw buildSendError('Select a provider and model before sending a message.');
         }
-      }
 
-      const userMessageCountBeforeSend = getOrderedConversationMessages(conversationId).filter(
-        (message) => message.role === 'user'
-      ).length;
-
-      let userMessage: ChatMessage = {
-        id: `msg-${Date.now()}`,
-        task_id: resolvedTaskId,
-        conversation_id: conversationId,
-        role: 'user',
-        content,
-        timestamp: new Date().toISOString(),
-      };
-
-      if (tauriIpc.isTauriAvailable()) {
-        try {
-          const dbMessage = await tauriIpc.createMessage(conversationId, 'user', content);
-          userMessage = {
-            id: dbMessage.id,
-            task_id: resolvedTaskId,
-            conversation_id: dbMessage.conversation_id,
-            role: 'user',
-            content: dbMessage.content,
-            timestamp: dbMessage.created_at,
-          };
-        } catch (error) {
-          console.error('Failed to create user message in DB:', error);
+        const providerConfig = providerConfigs.find((p) => p.id === selectedProviderId);
+        if (!providerConfig) {
+          throw buildSendError('Provider configuration not found.');
         }
-      }
 
-      set({ lastError: null });
-      get().addMessage(userMessage);
-      if (images && images.length > 0) {
-        get().setMessageImages(userMessage.id, images);
-      }
-      // Clear context refs after they've been captured for this message
-      get().clearComposerContextRefs();
+        const conversationTaskId =
+          get().conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null;
+        const resolvedTaskId =
+          taskId ?? conversationTaskId ?? useAppStore.getState().selectedTaskId ?? '';
+        let taskForSend = resolvedTaskId
+          ? useTaskStore.getState().getTaskById(resolvedTaskId)
+          : undefined;
+        let finalizedManualFeatureDraft = false;
 
-      if (userMessageCountBeforeSend === 0) {
-        const isManualFeatureDraft =
-          taskBeforeSend?.task_source === 'standalone' &&
-          taskBeforeSend.standalone_kind === 'manual_feature' &&
-          taskBeforeSend.draft === true;
+        if (modeAtSend === 'Implement') {
+          if (!resolvedTaskId) {
+            throw buildSendError('Select a task before sending a message in Implement mode.');
+          }
 
-        if (isManualFeatureDraft && resolvedTaskId) {
-          try {
+          if (
+            taskForSend?.task_source === 'standalone' &&
+            taskForSend.standalone_kind === 'manual_feature' &&
+            taskForSend.draft === true
+          ) {
+            finalizedManualFeatureDraft = true;
             await finalizeManualFeatureDraftIfNeeded({
               conversationId,
               taskId: resolvedTaskId,
@@ -3673,19 +3931,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
               apiKey: providerConfig.apiKey,
               modelId: selectedModelId,
             });
-          } catch (error) {
-            const normalized = toServiceError(error);
-            set({ lastError: normalized.message });
-            return;
           }
-        } else {
+
+          taskForSend = await assertImplementTaskReadyForSend(resolvedTaskId) ?? taskForSend;
+        }
+
+        const userMessageCountBeforeSend = getOrderedConversationMessages(conversationId).filter(
+          (message) => message.role === 'user'
+        ).length;
+
+        const userMessage = await buildUserMessageForSend({
+          conversationId,
+          taskId: resolvedTaskId,
+          content,
+        });
+
+        get().addMessage(userMessage);
+        if (images && images.length > 0) {
+          get().setMessageImages(userMessage.id, images);
+        }
+        get().clearComposerContextRefs();
+
+        if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
           const appState = useAppStore.getState();
           const architectPlan =
             modeAtSend === 'Architect' && appState.activeArchitectPlanId
               ? {
-                  planId: appState.activeArchitectPlanId,
-                  targetBranch: resolveTargetBranch(appState.activePlanContext?.targetBranch),
-                }
+                planId: appState.activeArchitectPlanId,
+                targetBranch: resolveTargetBranch(appState.activePlanContext?.targetBranch),
+              }
               : undefined;
 
           void maybeGenerateConversationMetadata({
@@ -3699,131 +3973,63 @@ export const useChatStore = create<ChatStore>((set, get) => {
             architectPlan,
           });
         }
-      }
 
-      try {
-        await ensureToolsLoaded();
-      } catch {
-        // Continue with currently available tool state (safe default is no tools)
-      }
-      const allowedToolIds = await getAllowedToolIdsForCurrentMode();
-      const showToolTraces = useAppStore.getState().mode === 'Debug';
-      const messagesForRequest = await prepareMessagesForRequest(
-        conversationId,
-        allowedToolIds,
-        userMessage.id
-      );
-      const fileToolContext = useCitationsStore
-        .getState()
-        .getConversationContextCitations(conversationId)
-        .filter((c) => c.type === 'file' || c.type === 'document')
-        .map((c) => ({
-          title: c.title,
-          source: c.source,
-          path: c.path,
-          snippet: c.snippet,
-        }));
-      const { enableWebSearch, enableWebFetch, webSearchOptions } = getStreamingWebSearchConfig();
-      const guidedToolRetry = buildGuidedToolRetryPolicy({
-        userContent: content,
-        allowedToolIds,
-        fileToolContext,
-      });
+        const assistantMessage: ChatMessage = {
+          id: `msg-${Date.now()}-assistant`,
+          task_id: resolvedTaskId,
+          conversation_id: conversationId,
+          role: 'assistant',
+          content: '',
+          tool_traces: [],
+          timestamp: new Date().toISOString(),
+        };
 
-      const assistantMessage: ChatMessage = {
-        id: `msg-${Date.now()}-assistant`,
-        task_id: resolvedTaskId,
-        conversation_id: conversationId,
-        role: 'assistant',
-        content: '',
-        tool_traces: [],
-        timestamp: new Date().toISOString(),
-      };
+        get().addMessage(assistantMessage);
 
-      get().addMessage(assistantMessage);
+        try {
+          const streamLaunch = await prepareAssistantStreamLaunch({
+            conversationId,
+            replyToMessageId: userMessage.id,
+            userContent: content,
+          });
 
-      const abortController = new AbortController();
-      set({ isLoading: true, isStreaming: true, abortController });
-      const tokenBatcher = createTokenBatcher((tokenChunk) => {
-        get().appendToMessage(assistantMessage.id, tokenChunk);
-      });
+          startAssistantStream({
+            assistantMessage,
+            conversationId,
+            modeAtSend,
+            resolvedTaskId,
+            selectedProviderId,
+            selectedModelId,
+            providerConfig,
+            messagesForRequest: streamLaunch.messagesForRequest,
+            fileToolContext: streamLaunch.fileToolContext,
+            allowedToolIds: streamLaunch.allowedToolIds,
+            guidedToolRetry: streamLaunch.guidedToolRetry,
+            showToolTraces: streamLaunch.showToolTraces,
+            enableWebSearch: streamLaunch.enableWebSearch,
+            enableWebFetch: streamLaunch.enableWebFetch,
+            webSearchOptions: streamLaunch.webSearchOptions,
+          });
+        } catch (error) {
+          applyAssistantLaunchError(assistantMessage.id, error, { setSendState: true });
+        }
 
-      try {
-        await streamChat({
-          providerId: selectedProviderId,
-          providerType: providerConfig.providerType,
-          baseUrl: providerConfig.baseUrl,
-          apiKey: providerConfig.apiKey,
-          modelId: selectedModelId,
-          messages: messagesForRequest,
-          fileToolContext,
-          allowedToolIds,
-          guidedToolRetry,
-          showToolTraces,
-          enableWebSearch,
-          enableWebFetch,
-          webSearchOptions,
-          signal: abortController.signal,
-          onToken: (token) => {
-            tokenBatcher.push(token);
-          },
-          onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
-            get().updateMessageFields(assistantMessage.id, { tool_traces: toolTraces });
-          },
-          onComplete: (result) => {
-            tokenBatcher.flushNow();
-            applyStreamCompletion(assistantMessage.id, result);
-
-            // Update conversation metadata
-            set((state) => {
-              const conversations = state.conversations.map((conv) =>
-                conv.id === conversationId
-                  ? {
-                    ...conv,
-                    last_message:
-                      result.visibleContent.slice(0, 100) +
-                      (result.visibleContent.length > 100 ? '...' : ''),
-                    updated_at: new Date().toISOString(),
-                  }
-                  : conv
-              );
-              return { conversations, isLoading: false, isStreaming: false, abortController: null };
-            });
-
-            persistAssistantStreamResult(conversationId, result);
-            const taskAfterStream = resolvedTaskId
-              ? useTaskStore.getState().getTaskById(resolvedTaskId)
-              : undefined;
-            if (modeAtSend === 'Implement' && resolvedTaskId && taskAfterStream?.status === 'InProgress') {
-              void useTaskStore.getState().markTaskAwaitingResponse(resolvedTaskId);
-            }
-            void syncMacroMetadataAfterStreamService({
-              mode: modeAtSend,
-              conversationId,
-              trigger: 'send',
-            });
-            tokenBatcher.dispose();
-          },
-          onError: (error) => {
-            tokenBatcher.dispose();
-            get().updateMessageContent(
-              assistantMessage.id,
-              `Error: ${error.message}`
-            );
-            set({ isLoading: false, isStreaming: false, lastError: error.message, abortController: null });
-          },
-          onToolCall: (toolName, args) => {
-            return handleToolCall(conversationId, assistantMessage.id, toolName, args);
-          },
-        });
+        return {
+          status: 'sent',
+          conversationId,
+          userMessageId: userMessage.id,
+          assistantMessageId: assistantMessage.id,
+        };
       } catch (error) {
-        tokenBatcher.dispose();
         const normalized = toServiceError(error);
-        get().updateMessageContent(
-          assistantMessage.id,
-          `Error: ${normalized.message}`
-        );
-        set({ isLoading: false, isStreaming: false, lastError: normalized.message, abortController: null });
+        set({
+          sendState: 'error',
+          lastError: normalized.message,
+          isLoading: false,
+          isStreaming: false,
+          abortController: null,
+        });
+        throw normalized;
       }
     },
 
@@ -3834,7 +4040,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       // Cancel the active reader and stream
       cancelStream();
-      set({ isStreaming: false, isLoading: false, abortController: null });
+      set({ isStreaming: false, isLoading: false, sendState: 'idle', abortController: null });
     },
 
     editMessage: async (messageId, newContent) => {
@@ -3856,18 +4062,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!target) return;
 
       const conversationId = target.conversation_id;
-      const taskBeforeEdit = target.task_id
-        ? useTaskStore.getState().getTaskById(target.task_id)
-        : undefined;
-
-      if (modeAtEdit === 'Implement' && target.task_id && taskBeforeEdit && !taskBeforeEdit.draft) {
-        if (taskBeforeEdit.status === 'Pending') {
-          await useTaskStore.getState().startTask(target.task_id);
-        } else if (
-          taskBeforeEdit.status === 'AwaitingResponse' ||
-          taskBeforeEdit.status === 'Failed'
-        ) {
-          await useTaskStore.getState().retryTask(target.task_id);
+      if (modeAtEdit === 'Implement' && target.task_id) {
+        try {
+          await assertImplementTaskReadyForSend(target.task_id);
+        } catch (error) {
+          const normalized = toServiceError(error);
+          set({ lastError: normalized.message });
+          return;
         }
       }
 
@@ -3935,35 +4136,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         .getState()
         .pruneConversationSourceCitations(conversationId, keptConversationMessageIds);
 
-      try {
-        await ensureToolsLoaded();
-      } catch {
-        // Continue with currently available tool state (safe default is no tools)
-      }
-      const allowedToolIds = await getAllowedToolIdsForCurrentMode();
-      const showToolTraces = useAppStore.getState().mode === 'Debug';
-      const messagesForRequest = await prepareMessagesForRequest(
-        conversationId,
-        allowedToolIds,
-        messageId
-      );
-      const fileToolContext = useCitationsStore
-        .getState()
-        .getConversationContextCitations(conversationId)
-        .filter((c) => c.type === 'file' || c.type === 'document')
-        .map((c) => ({
-          title: c.title,
-          source: c.source,
-          path: c.path,
-          snippet: c.snippet,
-        }));
-      const { enableWebSearch, enableWebFetch, webSearchOptions } = getStreamingWebSearchConfig();
-      const guidedToolRetry = buildGuidedToolRetryPolicy({
-        userContent: newContent,
-        allowedToolIds,
-        fileToolContext,
-      });
-
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-assistant`,
         task_id: target.task_id,
@@ -3976,92 +4148,39 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       get().addMessage(assistantMessage);
 
-      const abortController = new AbortController();
-      set({ isLoading: true, isStreaming: true, abortController });
-      const tokenBatcher = createTokenBatcher((tokenChunk) => {
-        get().appendToMessage(assistantMessage.id, tokenChunk);
-      });
-
       try {
-        await streamChat({
-          providerId: selectedProviderId,
-          providerType: providerConfig.providerType,
-          baseUrl: providerConfig.baseUrl,
-          apiKey: providerConfig.apiKey,
-          modelId: selectedModelId,
-          messages: messagesForRequest,
-          fileToolContext,
-          allowedToolIds,
-          guidedToolRetry,
-          showToolTraces,
-          enableWebSearch,
-          enableWebFetch,
-          webSearchOptions,
-          signal: abortController.signal,
-          onToken: (token) => {
-            tokenBatcher.push(token);
-          },
-          onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
-            get().updateMessageFields(assistantMessage.id, { tool_traces: toolTraces });
-          },
-          onComplete: (result) => {
-            tokenBatcher.flushNow();
-            applyStreamCompletion(assistantMessage.id, result);
+        const streamLaunch = await prepareAssistantStreamLaunch({
+          conversationId,
+          replyToMessageId: messageId,
+          userContent: newContent,
+        });
 
-            set((state) => {
-              const conversations = state.conversations.map((conv) =>
-                conv.id === conversationId
-                  ? {
-                    ...conv,
-                    last_message:
-                      result.visibleContent.slice(0, 100) +
-                      (result.visibleContent.length > 100 ? '...' : ''),
-                    updated_at: new Date().toISOString(),
-                  }
-                  : conv
-              );
-              return { conversations, isLoading: false, isStreaming: false, abortController: null };
-            });
-            persistAssistantStreamResult(conversationId, result);
-            const taskAfterStream = target.task_id
-              ? useTaskStore.getState().getTaskById(target.task_id)
-              : undefined;
-            if (modeAtEdit === 'Implement' && target.task_id && taskAfterStream?.status === 'InProgress') {
-              void useTaskStore.getState().markTaskAwaitingResponse(target.task_id);
-            }
-            void syncMacroMetadataAfterStreamService({
-              mode: modeAtEdit,
-              conversationId,
-              trigger: 'edit',
-            });
-            tokenBatcher.dispose();
-          },
-          onError: (error) => {
-            tokenBatcher.dispose();
-            get().updateMessageContent(
-              assistantMessage.id,
-              `Error: ${error.message}`
-            );
-            set({ isLoading: false, isStreaming: false, lastError: error.message, abortController: null });
-          },
-          onToolCall: (toolName, args) => {
-            return handleToolCall(conversationId, assistantMessage.id, toolName, args);
-          },
+        startAssistantStream({
+          assistantMessage,
+          conversationId,
+          modeAtSend: modeAtEdit,
+          resolvedTaskId: target.task_id ?? '',
+          selectedProviderId,
+          selectedModelId,
+          providerConfig,
+          messagesForRequest: streamLaunch.messagesForRequest,
+          fileToolContext: streamLaunch.fileToolContext,
+          allowedToolIds: streamLaunch.allowedToolIds,
+          guidedToolRetry: streamLaunch.guidedToolRetry,
+          showToolTraces: streamLaunch.showToolTraces,
+          enableWebSearch: streamLaunch.enableWebSearch,
+          enableWebFetch: streamLaunch.enableWebFetch,
+          webSearchOptions: streamLaunch.webSearchOptions,
         });
       } catch (error) {
-        tokenBatcher.dispose();
-        const normalized = toServiceError(error);
-        get().updateMessageContent(
-          assistantMessage.id,
-          `Error: ${normalized.message}`
-        );
-        set({ isLoading: false, isStreaming: false, lastError: normalized.message, abortController: null });
+        applyAssistantLaunchError(assistantMessage.id, error);
       }
     },
 
     initialize: async () => {
       set({
         isLoading: true,
+        sendState: 'idle',
         lastError: null,
         hydrationStatus: 'hydrating',
         restoreStatus: 'idle',
@@ -4097,6 +4216,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           activeContextKey: null,
           selectionRequestId: 0,
           isLoading: false,
+          sendState: 'error',
           lastError: normalized.message,
         });
 
