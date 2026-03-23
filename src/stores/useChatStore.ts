@@ -2972,13 +2972,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
       mode === 'Implement' && linkedTask?.title
         ? `Task - ${linkedTask.title}`
         : title.trim() || 'New Conversation';
-    const resolvedTaskId = mode === 'Implement' ? effectiveTaskId : taskId;
+    const resolvedTaskId =
+      mode === 'Chat'
+        ? null
+        : mode === 'Implement'
+          ? effectiveTaskId
+          : taskId;
     const resolvedProjectId =
-      mode === 'Implement'
+      mode === 'Chat'
+        ? null
+        : mode === 'Implement'
         ? projectId ?? linkedTask?.project_id ?? appState.selectedProjectId ?? null
         : projectId;
     const resolvedGroupId =
-      mode === 'Implement'
+      mode === 'Chat'
+        ? null
+        : mode === 'Implement'
         ? groupId ?? appState.selectedGroupId ?? null
         : groupId ?? null;
 
@@ -3903,8 +3912,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         const conversationTaskId =
           get().conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null;
+        const selectedTaskIdForMode =
+          modeAtSend === 'Implement'
+            ? useAppStore.getState().selectedTaskId ?? ''
+            : '';
         const resolvedTaskId =
-          taskId ?? conversationTaskId ?? useAppStore.getState().selectedTaskId ?? '';
+          modeAtSend === 'Chat'
+            ? ''
+            : taskId ?? conversationTaskId ?? selectedTaskIdForMode;
         let taskForSend = resolvedTaskId
           ? useTaskStore.getState().getTaskById(resolvedTaskId)
           : undefined;
