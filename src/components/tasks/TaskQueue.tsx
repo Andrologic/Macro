@@ -140,8 +140,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
       tasks: task.blocked_by.join(', '),
     })
     : '';
-  const isArchived = Boolean(task.archived_at);
-
   useEffect(() => {
     if (!showMenu) return;
 
@@ -214,58 +212,22 @@ const TaskItem: React.FC<TaskItemProps> = ({
           </div>
         </div>
 
-        <div className="min-h-0">
+        <div className="min-h-0 space-y-1">
           {task.description && (
             <p className="line-clamp-2 text-[13px] leading-[1.15rem] text-muted-foreground">
               {task.description}
             </p>
           )}
 
-          <div className="mt-0.5 flex min-h-[22px] flex-wrap items-center gap-1.5">
-            {isDraft ? (
-              <span className="rounded-md bg-sky-500/10 px-2 py-1 text-xs font-medium text-sky-400">
-                {t('implement.manualFeatureDraft', 'Draft')}
-              </span>
-            ) : isArchived ? (
-              <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">
-                <Icon name="archive" size={10} />
-                {t('common.archived', 'Archived')}
-              </span>
-            ) : isAssistantRunning ? (
-              <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-500">
-                <Icon name="loader" size={10} className="animate-spin" />
-                {t('implement.aiRunning', 'AI running')}
-              </span>
-            ) : isAwaitingUserReply ? (
-              <span className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-2 py-1 text-xs font-medium text-blue-500">
-                <Icon name="message-circle" size={10} />
-                {t('implement.awaitingYourReply', 'Awaiting your reply')}
-              </span>
-            ) : null}
-
-            {showPlanLabel && (
-              <span className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/60 px-2 py-1 text-xs text-muted-foreground">
-                <Icon name="layers" size={10} />
-                {planLabel}
-              </span>
-            )}
-
-            {task.needs_revalidation && (
-              <span
-                title={t(
-                  'implement.needsRevalidationHint',
-                  'A prerequisite was reopened. Revalidation is recommended.'
-                )}
-                className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-500"
-              >
-                <Icon name="alert-circle" size={10} />
-                {t('implement.needsRevalidation', 'Revalidate')}
-              </span>
-            )}
-          </div>
+          {showPlanLabel && (
+            <div className="inline-flex max-w-full items-center gap-1.5 text-xs text-muted-foreground">
+              <Icon name="layers" size={10} />
+              <span className="truncate">{planLabel}</span>
+            </div>
+          )}
         </div>
 
-        <div className="mt-0.5 flex min-h-[28px] items-end justify-between gap-2 border-t border-border/60 pt-1">
+        <div className="mt-1 flex min-h-[28px] items-end justify-between gap-2">
           <div className="min-w-0 flex flex-1 flex-col justify-center gap-1 pb-0.5 pr-7">
             {!isDraft && task.branch_name && (
               <div className="inline-flex h-[18px] items-center gap-1.5 text-xs leading-none text-muted-foreground">

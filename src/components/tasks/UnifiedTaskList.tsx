@@ -134,34 +134,14 @@ export const UnifiedTaskList: React.FC<UnifiedTaskListProps> = ({
                             <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
                           )}
                         </div>
-                        <div className="flex items-center gap-2 mt-1">
-                          <span
-                            className={cn(
-                              'inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded border',
-                              statusColors[task.status]
-                            )}
-                          >
-                            {task.status === 'Pending'
-                              ? t('tasks.pending', 'Pending')
-                              : task.status === 'InProgress'
-                                ? t('tasks.inProgress', 'In Progress')
-                                : task.status === 'AwaitingResponse'
-                                  ? t('implement.awaitingResponse', 'Awaiting response')
-                                  : task.status === 'InReview'
-                                    ? t('implement.inReview', 'In review')
-                                    : task.status === 'Completed'
-                                      ? t('tasks.completed', 'Completed')
-                                      : task.status === 'Failed'
-                                        ? t('implement.failed', 'Failed')
-                                        : t('tasks.blocked', 'Blocked')}
-                          </span>
-                          {conversation && conversation.message_count > 0 && (
+                        {conversation && conversation.message_count > 0 && (
+                          <div className="mt-1 flex items-center gap-2">
                             <span className="text-[10px] text-muted-foreground flex items-center gap-1">
                               <Icon name="message-square" size={10} />
                               {conversation.message_count}
                             </span>
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </button>
