@@ -5,6 +5,7 @@ import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
 import { useAppStore } from './useAppStore';
 import { useGitStore } from './useGitStore';
+import { useTerminalStore } from './useTerminalStore';
 import {
   clearPlanRuntimeStateSnapshot,
   type ClearPlanRuntimeStateParams,
@@ -45,6 +46,10 @@ import {
   buildPlanFinalizationSuccessState,
   type BlockedPlanFinalizationState,
 } from './taskStorePlanFinalizationState';
+import {
+  getTaskProjectCommand,
+  loadTaskProjectCommandRegistry,
+} from '../services/taskProjectCommands';
 
 type TaskSource = 'architect' | 'mixed' | 'fallback' | 'empty';
 
@@ -464,6 +469,93 @@ const applyPredictedBranchLifecycle = (
   });
 };
 
+interface TaskCommandRunState {
+  taskId: string;
+  status: 'running' | 'cancelling';
+  currentProjectId: string | null;
+  currentProjectName: string | null;
+  activeSessionId: string | null;
+  startedAt: string;
+}
+
+interface TaskCommandRunResult {
+  status: 'completed' | 'cancelled';
+  completedCount: number;
+  totalCount: number;
+  currentProjectName: string | null;
+}
+
+interface PreparedTaskExecutionTarget extends TaskExecutionTarget {
+  projectName: string;
+  repoPath: string;
+  worktreePath: string;
+}
+
+const ensureTaskExecutionTargetsReady = async (
+  task: CatalogedImplementTask,
+  branchWorktrees: Record<string, string>
+): Promise<{
+  createdWorktrees: Record<string, string>;
+  preparedTargets: PreparedTaskExecutionTarget[];
+}> => {
+  const appState = useAppStore.getState();
+  const executionTargets = getExecutionTargets(task);
+  if (executionTargets.length === 0) {
+    throw toServiceError(
+      tTask('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', {
+        taskId: task.id,
+      })
+    );
+  }
+
+  const createdWorktrees: Record<string, string> = {};
+  const preparedTargets: PreparedTaskExecutionTarget[] = [];
+
+  for (const target of executionTargets) {
+    let worktreePath = branchWorktrees[target.worktreeKey] || null;
+    if (!worktreePath) {
+      const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
+      const fromRef = repoPath ? await resolveTaskStartRef(task, target, repoPath) : null;
+      worktreePath = await useGitStore
+        .getState()
+        .createWorktree(target.projectId, target.worktreeKey, target.branchName, fromRef);
+      if (!worktreePath) {
+        throw toServiceError(
+          tTask(
+            'implement.errors.worktreeCreateFailed',
+            'Failed to create or reuse worktree for branch {{branchName}}',
+            { branchName: target.branchName }
+          )
+        );
+      }
+    }
+
+    createdWorktrees[target.worktreeKey] = worktreePath;
+
+    const project = appState.getProjectById(target.projectId);
+    const repoPath = project?.path ?? target.repoPath ?? null;
+    if (!repoPath) {
+      throw toServiceError(
+        tTask('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', {
+          taskId: task.id,
+        })
+      );
+    }
+
+    preparedTargets.push({
+      ...target,
+      projectName: project?.name ?? target.projectId,
+      repoPath,
+      worktreePath,
+    });
+  }
+
+  return {
+    createdWorktrees,
+    preparedTargets,
+  };
+};
+
 interface TaskStore {
   tasks: CatalogedImplementTask[];
   planSummaries: ImplementTaskPlanSummary[];
@@ -477,6 +569,7 @@ interface TaskStore {
   branchWorktrees: Record<string, string>;
   activeBranchName: string | null;
   activeRepositoryPath: string | null;
+  taskCommandRuns: Record<string, TaskCommandRunState>;
   setTasks: (tasks: CatalogedImplementTask[]) => void;
   initialize: () => Promise<void>;
   refreshFromPlan: () => Promise<void>;
@@ -506,6 +599,8 @@ interface TaskStore {
   startTask: (taskId: string) => Promise<void>;
   startReview: (taskId: string) => Promise<void>;
   requestTaskChanges: (taskId: string) => Promise<void>;
+  runTaskCommands: (taskId: string) => Promise<TaskCommandRunResult | null>;
+  cancelTaskCommands: (taskId: string) => Promise<void>;
   finishTask: (taskId: string, options?: CompleteTaskOptions) => Promise<void>;
   completeTask: (taskId: string, options?: CompleteTaskOptions) => Promise<void>;
   finalizePlan: (planId: string) => Promise<void>;
@@ -681,6 +776,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   branchWorktrees: {},
   activeBranchName: null,
   activeRepositoryPath: null,
+  taskCommandRuns: {},
 
   setTasks: (tasks) => set({ tasks }),
 
@@ -1203,58 +1299,32 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       appState.setSelectedTask(task.id);
     }
 
-    const executionTargets = getExecutionTargets(task);
-    if (executionTargets.length === 0) {
-      set({
-        lastError: tTask(
-          'implement.errors.cannotResolveTaskProject',
-          'Cannot resolve project for task {{taskId}}',
-          { taskId: task.id }
-        ),
-      });
-      return;
+    try {
+      const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
+        task,
+        get().branchWorktrees
+      );
+      const primaryTarget =
+        preparedTargets.find((target) => target.projectId === appState.selectedProjectId) ||
+        preparedTargets[0];
+      const primaryWorktree = primaryTarget?.worktreePath || null;
+
+      set((state) => ({
+        branchWorktrees: {
+          ...state.branchWorktrees,
+          ...createdWorktrees,
+        },
+        activeBranchName: task.assigned_branch,
+        activeRepositoryPath: primaryWorktree,
+        lastError: null,
+      }));
+
+      await syncWorkspaceRoot(primaryWorktree);
+      await get().setTaskStatus(task.id, 'InProgress');
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
     }
-
-    const createdWorktrees: Record<string, string> = {};
-    for (const target of executionTargets) {
-      let worktreePath = get().branchWorktrees[target.worktreeKey] || null;
-      if (!worktreePath) {
-        const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
-        const fromRef = repoPath ? await resolveTaskStartRef(task, target, repoPath) : null;
-        worktreePath = await useGitStore
-          .getState()
-          .createWorktree(target.projectId, target.worktreeKey, target.branchName, fromRef);
-        if (!worktreePath) {
-          set({
-            lastError: tTask(
-              'implement.errors.worktreeCreateFailed',
-              'Failed to create or reuse worktree for branch {{branchName}}',
-              { branchName: target.branchName }
-            ),
-          });
-          return;
-        }
-      }
-      createdWorktrees[target.worktreeKey] = worktreePath;
-    }
-
-    const primaryTarget =
-      executionTargets.find((target) => target.projectId === appState.selectedProjectId) ||
-      executionTargets[0];
-    const primaryWorktree = createdWorktrees[primaryTarget.worktreeKey] || get().branchWorktrees[primaryTarget.worktreeKey] || null;
-
-    set((state) => ({
-      branchWorktrees: {
-        ...state.branchWorktrees,
-        ...createdWorktrees,
-      },
-      activeBranchName: task.assigned_branch,
-      activeRepositoryPath: primaryWorktree,
-      lastError: null,
-    }));
-
-    await syncWorkspaceRoot(primaryWorktree);
-    await get().setTaskStatus(task.id, 'InProgress');
   },
 
   startReview: async (taskId) => {
@@ -1263,6 +1333,223 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   requestTaskChanges: async (taskId) => {
     await get().setTaskStatus(taskId, 'InProgress');
+  },
+
+  runTaskCommands: async (taskId) => {
+    const task = get().tasks.find((candidate) => candidate.id === taskId);
+    if (!task) {
+      set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
+      return null;
+    }
+
+    if (task.draft) {
+      set({
+        lastError: tTask(
+          'implement.taskCommandsDraftUnsupported',
+          'Commands are unavailable while this task is still a draft.'
+        ),
+      });
+      return null;
+    }
+
+    if (task.archived_at) {
+      set({
+        lastError: tTask(
+          'implement.taskCommandsArchivedUnsupported',
+          'Commands are unavailable for archived tasks.'
+        ),
+      });
+      return null;
+    }
+
+    if (get().taskCommandRuns[taskId]) {
+      return null;
+    }
+
+    set({ lastError: null });
+
+    try {
+      const registry = await loadTaskProjectCommandRegistry();
+      const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
+        task,
+        get().branchWorktrees
+      );
+
+      set((state) => ({
+        branchWorktrees: {
+          ...state.branchWorktrees,
+          ...createdWorktrees,
+        },
+      }));
+
+      const missingProject = preparedTargets.find(
+        (target) => !getTaskProjectCommand(registry, target.repoPath)?.command
+      );
+      if (missingProject) {
+        set({
+          lastError: tTask(
+            'implement.taskCommandMissingForProject',
+            'Missing run command for {{project}}.',
+            { project: missingProject.projectName }
+          ),
+        });
+        return null;
+      }
+
+      const terminalStore = useTerminalStore.getState();
+      const totalCount = preparedTargets.length;
+      let completedCount = 0;
+
+      set((state) => ({
+        taskCommandRuns: {
+          ...state.taskCommandRuns,
+          [taskId]: {
+            taskId,
+            status: 'running',
+            currentProjectId: null,
+            currentProjectName: null,
+            activeSessionId: null,
+            startedAt: new Date().toISOString(),
+          },
+        },
+      }));
+
+      for (const target of preparedTargets) {
+        const currentRun = get().taskCommandRuns[taskId];
+        if (!currentRun || currentRun.status === 'cancelling') {
+          return {
+            status: 'cancelled',
+            completedCount,
+            totalCount,
+            currentProjectName: target.projectName,
+          };
+        }
+
+        const commandEntry = getTaskProjectCommand(registry, target.repoPath);
+        if (!commandEntry?.command) {
+          set({
+            lastError: tTask(
+              'implement.taskCommandMissingForProject',
+              'Missing run command for {{project}}.',
+              { project: target.projectName }
+            ),
+          });
+          return null;
+        }
+
+        const session = await terminalStore.createSession({
+          projectId: target.projectId,
+          cwd: target.worktreePath,
+        });
+
+        set((state) => ({
+          taskCommandRuns: {
+            ...state.taskCommandRuns,
+            [taskId]: {
+              ...(state.taskCommandRuns[taskId] || {
+                taskId,
+                status: 'running',
+                currentProjectId: null,
+                currentProjectName: null,
+                activeSessionId: null,
+                startedAt: new Date().toISOString(),
+              }),
+              currentProjectId: target.projectId,
+              currentProjectName: target.projectName,
+              activeSessionId: session.id,
+            },
+          },
+        }));
+
+        const result = await terminalStore.runCommand({
+          sessionId: session.id,
+          command: commandEntry.command,
+        });
+
+        const nextRun = get().taskCommandRuns[taskId];
+        if (nextRun?.status === 'cancelling' || result.status === 'killed') {
+          return {
+            status: 'cancelled',
+            completedCount,
+            totalCount,
+            currentProjectName: target.projectName,
+          };
+        }
+
+        if (result.status !== 'completed' || result.exit_code !== 0) {
+          const summary = (result.output || '')
+            .trim()
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .slice(-1)[0];
+          set({
+            lastError: summary
+              ? tTask(
+                  'implement.taskCommandRunFailedWithOutput',
+                  'Command failed for {{project}}: {{summary}}',
+                  { project: target.projectName, summary }
+                )
+              : tTask(
+                  'implement.taskCommandRunFailed',
+                  'Command failed for {{project}}.',
+                  { project: target.projectName }
+                ),
+          });
+          return null;
+        }
+
+        completedCount += 1;
+      }
+
+      return {
+        status: 'completed',
+        completedCount,
+        totalCount,
+        currentProjectName: null,
+      };
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      return null;
+    } finally {
+      set((state) => {
+        if (!state.taskCommandRuns[taskId]) {
+          return state;
+        }
+
+        const nextRuns = { ...state.taskCommandRuns };
+        delete nextRuns[taskId];
+        return { taskCommandRuns: nextRuns };
+      });
+    }
+  },
+
+  cancelTaskCommands: async (taskId) => {
+    const runState = get().taskCommandRuns[taskId];
+    if (!runState) {
+      return;
+    }
+
+    set((state) => ({
+      taskCommandRuns: {
+        ...state.taskCommandRuns,
+        [taskId]: {
+          ...state.taskCommandRuns[taskId],
+          status: 'cancelling',
+        },
+      },
+    }));
+
+    if (!runState.activeSessionId) {
+      return;
+    }
+
+    try {
+      await useTerminalStore.getState().killSession(runState.activeSessionId);
+    } catch {
+      // Ignore kill failures here; terminal_run will still settle and clear the run state.
+    }
   },
 
   finishTask: async (taskId, options) => {
