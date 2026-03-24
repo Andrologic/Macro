@@ -25,7 +25,8 @@ pub async fn get_project_registry_diagnostics(
     metadata_root: &PathBuf,
 ) -> Result<ProjectRegistryDiagnosticsDto> {
     let raw_state = load_raw_state(metadata_root).await?.unwrap_or_default();
-    let (sanitized_state, repair_report) = sanitize_workspace_state(workspace_path, raw_state.clone());
+    let (sanitized_state, repair_report) =
+        sanitize_workspace_state(workspace_path, raw_state.clone());
 
     Ok(ProjectRegistryDiagnosticsDto {
         raw_group_count: raw_state.project_groups.len(),
@@ -118,7 +119,8 @@ pub async fn list_tasks(
         Vec::new()
     };
 
-    let has_standalone_tasks = !state.manual_features.is_empty() || (!is_executable_plan && task_count > 0);
+    let has_standalone_tasks =
+        !state.manual_features.is_empty() || (!is_executable_plan && task_count > 0);
     let source = if is_executable_plan && has_standalone_tasks {
         "mixed".to_string()
     } else if is_executable_plan {
@@ -228,9 +230,13 @@ pub async fn create_manual_feature_draft(
     };
 
     state.manual_features.insert(0, feature.clone());
-    let (sanitized_state, _) =
-        persist_sanitized_state(workspace_path, metadata_root, state, "create_manual_feature_draft")
-            .await?;
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "create_manual_feature_draft",
+    )
+    .await?;
 
     sanitized_state
         .manual_features
@@ -264,13 +270,19 @@ pub async fn finalize_manual_feature(
     let normalized_title = title.trim();
     let normalized_description = description.trim();
     let normalized_feature_slug = slugify(feature_slug);
-    if normalized_title.is_empty() || normalized_description.is_empty() || normalized_feature_slug.is_empty() {
+    if normalized_title.is_empty()
+        || normalized_description.is_empty()
+        || normalized_feature_slug.is_empty()
+    {
         return Err(BackendError::Validation(
             "Manual feature finalization requires title, description and feature slug".to_string(),
         ));
     }
 
-    if let Some(next_conversation_id) = conversation_id.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(next_conversation_id) = conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         feature.conversation_id = next_conversation_id.to_string();
     }
 
@@ -287,18 +299,20 @@ pub async fn finalize_manual_feature(
         build_manual_feature_execution_targets(&feature.project_ids, &branch_name, &project_groups);
     feature.updated_at = Utc::now().to_rfc3339();
 
-    let (sanitized_state, _) =
-        persist_sanitized_state(workspace_path, metadata_root, state, "finalize_manual_feature")
-            .await?;
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "finalize_manual_feature",
+    )
+    .await?;
 
     sanitized_state
         .manual_features
         .iter()
         .find(|candidate| candidate.id == task_id.trim())
         .cloned()
-        .ok_or_else(|| {
-            BackendError::Validation(format!("Unknown manual feature id: {}", task_id))
-        })
+        .ok_or_else(|| BackendError::Validation(format!("Unknown manual feature id: {}", task_id)))
 }
 
 pub async fn delete_manual_feature_draft(
@@ -308,9 +322,9 @@ pub async fn delete_manual_feature_draft(
 ) -> Result<()> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let initial_len = state.manual_features.len();
-    state.manual_features.retain(|feature| {
-        !(feature.id == task_id.trim() && feature.draft)
-    });
+    state
+        .manual_features
+        .retain(|feature| !(feature.id == task_id.trim() && feature.draft));
     if state.manual_features.len() == initial_len {
         return Err(BackendError::Validation(format!(
             "Unknown manual feature draft: {}",
@@ -318,8 +332,13 @@ pub async fn delete_manual_feature_draft(
         )));
     }
 
-    persist_sanitized_state(workspace_path, metadata_root, state, "delete_manual_feature_draft")
-        .await?;
+    persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "delete_manual_feature_draft",
+    )
+    .await?;
     Ok(())
 }
 
@@ -343,18 +362,19 @@ pub async fn rename_manual_feature(
         .iter_mut()
         .find(|candidate| candidate.id == normalized_task_id)
         .ok_or_else(|| {
-            BackendError::Validation(format!(
-                "Unknown manual feature id: {}",
-                normalized_task_id
-            ))
+            BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
         })?;
 
     feature.title = normalized_title.to_string();
     feature.updated_at = Utc::now().to_rfc3339();
 
-    let (sanitized_state, _) =
-        persist_sanitized_state(workspace_path, metadata_root, state, "rename_manual_feature")
-            .await?;
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "rename_manual_feature",
+    )
+    .await?;
 
     sanitized_state
         .manual_features
@@ -362,10 +382,7 @@ pub async fn rename_manual_feature(
         .find(|candidate| candidate.id == normalized_task_id)
         .cloned()
         .ok_or_else(|| {
-            BackendError::Validation(format!(
-                "Unknown manual feature id: {}",
-                normalized_task_id
-            ))
+            BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
         })
 }
 
@@ -389,10 +406,7 @@ pub async fn archive_manual_feature(
         .iter_mut()
         .find(|candidate| candidate.id == normalized_task_id)
         .ok_or_else(|| {
-            BackendError::Validation(format!(
-                "Unknown manual feature id: {}",
-                normalized_task_id
-            ))
+            BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
         })?;
 
     let now = Utc::now().to_rfc3339();
@@ -406,9 +420,13 @@ pub async fn archive_manual_feature(
     }
     feature.updated_at = now;
 
-    let (sanitized_state, _) =
-        persist_sanitized_state(workspace_path, metadata_root, state, "archive_manual_feature")
-            .await?;
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "archive_manual_feature",
+    )
+    .await?;
 
     sanitized_state
         .manual_features
@@ -416,10 +434,7 @@ pub async fn archive_manual_feature(
         .find(|candidate| candidate.id == normalized_task_id)
         .cloned()
         .ok_or_else(|| {
-            BackendError::Validation(format!(
-                "Unknown manual feature id: {}",
-                normalized_task_id
-            ))
+            BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
         })
 }
 
@@ -441,10 +456,7 @@ pub async fn restore_manual_feature(
         .iter_mut()
         .find(|candidate| candidate.id == normalized_task_id)
         .ok_or_else(|| {
-            BackendError::Validation(format!(
-                "Unknown manual feature id: {}",
-                normalized_task_id
-            ))
+            BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
         })?;
 
     feature.archived_at = None;
@@ -454,9 +466,13 @@ pub async fn restore_manual_feature(
     }
     feature.updated_at = Utc::now().to_rfc3339();
 
-    let (sanitized_state, _) =
-        persist_sanitized_state(workspace_path, metadata_root, state, "restore_manual_feature")
-            .await?;
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "restore_manual_feature",
+    )
+    .await?;
 
     sanitized_state
         .manual_features
@@ -464,10 +480,7 @@ pub async fn restore_manual_feature(
         .find(|candidate| candidate.id == normalized_task_id)
         .cloned()
         .ok_or_else(|| {
-            BackendError::Validation(format!(
-                "Unknown manual feature id: {}",
-                normalized_task_id
-            ))
+            BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
         })
 }
 
@@ -489,8 +502,13 @@ pub async fn delete_manual_feature(
         )));
     }
 
-    persist_sanitized_state(workspace_path, metadata_root, state, "delete_manual_feature")
-        .await?;
+    persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "delete_manual_feature",
+    )
+    .await?;
     Ok(())
 }
 
@@ -741,7 +759,9 @@ pub async fn rename_project_group(
         .iter()
         .find(|group| group.id == group_id)
         .cloned()
-        .ok_or_else(|| BackendError::Validation(format!("Unknown project group id: {}", group_id)))?;
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Unknown project group id: {}", group_id))
+        })?;
     tracing::info!(
         action = "project_registry_action_succeeded",
         operation = "rename_project_group",
@@ -828,15 +848,21 @@ pub async fn archive_project_group(
         project.status = "archived".to_string();
     }
 
-    let (sanitized_state, _) =
-        persist_sanitized_state(workspace_path, metadata_root, state, "archive_project_group")
-            .await?;
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "archive_project_group",
+    )
+    .await?;
     let updated_group = sanitized_state
         .project_groups
         .iter()
         .find(|group| group.id == group_id)
         .cloned()
-        .ok_or_else(|| BackendError::Validation(format!("Unknown project group id: {}", group_id)))?;
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Unknown project group id: {}", group_id))
+        })?;
     Ok(updated_group)
 }
 
@@ -906,8 +932,11 @@ pub async fn remove_project_group(
     state.project_groups.retain(|group| group.id != group_id);
 
     if let Some(plan) = state.current_plan.as_mut() {
-        plan.project_ids
-            .retain(|id| !removed_project_ids.iter().any(|project_id| project_id == id));
+        plan.project_ids.retain(|id| {
+            !removed_project_ids
+                .iter()
+                .any(|project_id| project_id == id)
+        });
         plan.updated_at = Utc::now().to_rfc3339();
     }
 
@@ -1031,7 +1060,13 @@ fn normalized_project_id(project_id: &str) -> String {
     let normalized = project_id
         .to_lowercase()
         .chars()
-        .map(|character| if character.is_ascii_alphanumeric() { character } else { '-' })
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .to_string();
@@ -1056,7 +1091,13 @@ fn to_branch_worktree_key(project_id: &str, branch_name: &str) -> String {
         .trim()
         .to_lowercase()
         .chars()
-        .map(|character| if character.is_ascii_alphanumeric() { character } else { '-' })
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .chars()
@@ -1086,7 +1127,8 @@ fn build_manual_feature_execution_targets(
             project_id: project_id.clone(),
             branch_name: branch_name.to_string(),
             worktree_key: to_branch_worktree_key(project_id, branch_name),
-            repo_path: find_project_by_id(project_groups, project_id).map(|project| project.path.clone()),
+            repo_path: find_project_by_id(project_groups, project_id)
+                .map(|project| project.path.clone()),
         })
         .collect()
 }
@@ -1106,7 +1148,10 @@ fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
 
     let mut task = serde_json::Map::new();
     task.insert("id".to_string(), Value::String(feature.id.clone()));
-    task.insert("plan_id".to_string(), Value::String(format!("manual:{}", feature.id)));
+    task.insert(
+        "plan_id".to_string(),
+        Value::String(format!("manual:{}", feature.id)),
+    );
     task.insert("project_id".to_string(), Value::String(project_id));
     task.insert(
         "project_ids".to_string(),
@@ -1153,10 +1198,7 @@ fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
         );
     }
     if let Some(merged_at) = feature.merged_at.as_ref() {
-        task.insert(
-            "merged_at".to_string(),
-            Value::String(merged_at.clone()),
-        );
+        task.insert("merged_at".to_string(), Value::String(merged_at.clone()));
     }
 
     if let Some(feature_slug) = feature.feature_slug.as_ref() {
@@ -1197,10 +1239,7 @@ fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
                             Value::String(target.worktree_key.clone()),
                         );
                         if let Some(repo_path) = target.repo_path.as_ref() {
-                            value.insert(
-                                "repoPath".to_string(),
-                                Value::String(repo_path.clone()),
-                            );
+                            value.insert("repoPath".to_string(), Value::String(repo_path.clone()));
                         }
                         Value::Object(value)
                     })
@@ -1375,9 +1414,11 @@ fn sanitize_workspace_state(
 
     if let Some(plan) = state.current_plan.as_mut() {
         let initial_project_ids = plan.project_ids.len();
-        plan.project_ids.retain(|project_id| valid_project_ids.contains(project_id));
+        plan.project_ids
+            .retain(|project_id| valid_project_ids.contains(project_id));
         let mut unique_project_ids = HashSet::new();
-        plan.project_ids.retain(|project_id| unique_project_ids.insert(project_id.clone()));
+        plan.project_ids
+            .retain(|project_id| unique_project_ids.insert(project_id.clone()));
         repair_report.current_plan_project_ids_removed =
             initial_project_ids.saturating_sub(plan.project_ids.len());
 
@@ -1416,7 +1457,9 @@ fn sanitize_workspace_state(
         initial_plan_node_count.saturating_sub(state.plan_nodes.len());
 
     let initial_predicted_branch_count = state.predicted_branches.len();
-    state.predicted_branches.retain(|branch| valid_project_ids.contains(&branch.project_id));
+    state
+        .predicted_branches
+        .retain(|branch| valid_project_ids.contains(&branch.project_id));
     repair_report.predicted_branches_removed =
         initial_predicted_branch_count.saturating_sub(state.predicted_branches.len());
 
@@ -1689,7 +1732,10 @@ fn ensure_valid_project_group_target(
         )));
     }
 
-    if normalize_group_name(group_name, fallback_name).trim().is_empty() {
+    if normalize_group_name(group_name, fallback_name)
+        .trim()
+        .is_empty()
+    {
         return Err(BackendError::Validation(
             "Project group name cannot be empty".to_string(),
         ));
@@ -1715,9 +1761,10 @@ fn ensure_unique_project_name_in_group(
             .iter()
             .find(|group| group.id == group_id)
             .and_then(|group| {
-                group.projects.iter().find(|project| {
-                    project.name.trim().eq_ignore_ascii_case(trimmed_name)
-                })
+                group
+                    .projects
+                    .iter()
+                    .find(|project| project.name.trim().eq_ignore_ascii_case(trimmed_name))
             });
         if duplicate.is_some() {
             return Err(BackendError::Validation(format!(
@@ -1916,7 +1963,10 @@ fn assign_group_mount_names(projects: &mut [ProjectDto]) -> usize {
     assigned
 }
 
-fn find_project_by_id<'a>(groups: &'a [ProjectGroupDto], project_id: &str) -> Option<&'a ProjectDto> {
+fn find_project_by_id<'a>(
+    groups: &'a [ProjectGroupDto],
+    project_id: &str,
+) -> Option<&'a ProjectDto> {
     groups
         .iter()
         .flat_map(|group| group.projects.iter())
@@ -2081,7 +2131,10 @@ mod tests {
         assert_eq!(plan.project_ids, vec!["project-web".to_string()]);
         assert_eq!(plan.tasks.len(), 1);
         assert_eq!(
-            plan.tasks[0].get("project_ids").and_then(|value| value.as_array()).map(Vec::len),
+            plan.tasks[0]
+                .get("project_ids")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
             Some(1)
         );
         assert_eq!(sanitized.project_groups[0].projects[0].mount_name, "web");

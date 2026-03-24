@@ -178,7 +178,12 @@ export const gitWorktreeCreate = async (
   taskId: string,
   branchName: string,
   fromRef?: string | null
-): Promise<string> => {
+): Promise<{
+  taskId: string;
+  worktreePath: string;
+  branchName: string;
+  status: 'created' | 'reused' | 'repaired';
+}> => {
   const project = useAppStore.getState().getProjectById(projectId);
   if (!project) throw { code: 'PROJECT_NOT_FOUND', message: `Unknown project: ${projectId}` };
 
@@ -193,7 +198,13 @@ export const gitWorktreeCreate = async (
 export const gitWorktreeRemove = async (
   projectId: string,
   taskId: string
-): Promise<void> => {
+): Promise<{
+  taskId: string;
+  worktreePath: string;
+  removedPath: boolean;
+  prunedRegistration: boolean;
+  alreadyAbsent: boolean;
+}> => {
   const project = useAppStore.getState().getProjectById(projectId);
   if (!project) throw { code: 'PROJECT_NOT_FOUND', message: `Unknown project: ${projectId}` };
 

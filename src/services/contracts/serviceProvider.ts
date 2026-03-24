@@ -27,8 +27,22 @@ export interface ServiceProvider {
     taskId: string,
     branchName: string,
     fromRef?: string | null
-  ) => Promise<string>;
-  gitWorktreeRemove: (projectId: string, taskId: string) => Promise<void>;
+  ) => Promise<{
+    taskId: string;
+    worktreePath: string;
+    branchName: string;
+    status: 'created' | 'reused' | 'repaired';
+  }>;
+  gitWorktreeRemove: (
+    projectId: string,
+    taskId: string
+  ) => Promise<{
+    taskId: string;
+    worktreePath: string;
+    removedPath: boolean;
+    prunedRegistration: boolean;
+    alreadyAbsent: boolean;
+  }>;
   getFileContent: (path: string) => Promise<FileContentDto>;
   listCommits: (projectId?: string) => Promise<CommitsDto>;
   listProviders: () => Promise<ProvidersDto>;

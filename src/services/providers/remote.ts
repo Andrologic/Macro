@@ -230,8 +230,22 @@ export const gitWorktreeCreate = async (
   _taskId: string,
   _branchName: string,
   _fromRef?: string | null
-): Promise<string> => notReady();
-export const gitWorktreeRemove = async (_projectId: string, _taskId: string): Promise<void> => notReady();
+): Promise<{
+  taskId: string;
+  worktreePath: string;
+  branchName: string;
+  status: 'created' | 'reused' | 'repaired';
+}> => notReady();
+export const gitWorktreeRemove = async (
+  _projectId: string,
+  _taskId: string
+): Promise<{
+  taskId: string;
+  worktreePath: string;
+  removedPath: boolean;
+  prunedRegistration: boolean;
+  alreadyAbsent: boolean;
+}> => notReady();
 export const getFileContent = async (_path: string): Promise<FileContentDto> => notReady();
 export const listCommits = async (projectId?: string): Promise<CommitsDto> => {
   if (!projectId) {

@@ -67,6 +67,16 @@ interface CompleteTaskOptions {
   repositories?: TaskCompletionRepositoryRecord[];
 }
 
+export interface TaskMissingBaseBranchIssue {
+  kind: 'missing_base_branch';
+  taskId: string;
+  projectId: string;
+  repoPath: string;
+  targetBranchName: string;
+  missingRef: string;
+  message: string;
+}
+
 let appSyncUnsubscribe: (() => void) | null = null;
 
 const normalizeBranchName = (value?: string): string => {
@@ -217,6 +227,81 @@ const resolveTaskStartRef = async (
   return resolveStandaloneStartRef(task, repoPath);
 };
 
+const inspectTargetWorktreePath = async (
+  target: TaskExecutionTarget,
+  branchWorktrees: Record<string, string>
+): Promise<string | null> => {
+  const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
+  if (repoPath && tauriIpc.isTauriAvailable()) {
+    try {
+      const inspection = await tauriIpc.gitWorktreeInspect({
+        repoPath,
+        taskId: target.worktreeKey,
+        branchName: target.branchName,
+      });
+      if (inspection.status === 'ready' && inspection.worktreePath.trim().length > 0) {
+        return inspection.worktreePath;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  return branchWorktrees[target.worktreeKey] || null;
+};
+
+const ensureTargetWorktreePath = async (
+  task: CatalogedImplementTask,
+  target: TaskExecutionTarget,
+  branchWorktrees: Record<string, string>
+): Promise<string> => {
+  const inspectedPath = await inspectTargetWorktreePath(target, branchWorktrees);
+  if (inspectedPath) {
+    return inspectedPath;
+  }
+
+  const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
+  const fromRef = repoPath ? await resolveTaskStartRef(task, target, repoPath) : null;
+  const ensured = await useGitStore
+    .getState()
+    .createWorktree(target.projectId, target.worktreeKey, target.branchName, fromRef);
+  if (!ensured?.worktreePath) {
+    const createError = useGitStore.getState().lastError?.trim();
+    const expectedBaseRef = normalizeBranchName(task.base_branch || getGitFlowBaseBranch());
+    const parsedMissingRef = createError ? parseMissingStartRefError(createError) : null;
+    if (
+      parsedMissingRef &&
+      repoPath &&
+      isManualStandaloneTask(task) &&
+      parsedMissingRef.missingRef.toLowerCase() === expectedBaseRef.toLowerCase()
+    ) {
+      throw new MissingTaskBaseBranchError({
+        kind: 'missing_base_branch',
+        taskId: task.id,
+        projectId: target.projectId,
+        repoPath,
+        targetBranchName: parsedMissingRef.targetBranchName,
+        missingRef: parsedMissingRef.missingRef,
+        message: tTask(
+          'implement.errors.missingBaseBranchForWorktree',
+          'Base branch {{baseBranch}} does not exist in this repository. Create it or update the task base branch.',
+          { baseBranch: parsedMissingRef.missingRef }
+        ),
+      });
+    }
+    throw toServiceError(
+      createError || tTask(
+        'implement.errors.worktreeCreateFailed',
+        'Failed to create or reuse worktree for branch {{branchName}}',
+        { branchName: target.branchName }
+      )
+    );
+  }
+
+  return ensured.worktreePath;
+};
+
 const updateTaskRuntimeAfterCleanup = (
   state: Pick<TaskStore, 'branchWorktrees' | 'activeBranchName' | 'activeRepositoryPath'>,
   task: CatalogedImplementTask,
@@ -320,6 +405,33 @@ const AUTO_LAUNCH_TASK_STATUS_ORDER: Record<TaskStatus, number> = {
 
 const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
   i18n.t(key, { defaultValue: fallback, ...(options || {}) });
+
+const MISSING_START_REF_ERROR_PATTERN =
+  /^Cannot create branch '([^']+)' from reference '([^']+)'$/i;
+
+class MissingTaskBaseBranchError extends Error {
+  issue: TaskMissingBaseBranchIssue;
+
+  constructor(issue: TaskMissingBaseBranchIssue) {
+    super(issue.message);
+    this.name = 'MissingTaskBaseBranchError';
+    this.issue = issue;
+  }
+}
+
+const parseMissingStartRefError = (
+  message: string
+): { targetBranchName: string; missingRef: string } | null => {
+  const match = message.trim().match(MISSING_START_REF_ERROR_PATTERN);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    targetBranchName: match[1] || '',
+    missingRef: match[2] || '',
+  };
+};
 
 export const getAutoLaunchCandidateTask = (
   tasks: CatalogedImplementTask[],
@@ -512,23 +624,7 @@ const ensureTaskExecutionTargetsReady = async (
   const preparedTargets: PreparedTaskExecutionTarget[] = [];
 
   for (const target of executionTargets) {
-    let worktreePath = branchWorktrees[target.worktreeKey] || null;
-    if (!worktreePath) {
-      const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
-      const fromRef = repoPath ? await resolveTaskStartRef(task, target, repoPath) : null;
-      worktreePath = await useGitStore
-        .getState()
-        .createWorktree(target.projectId, target.worktreeKey, target.branchName, fromRef);
-      if (!worktreePath) {
-        throw toServiceError(
-          tTask(
-            'implement.errors.worktreeCreateFailed',
-            'Failed to create or reuse worktree for branch {{branchName}}',
-            { branchName: target.branchName }
-          )
-        );
-      }
-    }
+    const worktreePath = await ensureTargetWorktreePath(task, target, branchWorktrees);
 
     createdWorktrees[target.worktreeKey] = worktreePath;
 
@@ -565,6 +661,7 @@ interface TaskStore {
   finalizingPlanId: string | null;
   blockedPlanFinalization: BlockedPlanFinalizationState | null;
   lastError: string | null;
+  missingBaseBranchIssue: TaskMissingBaseBranchIssue | null;
   source: TaskSource;
   branchWorktrees: Record<string, string>;
   activeBranchName: string | null;
@@ -591,6 +688,8 @@ interface TaskStore {
     featureSlug: string;
   }) => Promise<void>;
   deleteManualFeatureDraft: (taskId: string) => Promise<void>;
+  createMissingBaseBranch: (issue: TaskMissingBaseBranchIssue) => Promise<void>;
+  clearMissingBaseBranchIssue: () => void;
   renameTask: (taskId: string, title: string) => Promise<void>;
   archiveTask: (taskId: string, options?: { reason?: string | null; mergedAt?: string | null }) => Promise<void>;
   restoreTask: (taskId: string) => Promise<void>;
@@ -727,6 +826,19 @@ const syncIntegrationBranchIfConfigured = async (
   });
 };
 
+const resolveMissingBaseBranchSourceRef = async (
+  repoPath: string,
+  missingRef: string
+): Promise<string> => {
+  const branches = await tauriIpc.gitBranchList(repoPath);
+  const currentBranch = branches.current?.trim();
+  if (currentBranch && currentBranch.length > 0 && currentBranch !== missingRef) {
+    return currentBranch;
+  }
+
+  return 'HEAD';
+};
+
 const cleanupTaskExecutionTargets = async (
   executionTargets: Array<TaskExecutionTarget & { repoPath: string }>
 ): Promise<string[]> => {
@@ -741,6 +853,7 @@ const cleanupTaskExecutionTargets = async (
       repoPath: target.repoPath,
       taskId: target.worktreeKey,
       force: false,
+      branchName: target.branchName,
     });
     removedWorktreeKeys.push(target.worktreeKey);
 
@@ -772,6 +885,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   finalizingPlanId: null,
   blockedPlanFinalization: null,
   lastError: null,
+  missingBaseBranchIssue: null,
   source: 'empty',
   branchWorktrees: {},
   activeBranchName: null,
@@ -796,6 +910,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         planSummaries: catalog.plans,
         hasStandaloneTasks: catalog.hasStandaloneTasks,
         publishedStandaloneTasks,
+        missingBaseBranchIssue: null,
         source: catalog.source,
         ...buildPlanFinalizationRefreshState(),
         isLoading: false,
@@ -850,12 +965,25 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     const branchName = task.assigned_branch;
     const preferredTarget = getPreferredExecutionTarget(task, appState.selectedProjectId);
     const primaryTarget = preferredTarget || getPrimaryExecutionTarget(task);
-    const knownWorktree = primaryTarget ? get().branchWorktrees[primaryTarget.worktreeKey] : null;
+    const knownWorktree = primaryTarget
+      ? await inspectTargetWorktreePath(primaryTarget, get().branchWorktrees)
+      : null;
     if (knownWorktree) {
-      set({
-        activeBranchName: branchName,
-        activeRepositoryPath: knownWorktree,
-      });
+      if (primaryTarget) {
+        set((state) => ({
+          branchWorktrees: {
+            ...state.branchWorktrees,
+            [primaryTarget.worktreeKey]: knownWorktree,
+          },
+          activeBranchName: branchName,
+          activeRepositoryPath: knownWorktree,
+        }));
+      } else {
+        set({
+          activeBranchName: branchName,
+          activeRepositoryPath: knownWorktree,
+        });
+      }
       await syncWorkspaceRoot(knownWorktree);
       return;
     }
@@ -953,6 +1081,27 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
   },
 
+  createMissingBaseBranch: async (issue) => {
+    set({ lastError: null });
+    try {
+      const fromRef = await resolveMissingBaseBranchSourceRef(issue.repoPath, issue.missingRef);
+      await tauriIpc.gitBranchCreate({
+        repoPath: issue.repoPath,
+        branchName: issue.missingRef,
+        fromRef,
+      });
+      set({ missingBaseBranchIssue: null, lastError: null });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      throw normalized;
+    }
+  },
+
+  clearMissingBaseBranchIssue: () => {
+    set({ missingBaseBranchIssue: null });
+  },
+
   renameTask: async (taskId, title) => {
     set({ lastError: null });
     const task = get().getTaskById(taskId);
@@ -1043,6 +1192,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           repoPath: target.repoPath,
           taskId: target.worktreeKey,
           force: true,
+          branchName: target.branchName,
         });
 
         const branches = await tauriIpc.gitBranchList(target.repoPath);
@@ -1175,6 +1325,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           repoPath: target.repoPath,
           taskId: target.worktreeKey,
           force: true,
+          branchName: target.branchName,
         });
 
         const branches = await tauriIpc.gitBranchList(target.repoPath);
@@ -1316,12 +1467,20 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         },
         activeBranchName: task.assigned_branch,
         activeRepositoryPath: primaryWorktree,
+        missingBaseBranchIssue: null,
         lastError: null,
       }));
 
       await syncWorkspaceRoot(primaryWorktree);
       await get().setTaskStatus(task.id, 'InProgress');
     } catch (error) {
+      if (error instanceof MissingTaskBaseBranchError) {
+        set({
+          missingBaseBranchIssue: error.issue,
+          lastError: error.issue.message,
+        });
+        return;
+      }
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
     }
@@ -1380,6 +1539,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           ...state.branchWorktrees,
           ...createdWorktrees,
         },
+        missingBaseBranchIssue: null,
       }));
 
       const missingProject = preparedTargets.find(
@@ -1509,6 +1669,13 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         currentProjectName: null,
       };
     } catch (error) {
+      if (error instanceof MissingTaskBaseBranchError) {
+        set({
+          missingBaseBranchIssue: error.issue,
+          lastError: error.issue.message,
+        });
+        return null;
+      }
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
       return null;
@@ -1571,7 +1738,6 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
-    const appState = useAppStore.getState();
     const executionTargets = getExecutionTargets(task);
     if (executionTargets.length === 0) {
       set({ lastError: tTask('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', { taskId }) });
@@ -1579,39 +1745,31 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
 
     const repositories: TaskCompletionRepositoryRecord[] = [...(options?.repositories || [])];
-    const executionTargetsWithRepoPaths: Array<TaskExecutionTarget & { repoPath: string; worktreePath: string }> = [];
-
-    for (const target of executionTargets) {
-      const worktreePath = get().branchWorktrees[target.worktreeKey];
-      if (!worktreePath) {
+    let executionTargetsWithRepoPaths: Array<TaskExecutionTarget & { repoPath: string; worktreePath: string }> = [];
+    try {
+      const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
+        task,
+        get().branchWorktrees
+      );
+      set((state) => ({
+        branchWorktrees: {
+          ...state.branchWorktrees,
+          ...createdWorktrees,
+        },
+        missingBaseBranchIssue: null,
+      }));
+      executionTargetsWithRepoPaths = preparedTargets;
+    } catch (error) {
+      if (error instanceof MissingTaskBaseBranchError) {
         set({
-          lastError: tTask(
-            'implement.errors.worktreeCreateFailed',
-            'Missing worktree for branch {{branchName}}',
-            { branchName: target.branchName }
-          ),
+          missingBaseBranchIssue: error.issue,
+          lastError: error.issue.message,
         });
         return;
       }
-
-      const project = appState.getProjectById(target.projectId);
-      const repoPath = project?.path ?? target.repoPath ?? null;
-      if (!repoPath) {
-        set({
-          lastError: tTask(
-            'implement.errors.cannotResolveTaskProject',
-            'Cannot resolve project for task {{taskId}}',
-            { taskId: task.id }
-          ),
-        });
-        return;
-      }
-
-      executionTargetsWithRepoPaths.push({
-        ...target,
-        repoPath,
-        worktreePath,
-      });
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      return;
     }
 
     let mergedRepositoryCount = 0;

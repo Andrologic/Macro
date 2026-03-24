@@ -3,6 +3,15 @@ import { PREF_KEYS, savePreference } from '../services/preferences';
 
 export type NotificationLevel = 'info' | 'warning' | 'error';
 
+export interface NotificationCenterItemInput {
+  id: string;
+  level: NotificationLevel;
+  title: string;
+  description?: string | null;
+  createdAt: string;
+  readAt?: string | null;
+}
+
 export interface NotificationCenterItem {
   id: string;
   level: NotificationLevel;
@@ -16,7 +25,7 @@ interface NotificationCenterStore {
   items: NotificationCenterItem[];
   isCenterOpen: boolean;
   setCenterOpen: (open: boolean) => void;
-  addItem: (level: NotificationLevel, title: string, description?: string) => void;
+  upsertItem: (item: NotificationCenterItemInput) => void;
   removeItem: (id: string) => void;
   clearAll: () => void;
   markAllRead: () => void;
@@ -41,12 +50,39 @@ const getLocalStorage = (): Storage | null => {
   return globalThis.localStorage ?? null;
 };
 
-const createNotificationId = (): string => {
-  if ('crypto' in globalThis && typeof globalThis.crypto?.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID();
+const toNotificationCenterItem = (
+  value: unknown
+): NotificationCenterItem | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
   }
 
-  return `notification-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const item = value as Partial<NotificationCenterItem>;
+  if (
+    typeof item.id !== 'string' ||
+    !item.id.trim() ||
+    !isNotificationLevel(item.level) ||
+    typeof item.title !== 'string' ||
+    !item.title.trim() ||
+    !isValidIsoDate(item.createdAt)
+  ) {
+    return null;
+  }
+
+  const description =
+    typeof item.description === 'string' && item.description.trim()
+      ? item.description.trim()
+      : undefined;
+  const readAt = isValidIsoDate(item.readAt) ? item.readAt : null;
+
+  return {
+    id: item.id.trim(),
+    level: item.level,
+    title: item.title.trim(),
+    description,
+    createdAt: item.createdAt,
+    readAt,
+  };
 };
 
 export const sanitizeNotificationCenterItems = (value: unknown): NotificationCenterItem[] => {
@@ -56,38 +92,8 @@ export const sanitizeNotificationCenterItems = (value: unknown): NotificationCen
 
   return value
     .flatMap((entry): NotificationCenterItem[] => {
-      if (!entry || typeof entry !== 'object') {
-        return [];
-      }
-
-      const item = entry as Partial<NotificationCenterItem>;
-      if (
-        typeof item.id !== 'string' ||
-        !item.id.trim() ||
-        !isNotificationLevel(item.level) ||
-        typeof item.title !== 'string' ||
-        !item.title.trim() ||
-        !isValidIsoDate(item.createdAt)
-      ) {
-        return [];
-      }
-
-      const description =
-        typeof item.description === 'string' && item.description.trim()
-          ? item.description.trim()
-          : undefined;
-      const readAt = isValidIsoDate(item.readAt) ? item.readAt : null;
-
-      return [
-        {
-          id: item.id,
-          level: item.level,
-          title: item.title.trim(),
-          description,
-          createdAt: item.createdAt,
-          readAt,
-        },
-      ];
+      const item = toNotificationCenterItem(entry);
+      return item ? [item] : [];
     })
     .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
     .slice(0, NOTIFICATION_CENTER_MAX_ITEMS);
@@ -164,28 +170,18 @@ export const useNotificationCenterStore = create<NotificationCenterStore>((set, 
     }
   },
 
-  addItem: (level, title, description) => {
-    const normalizedTitle = title.trim();
-    if (!normalizedTitle) {
+  upsertItem: (item) => {
+    const normalizedItem = toNotificationCenterItem(item);
+    if (!normalizedItem) {
       return;
     }
 
-    const createdAt = new Date().toISOString();
-    const normalizedDescription =
-      typeof description === 'string' && description.trim() ? description.trim() : undefined;
-    const readAt = get().isCenterOpen ? createdAt : null;
-
     const nextItems = [
-      {
-        id: createNotificationId(),
-        level,
-        title: normalizedTitle,
-        description: normalizedDescription,
-        createdAt,
-        readAt,
-      },
-      ...get().items,
-    ].slice(0, NOTIFICATION_CENTER_MAX_ITEMS);
+      normalizedItem,
+      ...get().items.filter((existingItem) => existingItem.id !== normalizedItem.id),
+    ]
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+      .slice(0, NOTIFICATION_CENTER_MAX_ITEMS);
 
     set({ items: nextItems });
     persistNotificationCenterItems(nextItems);

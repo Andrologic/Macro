@@ -182,6 +182,7 @@ type ArchitectGitFlowTauriDeps = Pick<
   | 'gitBranchDeleteRemote'
   | 'gitCheckout'
   | 'gitBranchCreate'
+  | 'gitWorktreeInspect'
   | 'gitWorktreeRemove'
   | 'gitPull'
 > & {
@@ -691,10 +692,14 @@ const preflightPlanCleanup = async (targets: CleanupPlanRepositoryTarget[]): Pro
 
     for (const worktree of target.worktrees) {
       try {
-        const status = await tauriIpc.gitStatus(worktree.worktreePath);
-        if (!status.is_clean) {
+        const inspection = await tauriIpc.gitWorktreeInspect({
+          repoPath: target.repoPath,
+          taskId: worktree.worktreeKey,
+          branchName: worktree.branchName,
+        });
+        if (inspection.status !== 'absent' && inspection.isDirty) {
           throw new Error(
-            `Cannot clean up worktree ${worktree.worktreePath} because it has uncommitted changes.`
+            `Cannot clean up worktree ${inspection.worktreePath} because it has uncommitted changes.`
           );
         }
       } catch (error) {
@@ -751,26 +756,26 @@ const cleanupPlanBranchesInternal = async (
 
     for (const worktree of target.worktrees) {
       try {
-        let worktreeExists = true;
-        try {
-          await tauriIpc.gitStatus(worktree.worktreePath);
-        } catch (error) {
-          if (isMissingGitTargetError(error)) {
-            worktreeExists = false;
-          } else {
-            throw error;
-          }
-        }
-
-        if (!worktreeExists) {
+        const inspection = await tauriIpc.gitWorktreeInspect({
+          repoPath: target.repoPath,
+          taskId: worktree.worktreeKey,
+          branchName: worktree.branchName,
+        });
+        if (inspection.status === 'absent') {
           continue;
         }
 
-        await tauriIpc.gitWorktreeRemove({
+        const removed = await tauriIpc.gitWorktreeRemove({
           repoPath: target.repoPath,
           taskId: worktree.worktreeKey,
+          branchName: worktree.branchName,
         });
-        deletedWorktrees.push(worktree);
+        if (!removed.alreadyAbsent) {
+          deletedWorktrees.push({
+            ...worktree,
+            worktreePath: removed.worktreePath,
+          });
+        }
       } catch (error) {
         if (isMissingGitTargetError(error)) {
           continue;
@@ -1357,10 +1362,14 @@ export const createArchitectGitFlowService = (
 
       for (const worktree of target.worktrees) {
         try {
-          const status = await deps.tauri.gitStatus(worktree.worktreePath);
-          if (!status.is_clean) {
+          const inspection = await deps.tauri.gitWorktreeInspect({
+            repoPath: target.repoPath,
+            taskId: worktree.worktreeKey,
+            branchName: worktree.branchName,
+          });
+          if (inspection.status !== 'absent' && inspection.isDirty) {
             throw new Error(
-              `Cannot clean up worktree ${worktree.worktreePath} because it has uncommitted changes.`
+              `Cannot clean up worktree ${inspection.worktreePath} because it has uncommitted changes.`
             );
           }
         } catch (error) {
@@ -1416,30 +1425,30 @@ export const createArchitectGitFlowService = (
 
       for (const worktree of target.worktrees) {
         try {
-          let worktreeExists = true;
-          try {
-            await deps.tauri.gitStatus(worktree.worktreePath);
-          } catch (error) {
-            if (isMissingGitTargetError(error)) {
-              worktreeExists = false;
-            } else {
-              throw error;
-            }
-          }
-
-          if (!worktreeExists) {
+          const inspection = await deps.tauri.gitWorktreeInspect({
+            repoPath: target.repoPath,
+            taskId: worktree.worktreeKey,
+            branchName: worktree.branchName,
+          });
+          if (inspection.status === 'absent') {
             continue;
           }
 
-          await deps.tauri.gitWorktreeRemove({
+          const removed = await deps.tauri.gitWorktreeRemove({
             repoPath: target.repoPath,
             taskId: worktree.worktreeKey,
+            branchName: worktree.branchName,
           });
-          deletedWorktrees.push(worktree);
+          if (!removed.alreadyAbsent) {
+            deletedWorktrees.push({
+              ...worktree,
+              worktreePath: removed.worktreePath,
+            });
+          }
         } catch (error) {
           if (isMissingGitTargetError(error)) {
             continue;
-          }
+        }
           if (!allowRetained) {
             throw error;
           }

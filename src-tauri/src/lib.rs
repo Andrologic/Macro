@@ -92,11 +92,7 @@ async fn window_set_size(
 }
 
 #[tauri::command]
-async fn window_set_position(
-    window: tauri::WebviewWindow,
-    x: f64,
-    y: f64,
-) -> Result<(), String> {
+async fn window_set_position(window: tauri::WebviewWindow, x: f64, y: f64) -> Result<(), String> {
     window
         .set_position(tauri::LogicalPosition::new(x, y))
         .map_err(|error| error.to_string())
@@ -297,6 +293,7 @@ pub fn run() {
             commands::git::git_stash,
             commands::git::git_diff,
             commands::git::git_get_tree,
+            commands::git::git_worktree_inspect,
             commands::git::git_worktree_create,
             commands::git::git_worktree_remove,
             commands::git::git_push,

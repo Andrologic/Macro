@@ -142,7 +142,11 @@ pub async fn refresh_conversation_metadata(
     let fallback_updated_at = chrono::Utc::now().to_rfc3339();
     let updated_at = updated_at_override
         .map(str::to_string)
-        .or_else(|| latest_row.as_ref().map(|row| row.get::<String, _>("created_at")))
+        .or_else(|| {
+            latest_row
+                .as_ref()
+                .map(|row| row.get::<String, _>("created_at"))
+        })
         .unwrap_or(fallback_updated_at);
 
     sqlx::query(
