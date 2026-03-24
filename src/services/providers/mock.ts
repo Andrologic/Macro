@@ -100,19 +100,41 @@ export const gitWorktreeCreate = async (
   _taskId: string,
   _branchName: string,
   _fromRef?: string | null
-): Promise<string> => {
+): Promise<{
+  taskId: string;
+  worktreePath: string;
+  branchName: string;
+  status: 'created' | 'reused' | 'repaired';
+}> => {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
-  return simulate(`/path/to/mock/worktree/${_projectId}/${_taskId}/${_branchName}`);
+  return simulate({
+    taskId: _taskId,
+    worktreePath: `/path/to/mock/worktree/${_projectId}/${_taskId}/${_branchName}`,
+    branchName: _branchName,
+    status: 'created',
+  });
 };
 
 export const gitWorktreeRemove = async (
   _projectId: string,
   _taskId: string
-): Promise<void> => {
+): Promise<{
+  taskId: string;
+  worktreePath: string;
+  removedPath: boolean;
+  prunedRegistration: boolean;
+  alreadyAbsent: boolean;
+}> => {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
-  return simulate(undefined);
+  return simulate({
+    taskId: _taskId,
+    worktreePath: `/path/to/mock/worktree/${_projectId}/${_taskId}`,
+    removedPath: true,
+    prunedRegistration: true,
+    alreadyAbsent: false,
+  });
 };
 
 export const getFileContent = async (

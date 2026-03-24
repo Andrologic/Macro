@@ -99,7 +99,42 @@ const gitBranchDeleteMock = mock(async (_params: { repoPath: string; branchName:
 const gitBranchDeleteRemoteMock = mock(async (_params: { repoPath: string; branchName: string }) => undefined);
 const gitCheckoutMock = mock(async (_params: { repoPath: string; branchOrCommit: string }) => undefined);
 const gitBranchCreateMock = mock(async (_params: { repoPath: string; branchName: string; fromRef: string }) => undefined);
-const gitWorktreeRemoveMock = mock(async (_params: { repoPath: string; taskId: string }) => undefined);
+const gitWorktreeInspectMock = mock(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => {
+  const worktreePath = `${params.repoPath}/.macro/worktrees/task${params.taskId}`;
+  if (worktreeStatusByPath.has(worktreePath)) {
+    const status = worktreeStatusByPath.get(worktreePath);
+    if (!status) {
+      return {
+        taskId: params.taskId,
+        worktreePath,
+        branchName: null,
+        status: 'absent' as const,
+        isDirty: null,
+      };
+    }
+    return {
+      taskId: params.taskId,
+      worktreePath,
+      branchName: status.branch,
+      status: 'ready' as const,
+      isDirty: !status.is_clean,
+    };
+  }
+  return {
+    taskId: params.taskId,
+    worktreePath,
+    branchName: null,
+    status: 'ready' as const,
+    isDirty: false,
+  };
+});
+const gitWorktreeRemoveMock = mock(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => ({
+  taskId: params.taskId,
+  worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
+  removedPath: true,
+  prunedRegistration: true,
+  alreadyAbsent: false,
+}));
 const gitAddMock = mock(async (_params: { repoPath: string; paths: string[] }) => undefined);
 const gitCommitMock = mock(async (_params: { repoPath: string; message: string }) => 'commit-hash');
 const fsWriteFileMock = mock(async (_params: { path: string; content: string }) => ({
@@ -249,7 +284,44 @@ describe('architectGitFlowService', () => {
     gitBranchDeleteRemoteMock.mockReset();
     gitCheckoutMock.mockReset();
     gitBranchCreateMock.mockReset();
+    gitWorktreeInspectMock.mockReset();
     gitWorktreeRemoveMock.mockReset();
+    gitWorktreeInspectMock.mockImplementation(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => {
+      const worktreePath = `${params.repoPath}/.macro/worktrees/task${params.taskId}`;
+      if (worktreeStatusByPath.has(worktreePath)) {
+        const status = worktreeStatusByPath.get(worktreePath);
+        if (!status) {
+          return {
+            taskId: params.taskId,
+            worktreePath,
+            branchName: null,
+            status: 'absent' as const,
+            isDirty: null,
+          };
+        }
+        return {
+          taskId: params.taskId,
+          worktreePath,
+          branchName: status.branch,
+          status: 'ready' as const,
+          isDirty: !status.is_clean,
+        };
+      }
+      return {
+        taskId: params.taskId,
+        worktreePath,
+        branchName: null,
+        status: 'ready' as const,
+        isDirty: false,
+      };
+    });
+    gitWorktreeRemoveMock.mockImplementation(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => ({
+      taskId: params.taskId,
+      worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
+      removedPath: true,
+      prunedRegistration: true,
+      alreadyAbsent: false,
+    }));
     gitAddMock.mockReset();
     gitCommitMock.mockReset();
     fsWriteFileMock.mockReset();
@@ -271,6 +343,7 @@ describe('architectGitFlowService', () => {
         gitBranchDeleteRemote: gitBranchDeleteRemoteMock,
         gitCheckout: gitCheckoutMock,
         gitBranchCreate: gitBranchCreateMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
       },
       getAppState: () => ({
@@ -574,10 +647,12 @@ describe('architectGitFlowService', () => {
       {
         repoPath: '/repos/web',
         taskId: toBranchWorktreeKey('web', 'feature/checkout/checkout-web'),
+        branchName: 'feature/checkout/checkout-web',
       },
       {
         repoPath: '/repos/api',
         taskId: toBranchWorktreeKey('api', 'feature/checkout/checkout-api'),
+        branchName: 'feature/checkout/checkout-api',
       },
     ]);
     expect(gitBranchDeleteMock.mock.calls.map(([params]) => params)).toEqual([
@@ -740,6 +815,7 @@ describe('architectGitFlowService', () => {
         gitBranchDeleteRemote: gitBranchDeleteRemoteMock,
         gitCheckout: gitCheckoutMock,
         gitBranchCreate: gitBranchCreateMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
       },
       getAppState: () => ({

@@ -76,7 +76,10 @@ impl TerminalSessionRecord {
     }
 }
 
-async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> CommandResult<PathBuf> {
+async fn resolve_metadata_root(
+    workspace_path: PathBuf,
+    git_state: GitState,
+) -> CommandResult<PathBuf> {
     tokio::task::spawn_blocking(move || {
         git_state
             .resolve_macro_metadata_root(&workspace_path)
@@ -125,7 +128,8 @@ async fn resolve_project_target(
         .find(|project| project.id == project_id)
         .ok_or_else(|| command_error(format!("Unknown project id: {}", project_id)))?;
 
-    let workspace_path = canonicalize_existing_dir(&resolve_project_path(workspace_path, &project.path))?;
+    let workspace_path =
+        canonicalize_existing_dir(&resolve_project_path(workspace_path, &project.path))?;
 
     Ok(ProjectTerminalTarget {
         project_name: project.name.clone(),
@@ -245,9 +249,11 @@ pub async fn terminal_create_session(
     cwd: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root = resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     let project = resolve_project_target(&workspace_path, &metadata_root, &project_id).await?;
-    let session_cwd = resolve_session_cwd(&project.workspace_path, cwd.as_deref(), git_state.inner())?;
+    let session_cwd =
+        resolve_session_cwd(&project.workspace_path, cwd.as_deref(), git_state.inner())?;
 
     let session = TerminalSessionRecord {
         id: format!("terminal-{}", Uuid::new_v4()),
@@ -293,7 +299,9 @@ pub async fn terminal_run(
             .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
 
         if session.pid.is_some() {
-            return Err(command_error("A command is already running in this session"));
+            return Err(command_error(
+                "A command is already running in this session",
+            ));
         }
 
         session.status = "running".to_string();
@@ -326,23 +334,23 @@ pub async fn terminal_run(
 
     let mut timed_out = false;
     let exit_status = if let Some(timeout_ms) = timeout_ms.filter(|value| *value > 0) {
-        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), child.wait()).await {
-            Ok(result) => result
-                .map_err(|error| command_error(format!("Failed to wait for terminal command: {}", error)))?,
+        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), child.wait()).await
+        {
+            Ok(result) => result.map_err(|error| {
+                command_error(format!("Failed to wait for terminal command: {}", error))
+            })?,
             Err(_) => {
                 timed_out = true;
                 let _ = child.kill().await;
-                child
-                    .wait()
-                    .await
-                    .map_err(|error| command_error(format!("Failed to stop terminal command: {}", error)))?
+                child.wait().await.map_err(|error| {
+                    command_error(format!("Failed to stop terminal command: {}", error))
+                })?
             }
         }
     } else {
-        child
-            .wait()
-            .await
-            .map_err(|error| command_error(format!("Failed to wait for terminal command: {}", error)))?
+        child.wait().await.map_err(|error| {
+            command_error(format!("Failed to wait for terminal command: {}", error))
+        })?
     };
 
     let stdout_output = stdout_task

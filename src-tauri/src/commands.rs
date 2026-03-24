@@ -13,8 +13,8 @@ use crate::core::tool_policy::{
     get_mode_policy, is_macro_scoped_path, validate_tool_execution, ToolModePolicyResult,
     ToolValidationResult,
 };
-use crate::dev_overrides::DevProviderOverridesFile;
 use crate::db::{models::*, repository, DbError};
+use crate::dev_overrides::DevProviderOverridesFile;
 use crate::git::GitState;
 use crate::secrets;
 use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
@@ -80,9 +80,7 @@ pub async fn ai_get_dev_provider_overrides(
     }
 
     let workspace_root = workspace_metadata_root.0.read().await.clone();
-    Ok(crate::dev_overrides::load_dev_provider_overrides_from_workspace(
-        &workspace_root,
-    ))
+    Ok(crate::dev_overrides::load_dev_provider_overrides_from_workspace(&workspace_root))
 }
 
 fn json_arg_string(args: &Value, key: &str) -> Option<String> {
@@ -1225,8 +1223,8 @@ pub async fn db_update_message(
         tool_traces_json,
         hidden_context,
     )
-        .await
-        .map_err(Into::into)
+    .await
+    .map_err(Into::into)
 }
 
 #[tauri::command]
