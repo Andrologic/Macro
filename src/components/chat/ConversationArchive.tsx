@@ -1,8 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/useChatStore';
 import { useCitationsStore } from '../../stores/useCitationsStore';
-import { useAppStore } from '../../stores/useAppStore';
+import { loadPreference, PREF_KEYS, savePreference } from '../../services/preferences';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -10,35 +10,77 @@ import { toast } from '../ui/Toaster';
 import { cn } from '../../utils/cn';
 import { formatDate } from '../../i18n/format';
 import type { Conversation } from '../../types';
+import {
+  areConversationIdSetsEqual,
+  filterConversationsByQuery,
+  getArchiveViewConversations,
+  getChatOnlyConversations,
+  normalizeConversationIdList,
+  partitionPinnedConversations,
+  pruneConversationIdSet,
+  toggleAllConversationIds,
+  toggleConversationIdInSet,
+} from './conversationArchiveState';
 
 interface ConversationArchiveProps {
   className?: string;
 }
 
-/**
- * ConversationArchive - Displays conversation history in Chat mode
- *
- * PERFORMANCE: Lazy loaded via ModeRouter, only rendered when Chat mode is active
- */
-
 interface ConversationItemProps {
   conversation: Conversation;
-  isSelected: boolean;
+  isCurrentConversation: boolean;
   isChecked: boolean;
-  onSelect: () => void;
-  onToggleCheck: () => void;
-  onPin?: () => void;
-  isPinned?: boolean;
+  isPinned: boolean;
+  isMultiSelectMode: boolean;
+  isArchivedView: boolean;
+  onActivate: () => void;
+  onToggleSelection: () => void;
+  onPin: () => void;
+  onArchiveToggle: () => void;
+  onDeleteComplete: (conversationId: string) => void;
 }
+
+const readArchivedConversationPreferenceCache = (): {
+  ids: string[];
+  hasCachedValue: boolean;
+} => {
+  if (typeof window === 'undefined') {
+    return { ids: [], hasCachedValue: false };
+  }
+
+  const cacheKey = `macro_${PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS}`;
+  const rawValue = window.localStorage.getItem(cacheKey);
+  if (rawValue === null) {
+    return { ids: [], hasCachedValue: false };
+  }
+
+  try {
+    return {
+      ids: normalizeConversationIdList(JSON.parse(rawValue)),
+      hasCachedValue: true,
+    };
+  } catch {
+    return { ids: [], hasCachedValue: true };
+  }
+};
+
+const removeConversationIdsFromSet = (
+  current: ReadonlySet<string>,
+  idsToRemove: ReadonlySet<string>
+): Set<string> => new Set([...current].filter((conversationId) => !idsToRemove.has(conversationId)));
 
 const ConversationItem: React.FC<ConversationItemProps> = ({
   conversation,
-  isSelected,
+  isCurrentConversation,
   isChecked,
-  onSelect,
-  onToggleCheck,
-  onPin,
   isPinned,
+  isMultiSelectMode,
+  isArchivedView,
+  onActivate,
+  onToggleSelection,
+  onPin,
+  onArchiveToggle,
+  onDeleteComplete,
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = useState(false);
@@ -47,17 +89,14 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const { renameConversation, deleteConversation } = useChatStore();
-  const getProjectById = useAppStore((state) => state.getProjectById);
   const { clearConversationCitations } = useCitationsStore();
+  const isHighlighted = isMultiSelectMode ? isChecked : isCurrentConversation;
 
-  const deleteKind: 'chat' | 'implement' | 'architect' = conversation.task_id
-    ? 'implement'
-    : conversation.project_id
-      ? 'architect'
-      : 'chat';
-  const architectProjectName = conversation.project_id
-    ? getProjectById(conversation.project_id)?.name || ''
-    : '';
+  useEffect(() => {
+    if (isMultiSelectMode) {
+      setShowMenu(false);
+    }
+  }, [isMultiSelectMode]);
 
   const handleRename = async (newTitle?: string) => {
     if (newTitle && newTitle !== conversation.title) {
@@ -66,26 +105,18 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
     setIsRenameOpen(false);
   };
 
-  const handleDelete = async (typedProjectName?: string) => {
+  const handleDelete = async () => {
     setIsDeleting(true);
     try {
-      if (deleteKind === 'architect') {
-        await deleteConversation(conversation.id, {
-          mode: 'architect',
-          typedProjectName,
-        });
-      } else if (deleteKind === 'implement') {
-        await deleteConversation(conversation.id, { mode: 'implement' });
-      } else {
-        await deleteConversation(conversation.id, { mode: 'chat' });
-      }
-
+      await deleteConversation(conversation.id, { mode: 'chat' });
       clearConversationCitations(conversation.id);
+      onDeleteComplete(conversation.id);
       setDeleteError(null);
       setIsDeleteOpen(false);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Suppression impossible.';
-      setDeleteError(message);
+      setDeleteError(
+        error instanceof Error ? error.message : t('chat.deleteConversationError', 'Deletion failed.')
+      );
     } finally {
       setIsDeleting(false);
     }
@@ -93,102 +124,75 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
 
   const handleExport = () => {
     const { messages } = useChatStore.getState();
-    const conversationMessages = messages.filter(m => m.conversation_id === conversation.id);
-    
+    const conversationMessages = messages.filter(
+      (message) => message.conversation_id === conversation.id
+    );
     const exportData = {
       title: conversation.title,
       messages: conversationMessages,
-      exportedAt: new Date().toISOString()
+      exportedAt: new Date().toISOString(),
     };
-
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${conversation.title.replace(/\s+/g, '_')}_export.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${conversation.title.replace(/\s+/g, '_')}_export.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
     URL.revokeObjectURL(url);
-    
     setShowMenu(false);
   };
+
+  const archiveActionLabel = isArchivedView ? t('common.restore', 'Restore') : t('common.archive', 'Archive');
+  const archiveActionIcon = isArchivedView ? 'rotate-ccw' : 'archive';
 
   return (
     <div className="relative">
       <div
         role="button"
         tabIndex={0}
-        onClick={onSelect}
+        onClick={onActivate}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
-            onSelect();
+            onActivate();
           }
         }}
         className={cn(
           'w-full text-left px-3 py-2.5 rounded-lg border transition-all duration-200 group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-          isSelected
-            ? 'bg-primary/10 border-primary/30'
-            : 'border-transparent hover:bg-accent'
+          isHighlighted ? 'bg-primary/10 border-primary/30' : 'border-transparent hover:bg-accent'
         )}
       >
         <div className="flex items-start gap-3">
-          <button
-            type="button"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onToggleCheck();
-            }}
-            className="mt-1 h-4 w-4 rounded border border-border bg-background flex items-center justify-center shrink-0 hover:border-primary/60 transition-colors"
-            aria-label={
-              isChecked
-                ? t('chat.deselectConversation', 'Deselect conversation')
-                : t('chat.selectConversation', 'Select conversation')
-            }
-          >
-            {isChecked && <Icon name="check" size={11} className="text-primary" />}
-          </button>
+          {isMultiSelectMode && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onToggleSelection();
+              }}
+              className="mt-1 h-4 w-4 rounded border border-border bg-background flex items-center justify-center shrink-0 hover:border-primary/60 transition-colors"
+              aria-label={isChecked ? t('chat.deselectConversation', 'Deselect conversation') : t('chat.selectConversation', 'Select conversation')}
+            >
+              {isChecked && <Icon name="check" size={11} className="text-primary" />}
+            </button>
+          )}
 
-          {/* Icon */}
-          <div className={cn(
-            'w-8 h-8 rounded-lg flex items-center justify-center shrink-0',
-            isSelected ? 'bg-primary/20' : 'bg-muted'
-          )}>
-            <Icon
-              name="message-circle"
-              size={14}
-              className={isSelected ? 'text-primary' : 'text-muted-foreground'}
-            />
+          <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center shrink-0', isHighlighted ? 'bg-primary/20' : 'bg-muted')}>
+            <Icon name="message-circle" size={14} className={isHighlighted ? 'text-primary' : 'text-muted-foreground'} />
           </div>
 
-          {/* Content */}
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-medium text-foreground truncate">
-                {conversation.title}
-              </h3>
-              {conversation.is_unread && (
-                <span className="w-2 h-2 rounded-full bg-primary shrink-0" />
-              )}
-              {isPinned && (
-                <Icon name="pin" size={10} className="text-primary shrink-0" />
-              )}
+              <h3 className="text-sm font-medium text-foreground truncate">{conversation.title}</h3>
+              {conversation.is_unread && <span className="w-2 h-2 rounded-full bg-primary shrink-0" />}
+              {isPinned && <Icon name="pin" size={10} className="text-primary shrink-0" />}
             </div>
-
-            {/* Description preview */}
-            {conversation.description && (
-              <p className="text-xs text-muted-foreground mt-0.5 truncate">
-                {conversation.description}
-              </p>
-            )}
-
-            {/* Meta */}
+            {conversation.description && <p className="text-xs text-muted-foreground mt-0.5 truncate">{conversation.description}</p>}
             <div className="flex items-center gap-2 mt-1.5">
-              <span className="text-xs text-muted-foreground/70">
-                {formatDate(conversation.updated_at)}
-              </span>
+              <span className="text-xs text-muted-foreground/70">{formatDate(conversation.updated_at)}</span>
               <span className="text-xs text-muted-foreground/70 flex items-center gap-1">
                 <Icon name="message-square" size={8} />
                 {conversation.message_count}
@@ -196,38 +200,35 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             </div>
           </div>
 
-          {/* Menu button */}
-          <button
-            type="button"
-            onClick={(e) => {
-              if (isDeleting) return;
-              e.stopPropagation();
-              setShowMenu(!showMenu);
-            }}
-            disabled={isDeleting}
-            className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
-          >
-            <Icon name="more-vertical" size={12} className="text-muted-foreground" />
-          </button>
+          {!isMultiSelectMode && (
+            <button
+              type="button"
+              onClick={(event) => {
+                if (isDeleting) return;
+                event.stopPropagation();
+                setShowMenu((current) => !current);
+              }}
+              disabled={isDeleting}
+              className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
+              aria-label={t('chat.conversationActions', 'Conversation actions')}
+            >
+              <Icon name="more-vertical" size={12} className="text-muted-foreground" />
+            </button>
+          )}
         </div>
       </div>
-
-      {/* Context Menu */}
-      {showMenu && (
+      {showMenu && !isMultiSelectMode && (
         <>
-          <div 
-            className="fixed inset-0 z-40" 
-            onClick={() => setShowMenu(false)}
-          />
+          <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
           <div
-            className="absolute right-2 top-full z-50 mt-1 w-36 bg-card border border-border rounded-lg shadow-lg py-1"
-            onClick={(e) => e.stopPropagation()}
+            className="absolute right-2 top-full z-50 mt-1 w-40 bg-card border border-border rounded-lg shadow-lg py-1"
+            onClick={(event) => event.stopPropagation()}
           >
             <button
               type="button"
               onClick={() => {
                 if (isDeleting) return;
-                onPin?.();
+                onPin();
                 setShowMenu(false);
               }}
               disabled={isDeleting}
@@ -236,7 +237,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               <Icon name="pin" size={12} />
               {isPinned ? t('chat.unpinConversation', 'Unpin') : t('chat.pinConversation', 'Pin')}
             </button>
-            <button 
+            <button
               type="button"
               onClick={() => {
                 if (isDeleting) return;
@@ -249,7 +250,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               <Icon name="edit" size={12} />
               {t('common.rename', 'Rename')}
             </button>
-            <button 
+            <button
               type="button"
               onClick={handleExport}
               disabled={isDeleting}
@@ -258,7 +259,20 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               <Icon name="download" size={12} />
               {t('common.export', 'Export')}
             </button>
-            <button 
+            <button
+              type="button"
+              onClick={() => {
+                if (isDeleting) return;
+                setShowMenu(false);
+                void onArchiveToggle();
+              }}
+              disabled={isDeleting}
+              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+            >
+              <Icon name={archiveActionIcon} size={12} />
+              {archiveActionLabel}
+            </button>
+            <button
               type="button"
               onClick={() => {
                 if (isDeleting) return;
@@ -293,37 +307,16 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
 
       <ConfirmPromptModal
         isOpen={isDeleteOpen}
-        title={
-          deleteKind === 'architect'
-            ? t('chat.deleteArchitectConversation', 'Delete Architect conversation')
-            : deleteKind === 'implement'
-              ? t('chat.deleteImplementConversation', 'Delete Implement conversation')
-              : t('chat.deleteConversationTitle', 'Delete conversation')
-        }
-        description={
-          deleteError ||
-          (deleteKind === 'architect'
-            ? t('chat.typeProjectNameToDelete', 'Type {{name}} to confirm deletion.', {
-                name: architectProjectName,
-              })
-            : deleteKind === 'implement'
-              ? t('chat.confirmImplementDeletion', 'Confirm deletion of this task conversation.')
-              : t('chat.deleteConversationConfirm', 'Are you sure you want to delete this conversation?'))
-        }
-        confirmLabel={
-          isDeleting
-            ? t('chat.deletingConversation', 'Deleting...')
-            : t('common.delete', 'Delete')
-        }
+        title={t('chat.deleteConversationTitle', 'Delete conversation')}
+        description={deleteError || t('chat.deleteConversationConfirm', 'Are you sure you want to delete this conversation?')}
+        confirmLabel={isDeleting ? t('chat.deletingConversation', 'Deleting...') : t('common.delete', 'Delete')}
         cancelLabel={t('common.cancel', 'Cancel')}
         confirmVariant="error"
-        inputPlaceholder={deleteKind === 'architect' ? t('project.name', 'Project name') : undefined}
-        requireInput={deleteKind === 'architect'}
         initialValue=""
         onCancel={() => setIsDeleteOpen(false)}
         isSubmitting={isDeleting}
-        onConfirm={(value) => {
-          void handleDelete(value);
+        onConfirm={() => {
+          void handleDelete();
         }}
       />
     </div>
@@ -343,121 +336,236 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
 
   const [searchQuery, setSearchQuery] = useState('');
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
-  const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set());
+  const [archivedIds, setArchivedIds] = useState<Set<string>>(
+    () => new Set(readArchivedConversationPreferenceCache().ids)
+  );
+  const [isArchivePersistenceReady, setIsArchivePersistenceReady] = useState(
+    () => readArchivedConversationPreferenceCache().hasCachedValue
+  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
 
-  // Use real conversations from store (filter to chat-only conversations with no project_id)
-  const chatConversations = useMemo(
-    () =>
-      conversations
-        .filter((conversation) => !conversation.project_id && !conversation.task_id)
-        .filter((conversation) => !archivedIds.has(conversation.id))
-        .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
-    [conversations, archivedIds]
-  );
-
-  // Filter conversations
-  const filteredConversations = useMemo(() => {
-    if (!searchQuery.trim()) {
-      return chatConversations;
+  useEffect(() => {
+    if (isArchivePersistenceReady) {
+      return;
     }
 
-    const query = searchQuery.toLowerCase();
-    return chatConversations.filter(
-      (conv) =>
-        conv.title.toLowerCase().includes(query) ||
-        conv.description?.toLowerCase().includes(query)
-    );
-  }, [chatConversations, searchQuery]);
+    let cancelled = false;
 
-  // Separate pinned and regular
-  const pinnedConversations = filteredConversations.filter((c) => pinnedIds.has(c.id));
-  const regularConversations = filteredConversations.filter((c) => !pinnedIds.has(c.id));
+    void loadPreference<string[]>(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS)
+      .then((storedIds) => {
+        if (cancelled) {
+          return;
+        }
 
-  const togglePin = (id: string) => {
-    setPinnedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
+        setArchivedIds((current) =>
+          current.size > 0 ? current : new Set(normalizeConversationIdList(storedIds))
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsArchivePersistenceReady(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isArchivePersistenceReady]);
+
+  useEffect(() => {
+    if (!isArchivePersistenceReady) {
+      return;
+    }
+
+    void savePreference(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS, Array.from(archivedIds));
+  }, [archivedIds, isArchivePersistenceReady]);
+
+  const chatConversations = useMemo(
+    () => getChatOnlyConversations(conversations),
+    [conversations]
+  );
+  const chatConversationIds = useMemo(
+    () => chatConversations.map((conversation) => conversation.id),
+    [chatConversations]
+  );
+
+  useEffect(() => {
+    setPinnedIds((current) => {
+      const next = pruneConversationIdSet(current, chatConversationIds);
+      return areConversationIdSetsEqual(current, next) ? current : next;
     });
-  };
-
-  const toggleSelection = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
+    setSelectedIds((current) => {
+      const next = pruneConversationIdSet(current, chatConversationIds);
+      return areConversationIdSetsEqual(current, next) ? current : next;
     });
-  };
+    setArchivedIds((current) => {
+      const next = pruneConversationIdSet(current, chatConversationIds);
+      return areConversationIdSetsEqual(current, next) ? current : next;
+    });
+  }, [chatConversationIds]);
 
+  const archiveSourceConversations = useMemo(
+    () => getArchiveViewConversations(chatConversations, archivedIds, showArchived),
+    [archivedIds, chatConversations, showArchived]
+  );
+  const filteredConversations = useMemo(
+    () => filterConversationsByQuery(archiveSourceConversations, searchQuery),
+    [archiveSourceConversations, searchQuery]
+  );
+  const { pinnedConversations, regularConversations } = useMemo(
+    () => partitionPinnedConversations(filteredConversations, pinnedIds),
+    [filteredConversations, pinnedIds]
+  );
   const visibleConversationIds = useMemo(
     () => filteredConversations.map((conversation) => conversation.id),
     [filteredConversations]
   );
 
+  useEffect(() => {
+    if (!isMultiSelectMode) {
+      return;
+    }
+
+    setSelectedIds((current) => {
+      const next = pruneConversationIdSet(current, visibleConversationIds);
+      return areConversationIdSetsEqual(current, next) ? current : next;
+    });
+  }, [isMultiSelectMode, visibleConversationIds]);
+
   const isAllVisibleSelected =
     visibleConversationIds.length > 0 &&
     visibleConversationIds.every((conversationId) => selectedIds.has(conversationId));
 
-  const handleToggleSelectAll = () => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (isAllVisibleSelected) {
-        visibleConversationIds.forEach((id) => next.delete(id));
-      } else {
-        visibleConversationIds.forEach((id) => next.add(id));
+  const exitMultiSelectMode = useCallback(() => {
+    setIsMultiSelectMode(false);
+    setSelectedIds(new Set());
+    setBulkDeleteError(null);
+    setIsBulkDeleteOpen(false);
+  }, []);
+
+  const togglePin = useCallback((conversationId: string) => {
+    setPinnedIds((current) => toggleConversationIdInSet(current, conversationId));
+  }, []);
+
+  const toggleSelection = useCallback((conversationId: string) => {
+    setSelectedIds((current) => toggleConversationIdInSet(current, conversationId));
+  }, []);
+
+  const applyConversationArchiveState = useCallback(
+    (conversationIds: string[], shouldArchive: boolean) => {
+      const normalizedIds = normalizeConversationIdList(conversationIds);
+      if (normalizedIds.length === 0) {
+        return;
       }
-      return next;
-    });
-  };
 
-  const handleArchiveSelected = () => {
-    if (selectedIds.size === 0) return;
-    setArchivedIds((prev) => {
-      const next = new Set(prev);
-      selectedIds.forEach((id) => next.add(id));
-      return next;
-    });
+      const idsToUpdate = new Set(normalizedIds);
 
-    if (selectedConversationId && selectedIds.has(selectedConversationId)) {
-      const nextConversation = filteredConversations.find(
-        (conversation) => !selectedIds.has(conversation.id)
+      setArchivedIds((current) => {
+        const next = new Set(current);
+        normalizedIds.forEach((conversationId) => {
+          if (shouldArchive) {
+            next.add(conversationId);
+            return;
+          }
+          next.delete(conversationId);
+        });
+        return areConversationIdSetsEqual(current, next) ? current : next;
+      });
+
+      setSelectedIds((current) => {
+        const next = removeConversationIdsFromSet(current, idsToUpdate);
+        return areConversationIdSetsEqual(current, next) ? current : next;
+      });
+
+      if (selectedConversationId && idsToUpdate.has(selectedConversationId)) {
+        const fallbackConversation = archiveSourceConversations.find(
+          (conversation) => !idsToUpdate.has(conversation.id)
+        );
+        if (fallbackConversation) {
+          selectConversation(fallbackConversation.id);
+        }
+      }
+
+      toast.success(
+        shouldArchive
+          ? normalizedIds.length === 1
+            ? t('chat.conversationArchived', 'Conversation archived')
+            : t('chat.conversationsArchived', '{{count}} conversations archived', {
+                count: normalizedIds.length,
+              })
+          : normalizedIds.length === 1
+            ? t('chat.conversationRestored', 'Conversation restored')
+            : t('chat.conversationsRestored', '{{count}} conversations restored', {
+                count: normalizedIds.length,
+              })
       );
-      if (nextConversation) {
-        selectConversation(nextConversation.id);
+    },
+    [archiveSourceConversations, selectConversation, selectedConversationId, t]
+  );
+
+  const handleConversationDeleted = useCallback((conversationId: string) => {
+    const idsToRemove = new Set([conversationId]);
+
+    setPinnedIds((current) => {
+      if (!current.has(conversationId)) {
+        return current;
       }
+      return removeConversationIdsFromSet(current, idsToRemove);
+    });
+
+    setSelectedIds((current) => {
+      if (!current.has(conversationId)) {
+        return current;
+      }
+      return removeConversationIdsFromSet(current, idsToRemove);
+    });
+
+    setArchivedIds((current) => {
+      if (!current.has(conversationId)) {
+        return current;
+      }
+      return removeConversationIdsFromSet(current, idsToRemove);
+    });
+  }, []);
+
+  const handleToggleSelectAll = useCallback(() => {
+    setSelectedIds((current) => toggleAllConversationIds(current, visibleConversationIds));
+  }, [visibleConversationIds]);
+
+  const handleBulkArchiveAction = useCallback(() => {
+    const conversationIds = Array.from(selectedIds);
+    if (conversationIds.length === 0) {
+      return;
     }
 
-    setSelectedIds(new Set());
-  };
+    applyConversationArchiveState(conversationIds, !showArchived);
+    exitMultiSelectMode();
+  }, [applyConversationArchiveState, exitMultiSelectMode, selectedIds, showArchived]);
 
   const handleDeleteSelected = async () => {
     if (selectedIds.size === 0 || isBulkDeleting) return;
-    const ids = Array.from(selectedIds);
+
+    const conversationIds = Array.from(selectedIds);
+    const idsToDelete = new Set(conversationIds);
     setIsBulkDeleting(true);
     setBulkDeleteError(null);
 
     try {
-      await deleteChatConversations(ids);
-      clearConversationCitationsBulk(ids);
+      await deleteChatConversations(conversationIds);
+      clearConversationCitationsBulk(conversationIds);
+      setPinnedIds((current) => removeConversationIdsFromSet(current, idsToDelete));
+      setArchivedIds((current) => removeConversationIdsFromSet(current, idsToDelete));
       setSelectedIds(new Set());
-      setPinnedIds((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
-      setArchivedIds((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
+      setIsMultiSelectMode(false);
       setIsBulkDeleteOpen(false);
       toast.success(
         t('toast.chatConversationsDeleted', {
-          count: ids.length,
+          count: conversationIds.length,
           defaultValue: '{{count}} conversations deleted',
         })
       );
@@ -475,184 +583,265 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     }
   };
 
-  const handleNewChat = () => {
-    createConversation(t('chat.newConversation', 'New Conversation'), null, null);
-  };
+  const handleNewChat = useCallback(() => {
+    if (showArchived) {
+      setShowArchived(false);
+    }
+    exitMultiSelectMode();
+    void createConversation(t('chat.newConversation', 'New Conversation'), null, null);
+  }, [createConversation, exitMultiSelectMode, showArchived, t]);
+
+  const handleToggleArchivedView = useCallback(() => {
+    exitMultiSelectMode();
+    setShowArchived((current) => !current);
+  }, [exitMultiSelectMode]);
+
+  const footerCountLabel = showArchived
+    ? t('chat.archivedConversationCount', '{{count}} archived', {
+        count: archiveSourceConversations.length,
+      })
+    : t('chat.conversationCount', '{{count}} conversations', {
+        count: archiveSourceConversations.length,
+      });
+  const archiveButtonLabel = showArchived
+    ? t('common.restore', 'Restore')
+    : t('common.archive', 'Archive');
+  const archiveButtonIcon = showArchived ? 'rotate-ccw' : 'archive';
+  const footerButtonLabel = showArchived
+    ? t('chat.activeConversations', 'Conversations')
+    : t('chat.archives', 'Archives');
+  const footerButtonIcon = showArchived ? 'arrow-left' : 'archive';
+  const hasNoActiveConversations = !showArchived && archiveSourceConversations.length === 0;
+  const hasAnyChatConversations = chatConversations.length > 0;
 
   return (
     <>
-      <aside
-        className={cn("h-full w-full bg-card border-r border-border flex flex-col", className)}
-      >
-      {/* Header */}
-      <div className="h-12 border-b border-border flex items-center justify-between px-4">
-        <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-          <Icon name="message-circle" size={16} className="text-primary" />
-          {t('chat.conversations', 'Conversations')}
-        </h1>
-        <button
-          onClick={handleNewChat}
-          disabled={isBulkDeleting}
-          className="p-1 hover:bg-accent rounded-md transition-colors"
-          title={t('chat.newChat', 'New Chat')}
-        >
-          <Icon name="plus" size={16} className="text-muted-foreground" />
-        </button>
-      </div>
-
-      <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-2 min-w-0">
-        <button
-          onClick={handleToggleSelectAll}
-          type="button"
-          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors min-w-0 shrink"
-          disabled={visibleConversationIds.length === 0 || isBulkDeleting}
-        >
-          <Icon name={isAllVisibleSelected ? 'square' : 'check-square'} size={12} />
-          <span className="truncate">{t('common.selectAll', 'Tout sélectionner')}</span>
-        </button>
-
-        <div className="flex items-center gap-1 shrink-0">
+      <aside className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}>
+        <div className="h-12 border-b border-border flex items-center justify-between px-4">
+          <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <Icon name="message-circle" size={16} className="text-primary" />
+            {t('chat.conversations', 'Conversations')}
+          </h1>
           <button
-            onClick={handleArchiveSelected}
-            type="button"
-            disabled={selectedIds.size === 0 || isBulkDeleting}
-            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            title={t('common.archive', 'Archiver')}
+            onClick={handleNewChat}
+            disabled={isBulkDeleting}
+            className="p-1 hover:bg-accent rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title={t('chat.newChat', 'New Chat')}
           >
-            <Icon name="archive" size={12} />
-            <span className="hidden 2xl:inline">{t('common.archive', 'Archiver')}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setBulkDeleteError(null);
-              setIsBulkDeleteOpen(true);
-            }}
-            disabled={selectedIds.size === 0 || isBulkDeleting}
-            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            title={t('common.delete', 'Delete')}
-          >
-            <Icon name="trash" size={12} />
-            <span className="hidden 2xl:inline">{t('common.delete', 'Delete')}</span>
+            <Icon name="plus" size={16} className="text-muted-foreground" />
           </button>
         </div>
-      </div>
 
-      {/* Search */}
-      <div className="p-3 border-b border-border">
-        <SearchBar
-          value={searchQuery}
-          onChange={setSearchQuery}
-          placeholder={t('chat.searchConversations', 'Search conversations...')}
-        />
-      </div>
+        <div className="px-3 py-2 border-b border-border">
+          {isMultiSelectMode ? (
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <button
+                onClick={handleToggleSelectAll}
+                type="button"
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors min-w-0"
+                disabled={visibleConversationIds.length === 0 || isBulkDeleting}
+              >
+                <Icon name={isAllVisibleSelected ? 'square' : 'check-square'} size={12} />
+                <span className="truncate">{t('common.selectAll', 'Select all')}</span>
+              </button>
 
-      {/* Conversation List */}
-      <div className="flex-1 overflow-y-auto p-2">
-        {/* Pinned Section */}
-        {pinnedConversations.length > 0 && (
-          <div className="mb-4">
-            <div className="flex items-center gap-2 px-2 mb-2">
-              <Icon name="pin" size={12} className="text-primary" />
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                {t('chat.pinned', 'Pinned')}
-              </span>
+              <div className="flex items-center gap-1 shrink-0">
+                <span className="hidden xl:inline text-xs text-muted-foreground">
+                  {t('chat.selectedCount', '{{count}} selected', { count: selectedIds.size })}
+                </span>
+                <button
+                  onClick={handleBulkArchiveAction}
+                  type="button"
+                  disabled={selectedIds.size === 0 || isBulkDeleting}
+                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={archiveButtonLabel}
+                >
+                  <Icon name={archiveButtonIcon} size={12} />
+                  <span className="hidden 2xl:inline">{archiveButtonLabel}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkDeleteError(null);
+                    setIsBulkDeleteOpen(true);
+                  }}
+                  disabled={selectedIds.size === 0 || isBulkDeleting}
+                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={t('common.delete', 'Delete')}
+                >
+                  <Icon name="trash" size={12} />
+                  <span className="hidden 2xl:inline">{t('common.delete', 'Delete')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={exitMultiSelectMode}
+                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                >
+                  <Icon name="x" size={12} />
+                  <span className="hidden 2xl:inline">{t('common.cancel', 'Cancel')}</span>
+                </button>
+              </div>
             </div>
+          ) : (
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedIds(new Set());
+                  setIsMultiSelectMode(true);
+                }}
+                disabled={filteredConversations.length === 0 || isBulkDeleting}
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Icon name="check-square" size={12} />
+                <span className="truncate">{t('chat.multiSelect', 'Multi-select')}</span>
+              </button>
+              {showArchived && (
+                <span className="text-xs text-muted-foreground">
+                  {t('chat.archivedView', 'Archived view')}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="p-3 border-b border-border">
+          <SearchBar
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder={t('chat.searchConversations', 'Search conversations...')}
+          />
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-2">
+          {pinnedConversations.length > 0 && (
+            <div className="mb-4">
+              <div className="flex items-center gap-2 px-2 mb-2">
+                <Icon name="pin" size={12} className="text-primary" />
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  {t('chat.pinned', 'Pinned')}
+                </span>
+              </div>
+              <div className="space-y-1">
+                {pinnedConversations.map((conversation) => (
+                  <ConversationItem
+                    key={conversation.id}
+                    conversation={conversation}
+                    isCurrentConversation={selectedConversationId === conversation.id}
+                    isChecked={selectedIds.has(conversation.id)}
+                    isPinned
+                    isMultiSelectMode={isMultiSelectMode}
+                    isArchivedView={showArchived}
+                    onActivate={() =>
+                      isMultiSelectMode ? toggleSelection(conversation.id) : selectConversation(conversation.id)
+                    }
+                    onToggleSelection={() => toggleSelection(conversation.id)}
+                    onPin={() => togglePin(conversation.id)}
+                    onArchiveToggle={() => applyConversationArchiveState([conversation.id], !showArchived)}
+                    onDeleteComplete={handleConversationDeleted}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {regularConversations.length > 0 ? (
             <div className="space-y-1">
-              {pinnedConversations.map((conv) => (
+              {pinnedConversations.length > 0 && (
+                <div className="flex items-center gap-2 px-2 mb-2">
+                  <Icon name="clock" size={12} className="text-muted-foreground" />
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    {t('chat.recent', 'Recent')}
+                  </span>
+                </div>
+              )}
+              {regularConversations.map((conversation) => (
                 <ConversationItem
-                  key={conv.id}
-                  conversation={conv}
-                  isSelected={selectedConversationId === conv.id}
-                  isChecked={selectedIds.has(conv.id)}
-                  onSelect={() => selectConversation(conv.id)}
-                  onToggleCheck={() => toggleSelection(conv.id)}
-                  onPin={() => togglePin(conv.id)}
-                  isPinned
+                  key={conversation.id}
+                  conversation={conversation}
+                  isCurrentConversation={selectedConversationId === conversation.id}
+                  isChecked={selectedIds.has(conversation.id)}
+                  isPinned={false}
+                  isMultiSelectMode={isMultiSelectMode}
+                  isArchivedView={showArchived}
+                  onActivate={() =>
+                    isMultiSelectMode ? toggleSelection(conversation.id) : selectConversation(conversation.id)
+                  }
+                  onToggleSelection={() => toggleSelection(conversation.id)}
+                  onPin={() => togglePin(conversation.id)}
+                  onArchiveToggle={() => applyConversationArchiveState([conversation.id], !showArchived)}
+                  onDeleteComplete={handleConversationDeleted}
                 />
               ))}
             </div>
-          </div>
-        )}
+          ) : searchQuery.trim() ? (
+            <div className="flex flex-col items-center justify-center h-48 text-center px-4">
+              <Icon name="search" size={32} className="text-muted-foreground/50 mb-3" />
+              <p className="text-sm text-muted-foreground">
+                {showArchived
+                  ? t('chat.noArchivedResults', 'No archived conversations found')
+                  : t('chat.noResults', 'No conversations found')}
+              </p>
+            </div>
+          ) : showArchived ? (
+            <div className="flex flex-col items-center justify-center h-48 text-center px-4">
+              <Icon name="archive" size={32} className="text-muted-foreground/50 mb-3" />
+              <p className="text-sm text-muted-foreground">
+                {t('chat.noArchivedConversations', 'No archived conversations')}
+              </p>
+            </div>
+          ) : !hasAnyChatConversations ? (
+            <div className="flex flex-col items-center justify-center h-48 text-center px-4">
+              <Icon name="message-circle" size={32} className="text-muted-foreground/50 mb-3" />
+              <p className="text-sm text-muted-foreground mb-2">
+                {t('chat.noConversations', 'No conversations yet')}
+              </p>
+              <button onClick={handleNewChat} className="text-xs text-primary hover:underline">
+                {t('chat.startNew', 'Start a new conversation')}
+              </button>
+            </div>
+          ) : hasNoActiveConversations ? (
+            <div className="flex flex-col items-center justify-center h-48 text-center px-4">
+              <Icon name="archive" size={32} className="text-muted-foreground/50 mb-3" />
+              <p className="text-sm text-muted-foreground mb-2">
+                {t('chat.noActiveConversations', 'No active conversations')}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t('chat.noActiveConversationsDescription', 'Your conversations are currently in Archives.')}
+              </p>
+            </div>
+          ) : null}
+        </div>
 
-        {/* Regular Conversations */}
-        {regularConversations.length > 0 ? (
-          <div className="space-y-1">
-            {pinnedConversations.length > 0 && (
-              <div className="flex items-center gap-2 px-2 mb-2">
-                <Icon name="clock" size={12} className="text-muted-foreground" />
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  {t('chat.recent', 'Recent')}
-                </span>
-              </div>
-            )}
-            {regularConversations.map((conv) => (
-              <ConversationItem
-                key={conv.id}
-                conversation={conv}
-                isSelected={selectedConversationId === conv.id}
-                isChecked={selectedIds.has(conv.id)}
-                onSelect={() => selectConversation(conv.id)}
-                onToggleCheck={() => toggleSelection(conv.id)}
-                onPin={() => togglePin(conv.id)}
-                isPinned={false}
-              />
-            ))}
-          </div>
-        ) : filteredConversations.length === 0 && searchQuery ? (
-          <div className="flex flex-col items-center justify-center h-48 text-center">
-            <Icon name="search" size={32} className="text-muted-foreground/50 mb-3" />
-            <p className="text-sm text-muted-foreground">
-              {t('chat.noResults', 'No conversations found')}
-            </p>
-          </div>
-        ) : chatConversations.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-48 text-center px-4">
-            <Icon name="message-circle" size={32} className="text-muted-foreground/50 mb-3" />
-            <p className="text-sm text-muted-foreground mb-2">
-              {t('chat.noConversations', 'No conversations yet')}
-            </p>
-            <button
-              onClick={handleNewChat}
-              className="text-xs text-primary hover:underline"
-            >
-              {t('chat.startNew', 'Start a new conversation')}
-            </button>
-          </div>
-        ) : null}
-      </div>
-
-      {/* Footer */}
-      <div className="h-12 border-t border-border flex items-center justify-between px-4 bg-card">
-        <span className="text-xs text-muted-foreground">
-          {chatConversations.length} conversation{chatConversations.length > 1 ? 's' : ''}
-        </span>
-        <button className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
-          <Icon name="archive" size={12} />
-          Archives
-        </button>
-      </div>
+        <div className="h-12 border-t border-border flex items-center justify-between px-4 bg-card">
+          <span className="text-xs text-muted-foreground">{footerCountLabel}</span>
+          <button
+            type="button"
+            onClick={handleToggleArchivedView}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            <Icon name={footerButtonIcon} size={12} />
+            {footerButtonLabel}
+          </button>
+        </div>
       </aside>
 
       <ConfirmPromptModal
         isOpen={isBulkDeleteOpen}
-        title={t('chat.deleteConversation', 'Delete conversation')}
+        title={showArchived ? t('chat.deleteArchivedConversationsTitle', 'Delete archived conversations') : t('chat.deleteConversationTitle', 'Delete conversation')}
         description={
           bulkDeleteError ||
           (selectedIds.size > 1
             ? t('chat.deleteConversationCount', {
-              count: selectedIds.size,
-              defaultValue: '{{count}} conversations will be deleted.',
-            })
+                count: selectedIds.size,
+                defaultValue: '{{count}} conversations will be deleted.',
+              })
             : t('chat.deleteConversation', 'Delete this conversation?'))
         }
-        confirmLabel={
-          isBulkDeleting
-            ? t('chat.deletingConversations', 'Deleting...')
-            : t('common.delete', 'Delete')
-        }
+        confirmLabel={isBulkDeleting ? t('chat.deletingConversations', 'Deleting...') : t('common.delete', 'Delete')}
         cancelLabel={t('common.cancel', 'Cancel')}
         confirmVariant="error"
+        initialValue=""
         isSubmitting={isBulkDeleting}
         onCancel={() => {
           setBulkDeleteError(null);
@@ -666,5 +855,4 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   );
 };
 
-// Export both named and default for lazy loading compatibility
 export default ConversationArchive;
