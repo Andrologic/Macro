@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ThemeProvider } from "./components/theme/ThemeProvider";
 import { usePerformanceMonitor } from "./hooks/usePerformanceMonitor";
+import { isDevelopmentBuild } from "./utils/devLogger";
 import "./i18n"; // Initialize i18n before React renders
 import "./index.css";
 import "./styles/highlight.css";
@@ -49,6 +50,14 @@ const PerformanceMonitor: React.FC<{ children: React.ReactNode }> = ({ children 
   return <>{children}</>;
 };
 
+const appTree = isDevelopmentBuild ? (
+  <PerformanceMonitor>
+    <App />
+  </PerformanceMonitor>
+) : (
+  <App />
+);
+
 // =============================================================================
 // APP RENDER
 // =============================================================================
@@ -65,9 +74,7 @@ installBenignTauriReloadWarningFilter();
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
     <ThemeProvider>
-      <PerformanceMonitor>
-        <App />
-      </PerformanceMonitor>
+      {appTree}
     </ThemeProvider>
   </React.StrictMode>,
 );
