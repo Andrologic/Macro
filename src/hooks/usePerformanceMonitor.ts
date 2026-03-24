@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { devLogger, isDevelopmentBuild } from '../utils/devLogger';
 
 // =============================================================================
 // PERFORMANCE MONITORING HOOK
@@ -30,6 +31,7 @@ interface PerformanceReport {
 
 const PERFORMANCE_STORAGE_KEY = 'macro-performance-metrics';
 const MAX_STORED_REPORTS = 50;
+const PERFORMANCE_MONITORING_ENABLED = isDevelopmentBuild;
 let initialReactMountLogged = false;
 let initialDomReadyLogged = false;
 let initialWindowLoadLogged = false;
@@ -65,6 +67,10 @@ const getNavigationTiming = (): Partial<PerformanceMetrics> => {
  * Store performance report
  */
 const storeReport = (report: PerformanceReport): void => {
+  if (!PERFORMANCE_MONITORING_ENABLED) {
+    return;
+  }
+
   try {
     const existing = JSON.parse(localStorage.getItem(PERFORMANCE_STORAGE_KEY) || '[]');
     const reports = [report, ...existing].slice(0, MAX_STORED_REPORTS);
@@ -78,6 +84,10 @@ const storeReport = (report: PerformanceReport): void => {
  * Get stored reports
  */
 export const getPerformanceReports = (): PerformanceReport[] => {
+  if (!PERFORMANCE_MONITORING_ENABLED) {
+    return [];
+  }
+
   try {
     return JSON.parse(localStorage.getItem(PERFORMANCE_STORAGE_KEY) || '[]');
   } catch {
@@ -89,6 +99,10 @@ export const getPerformanceReports = (): PerformanceReport[] => {
  * Clear stored reports
  */
 export const clearPerformanceReports = (): void => {
+  if (!PERFORMANCE_MONITORING_ENABLED) {
+    return;
+  }
+
   localStorage.removeItem(PERFORMANCE_STORAGE_KEY);
 };
 
@@ -104,6 +118,10 @@ export function usePerformanceMonitor() {
    * Mark a custom timing point
    */
   const mark = useCallback((name: string): void => {
+    if (!PERFORMANCE_MONITORING_ENABLED) {
+      return;
+    }
+
     const time = performance.now() - startTimeRef.current;
     marksRef.current.set(name, time);
     
@@ -112,13 +130,17 @@ export function usePerformanceMonitor() {
       performance.mark(`${name}-start`);
     }
     
-    console.log(`[Performance] ${name}: ${time.toFixed(2)}ms`);
+    devLogger.log(`[Performance] ${name}: ${time.toFixed(2)}ms`);
   }, []);
 
   /**
    * Measure time between two marks
    */
   const measure = useCallback((name: string, startMark?: string, endMark?: string): number => {
+    if (!PERFORMANCE_MONITORING_ENABLED) {
+      return 0;
+    }
+
     if (typeof performance !== 'undefined' && performance.measure) {
       try {
         performance.measure(name, startMark, endMark);
@@ -139,6 +161,10 @@ export function usePerformanceMonitor() {
    * Get all metrics
    */
   const getMetrics = useCallback((): PerformanceMetrics => {
+    if (!PERFORMANCE_MONITORING_ENABLED) {
+      return {} as PerformanceMetrics;
+    }
+
     const navigationTiming = getNavigationTiming();
     const customMarks: Record<string, number> = {};
     
@@ -161,8 +187,11 @@ export function usePerformanceMonitor() {
       timestamp: Date.now(),
       url: window.location.href,
     };
-    
-    storeReport(report);
+
+    if (PERFORMANCE_MONITORING_ENABLED) {
+      storeReport(report);
+    }
+
     return report;
   }, [getMetrics]);
 
@@ -170,6 +199,10 @@ export function usePerformanceMonitor() {
    * Log metrics to console in a formatted table
    */
   const logMetrics = useCallback((): void => {
+    if (!PERFORMANCE_MONITORING_ENABLED) {
+      return;
+    }
+
     const metrics = getMetrics();
     
     console.group('📊 Performance Metrics');
@@ -179,6 +212,10 @@ export function usePerformanceMonitor() {
 
   // Auto-mark important milestones
   useEffect(() => {
+    if (!PERFORMANCE_MONITORING_ENABLED) {
+      return;
+    }
+
     let reportTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
     // Mark when component mounts (React render start)
@@ -201,7 +238,7 @@ export function usePerformanceMonitor() {
 
         initialReportGenerated = true;
         const report = generateReport();
-        console.log('[PerformanceMonitor] Report generated:', report);
+        devLogger.log('[PerformanceMonitor] Report generated:', report);
       }, 100);
     };
 
@@ -266,13 +303,17 @@ export function useComponentPerformance(componentName: string) {
   const renderStartRef = useRef(performance.now());
 
   useEffect(() => {
+    if (!PERFORMANCE_MONITORING_ENABLED) {
+      return;
+    }
+
     renderCountRef.current += 1;
     const renderTime = performance.now() - renderStartRef.current;
     
     if (renderCountRef.current === 1) {
-      console.log(`[ComponentPerformance] ${componentName} first render: ${renderTime.toFixed(2)}ms`);
+      devLogger.log(`[ComponentPerformance] ${componentName} first render: ${renderTime.toFixed(2)}ms`);
     } else if (renderCountRef.current % 10 === 0) {
-      console.log(`[ComponentPerformance] ${componentName} render #${renderCountRef.current}: ${renderTime.toFixed(2)}ms`);
+      devLogger.log(`[ComponentPerformance] ${componentName} render #${renderCountRef.current}: ${renderTime.toFixed(2)}ms`);
     }
 
     renderStartRef.current = performance.now();

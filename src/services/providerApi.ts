@@ -7,6 +7,7 @@
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { getPageLifecycleSignal, isPageShuttingDown } from '../utils/pageLifecycle';
 import { createCombinedAbortSignal } from '../utils/abortSignals';
+import { devLogger } from '../utils/devLogger';
 
 export interface ProviderModel {
   id: string;
@@ -85,7 +86,7 @@ export async function fetchModelsFromProvider(
 
   // Log connection attempt for debugging
   if (isLocalProvider) {
-    console.log(`[${providerId}] Fetching models from ${baseUrl}/models`);
+    devLogger.log(`[${providerId}] Fetching models from ${baseUrl}/models`);
   }
 
   try {

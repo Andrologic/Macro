@@ -23,6 +23,7 @@ import {
   windowSetSize,
 } from "../services/tauriWindow";
 import { isPageShuttingDown } from "../utils/pageLifecycle";
+import { devLogger } from "../utils/devLogger";
 
 type WindowApi = {
   setSize: (width: number, height: number) => Promise<void>;
@@ -121,7 +122,7 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
       }
 
       if (isPageShuttingDown()) return;
-      console.log("Window state restored:", { width, height, x, y, isMaximized });
+      devLogger.log("Window state restored:", { width, height, x, y, isMaximized });
     } catch (error) {
       if (isPageShuttingDown()) return;
       console.error("Failed to restore window state:", error);
@@ -132,7 +133,7 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
     try {
       await showMainWindow();
       if (isPageShuttingDown()) return;
-      console.log("Window shown via command");
+      devLogger.log("Window shown via command");
     } catch (error) {
       if (isPageShuttingDown()) return;
       console.error("Failed to invoke show_main_window:", error);
