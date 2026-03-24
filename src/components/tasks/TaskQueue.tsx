@@ -11,19 +11,25 @@ import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import { getArchitectPlanDisplayName } from '../../services/architectPlanPresentation';
 import { getGitFlowBaseBranch } from '../../services/architectPlanService';
 import { taskMatchesProjectId } from '../../services/implementTaskCatalog';
-import { getScopedProjectIds } from '../../services/globalProjects';
+import { getProjectGroupByProjectId, getScopedProjectIds } from '../../services/globalProjects';
 import {
   getTaskRepositoryDescriptors,
   type ReviewRepositoryUiState,
   type ReviewTaskSummary,
   type TaskRepositoryDescriptor,
 } from '../../services/implementMultiRepoSummary';
+import {
+  getTaskProjectCommand,
+  loadTaskProjectCommandRegistry,
+  saveTaskProjectCommandDrafts,
+} from '../../services/taskProjectCommands';
 import { Icon, IconName } from '../ui/Icon';
 import { Select } from '../ui/Select';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
 import { toast } from '../ui/Toaster';
 import { PlanReviewModal } from '../plan/PlanReviewModal';
+import { TaskProjectCommandsModal } from './TaskProjectCommandsModal';
 import type { TaskStatus } from '../../types';
 
 interface TaskQueueProps {
@@ -73,7 +79,13 @@ interface MultiRepoTaskPresentation {
   nextActionLabel: string;
 }
 
-type TaskActionKey = 'rename' | 'delete' | 'archive' | 'restore' | 'reopen';
+type TaskActionKey =
+  | 'project_settings'
+  | 'rename'
+  | 'delete'
+  | 'archive'
+  | 'restore'
+  | 'reopen';
 
 interface TaskActionDescriptor {
   key: TaskActionKey;
@@ -88,10 +100,14 @@ interface TaskItemProps {
   task: ImplementTask;
   isSelected: boolean;
   planLabel: string;
-  statusLabel: string;
   multiRepoPresentation: MultiRepoTaskPresentation | null;
   isAssistantRunning: boolean;
+  taskCommandRunStatus: 'running' | 'cancelling' | null;
+  canRunTaskCommands: boolean;
+  runTaskCommandsTitle?: string;
   onSelect: () => void;
+  onRunTaskCommands: () => void;
+  onCancelTaskCommands: () => void;
   actions: TaskActionDescriptor[];
   onAction: (action: TaskActionKey) => void;
 }
@@ -100,10 +116,14 @@ const TaskItem: React.FC<TaskItemProps> = ({
   task,
   isSelected,
   planLabel,
-  statusLabel,
   multiRepoPresentation,
   isAssistantRunning,
+  taskCommandRunStatus,
+  canRunTaskCommands,
+  runTaskCommandsTitle,
   onSelect,
+  onRunTaskCommands,
+  onCancelTaskCommands,
   actions,
   onAction,
 }) => {
@@ -147,99 +167,86 @@ const TaskItem: React.FC<TaskItemProps> = ({
         }
       }}
       className={cn(
-        'relative w-full text-left px-3 py-3 rounded-lg border transition-all duration-200 group cursor-pointer',
+        'relative h-[112px] w-full overflow-hidden rounded-xl border text-left transition-all duration-200 group cursor-pointer',
         isSelected
-          ? 'bg-primary/10 border-primary/30'
+          ? 'border-primary/30 bg-primary/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
           : isAssistantRunning
             ? 'border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10'
-            : isAwaitingUserReply
+          : isAwaitingUserReply
               ? 'border-blue-500/30 bg-blue-500/5 hover:bg-blue-500/10'
-              : 'border-transparent hover:bg-accent'
+              : 'border-border/70 bg-card/70 hover:border-primary/20 hover:bg-accent/30'
       )}
     >
-      <div className="flex items-start gap-3">
-        <div className="relative shrink-0 group/lock">
-          <div className={cn('w-7 h-7 rounded-lg flex items-center justify-center', status.bgColor)}>
-            <Icon
-              name={status.icon}
-              size={14}
-              className={cn(status.color, isAssistantRunning && 'animate-spin')}
-            />
-          </div>
-          {task.is_blocked && task.blocked_by.length > 0 && (
-            <div className="pointer-events-none absolute left-0 top-8 z-20 hidden min-w-56 max-w-72 rounded-md border border-orange-500/30 bg-popover px-2 py-1.5 text-xs text-orange-300 shadow-lg group-hover/lock:block">
-              {lockTooltip}
+      <div className="grid h-full grid-rows-[auto,1fr,auto] px-4 py-2">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            setShowMenu((current) => !current);
+          }}
+          onMouseDown={(event) => event.stopPropagation()}
+          className="absolute right-2 top-2.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          title={t('implement.taskActions', 'Task actions')}
+        >
+          <Icon name="more-vertical" size={13} />
+        </button>
+
+        <div className="flex items-center gap-2.5">
+          <div className="relative shrink-0 group/lock">
+            <div className={cn('flex h-8 w-8 items-center justify-center rounded-lg', status.bgColor)}>
+              <Icon
+                name={status.icon}
+                size={14}
+                className={cn(status.color, isAssistantRunning && 'animate-spin')}
+              />
             </div>
-          )}
+            {task.is_blocked && task.blocked_by.length > 0 && (
+              <div className="pointer-events-none absolute left-0 top-9 z-20 hidden min-w-56 max-w-72 rounded-md border border-orange-500/30 bg-popover px-2 py-1.5 text-xs text-orange-300 shadow-lg group-hover/lock:block">
+                {lockTooltip}
+              </div>
+            )}
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <h3 className="pr-7 text-sm font-semibold leading-[1.1rem] text-foreground line-clamp-2">
+              {task.title}
+            </h3>
+          </div>
         </div>
 
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-2">
-            <h3 className="text-sm font-medium text-foreground leading-tight">{task.title}</h3>
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                setShowMenu((current) => !current);
-              }}
-              onMouseDown={(event) => event.stopPropagation()}
-              className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
-              title={t('implement.taskActions', 'Task actions')}
-            >
-              <Icon name="more-vertical" size={12} />
-            </button>
-          </div>
-
+        <div className="min-h-0">
           {task.description && (
-            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{task.description}</p>
+            <p className="line-clamp-2 text-[13px] leading-[1.15rem] text-muted-foreground">
+              {task.description}
+            </p>
           )}
 
-          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+          <div className="mt-0.5 flex min-h-[22px] flex-wrap items-center gap-1.5">
             {isDraft ? (
-              <span className="text-xs px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400">
+              <span className="rounded-md bg-sky-500/10 px-2 py-1 text-xs font-medium text-sky-400">
                 {t('implement.manualFeatureDraft', 'Draft')}
               </span>
             ) : isArchived ? (
-              <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+              <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">
                 <Icon name="archive" size={10} />
                 {t('common.archived', 'Archived')}
               </span>
             ) : isAssistantRunning ? (
-              <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-500">
+              <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-500">
                 <Icon name="loader" size={10} className="animate-spin" />
                 {t('implement.aiRunning', 'AI running')}
               </span>
             ) : isAwaitingUserReply ? (
-              <span className="inline-flex items-center gap-1 rounded bg-blue-500/10 px-1.5 py-0.5 text-xs font-medium text-blue-500">
+              <span className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-2 py-1 text-xs font-medium text-blue-500">
                 <Icon name="message-circle" size={10} />
                 {t('implement.awaitingYourReply', 'Awaiting your reply')}
               </span>
-            ) : task.status !== 'Blocked' && (
-              <span className={cn('text-xs px-1.5 py-0.5 rounded', status.bgColor, status.color)}>
-                {statusLabel}
-              </span>
-            )}
+            ) : null}
 
             {showPlanLabel && (
-              <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/60 px-1.5 py-0.5 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/60 px-2 py-1 text-xs text-muted-foreground">
                 <Icon name="layers" size={10} />
                 {planLabel}
-              </span>
-            )}
-
-            {!isDraft && task.branch_name && (
-              <span className="text-xs text-muted-foreground inline-flex items-center gap-1 leading-none">
-                <Icon name="git-branch" size={10} />
-                {task.branch_name}
-              </span>
-            )}
-
-            {multiRepoPresentation && (
-              <span className="text-xs text-muted-foreground inline-flex items-center gap-1 leading-none">
-                <Icon name="folder" size={10} />
-                {t('implement.multiProjectTask', '{{count}} repositories', {
-                  count: multiRepoPresentation.repositories.length,
-                })}
               </span>
             )}
 
@@ -249,42 +256,103 @@ const TaskItem: React.FC<TaskItemProps> = ({
                   'implement.needsRevalidationHint',
                   'A prerequisite was reopened. Revalidation is recommended.'
                 )}
-                className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-500"
+                className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-500"
               >
                 <Icon name="alert-circle" size={10} />
                 {t('implement.needsRevalidation', 'Revalidate')}
               </span>
             )}
           </div>
-
-          {multiRepoPresentation && (
-            <div className="mt-2 space-y-1.5">
-              <div className="flex flex-wrap gap-1">
-                {multiRepoPresentation.repositories.map((repository) => (
-                  <span
-                    key={repository.id}
-                    title={repository.title}
-                    className={cn(
-                      'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]',
-                      repository.state ? REPOSITORY_CHIP_STATE_CLASSES[repository.state] : 'border-border bg-muted/40 text-muted-foreground'
-                    )}
-                  >
-                    <span>{repository.label}</span>
-                    {repository.isCurrent && (
-                      <span className="text-primary">{t('implement.currentRepository', 'Current')}</span>
-                    )}
-                    {repository.isNext && !repository.isCurrent && (
-                      <span className="text-sky-400">{t('implement.nextRepository', 'Next')}</span>
-                    )}
-                  </span>
-                ))}
-              </div>
-              <p className="text-[11px] text-muted-foreground">{multiRepoPresentation.progressLabel}</p>
-              <p className="text-[11px] text-muted-foreground">{multiRepoPresentation.nextActionLabel}</p>
-            </div>
-          )}
-
         </div>
+
+        <div className="mt-0.5 flex min-h-[28px] items-end justify-between gap-2 border-t border-border/60 pt-1">
+          <div className="min-w-0 flex flex-1 flex-col justify-center gap-1 pb-0.5 pr-7">
+            {!isDraft && task.branch_name && (
+              <div className="inline-flex h-[18px] items-center gap-1.5 text-xs leading-none text-muted-foreground">
+                <Icon name="git-branch" size={10} />
+                <span className="truncate leading-none">{task.branch_name}</span>
+              </div>
+            )}
+
+            {multiRepoPresentation && (
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+                  <Icon name="folder" size={10} />
+                  {t('implement.multiProjectTask', '{{count}} repositories', {
+                    count: multiRepoPresentation.repositories.length,
+                  })}
+                </span>
+                <div className="flex min-w-0 flex-wrap gap-1">
+                  {multiRepoPresentation.repositories.slice(0, 2).map((repository) => (
+                    <span
+                      key={repository.id}
+                      title={repository.title}
+                      className={cn(
+                        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]',
+                        repository.state
+                          ? REPOSITORY_CHIP_STATE_CLASSES[repository.state]
+                          : 'border-border bg-muted/40 text-muted-foreground'
+                      )}
+                    >
+                      <span>{repository.label}</span>
+                      {repository.isCurrent && (
+                        <span className="text-primary">{t('implement.currentRepository', 'Current')}</span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {taskCommandRunStatus ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onCancelTaskCommands();
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+            disabled={taskCommandRunStatus === 'cancelling'}
+            className={cn(
+              'absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+              taskCommandRunStatus === 'cancelling'
+                ? 'cursor-not-allowed text-muted-foreground'
+                : 'text-amber-500 hover:bg-accent/70'
+            )}
+            title={
+              taskCommandRunStatus === 'cancelling'
+                ? t('implement.taskCommandCancelling', 'Cancelling...')
+                : t('implement.cancelTaskCommands', 'Cancel run')
+            }
+          >
+            <Icon
+              name={taskCommandRunStatus === 'cancelling' ? 'loader' : 'x'}
+              size={13}
+              className={taskCommandRunStatus === 'cancelling' ? 'animate-spin' : undefined}
+            />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRunTaskCommands();
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+            disabled={!canRunTaskCommands}
+            className={cn(
+              'absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+              canRunTaskCommands
+                ? 'text-emerald-500 hover:bg-accent/70'
+                : 'cursor-not-allowed text-muted-foreground/50'
+            )}
+            title={runTaskCommandsTitle || t('implement.runTaskCommands', 'Run commands')}
+          >
+            <Icon name="play" size={13} />
+          </button>
+        )}
       </div>
 
       {showMenu && (
@@ -359,6 +427,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const restoreTask = useTaskStore((state) => state.restoreTask);
   const deleteTask = useTaskStore((state) => state.deleteTask);
   const reopenTask = useTaskStore((state) => state.reopenTask);
+  const taskCommandRuns = useTaskStore((state) => state.taskCommandRuns);
+  const runTaskCommands = useTaskStore((state) => state.runTaskCommands);
+  const cancelTaskCommands = useTaskStore((state) => state.cancelTaskCommands);
   const taskError = useTaskStore((state) => state.lastError);
   const reviewCurrentTaskId = useFileChangesStore((state) => state.currentTaskId);
   const liveReviewSummary = useFileChangesStore((state) => state.reviewSummary);
@@ -369,6 +440,18 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const [planReviewTarget, setPlanReviewTarget] = useState<{ planId: string; branchName: string } | null>(null);
   const [renameTarget, setRenameTarget] = useState<ImplementTask | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ task: ImplementTask; action: 'archive' | 'delete' } | null>(null);
+  const [taskCommandModal, setTaskCommandModal] = useState<{
+    taskId: string;
+    groupName: string;
+    autoRunAfterSave: boolean;
+    projects: Array<{
+      projectId: string;
+      projectName: string;
+      projectPath: string;
+      command: string;
+    }>;
+  } | null>(null);
+  const [isSavingTaskCommands, setIsSavingTaskCommands] = useState(false);
 
   useEffect(() => {
     if (!taskError || taskError === lastErrorToastRef.current) return;
@@ -421,15 +504,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     }
   };
 
-  const statusLabels: Record<TaskStatus, string> = {
-    Pending: t('tasks.pending', 'Pending'),
-    InProgress: t('tasks.inProgress', 'In Progress'),
-    AwaitingResponse: t('implement.awaitingResponse', 'Awaiting response'),
-    InReview: t('implement.inReview', 'Validation'),
-    Completed: t('tasks.completed', 'Completed'),
-    Failed: t('implement.failed', 'Failed'),
-    Blocked: t('tasks.blocked', 'Blocked'),
-  };
   const standalonePlanLabel = t('implement.planFilterStandalone', 'No plan / standalone');
 
   const buildMultiRepoPresentation = (
@@ -599,6 +673,131 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     return planLabelsById.get(task.plan_id) || task.plan_title || standalonePlanLabel;
   };
 
+  const getTaskCommandProjectIds = (task: ImplementTask): string[] => {
+    const ids = [
+      ...(task.execution_targets?.map((target) => target.projectId) || []),
+      ...(task.project_ids || []),
+      task.project_id,
+    ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+    return Array.from(new Set(ids));
+  };
+
+  const canRunTaskCommandsForTask = (task: ImplementTask): boolean =>
+    !task.draft && !task.archived_at && getTaskCommandProjectIds(task).length > 0;
+
+  const buildTaskCommandModalState = async (task: ImplementTask) => {
+    const registry = await loadTaskProjectCommandRegistry();
+    const taskProjectIds = getTaskCommandProjectIds(task);
+    const taskGroup =
+      getProjectGroupByProjectId(projectGroups, task.project_id) ||
+      getProjectGroupByProjectId(projectGroups, taskProjectIds[0] || null);
+    const modalProjectsSource =
+      taskGroup?.projects ||
+      taskProjectIds
+        .map((projectId) => getProjectById(projectId))
+        .filter((project): project is NonNullable<ReturnType<typeof getProjectById>> => Boolean(project));
+
+    return {
+      taskId: task.id,
+      groupName: taskGroup?.name || t('project.projectSettings', 'Paramètres du projet'),
+      requiredProjectIds: taskProjectIds,
+      projects: modalProjectsSource.map((project) => ({
+        projectId: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+        command: getTaskProjectCommand(registry, project.path)?.command || '',
+      })),
+    };
+  };
+
+  const openTaskCommandModal = async (task: ImplementTask) => {
+    try {
+      const modalState = await buildTaskCommandModalState(task);
+      if (modalState.projects.length === 0) {
+        toast.error(
+          t(
+            'implement.taskCommandNoProjects',
+            'No repository is available for this task.'
+          )
+        );
+        return;
+      }
+
+      setTaskCommandModal({
+        taskId: modalState.taskId,
+        groupName: modalState.groupName,
+        autoRunAfterSave: false,
+        projects: modalState.projects,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : t('common.error', 'An error occurred');
+      toast.error(message);
+    }
+  };
+
+  const handleRunTaskCommands = async (task: ImplementTask) => {
+    try {
+      const modalState = await buildTaskCommandModalState(task);
+      const requiredProjects = modalState.projects.filter((project) =>
+        modalState.requiredProjectIds.includes(project.projectId)
+      );
+      if (requiredProjects.some((project) => !project.command.trim())) {
+        setTaskCommandModal({
+          taskId: modalState.taskId,
+          groupName: modalState.groupName,
+          autoRunAfterSave: true,
+          projects: modalState.projects,
+        });
+        return;
+      }
+
+      const result = await runTaskCommands(task.id);
+      if (!result) {
+        return;
+      }
+
+      if (result.status === 'completed') {
+        toast.success(
+          t('implement.taskCommandRunSuccess', 'Commands completed'),
+          {
+            description: t(
+              'implement.taskCommandRunSuccessDescription',
+              '{{count}} subprojects executed successfully.',
+              { count: result.completedCount }
+            ),
+          }
+        );
+        return;
+      }
+
+      toast.info(
+        t('implement.taskCommandRunCancelled', 'Run cancelled'),
+        {
+          description: result.currentProjectName
+            ? t(
+                'implement.taskCommandRunCancelledDescription',
+                'Execution stopped while processing {{project}}.',
+                { project: result.currentProjectName }
+              )
+            : t(
+                'implement.taskCommandRunCancelledGeneric',
+                'Execution was cancelled.'
+              ),
+        }
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : t('common.error', 'An error occurred');
+      toast.error(message);
+    }
+  };
+
   const buildTaskActions = (task: ImplementTask): TaskActionDescriptor[] => {
     const capabilities = getTaskLifecycleCapabilities(
       task,
@@ -606,6 +805,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     );
     const archived = Boolean(task.archived_at);
     const actions: TaskActionDescriptor[] = [
+      {
+        key: 'project_settings',
+        label: t('project.projectSettings', 'Paramètres du projet'),
+        icon: 'settings',
+      },
       {
         key: 'rename',
         label: t('common.rename', 'Rename'),
@@ -652,6 +856,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const handleTaskAction = async (task: ImplementTask, action: TaskActionKey) => {
+    if (action === 'project_settings') {
+      await openTaskCommandModal(task);
+      return;
+    }
     if (action === 'rename') {
       setRenameTarget(task);
       return;
@@ -894,18 +1102,30 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                 </div>
 
                 {draftTasks.map((task) => (
-                  <MemoizedTaskItem
-                    key={task.id}
-                    task={task}
-                    isSelected={selectedTaskId === task.id}
-                    planLabel={getTaskPlanLabel(task)}
-                    statusLabel={statusLabels[task.status]}
-                    multiRepoPresentation={null}
-                    isAssistantRunning={streamingTaskId === task.id}
-                    onSelect={() => void activateTask(task.id)}
-                    actions={buildTaskActions(task)}
-                    onAction={(action) => void handleTaskAction(task, action)}
-                  />
+                <MemoizedTaskItem
+                  key={task.id}
+                  task={task}
+                  isSelected={selectedTaskId === task.id}
+                  planLabel={getTaskPlanLabel(task)}
+                  multiRepoPresentation={null}
+                  isAssistantRunning={streamingTaskId === task.id}
+                  taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
+                  canRunTaskCommands={canRunTaskCommandsForTask(task)}
+                  runTaskCommandsTitle={
+                    task.draft
+                      ? t('implement.taskCommandsDraftUnsupported', 'Commands are unavailable while this task is still a draft.')
+                      : task.archived_at
+                        ? t('implement.taskCommandsArchivedUnsupported', 'Commands are unavailable for archived tasks.')
+                        : !canRunTaskCommandsForTask(task)
+                          ? t('implement.taskCommandNoProjects', 'No repository is available for this task.')
+                          : t('implement.runTaskCommands', 'Run commands')
+                  }
+                  onSelect={() => void activateTask(task.id)}
+                  onRunTaskCommands={() => void handleRunTaskCommands(task)}
+                  onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
+                  actions={buildTaskActions(task)}
+                  onAction={(action) => void handleTaskAction(task, action)}
+                />
                 ))}
               </section>
             )}
@@ -930,7 +1150,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   task={task}
                   isSelected={selectedTaskId === task.id}
                   planLabel={getTaskPlanLabel(task)}
-                  statusLabel={statusLabels[task.status]}
                   multiRepoPresentation={buildMultiRepoPresentation(
                     task,
                     reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
@@ -938,7 +1157,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                       : null
                   )}
                   isAssistantRunning={streamingTaskId === task.id}
+                  taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
+                  canRunTaskCommands={canRunTaskCommandsForTask(task)}
+                  runTaskCommandsTitle={
+                    canRunTaskCommandsForTask(task)
+                      ? t('implement.runTaskCommands', 'Run commands')
+                      : t('implement.taskCommandNoProjects', 'No repository is available for this task.')
+                  }
                   onSelect={() => void activateTask(task.id)}
+                  onRunTaskCommands={() => void handleRunTaskCommands(task)}
+                  onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
                   actions={buildTaskActions(task)}
                   onAction={(action) => void handleTaskAction(task, action)}
                 />
@@ -965,7 +1193,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   task={task}
                   isSelected={selectedTaskId === task.id}
                   planLabel={getTaskPlanLabel(task)}
-                  statusLabel={statusLabels[task.status]}
                   multiRepoPresentation={buildMultiRepoPresentation(
                     task,
                     reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
@@ -973,7 +1200,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                       : null
                   )}
                   isAssistantRunning={streamingTaskId === task.id}
+                  taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
+                  canRunTaskCommands={canRunTaskCommandsForTask(task)}
+                  runTaskCommandsTitle={
+                    canRunTaskCommandsForTask(task)
+                      ? t('implement.runTaskCommands', 'Run commands')
+                      : t('implement.taskCommandNoProjects', 'No repository is available for this task.')
+                  }
                   onSelect={() => void activateTask(task.id)}
+                  onRunTaskCommands={() => void handleRunTaskCommands(task)}
+                  onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
                   actions={buildTaskActions(task)}
                   onAction={(action) => void handleTaskAction(task, action)}
                 />
@@ -1000,7 +1236,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   task={task}
                   isSelected={selectedTaskId === task.id}
                   planLabel={getTaskPlanLabel(task)}
-                  statusLabel={statusLabels[task.status]}
                   multiRepoPresentation={buildMultiRepoPresentation(
                     task,
                     reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
@@ -1008,7 +1243,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                       : null
                   )}
                   isAssistantRunning={streamingTaskId === task.id}
+                  taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
+                  canRunTaskCommands={canRunTaskCommandsForTask(task)}
+                  runTaskCommandsTitle={
+                    canRunTaskCommandsForTask(task)
+                      ? t('implement.runTaskCommands', 'Run commands')
+                      : t('implement.taskCommandNoProjects', 'No repository is available for this task.')
+                  }
                   onSelect={() => void activateTask(task.id)}
+                  onRunTaskCommands={() => void handleRunTaskCommands(task)}
+                  onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
                   actions={buildTaskActions(task)}
                   onAction={(action) => void handleTaskAction(task, action)}
                 />
@@ -1036,7 +1280,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     task={task}
                     isSelected={selectedTaskId === task.id}
                     planLabel={getTaskPlanLabel(task)}
-                    statusLabel={statusLabels[task.status]}
                     multiRepoPresentation={buildMultiRepoPresentation(
                       task,
                       reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
@@ -1044,7 +1287,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         : null
                     )}
                     isAssistantRunning={streamingTaskId === task.id}
+                    taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
+                    canRunTaskCommands={canRunTaskCommandsForTask(task)}
+                    runTaskCommandsTitle={
+                      canRunTaskCommandsForTask(task)
+                        ? t('implement.runTaskCommands', 'Run commands')
+                        : t('implement.taskCommandNoProjects', 'No repository is available for this task.')
+                    }
                     onSelect={() => void activateTask(task.id)}
+                    onRunTaskCommands={() => void handleRunTaskCommands(task)}
+                    onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
                     actions={buildTaskActions(task)}
                     onAction={(action) => void handleTaskAction(task, action)}
                   />
@@ -1061,6 +1313,56 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           branchName={planReviewTarget.branchName}
           planId={planReviewTarget.planId}
           onClose={() => setPlanReviewTarget(null)}
+        />
+      )}
+
+      {taskCommandModal && (
+        <TaskProjectCommandsModal
+          isOpen
+          projectGroupName={taskCommandModal.groupName}
+          projects={taskCommandModal.projects}
+          isSubmitting={isSavingTaskCommands}
+          onClose={() => {
+            if (!isSavingTaskCommands) {
+              setTaskCommandModal(null);
+            }
+          }}
+          onSave={(projects) => {
+            void (async () => {
+              setIsSavingTaskCommands(true);
+              try {
+                await saveTaskProjectCommandDrafts(projects);
+                const autoRunTaskId = taskCommandModal.autoRunAfterSave
+                  ? taskCommandModal.taskId
+                  : null;
+                setTaskCommandModal(null);
+                toast.success(
+                  t('project.projectSettings', 'Paramètres du projet'),
+                  {
+                    description: t(
+                      'implement.taskCommandsSaved',
+                      'Commands saved successfully.'
+                    ),
+                  }
+                );
+
+                if (autoRunTaskId) {
+                  const nextTask = tasks.find((task) => task.id === autoRunTaskId);
+                  if (nextTask) {
+                    await handleRunTaskCommands(nextTask);
+                  }
+                }
+              } catch (error) {
+                const message =
+                  error instanceof Error
+                    ? error.message
+                    : t('common.error', 'An error occurred');
+                toast.error(message);
+              } finally {
+                setIsSavingTaskCommands(false);
+              }
+            })();
+          }}
         />
       )}
 
