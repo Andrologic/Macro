@@ -79,7 +79,10 @@ mod tests {
     #[test]
     fn returns_none_when_dev_provider_overrides_file_is_missing() {
         let root = TempDir::new().expect("temp dir");
-        assert_eq!(load_dev_provider_overrides_from_workspace(root.path()), None);
+        assert_eq!(
+            load_dev_provider_overrides_from_workspace(root.path()),
+            None
+        );
     }
 
     #[test]
@@ -89,7 +92,10 @@ mod tests {
         fs::create_dir_all(&dev_dir).expect("create dev dir");
         fs::write(dev_dir.join("ai-keys.local.json"), "{not-json").expect("write invalid json");
 
-        assert_eq!(load_dev_provider_overrides_from_workspace(root.path()), None);
+        assert_eq!(
+            load_dev_provider_overrides_from_workspace(root.path()),
+            None
+        );
     }
 
     #[test]

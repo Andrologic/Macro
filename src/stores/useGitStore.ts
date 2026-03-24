@@ -3,6 +3,21 @@ import { PredictedGitTree, GitCommit } from '../types';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
 
+interface GitWorktreeEnsureResult {
+  taskId: string;
+  worktreePath: string;
+  branchName: string;
+  status: 'created' | 'reused' | 'repaired';
+}
+
+interface GitWorktreeRemoveResult {
+  taskId: string;
+  worktreePath: string;
+  removedPath: boolean;
+  prunedRegistration: boolean;
+  alreadyAbsent: boolean;
+}
+
 interface GitStore {
   trees: Record<string, PredictedGitTree>;
   commitsByProject: Record<string, GitCommit[]>;
@@ -15,8 +30,8 @@ interface GitStore {
     taskId: string,
     branchName: string,
     fromRef?: string | null
-  ) => Promise<string | null>;
-  removeWorktree: (projectId: string, taskId: string) => Promise<void>;
+  ) => Promise<GitWorktreeEnsureResult | null>;
+  removeWorktree: (projectId: string, taskId: string) => Promise<GitWorktreeRemoveResult | null>;
 }
 
 export const useGitStore = create<GitStore>((set) => ({
@@ -60,9 +75,9 @@ export const useGitStore = create<GitStore>((set) => ({
   createWorktree: async (projectId: string, taskId: string, branchName: string, fromRef?: string | null) => {
     set({ isLoading: true, lastError: null });
     try {
-      const worktreePath = await services.gitWorktreeCreate(projectId, taskId, branchName, fromRef);
+      const result = await services.gitWorktreeCreate(projectId, taskId, branchName, fromRef);
       set({ isLoading: false });
-      return worktreePath;
+      return result;
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
@@ -73,11 +88,13 @@ export const useGitStore = create<GitStore>((set) => ({
   removeWorktree: async (projectId: string, taskId: string) => {
     set({ isLoading: true, lastError: null });
     try {
-      await services.gitWorktreeRemove(projectId, taskId);
+      const result = await services.gitWorktreeRemove(projectId, taskId);
       set({ isLoading: false });
+      return result;
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
+      return null;
     }
   },
 }));

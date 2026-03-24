@@ -104,6 +104,38 @@ export interface GitBranchesDto {
   current: string | null;
 }
 
+export type GitWorktreeInspectionStatus =
+  | 'absent'
+  | 'ready'
+  | 'stale_registration'
+  | 'orphan_path'
+  | 'invalid_repo';
+
+export type GitWorktreeEnsureStatus = 'created' | 'reused' | 'repaired';
+
+export interface GitWorktreeInspectionDto {
+  taskId: string;
+  worktreePath: string;
+  branchName: string | null;
+  status: GitWorktreeInspectionStatus;
+  isDirty: boolean | null;
+}
+
+export interface GitWorktreeEnsureDto {
+  taskId: string;
+  worktreePath: string;
+  branchName: string;
+  status: GitWorktreeEnsureStatus;
+}
+
+export interface GitWorktreeRemoveDto {
+  taskId: string;
+  worktreePath: string;
+  removedPath: boolean;
+  prunedRegistration: boolean;
+  alreadyAbsent: boolean;
+}
+
 export interface GitSyncDto {
   branch: string;
   remote: string;
@@ -952,13 +984,25 @@ export async function gitGetTree(params: {
   });
 }
 
+export async function gitWorktreeInspect(params: {
+  repoPath: string;
+  taskId: string;
+  branchName?: string | null;
+}): Promise<GitWorktreeInspectionDto> {
+  return invoke<GitWorktreeInspectionDto>('git_worktree_inspect', {
+    repoPath: params.repoPath,
+    taskId: params.taskId,
+    branchName: params.branchName ?? null,
+  });
+}
+
 export async function gitWorktreeCreate(params: {
   repoPath: string;
   taskId: string;
   branchName: string;
   fromRef?: string | null;
-}): Promise<string> {
-  return invoke<string>('git_worktree_create', {
+}): Promise<GitWorktreeEnsureDto> {
+  return invoke<GitWorktreeEnsureDto>('git_worktree_create', {
     repoPath: params.repoPath,
     taskId: params.taskId,
     branchName: params.branchName,
@@ -970,11 +1014,13 @@ export async function gitWorktreeRemove(params: {
   repoPath: string;
   taskId: string;
   force?: boolean;
-}): Promise<void> {
-  return invoke('git_worktree_remove', {
+  branchName?: string | null;
+}): Promise<GitWorktreeRemoveDto> {
+  return invoke<GitWorktreeRemoveDto>('git_worktree_remove', {
     repoPath: params.repoPath,
     taskId: params.taskId,
     force: params.force ?? null,
+    branchName: params.branchName ?? null,
   });
 }
 
