@@ -3,6 +3,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { applyTheme } from '../../utils/themeUtils';
 import { useDynamicAppIcon } from '../../hooks/useDynamicAppIcon';
 import { Theme, ThemeManifest } from '../../types/theme';
+import { devLogger } from '../../utils/devLogger';
 
 // =============================================================================
 // THEME CONTEXT
@@ -155,7 +156,7 @@ const ensureInitialThemeSetup = async (activeThemeId: string): Promise<InitialTh
     if (cachedTheme) {
       resolvedTheme = cachedTheme;
       applyTheme(cachedTheme);
-      console.log(`[ThemeProvider] Loaded from cache in ${(performance.now() - startTime).toFixed(2)}ms`);
+      devLogger.log(`[ThemeProvider] Loaded from cache in ${(performance.now() - startTime).toFixed(2)}ms`);
     }
 
     try {
@@ -175,7 +176,7 @@ const ensureInitialThemeSetup = async (activeThemeId: string): Promise<InitialTh
         resolvedTheme = await themeResponse.json();
         applyTheme(resolvedTheme);
         saveThemeToCache(themeEntry.id, resolvedTheme);
-        console.log(`[ThemeProvider] Loaded from network in ${(performance.now() - startTime).toFixed(2)}ms`);
+        devLogger.log(`[ThemeProvider] Loaded from network in ${(performance.now() - startTime).toFixed(2)}ms`);
       }
     } catch (error) {
       console.error('[ThemeProvider] Failed to load theme:', error);
@@ -303,7 +304,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
                 return;
               }
               saveThemeToCache(themeEntry.id, theme);
-              console.log(`[ThemeProvider] Preloaded theme: ${themeEntry.id}`);
+              devLogger.log(`[ThemeProvider] Preloaded theme: ${themeEntry.id}`);
             })
             .catch((err) => {
               console.warn(`[ThemeProvider] Failed to preload theme ${themeEntry.id}:`, err);

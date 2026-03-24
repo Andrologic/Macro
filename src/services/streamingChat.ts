@@ -10,6 +10,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions } from './webSearch';
 import * as tauriIpc from './tauriIpc';
 import type { ToolTrace } from '../types';
+import { devLogger } from '../utils/devLogger';
 
 // Global references to active streaming resources for cancellation
 let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -1750,7 +1751,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   // LM Studio: Log connection attempt for debugging
   const isLocalProvider = providerType === 'lmstudio' || providerType === 'ollama';
   if (isLocalProvider) {
-    console.log(`[${providerId}] Connecting to ${baseUrl}/chat/completions`);
+    devLogger.log(`[${providerId}] Connecting to ${baseUrl}/chat/completions`);
   }
 
   // Build request body with optional tools
@@ -1963,7 +1964,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               }
             } catch (e) {
               // Skip malformed JSON - some providers send non-JSON lines
-              console.debug('Failed to parse SSE data:', data);
+              devLogger.debug('Failed to parse SSE data:', data);
             }
           }
         }

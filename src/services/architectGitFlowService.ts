@@ -23,6 +23,7 @@ import {
   isSyntheticProjectId,
   normalizeProjectRegistryPath,
 } from './validProjectRegistry';
+import { devLogger } from '../utils/devLogger';
 
 const BRANCH_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
@@ -310,7 +311,7 @@ const logIgnoredPlanProjectIds = (
     return;
   }
 
-  console.info('[architectGitFlow] Ignoring invalid plan project ids.', {
+  devLogger.info('[architectGitFlow] Ignoring invalid plan project ids.', {
     context: logContext,
     planId: plan.id,
     ignoredProjectIds,

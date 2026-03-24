@@ -11,6 +11,7 @@ import {
 } from '../types';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
+import { devLogger } from '../utils/devLogger';
 import {
   type ProjectSwitchPolicy,
   getLocalProjectContextState,
@@ -211,7 +212,7 @@ const logProjectRegistryAction = (
     return;
   }
 
-  console.info(JSON.stringify(message));
+  devLogger.info(JSON.stringify(message));
 };
 
 const reconcileProjectRegistryDependencies = async (params: {

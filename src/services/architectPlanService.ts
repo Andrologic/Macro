@@ -1,6 +1,7 @@
 import type { PlanNode, PredictedBranch } from '../types';
 import type { Need } from '../types';
 import * as tauriIpc from './tauriIpc';
+import { devLogger } from '../utils/devLogger';
 import {
   isCanonicalArchitectPlan,
   isDefaultNewPlanFamilyLabel,
@@ -857,7 +858,7 @@ const logArchitectPlanSanitization = (params: {
     return;
   }
 
-  console.info(JSON.stringify({
+  devLogger.info(JSON.stringify({
     event: 'architect_plan_metadata_sanitized',
     at: new Date().toISOString(),
     branchName: params.branchName,

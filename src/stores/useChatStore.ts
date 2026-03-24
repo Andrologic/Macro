@@ -13,6 +13,7 @@ import { executeWorkspaceTool } from '../services/workspaceToolExecutor';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
 import { useNeedsStore } from './useNeedsStore';
 import { useTerminalStore } from './useTerminalStore';
+import { devLogger } from '../utils/devLogger';
 import { canUseRemoteKernel, getRemoteToolModePolicy } from '../services/remoteKernelApi';
 import * as tauriIpc from '../services/tauriIpc';
 import {
@@ -2900,7 +2901,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
-    console.info(JSON.stringify(entry));
+    devLogger.info(JSON.stringify(entry));
   };
 
   const applyConversationSelection = (

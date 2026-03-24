@@ -8,6 +8,7 @@ import { useProviderStore } from '../stores/useProviderStore';
 import { useShortcutsStore } from '../stores/useShortcutsStore';
 import { useTaskStore } from '../stores/useTaskStore';
 import { useToolsStore } from '../stores/useToolsStore';
+import { devLogger } from '../utils/devLogger';
 
 type InitPriority = 'critical' | 'high' | 'normal' | 'low';
 
@@ -209,7 +210,7 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   preloadAllModes,
   scheduleLowPriority: createWindowLowPriorityScheduler(),
   now: () => performance.now(),
-  log: (message) => console.log(message),
+  log: (message) => devLogger.log(message),
   error: (message) => console.error(message),
   isPageShuttingDown,
 });
