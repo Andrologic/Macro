@@ -48,6 +48,7 @@ export const PREF_KEYS = {
   ARCHITECT_SYNC_TARGET_BEFORE_FINISH: "architectSyncTargetBeforeFinish",
   METADATA_AUTO_PUSH: "metadataAutoPush",
   NOTIFICATION_CENTER_ITEMS: "notificationCenterItems",
+  CHAT_ARCHIVED_CONVERSATION_IDS: "chatArchivedConversationIds",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -92,6 +93,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH]: true,
   [PREF_KEYS.METADATA_AUTO_PUSH]: false,
   [PREF_KEYS.NOTIFICATION_CENTER_ITEMS]: [],
+  [PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS]: [],
 };
 
 // Store instance (singleton)
