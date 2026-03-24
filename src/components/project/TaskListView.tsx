@@ -82,16 +82,6 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
     return getConversationByTask(taskId);
   };
 
-  const statusLabels: Record<TaskStatus, string> = {
-    Pending: t('tasks.pending', 'Pending'),
-    InProgress: t('tasks.inProgress', 'In Progress'),
-    AwaitingResponse: t('implement.awaitingResponse', 'Awaiting response'),
-    InReview: t('implement.inReview', 'In review'),
-    Completed: t('tasks.completed', 'Completed'),
-    Failed: t('implement.failed', 'Failed'),
-    Blocked: t('tasks.blocked', 'Blocked'),
-  };
-
   return (
     <div className="h-full flex flex-col bg-card">
       {/* Header with sort options */}
@@ -156,33 +146,26 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
                         )}
                       </div>
 
-                      {/* Status badge */}
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={cn(
-                            'inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded border',
-                            statusColors[task.status]
+                      {(conversation && conversation.message_count > 0) ||
+                      task.dependencies.length > 0 ? (
+                        <div className="flex items-center gap-2">
+                          {/* Message count */}
+                          {conversation && conversation.message_count > 0 && (
+                            <span className="text-xs text-muted-foreground flex items-center gap-1">
+                              <Icon name="message-square" size={10} />
+                              {conversation.message_count}
+                            </span>
                           )}
-                        >
-                          {statusLabels[task.status]}
-                        </span>
 
-                        {/* Message count */}
-                        {conversation && conversation.message_count > 0 && (
-                          <span className="text-xs text-muted-foreground flex items-center gap-1">
-                            <Icon name="message-square" size={10} />
-                            {conversation.message_count}
-                          </span>
-                        )}
-
-                        {/* Dependencies count */}
-                        {task.dependencies.length > 0 && (
-                          <span className="text-xs text-muted-foreground flex items-center gap-1">
-                            <Icon name="git-branch" size={10} />
-                            {task.dependencies.length}
-                          </span>
-                        )}
-                      </div>
+                          {/* Dependencies count */}
+                          {task.dependencies.length > 0 && (
+                            <span className="text-xs text-muted-foreground flex items-center gap-1">
+                              <Icon name="git-branch" size={10} />
+                              {task.dependencies.length}
+                            </span>
+                          )}
+                        </div>
+                      ) : null}
 
                       {/* Last message preview */}
                       {conversation?.last_message && (

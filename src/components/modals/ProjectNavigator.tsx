@@ -11,14 +11,13 @@ import {
   useSensors,
 } from '@dnd-kit/core';
 import { useAppStore } from '../../stores/useAppStore';
-import { useTaskStore } from '../../stores/useTaskStore';
 import { toServiceError } from '../../services/contracts/errors';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { toast } from '../ui/Toaster';
 import { cn } from '../../utils/cn';
-import type { Project, ProjectGroup, TaskStatus } from '../../types';
+import type { Project, ProjectGroup } from '../../types';
 
 interface ProjectNavigatorProps {
   isOpen: boolean;
@@ -27,14 +26,12 @@ interface ProjectNavigatorProps {
 
 interface ProjectItemProps {
   project: Project;
-  badges: { label: string; variant: 'default' | 'success' | 'warning' | 'attention' }[];
   onSelect: () => void;
   onMenuOpen: (e: React.MouseEvent) => void;
 }
 
 const ProjectItem: React.FC<ProjectItemProps> = ({
   project,
-  badges,
   onSelect,
   onMenuOpen,
 }) => {
@@ -69,25 +66,6 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
       </div>
 
       <div className="flex items-center gap-2">
-        {badges.map((badge) => (
-          <span
-            key={`${project.id}-${badge.label}`}
-            className={cn(
-              'px-2 py-0.5 rounded-full text-[11px] font-medium border',
-              badge.variant === 'success' &&
-                'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
-              badge.variant === 'warning' &&
-                'bg-amber-500/10 text-amber-500 border-amber-500/20',
-              badge.variant === 'attention' &&
-                'bg-destructive/10 text-destructive border-destructive/20',
-              badge.variant === 'default' &&
-                'bg-muted/60 text-muted-foreground border-border/50'
-            )}
-          >
-            {badge.label}
-          </span>
-        ))}
-
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -118,7 +96,6 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     removeProject,
     openProjectModal,
   } = useAppStore();
-  const tasks = useTaskStore((state) => state.tasks);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
@@ -253,91 +230,6 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     }
   };
 
-  const getProjectTaskCounts = (projectId: string) => {
-    const projectTasks = tasks.filter((task) => task.project_id === projectId);
-    const counts: Record<TaskStatus, number> = {
-      Pending: 0,
-      InProgress: 0,
-      AwaitingResponse: 0,
-      InReview: 0,
-      Completed: 0,
-      Failed: 0,
-      Blocked: 0,
-    };
-
-    projectTasks.forEach((task) => {
-      counts[task.status] += 1;
-    });
-
-    const needsAttention =
-      counts.AwaitingResponse + counts.InReview + counts.Blocked + counts.Failed;
-
-    return {
-      counts,
-      needsAttention,
-      total: projectTasks.length,
-    };
-  };
-
-  const getProjectBadges = (projectId: string) => {
-    const { counts, needsAttention, total } = getProjectTaskCounts(projectId);
-    if (total === 0) {
-      return [] as {
-        label: string;
-        variant: 'default' | 'success' | 'warning' | 'attention';
-      }[];
-    }
-
-    const badges = [] as {
-      label: string;
-      variant: 'default' | 'success' | 'warning' | 'attention';
-    }[];
-
-    if (counts.InProgress > 0) {
-      badges.push({
-        label: `${counts.InProgress} ${t('tasks.inProgress', 'In Progress')}`,
-        variant: 'warning',
-      });
-    }
-
-    if (counts.InReview > 0) {
-      badges.push({
-        label: `${counts.InReview} ${t('implement.inReview', 'Validation')}`,
-        variant: 'warning',
-      });
-    }
-
-    if (counts.Pending > 0) {
-      badges.push({
-        label: `${counts.Pending} ${t('tasks.pending', 'Pending')}`,
-        variant: 'default',
-      });
-    }
-
-    if (counts.Completed > 0) {
-      badges.push({
-        label: `${counts.Completed} ${t('tasks.completed', 'Completed')}`,
-        variant: 'success',
-      });
-    }
-
-    if (needsAttention > 0) {
-      badges.unshift({
-        label: `${needsAttention} ${t('tasks.actionRequired', 'Action required')}`,
-        variant: 'attention',
-      });
-    }
-
-    return badges;
-  };
-
-  const getGroupAttentionCount = (group: ProjectGroup): number => {
-    return group.projects.reduce((count, project) => {
-      const { needsAttention } = getProjectTaskCounts(project.id);
-      return count + needsAttention;
-    }, 0);
-  };
-
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
@@ -402,7 +294,6 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
               </div>
             ) : (
               filteredGroups.map((group) => {
-                const attentionCount = getGroupAttentionCount(group);
                 const isGroupSelected = selectedGroupId === group.id;
 
                 return (
@@ -427,11 +318,6 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                         <span className="text-sm font-medium text-foreground truncate">
                           {group.name}
                         </span>
-                        {attentionCount > 0 && (
-                          <span className="px-1.5 py-0.5 rounded-full bg-destructive/10 text-destructive text-xs">
-                            {attentionCount} {t('tasks.actionRequired', 'Action required')}
-                          </span>
-                        )}
                       </div>
 
                       <div className="flex items-center gap-1">
@@ -509,7 +395,6 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                             <div key={project.id} className="relative">
                               <ProjectItem
                                 project={project}
-                                badges={getProjectBadges(project.id)}
                                 onSelect={() => handleSelectGroup(group.id)}
                                 onMenuOpen={(e) => {
                                   e.stopPropagation();
