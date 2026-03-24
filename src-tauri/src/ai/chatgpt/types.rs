@@ -226,7 +226,14 @@ impl AuthFlowError {
 
 fn auth_copy(
     language: &str,
-) -> (&'static str, &'static str, &'static str, &'static str, &'static str, &'static str) {
+) -> (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+) {
     match language {
         "fr" => (
             "Macro - Autorisation ChatGPT réussie",

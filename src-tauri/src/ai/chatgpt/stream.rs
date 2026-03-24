@@ -254,7 +254,9 @@ fn normalize_tool_definition(raw_tool: &Value) -> Result<Value, String> {
     Ok(raw_tool.clone())
 }
 
-pub(super) fn build_responses_request(request: &AiChatRequest) -> Result<ChatGptResponsesRequest, String> {
+pub(super) fn build_responses_request(
+    request: &AiChatRequest,
+) -> Result<ChatGptResponsesRequest, String> {
     let mut instructions = Vec::new();
     let mut input = Vec::new();
 
