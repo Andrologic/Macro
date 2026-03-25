@@ -2,11 +2,11 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { changeLanguage, resolveSupportedLanguage } from '../../../i18n';
 import { SUPPORTED_LANGUAGE_METADATA } from '../../../i18n/languages';
+import type { ProjectSwitchPolicy } from '../../../services/localProjectContext';
+import { useAppStore } from '../../../stores/useAppStore';
 // @ts-ignore
 import { Select } from '../../ui/Select';
 import { Switch } from '../../ui/Switch';
-import { useAppStore } from '../../../stores/useAppStore';
-import type { ProjectSwitchPolicy } from '../../../services/localProjectContext';
 
 export const GeneralView: React.FC = () => {
     const { t, i18n } = useTranslation();
@@ -17,14 +17,14 @@ export const GeneralView: React.FC = () => {
     const implementExecutionMode = useAppStore((state) => state.implementExecutionMode);
     const setImplementExecutionMode = useAppStore((state) => state.setImplementExecutionMode);
     const selectedLanguage = resolveSupportedLanguage(i18n.resolvedLanguage || i18n.language);
-    
+
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <section className="space-y-4">
                 <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
                     {t('settings.language_region', 'Language & Region')}
                 </h4>
-                
+
                 <div className="grid grid-cols-1 gap-6 bg-card/40 p-4 rounded-xl border border-border/50">
                     <div className="flex items-center justify-between">
                         <div className="space-y-1">
@@ -34,7 +34,12 @@ export const GeneralView: React.FC = () => {
                             </p>
                         </div>
                         <div className="w-[220px]">
-                            <Select value={selectedLanguage} onChange={(e: any) => void changeLanguage(e.target.value)}>
+                            <Select
+                                value={selectedLanguage}
+                                onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+                                    void changeLanguage(resolveSupportedLanguage(e.target.value))
+                                }
+                            >
                                 {SUPPORTED_LANGUAGE_METADATA.map((language) => (
                                     <option key={language.code} value={language.code}>
                                         {language.flag} {language.nativeName}
@@ -50,30 +55,21 @@ export const GeneralView: React.FC = () => {
                 <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
                     {t('settings.application', 'Application')}
                 </h4>
-                
+
                 <div className="space-y-4 bg-card/40 p-4 rounded-xl border border-border/50">
                     <div className="flex items-center justify-between">
                         <div className="space-y-1">
                             <label className="text-sm font-medium text-foreground">{t('settings.sound_effects', 'Sound Effects')}</label>
                             <p className="text-xs text-muted-foreground">{t('settings.sound_effects_desc', 'Play sounds on task completion or errors')}</p>
                         </div>
-                        <Switch checked={true} onCheckedChange={() => {}} disabled />
+                        <Switch checked={true} onCheckedChange={() => { }} disabled />
                     </div>
-                    <div className="h-px bg-border/50" />
-                     <div className="flex items-center justify-between">
-                        <div className="space-y-1">
-                            <label className="text-sm font-medium text-foreground">{t('settings.desktop_notifications', 'Desktop Notifications')}</label>
-                            <p className="text-xs text-muted-foreground">{t('settings.desktop_notifications_desc', 'Show native desktop notifications for important events')}</p>
-                        </div>
-                        <Switch checked={false} onCheckedChange={() => {}} disabled />
-                    </div>
-                    <div className="h-px bg-border/50" />
                     <div className="flex items-center justify-between">
                         <div className="space-y-1">
                             <label className="text-sm font-medium text-foreground">{t('settings.analytics', 'Analytics')}</label>
                             <p className="text-xs text-muted-foreground">{t('settings.analytics_desc', 'Share anonymous usage data to help improve Macro')}</p>
                         </div>
-                         <Switch checked={false} onCheckedChange={() => {}} />
+                         <Switch checked={false} onCheckedChange={() => { }} />
                     </div>
                     <div className="h-px bg-border/50" />
                     <div className="flex items-center justify-between gap-4">

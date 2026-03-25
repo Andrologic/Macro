@@ -10,6 +10,7 @@ import {
   toast as sonnerToast,
   type ExternalToast,
 } from 'sonner';
+import { maybeSendDesktopNotification } from '../../services/desktopNotifications';
 import { useAuthStore } from '../../stores/useAuthStore';
 import {
   useNotificationCenterStore,
@@ -26,6 +27,7 @@ type ToastMessage = Parameters<typeof sonnerToast>[0];
 type SonnerToastArgs = Parameters<typeof sonnerToast>;
 type SonnerCustomToastArgs = Parameters<typeof sonnerToast.custom>;
 type ToastId = string | number;
+type DesktopEligibleNotificationLevel = NotificationLevel | 'success';
 
 export interface NotificationActionSpec {
   label: string;
@@ -37,6 +39,7 @@ export interface NotificationActionSpec {
 export interface NotificationOptions extends ExternalToast {
   actions?: NotificationActionSpec[];
   notificationKey?: string;
+  desktopEligible?: boolean;
 }
 
 interface TrackableToastContent {
@@ -136,7 +139,12 @@ const toSonnerToastOptions = (
     return { id: toastId };
   }
 
-  const { actions: _actions, notificationKey: _notificationKey, ...sonnerOptions } = options;
+  const {
+    actions: _actions,
+    notificationKey: _notificationKey,
+    desktopEligible: _desktopEligible,
+    ...sonnerOptions
+  } = options;
   return {
     ...sonnerOptions,
     id: toastId,
@@ -223,6 +231,39 @@ const getLevelMethod = (level: NotificationLevel) => {
   }
 };
 
+const isDesktopNotificationEligible = (
+  level: DesktopEligibleNotificationLevel,
+  options?: NotificationOptions
+): boolean => {
+  if (level === 'warning' || level === 'error') {
+    return true;
+  }
+
+  return options?.desktopEligible === true;
+};
+
+const maybeEmitDesktopNotification = (
+  level: DesktopEligibleNotificationLevel,
+  message: ToastMessage,
+  options: NotificationOptions | undefined,
+  toastIdentity: { toastId: ToastId; historyId: string }
+): void => {
+  if (!isDesktopNotificationEligible(level, options)) {
+    return;
+  }
+
+  const content = toTrackableToastContent(message, options);
+  if (!content) {
+    return;
+  }
+
+  void maybeSendDesktopNotification({
+    title: content.title,
+    body: content.description,
+    notificationKey: resolveNotificationKey(options?.notificationKey) ?? toastIdentity.historyId,
+  });
+};
+
 export const normalizeNotificationActions = (
   actions?: NotificationActionSpec[]
 ): NormalizedNotificationActionSpec[] =>
@@ -247,12 +288,14 @@ const emitTrackedToast = (
   message: ToastMessage,
   options?: NotificationOptions
 ): ToastId | typeof NOTIFICATIONS_DISABLED_RESULT => {
+  const toastIdentity = resolveToastIdentity(options);
+  maybeEmitDesktopNotification(level, message, options, toastIdentity);
+
   if (!notificationsEnabled()) {
     return NOTIFICATIONS_DISABLED_RESULT;
   }
 
-  const { toastId, historyId } = resolveToastIdentity(options);
-  const sonnerOptions = toSonnerToastOptions(options, toastId);
+  const sonnerOptions = toSonnerToastOptions(options, toastIdentity.toastId);
   const actions = normalizeNotificationActions(options?.actions);
   const result =
     actions.length === 0
@@ -270,8 +313,22 @@ const emitTrackedToast = (
         sonnerOptions
       );
 
-  persistNotification(level, historyId, toTrackableToastContent(message, options));
+  persistNotification(level, toastIdentity.historyId, toTrackableToastContent(message, options));
   return result;
+};
+
+const emitVisibleSuccessToast = (
+  message: ToastMessage,
+  options?: NotificationOptions
+): ToastId | typeof NOTIFICATIONS_DISABLED_RESULT => {
+  const toastIdentity = resolveToastIdentity(options);
+  maybeEmitDesktopNotification('success', message, options, toastIdentity);
+
+  if (!notificationsEnabled()) {
+    return NOTIFICATIONS_DISABLED_RESULT;
+  }
+
+  return sonnerToast.success(message, toSonnerToastOptions(options, toastIdentity.toastId));
 };
 
 function callVisibleToast<TArgs extends unknown[], TResult>(
@@ -389,8 +446,8 @@ export const toast = Object.assign(
   ((...args: SonnerToastArgs) =>
     callVisibleToast(sonnerToast, ...args)) as typeof sonnerToast,
   {
-    success: (...args: SonnerToastArgs) =>
-      callVisibleToast(sonnerToast.success, ...args),
+    success: (message: ToastMessage, options?: NotificationOptions) =>
+      emitVisibleSuccessToast(message, options),
     info: (message: ToastMessage, options?: NotificationOptions) =>
       emitTrackedToast('info', message, options),
     warning: (message: ToastMessage, options?: NotificationOptions) =>

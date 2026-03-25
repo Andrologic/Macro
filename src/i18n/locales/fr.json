@@ -266,7 +266,8 @@
       "architect": "Configurer les patterns de target et de branch d'Architect",
       "shortcuts": "Configurer les raccourcis clavier et les raccourcis clavier",
       "providers": "Configurer les clés API et les points de terminaison",
-      "models": "Gérer les paramètres des modèles disponibles"
+      "models": "Gérer les paramètres des modèles disponibles",
+      "notifications": "Configurer les notifications intégrées et desktop"
     },
     "language_region": "Langue et région",
     "language": "Langue",
@@ -276,6 +277,12 @@
     "sound_effects_desc": "Jouer des sons à la fin d'une tâche ou en cas d'erreur",
     "desktop_notifications": "Notifications sur le bureau",
     "desktop_notifications_desc": "Afficher les notifications natives du bureau pour les événements importants",
+    "desktopNotificationsRuntime": "État d'exécution",
+    "desktopNotificationsStatusDisabled": "Désactivé",
+    "desktopNotificationsStatusAllowed": "Autorisé",
+    "desktopNotificationsStatusDenied": "Refusé",
+    "desktopNotificationsStatusUnsupported": "Non pris en charge",
+    "desktopNotificationsStatusPermissionNeeded": "Autorisation requise",
     "analytics": "Analyse",
     "analytics_desc": "Partagez des données d'utilisation anonymes pour aider à améliorer Macro",
     "projectContextPolicy": "Mémoire de contexte du projet",
@@ -312,7 +319,12 @@
     },
     "prompts": "Invites",
     "providers": "Fournisseurs d'IA",
-    "models": "Modèles d'IA"
+    "models": "Modèles d'IA",
+    "notifications": "Notifications",
+    "notificationsDelivery": "Diffusion",
+    "inAppNotifications": "Notifications intégrées",
+    "inAppNotificationsDesc": "Afficher les toasts dans Macro et conserver les alertes importantes dans le centre de notifications.",
+    "inAppNotificationsUpdateFailed": "Échec de la mise à jour des préférences de notifications intégrées"
   },
   "project": {
     "projects": "Projets",
