@@ -1,0 +1,150 @@
+name: Weekly Release
+
+on:
+  schedule:
+    # Mondays at 08:17 UTC. GitHub schedules always use UTC.
+    - cron: '17 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: weekly-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      release_name: ${{ steps.meta.outputs.release_name }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Enforce default branch for weekly releases
+        if: github.ref_name != github.event.repository.default_branch
+        run: |
+          echo "Weekly releases can only run from ${{ github.event.repository.default_branch }}, current ref is ${GITHUB_REF_NAME}."
+          exit 1
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Bump weekly version
+        run: bun run version:bump weekly
+
+      - name: Verify version state
+        run: bun run version:check
+
+      - name: Read release metadata
+        id: meta
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          STAMP="${VERSION#*-weekly.}"
+          STAMP="${STAMP%%.*}"
+          HUMAN_DATE="${STAMP:0:4}-${STAMP:4:2}-${STAMP:6:2}"
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_name=Weekly ${HUMAN_DATE} (${TAG})" >> "$GITHUB_OUTPUT"
+
+      - name: Commit weekly version bump
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          git commit -m "chore(release): weekly v${VERSION}"
+
+      - name: Tag weekly release
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: git tag "${TAG}"
+
+      - name: Push version bump and tag
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          git push origin HEAD:${GITHUB_REF_NAME}
+          git push origin "${TAG}"
+
+  publish-tauri:
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Check out tagged release
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ needs.prepare-release.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build and upload weekly release artifacts
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ needs.prepare-release.outputs.tag }}
+          releaseName: ${{ needs.prepare-release.outputs.release_name }}
+          releaseBody: 'Automated weekly prerelease.'
+          releaseDraft: true
+          prerelease: true
+          generateReleaseNotes: true
+          args: ${{ matrix.args }}
+
+  publish-release:
+    needs:
+      - prepare-release
+      - publish-tauri
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish draft GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          RELEASE_NAME: ${{ needs.prepare-release.outputs.release_name }}
+        run: gh release edit "${TAG}" --draft=false --prerelease --title "${RELEASE_NAME}"
