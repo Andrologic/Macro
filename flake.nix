@@ -14,6 +14,7 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
+        packageJson = builtins.fromJSON (builtins.readFile ./package.json);
 
         # Rust toolchain with src and analyzer
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
@@ -127,7 +128,7 @@
         # =============================================================================
         packages.default = pkgs.stdenv.mkDerivation {
           pname = "macro";
-          version = "0.1.0";
+          version = packageJson.version;
 
           src = ./.;
 
