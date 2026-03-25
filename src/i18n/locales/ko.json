@@ -266,7 +266,8 @@
       "architect": "Architect 대상 및 분기 이름 지정 패턴 구성",
       "shortcuts": "키보드 단축키 및 키 바인딩 구성",
       "providers": "API 키 및 엔드포인트 구성",
-      "models": "사용 가능한 모델 매개변수 관리"
+      "models": "사용 가능한 모델 매개변수 관리",
+      "notifications": "? ? ??? ???? ?? ?? ??"
     },
     "language_region": "언어 및 지역",
     "language": "언어",
@@ -276,6 +277,12 @@
     "sound_effects_desc": "작업 완료 또는 오류 시 소리 재생",
     "desktop_notifications": "데스크톱 알림",
     "desktop_notifications_desc": "중요한 이벤트에 대한 기본 데스크톱 알림 표시",
+    "desktopNotificationsRuntime": "런타임 상태",
+    "desktopNotificationsStatusDisabled": "비활성화됨",
+    "desktopNotificationsStatusAllowed": "허용됨",
+    "desktopNotificationsStatusDenied": "거부됨",
+    "desktopNotificationsStatusUnsupported": "지원되지 않음",
+    "desktopNotificationsStatusPermissionNeeded": "권한 필요",
     "analytics": "해석학",
     "analytics_desc": "매크로 개선을 위해 익명의 사용 데이터를 공유하세요.",
     "projectContextPolicy": "프로젝트 컨텍스트 메모리",
@@ -312,7 +319,12 @@
     },
     "prompts": "프롬프트",
     "providers": "AI 제공업체",
-    "models": "AI 모델"
+    "models": "AI 모델",
+    "notifications": "??",
+    "notificationsDelivery": "??",
+    "inAppNotifications": "? ? ??",
+    "inAppNotificationsDesc": "Macro ??? ??? ??? ???? ??? ??? ?? ??? ?????.",
+    "inAppNotificationsUpdateFailed": "? ? ?? ?? ??? ?????? ?????"
   },
   "project": {
     "projects": "프로젝트",

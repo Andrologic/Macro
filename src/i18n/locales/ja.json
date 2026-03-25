@@ -266,7 +266,8 @@
       "architect": "Architect のターゲットとブランチの命名パターンを構成する",
       "shortcuts": "キーボード ショートカットとキー バインドを構成する",
       "providers": "API キーとエンドポイントを構成する",
-      "models": "利用可能なモデルパラメータを管理する"
+      "models": "利用可能なモデルパラメータを管理する",
+      "notifications": "???????????????????????"
     },
     "language_region": "言語と地域",
     "language": "言語",
@@ -276,6 +277,12 @@
     "sound_effects_desc": "タスクの完了またはエラー時にサウンドを再生する",
     "desktop_notifications": "デスクトップ通知",
     "desktop_notifications_desc": "重要なイベントについてネイティブのデスクトップ通知を表示する",
+    "desktopNotificationsRuntime": "実行時ステータス",
+    "desktopNotificationsStatusDisabled": "無効",
+    "desktopNotificationsStatusAllowed": "許可済み",
+    "desktopNotificationsStatusDenied": "拒否",
+    "desktopNotificationsStatusUnsupported": "非対応",
+    "desktopNotificationsStatusPermissionNeeded": "許可が必要",
     "analytics": "分析",
     "analytics_desc": "匿名の使用状況データを共有してマクロの改善に役立てる",
     "projectContextPolicy": "プロジェクトコンテキストメモリ",
@@ -312,7 +319,12 @@
     },
     "prompts": "プロンプト",
     "providers": "AIプロバイダー",
-    "models": "AIモデル"
+    "models": "AIモデル",
+    "notifications": "??",
+    "notificationsDelivery": "??",
+    "inAppNotifications": "??????",
+    "inAppNotificationsDesc": "Macro ????????????????????????????????",
+    "inAppNotificationsUpdateFailed": "??????????????????"
   },
   "project": {
     "projects": "プロジェクト",
