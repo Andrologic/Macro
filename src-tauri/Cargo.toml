@@ -60,6 +60,7 @@ urlencoding = "2"
 
 # Config
 config = "0.13"
+tauri-plugin-notification = "2.3.3"
 
 # Utils
 [dev-dependencies]

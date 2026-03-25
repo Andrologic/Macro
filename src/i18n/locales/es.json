@@ -266,7 +266,8 @@
       "architect": "Configurar patrones de nomenclatura de ramas y objetivos de Architect",
       "shortcuts": "Configurar atajos de teclado y combinaciones de teclas",
       "providers": "Configurar claves API y puntos finales",
-      "models": "Administrar los parámetros de los modelos disponibles."
+      "models": "Administrar los parámetros de los modelos disponibles.",
+      "notifications": "Configura la entrega de notificaciones dentro de la app y en el escritorio"
     },
     "language_region": "Idioma y región",
     "language": "Idioma",
@@ -276,6 +277,12 @@
     "sound_effects_desc": "Reproducir sonidos al completar tareas o errores",
     "desktop_notifications": "Notificaciones de escritorio",
     "desktop_notifications_desc": "Mostrar notificaciones de escritorio nativas para eventos importantes",
+    "desktopNotificationsRuntime": "Estado de ejecución",
+    "desktopNotificationsStatusDisabled": "Desactivado",
+    "desktopNotificationsStatusAllowed": "Permitido",
+    "desktopNotificationsStatusDenied": "Denegado",
+    "desktopNotificationsStatusUnsupported": "No compatible",
+    "desktopNotificationsStatusPermissionNeeded": "Se requiere permiso",
     "analytics": "Analítica",
     "analytics_desc": "Comparta datos de uso anónimos para ayudar a mejorar Macro",
     "projectContextPolicy": "Memoria de contexto del proyecto",
@@ -312,7 +319,12 @@
     },
     "prompts": "Indicaciones",
     "providers": "Proveedores de IA",
-    "models": "Modelos de IA"
+    "models": "Modelos de IA",
+    "notifications": "Notificaciones",
+    "notificationsDelivery": "Entrega",
+    "inAppNotifications": "Notificaciones dentro de la app",
+    "inAppNotificationsDesc": "Muestra toasts dentro de Macro y conserva las alertas importantes en el centro de notificaciones.",
+    "inAppNotificationsUpdateFailed": "No se pudieron actualizar las preferencias de notificaciones dentro de la app"
   },
   "project": {
     "projects": "Proyectos",

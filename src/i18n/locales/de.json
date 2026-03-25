@@ -266,7 +266,8 @@
       "architect": "Konfigurieren Sie Architect-Ziel- und Branch-Benennungsmuster",
       "shortcuts": "Konfigurieren Sie Tastaturkürzel und Tastenkombinationen",
       "providers": "Konfigurieren Sie API-Schlüssel und Endpunkte",
-      "models": "Verwalten Sie verfügbare Modellparameter"
+      "models": "Verwalten Sie verfügbare Modellparameter",
+      "notifications": "In-App- und Desktop-Benachrichtigungen konfigurieren"
     },
     "language_region": "Sprache und Region",
     "language": "Sprache",
@@ -276,6 +277,12 @@
     "sound_effects_desc": "Spielen Sie bei Abschluss der Aufgabe oder bei Fehlern Töne ab",
     "desktop_notifications": "Desktop-Benachrichtigungen",
     "desktop_notifications_desc": "Zeigen Sie native Desktop-Benachrichtigungen für wichtige Ereignisse an",
+    "desktopNotificationsRuntime": "Laufzeitstatus",
+    "desktopNotificationsStatusDisabled": "Deaktiviert",
+    "desktopNotificationsStatusAllowed": "Erlaubt",
+    "desktopNotificationsStatusDenied": "Verweigert",
+    "desktopNotificationsStatusUnsupported": "Nicht unterstützt",
+    "desktopNotificationsStatusPermissionNeeded": "Berechtigung erforderlich",
     "analytics": "Analytik",
     "analytics_desc": "Teilen Sie anonyme Nutzungsdaten, um Makro zu verbessern",
     "projectContextPolicy": "Projektkontextgedächtnis",
@@ -312,7 +319,12 @@
     },
     "prompts": "Aufforderungen",
     "providers": "KI-Anbieter",
-    "models": "KI-Modelle"
+    "models": "KI-Modelle",
+    "notifications": "Benachrichtigungen",
+    "notificationsDelivery": "Zustellung",
+    "inAppNotifications": "In-App-Benachrichtigungen",
+    "inAppNotificationsDesc": "Toasts in Macro anzeigen und wichtige Hinweise im Benachrichtigungszentrum behalten.",
+    "inAppNotificationsUpdateFailed": "In-App-Benachrichtigungseinstellungen konnten nicht aktualisiert werden"
   },
   "project": {
     "projects": "Projekte",

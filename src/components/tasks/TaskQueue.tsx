@@ -817,6 +817,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               '{{count}} subprojects executed successfully.',
               { count: result.completedCount }
             ),
+            desktopEligible: true,
           }
         );
         return;

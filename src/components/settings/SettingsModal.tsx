@@ -4,6 +4,7 @@ import { useAppStore, SettingsTab } from '../../stores/useAppStore';
 import { Icon, IconName } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { GeneralView } from './views/GeneralView';
+import { NotificationsView } from './views/NotificationsView';
 import { AppearanceView } from './views/AppearanceView';
 import { ProvidersSettings } from './views/ai/ProvidersSettings';
 import { ModelsSettings } from './views/ai/ModelsSettings';
@@ -21,8 +22,21 @@ export const SettingsModal: React.FC = () => {
 
   if (!settingsOpen) return null;
 
+  const activeTabDescription =
+    activeSettingsTab === 'notifications'
+      ? t(
+          'settings.desc.notifications',
+          'Configure in-app and desktop notification delivery'
+        )
+      : t(`settings.desc.${activeSettingsTab}`) || 'Configure your application settings';
+
   const tabs: { id: SettingsTab; icon: IconName; label: string }[] = [
     { id: 'general', icon: 'settings', label: t('settings.general') || 'General' },
+    {
+      id: 'notifications',
+      icon: 'bell',
+      label: t('settings.notifications', 'Notifications'),
+    },
     { id: 'appearance', icon: 'palette', label: t('settings.appearance') || 'Appearance' },
     { id: 'providers', icon: 'server', label: t('settings.providers') || 'AI Providers' },
     { id: 'models', icon: 'cpu', label: t('settings.models') || 'AI Models' },
@@ -83,7 +97,7 @@ export const SettingsModal: React.FC = () => {
                 {tabs.find(t => t.id === activeSettingsTab)?.label}
               </h3>
               <p className="text-sm text-muted-foreground">
-                {t(`settings.desc.${activeSettingsTab}`) || 'Configure your application settings'}
+                {activeTabDescription}
               </p>
             </div>
             <button
@@ -97,6 +111,7 @@ export const SettingsModal: React.FC = () => {
           <div className="flex-1 overflow-y-auto p-4 md:p-8">
             <div className="max-w-3xl mx-auto animate-fade-in">
               {activeSettingsTab === 'general' && <GeneralView />}
+              {activeSettingsTab === 'notifications' && <NotificationsView />}
               {activeSettingsTab === 'appearance' && <AppearanceView />}
               {activeSettingsTab === 'providers' && <ProvidersSettings />}
               {activeSettingsTab === 'models' && <ModelsSettings />}
