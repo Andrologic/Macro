@@ -11,9 +11,11 @@ import { ToolsView } from './views/ToolsView';
 import { ShortcutsView } from './views/ShortcutsView';
 import { PromptsView } from './views/PromptsView';
 import { ArchitectGitFlowView } from './views/ArchitectGitFlowView';
+import { useAppVersion } from '../../hooks/useAppVersion';
 
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
+  const appVersion = useAppVersion();
   // @ts-ignore - store types updated but might not be picked up by lsp immediately
   const { settingsOpen, closeSettings, activeSettingsTab, setSettingsTab } = useAppStore();
 
@@ -66,9 +68,9 @@ export const SettingsModal: React.FC = () => {
 
           <div className="p-4 border-t border-border bg-card/30 hidden md:block">
             <div className="text-xs text-muted-foreground text-center">
-              Macro v0.1.0-alpha
+              Macro
               <br />
-              <span className="opacity-50">Build 20240130</span>
+              <span className="opacity-50">{appVersion}</span>
             </div>
           </div>
         </div>
