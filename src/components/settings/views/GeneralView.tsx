@@ -57,21 +57,6 @@ export const GeneralView: React.FC = () => {
                 </h4>
 
                 <div className="space-y-4 bg-card/40 p-4 rounded-xl border border-border/50">
-                    <div className="flex items-center justify-between">
-                        <div className="space-y-1">
-                            <label className="text-sm font-medium text-foreground">{t('settings.sound_effects', 'Sound Effects')}</label>
-                            <p className="text-xs text-muted-foreground">{t('settings.sound_effects_desc', 'Play sounds on task completion or errors')}</p>
-                        </div>
-                        <Switch checked={true} onCheckedChange={() => { }} disabled />
-                    </div>
-                    <div className="flex items-center justify-between">
-                        <div className="space-y-1">
-                            <label className="text-sm font-medium text-foreground">{t('settings.analytics', 'Analytics')}</label>
-                            <p className="text-xs text-muted-foreground">{t('settings.analytics_desc', 'Share anonymous usage data to help improve Macro')}</p>
-                        </div>
-                         <Switch checked={false} onCheckedChange={() => { }} />
-                    </div>
-                    <div className="h-px bg-border/50" />
                     <div className="flex items-center justify-between gap-4">
                         <div className="space-y-1">
                             <label className="text-sm font-medium text-foreground">
