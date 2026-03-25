@@ -50,7 +50,46 @@ bun run tauri:build
 | `bun run clean` | Clean build artifacts |
 | `bun run update` | Update dependencies |
 | `bun run test` | Run tests with Bun test runner |
+| `bun run version:sync` | Sync secondary version manifests from `package.json` |
+| `bun run version:check` | Verify version consistency across app manifests |
+| `bun run version:bump` | Bump `package.json` version and sync dependent files |
 | `bun run ci` | CI pipeline (install + typecheck + build) |
+
+## Versioning
+
+`package.json` is the single source of truth for the application version.
+
+- `src-tauri/tauri.conf.json` reads the version from `../package.json`
+- `src-tauri/Cargo.toml` is synchronized from `package.json`
+- `src-tauri/Cargo.lock` keeps the root package version synchronized from `package.json`
+- `flake.nix` derives its package version from `package.json`
+- the desktop UI reads the runtime app version from Tauri, with a Vite fallback sourced from `package.json`
+
+Use these commands for version management:
+
+```bash
+bun run version:check
+bun run version:sync
+bun run version:bump patch
+bun run version:bump rc
+bun run version:bump weekly
+bun run version:bump weekly 20260325
+```
+
+Release channels:
+
+- stable releases use `major`, `minor`, and `patch`
+- release candidates use `bun run version:bump rc` and produce versions like `0.2.1-rc.0`
+- weekly releases use `bun run version:bump weekly` and produce versions like `0.2.1-weekly.20260325.0`
+
+## Weekly Releases
+
+Weekly releases are automated through [`.github/workflows/weekly-release.yml`](.github/workflows/weekly-release.yml).
+
+- schedule-driven releases only run from the repository default branch on GitHub
+- the current cron is Monday at 08:17 UTC (`17 8 * * 1`)
+- the workflow bumps the app to the next `weekly` prerelease, commits the version files, tags `v<version>`, and publishes a GitHub prerelease
+- release candidates stay manual and should be cut locally with `bun run version:bump rc`
 
 ## Bun Configuration
 
