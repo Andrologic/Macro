@@ -57,7 +57,16 @@ import type {
 } from '../services/tauriIpc';
 
 export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
-export type SettingsTab = 'general' | 'appearance' | 'providers' | 'models' | 'tools' | 'shortcuts' | 'prompts' | 'architect';
+export type SettingsTab =
+  | 'general'
+  | 'notifications'
+  | 'appearance'
+  | 'providers'
+  | 'models'
+  | 'tools'
+  | 'shortcuts'
+  | 'prompts'
+  | 'architect';
 export type UiZoomMode = 'auto' | 'override';
 export type MetadataSyncState = 'clean' | 'pending' | 'failed' | 'conflict';
 
@@ -546,6 +555,7 @@ interface AppStore {
   isProjectSwitching: boolean;
   metadataAutoPush: boolean;
   implementExecutionMode: ImplementExecutionMode;
+  desktopNotificationsEnabled: boolean;
   pendingAutoLaunchPlanId: string | null;
   pendingAutoLaunchTaskId: string | null;
   metadataSyncState: MetadataSyncState;
@@ -583,6 +593,7 @@ interface AppStore {
   setProjectSwitchPolicy: (policy: ProjectSwitchPolicy) => Promise<void>;
   setMetadataAutoPush: (enabled: boolean) => void;
   setImplementExecutionMode: (mode: ImplementExecutionMode) => void;
+  setDesktopNotificationsEnabled: (enabled: boolean) => void;
   armPendingAutoLaunch: (planId: string, taskId: string) => void;
   clearPendingAutoLaunch: (params?: { planId?: string | null; taskId?: string | null }) => void;
   setMetadataSyncStatus: (params: {
@@ -703,6 +714,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isProjectSwitching: false,
   metadataAutoPush: false,
   implementExecutionMode: 'semi_auto',
+  desktopNotificationsEnabled: true,
   pendingAutoLaunchPlanId: null,
   pendingAutoLaunchTaskId: null,
   metadataSyncState: 'clean',
@@ -840,6 +852,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
           }),
     });
     void savePreference(PREF_KEYS.IMPLEMENT_EXECUTION_MODE, normalized);
+  },
+
+  setDesktopNotificationsEnabled: (enabled) => {
+    set({ desktopNotificationsEnabled: enabled });
+    void savePreference(PREF_KEYS.DESKTOP_NOTIFICATIONS_ENABLED, enabled);
   },
 
   armPendingAutoLaunch: (planId, taskId) => {
@@ -1999,7 +2016,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       logProjectRegistryAction('started', { action: 'initialize' });
       // Load persisted panel preferences
-      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId, lastOpenProjectPath, lastActiveMode, lastAgentType, recentProjects, macroEnabledProjects, metadataAutoPush, implementExecutionMode, storedProjectSwitchPolicy, sessionContext] = await Promise.all([
+      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId, lastOpenProjectPath, lastActiveMode, lastAgentType, recentProjects, macroEnabledProjects, metadataAutoPush, implementExecutionMode, desktopNotificationsEnabled, storedProjectSwitchPolicy, sessionContext] = await Promise.all([
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
         loadPreference<boolean>(PREF_KEYS.IS_LEFT_PANEL_OPEN),
@@ -2015,6 +2032,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         loadPreference<RememberedProject[]>(PREF_KEYS.MACRO_ENABLED_PROJECTS),
         loadPreference<boolean>(PREF_KEYS.METADATA_AUTO_PUSH),
         loadPreference<ImplementExecutionMode>(PREF_KEYS.IMPLEMENT_EXECUTION_MODE),
+        loadPreference<boolean>(PREF_KEYS.DESKTOP_NOTIFICATIONS_ENABLED),
         getProjectSwitchPolicy(),
         getLocalSessionContextState(),
       ]);
@@ -2153,6 +2171,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         uiZoomLevel: normalizedZoomLevel,
         metadataAutoPush,
         implementExecutionMode: normalizedImplementExecutionMode,
+        desktopNotificationsEnabled,
         projectSwitchPolicy: storedProjectSwitchPolicy,
         isProjectSwitching: false,
         isLoading: false,

@@ -293,6 +293,7 @@ export const Footer: React.FC = () => {
       const result = await tauriIpc.gitPull({ repoPath });
       toast.success(t('footer.sync.codePullComplete', 'Code pull complete'), {
         description: formatGitOutput(result.output, translate),
+        desktopEligible: true,
       });
     } catch (error) {
       const message = toServiceError(error).message;
@@ -313,6 +314,7 @@ export const Footer: React.FC = () => {
       const result = await tauriIpc.gitPush({ repoPath });
       toast.success(t('footer.sync.codePushComplete', 'Code push complete'), {
         description: formatGitOutput(result.output, translate),
+        desktopEligible: true,
       });
     } catch (error) {
       const message = toServiceError(error).message;
@@ -350,6 +352,7 @@ export const Footer: React.FC = () => {
       } else {
         toast.success(t('footer.sync.macroPullComplete', '@macro pull complete'), {
           description: formatGitOutput(result.output, translate),
+          desktopEligible: true,
         });
       }
       return result;
@@ -379,6 +382,7 @@ export const Footer: React.FC = () => {
       } else if (result.committed) {
         toast.success(t('footer.sync.macroCommitComplete', '@macro commit complete'), {
           description: formatGitOutput(result.output, translate),
+          desktopEligible: true,
         });
       } else if (result.state === 'failed') {
         toast.error(t('footer.sync.macroCommitFailed', '@macro commit failed'), {
@@ -425,6 +429,7 @@ export const Footer: React.FC = () => {
       } else {
         toast.success(t('footer.sync.macroPushComplete', '@macro push complete'), {
           description: formatGitOutput(result.output, translate),
+          desktopEligible: true,
         });
       }
       return result;
