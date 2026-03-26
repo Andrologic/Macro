@@ -16,6 +16,7 @@ const StrategyGraph = lazy(() => import('../plan/StrategyGraph'));
 // Implement Mode components - Loaded only when mode === 'Implement'
 const TaskQueue = lazy(() => import('../tasks/TaskQueue'));
 const FileChangesPanel = lazy(() => import('../implement/FileChangesPanel'));
+const ImplementCenter = lazy(() => import('../implement/ImplementCenter'));
 
 // Chat Mode components - Loaded only when mode === 'Chat'
 const ConversationArchive = lazy(() => import('../chat/ConversationArchive'));
@@ -93,7 +94,7 @@ const modeConfigs: Record<AppMode, PanelConfig> = {
   },
   Implement: {
     left: TaskQueue,
-    center: ChatZone,
+    center: ImplementCenter,
     right: FileChangesPanel,
   },
   Chat: {
@@ -167,6 +168,7 @@ export const preloadModeComponents = (mode: AppMode): void => {
     case 'Implement':
       import('../tasks/TaskQueue');
       import('../implement/FileChangesPanel');
+      import('../implement/ImplementCenter');
       break;
     case 'Chat':
       import('../chat/ConversationArchive');

@@ -458,6 +458,33 @@ export interface TerminalSessionDto {
   updated_at: string;
 }
 
+export interface TerminalTabDto {
+  id: string;
+  kind: string;
+  task_id: string | null;
+  project_id: string;
+  project_name: string;
+  mount_name: string;
+  workspace_path: string;
+  cwd: string;
+  title: string;
+  status: string;
+  snapshot: string;
+  last_command: string | null;
+  last_exit_code: number | null;
+  has_live_session: boolean;
+  is_restored: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TerminalOutputEvent {
+  tab_id: string;
+  data: string;
+  snapshot: string;
+  updated_at: string;
+}
+
 export type WorkspaceScope = 'default' | 'metadata';
 
 const normalizeGitStatus = (status: Omit<GitStatusDto, 'conflictedFiles' | 'mergeInProgress'>): GitStatusDto => {
@@ -1504,6 +1531,78 @@ export async function terminalRead(sessionId: string): Promise<TerminalSessionDt
 
 export async function terminalKill(sessionId: string): Promise<TerminalSessionDto> {
   return invoke<TerminalSessionDto>('terminal_kill', { sessionId });
+}
+
+export async function terminalListTabs(): Promise<TerminalTabDto[]> {
+  return invoke<TerminalTabDto[]>('terminal_list_tabs');
+}
+
+export async function terminalCreateTab(params: {
+  kind: 'manual' | 'task';
+  projectId: string;
+  cwd?: string | null;
+  title: string;
+  taskId?: string | null;
+}): Promise<TerminalTabDto> {
+  return invoke<TerminalTabDto>('terminal_create_tab', {
+    kind: params.kind,
+    projectId: params.projectId,
+    cwd: params.cwd ?? null,
+    title: params.title,
+    taskId: params.taskId ?? null,
+  });
+}
+
+export async function terminalReconnectTab(tabId: string): Promise<TerminalTabDto> {
+  return invoke<TerminalTabDto>('terminal_reconnect_tab', { tabId });
+}
+
+export async function terminalReadTab(tabId: string): Promise<TerminalTabDto> {
+  return invoke<TerminalTabDto>('terminal_read_tab', { tabId });
+}
+
+export async function terminalWriteInput(params: {
+  tabId: string;
+  input: string;
+}): Promise<void> {
+  return invoke('terminal_write_input', {
+    tabId: params.tabId,
+    input: params.input,
+  });
+}
+
+export async function terminalResize(params: {
+  tabId: string;
+  cols: number;
+  rows: number;
+}): Promise<void> {
+  return invoke('terminal_resize', {
+    tabId: params.tabId,
+    cols: params.cols,
+    rows: params.rows,
+  });
+}
+
+export async function terminalExecuteCommand(params: {
+  tabId: string;
+  command: string;
+}): Promise<TerminalTabDto> {
+  return invoke<TerminalTabDto>('terminal_execute_command', {
+    tabId: params.tabId,
+    command: params.command,
+  });
+}
+
+export async function terminalInterrupt(tabId: string): Promise<TerminalTabDto> {
+  return invoke<TerminalTabDto>('terminal_interrupt', { tabId });
+}
+
+export async function terminalClearTab(tabId: string): Promise<TerminalTabDto> {
+  return invoke<TerminalTabDto>('terminal_clear_tab', { tabId });
+}
+
+export async function terminalCloseTab(tabId: string): Promise<void> {
+  return invoke('terminal_close_tab', { tabId });
 }
 
 // ============ Utility ============

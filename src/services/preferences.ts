@@ -48,6 +48,8 @@ export const PREF_KEYS = {
   ARCHITECT_FEATURE_BRANCH_TEMPLATE: "architectFeatureBranchTemplate",
   ARCHITECT_SYNC_TARGET_BEFORE_FINISH: "architectSyncTargetBeforeFinish",
   METADATA_AUTO_PUSH: "metadataAutoPush",
+  TERMINAL_PANEL_HEIGHT: "terminalPanelHeight",
+  TERMINAL_ACTIVE_TAB_ID: "terminalActiveTabId",
   NOTIFICATION_CENTER_ITEMS: "notificationCenterItems",
   CHAT_ARCHIVED_CONVERSATION_IDS: "chatArchivedConversationIds",
 } as const;
@@ -94,6 +96,8 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE]: 'feature/{planSlug}/{featureSlug}',
   [PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH]: true,
   [PREF_KEYS.METADATA_AUTO_PUSH]: false,
+  [PREF_KEYS.TERMINAL_PANEL_HEIGHT]: 280,
+  [PREF_KEYS.TERMINAL_ACTIVE_TAB_ID]: null,
   [PREF_KEYS.NOTIFICATION_CENTER_ITEMS]: [],
   [PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS]: [],
 };

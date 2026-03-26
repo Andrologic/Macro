@@ -6,9 +6,19 @@ interface PanelResizerProps {
   onResize: (delta: number) => void;
   className?: string;
   disabled?: boolean;
+  orientation?: 'horizontal' | 'vertical';
 }
 
-export function PanelResizer({ onResize, className, disabled = false }: PanelResizerProps) {
+const RESIZER_ICON_SIZE_PX = 16;
+const RESIZER_VERTICAL_GUTTER_PX = 6;
+const RESIZER_HORIZONTAL_GUTTER_PX = 6;
+
+export function PanelResizer({
+  onResize,
+  className,
+  disabled = false,
+  orientation = 'horizontal',
+}: PanelResizerProps) {
   const resizerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const isDraggingRef = useRef(false);
@@ -25,22 +35,36 @@ export function PanelResizer({ onResize, className, disabled = false }: PanelRes
     e.preventDefault();
     isDraggingRef.current = true;
     setIsDragging(true);
-    startPos.current = 'clientX' in e ? e.clientX : e.touches[0].clientX;
+    startPos.current =
+      orientation === 'vertical'
+        ? 'clientY' in e
+          ? e.clientY
+          : e.touches[0].clientY
+        : 'clientX' in e
+          ? e.clientX
+          : e.touches[0].clientX;
 
     // Disable text selection during drag
     document.body.style.userSelect = 'none';
-    document.body.style.cursor = 'col-resize';
-  }, [disabled]);
+    document.body.style.cursor = orientation === 'vertical' ? 'row-resize' : 'col-resize';
+  }, [disabled, orientation]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent | TouchEvent) => {
       if (!isDraggingRef.current) return;
 
-      const clientX = 'clientX' in e ? e.clientX : e.touches[0].clientX;
-      const delta = clientX - startPos.current;
+      const currentPos =
+        orientation === 'vertical'
+          ? 'clientY' in e
+            ? e.clientY
+            : e.touches[0].clientY
+          : 'clientX' in e
+            ? e.clientX
+            : e.touches[0].clientX;
+      const delta = currentPos - startPos.current;
 
       onResizeRef.current(delta);
-      startPos.current = clientX;
+      startPos.current = currentPos;
     };
 
     const handleMouseUp = () => {
@@ -73,21 +97,30 @@ export function PanelResizer({ onResize, className, disabled = false }: PanelRes
       className={cn(
         'relative flex items-center justify-center transition-colors',
         'hover:bg-accent/50 active:bg-accent/60',
-        'cursor-col-resize select-none',
+        orientation === 'vertical' ? 'cursor-row-resize select-none' : 'cursor-col-resize select-none',
         'z-10 shrink-0',
         isDragging && 'bg-accent/60',
         disabled && 'cursor-default hover:bg-transparent',
         className
       )}
-      style={{ width: '6px' }}
+      style={
+        orientation === 'vertical'
+          ? { height: `${RESIZER_VERTICAL_GUTTER_PX}px` }
+          : { width: `${RESIZER_HORIZONTAL_GUTTER_PX}px` }
+      }
     >
       <GripVertical
+        size={RESIZER_ICON_SIZE_PX}
         className={cn(
-          'w-4 h-4 text-muted-foreground transition-opacity',
-          'hover:text-foreground',
+          'text-muted-foreground transition-opacity hover:text-foreground',
           disabled && 'opacity-30',
-          isDragging && 'text-foreground'
+          isDragging && 'text-foreground',
+          orientation === 'vertical' && 'rotate-90'
         )}
+        style={{
+          width: `${RESIZER_ICON_SIZE_PX}px`,
+          height: `${RESIZER_ICON_SIZE_PX}px`,
+        }}
       />
     </div>
   );

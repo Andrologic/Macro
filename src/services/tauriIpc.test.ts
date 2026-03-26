@@ -205,6 +205,91 @@ describe('tauriIpc executeWorkspaceTool', () => {
     ]);
   });
 
+  it('uses camelCase payload keys for interactive terminal tabs', async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.terminalCreateTab({
+      kind: 'task',
+      projectId: 'project-1',
+      cwd: 'C:/dev/worktree',
+      title: 'Build · API',
+      taskId: 'task-1',
+    });
+    await tauriIpc.terminalReconnectTab('tab-1');
+    await tauriIpc.terminalReadTab('tab-1');
+    await tauriIpc.terminalWriteInput({ tabId: 'tab-1', input: 'pwd\\r' });
+    await tauriIpc.terminalResize({ tabId: 'tab-1', cols: 120, rows: 32 });
+    await tauriIpc.terminalExecuteCommand({ tabId: 'tab-1', command: 'bun test' });
+    await tauriIpc.terminalInterrupt('tab-1');
+    await tauriIpc.terminalClearTab('tab-1');
+    await tauriIpc.terminalCloseTab('tab-1');
+
+    expect(invokeCalls).toEqual([
+      {
+        command: 'terminal_create_tab',
+        payload: {
+          kind: 'task',
+          projectId: 'project-1',
+          cwd: 'C:/dev/worktree',
+          title: 'Build · API',
+          taskId: 'task-1',
+        },
+      },
+      {
+        command: 'terminal_reconnect_tab',
+        payload: {
+          tabId: 'tab-1',
+        },
+      },
+      {
+        command: 'terminal_read_tab',
+        payload: {
+          tabId: 'tab-1',
+        },
+      },
+      {
+        command: 'terminal_write_input',
+        payload: {
+          tabId: 'tab-1',
+          input: 'pwd\\r',
+        },
+      },
+      {
+        command: 'terminal_resize',
+        payload: {
+          tabId: 'tab-1',
+          cols: 120,
+          rows: 32,
+        },
+      },
+      {
+        command: 'terminal_execute_command',
+        payload: {
+          tabId: 'tab-1',
+          command: 'bun test',
+        },
+      },
+      {
+        command: 'terminal_interrupt',
+        payload: {
+          tabId: 'tab-1',
+        },
+      },
+      {
+        command: 'terminal_clear_tab',
+        payload: {
+          tabId: 'tab-1',
+        },
+      },
+      {
+        command: 'terminal_close_tab',
+        payload: {
+          tabId: 'tab-1',
+        },
+      },
+    ]);
+  });
+
   afterAll(() => {
     mock.restore();
   });

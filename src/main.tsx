@@ -7,6 +7,7 @@ import { isDevelopmentBuild } from "./utils/devLogger";
 import "./i18n"; // Initialize i18n before React renders
 import "./index.css";
 import "./styles/highlight.css";
+import "xterm/css/xterm.css";
 
 const installBenignTauriReloadWarningFilter = (): void => {
   if (!import.meta.env.DEV || typeof window === "undefined") {
