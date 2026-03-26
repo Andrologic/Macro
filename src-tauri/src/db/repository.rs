@@ -1158,6 +1158,175 @@ pub async fn set_app_setting(
     })
 }
 
+// ============ TERMINAL TABS ============
+
+pub async fn list_terminal_tabs(pool: &SqlitePool) -> DbResult<Vec<TerminalTabRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            kind,
+            task_id,
+            project_id,
+            project_name,
+            mount_name,
+            workspace_path,
+            cwd,
+            title,
+            status,
+            snapshot,
+            last_command,
+            last_exit_code,
+            created_at,
+            updated_at
+        FROM terminal_tabs
+        ORDER BY updated_at DESC, created_at DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| TerminalTabRecord {
+            id: row.get("id"),
+            kind: row.get("kind"),
+            task_id: row.get("task_id"),
+            project_id: row.get("project_id"),
+            project_name: row.get("project_name"),
+            mount_name: row.get("mount_name"),
+            workspace_path: row.get("workspace_path"),
+            cwd: row.get("cwd"),
+            title: row.get("title"),
+            status: row.get("status"),
+            snapshot: row.get("snapshot"),
+            last_command: row.get("last_command"),
+            last_exit_code: row.get("last_exit_code"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        })
+        .collect())
+}
+
+pub async fn get_terminal_tab(
+    pool: &SqlitePool,
+    id: &str,
+) -> DbResult<Option<TerminalTabRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            kind,
+            task_id,
+            project_id,
+            project_name,
+            mount_name,
+            workspace_path,
+            cwd,
+            title,
+            status,
+            snapshot,
+            last_command,
+            last_exit_code,
+            created_at,
+            updated_at
+        FROM terminal_tabs
+        WHERE id = ?
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| TerminalTabRecord {
+        id: row.get("id"),
+        kind: row.get("kind"),
+        task_id: row.get("task_id"),
+        project_id: row.get("project_id"),
+        project_name: row.get("project_name"),
+        mount_name: row.get("mount_name"),
+        workspace_path: row.get("workspace_path"),
+        cwd: row.get("cwd"),
+        title: row.get("title"),
+        status: row.get("status"),
+        snapshot: row.get("snapshot"),
+        last_command: row.get("last_command"),
+        last_exit_code: row.get("last_exit_code"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+pub async fn upsert_terminal_tab(
+    pool: &SqlitePool,
+    tab: &TerminalTabRecord,
+) -> DbResult<TerminalTabRecord> {
+    sqlx::query(
+        r#"
+        INSERT INTO terminal_tabs (
+            id,
+            kind,
+            task_id,
+            project_id,
+            project_name,
+            mount_name,
+            workspace_path,
+            cwd,
+            title,
+            status,
+            snapshot,
+            last_command,
+            last_exit_code,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            kind = excluded.kind,
+            task_id = excluded.task_id,
+            project_id = excluded.project_id,
+            project_name = excluded.project_name,
+            mount_name = excluded.mount_name,
+            workspace_path = excluded.workspace_path,
+            cwd = excluded.cwd,
+            title = excluded.title,
+            status = excluded.status,
+            snapshot = excluded.snapshot,
+            last_command = excluded.last_command,
+            last_exit_code = excluded.last_exit_code,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(&tab.id)
+    .bind(&tab.kind)
+    .bind(&tab.task_id)
+    .bind(&tab.project_id)
+    .bind(&tab.project_name)
+    .bind(&tab.mount_name)
+    .bind(&tab.workspace_path)
+    .bind(&tab.cwd)
+    .bind(&tab.title)
+    .bind(&tab.status)
+    .bind(&tab.snapshot)
+    .bind(&tab.last_command)
+    .bind(tab.last_exit_code)
+    .bind(&tab.created_at)
+    .bind(&tab.updated_at)
+    .execute(pool)
+    .await?;
+
+    Ok(tab.clone())
+}
+
+pub async fn delete_terminal_tab(pool: &SqlitePool, id: &str) -> DbResult<()> {
+    sqlx::query("DELETE FROM terminal_tabs WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
 // ============ PROJECT CONTEXT STATE ============
 
 pub async fn get_project_context_state(

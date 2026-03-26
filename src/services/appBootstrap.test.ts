@@ -6,6 +6,7 @@ describe('appBootstrap', () => {
   let lowPriorityRuns: Array<() => void>;
   let initializeApp: ReturnType<typeof mock>;
   let initializeTasks: ReturnType<typeof mock>;
+  let initializeTerminal: ReturnType<typeof mock>;
   let initializeChat: ReturnType<typeof mock>;
   let initializeAI: ReturnType<typeof mock>;
   let initializeTools: ReturnType<typeof mock>;
@@ -22,6 +23,9 @@ describe('appBootstrap', () => {
     });
     initializeTasks = mock(async () => {
       callOrder.push('tasks');
+    });
+    initializeTerminal = mock(async () => {
+      callOrder.push('terminal');
     });
     initializeChat = mock(async () => {
       callOrder.push('chat');
@@ -51,6 +55,7 @@ describe('appBootstrap', () => {
       initializeApp,
       initializeChat,
       initializeTasks,
+      initializeTerminal,
       initializeAI,
       initializeTools,
       initializeProviders,
@@ -77,9 +82,10 @@ describe('appBootstrap', () => {
     expect(initializeChat.mock.calls.length).toBe(1);
     expect(checkSession.mock.calls.length).toBe(1);
     expect(initializeShortcuts.mock.calls.length).toBe(1);
+    expect(initializeTerminal.mock.calls.length).toBe(1);
     expect(preloadAllModes.mock.calls.length).toBe(1);
     expect(lowPriorityRuns).toHaveLength(1);
-    expect(callOrder.slice(0, 6)).toEqual(['app', 'tasks', 'chat', 'auth', 'shortcuts', 'preload']);
+    expect(callOrder.slice(0, 7)).toEqual(['app', 'tasks', 'chat', 'auth', 'shortcuts', 'terminal', 'preload']);
 
     expect(controller.getSnapshot()).toEqual({
       critical: true,

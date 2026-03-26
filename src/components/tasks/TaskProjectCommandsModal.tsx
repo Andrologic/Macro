@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
+import { Switch } from '../ui/Switch';
 import { cn } from '../../utils/cn';
 
 interface TaskProjectCommandModalProject {
@@ -9,6 +10,7 @@ interface TaskProjectCommandModalProject {
   projectName: string;
   projectPath: string;
   command: string;
+  openTerminalOnRun: boolean;
 }
 
 interface TaskProjectCommandsModalProps {
@@ -23,6 +25,7 @@ interface TaskProjectCommandsModalProps {
       projectName: string;
       projectPath: string;
       command: string;
+      openTerminalOnRun: boolean;
     }>
   ) => void;
 }
@@ -138,6 +141,32 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
                   )}
                 />
               </div>
+
+              <div className="mt-4 flex items-center justify-between rounded-lg border border-border bg-card/40 px-3 py-2">
+                <div className="pr-3">
+                  <div className="text-sm font-medium text-foreground">
+                    {t('terminal.openOnLaunch', 'Open terminal when launched')}
+                  </div>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {t(
+                      'terminal.openOnLaunchDescription',
+                      'Automatically reveal the split when this command starts for the project.'
+                    )}
+                  </p>
+                </div>
+                <Switch
+                  checked={project.openTerminalOnRun}
+                  onCheckedChange={(checked) => {
+                    setDrafts((current) =>
+                      current.map((entry, entryIndex) =>
+                        entryIndex === index
+                          ? { ...entry, openTerminalOnRun: checked }
+                          : entry
+                      )
+                    );
+                  }}
+                />
+              </div>
             </section>
           ))}
         </div>
@@ -169,6 +198,7 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
                     projectName: project.projectName,
                     projectPath: project.projectPath,
                     command: project.command.trim(),
+                    openTerminalOnRun: project.openTerminalOnRun,
                   }))
                 )
               }
