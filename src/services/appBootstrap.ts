@@ -7,6 +7,7 @@ import { useChatStore } from '../stores/useChatStore';
 import { useProviderStore } from '../stores/useProviderStore';
 import { useShortcutsStore } from '../stores/useShortcutsStore';
 import { useTaskStore } from '../stores/useTaskStore';
+import { useTerminalStore } from '../stores/useTerminalStore';
 import { useToolsStore } from '../stores/useToolsStore';
 import { devLogger } from '../utils/devLogger';
 
@@ -25,6 +26,7 @@ interface AppBootstrapDependencies {
   initializeApp: () => Promise<void>;
   initializeChat: () => Promise<void>;
   initializeTasks: () => Promise<void>;
+  initializeTerminal: () => Promise<void>;
   initializeAI: () => Promise<void>;
   initializeTools: () => Promise<void>;
   initializeProviders: () => Promise<void>;
@@ -144,6 +146,7 @@ export const createAppBootstrapController = (
 
       const normalPriorityInit = Promise.all([
         initWithTracking('Shortcuts', dependencies.initializeShortcuts, 'normal'),
+        initWithTracking('Terminal Store', dependencies.initializeTerminal, 'normal'),
       ]).then(() => {
         if (!dependencies.isPageShuttingDown()) {
           updateSnapshot((current) => ({ ...current, normal: true }));
@@ -202,6 +205,7 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   initializeApp: useAppStore.getState().initialize,
   initializeChat: useChatStore.getState().initialize,
   initializeTasks: useTaskStore.getState().initialize,
+  initializeTerminal: useTerminalStore.getState().initialize,
   initializeAI: useAIStore.getState().initialize,
   initializeTools: useToolsStore.getState().loadSettings,
   initializeProviders: useProviderStore.getState().initialize,

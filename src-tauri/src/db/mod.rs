@@ -327,6 +327,48 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS terminal_tabs (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            task_id TEXT,
+            project_id TEXT NOT NULL,
+            project_name TEXT NOT NULL,
+            mount_name TEXT NOT NULL,
+            workspace_path TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            snapshot TEXT NOT NULL DEFAULT '',
+            last_command TEXT,
+            last_exit_code INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_terminal_tabs_updated_at
+        ON terminal_tabs(updated_at DESC);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_terminal_tabs_task_project
+        ON terminal_tabs(task_id, project_id);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS project_context_states (
             project_id TEXT PRIMARY KEY,
             group_id TEXT,

@@ -2,13 +2,14 @@ import * as tauriIpc from './tauriIpc';
 
 const APP_SETTING_TASK_PROJECT_COMMANDS_KEY = 'task_project_commands';
 const LEGACY_TASK_PROJECT_COMMANDS_KEY = 'macro_task_project_commands';
-const TASK_PROJECT_COMMANDS_VERSION = 1;
+const TASK_PROJECT_COMMANDS_VERSION = 2;
 
 export interface TaskProjectCommandEntry {
   projectId: string | null;
   projectName: string;
   projectPath: string;
   command: string;
+  openTerminalOnRun: boolean;
   updatedAt: string;
 }
 
@@ -22,6 +23,7 @@ export interface TaskProjectCommandDraft {
   projectName: string;
   projectPath: string;
   command: string;
+  openTerminalOnRun: boolean;
 }
 
 const defaultRegistry = (): TaskProjectCommandRegistry => ({
@@ -52,6 +54,8 @@ const normalizeEntry = (
     projectName: typeof value?.projectName === 'string' ? value.projectName : '',
     projectPath,
     command,
+    openTerminalOnRun:
+      typeof value?.openTerminalOnRun === 'boolean' ? value.openTerminalOnRun : true,
     updatedAt: typeof value?.updatedAt === 'string' ? value.updatedAt : toNowIso(),
   };
 };
@@ -126,6 +130,7 @@ export const mergeTaskProjectCommandRegistry = (
       projectName: draft.projectName.trim(),
       projectPath,
       command,
+      openTerminalOnRun: draft.openTerminalOnRun !== false,
       updatedAt: toNowIso(),
     };
   });

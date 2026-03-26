@@ -91,6 +91,25 @@ pub struct AppSettingRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalTabRecord {
+    pub id: String,
+    pub kind: String,
+    pub task_id: Option<String>,
+    pub project_id: String,
+    pub project_name: String,
+    pub mount_name: String,
+    pub workspace_path: String,
+    pub cwd: String,
+    pub title: String,
+    pub status: String,
+    pub snapshot: String,
+    pub last_command: Option<String>,
+    pub last_exit_code: Option<i32>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectContextStateRecord {
     pub project_id: String,
     pub group_id: Option<String>,

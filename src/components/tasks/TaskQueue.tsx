@@ -416,6 +416,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       projectName: string;
       projectPath: string;
       command: string;
+      openTerminalOnRun: boolean;
     }>;
   } | null>(null);
   const [isSavingTaskCommands, setIsSavingTaskCommands] = useState(false);
@@ -755,6 +756,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         projectName: project.name,
         projectPath: project.path,
         command: getTaskProjectCommand(registry, project.path)?.command || '',
+        openTerminalOnRun:
+          getTaskProjectCommand(registry, project.path)?.openTerminalOnRun ?? true,
       })),
     };
   };
