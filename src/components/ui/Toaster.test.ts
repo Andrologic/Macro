@@ -65,12 +65,6 @@ mock.module('sonner', () => ({
   Toaster: () => null,
 }));
 
-const maybeSendDesktopNotificationMock = mock(async (_input?: unknown) => true);
-
-mock.module('../../services/desktopNotifications', () => ({
-  maybeSendDesktopNotification: maybeSendDesktopNotificationMock,
-}));
-
 const { toast, __testables } = await import('./Toaster');
 const { useAuthStore } = await import('../../stores/useAuthStore');
 const { useNotificationCenterStore } = await import('../../stores/useNotificationCenterStore');
@@ -140,8 +134,6 @@ describe('toast wrapper', () => {
     });
     sonnerToastMock.dismiss.mockReset();
     sonnerToastMock.dismiss.mockImplementation((_id?: unknown) => 'dismissed-id');
-    maybeSendDesktopNotificationMock.mockReset();
-    maybeSendDesktopNotificationMock.mockImplementation(async (_input?: unknown) => true);
   });
 
   it('stores tracked info, warning, and error toasts in the notification center', () => {
@@ -245,63 +237,6 @@ describe('toast wrapper', () => {
     expect(sonnerToastMock.success).toHaveBeenCalledTimes(1);
   });
 
-  it('routes warning and error toasts to desktop notifications by default', () => {
-    toast.warning('Background warning', {
-      description: 'Warning details',
-      notificationKey: 'warning-key',
-    });
-    toast.error('Background error', {
-      description: 'Error details',
-    });
-
-    expect(maybeSendDesktopNotificationMock).toHaveBeenCalledTimes(2);
-    expect(maybeSendDesktopNotificationMock).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        title: 'Background warning',
-        body: 'Warning details',
-        notificationKey: 'warning-key',
-      })
-    );
-    expect(maybeSendDesktopNotificationMock).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        title: 'Background error',
-        body: 'Error details',
-        notificationKey: expect.any(String),
-      })
-    );
-  });
-
-  it('limits desktop notifications to explicitly important info and success toasts', () => {
-    toast.info('Informational update');
-    toast.success('Routine success');
-    toast.info('Important info', {
-      desktopEligible: true,
-      description: 'Needs desktop delivery',
-    });
-    toast.success('Important success', {
-      desktopEligible: true,
-      description: 'Background-safe confirmation',
-    });
-
-    expect(maybeSendDesktopNotificationMock).toHaveBeenCalledTimes(2);
-    expect(maybeSendDesktopNotificationMock).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        title: 'Important info',
-        body: 'Needs desktop delivery',
-      })
-    );
-    expect(maybeSendDesktopNotificationMock).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        title: 'Important success',
-        body: 'Background-safe confirmation',
-      })
-    );
-  });
-
   it('blocks visible toasts and history when in-app notifications are disabled', () => {
     useAuthStore.setState({
       user: buildUser(false),
@@ -312,28 +247,6 @@ describe('toast wrapper', () => {
     expect(useNotificationCenterStore.getState().items).toEqual([]);
     expect(sonnerToastMock.info).not.toHaveBeenCalled();
     expect(sonnerToastMock.success).not.toHaveBeenCalled();
-    expect(maybeSendDesktopNotificationMock).not.toHaveBeenCalled();
-  });
-
-  it('still attempts desktop delivery for eligible alerts when in-app notifications are disabled', () => {
-    useAuthStore.setState({
-      user: buildUser(false),
-    });
-
-    expect(
-      toast.error('Muted but important', {
-        description: 'Desktop should still decide whether to deliver this.',
-      })
-    ).toBe('notifications-disabled');
-
-    expect(sonnerToastMock.error).not.toHaveBeenCalled();
-    expect(useNotificationCenterStore.getState().items).toEqual([]);
-    expect(maybeSendDesktopNotificationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: 'Muted but important',
-        body: 'Desktop should still decide whether to deliver this.',
-      })
-    );
   });
 
   it('keeps tracked non-text payloads visible without persisting them', () => {
@@ -343,7 +256,6 @@ describe('toast wrapper', () => {
 
     expect(useNotificationCenterStore.getState().items).toEqual([]);
     expect(sonnerToastMock.error).toHaveBeenCalledTimes(1);
-    expect(maybeSendDesktopNotificationMock).not.toHaveBeenCalled();
   });
 
   it('keeps helper extraction strict to string-only payloads', () => {

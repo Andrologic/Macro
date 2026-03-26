@@ -19,6 +19,10 @@ import { PlanSelector } from '../architect/PlanSelector';
 import { ComposerEditor, type ComposerEditorHandle } from './composer/ComposerEditor';
 import { getFocusedProjectForGroup, getGlobalProjectById } from '../../services/globalProjects';
 
+interface ChatZoneProps {
+  headerActions?: React.ReactNode;
+}
+
 /**
  * ChatZone - Main chat interface used across all modes
  *
@@ -75,7 +79,7 @@ const buildImplementKickoffPrompt = (params: {
   ].join('\n');
 };
 
-const ChatZone: React.FC = () => {
+const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const { t } = useTranslation();
   const {
     mode,
@@ -801,6 +805,7 @@ const ChatZone: React.FC = () => {
                 {implementProgress.completed}/{implementProgress.total}
               </span>
             )}
+            {headerActions}
           </div>
         </header>
 

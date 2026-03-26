@@ -586,7 +586,7 @@ interface TaskCommandRunState {
   status: 'running' | 'cancelling';
   currentProjectId: string | null;
   currentProjectName: string | null;
-  activeSessionId: string | null;
+  activeTabId: string | null;
   startedAt: string;
 }
 
@@ -1568,7 +1568,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
             status: 'running',
             currentProjectId: null,
             currentProjectName: null,
-            activeSessionId: null,
+            activeTabId: null,
             startedAt: new Date().toISOString(),
           },
         },
@@ -1597,9 +1597,12 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           return null;
         }
 
-        const session = await terminalStore.createSession({
+        const tab = await terminalStore.ensureTaskTab({
+          taskId,
           projectId: target.projectId,
           cwd: target.worktreePath,
+          title: `${task.title} · ${target.projectName}`,
+          reveal: commandEntry.openTerminalOnRun,
         });
 
         set((state) => ({
@@ -1611,23 +1614,24 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
                 status: 'running',
                 currentProjectId: null,
                 currentProjectName: null,
-                activeSessionId: null,
+                activeTabId: null,
                 startedAt: new Date().toISOString(),
               }),
               currentProjectId: target.projectId,
               currentProjectName: target.projectName,
-              activeSessionId: session.id,
+              activeTabId: tab.id,
             },
           },
         }));
 
-        const result = await terminalStore.runCommand({
-          sessionId: session.id,
+        const result = await terminalStore.executeCommand({
+          tabId: tab.id,
           command: commandEntry.command,
+          reveal: commandEntry.openTerminalOnRun,
         });
 
         const nextRun = get().taskCommandRuns[taskId];
-        if (nextRun?.status === 'cancelling' || result.status === 'killed') {
+        if (nextRun?.status === 'cancelling') {
           return {
             status: 'cancelled',
             completedCount,
@@ -1636,8 +1640,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           };
         }
 
-        if (result.status !== 'completed' || result.exit_code !== 0) {
-          const summary = (result.output || '')
+        if (result.lastExitCode !== 0) {
+          const summary = (result.snapshot || '')
             .trim()
             .split('\n')
             .map((line) => line.trim())
@@ -1708,14 +1712,14 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       },
     }));
 
-    if (!runState.activeSessionId) {
+    if (!runState.activeTabId) {
       return;
     }
 
     try {
-      await useTerminalStore.getState().killSession(runState.activeSessionId);
+      await useTerminalStore.getState().interruptTab(runState.activeTabId);
     } catch {
-      // Ignore kill failures here; terminal_run will still settle and clear the run state.
+      // Ignore interrupt failures here; the pending command will still settle or the tab stays interactive.
     }
   },
 
