@@ -50,6 +50,7 @@ export const PREF_KEYS = {
   METADATA_AUTO_PUSH: "metadataAutoPush",
   TERMINAL_PANEL_HEIGHT: "terminalPanelHeight",
   TERMINAL_ACTIVE_TAB_ID: "terminalActiveTabId",
+  TERMINAL_LAST_MANUAL_PROJECT_BY_TASK: "terminalLastManualProjectByTask",
   NOTIFICATION_CENTER_ITEMS: "notificationCenterItems",
   CHAT_ARCHIVED_CONVERSATION_IDS: "chatArchivedConversationIds",
 } as const;
@@ -98,6 +99,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.METADATA_AUTO_PUSH]: false,
   [PREF_KEYS.TERMINAL_PANEL_HEIGHT]: 280,
   [PREF_KEYS.TERMINAL_ACTIVE_TAB_ID]: null,
+  [PREF_KEYS.TERMINAL_LAST_MANUAL_PROJECT_BY_TASK]: {},
   [PREF_KEYS.NOTIFICATION_CENTER_ITEMS]: [],
   [PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS]: [],
 };
