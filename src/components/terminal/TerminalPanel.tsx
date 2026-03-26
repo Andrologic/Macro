@@ -4,36 +4,101 @@ import { toast } from '../ui/Toaster';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { useTerminalStore } from '../../stores/useTerminalStore';
+import { useAppStore } from '../../stores/useAppStore';
+import { getTerminalScopeKey, resolveSelectedTaskTerminalScope } from '../../services/manualTerminalTargets';
+import { useTaskStore } from '../../stores/useTaskStore';
 import { TerminalViewport } from './TerminalViewport';
+import TerminalTargetSplitButton from './TerminalTargetSplitButton';
 
 interface TerminalPanelProps {
   className?: string;
 }
-
-const STATUS_LABELS: Record<string, string> = {
-  idle: 'Idle',
-  running: 'Running',
-  disconnected: 'Disconnected',
-  'restored-disconnected': 'Disconnected',
-};
 
 export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
   const { t } = useTranslation();
   const tabs = useTerminalStore((state) => state.tabs);
   const tabOrder = useTerminalStore((state) => state.tabOrder);
   const activeTabId = useTerminalStore((state) => state.activeTabId);
+  const activeTabIdByScope = useTerminalStore((state) => state.activeTabIdByScope);
   const activateTab = useTerminalStore((state) => state.activateTab);
   const createManualTab = useTerminalStore((state) => state.createManualTab);
+  const openManualTabForProject = useTerminalStore((state) => state.openManualTabForProject);
+  const rememberManualProjectForTask = useTerminalStore((state) => state.rememberManualProjectForTask);
+  const lastManualProjectIdByTaskId = useTerminalStore((state) => state.lastManualProjectIdByTaskId);
   const reconnectTab = useTerminalStore((state) => state.reconnectTab);
   const writeInput = useTerminalStore((state) => state.writeInput);
   const resizeTab = useTerminalStore((state) => state.resizeTab);
   const closeTab = useTerminalStore((state) => state.closeTab);
+  const selectedGroupId = useAppStore((state) => state.selectedGroupId);
+  const selectedProjectId = useAppStore((state) => state.selectedProjectId);
+  const selectedTaskId = useAppStore((state) => state.selectedTaskId);
+  const setSelectedProject = useAppStore((state) => state.setSelectedProject);
+  const projectGroups = useAppStore((state) => state.projectGroups);
+  const tasks = useTaskStore((state) => state.tasks);
 
-  const orderedTabs = useMemo(
-    () => tabOrder.map((tabId) => tabs[tabId]).filter(Boolean),
-    [tabOrder, tabs]
+  const selectedTask = useMemo(
+    () => tasks.find((task) => task.id === selectedTaskId) ?? null,
+    [selectedTaskId, tasks]
   );
-  const activeTab = activeTabId ? tabs[activeTabId] : null;
+  const terminalScope = useMemo(
+    () =>
+      resolveSelectedTaskTerminalScope({
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+        selectedTask,
+        lastManualProjectIdByTaskId,
+      }),
+    [lastManualProjectIdByTaskId, projectGroups, selectedGroupId, selectedProjectId, selectedTask]
+  );
+  const orderedTabs = useMemo(
+    () =>
+      terminalScope
+        ? tabOrder
+            .map((tabId) => tabs[tabId])
+            .filter(
+              (tab): tab is NonNullable<typeof tab> =>
+                Boolean(tab) &&
+                tab.taskId === terminalScope.taskId &&
+                tab.projectId === terminalScope.projectId
+            )
+        : [],
+    [tabOrder, tabs, terminalScope]
+  );
+  const activeVisibleTabId = useMemo(
+    () => {
+      if (!terminalScope || orderedTabs.length === 0) {
+        return null;
+      }
+
+      const visibleTabIds = new Set(orderedTabs.map((tab) => tab.id));
+      const scopedActiveTabId = activeTabIdByScope[getTerminalScopeKey(
+        terminalScope.taskId,
+        terminalScope.projectId
+      )];
+      if (scopedActiveTabId && visibleTabIds.has(scopedActiveTabId)) {
+        return scopedActiveTabId;
+      }
+
+      if (activeTabId && visibleTabIds.has(activeTabId)) {
+        return activeTabId;
+      }
+
+      return orderedTabs[0]?.id ?? null;
+    },
+    [activeTabId, activeTabIdByScope, orderedTabs, terminalScope]
+  );
+  const activeTab = useMemo(
+    () => orderedTabs.find((tab) => tab.id === activeVisibleTabId) ?? orderedTabs[0] ?? null,
+    [activeVisibleTabId, orderedTabs]
+  );
+  const hasAnyTabForSelectedTask = useMemo(
+    () =>
+      terminalScope
+        ? tabOrder.some((tabId) => tabs[tabId]?.taskId === terminalScope.taskId)
+        : false,
+    [tabOrder, tabs, terminalScope]
+  );
 
   const runAction = (action: () => Promise<unknown>) => {
     void action().catch((error) => {
@@ -43,18 +108,92 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
     });
   };
 
-  if (!activeTab) {
+  const handleQuickOpen = () => {
+    if (!terminalScope) {
+      return;
+    }
+
+    if (terminalScope.preferredProjectId !== terminalScope.projectId) {
+      setSelectedProject(terminalScope.preferredProjectId);
+    }
+
+    runAction(() =>
+      createManualTab({
+        projectId: terminalScope.preferredProjectId,
+        groupId: terminalScope.groupId,
+      })
+    );
+  };
+
+  const handleProjectSelect = (projectId: string) => {
+    if (!terminalScope) {
+      return;
+    }
+
+    rememberManualProjectForTask(terminalScope.taskId, projectId);
+    setSelectedProject(projectId);
+    runAction(() => openManualTabForProject({ projectId, groupId: terminalScope.groupId }));
+  };
+
+  if (!terminalScope) {
     return (
       <div className={cn('h-full border-t border-border/60 bg-card/40', className)}>
-        <div className="flex h-full items-center justify-center">
-          <button
-            type="button"
-            onClick={() => runAction(() => createManualTab())}
-            className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm text-foreground hover:bg-accent/60"
-          >
-            <Icon name="plus" size={14} />
-            {t('terminal.newTerminal', 'New terminal')}
-          </button>
+        <div className="flex h-full items-center justify-center px-6 text-center">
+          <div className="space-y-2">
+            <div className="text-sm font-medium text-foreground">
+              {t('implement.selectTaskShort', 'Select a task')}
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {t('implement.selectTaskToStart', 'Select a task to start implementation.')}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!activeTab) {
+    const showMultiProjectPrompt = !hasAnyTabForSelectedTask && terminalScope.projects.length > 1;
+
+    return (
+      <div className={cn('h-full border-t border-border/60 bg-card/40', className)}>
+        <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+          {showMultiProjectPrompt && (
+            <p className="max-w-md text-sm text-muted-foreground">
+              {t(
+                'terminal.chooseProjectBeforeOpen',
+                'Please choose which sub-project to open in a terminal with the plus button.'
+              )}
+            </p>
+          )}
+          {hasAnyTabForSelectedTask && (
+            <p className="text-sm text-muted-foreground">
+              {t(
+                'terminal.noTerminalForSubProject',
+                'No terminal is open for this sub-project in the selected task.'
+              )}
+            </p>
+          )}
+          {!hasAnyTabForSelectedTask && !showMultiProjectPrompt && (
+            <p className="text-sm text-muted-foreground">
+              {t(
+                'terminal.openWithPlus',
+                'Open a terminal with the plus button.'
+              )}
+            </p>
+          )}
+          <TerminalTargetSplitButton
+            variant="empty"
+            icon="plus"
+            label={t('terminal.newTerminal', 'New terminal')}
+            title={t('terminal.newTerminal', 'New terminal')}
+            disabled={!terminalScope}
+            projects={terminalScope.projects}
+            preferredProjectId={terminalScope.preferredProjectId}
+            focusedProjectId={terminalScope.projectId}
+            onPrimaryClick={handleQuickOpen}
+            onProjectSelect={handleProjectSelect}
+          />
         </div>
       </div>
     );
@@ -120,21 +259,19 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
               {t('terminal.reconnect', 'Reconnect')}
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => runAction(() => createManualTab())}
-            className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs text-foreground hover:bg-accent"
+          <TerminalTargetSplitButton
+            variant="icon"
+            icon="plus"
             title={t('terminal.newTerminal', 'New terminal')}
-          >
-            <Icon name="plus" size={12} />
-          </button>
+            disabled={!terminalScope}
+            projects={terminalScope.projects}
+            preferredProjectId={terminalScope.preferredProjectId}
+            focusedProjectId={terminalScope.projectId}
+            onPrimaryClick={handleQuickOpen}
+            onProjectSelect={handleProjectSelect}
+          />
         </div>
       </header>
-
-      <div className="flex items-center justify-between border-b border-border/40 px-3 py-1.5 text-[11px] text-muted-foreground">
-        <span className="truncate">{activeTab.cwd}</span>
-        <span>{STATUS_LABELS[activeTab.status] || activeTab.status}</span>
-      </div>
 
       <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
         <TerminalViewport
