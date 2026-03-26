@@ -6,33 +6,142 @@ import { Icon } from '../ui/Icon';
 import { toast } from '../ui/Toaster';
 import { cn } from '../../utils/cn';
 import { useTerminalStore } from '../../stores/useTerminalStore';
+import { useAppStore } from '../../stores/useAppStore';
+import { getTerminalScopeKey, resolveSelectedTaskTerminalScope } from '../../services/manualTerminalTargets';
+import { useTaskStore } from '../../stores/useTaskStore';
 import TerminalPanel from '../terminal/TerminalPanel';
 
 export const ImplementCenter: React.FC = () => {
   const { t } = useTranslation();
   const panelOpen = useTerminalStore((state) => state.panelOpen);
   const panelHeight = useTerminalStore((state) => state.panelHeight);
-  const hiddenTerminalTabCount = useTerminalStore((state) => state.hiddenTerminalTabCount);
-  const togglePanel = useTerminalStore((state) => state.togglePanel);
+  const tabs = useTerminalStore((state) => state.tabs);
+  const tabOrder = useTerminalStore((state) => state.tabOrder);
+  const activeTabId = useTerminalStore((state) => state.activeTabId);
+  const activeTabIdByScope = useTerminalStore((state) => state.activeTabIdByScope);
+  const createManualTab = useTerminalStore((state) => state.createManualTab);
+  const lastManualProjectIdByTaskId = useTerminalStore((state) => state.lastManualProjectIdByTaskId);
+  const setPanelOpen = useTerminalStore((state) => state.setPanelOpen);
   const setPanelHeight = useTerminalStore((state) => state.setPanelHeight);
+  const selectedGroupId = useAppStore((state) => state.selectedGroupId);
+  const selectedProjectId = useAppStore((state) => state.selectedProjectId);
+  const selectedTaskId = useAppStore((state) => state.selectedTaskId);
+  const setSelectedProject = useAppStore((state) => state.setSelectedProject);
+  const projectGroups = useAppStore((state) => state.projectGroups);
+  const tasks = useTaskStore((state) => state.tasks);
 
-  const handleToggleTerminal = React.useCallback(() => {
-    void togglePanel().catch((error) => {
+  const selectedTask = React.useMemo(
+    () => (tasks.find((task) => task.id === selectedTaskId) ?? null),
+    [selectedTaskId, tasks]
+  );
+  const terminalScope = React.useMemo(
+    () =>
+      resolveSelectedTaskTerminalScope({
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+        selectedTask,
+        lastManualProjectIdByTaskId,
+      }),
+    [lastManualProjectIdByTaskId, projectGroups, selectedGroupId, selectedProjectId, selectedTask]
+  );
+  const hasAnyTabForSelectedTask = React.useMemo(
+    () =>
+      terminalScope
+        ? tabOrder.some((tabId) => tabs[tabId]?.taskId === terminalScope.taskId)
+        : false,
+    [tabOrder, tabs, terminalScope]
+  );
+  const hiddenTerminalTabCount = React.useMemo(() => {
+    if (!terminalScope) {
+      return 0;
+    }
+
+    const visibleTabs = tabOrder
+      .map((tabId) => tabs[tabId])
+      .filter(
+        (tab): tab is NonNullable<typeof tab> =>
+          Boolean(tab) &&
+          tab.taskId === terminalScope.taskId &&
+          tab.projectId === terminalScope.projectId
+      );
+
+    if (visibleTabs.length === 0) {
+      return 0;
+    }
+
+    const visibleTabIds = new Set(visibleTabs.map((tab) => tab.id));
+    const scopedActiveTabId = activeTabIdByScope[getTerminalScopeKey(
+      terminalScope.taskId,
+      terminalScope.projectId
+    )];
+    const resolvedActiveTabId =
+      (scopedActiveTabId && visibleTabIds.has(scopedActiveTabId) ? scopedActiveTabId : null) ||
+      (activeTabId && visibleTabIds.has(activeTabId) ? activeTabId : null);
+
+    return visibleTabs.filter((tab) => {
+      if (panelOpen) {
+        return tab.id !== resolvedActiveTabId && tab.hasUnreadOutput;
+      }
+      return tab.hasUnreadOutput || tab.status === 'running';
+    }).length;
+  }, [activeTabId, activeTabIdByScope, panelOpen, tabOrder, tabs, terminalScope]);
+
+  const handleQuickOpenTerminal = React.useCallback(() => {
+    if (!terminalScope) {
+      return;
+    }
+
+    if (panelOpen) {
+      setPanelOpen(false);
+      return;
+    }
+
+    if (hasAnyTabForSelectedTask) {
+      setPanelOpen(true);
+      return;
+    }
+
+    if (terminalScope.projects.length > 1) {
+      setPanelOpen(true);
+      return;
+    }
+
+    if (terminalScope.preferredProjectId !== terminalScope.projectId) {
+      setSelectedProject(terminalScope.preferredProjectId);
+    }
+
+    void createManualTab({
+      projectId: terminalScope.preferredProjectId,
+      groupId: terminalScope.groupId,
+    }).catch((error) => {
       const message =
         error instanceof Error ? error.message : t('common.error', 'An error occurred');
       toast.error(message);
     });
-  }, [t, togglePanel]);
+  }, [
+    createManualTab,
+    hasAnyTabForSelectedTask,
+    panelOpen,
+    setPanelOpen,
+    setSelectedProject,
+    t,
+    terminalScope,
+  ]);
 
   const terminalButton = (
     <button
       type="button"
-      onClick={handleToggleTerminal}
+      disabled={!terminalScope}
+      onClick={handleQuickOpenTerminal}
+      title={t('terminal.title', 'Terminal')}
       className={cn(
         'relative inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium transition-colors',
-        panelOpen
-          ? 'border-primary/30 bg-primary/10 text-primary'
-          : 'border-border bg-card/40 text-muted-foreground hover:bg-accent hover:text-foreground'
+        !terminalScope
+          ? 'cursor-not-allowed border-border bg-card/30 text-muted-foreground/60'
+          : panelOpen
+            ? 'border-primary/30 bg-primary/10 text-primary'
+            : 'border-border bg-card/40 text-muted-foreground hover:bg-accent hover:text-foreground'
       )}
     >
       <Icon name="terminal" size={12} />
