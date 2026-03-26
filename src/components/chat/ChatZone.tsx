@@ -231,12 +231,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       selectedTask.plan_id === pendingAutoLaunchPlanId
   );
 
-  const implementProgress = useMemo(() => {
-    const total = tasks.length;
-    const completed = tasks.filter((task) => task.status === 'Completed').length;
-    return { completed, total };
-  }, [tasks]);
-
   const selectedGlobalProject = useMemo(
     () => getGlobalProjectById(projectGroups, selectedGroupId),
     [projectGroups, selectedGroupId]
@@ -799,11 +793,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 <Icon name="refresh-cw" size={12} />
                 Reset
               </button>
-            )}
-            {mode === 'Implement' && implementProgress.total > 0 && (
-              <span className="text-xs text-muted-foreground font-mono">
-                {implementProgress.completed}/{implementProgress.total}
-              </span>
             )}
             {headerActions}
           </div>
