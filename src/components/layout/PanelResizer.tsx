@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { GripVertical } from 'lucide-react';
+import { GripVertical, GripHorizontal } from 'lucide-react';
 import { cn } from '../../utils/cn';
 
 interface PanelResizerProps {
@@ -9,7 +9,7 @@ interface PanelResizerProps {
   orientation?: 'horizontal' | 'vertical';
 }
 
-const RESIZER_ICON_SIZE_PX = 16;
+const RESIZER_ICON_SIZE_PX = 6;
 const RESIZER_VERTICAL_GUTTER_PX = 6;
 const RESIZER_HORIZONTAL_GUTTER_PX = 6;
 
@@ -109,19 +109,33 @@ export function PanelResizer({
           : { width: `${RESIZER_HORIZONTAL_GUTTER_PX}px` }
       }
     >
-      <GripVertical
-        size={RESIZER_ICON_SIZE_PX}
-        className={cn(
-          'text-muted-foreground transition-opacity hover:text-foreground',
-          disabled && 'opacity-30',
-          isDragging && 'text-foreground',
-          orientation === 'vertical' && 'rotate-90'
-        )}
-        style={{
-          width: `${RESIZER_ICON_SIZE_PX}px`,
-          height: `${RESIZER_ICON_SIZE_PX}px`,
-        }}
-      />
+      {orientation === 'vertical' ? (
+        <GripHorizontal
+          size={RESIZER_ICON_SIZE_PX}
+          className={cn(
+            'text-muted-foreground transition-opacity hover:text-foreground',
+            disabled && 'opacity-30',
+            isDragging && 'text-foreground'
+          )}
+          style={{
+            width: `${RESIZER_ICON_SIZE_PX}px`,
+            height: `${RESIZER_ICON_SIZE_PX}px`,
+          }}
+        />
+      ) : (
+        <GripVertical
+          size={RESIZER_ICON_SIZE_PX}
+          className={cn(
+            'text-muted-foreground transition-opacity hover:text-foreground',
+            disabled && 'opacity-30',
+            isDragging && 'text-foreground'
+          )}
+          style={{
+            width: `${RESIZER_ICON_SIZE_PX}px`,
+            height: `${RESIZER_ICON_SIZE_PX}px`,
+          }}
+        />
+      )}
     </div>
   );
 }
