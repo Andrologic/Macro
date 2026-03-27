@@ -172,6 +172,11 @@ const terminalCreateTabMock = mock(
     cwd?: string | null;
     title?: string;
     taskId?: string | null;
+    promptContext?: {
+      projectLabel?: string | null;
+      taskLabel?: string | null;
+      branchLabel?: string | null;
+    } | null;
   }): Promise<TerminalTabDto> => ({
     id: `${params?.kind === 'task' ? 'task' : 'manual'}-tab-${params?.taskId || 'none'}-${params?.projectId || 'project-1'}`,
     kind: params?.kind === 'task' ? 'task' : 'manual',
@@ -208,6 +213,7 @@ const resolveProjectExecutionContextMock = mock(
     projectId: params?.selectedProjectId ?? 'project-1',
     projectName: params?.selectedProjectId === 'project-2' ? 'API' : 'Web',
     taskId: params?.selectedTaskId ?? null,
+    branchName: params?.selectedProjectId === 'project-2' ? 'feature/task-1-api' : 'feature/task-1-web',
     workspacePath: params?.selectedProjectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web',
     workspacePathsByProjectId: {
       'project-1': 'C:/repos/web/.macro/worktrees/task-1',
@@ -302,6 +308,11 @@ describe('useTerminalStore', () => {
         cwd?: string | null;
         title?: string;
         taskId?: string | null;
+        promptContext?: {
+          projectLabel?: string | null;
+          taskLabel?: string | null;
+          branchLabel?: string | null;
+        } | null;
       }) => ({
         id: `${params?.kind === 'task' ? 'task' : 'manual'}-tab-${params?.taskId || 'none'}-${params?.projectId || 'project-1'}`,
         kind: params?.kind === 'task' ? 'task' : 'manual',
@@ -343,6 +354,8 @@ describe('useTerminalStore', () => {
         projectId: params?.selectedProjectId ?? 'project-1',
         projectName: params?.selectedProjectId === 'project-2' ? 'API' : 'Web',
         taskId: params?.selectedTaskId ?? null,
+        branchName:
+          params?.selectedProjectId === 'project-2' ? 'feature/task-1-api' : 'feature/task-1-web',
         workspacePath:
           params?.selectedProjectId === 'project-2'
             ? 'C:/repos/api/.macro/worktrees/task-1'
@@ -366,6 +379,11 @@ describe('useTerminalStore', () => {
         kind: 'manual',
         taskId: 'task-1',
         projectId: 'project-1',
+        promptContext: {
+          projectLabel: 'web',
+          taskLabel: 'Task 1',
+          branchLabel: 'task-1-web',
+        },
       })
     );
     expect(state.panelOpen).toBe(true);
@@ -391,6 +409,11 @@ describe('useTerminalStore', () => {
         kind: 'manual',
         taskId: 'task-1',
         projectId: 'project-2',
+        promptContext: {
+          projectLabel: 'api',
+          taskLabel: 'Task 1',
+          branchLabel: 'task-1-api',
+        },
       })
     );
     expect(useTerminalStore.getState().lastManualProjectIdByTaskId).toEqual({ 'task-1': 'project-2' });
@@ -511,8 +534,23 @@ describe('useTerminalStore', () => {
       cwd: 'C:/repos/api/.macro/worktrees/task-1',
       title: 'Task 1 API',
       reveal: false,
+      promptContext: {
+        projectLabel: 'api',
+        taskLabel: 'Task 1',
+        branchLabel: 'task-1-api',
+      },
     });
 
     expect(useTerminalStore.getState().lastManualProjectIdByTaskId).toEqual({});
+    expect(terminalCreateTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'task',
+        promptContext: {
+          projectLabel: 'api',
+          taskLabel: 'Task 1',
+          branchLabel: 'task-1-api',
+        },
+      })
+    );
   });
 });

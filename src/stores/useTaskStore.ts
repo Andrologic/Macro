@@ -50,6 +50,7 @@ import {
   getTaskProjectCommand,
   loadTaskProjectCommandRegistry,
 } from '../services/taskProjectCommands';
+import { buildTerminalPromptContext } from '../services/terminalPromptContext';
 
 type TaskSource = 'architect' | 'mixed' | 'fallback' | 'empty';
 
@@ -1603,6 +1604,13 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           cwd: target.worktreePath,
           title: `${task.title} · ${target.projectName}`,
           reveal: commandEntry.openTerminalOnRun,
+          promptContext: buildTerminalPromptContext({
+            projectLabel:
+              useAppStore.getState().getProjectById(target.projectId)?.mountName ||
+              target.projectName,
+            taskLabel: task.title,
+            branchLabel: target.branchName,
+          }),
         });
 
         set((state) => ({
