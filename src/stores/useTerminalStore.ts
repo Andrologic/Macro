@@ -11,6 +11,7 @@ import {
 } from '../services/manualTerminalTargets';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
 import { resolveProjectExecutionContext } from '../services/projectExecutionContext';
+import { buildTerminalPromptContext } from '../services/terminalPromptContext';
 import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
 import { useTaskStore } from './useTaskStore';
@@ -45,6 +46,7 @@ export interface TerminalTab {
 interface ManualTerminalContext extends TerminalTaskScope {
   cwd: string;
   title: string;
+  promptContext: tauriIpc.TerminalPromptContextInput | null;
 }
 
 type TaskWithTargets = Task & { execution_targets?: TaskExecutionTarget[] };
@@ -109,6 +111,7 @@ interface TerminalStore extends TerminalVisibilityState {
     cwd: string;
     title: string;
     reveal: boolean;
+    promptContext?: tauriIpc.TerminalPromptContextInput | null;
   }) => Promise<TerminalTab>;
   reconnectTab: (tabId: string) => Promise<TerminalTab>;
   executeCommand: (params: {
@@ -285,12 +288,19 @@ const resolveManualTerminalContext = (params?: {
     return null;
   }
 
+  const promptContext = buildTerminalPromptContext({
+    projectLabel: targetProject.mountName || targetProject.name,
+    taskLabel: selectedTask?.title || scope.taskId,
+    branchLabel: resolvedContext.branchName || null,
+  });
+
   return {
     ...scope,
     projectId: targetProjectId,
     preferredProjectId: scope.preferredProjectId,
     cwd,
     title: targetProject.name ? `Terminal - ${targetProject.name}` : 'Terminal',
+    promptContext,
   };
 };
 
@@ -964,6 +974,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         cwd: context.cwd,
         title: context.title,
         taskId: context.taskId,
+        promptContext: context.promptContext,
       });
       const tab = mapTabDto(dto);
       upsertTab(tab, { activate: true, openPanel: true });
@@ -990,7 +1001,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       });
     },
 
-    ensureTaskTab: async ({ taskId, projectId, cwd, title, reveal }) => {
+    ensureTaskTab: async ({ taskId, projectId, cwd, title, reveal, promptContext }) => {
       await get().initialize();
       const existing = Object.values(get().tabs).find(
         (tab) => tab.kind === 'task' && tab.taskId === taskId && tab.projectId === projectId
@@ -1005,6 +1016,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
             cwd,
             title,
             taskId,
+            promptContext: promptContext ?? null,
           });
 
       const tab = mapTabDto(dto, existing);

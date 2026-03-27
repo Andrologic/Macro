@@ -337,6 +337,7 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
             workspace_path TEXT NOT NULL,
             cwd TEXT NOT NULL,
             title TEXT NOT NULL,
+            prompt_context_json TEXT,
             status TEXT NOT NULL,
             snapshot TEXT NOT NULL DEFAULT '',
             last_command TEXT,
@@ -348,6 +349,18 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     )
     .execute(pool)
     .await?;
+
+    let terminal_tab_columns = sqlx::query("PRAGMA table_info(terminal_tabs)")
+        .fetch_all(pool)
+        .await?;
+    let has_prompt_context_json = terminal_tab_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "prompt_context_json");
+    if !has_prompt_context_json {
+        sqlx::query("ALTER TABLE terminal_tabs ADD COLUMN prompt_context_json TEXT")
+            .execute(pool)
+            .await?;
+    }
 
     sqlx::query(
         r#"

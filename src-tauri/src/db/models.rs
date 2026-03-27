@@ -101,6 +101,7 @@ pub struct TerminalTabRecord {
     pub workspace_path: String,
     pub cwd: String,
     pub title: String,
+    pub prompt_context_json: Option<String>,
     pub status: String,
     pub snapshot: String,
     pub last_command: Option<String>,
