@@ -1173,6 +1173,7 @@ pub async fn list_terminal_tabs(pool: &SqlitePool) -> DbResult<Vec<TerminalTabRe
             workspace_path,
             cwd,
             title,
+            prompt_context_json,
             status,
             snapshot,
             last_command,
@@ -1198,6 +1199,7 @@ pub async fn list_terminal_tabs(pool: &SqlitePool) -> DbResult<Vec<TerminalTabRe
             workspace_path: row.get("workspace_path"),
             cwd: row.get("cwd"),
             title: row.get("title"),
+            prompt_context_json: row.get("prompt_context_json"),
             status: row.get("status"),
             snapshot: row.get("snapshot"),
             last_command: row.get("last_command"),
@@ -1208,10 +1210,7 @@ pub async fn list_terminal_tabs(pool: &SqlitePool) -> DbResult<Vec<TerminalTabRe
         .collect())
 }
 
-pub async fn get_terminal_tab(
-    pool: &SqlitePool,
-    id: &str,
-) -> DbResult<Option<TerminalTabRecord>> {
+pub async fn get_terminal_tab(pool: &SqlitePool, id: &str) -> DbResult<Option<TerminalTabRecord>> {
     let row = sqlx::query(
         r#"
         SELECT
@@ -1224,6 +1223,7 @@ pub async fn get_terminal_tab(
             workspace_path,
             cwd,
             title,
+            prompt_context_json,
             status,
             snapshot,
             last_command,
@@ -1248,6 +1248,7 @@ pub async fn get_terminal_tab(
         workspace_path: row.get("workspace_path"),
         cwd: row.get("cwd"),
         title: row.get("title"),
+        prompt_context_json: row.get("prompt_context_json"),
         status: row.get("status"),
         snapshot: row.get("snapshot"),
         last_command: row.get("last_command"),
@@ -1273,6 +1274,7 @@ pub async fn upsert_terminal_tab(
             workspace_path,
             cwd,
             title,
+            prompt_context_json,
             status,
             snapshot,
             last_command,
@@ -1280,7 +1282,7 @@ pub async fn upsert_terminal_tab(
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             kind = excluded.kind,
             task_id = excluded.task_id,
@@ -1290,6 +1292,7 @@ pub async fn upsert_terminal_tab(
             workspace_path = excluded.workspace_path,
             cwd = excluded.cwd,
             title = excluded.title,
+            prompt_context_json = excluded.prompt_context_json,
             status = excluded.status,
             snapshot = excluded.snapshot,
             last_command = excluded.last_command,
@@ -1306,6 +1309,7 @@ pub async fn upsert_terminal_tab(
     .bind(&tab.workspace_path)
     .bind(&tab.cwd)
     .bind(&tab.title)
+    .bind(&tab.prompt_context_json)
     .bind(&tab.status)
     .bind(&tab.snapshot)
     .bind(&tab.last_command)

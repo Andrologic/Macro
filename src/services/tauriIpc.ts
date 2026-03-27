@@ -478,6 +478,12 @@ export interface TerminalTabDto {
   updated_at: string;
 }
 
+export interface TerminalPromptContextInput {
+  projectLabel?: string | null;
+  taskLabel?: string | null;
+  branchLabel?: string | null;
+}
+
 export interface TerminalOutputEvent {
   tab_id: string;
   data: string;
@@ -1543,6 +1549,7 @@ export async function terminalCreateTab(params: {
   cwd?: string | null;
   title: string;
   taskId?: string | null;
+  promptContext?: TerminalPromptContextInput | null;
 }): Promise<TerminalTabDto> {
   return invoke<TerminalTabDto>('terminal_create_tab', {
     kind: params.kind,
@@ -1550,6 +1557,7 @@ export async function terminalCreateTab(params: {
     cwd: params.cwd ?? null,
     title: params.title,
     taskId: params.taskId ?? null,
+    promptContext: params.promptContext ?? null,
   });
 }
 

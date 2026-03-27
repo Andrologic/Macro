@@ -117,6 +117,13 @@ struct ProjectTerminalTarget {
     workspace_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TerminalPromptContext {
+    pub project_label: Option<String>,
+    pub task_label: Option<String>,
+    pub branch_label: Option<String>,
+}
+
 impl LegacyTerminalSessionRecord {
     fn to_dto(&self) -> TerminalSessionDto {
         TerminalSessionDto {
@@ -302,6 +309,7 @@ fn build_terminal_record(
     project_id: String,
     task_id: Option<String>,
     title: String,
+    prompt_context: Option<TerminalPromptContext>,
     project: ProjectTerminalTarget,
     cwd: PathBuf,
 ) -> TerminalTabRecord {
@@ -316,6 +324,7 @@ fn build_terminal_record(
         workspace_path: project.workspace_path.to_string_lossy().to_string(),
         cwd: cwd.to_string_lossy().to_string(),
         title,
+        prompt_context_json: prompt_context.and_then(|value| serde_json::to_string(&value).ok()),
         status: "idle".to_string(),
         snapshot: String::new(),
         last_command: None,
@@ -340,19 +349,30 @@ fn parse_command_marker(buffer: &str, marker_prefix: &str) -> Option<(usize, usi
 }
 
 #[cfg(windows)]
-fn build_shell_command(cwd: &Path) -> CommandBuilder {
+fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
     let mut command = CommandBuilder::new("powershell");
     command.arg("-NoLogo");
     command.arg("-NoProfile");
-    command.cwd(cwd);
+    command.arg("-NoExit");
+    command.arg("-Command");
+    command.arg(
+        "function global:prompt { $env:MACRO_TERMINAL_PROMPT }; Set-Location -LiteralPath $env:MACRO_TERMINAL_CWD",
+    );
+    command.cwd(Path::new(&record.cwd));
+    command.env("MACRO_TERMINAL_CWD", &record.cwd);
+    command.env("MACRO_TERMINAL_PROMPT", render_terminal_prompt(record));
     command
 }
 
 #[cfg(not(windows))]
-fn build_shell_command(cwd: &Path) -> CommandBuilder {
+fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
     let mut command = CommandBuilder::new("bash");
+    command.arg("--noprofile");
+    command.arg("--norc");
     command.arg("-i");
-    command.cwd(cwd);
+    command.cwd(Path::new(&record.cwd));
+    command.env("PS1", render_terminal_prompt(record));
+    command.env("PROMPT_COMMAND", "");
     command
 }
 
@@ -378,6 +398,70 @@ fn pty_size(cols: u16, rows: u16) -> PtySize {
         cols,
         pixel_width: 0,
         pixel_height: 0,
+    }
+}
+
+fn trim_prompt_label(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn terminal_prompt_context_from_record(
+    record: &TerminalTabRecord,
+) -> Option<TerminalPromptContext> {
+    if let Some(serialized) = record.prompt_context_json.as_deref() {
+        if let Ok(context) = serde_json::from_str::<TerminalPromptContext>(serialized) {
+            return Some(context);
+        }
+    }
+
+    let project_label =
+        trim_prompt_label(&record.mount_name).or_else(|| trim_prompt_label(&record.project_name));
+    let task_label = record.task_id.as_deref().and_then(trim_prompt_label);
+    let cwd_leaf = Path::new(&record.cwd)
+        .file_name()
+        .and_then(|value| value.to_str());
+    let workspace_leaf = Path::new(&record.workspace_path)
+        .file_name()
+        .and_then(|value| value.to_str());
+    let branch_label = cwd_leaf
+        .filter(|value| Some(*value) != workspace_leaf)
+        .and_then(trim_prompt_label);
+
+    if project_label.is_none() && task_label.is_none() && branch_label.is_none() {
+        None
+    } else {
+        Some(TerminalPromptContext {
+            project_label,
+            task_label,
+            branch_label,
+        })
+    }
+}
+
+fn render_terminal_prompt(record: &TerminalTabRecord) -> String {
+    let Some(context) = terminal_prompt_context_from_record(record) else {
+        return "> ".to_string();
+    };
+
+    let segments = [
+        context.project_label.as_deref(),
+        context.task_label.as_deref(),
+        context.branch_label.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(trim_prompt_label)
+    .collect::<Vec<_>>();
+
+    if segments.is_empty() {
+        "> ".to_string()
+    } else {
+        format!("{} > ", segments.join(" | "))
     }
 }
 
@@ -441,12 +525,7 @@ fn spawn_reader_task(
                         continue;
                     }
 
-                    handle_live_output(
-                        app_handle.clone(),
-                        db_pool.clone(),
-                        runtime.clone(),
-                        chunk,
-                    );
+                    handle_live_output(app_handle.clone(), db_pool.clone(), runtime.clone(), chunk);
                 }
                 Err(_) => {
                     handle_live_disconnect(
@@ -591,7 +670,9 @@ async fn spawn_live_tab(
 ) -> CommandResult<TerminalTabDto> {
     let existing = {
         let live_tabs = terminal_store.live_tabs.lock().await;
-        live_tabs.get(&record.id).map(|session| session.runtime.clone())
+        live_tabs
+            .get(&record.id)
+            .map(|session| session.runtime.clone())
     };
     if let Some(runtime) = existing {
         let guard = runtime.lock().await;
@@ -603,8 +684,7 @@ async fn spawn_live_tab(
         .openpty(pty_size(DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS))
         .map_err(|error| command_error(format!("Failed to create terminal PTY: {}", error)))?;
 
-    let cwd_path = PathBuf::from(&record.cwd);
-    let shell_command = build_shell_command(&cwd_path);
+    let shell_command = build_shell_command(&record);
     let child = pair
         .slave
         .spawn_command(shell_command)
@@ -737,6 +817,7 @@ pub async fn terminal_create_tab(
     cwd: Option<String>,
     title: String,
     task_id: Option<String>,
+    prompt_context: Option<TerminalPromptContext>,
 ) -> CommandResult<TerminalTabDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
@@ -749,6 +830,7 @@ pub async fn terminal_create_tab(
         project_id,
         task_id,
         title.trim().to_string(),
+        prompt_context,
         project,
         session_cwd,
     );
@@ -912,10 +994,12 @@ pub async fn terminal_execute_command(
                 .map_err(|_| command_error("Failed to lock terminal writer"))?;
             guard
                 .write_all(wrapped_command.as_bytes())
-                .map_err(|error| command_error(format!("Failed to dispatch terminal command: {}", error)))?;
-            guard
-                .flush()
-                .map_err(|error| command_error(format!("Failed to flush terminal command: {}", error)))
+                .map_err(|error| {
+                    command_error(format!("Failed to dispatch terminal command: {}", error))
+                })?;
+            guard.flush().map_err(|error| {
+                command_error(format!("Failed to flush terminal command: {}", error))
+            })
         })
         .await
         .map_err(|error| command_error(format!("Terminal command task failed: {}", error)))?
@@ -965,9 +1049,9 @@ pub async fn terminal_interrupt(
         guard
             .write_all(&[3])
             .map_err(|error| command_error(format!("Failed to interrupt terminal: {}", error)))?;
-        guard
-            .flush()
-            .map_err(|error| command_error(format!("Failed to flush terminal interrupt: {}", error)))
+        guard.flush().map_err(|error| {
+            command_error(format!("Failed to flush terminal interrupt: {}", error))
+        })
     })
     .await
     .map_err(|error| command_error(format!("Terminal interrupt task failed: {}", error)))??;
@@ -1009,7 +1093,9 @@ pub async fn terminal_clear_tab(
 ) -> CommandResult<TerminalTabDto> {
     if let Some(runtime) = {
         let live_tabs = terminal_store.live_tabs.lock().await;
-        live_tabs.get(&tab_id).map(|session| session.runtime.clone())
+        live_tabs
+            .get(&tab_id)
+            .map(|session| session.runtime.clone())
     } {
         let mut runtime_guard = runtime.lock().await;
         runtime_guard.record.snapshot.clear();
