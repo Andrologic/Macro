@@ -217,6 +217,15 @@ describe('tauriIpc executeWorkspaceTool', () => {
     });
     await tauriIpc.terminalReconnectTab('tab-1');
     await tauriIpc.terminalReadTab('tab-1');
+    await tauriIpc.terminalUpdateTabMetadata({
+      tabId: 'tab-1',
+      title: 'api Â· Refactor parser',
+      promptContext: {
+        projectLabel: 'api',
+        taskLabel: 'Refactor parser',
+        branchLabel: null,
+      },
+    });
     await tauriIpc.terminalWriteInput({ tabId: 'tab-1', input: 'pwd\\r' });
     await tauriIpc.terminalResize({ tabId: 'tab-1', cols: 120, rows: 32 });
     await tauriIpc.terminalExecuteCommand({ tabId: 'tab-1', command: 'bun test' });
@@ -233,6 +242,7 @@ describe('tauriIpc executeWorkspaceTool', () => {
           cwd: 'C:/dev/worktree',
           title: 'Build · API',
           taskId: 'task-1',
+          promptContext: null,
         },
       },
       {
@@ -245,6 +255,18 @@ describe('tauriIpc executeWorkspaceTool', () => {
         command: 'terminal_read_tab',
         payload: {
           tabId: 'tab-1',
+        },
+      },
+      {
+        command: 'terminal_update_tab_metadata',
+        payload: {
+          tabId: 'tab-1',
+          title: 'api Â· Refactor parser',
+          promptContext: {
+            projectLabel: 'api',
+            taskLabel: 'Refactor parser',
+            branchLabel: null,
+          },
         },
       },
       {

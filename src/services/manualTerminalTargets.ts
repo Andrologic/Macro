@@ -1,5 +1,6 @@
 import type { Project, ProjectGroup, Task, TaskExecutionTarget } from '../types';
 import { getProjectGroupByProjectId, getSubProjectsForGroup } from './globalProjects';
+import { isManualDraftPendingInitialization } from './manualDraftInitialization';
 
 export type LastManualProjectIdByTaskId = Record<string, string>;
 
@@ -113,6 +114,10 @@ export const resolveTerminalGroupId = (
 export const resolveSelectedTaskTerminalScope = (
   params: ResolveSelectedTaskTerminalScopeParams
 ): TerminalTaskScope | null => {
+  if (isManualDraftPendingInitialization(params.selectedTask)) {
+    return null;
+  }
+
   const taskId = params.selectedTask?.id?.trim();
   if (!taskId) {
     return null;

@@ -23,6 +23,7 @@ import {
   loadTaskProjectCommandRegistry,
   saveTaskProjectCommandDrafts,
 } from '../../services/taskProjectCommands';
+import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { Icon, IconName } from '../ui/Icon';
 import { Select } from '../ui/Select';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -733,7 +734,39 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const canRunTaskCommandsForTask = (task: ImplementTask): boolean =>
-    !task.draft && !task.archived_at && getTaskCommandProjectIds(task).length > 0;
+    !isManualDraftPendingInitialization(task) &&
+    !task.draft &&
+    !task.archived_at &&
+    getTaskCommandProjectIds(task).length > 0;
+
+  const getRunTaskCommandsTitle = (task: ImplementTask): string => {
+    if (isManualDraftPendingInitialization(task)) {
+      return t(
+        'implement.taskCommandsManualDraftUnsupported',
+        'No worktree is available until this feature is initialized from the first message.'
+      );
+    }
+
+    if (task.draft) {
+      return t(
+        'implement.taskCommandsDraftUnsupported',
+        'Commands are unavailable while this task is still a draft.'
+      );
+    }
+
+    if (task.archived_at) {
+      return t(
+        'implement.taskCommandsArchivedUnsupported',
+        'Commands are unavailable for archived tasks.'
+      );
+    }
+
+    if (!canRunTaskCommandsForTask(task)) {
+      return t('implement.taskCommandNoProjects', 'No repository is available for this task.');
+    }
+
+    return t('implement.runTaskCommands', 'Run commands');
+  };
 
   const buildTaskCommandModalState = async (task: ImplementTask) => {
     const registry = await loadTaskProjectCommandRegistry();
@@ -1163,15 +1196,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   isAssistantRunning={streamingTaskId === task.id}
                   taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
                   canRunTaskCommands={canRunTaskCommandsForTask(task)}
-                  runTaskCommandsTitle={
-                    task.draft
-                      ? t('implement.taskCommandsDraftUnsupported', 'Commands are unavailable while this task is still a draft.')
-                      : task.archived_at
-                        ? t('implement.taskCommandsArchivedUnsupported', 'Commands are unavailable for archived tasks.')
-                        : !canRunTaskCommandsForTask(task)
-                          ? t('implement.taskCommandNoProjects', 'No repository is available for this task.')
-                          : t('implement.runTaskCommands', 'Run commands')
-                  }
+                  runTaskCommandsTitle={getRunTaskCommandsTitle(task)}
                   onSelect={() => void activateTask(task.id)}
                   onRunTaskCommands={() => void handleRunTaskCommands(task)}
                   onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
@@ -1211,11 +1236,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   isAssistantRunning={streamingTaskId === task.id}
                   taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
                   canRunTaskCommands={canRunTaskCommandsForTask(task)}
-                  runTaskCommandsTitle={
-                    canRunTaskCommandsForTask(task)
-                      ? t('implement.runTaskCommands', 'Run commands')
-                      : t('implement.taskCommandNoProjects', 'No repository is available for this task.')
-                  }
+                  runTaskCommandsTitle={getRunTaskCommandsTitle(task)}
                   onSelect={() => void activateTask(task.id)}
                   onRunTaskCommands={() => void handleRunTaskCommands(task)}
                   onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
@@ -1254,11 +1275,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   isAssistantRunning={streamingTaskId === task.id}
                   taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
                   canRunTaskCommands={canRunTaskCommandsForTask(task)}
-                  runTaskCommandsTitle={
-                    canRunTaskCommandsForTask(task)
-                      ? t('implement.runTaskCommands', 'Run commands')
-                      : t('implement.taskCommandNoProjects', 'No repository is available for this task.')
-                  }
+                  runTaskCommandsTitle={getRunTaskCommandsTitle(task)}
                   onSelect={() => void activateTask(task.id)}
                   onRunTaskCommands={() => void handleRunTaskCommands(task)}
                   onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
@@ -1297,11 +1314,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   isAssistantRunning={streamingTaskId === task.id}
                   taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
                   canRunTaskCommands={canRunTaskCommandsForTask(task)}
-                  runTaskCommandsTitle={
-                    canRunTaskCommandsForTask(task)
-                      ? t('implement.runTaskCommands', 'Run commands')
-                      : t('implement.taskCommandNoProjects', 'No repository is available for this task.')
-                  }
+                  runTaskCommandsTitle={getRunTaskCommandsTitle(task)}
                   onSelect={() => void activateTask(task.id)}
                   onRunTaskCommands={() => void handleRunTaskCommands(task)}
                   onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
@@ -1341,11 +1354,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     isAssistantRunning={streamingTaskId === task.id}
                     taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
                     canRunTaskCommands={canRunTaskCommandsForTask(task)}
-                    runTaskCommandsTitle={
-                      canRunTaskCommandsForTask(task)
-                        ? t('implement.runTaskCommands', 'Run commands')
-                        : t('implement.taskCommandNoProjects', 'No repository is available for this task.')
-                    }
+                    runTaskCommandsTitle={getRunTaskCommandsTitle(task)}
                     onSelect={() => void activateTask(task.id)}
                     onRunTaskCommands={() => void handleRunTaskCommands(task)}
                     onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
