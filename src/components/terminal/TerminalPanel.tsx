@@ -241,7 +241,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
               <div
                 key={tab.id}
                 className={cn(
-                  'group inline-flex h-8 min-w-0 max-w-[240px] items-center gap-1 rounded-md border pr-1 text-xs transition-colors',
+                  'group inline-flex h-8 min-w-0 max-w-[240px] shrink-0 items-center gap-1 overflow-hidden rounded-md border pr-1 text-xs transition-colors',
                   isActive
                     ? 'border-primary/30 bg-primary/10 text-foreground'
                     : 'border-transparent bg-transparent text-muted-foreground hover:border-border hover:bg-accent/50 hover:text-foreground'
@@ -250,7 +250,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
                 <button
                   type="button"
                   onClick={() => activateTab(tab.id)}
-                  className="inline-flex min-w-0 flex-1 items-center gap-2 px-3"
+                  title={tab.title}
+                  className="inline-flex min-w-0 flex-1 items-center gap-2 overflow-hidden px-3"
                 >
                   <span
                     className={cn(
@@ -262,7 +263,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
                           : 'bg-muted-foreground/60'
                     )}
                   />
-                  <span className="truncate">{tab.title}</span>
+                  <span className="min-w-0 flex-1 truncate text-left">{tab.title}</span>
                   {tab.hasUnreadOutput && !isActive && (
                     <span className="h-2 w-2 shrink-0 rounded-full bg-primary" />
                   )}
@@ -270,7 +271,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
                 <button
                   type="button"
                   onClick={() => runAction(() => closeTab(tab.id))}
-                  className="hidden rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:inline-flex"
+                  className="hidden shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:inline-flex"
                   title={t('common.close', 'Close')}
                 >
                   <Icon name="x" size={12} />
