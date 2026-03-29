@@ -6,6 +6,7 @@ import { cn } from '../../utils/cn';
 import { useTerminalStore } from '../../stores/useTerminalStore';
 import { useAppStore } from '../../stores/useAppStore';
 import { getTerminalScopeKey, resolveSelectedTaskTerminalScope } from '../../services/manualTerminalTargets';
+import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { TerminalViewport } from './TerminalViewport';
 import TerminalTargetSplitButton from './TerminalTargetSplitButton';
@@ -39,6 +40,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
   const selectedTask = useMemo(
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
     [selectedTaskId, tasks]
+  );
+  const manualDraftPendingInitialization = useMemo(
+    () => isManualDraftPendingInitialization(selectedTask),
+    [selectedTask]
   );
   const terminalScope = useMemo(
     () =>
@@ -99,6 +104,12 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
         : false,
     [tabOrder, tabs, terminalScope]
   );
+  const disabledTerminalTitle = manualDraftPendingInitialization
+    ? t(
+        'terminal.manualDraftUnavailable',
+        'Send a first message to name this feature and initialize its terminal.'
+      )
+    : t('implement.selectTaskToStart', 'Select a task to start implementation.');
 
   const runAction = (action: () => Promise<unknown>) => {
     void action().catch((error) => {
@@ -139,13 +150,34 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
     return (
       <div className={cn('h-full border-t border-border/60 bg-card/40', className)}>
         <div className="flex h-full items-center justify-center px-6 text-center">
-          <div className="space-y-2">
-            <div className="text-sm font-medium text-foreground">
-              {t('implement.selectTaskShort', 'Select a task')}
+          <div className="flex max-w-md flex-col items-center gap-3">
+            <div className="space-y-2">
+              <div className="text-sm font-medium text-foreground">
+                {manualDraftPendingInitialization
+                  ? t('terminal.manualDraftBlockedTitle', 'Feature initialization required')
+                  : t('implement.selectTaskShort', 'Select a task')}
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {manualDraftPendingInitialization
+                  ? t(
+                      'terminal.manualDraftBlockedDescription',
+                      'Send a first message to name this feature and initialize its terminal.'
+                    )
+                  : t('implement.selectTaskToStart', 'Select a task to start implementation.')}
+              </p>
             </div>
-            <p className="text-sm text-muted-foreground">
-              {t('implement.selectTaskToStart', 'Select a task to start implementation.')}
-            </p>
+            <TerminalTargetSplitButton
+              variant="empty"
+              icon="plus"
+              label={t('terminal.newTerminal', 'New terminal')}
+              title={disabledTerminalTitle}
+              disabled
+              projects={[]}
+              preferredProjectId={null}
+              focusedProjectId={null}
+              onPrimaryClick={() => undefined}
+              onProjectSelect={() => undefined}
+            />
           </div>
         </div>
       </div>

@@ -60,7 +60,7 @@ const projectGroups = [
   },
 ];
 
-const tasks = [
+const buildTasks = () => [
   {
     id: 'task-1',
     plan_id: 'plan-1',
@@ -70,11 +70,14 @@ const tasks = [
       { projectId: 'project-1', branchName: 'feature/task-1-web', worktreeKey: 'task-1-web' },
       { projectId: 'project-2', branchName: 'feature/task-1-api', worktreeKey: 'task-1-api' },
     ],
-    title: 'Task 1',
+    title: 'Refactor compiler',
     description: '',
     status: 'Pending',
     dependencies: [],
     estimated_changes: [],
+    task_source: 'architect',
+    standalone_kind: 'legacy',
+    draft: false,
   },
   {
     id: 'task-2',
@@ -89,8 +92,13 @@ const tasks = [
     status: 'Pending',
     dependencies: [],
     estimated_changes: [],
+    task_source: 'architect',
+    standalone_kind: 'legacy',
+    draft: false,
   },
 ];
+
+const tasks = buildTasks();
 
 const appStoreState = {
   mode: 'Implement',
@@ -206,6 +214,34 @@ const terminalReconnectTabMock = mock(async (tabId: string): Promise<TerminalTab
 const terminalReadTabMock = mock(async (tabId: string): Promise<TerminalTabDto> => ({
   ...buildTaskTabDto({ id: tabId }),
 }));
+const buildUpdatedTabDto = (params: {
+  tabId: string;
+  title: string;
+}): TerminalTabDto => {
+  const isProject2 = params.tabId.includes('project-2') || params.tabId.includes('-api');
+  const isTask2 = params.tabId.includes('task-2');
+  return buildManualTabDto({
+    id: params.tabId,
+    task_id: isTask2 ? 'task-2' : 'task-1',
+    project_id: isProject2 ? 'project-2' : 'project-1',
+    project_name: isProject2 ? 'API' : 'Web',
+    mount_name: isProject2 ? 'api' : 'web',
+    workspace_path: isProject2 ? 'C:/repos/api' : 'C:/repos/web',
+    cwd: isProject2 ? 'C:/repos/api' : 'C:/repos/web',
+    title: params.title,
+  });
+};
+const terminalUpdateTabMetadataMock = mock(
+  async (params: {
+    tabId: string;
+    title: string;
+    promptContext?: {
+      projectLabel?: string | null;
+      taskLabel?: string | null;
+      branchLabel?: string | null;
+    } | null;
+  }): Promise<TerminalTabDto> => buildUpdatedTabDto(params)
+);
 const loadPreferenceMock = mock(async (_key: string): Promise<unknown> => null);
 const savePreferenceMock = mock(async () => undefined);
 const resolveProjectExecutionContextMock = mock(
@@ -213,7 +249,6 @@ const resolveProjectExecutionContextMock = mock(
     projectId: params?.selectedProjectId ?? 'project-1',
     projectName: params?.selectedProjectId === 'project-2' ? 'API' : 'Web',
     taskId: params?.selectedTaskId ?? null,
-    branchName: params?.selectedProjectId === 'project-2' ? 'feature/task-1-api' : 'feature/task-1-web',
     workspacePath: params?.selectedProjectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web',
     workspacePathsByProjectId: {
       'project-1': 'C:/repos/web/.macro/worktrees/task-1',
@@ -232,6 +267,7 @@ mock.module('../services/tauriIpc', () => ({
   terminalCreateTab: terminalCreateTabMock,
   terminalReconnectTab: terminalReconnectTabMock,
   terminalReadTab: terminalReadTabMock,
+  terminalUpdateTabMetadata: terminalUpdateTabMetadataMock,
 }));
 
 mock.module('../services/preferences', () => ({
@@ -257,7 +293,13 @@ mock.module('./useAppStore', () => ({
 mock.module('./useChatStore', () => ({
   useChatStore: {
     getState: () => ({
-      conversations: [],
+      conversations: [
+        {
+          id: 'conversation-1',
+          title: 'manual-feature-1774264545297-kowb7j',
+          task_id: 'task-1',
+        },
+      ],
       selectedConversationId: null,
     }),
   },
@@ -284,11 +326,13 @@ describe('useTerminalStore', () => {
     appStoreState.selectedGroupId = 'group-1';
     appStoreState.selectedProjectId = 'project-1';
     appStoreState.selectedTaskId = 'task-1';
+    taskStoreState.tasks = buildTasks();
 
     terminalListTabsMock.mockReset();
     terminalCreateTabMock.mockReset();
     terminalReconnectTabMock.mockReset();
     terminalReadTabMock.mockReset();
+    terminalUpdateTabMetadataMock.mockReset();
     loadPreferenceMock.mockReset();
     savePreferenceMock.mockReset();
     resolveProjectExecutionContextMock.mockReset();
@@ -343,6 +387,9 @@ describe('useTerminalStore', () => {
     terminalReadTabMock.mockImplementation(async (tabId: string) => ({
       ...buildTaskTabDto({ id: tabId }),
     }));
+    terminalUpdateTabMetadataMock.mockImplementation(async (params) => ({
+      ...buildUpdatedTabDto(params),
+    }));
     loadPreferenceMock.mockImplementation(async (key: string) => {
       if (key === 'terminalPanelHeight') return 320;
       if (key === 'terminalActiveTabId') return null;
@@ -354,8 +401,6 @@ describe('useTerminalStore', () => {
         projectId: params?.selectedProjectId ?? 'project-1',
         projectName: params?.selectedProjectId === 'project-2' ? 'API' : 'Web',
         taskId: params?.selectedTaskId ?? null,
-        branchName:
-          params?.selectedProjectId === 'project-2' ? 'feature/task-1-api' : 'feature/task-1-web',
         workspacePath:
           params?.selectedProjectId === 'project-2'
             ? 'C:/repos/api/.macro/worktrees/task-1'
@@ -379,10 +424,11 @@ describe('useTerminalStore', () => {
         kind: 'manual',
         taskId: 'task-1',
         projectId: 'project-1',
+        title: 'web - Refactor compiler',
         promptContext: {
           projectLabel: 'web',
-          taskLabel: 'Task 1',
-          branchLabel: 'task-1-web',
+          taskLabel: 'Refactor compiler',
+          branchLabel: null,
         },
       })
     );
@@ -409,10 +455,11 @@ describe('useTerminalStore', () => {
         kind: 'manual',
         taskId: 'task-1',
         projectId: 'project-2',
+        title: 'api - Refactor compiler',
         promptContext: {
           projectLabel: 'api',
-          taskLabel: 'Task 1',
-          branchLabel: 'task-1-api',
+          taskLabel: 'Refactor compiler',
+          branchLabel: null,
         },
       })
     );
@@ -459,11 +506,16 @@ describe('useTerminalStore', () => {
 
     await useTerminalStore.getState().createManualTab();
 
-    expect(terminalCreateTabMock).not.toHaveBeenCalled();
-    expect(useTerminalStore.getState().activeTabId).toBe('manual-tab-task-1-project-1');
+    expect(terminalCreateTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'task-1',
+        projectId: 'project-1',
+        title: 'web - Refactor compiler #2',
+      })
+    );
   });
 
-  it('does not reuse a manual tab from another task', async () => {
+  it('creates a new manual tab even when another task already has one', async () => {
     terminalListTabsMock.mockImplementationOnce(async () => [
       buildManualTabDto({
         id: 'manual-tab-task-2-project-1',
@@ -481,6 +533,7 @@ describe('useTerminalStore', () => {
         kind: 'manual',
         taskId: 'task-1',
         projectId: 'project-1',
+        title: 'web - Refactor compiler',
       })
     );
   });
@@ -521,6 +574,7 @@ describe('useTerminalStore', () => {
       expect.objectContaining({
         taskId: 'task-2',
         projectId: 'project-2',
+        title: 'api - Task 2',
       })
     );
   });
@@ -536,8 +590,8 @@ describe('useTerminalStore', () => {
       reveal: false,
       promptContext: {
         projectLabel: 'api',
-        taskLabel: 'Task 1',
-        branchLabel: 'task-1-api',
+        taskLabel: 'Refactor compiler',
+        branchLabel: null,
       },
     });
 
@@ -545,12 +599,60 @@ describe('useTerminalStore', () => {
     expect(terminalCreateTabMock).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'task',
+        title: 'Task 1 API',
         promptContext: {
           projectLabel: 'api',
-          taskLabel: 'Task 1',
-          branchLabel: 'task-1-api',
+          taskLabel: 'Refactor compiler',
+          branchLabel: null,
         },
       })
     );
   });
+
+  it('blocks manual terminals for uninitialized manual drafts', async () => {
+    taskStoreState.tasks = [
+      {
+        ...buildTasks()[0],
+        task_source: 'standalone',
+        standalone_kind: 'manual_feature',
+        draft: true,
+        title: 'New feature',
+      },
+      buildTasks()[1],
+    ];
+
+    const { useTerminalStore } = await loadTerminalStore();
+
+    expect(useTerminalStore.getState().getSelectedTaskTerminalScope()).toBeNull();
+    await expect(useTerminalStore.getState().createManualTab()).rejects.toThrow(
+      'Send a first message to name this feature and initialize its terminal.'
+    );
+    expect(terminalCreateTabMock).not.toHaveBeenCalled();
+  });
+
+  it('syncs stale terminal titles to the current UI task title on initialize', async () => {
+    terminalListTabsMock.mockImplementationOnce(async () => [
+      buildManualTabDto({
+        id: 'manual-task-1-web',
+        task_id: 'task-1',
+        project_id: 'project-1',
+        title: 'Terminal - Web',
+      }),
+    ]);
+
+    const { useTerminalStore } = await loadTerminalStore();
+
+    await useTerminalStore.getState().initialize();
+
+    expect(terminalUpdateTabMetadataMock).toHaveBeenCalledWith({
+      tabId: 'manual-task-1-web',
+      title: 'web - Refactor compiler',
+      promptContext: {
+        projectLabel: 'web',
+        taskLabel: 'Refactor compiler',
+        branchLabel: null,
+      },
+    });
+  });
 });
+
