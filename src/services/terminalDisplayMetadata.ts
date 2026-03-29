@@ -14,6 +14,17 @@ export interface TerminalDisplayMetadata {
   promptContext: TerminalPromptContextInput | null;
 }
 
+const collapseWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
+
+const sanitizeTitleSegment = (value?: string | null): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = collapseWhitespace(value.replace(/[|><\r\n\t]+/g, ' '));
+  return normalized.length > 0 ? normalized : null;
+};
+
 export const buildTerminalDisplayMetadata = (
   input: TerminalDisplayMetadataInput
 ): TerminalDisplayMetadata => {
@@ -23,10 +34,10 @@ export const buildTerminalDisplayMetadata = (
     branchLabel: null,
   });
 
-  const segments = [promptContext?.projectLabel, promptContext?.taskLabel].filter(
+  const titleSegments = [sanitizeTitleSegment(input.projectLabel), sanitizeTitleSegment(input.taskLabel)].filter(
     (segment): segment is string => typeof segment === 'string' && segment.trim().length > 0
   );
-  const baseTitle = segments.length > 0 ? segments.join(' - ') : 'Terminal';
+  const baseTitle = titleSegments.length > 0 ? titleSegments.join(' - ') : 'Terminal';
   const instanceIndex =
     typeof input.instanceIndex === 'number' && input.instanceIndex > 1
       ? Math.floor(input.instanceIndex)
