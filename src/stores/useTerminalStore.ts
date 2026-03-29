@@ -510,6 +510,8 @@ const computeHiddenCountForScope = (
 export const useTerminalStore = create<TerminalStore>((set, get) => {
   let initializePromise: Promise<void> | null = null;
   let eventUnlisteners: UnlistenFn[] = [];
+  let pendingOutputEvents: Record<string, tauriIpc.TerminalOutputEvent> = {};
+  let outputFlushTimer: number | null = null;
 
   const computeCurrentHiddenCount = (state: TerminalVisibilityState): number =>
     computeHiddenCountForScope(state, resolveCurrentTerminalScope(state.lastManualProjectIdByTaskId));
@@ -647,39 +649,80 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return;
     }
 
-    eventUnlisteners = await Promise.all([
-      listen<tauriIpc.TerminalOutputEvent>('terminal:output', (event) => {
-        set((state) => {
-          const existing = state.tabs[event.payload.tab_id];
+    const flushPendingOutputEvents = () => {
+      outputFlushTimer = null;
+      const queuedEvents = Object.values(pendingOutputEvents);
+      pendingOutputEvents = {};
+
+      if (queuedEvents.length === 0) {
+        return;
+      }
+
+      set((state) => {
+        const currentScope = resolveCurrentTerminalScope(state.lastManualProjectIdByTaskId);
+        const activeVisibleTabId = getVisibleActiveTabIdFromState(state, currentScope);
+        let tabs = state.tabs;
+        let changed = false;
+
+        queuedEvents.forEach((payload) => {
+          const existing = tabs[payload.tab_id];
           if (!existing) {
-            return state;
+            return;
           }
 
-          const currentScope = resolveCurrentTerminalScope(state.lastManualProjectIdByTaskId);
-          const activeVisibleTabId = getVisibleActiveTabIdFromState(state, currentScope);
-          const tabs = {
-            ...state.tabs,
-            [existing.id]: {
-              ...existing,
-              snapshot: event.payload.snapshot,
-              updatedAt: event.payload.updated_at,
-              hasUnreadOutput: state.panelOpen && activeVisibleTabId === existing.id ? false : true,
-            },
-          };
-          const nextState: TerminalVisibilityState = {
-            tabs,
-            tabOrder: state.tabOrder,
-            panelOpen: state.panelOpen,
-            activeTabId: state.activeTabId,
-            activeTabIdByScope: state.activeTabIdByScope,
-            lastManualProjectIdByTaskId: state.lastManualProjectIdByTaskId,
-          };
+          if (!changed) {
+            tabs = { ...tabs };
+            changed = true;
+          }
 
-          return {
-            tabs,
-            hiddenTerminalTabCount: computeCurrentHiddenCount(nextState),
+          tabs[existing.id] = {
+            ...existing,
+            snapshot: payload.snapshot,
+            updatedAt: payload.updated_at,
+            hasUnreadOutput: state.panelOpen && activeVisibleTabId === existing.id ? false : true,
           };
         });
+
+        if (!changed) {
+          return state;
+        }
+
+        const nextState: TerminalVisibilityState = {
+          tabs,
+          tabOrder: state.tabOrder,
+          panelOpen: state.panelOpen,
+          activeTabId: state.activeTabId,
+          activeTabIdByScope: state.activeTabIdByScope,
+          lastManualProjectIdByTaskId: state.lastManualProjectIdByTaskId,
+        };
+
+        return {
+          tabs,
+          hiddenTerminalTabCount: computeCurrentHiddenCount(nextState),
+        };
+      });
+    };
+
+    const queueOutputEvent = (payload: tauriIpc.TerminalOutputEvent) => {
+      pendingOutputEvents[payload.tab_id] = payload;
+
+      if (outputFlushTimer !== null) {
+        return;
+      }
+
+      if (typeof window === 'undefined') {
+        flushPendingOutputEvents();
+        return;
+      }
+
+      outputFlushTimer = window.setTimeout(() => {
+        flushPendingOutputEvents();
+      }, 16);
+    };
+
+    eventUnlisteners = await Promise.all([
+      listen<tauriIpc.TerminalOutputEvent>('terminal:output', (event) => {
+        queueOutputEvent(event.payload);
       }),
       listen<tauriIpc.TerminalTabDto>('terminal:tab', (event) => {
         const existing = get().tabs[event.payload.id];
