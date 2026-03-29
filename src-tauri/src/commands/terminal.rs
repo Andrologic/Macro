@@ -11,6 +11,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -20,6 +21,7 @@ use uuid::Uuid;
 const DEFAULT_TERMINAL_COLS: u16 = 120;
 const DEFAULT_TERMINAL_ROWS: u16 = 32;
 const MAX_TERMINAL_SNAPSHOT_BYTES: usize = 1_000_000;
+const OUTPUT_FLUSH_DELAY_MS: u64 = 16;
 
 #[derive(Clone, Default)]
 pub struct TerminalSessionStore {
@@ -88,6 +90,8 @@ struct LiveTerminalRuntime {
     record: TerminalTabRecord,
     scan_buffer: String,
     pending_command: Option<PendingCommand>,
+    pending_output: String,
+    output_flush_scheduled: bool,
 }
 
 struct PendingCommand {
@@ -519,6 +523,50 @@ fn emit_output(app_handle: &AppHandle, record: &TerminalTabRecord, data: String)
     );
 }
 
+fn take_pending_output_batch(
+    runtime: &mut LiveTerminalRuntime,
+) -> Option<(String, TerminalTabRecord)> {
+    runtime.output_flush_scheduled = false;
+    if runtime.pending_output.is_empty() {
+        return None;
+    }
+
+    Some((
+        std::mem::take(&mut runtime.pending_output),
+        runtime.record.clone(),
+    ))
+}
+
+async fn flush_live_output(
+    app_handle: AppHandle,
+    db_pool: DbPool,
+    runtime: Arc<Mutex<LiveTerminalRuntime>>,
+) {
+    let maybe_batch = {
+        let mut runtime_guard = runtime.lock().await;
+        take_pending_output_batch(&mut runtime_guard)
+    };
+
+    if let Some((data, record)) = maybe_batch {
+        emit_output(&app_handle, &record, data);
+        persist_terminal_tab_record(db_pool, record).await;
+    }
+}
+
+fn schedule_live_output_flush(
+    app_handle: AppHandle,
+    db_pool: DbPool,
+    runtime: Arc<Mutex<LiveTerminalRuntime>>,
+    immediate: bool,
+) {
+    tauri::async_runtime::spawn(async move {
+        if !immediate {
+            tokio::time::sleep(Duration::from_millis(OUTPUT_FLUSH_DELAY_MS)).await;
+        }
+        flush_live_output(app_handle, db_pool, runtime).await;
+    });
+}
+
 fn spawn_reader_task(
     app_handle: AppHandle,
     db_pool: DbPool,
@@ -574,7 +622,7 @@ fn handle_live_output(
     let mut visible_output = String::new();
     let mut completed_exit_code: Option<i32> = None;
     let mut completion_tx: Option<oneshot::Sender<i32>> = None;
-    let record = {
+    let (record, should_schedule_output_flush, should_force_output_flush) = {
         let mut runtime_guard = runtime.blocking_lock();
         if let Some(mut pending) = runtime_guard.pending_command.take() {
             let combined = format!("{}{}", runtime_guard.scan_buffer, chunk);
@@ -601,6 +649,7 @@ fn handle_live_output(
 
         if !visible_output.is_empty() {
             append_snapshot(&mut runtime_guard.record.snapshot, &visible_output);
+            runtime_guard.pending_output.push_str(&visible_output);
             runtime_guard.record.updated_at = current_timestamp();
         }
 
@@ -610,21 +659,41 @@ fn handle_live_output(
             runtime_guard.record.updated_at = current_timestamp();
         }
 
-        runtime_guard.record.clone()
+        let should_schedule_output_flush =
+            !visible_output.is_empty() && !runtime_guard.output_flush_scheduled;
+        let should_force_output_flush = !visible_output.is_empty() && completed_exit_code.is_some();
+        if should_schedule_output_flush {
+            runtime_guard.output_flush_scheduled = true;
+        }
+
+        (
+            runtime_guard.record.clone(),
+            should_schedule_output_flush,
+            should_force_output_flush,
+        )
     };
 
-    if !visible_output.is_empty() {
-        emit_output(&app_handle, &record, visible_output);
+    if should_schedule_output_flush {
+        schedule_live_output_flush(
+            app_handle.clone(),
+            db_pool.clone(),
+            runtime.clone(),
+            completed_exit_code.is_some(),
+        );
+    } else if should_force_output_flush {
+        schedule_live_output_flush(app_handle.clone(), db_pool.clone(), runtime.clone(), true);
     }
 
     if completed_exit_code.is_some() {
         emit_tab_update(&app_handle, &record, true);
     }
 
-    let record_for_persist = record.clone();
-    tauri::async_runtime::spawn(async move {
-        persist_terminal_tab_record(db_pool, record_for_persist).await;
-    });
+    if completed_exit_code.is_some() && visible_output.is_empty() {
+        let record_for_persist = record.clone();
+        tauri::async_runtime::spawn(async move {
+            persist_terminal_tab_record(db_pool, record_for_persist).await;
+        });
+    }
 
     if let (Some(exit_code), Some(tx)) = (completed_exit_code, completion_tx) {
         let _ = tx.send(exit_code);
@@ -644,10 +713,11 @@ fn handle_live_disconnect(
     }
 
     let mut completion_tx: Option<oneshot::Sender<i32>> = None;
-    let maybe_record = {
+    let (pending_output_batch, maybe_record) = {
         let mut runtime_guard = runtime.blocking_lock();
+        let pending_output_batch = take_pending_output_batch(&mut runtime_guard);
         if runtime_guard.record.status == "closed" {
-            None
+            (pending_output_batch, None)
         } else {
             if let Some(pending) = runtime_guard.pending_command.as_mut() {
                 completion_tx = pending.completion_tx.take();
@@ -655,9 +725,13 @@ fn handle_live_disconnect(
             runtime_guard.pending_command = None;
             runtime_guard.record.status = "disconnected".to_string();
             runtime_guard.record.updated_at = current_timestamp();
-            Some(runtime_guard.record.clone())
+            (pending_output_batch, Some(runtime_guard.record.clone()))
         }
     };
+
+    if let Some((data, record)) = pending_output_batch {
+        emit_output(&app_handle, &record, data);
+    }
 
     if let Some(record) = maybe_record {
         emit_tab_update(&app_handle, &record, false);
@@ -730,6 +804,8 @@ async fn spawn_live_tab(
         record: record.clone(),
         scan_buffer: String::new(),
         pending_command: None,
+        pending_output: String::new(),
+        output_flush_scheduled: false,
     }));
 
     let session = LiveTerminalSession {

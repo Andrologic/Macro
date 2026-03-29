@@ -274,6 +274,41 @@
     @apply bg-card border-r border-border;
   }
 
+  .macro-terminal-shell {
+    @apply h-full w-full bg-background p-3;
+    overflow: hidden;
+  }
+
+  .macro-terminal-host {
+    @apply h-full w-full overflow-hidden rounded-md;
+    background: rgb(var(--background));
+  }
+
+  .macro-terminal-shell .xterm {
+    height: 100%;
+    padding: 0;
+  }
+
+  .macro-terminal-shell .xterm-screen,
+  .macro-terminal-shell .xterm-viewport {
+    height: 100% !important;
+    width: 100% !important;
+  }
+
+  .macro-terminal-shell .xterm-viewport {
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .macro-terminal-tabs-scroll {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .macro-terminal-tabs-scroll::-webkit-scrollbar {
+    display: none;
+  }
+
   /* Code block */
   .code-block {
     @apply font-mono text-sm bg-background rounded-lg p-4 border border-border;

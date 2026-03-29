@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from '../ui/Toaster';
 import { Icon } from '../ui/Icon';
@@ -10,6 +10,7 @@ import { isManualDraftPendingInitialization } from '../../services/manualDraftIn
 import { useTaskStore } from '../../stores/useTaskStore';
 import { TerminalViewport } from './TerminalViewport';
 import TerminalTargetSplitButton from './TerminalTargetSplitButton';
+import terminalRuntime from '../../services/terminalRuntime';
 
 interface TerminalPanelProps {
   className?: string;
@@ -36,6 +37,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
   const setSelectedProject = useAppStore((state) => state.setSelectedProject);
   const projectGroups = useAppStore((state) => state.projectGroups);
   const tasks = useTaskStore((state) => state.tasks);
+  const tabStripRef = useRef<HTMLDivElement | null>(null);
+  const [tabStripOverflow, setTabStripOverflow] = useState({ left: false, right: false });
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
@@ -110,6 +113,38 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
         'Send a first message to name this feature and initialize its terminal.'
       )
     : t('implement.selectTaskToStart', 'Select a task to start implementation.');
+
+  useEffect(() => {
+    const container = tabStripRef.current;
+    if (!container) {
+      setTabStripOverflow({ left: false, right: false });
+      return;
+    }
+
+    const updateOverflow = () => {
+      const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+      setTabStripOverflow({
+        left: container.scrollLeft > 4,
+        right: maxScrollLeft - container.scrollLeft > 4,
+      });
+    };
+
+    updateOverflow();
+
+    const resizeObserver = new ResizeObserver(() => {
+      updateOverflow();
+    });
+    resizeObserver.observe(container);
+
+    container.addEventListener('scroll', updateOverflow, { passive: true });
+    window.addEventListener('resize', updateOverflow);
+
+    return () => {
+      resizeObserver.disconnect();
+      container.removeEventListener('scroll', updateOverflow);
+      window.removeEventListener('resize', updateOverflow);
+    };
+  }, [orderedTabs.length, activeVisibleTabId]);
 
   const runAction = (action: () => Promise<unknown>) => {
     void action().catch((error) => {
@@ -234,64 +269,85 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
   return (
     <section className={cn('flex h-full min-h-0 flex-col border-t border-border/60 bg-card/40', className)}>
       <header className="flex h-11 items-center justify-between gap-3 border-b border-border/60 px-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
-          {orderedTabs.map((tab) => {
-            const isActive = tab.id === activeTab.id;
-            return (
-              <div
-                key={tab.id}
-                className={cn(
-                  'group inline-flex h-8 min-w-0 max-w-[240px] shrink-0 items-center gap-1 overflow-hidden rounded-md border pr-1 text-xs transition-colors',
-                  isActive
-                    ? 'border-primary/30 bg-primary/10 text-foreground'
-                    : 'border-transparent bg-transparent text-muted-foreground hover:border-border hover:bg-accent/50 hover:text-foreground'
-                )}
-              >
-                <button
-                  type="button"
-                  onClick={() => activateTab(tab.id)}
-                  title={tab.title}
-                  className="inline-flex min-w-0 flex-1 items-center gap-2 overflow-hidden px-3"
-                >
-                  <span
-                    className={cn(
-                      'h-2 w-2 shrink-0 rounded-full',
-                      tab.status === 'running'
-                        ? 'bg-amber-400'
-                        : tab.hasLiveSession
-                          ? 'bg-emerald-400'
-                          : 'bg-muted-foreground/60'
-                    )}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-left">{tab.title}</span>
-                  {tab.hasUnreadOutput && !isActive && (
-                    <span className="h-2 w-2 shrink-0 rounded-full bg-primary" />
+        <div className="relative min-w-0 flex-1">
+          <div
+            ref={tabStripRef}
+            className="macro-terminal-tabs-scroll flex min-w-0 items-center gap-2 overflow-x-auto"
+          >
+            {orderedTabs.map((tab) => {
+              const isActive = tab.id === activeTab.id;
+              return (
+                <div
+                  key={tab.id}
+                  className={cn(
+                    'group inline-flex h-8 min-w-0 max-w-[280px] shrink-0 items-center gap-1 overflow-hidden rounded-md border pr-1 text-xs transition-colors',
+                    isActive
+                      ? 'border-primary/30 bg-primary/10 text-foreground'
+                      : 'border-transparent bg-transparent text-muted-foreground hover:border-border hover:bg-accent/50 hover:text-foreground'
                   )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => runAction(() => closeTab(tab.id))}
-                  className="hidden shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:inline-flex"
-                  title={t('common.close', 'Close')}
                 >
-                  <Icon name="x" size={12} />
-                </button>
-              </div>
-            );
-          })}
+                  <button
+                    type="button"
+                    onClick={() => activateTab(tab.id)}
+                    title={tab.title}
+                    className="inline-flex min-w-0 flex-1 items-center gap-2 overflow-hidden px-3"
+                  >
+                    <span
+                      className={cn(
+                        'h-2 w-2 shrink-0 rounded-full',
+                        tab.status === 'running'
+                          ? 'bg-amber-400'
+                          : tab.hasLiveSession
+                            ? 'bg-emerald-400'
+                            : 'bg-muted-foreground/60'
+                      )}
+                    />
+                    <span className="min-w-0 flex-1 truncate text-left">{tab.title}</span>
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        'h-2 w-2 shrink-0 rounded-full transition-opacity',
+                        tab.hasUnreadOutput && !isActive ? 'bg-primary opacity-100' : 'opacity-0'
+                      )}
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      runAction(async () => {
+                        await closeTab(tab.id);
+                        terminalRuntime.disposeTab(tab.id);
+                      })
+                    }
+                    className={cn(
+                      'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm p-0.5 text-muted-foreground transition-all hover:bg-accent hover:text-foreground',
+                      isActive
+                        ? 'opacity-100'
+                        : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100'
+                    )}
+                    title={t('common.close', 'Close')}
+                  >
+                    <Icon name="x" size={12} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <div
+            className={cn(
+              'pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-card/95 to-transparent transition-opacity',
+              tabStripOverflow.left ? 'opacity-100' : 'opacity-0'
+            )}
+          />
+          <div
+            className={cn(
+              'pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-card/95 to-transparent transition-opacity',
+              tabStripOverflow.right ? 'opacity-100' : 'opacity-0'
+            )}
+          />
         </div>
 
         <div className="flex items-center gap-1">
-          {!activeTab.hasLiveSession && (
-            <button
-              type="button"
-              onClick={() => runAction(() => reconnectTab(activeTab.id))}
-              className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs text-foreground hover:bg-accent"
-            >
-              <Icon name="refresh-cw" size={12} />
-              {t('terminal.reconnect', 'Reconnect')}
-            </button>
-          )}
           <TerminalTargetSplitButton
             variant="icon"
             icon="plus"
@@ -305,6 +361,31 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
           />
         </div>
       </header>
+
+      {!activeTab.hasLiveSession && (
+        <div className="flex items-center justify-between gap-3 border-b border-border/60 bg-card/70 px-3 py-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-xs font-medium text-foreground">
+              <Icon name="alert-circle" size={12} />
+              {t('terminal.disconnected', 'Disconnected session')}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t(
+                'terminal.disconnectedDescription',
+                'This tab was restored from history. Start a new live shell to continue interacting.'
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => runAction(() => reconnectTab(activeTab.id))}
+            className="inline-flex shrink-0 items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            <Icon name="refresh-cw" size={12} />
+            {t('terminal.reconnect', 'Reconnect')}
+          </button>
+        </div>
+      )}
 
       <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
         <TerminalViewport
@@ -323,31 +404,6 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
             void resizeTab(activeTab.id, cols, rows).catch(() => undefined);
           }}
         />
-
-        {!activeTab.hasLiveSession && (
-          <div className="absolute inset-x-4 top-4 flex justify-end">
-            <div className="max-w-sm rounded-lg border border-border bg-card/95 px-3 py-2 text-xs text-muted-foreground shadow-lg">
-              <div className="mb-2 flex items-center gap-2 text-foreground">
-                <Icon name="alert-circle" size={12} />
-                {t('terminal.disconnected', 'Disconnected session')}
-              </div>
-              <p>
-                {t(
-                  'terminal.disconnectedDescription',
-                  'This tab was restored from history. Start a new live shell to continue interacting.'
-                )}
-              </p>
-              <button
-                type="button"
-                onClick={() => runAction(() => reconnectTab(activeTab.id))}
-                className="mt-3 inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-              >
-                <Icon name="refresh-cw" size={12} />
-                {t('terminal.reconnect', 'Reconnect')}
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </section>
   );
