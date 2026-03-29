@@ -1569,6 +1569,18 @@ export async function terminalReadTab(tabId: string): Promise<TerminalTabDto> {
   return invoke<TerminalTabDto>('terminal_read_tab', { tabId });
 }
 
+export async function terminalUpdateTabMetadata(params: {
+  tabId: string;
+  title: string;
+  promptContext?: TerminalPromptContextInput | null;
+}): Promise<TerminalTabDto> {
+  return invoke<TerminalTabDto>('terminal_update_tab_metadata', {
+    tabId: params.tabId,
+    title: params.title,
+    promptContext: params.promptContext ?? null,
+  });
+}
+
 export async function terminalWriteInput(params: {
   tabId: string;
   input: string;

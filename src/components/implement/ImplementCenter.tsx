@@ -8,6 +8,7 @@ import { cn } from '../../utils/cn';
 import { useTerminalStore } from '../../stores/useTerminalStore';
 import { useAppStore } from '../../stores/useAppStore';
 import { getTerminalScopeKey, resolveSelectedTaskTerminalScope } from '../../services/manualTerminalTargets';
+import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { useTaskStore } from '../../stores/useTaskStore';
 import TerminalPanel from '../terminal/TerminalPanel';
 
@@ -33,6 +34,10 @@ export const ImplementCenter: React.FC = () => {
   const selectedTask = React.useMemo(
     () => (tasks.find((task) => task.id === selectedTaskId) ?? null),
     [selectedTaskId, tasks]
+  );
+  const manualDraftPendingInitialization = React.useMemo(
+    () => isManualDraftPendingInitialization(selectedTask),
+    [selectedTask]
   );
   const terminalScope = React.useMemo(
     () =>
@@ -86,6 +91,14 @@ export const ImplementCenter: React.FC = () => {
       return tab.hasUnreadOutput || tab.status === 'running';
     }).length;
   }, [activeTabId, activeTabIdByScope, panelOpen, tabOrder, tabs, terminalScope]);
+  const terminalButtonTitle = manualDraftPendingInitialization
+    ? t(
+        'terminal.manualDraftUnavailable',
+        'Send a first message to name this feature and initialize its terminal.'
+      )
+    : !selectedTask
+      ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
+      : t('terminal.title', 'Terminal');
 
   const handleQuickOpenTerminal = React.useCallback(() => {
     if (!terminalScope) {
@@ -134,7 +147,7 @@ export const ImplementCenter: React.FC = () => {
       type="button"
       disabled={!terminalScope}
       onClick={handleQuickOpenTerminal}
-      title={t('terminal.title', 'Terminal')}
+      title={terminalButtonTitle}
       className={cn(
         'relative inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium transition-colors',
         !terminalScope
@@ -156,7 +169,20 @@ export const ImplementCenter: React.FC = () => {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className={cn('min-h-0', panelOpen ? 'flex-1' : 'h-full')}>
+      <div className={cn('min-h-0 flex flex-col', panelOpen ? 'flex-1' : 'h-full')}>
+        {manualDraftPendingInitialization && (
+          <div className="mx-3 mt-3 rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-sm text-sky-50">
+            <div className="flex items-start gap-2">
+              <Icon name="alert-circle" size={14} className="mt-0.5 shrink-0 text-sky-300" />
+              <p>
+                {t(
+                  'terminal.manualDraftBanner',
+                  'Send a first message to name this feature and initialize its terminal.'
+                )}
+              </p>
+            </div>
+          </div>
+        )}
         <ChatZone headerActions={terminalButton} />
       </div>
 

@@ -268,6 +268,7 @@ pub fn run() {
             commands::terminal::terminal_create_tab,
             commands::terminal::terminal_reconnect_tab,
             commands::terminal::terminal_read_tab,
+            commands::terminal::terminal_update_tab_metadata,
             commands::terminal::terminal_write_input,
             commands::terminal::terminal_resize,
             commands::terminal::terminal_execute_command,
