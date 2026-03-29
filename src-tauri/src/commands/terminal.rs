@@ -422,23 +422,14 @@ fn terminal_prompt_context_from_record(
     let project_label =
         trim_prompt_label(&record.mount_name).or_else(|| trim_prompt_label(&record.project_name));
     let task_label = record.task_id.as_deref().and_then(trim_prompt_label);
-    let cwd_leaf = Path::new(&record.cwd)
-        .file_name()
-        .and_then(|value| value.to_str());
-    let workspace_leaf = Path::new(&record.workspace_path)
-        .file_name()
-        .and_then(|value| value.to_str());
-    let branch_label = cwd_leaf
-        .filter(|value| Some(*value) != workspace_leaf)
-        .and_then(trim_prompt_label);
 
-    if project_label.is_none() && task_label.is_none() && branch_label.is_none() {
+    if project_label.is_none() && task_label.is_none() {
         None
     } else {
         Some(TerminalPromptContext {
             project_label,
             task_label,
-            branch_label,
+            branch_label: None,
         })
     }
 }
@@ -451,7 +442,6 @@ fn render_terminal_prompt(record: &TerminalTabRecord) -> String {
     let segments = [
         context.project_label.as_deref(),
         context.task_label.as_deref(),
-        context.branch_label.as_deref(),
     ]
     .into_iter()
     .flatten()
@@ -463,6 +453,39 @@ fn render_terminal_prompt(record: &TerminalTabRecord) -> String {
     } else {
         format!("{} > ", segments.join(" | "))
     }
+}
+
+async fn apply_live_tab_metadata_update(
+    app_handle: &AppHandle,
+    db_pool: DbPool,
+    terminal_store: &State<'_, TerminalSessionStore>,
+    tab_id: &str,
+    title: String,
+    prompt_context: Option<TerminalPromptContext>,
+) -> CommandResult<Option<TerminalTabDto>> {
+    let live_runtime = {
+        let live_tabs = terminal_store.live_tabs.lock().await;
+        live_tabs.get(tab_id).map(|session| session.runtime.clone())
+    };
+
+    let Some(runtime) = live_runtime else {
+        return Ok(None);
+    };
+
+    let (dto, record_to_persist) = {
+        let mut runtime_guard = runtime.lock().await;
+        runtime_guard.record.title = title;
+        runtime_guard.record.prompt_context_json =
+            prompt_context.and_then(|value| serde_json::to_string(&value).ok());
+        runtime_guard.record.updated_at = current_timestamp();
+        let dto = stored_tab_to_dto(&runtime_guard.record, true);
+        (dto, runtime_guard.record.clone())
+    };
+
+    emit_tab_update(app_handle, &record_to_persist, true);
+    persist_terminal_tab_record(db_pool, record_to_persist).await;
+
+    Ok(Some(dto))
 }
 
 async fn persist_terminal_tab_record(db_pool: DbPool, record: TerminalTabRecord) {
@@ -871,6 +894,49 @@ pub async fn terminal_read_tab(
     }
 
     let record = get_persisted_tab_record(&pool, &tab_id).await?;
+    Ok(stored_tab_to_dto(&record, false))
+}
+
+#[tauri::command]
+pub async fn terminal_update_tab_metadata(
+    app_handle: AppHandle,
+    pool: State<'_, DbPool>,
+    terminal_store: State<'_, TerminalSessionStore>,
+    tab_id: String,
+    title: String,
+    prompt_context: Option<TerminalPromptContext>,
+) -> CommandResult<TerminalTabDto> {
+    let normalized_title = title.trim().to_string();
+    if normalized_title.is_empty() {
+        return Err(command_error("Terminal title cannot be empty"));
+    }
+
+    if let Some(dto) = apply_live_tab_metadata_update(
+        &app_handle,
+        pool.inner().clone(),
+        &terminal_store,
+        &tab_id,
+        normalized_title.clone(),
+        prompt_context.clone(),
+    )
+    .await?
+    {
+        return Ok(dto);
+    }
+
+    let db_pool = load_db_pool(&pool).await?;
+    let mut record = repository::get_terminal_tab(&db_pool, &tab_id)
+        .await
+        .map_err(|error| command_error(error.to_string()))?
+        .ok_or_else(|| command_error(format!("Unknown terminal tab id: {}", tab_id)))?;
+    record.title = normalized_title;
+    record.prompt_context_json =
+        prompt_context.and_then(|value| serde_json::to_string(&value).ok());
+    record.updated_at = current_timestamp();
+    repository::upsert_terminal_tab(&db_pool, &record)
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
+    emit_tab_update(&app_handle, &record, false);
     Ok(stored_tab_to_dto(&record, false))
 }
 

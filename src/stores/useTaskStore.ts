@@ -40,6 +40,7 @@ import {
   removeManualFeatureMetadata,
   syncManualFeatureMetadataFromTask,
 } from '../services/manualFeatureMetadataService';
+import { isManualDraftPendingInitialization } from '../services/manualDraftInitialization';
 import {
   buildPlanFinalizationFailureState,
   buildPlanFinalizationRefreshState,
@@ -50,7 +51,7 @@ import {
   getTaskProjectCommand,
   loadTaskProjectCommandRegistry,
 } from '../services/taskProjectCommands';
-import { buildTerminalPromptContext } from '../services/terminalPromptContext';
+import { buildTerminalDisplayMetadata } from '../services/terminalDisplayMetadata';
 
 type TaskSource = 'architect' | 'mixed' | 'fallback' | 'empty';
 
@@ -963,6 +964,27 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
+    if (isManualDraftPendingInitialization(task)) {
+      const draftProjectIds = [
+        appState.selectedProjectId,
+        ...(task.project_ids ?? []),
+        task.project_id,
+      ].filter((value, index, values): value is string =>
+        typeof value === 'string' && value.trim().length > 0 && values.indexOf(value) === index
+      );
+      const projectPath =
+        draftProjectIds
+          .map((projectId) => appState.getProjectById(projectId)?.path ?? null)
+          .find((path): path is string => typeof path === 'string' && path.trim().length > 0) ?? null;
+
+      set({
+        activeBranchName: null,
+        activeRepositoryPath: projectPath,
+      });
+      await syncWorkspaceRoot(projectPath);
+      return;
+    }
+
     const branchName = task.assigned_branch;
     const preferredTarget = getPreferredExecutionTarget(task, appState.selectedProjectId);
     const primaryTarget = preferredTarget || getPrimaryExecutionTarget(task);
@@ -1046,6 +1068,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       });
 
       await get().refreshFromPlan();
+      await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId: params.taskId });
       await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
         set({ lastError: message });
       });
@@ -1129,6 +1152,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
         await tauriIpc.workspaceRenameManualFeature({ taskId, title: nextTitle });
         await get().refreshFromPlan();
+        await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId });
         await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
           set({ lastError: message });
         });
@@ -1162,6 +1186,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       }
 
       await get().refreshFromPlan();
+      await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId });
     } catch (error) {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
@@ -1502,6 +1527,16 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return null;
     }
 
+    if (isManualDraftPendingInitialization(task)) {
+      set({
+        lastError: tTask(
+          'implement.taskCommandsDraftUnsupported',
+          'No worktree is available until this feature is initialized from the first message.'
+        ),
+      });
+      return null;
+    }
+
     if (task.draft) {
       set({
         lastError: tTask(
@@ -1602,15 +1637,19 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           taskId,
           projectId: target.projectId,
           cwd: target.worktreePath,
-          title: `${task.title} · ${target.projectName}`,
-          reveal: commandEntry.openTerminalOnRun,
-          promptContext: buildTerminalPromptContext({
+          title: buildTerminalDisplayMetadata({
             projectLabel:
               useAppStore.getState().getProjectById(target.projectId)?.mountName ||
               target.projectName,
             taskLabel: task.title,
-            branchLabel: target.branchName,
-          }),
+          }).title,
+          reveal: commandEntry.openTerminalOnRun,
+          promptContext: buildTerminalDisplayMetadata({
+            projectLabel:
+              useAppStore.getState().getProjectById(target.projectId)?.mountName ||
+              target.projectName,
+            taskLabel: task.title,
+          }).promptContext,
         });
 
         set((state) => ({
