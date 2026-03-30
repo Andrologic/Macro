@@ -1,12 +1,18 @@
 import { Icon } from '../ui/Icon';
 import i18n from '../../i18n';
 import { useTauriWindow } from '../../hooks/useTauriWindow';
+import { getPlatformChromeState, type PlatformChromeState } from '../../utils/desktopPlatform';
 
-export function WindowControls() {
+interface WindowControlsProps {
+  chromeState?: PlatformChromeState;
+}
+
+export function WindowControls(
+  { chromeState = getPlatformChromeState() }: WindowControlsProps = {}
+) {
   const { isAvailable, isMaximized, minimize, maximize, unmaximize, close } = useTauriWindow();
 
-  // Don't render window controls in web mode
-  if (!isAvailable) {
+  if (!isAvailable || !chromeState.showCustomWindowControls) {
     return null;
   }
 

@@ -5,6 +5,7 @@ import {
   windowIsMaximized,
   windowMaximize,
   windowMinimize,
+  windowStartDragging,
   windowToggleMaximize,
   windowUnmaximize,
 } from '../services/tauriWindow';
@@ -119,6 +120,18 @@ export function useTauriWindow() {
     }
   }, [isAvailable]);
 
+  const startDragging = useCallback(async () => {
+    if (!isAvailable) {
+      return;
+    }
+
+    try {
+      await windowStartDragging();
+    } catch (error) {
+      console.error('Failed to start dragging window:', error);
+    }
+  }, [isAvailable]);
+
   return {
     isAvailable,
     isMaximized,
@@ -127,5 +140,6 @@ export function useTauriWindow() {
     unmaximize,
     toggleMaximize,
     close,
+    startDragging,
   };
 }

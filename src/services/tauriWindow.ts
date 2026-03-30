@@ -8,6 +8,11 @@ async function invokeWindow<T>(command: string, args?: Record<string, unknown>):
   return invoke<T>(command, args);
 }
 
+async function getCurrentTauriWindow() {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window');
+  return getCurrentWindow();
+}
+
 export { isTauriEnvironment };
 
 export async function showMainWindow(): Promise<void> {
@@ -60,4 +65,23 @@ export async function windowScaleFactor(): Promise<number> {
 
 export async function windowSetZoom(scale: number): Promise<void> {
   await invokeWindow<void>('window_set_zoom', { scale });
+}
+
+export async function windowSetBackgroundColor(color: string): Promise<void> {
+  const window = await getCurrentTauriWindow();
+  await window.setBackgroundColor(color);
+}
+
+export async function windowSetMacosAppIcon(pngBytes: Uint8Array): Promise<void> {
+  await invokeWindow<void>('set_macos_app_icon', { pngBytes: Array.from(pngBytes) });
+}
+
+export async function windowSetTheme(theme: 'light' | 'dark' | null): Promise<void> {
+  const window = await getCurrentTauriWindow();
+  await window.setTheme(theme);
+}
+
+export async function windowStartDragging(): Promise<void> {
+  const window = await getCurrentTauriWindow();
+  await window.startDragging();
 }

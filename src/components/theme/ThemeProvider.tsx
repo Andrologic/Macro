@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, createContext, useContext } from 'rea
 import { useAppStore } from '../../stores/useAppStore';
 import { applyTheme } from '../../utils/themeUtils';
 import { useDynamicAppIcon } from '../../hooks/useDynamicAppIcon';
+import { useNativeMacWindowTheme } from '../../hooks/useNativeMacWindowTheme';
 import { Theme, ThemeManifest } from '../../types/theme';
 import { devLogger } from '../../utils/devLogger';
 
@@ -204,7 +205,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [currentThemeId, setCurrentThemeId] = useState<string>('macro-dark');
   const [isLoading, setIsLoading] = useState(true);
   
-  useDynamicAppIcon(currentTheme?.colors?.primary);
+  useDynamicAppIcon(currentTheme, !isLoading);
+  useNativeMacWindowTheme(currentTheme, !isLoading);
 
   const activeThemeId = useAppStore((state) => state.activeThemeId);
   const [initialThemeId] = useState(() => activeThemeId);
