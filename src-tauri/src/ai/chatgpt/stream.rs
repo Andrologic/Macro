@@ -119,6 +119,8 @@ async fn stream_chat_inner(
                     request_id: request.request_id,
                     output_text: String::new(),
                     tool_calls: Vec::new(),
+                    tool_traces: None,
+                    hidden_context: None,
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -209,6 +211,8 @@ fn process_sse_event(
                         request_id: request_id.to_string(),
                         output_text,
                         tool_calls,
+                        tool_traces: None,
+                        hidden_context: None,
                     },
                 )
                 .map_err(|error| error.to_string())?;

@@ -1,6 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useProviderStore } from '../../../../stores/useProviderStore';
+import {
+  isLinkedProviderType,
+  providerHasAuthSession,
+  useProviderStore,
+} from '../../../../stores/useProviderStore';
 import { Icon } from '../../../ui/Icon';
 import { Button } from '../../../ui/Button';
 import { Input } from '../../../ui/Input';
@@ -30,6 +34,26 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
+const COPILOT_TROUBLESHOOT_DOCS_URL =
+  'https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/troubleshoot-copilot-cli-auth';
+const COPILOT_DEVICE_FLOW_URL = 'https://github.com/login/device';
+
+const formatBytes = (value: number): string => {
+  if (value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const normalized = value / 1024 ** exponent;
+  return `${normalized.toFixed(normalized >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+};
+
+const formatCopilotAuthSource = (authSource?: string | null): string | null => {
+  if (authSource === 'oauth') return 'Copilot login';
+  if (authSource === 'gh-cli') return 'GitHub CLI';
+  if (authSource === 'env') return 'environment token';
+  if (authSource === 'unknown') return 'another terminal session';
+  return null;
+};
+
 const providerTypeOptions = [
   { value: 'openai', labelKey: 'providers.types.openaiCompatible', fallback: 'OpenAI Compatible' },
   { value: 'anthropic', labelKey: 'providers.types.anthropic', fallback: 'Anthropic' },
@@ -44,10 +68,17 @@ export const ProvidersSettings: React.FC = () => {
   const {
     providerConfigs,
     connectionStatus,
+    copilotStatusByProvider,
+    copilotDownloadStateByProvider,
+    copilotAuthStateByProvider,
     updateProviderConfig,
     createProviderConfig,
     deleteProviderConfig,
     startChatGptAuth,
+    startCopilotRuntimeDownload,
+    cancelCopilotRuntimeDownload,
+    startCopilotAuth,
+    cancelCopilotAuth,
     authErrorsByProvider,
     disconnectProviderAuth,
     testConnection,
@@ -62,6 +93,7 @@ export const ProvidersSettings: React.FC = () => {
   );
   const [saving, setSaving] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [refreshingCopilotProviderIds, setRefreshingCopilotProviderIds] = useState<string[]>([]);
 
   const filteredProviders = useMemo(() => {
     const query = searchQuery.toLowerCase();
@@ -76,9 +108,190 @@ export const ProvidersSettings: React.FC = () => {
   const translateAuthError = (code: string, fallback: string) =>
     t(`providers.authErrors.${code}`, fallback);
 
+  const refreshCopilotProviderStatus = useCallback(
+    async (providerId: string, options?: { silent?: boolean }) => {
+      const silent = options?.silent === true;
+      if (!silent) {
+        setRefreshingCopilotProviderIds((current) =>
+          current.includes(providerId) ? current : [...current, providerId]
+        );
+      }
+
+      try {
+        await testConnection(providerId);
+      } catch {
+        // The provider card already renders the refreshed status and auth error state.
+      } finally {
+        if (!silent) {
+          setRefreshingCopilotProviderIds((current) =>
+            current.filter((currentProviderId) => currentProviderId !== providerId)
+          );
+        }
+      }
+    },
+    [testConnection]
+  );
+
+  const sequentialCopilotProviderIds = useMemo(
+    () =>
+      providerConfigs
+        .filter((provider) => provider.providerType === 'copilot')
+        .map((provider) => provider.id),
+    [providerConfigs]
+  );
+  const sequentialCopilotProviderKey = useMemo(
+    () => sequentialCopilotProviderIds.join('|'),
+    [sequentialCopilotProviderIds]
+  );
+  const sequentialCopilotProviderIdList = useMemo(
+    () => (sequentialCopilotProviderKey ? sequentialCopilotProviderKey.split('|') : []),
+    [sequentialCopilotProviderKey]
+  );
+
+  useEffect(() => {
+    if (sequentialCopilotProviderIdList.length === 0) {
+      return;
+    }
+
+    sequentialCopilotProviderIdList.forEach((providerId) => {
+      void refreshCopilotProviderStatus(providerId, { silent: true });
+    });
+  }, [refreshCopilotProviderStatus, sequentialCopilotProviderIdList]);
+
+  useEffect(() => {
+    if (sequentialCopilotProviderIdList.length === 0) {
+      return;
+    }
+
+    const refreshOnFocus = () => {
+      sequentialCopilotProviderIdList.forEach((providerId) => {
+        void refreshCopilotProviderStatus(providerId, { silent: true });
+      });
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshOnFocus();
+      }
+    };
+
+    window.addEventListener('focus', refreshOnFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('focus', refreshOnFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [refreshCopilotProviderStatus, sequentialCopilotProviderIdList]);
+
+  const openExternalDocs = (url: string) => {
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  const copyToClipboard = useCallback(
+    async (value: string, successMessage: string) => {
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        toast.success(successMessage);
+      } catch (error) {
+        toast.error(getErrorMessage(error, 'Failed to copy'));
+      }
+    },
+    []
+  );
+
   const getProviderStatus = (provider: ProviderConfig) => {
-    if (provider.providerType === 'chatgpt') {
+    if (provider.providerType === 'copilot') {
+      const runtime = copilotStatusByProvider[provider.id];
+      const downloadState = copilotDownloadStateByProvider[provider.id];
+      const authState = copilotAuthStateByProvider[provider.id];
+      const isRefreshing = refreshingCopilotProviderIds.includes(provider.id);
+
+      if (downloadState) {
+        return {
+          label: t('providers.status.downloading', 'Downloading'),
+          dot: 'bg-blue-500',
+          text: 'text-blue-600',
+        };
+      }
+
+      if (authState) {
+        return {
+          label: t('providers.status.connecting', 'Connecting'),
+          dot: 'bg-blue-500',
+          text: 'text-blue-600',
+        };
+      }
+
+      if (isRefreshing && !runtime) {
+        return {
+          label: t('providers.status.checking', 'Checking'),
+          dot: 'bg-blue-500',
+          text: 'text-blue-600',
+        };
+      }
+
+      if (!runtime || runtime.runtime_status === 'missing') {
+        return {
+          label: t('providers.status.runtimeMissing', 'Not installed'),
+          dot: 'bg-amber-500',
+          text: 'text-amber-600',
+        };
+      }
+
+      if (runtime.runtime_status === 'update_required') {
+        return {
+          label: t('providers.status.updateRequired', 'Update required'),
+          dot: 'bg-amber-500',
+          text: 'text-amber-600',
+        };
+      }
+
+      if (runtime.runtime_status === 'error') {
+        return {
+          label: t('providers.status.error', 'Error'),
+          dot: 'bg-red-500',
+          text: 'text-red-600',
+        };
+      }
+
+      if (runtime.auth_status === 'connected') {
+        return {
+          label: t('providers.status.connected', 'Connected'),
+          dot: 'bg-emerald-500',
+          text: 'text-emerald-600',
+        };
+      }
+
+      if (runtime.auth_status === 'policy_blocked') {
+        return {
+          label: t('providers.status.policyBlocked', 'Policy blocked'),
+          dot: 'bg-red-500',
+          text: 'text-red-600',
+        };
+      }
+
+      if (runtime.auth_status === 'quota_or_auth_error' || runtime.auth_status === 'error') {
+        return {
+          label: t('providers.status.error', 'Error'),
+          dot: 'bg-red-500',
+          text: 'text-red-600',
+        };
+      }
+
+      return {
+        label: t('providers.status.notLinked', 'Not linked'),
+        dot: 'bg-muted-foreground',
+        text: 'text-muted-foreground',
+      };
+    }
+
+    if (isLinkedProviderType(provider.providerType)) {
       const authStatus = provider.authStatus ?? 'unauthenticated';
+
       if (authStatus === 'authorizing') {
         return {
           label: t('providers.status.connecting', 'Connecting'),
@@ -86,6 +299,7 @@ export const ProvidersSettings: React.FC = () => {
           text: 'text-blue-600',
         };
       }
+
       if (authStatus === 'refreshing') {
         return {
           label: t('providers.status.refreshing', 'Refreshing'),
@@ -93,13 +307,15 @@ export const ProvidersSettings: React.FC = () => {
           text: 'text-blue-600',
         };
       }
-      if (authStatus === 'authenticated') {
+
+      if (authStatus === 'authenticated' || authStatus === 'connected') {
         return {
           label: t('providers.status.linked', 'Linked'),
           dot: 'bg-emerald-500',
           text: 'text-emerald-600',
         };
       }
+
       if (authStatus === 'expired') {
         return {
           label: t('providers.status.expired', 'Expired'),
@@ -107,13 +323,23 @@ export const ProvidersSettings: React.FC = () => {
           text: 'text-amber-600',
         };
       }
-      if (authStatus === 'error') {
+
+      if (authStatus === 'policy_blocked') {
+        return {
+          label: t('providers.status.policyBlocked', 'Policy blocked'),
+          dot: 'bg-red-500',
+          text: 'text-red-600',
+        };
+      }
+
+      if (authStatus === 'quota_or_auth_error' || authStatus === 'error') {
         return {
           label: t('providers.status.error', 'Error'),
           dot: 'bg-red-500',
           text: 'text-red-600',
         };
       }
+
       return {
         label: t('providers.status.notLinked', 'Not linked'),
         dot: 'bg-muted-foreground',
@@ -259,11 +485,13 @@ export const ProvidersSettings: React.FC = () => {
   };
 
   if (editingProvider) {
+    const showLinkedFields = !isLinkedProviderType(editingProvider.providerType);
+
     return (
       <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
-        <div className="flex items-center justify-between pb-4 border-b border-border">
+        <div className="flex items-center justify-between border-b border-border pb-4">
           <div className="flex items-center gap-2">
-            <button onClick={() => setEditingProvider(null)} className="p-1 hover:bg-muted rounded-full">
+            <button onClick={() => setEditingProvider(null)} className="rounded-full p-1 hover:bg-muted">
               <Icon name="arrow-left" size={18} />
             </button>
             <h3 className="text-lg font-medium">
@@ -275,7 +503,7 @@ export const ProvidersSettings: React.FC = () => {
           {!isCreating && (
             <Button
               variant="ghost"
-              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
               onClick={() => setIsDeleteConfirmOpen(true)}
             >
               <Icon name="trash" size={16} className="mr-2" />
@@ -284,7 +512,7 @@ export const ProvidersSettings: React.FC = () => {
           )}
         </div>
 
-        <div className="space-y-4 max-w-xl">
+        <div className="max-w-xl space-y-4">
           <div className="space-y-1">
             <label className="text-sm font-medium">{t('common.name', 'Name')}</label>
             <Input
@@ -300,7 +528,7 @@ export const ProvidersSettings: React.FC = () => {
             <div className="space-y-1">
               <label className="text-sm font-medium">{t('common.type', 'Type')}</label>
               <select
-                className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
+                className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
                 value={editingProvider.providerType}
                 onChange={(event) =>
                   setEditingProvider({ ...editingProvider, providerType: event.target.value })
@@ -316,7 +544,7 @@ export const ProvidersSettings: React.FC = () => {
 
             <div className="space-y-1">
               <label className="text-sm font-medium">{t('common.status', 'Status')}</label>
-              <div className="flex items-center h-9 px-1">
+              <div className="flex h-9 items-center px-1">
                 <span className="mr-3 text-sm text-muted-foreground">
                   {editingProvider.isEnabled
                     ? t('common.enabled', 'Enabled')
@@ -332,7 +560,7 @@ export const ProvidersSettings: React.FC = () => {
             </div>
           </div>
 
-          {editingProvider.providerType !== 'chatgpt' && (
+          {showLinkedFields && (
             <>
               <div className="space-y-1">
                 <label className="text-sm font-medium">
@@ -366,7 +594,7 @@ export const ProvidersSettings: React.FC = () => {
           {testResult && (
             <div
               className={cn(
-                'p-3 rounded-md text-sm',
+                'rounded-md p-3 text-sm',
                 testResult.success
                   ? 'bg-emerald-500/10 text-emerald-500'
                   : 'bg-destructive/10 text-destructive'
@@ -380,7 +608,7 @@ export const ProvidersSettings: React.FC = () => {
           )}
 
           <div className="flex items-center justify-end gap-3 pt-4">
-            {editingProvider.providerType !== 'chatgpt' && (
+            {showLinkedFields && (
               <Button variant="secondary" onClick={handleTest} isLoading={testingId === 'current'}>
                 {t('providers.testConnection', 'Test Connection')}
               </Button>
@@ -434,17 +662,127 @@ export const ProvidersSettings: React.FC = () => {
         {filteredProviders.map((provider) => {
           const status = getProviderStatus(provider);
           const authError = authErrorsByProvider[provider.id];
-          const hasKey =
-            provider.providerType === 'chatgpt'
-              ? ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '')
-              : !!provider.apiKey;
+          const hasLinkedSession = providerHasAuthSession(provider);
 
-          if (provider.providerType === 'chatgpt') {
+          if (isLinkedProviderType(provider.providerType)) {
+            const isCopilot = provider.providerType === 'copilot';
+            const isRefreshingCopilotStatus =
+              isCopilot && refreshingCopilotProviderIds.includes(provider.id);
+            const copilotStatus = isCopilot ? copilotStatusByProvider[provider.id] : undefined;
+            const copilotDownloadState = isCopilot
+              ? copilotDownloadStateByProvider[provider.id]
+              : undefined;
+            const copilotAuthState = isCopilot ? copilotAuthStateByProvider[provider.id] : undefined;
+            const isCopilotDownloading = !!copilotDownloadState;
+            const isCopilotAuthorizing = !!copilotAuthState;
+            const showDownloadCopilotCta =
+              isCopilot &&
+              !isCopilotDownloading &&
+              !isCopilotAuthorizing &&
+              (!copilotStatus ||
+                copilotStatus.runtime_status === 'missing' ||
+                copilotStatus.runtime_status === 'update_required');
+            const showTroubleshootCopilotCta =
+              isCopilot &&
+              !isCopilotDownloading &&
+              !isCopilotAuthorizing &&
+              !!copilotStatus &&
+              (copilotStatus.runtime_status === 'error' ||
+                ['policy_blocked', 'quota_or_auth_error', 'error'].includes(
+                  copilotStatus.auth_status
+                ));
+            const showConnectCopilotCta =
+              isCopilot &&
+              !isCopilotDownloading &&
+              !isCopilotAuthorizing &&
+              !!copilotStatus &&
+              copilotStatus.runtime_status === 'ready' &&
+              copilotStatus.auth_status === 'login_required';
+            const showChatGptConnectCta = !isCopilot && !hasLinkedSession;
+            const showDisconnectCta = !isCopilot && hasLinkedSession;
+            const copilotSourceLabel = formatCopilotAuthSource(copilotStatus?.auth_source);
+            const copilotConnectionHint =
+              copilotStatus?.auth_source === 'oauth'
+                ? t(
+                    'providers.copilot.oauthConnectedHint',
+                    'Use Copilot CLI on this machine to switch accounts.'
+                  )
+                : copilotStatus?.auth_source === 'gh-cli'
+                  ? t(
+                      'providers.copilot.ghCliConnectedHint',
+                      'Using the GitHub CLI session available on this machine.'
+                    )
+                  : copilotStatus?.auth_source === 'env'
+                    ? t(
+                        'providers.copilot.envConnectedHint',
+                        'Using a Copilot token provided by this machine environment.'
+                      )
+                    : t(
+                        'providers.copilot.connectedInTerminalHint',
+                        'Connected in this machine terminal session.'
+                      );
+            const linkedHint = isCopilot
+              ? isCopilotDownloading
+                ? copilotDownloadState?.totalBytes
+                  ? `${copilotDownloadState.message} • ${formatBytes(copilotDownloadState.downloadedBytes)} / ${formatBytes(copilotDownloadState.totalBytes)}`
+                  : copilotDownloadState?.message || 'Downloading GitHub Copilot runtime...'
+                : isCopilotAuthorizing
+                  ? copilotAuthState?.message ||
+                    'Finish GitHub Copilot login in your browser with the device code below.'
+                  : !copilotStatus || copilotStatus.runtime_status === 'missing'
+                    ? t(
+                        'providers.copilot.downloadHint',
+                        'Download the official GitHub Copilot runtime to continue.'
+                      )
+                    : copilotStatus.runtime_status === 'update_required'
+                      ? copilotStatus.error_message ||
+                        t(
+                          'providers.copilot.updateHint',
+                          'Download a Macro-managed GitHub Copilot runtime to continue.'
+                        )
+                      : copilotStatus.runtime_status === 'error' || showTroubleshootCopilotCta
+                        ? authError?.message ||
+                          copilotStatus.error_message ||
+                          copilotStatus.status_message ||
+                          t(
+                            'providers.copilot.troubleshootHint',
+                            'GitHub Copilot needs attention before it can be used.'
+                          )
+                        : copilotStatus.auth_status === 'connected'
+                          ? [
+                              provider.accountLabel,
+                              copilotSourceLabel,
+                              copilotConnectionHint,
+                            ]
+                              .filter(Boolean)
+                              .join(' • ')
+                          : t(
+                              'providers.copilot.connectHint',
+                              'Connect GitHub Copilot to finish setup.'
+                            )
+              : provider.accountLabel ||
+                t('providers.connectBrowserHint', 'Connect with ChatGPT in your browser.');
+            const showAuthError =
+              !!authError &&
+              (!isCopilot ||
+                showTroubleshootCopilotCta ||
+                copilotStatus?.runtime_status === 'error');
+            const copilotDownloadProgressPercent =
+              copilotDownloadState?.totalBytes && copilotDownloadState.totalBytes > 0
+                ? Math.min(
+                    100,
+                    Math.round(
+                      (copilotDownloadState.downloadedBytes / copilotDownloadState.totalBytes) * 100
+                    )
+                  )
+                : null;
+            const copilotDeviceUrl = copilotAuthState?.verificationUrl || COPILOT_DEVICE_FLOW_URL;
+
             return (
-              <div key={provider.id} className="bg-card border border-border rounded-xl">
+              <div key={provider.id} className="rounded-xl border border-border bg-card">
                 <div className="flex items-center justify-between p-4">
                   <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-primary/10 text-primary">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
                       <Icon name="cpu" size={20} />
                     </div>
                     <div>
@@ -455,74 +793,242 @@ export const ProvidersSettings: React.FC = () => {
                         <span>{provider.baseUrl}</span>
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
-                        {provider.accountLabel ||
-                          t(
-                            'providers.connectBrowserHint',
-                            'Connect with ChatGPT in your browser.'
-                          )}
-                        {provider.planType ? ` • ${provider.planType}` : ''}
+                        {linkedHint}
+                        {!isCopilot && provider.planType ? ` • ${provider.planType}` : ''}
                       </div>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1.5 px-2 py-1 bg-muted/50 rounded-md">
-                      <div className={cn('w-2 h-2 rounded-full', status.dot)} />
+                    <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
+                      <div className={cn('h-2 w-2 rounded-full', status.dot)} />
                       <span className={cn('text-xs font-medium', status.text)}>{status.label}</span>
                     </div>
 
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={async () => {
-                        try {
-                          await startChatGptAuth(provider.id);
-                          toast.success(t('providers.chatgptLinked', 'ChatGPT linked'));
-                        } catch (error) {
-                          toast.error(
-                            getErrorMessage(
+                    {isRefreshingCopilotStatus ? (
+                      <Button variant="ghost" size="sm" isLoading>
+                        {t('providers.status.checking', 'Checking')}
+                      </Button>
+                    ) : isCopilotDownloading ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void cancelCopilotRuntimeDownload(provider.id)}
+                      >
+                        {t('common.cancel', 'Cancel')}
+                      </Button>
+                    ) : showDownloadCopilotCta ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            await startCopilotRuntimeDownload(provider.id);
+                            toast.success(
+                              t(
+                                'providers.copilot.runtimeDownloaded',
+                                'GitHub Copilot runtime is ready'
+                              )
+                            );
+                          } catch (error) {
+                            const message = getErrorMessage(
                               error,
                               t(
-                                'providers.failedConnectChatGpt',
-                                'Failed to connect with ChatGPT'
+                                'providers.copilot.runtimeDownloadFailed',
+                                'Failed to download GitHub Copilot runtime'
                               )
-                            )
-                          );
-                        }
-                      }}
-                      disabled={provider.authStatus === 'authorizing'}
-                    >
-                      {provider.authStatus === 'authorizing'
-                        ? t('providers.connectingChatGpt', 'Connecting…')
-                        : t('providers.connectChatGpt', 'Connect with ChatGPT')}
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={async () => {
-                        try {
-                          await disconnectProviderAuth(provider.id);
-                          toast.success(
-                            t('providers.chatgptDisconnected', 'ChatGPT disconnected')
-                          );
-                        } catch (error) {
-                          toast.error(
-                            getErrorMessage(
+                            );
+                            if (message !== 'GitHub Copilot runtime download was cancelled.') {
+                              toast.error(message);
+                            }
+                          }
+                        }}
+                      >
+                        {t('providers.copilot.downloadRuntime', 'Download Copilot')}
+                      </Button>
+                    ) : showTroubleshootCopilotCta ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openExternalDocs(COPILOT_TROUBLESHOOT_DOCS_URL)}
+                      >
+                        {t('providers.copilot.troubleshoot', 'Troubleshoot')}
+                      </Button>
+                    ) : showConnectCopilotCta ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            await startCopilotAuth(provider.id);
+                            toast.success(
+                              t('providers.copilotLinked', 'GitHub Copilot linked')
+                            );
+                          } catch (error) {
+                            const message = getErrorMessage(
                               error,
-                              t('providers.failedDisconnect', 'Failed to disconnect')
-                            )
-                          );
-                        }
-                      }}
-                      disabled={!hasKey}
-                    >
-                      {t('providers.disconnect', 'Disconnect')}
-                    </Button>
+                              t(
+                                'providers.failedConnectCopilot',
+                                'Failed to connect with GitHub Copilot'
+                              )
+                            );
+                            if (message !== 'GitHub Copilot login was cancelled.') {
+                              toast.error(message);
+                            }
+                          }
+                        }}
+                      >
+                        {t('providers.connectCopilot', 'Connect GitHub Copilot')}
+                      </Button>
+                    ) : showChatGptConnectCta ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            await startChatGptAuth(provider.id);
+                            toast.success(t('providers.chatgptLinked', 'ChatGPT linked'));
+                          } catch (error) {
+                            toast.error(
+                              getErrorMessage(
+                                error,
+                                t('providers.failedConnectChatGpt', 'Failed to connect with ChatGPT')
+                              )
+                            );
+                          }
+                        }}
+                      >
+                        {provider.authStatus === 'authorizing'
+                          ? t('providers.connectingChatGpt', 'Connecting…')
+                          : t('providers.connectChatGpt', 'Connect with ChatGPT')}
+                      </Button>
+                    ) : null}
+
+                    {isCopilot && !isRefreshingCopilotStatus && !isCopilotDownloading ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void refreshCopilotProviderStatus(provider.id)}
+                      >
+                        {t('providers.copilot.recheckStatus', 'Re-check status')}
+                      </Button>
+                    ) : null}
+
+                    {showDisconnectCta && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            await disconnectProviderAuth(provider.id);
+                            toast.success(
+                              isCopilot
+                                ? t('providers.copilotDisconnected', 'GitHub Copilot disconnected')
+                                : t('providers.chatgptDisconnected', 'ChatGPT disconnected')
+                            );
+                          } catch (error) {
+                            toast.error(
+                              getErrorMessage(
+                                error,
+                                t('providers.failedDisconnect', 'Failed to disconnect')
+                              )
+                            );
+                          }
+                        }}
+                        disabled={!hasLinkedSession}
+                      >
+                        {t('providers.disconnect', 'Disconnect')}
+                      </Button>
+                    )}
                   </div>
                 </div>
 
-                {authError && (
+                {isCopilotDownloading && copilotDownloadState && (
+                  <div className="mx-4 mb-4 rounded-lg border border-border/60 bg-muted/20 p-3">
+                    <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                      <span>{copilotDownloadState.message}</span>
+                      {copilotDownloadState.totalBytes ? (
+                        <span className="font-mono">
+                          {formatBytes(copilotDownloadState.downloadedBytes)} /{' '}
+                          {formatBytes(copilotDownloadState.totalBytes)}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all"
+                        style={{
+                          width:
+                            copilotDownloadProgressPercent === null
+                              ? '20%'
+                              : `${copilotDownloadProgressPercent}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {isCopilotAuthorizing && copilotAuthState && (
+                  <div className="mx-4 mb-4 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm">
+                    <div className="font-medium text-foreground">
+                      {t('providers.copilot.finishLoginTitle', 'Finish login in your browser')}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {copilotAuthState.message}
+                    </div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <div className="rounded-md border border-border/70 bg-background px-3 py-2">
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                          {t('providers.copilot.deviceCode', 'Device code')}
+                        </div>
+                        <div className="mt-1 font-mono text-lg text-foreground">
+                          {copilotAuthState.userCode || '...'}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-border/70 bg-background px-3 py-2">
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                          {t('providers.copilot.browserUrl', 'Browser URL')}
+                        </div>
+                        <div className="mt-1 break-all text-xs text-foreground">
+                          {copilotDeviceUrl}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() =>
+                          void copyToClipboard(
+                            copilotAuthState.userCode || '',
+                            t('providers.copilot.codeCopied', 'Device code copied')
+                          )
+                        }
+                        disabled={!copilotAuthState.userCode}
+                      >
+                        <Icon name="copy" size={14} />
+                        {t('providers.copilot.copyCode', 'Copy code')}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openExternalDocs(copilotDeviceUrl)}
+                      >
+                        <Icon name="external-link" size={14} />
+                        {t('providers.copilot.openBrowser', 'Open browser')}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void cancelCopilotAuth(provider.id)}
+                      >
+                        {t('common.cancel', 'Cancel')}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {showAuthError && authError && (
                   <div className="mx-4 mb-4 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                     {translateAuthError(authError.code, authError.message)}
                   </div>
@@ -532,12 +1038,12 @@ export const ProvidersSettings: React.FC = () => {
           }
 
           return (
-            <div key={provider.id} className="bg-card border border-border rounded-xl">
+            <div key={provider.id} className="rounded-xl border border-border bg-card">
               <div className="flex items-center justify-between p-4">
                 <div className="flex items-center gap-4">
                   <div
                     className={cn(
-                      'w-10 h-10 rounded-lg flex items-center justify-center',
+                      'flex h-10 w-10 items-center justify-center rounded-lg',
                       provider.isEnabled
                         ? 'bg-primary/10 text-primary'
                         : 'bg-muted text-muted-foreground'
@@ -556,8 +1062,8 @@ export const ProvidersSettings: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1.5 px-2 py-1 bg-muted/50 rounded-md">
-                    <div className={cn('w-2 h-2 rounded-full', status.dot)} />
+                  <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
+                    <div className={cn('h-2 w-2 rounded-full', status.dot)} />
                     <span className={cn('text-xs font-medium', status.text)}>{status.label}</span>
                   </div>
                   <Button variant="ghost" size="sm" onClick={() => handleEdit(provider)}>
@@ -570,7 +1076,7 @@ export const ProvidersSettings: React.FC = () => {
         })}
 
         {filteredProviders.length === 0 && (
-          <div className="text-center py-12 text-muted-foreground">
+          <div className="py-12 text-center text-muted-foreground">
             <Icon name="search" size={32} className="mx-auto mb-3 opacity-50" />
             <p>{t('providers.noProvidersFound', 'No providers found matching your search.')}</p>
           </div>

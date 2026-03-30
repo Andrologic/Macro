@@ -11,6 +11,7 @@ pub mod git;
 
 mod ai;
 mod index;
+mod tool_host;
 pub mod workspace;
 
 use ai::AiState;
@@ -161,8 +162,17 @@ pub fn run() {
                 WorkspaceMetadataRoot(Arc::new(RwLock::new(workspace_path.clone())));
             let workspace_runtime_root: WorkspaceRoot =
                 Arc::new(RwLock::new(workspace_path.clone()));
-            app.manage(workspace_metadata_root);
+            app.manage(workspace_metadata_root.clone());
             app.manage(workspace_runtime_root);
+
+            let tool_host_config = tool_host::start(
+                workspace_metadata_root.clone(),
+                app.state::<GitState>().inner().clone(),
+                app.state::<commands::terminal::TerminalSessionStore>()
+                    .inner()
+                    .clone(),
+            )?;
+            app.manage(tool_host_config);
 
             // Initialize file system watcher
             if let Err(e) = init_watcher(app, workspace_path) {
@@ -226,6 +236,11 @@ pub fn run() {
             commands::db_delete_provider_config,
             commands::ai_get_dev_provider_overrides,
             commands::ai::ai_start_chatgpt_auth,
+            commands::ai::ai_get_copilot_status,
+            commands::ai::ai_download_copilot_runtime,
+            commands::ai::ai_cancel_copilot_runtime_download,
+            commands::ai::ai_start_copilot_auth,
+            commands::ai::ai_cancel_copilot_auth,
             commands::ai::ai_cancel_chatgpt_auth,
             commands::ai::ai_disconnect_provider_auth,
             commands::ai::ai_sync_provider_models,

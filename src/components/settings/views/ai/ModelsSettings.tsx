@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useProviderStore } from '../../../../stores/useProviderStore';
+import { providerHasCredentials, useProviderStore } from '../../../../stores/useProviderStore';
 import { Icon } from '../../../ui/Icon';
 import { Button } from '../../../ui/Button';
 import { Input } from '../../../ui/Input';
@@ -56,10 +56,7 @@ export const ModelsSettings: React.FC = () => {
           const settings = providerSettingsById[provider.id];
           const showFreeOnly = provider.providerType === 'openrouter' && settings?.filterFreeModels;
           const filteredModels = showFreeOnly ? models.filter((model) => model.isFree) : models;
-          const hasKey =
-            provider.providerType === 'chatgpt'
-              ? ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '')
-              : !!provider.apiKey;
+          const hasKey = providerHasCredentials(provider);
 
           return (
             <AccordionItem

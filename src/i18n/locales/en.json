@@ -813,11 +813,18 @@
     "connectBrowserHint": "Connect with ChatGPT in your browser.",
     "connectChatGpt": "Connect with ChatGPT",
     "connectingChatGpt": "Connecting…",
+    "connectCopilot": "Connect GitHub Copilot",
+    "connectingCopilot": "Connecting...",
     "disconnect": "Disconnect",
     "chatgptLinked": "ChatGPT linked",
+    "copilotLinked": "GitHub Copilot linked",
     "chatgptDisconnected": "ChatGPT disconnected",
+    "copilotDisconnected": "GitHub Copilot disconnected",
     "failedConnectChatGpt": "Failed to connect with ChatGPT",
+    "failedConnectCopilot": "Failed to connect with GitHub Copilot",
     "failedDisconnect": "Failed to disconnect",
+    "connectCopilotHint": "Install GitHub Copilot CLI, then connect your GitHub account.",
+    "installCopilotCli": "Install Copilot CLI",
     "noProvidersFound": "No providers found matching your search.",
     "status": {
       "connecting": "Connecting",
@@ -830,7 +837,13 @@
       "noKey": "No key",
       "checking": "Checking",
       "active": "Active",
-      "offline": "Offline"
+      "offline": "Offline",
+      "cliMissing": "CLI missing",
+      "policyBlocked": "Policy blocked",
+      "connected": "Connected",
+      "downloading": "Downloading",
+      "runtimeMissing": "Not installed",
+      "updateRequired": "Update required"
     },
     "types": {
       "openaiCompatible": "OpenAI Compatible",
@@ -855,6 +868,27 @@
       "callback_denied": "ChatGPT login was denied.",
       "callback_invalid": "The ChatGPT callback response was invalid.",
       "secret_persist_failed": "ChatGPT login succeeded, but the session could not be saved."
+    },
+    "copilot": {
+      "downloadRuntime": "Download Copilot",
+      "runtimeDownloaded": "GitHub Copilot runtime is ready",
+      "runtimeDownloadFailed": "Failed to download GitHub Copilot runtime",
+      "downloadHint": "Download the official GitHub Copilot runtime to continue.",
+      "updateHint": "Download a Macro-managed GitHub Copilot runtime to continue.",
+      "troubleshootHint": "GitHub Copilot needs attention before it can be used.",
+      "connectHint": "Connect GitHub Copilot to finish setup.",
+      "troubleshoot": "Troubleshoot",
+      "recheckStatus": "Re-check status",
+      "oauthConnectedHint": "Use Copilot CLI on this machine to switch accounts.",
+      "ghCliConnectedHint": "Using the GitHub CLI session available on this machine.",
+      "envConnectedHint": "Using a Copilot token provided by this machine environment.",
+      "connectedInTerminalHint": "Connected in this machine terminal session.",
+      "finishLoginTitle": "Finish login in your browser",
+      "deviceCode": "Device code",
+      "browserUrl": "Browser URL",
+      "copyCode": "Copy code",
+      "codeCopied": "Device code copied",
+      "openBrowser": "Open browser"
     }
   },
   "tools": {

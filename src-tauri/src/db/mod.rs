@@ -456,6 +456,13 @@ async fn insert_default_providers(pool: &SqlitePool) -> DbResult<()> {
             false,
         ),
         (
+            "copilot",
+            "GitHub Copilot",
+            "copilot",
+            "copilot://cli",
+            false,
+        ),
+        (
             "openai",
             "OpenAI",
             "openai",

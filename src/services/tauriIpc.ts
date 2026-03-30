@@ -14,6 +14,7 @@ import type {
   PredictedBranch,
   Project,
   AppMode,
+  ProjectMount,
   ToolTrace,
 } from '../types';
 
@@ -321,6 +322,8 @@ export interface AiStreamDoneEvent {
   request_id: string;
   output_text: string;
   tool_calls: AiToolCall[];
+  tool_traces?: ToolTrace[] | null;
+  hidden_context?: string | null;
 }
 
 export interface AiStreamErrorEvent {
@@ -344,6 +347,69 @@ export interface AiAuthCancelledEvent {
 }
 
 export interface AiAuthErrorEvent {
+  request_id: string;
+  provider_id: string;
+  code: string;
+  message: string;
+}
+
+export interface CopilotStatusDto {
+  ok: boolean;
+  runtime_source: 'managed' | 'system' | 'none';
+  runtime_status: 'ready' | 'missing' | 'downloading' | 'update_required' | 'error';
+  runtime_version: string | null;
+  min_cli_version: string;
+  auth_status: string;
+  auth_source: string | null;
+  account_label: string | null;
+  status_message: string | null;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface CopilotDownloadProgressEvent {
+  request_id: string;
+  provider_id: string;
+  phase: string;
+  message: string;
+  downloaded_bytes: number;
+  total_bytes: number | null;
+}
+
+export interface CopilotDownloadCompleteEvent {
+  request_id: string;
+  provider_id: string;
+  runtime_version: string;
+  runtime_source: 'managed' | 'system' | 'none';
+}
+
+export interface CopilotDownloadErrorEvent {
+  request_id: string;
+  provider_id: string;
+  code: string;
+  message: string;
+}
+
+export interface CopilotAuthProgressEvent {
+  request_id: string;
+  provider_id: string;
+  phase: string;
+  message: string;
+  verification_url: string | null;
+  user_code: string | null;
+}
+
+export interface CopilotAuthCompleteEvent {
+  request_id: string;
+  provider_id: string;
+}
+
+export interface CopilotAuthCancelledEvent {
+  request_id: string;
+  provider_id: string;
+}
+
+export interface CopilotAuthErrorEvent {
   request_id: string;
   provider_id: string;
   code: string;
@@ -811,6 +877,40 @@ export async function aiCancelChatGptAuth(requestId: string): Promise<void> {
   return invoke('ai_cancel_chatgpt_auth', { requestId });
 }
 
+export async function aiGetCopilotStatus(providerId?: string): Promise<CopilotStatusDto> {
+  return invoke<CopilotStatusDto>('ai_get_copilot_status', {
+    providerId: providerId ?? null,
+  });
+}
+
+export async function aiDownloadCopilotRuntime(params: {
+  requestId: string;
+  providerId?: string;
+}): Promise<void> {
+  return invoke('ai_download_copilot_runtime', {
+    requestId: params.requestId,
+    providerId: params.providerId ?? null,
+  });
+}
+
+export async function aiCancelCopilotRuntimeDownload(requestId: string): Promise<void> {
+  return invoke('ai_cancel_copilot_runtime_download', { requestId });
+}
+
+export async function aiStartCopilotAuth(params: {
+  requestId: string;
+  providerId?: string;
+}): Promise<void> {
+  return invoke('ai_start_copilot_auth', {
+    requestId: params.requestId,
+    providerId: params.providerId ?? null,
+  });
+}
+
+export async function aiCancelCopilotAuth(requestId: string): Promise<void> {
+  return invoke('ai_cancel_copilot_auth', { requestId });
+}
+
 export async function aiDisconnectProviderAuth(providerId: string): Promise<DbProviderConfig> {
   return invoke<DbProviderConfig>('ai_disconnect_provider_auth', {
     providerId,
@@ -833,6 +933,12 @@ export async function aiStreamChat(params: {
   tools?: unknown[];
   toolChoice?: string;
   parallelToolCalls?: boolean;
+  workspacePath?: string | null;
+  defaultWorkspacePath?: string | null;
+  projectMounts?: ProjectMount[];
+  virtualRootEnabled?: boolean;
+  focusedProjectId?: string | null;
+  allowedToolIds?: string[];
 }): Promise<void> {
   return invoke('ai_stream_chat', {
     request: {
@@ -843,6 +949,17 @@ export async function aiStreamChat(params: {
       tools: params.tools ?? [],
       tool_choice: params.toolChoice ?? 'auto',
       parallel_tool_calls: params.parallelToolCalls ?? false,
+      workspace_path: params.workspacePath ?? null,
+      default_workspace_path: params.defaultWorkspacePath ?? null,
+      project_mounts: (params.projectMounts ?? []).map((mount) => ({
+        project_id: mount.projectId,
+        mount_name: mount.mountName,
+        workspace_path: mount.workspacePath ?? null,
+        display_name: mount.displayName,
+      })),
+      virtual_root_enabled: params.virtualRootEnabled ?? null,
+      focused_project_id: params.focusedProjectId ?? null,
+      allowed_tool_ids: params.allowedToolIds ?? [],
     },
   });
 }

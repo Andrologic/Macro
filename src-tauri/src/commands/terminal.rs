@@ -1349,20 +1349,16 @@ where
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
-#[tauri::command]
-pub async fn terminal_create_session(
-    workspace_root: State<'_, WorkspaceMetadataRoot>,
-    git_state: State<'_, GitState>,
-    terminal_store: State<'_, TerminalSessionStore>,
+pub async fn create_legacy_session_internal(
+    workspace_path: PathBuf,
+    git_state: GitState,
+    terminal_store: TerminalSessionStore,
     project_id: String,
     cwd: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
-    let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let metadata_root = resolve_metadata_root(workspace_path.clone(), git_state.clone()).await?;
     let project = resolve_project_target(&workspace_path, &metadata_root, &project_id).await?;
-    let session_cwd =
-        resolve_session_cwd(&project.workspace_path, cwd.as_deref(), git_state.inner())?;
+    let session_cwd = resolve_session_cwd(&project.workspace_path, cwd.as_deref(), &git_state)?;
 
     let session = LegacyTerminalSessionRecord {
         id: format!("terminal-{}", Uuid::new_v4()),
@@ -1389,9 +1385,8 @@ pub async fn terminal_create_session(
     Ok(dto)
 }
 
-#[tauri::command]
-pub async fn terminal_run(
-    terminal_store: State<'_, TerminalSessionStore>,
+pub async fn run_legacy_session_internal(
+    terminal_store: TerminalSessionStore,
     session_id: String,
     command: String,
     timeout_ms: Option<u64>,
@@ -1494,9 +1489,8 @@ pub async fn terminal_run(
     Ok(session.to_dto())
 }
 
-#[tauri::command]
-pub async fn terminal_read(
-    terminal_store: State<'_, TerminalSessionStore>,
+pub async fn read_legacy_session_internal(
+    terminal_store: TerminalSessionStore,
     session_id: String,
 ) -> CommandResult<TerminalSessionDto> {
     let sessions = terminal_store.legacy_sessions.lock().await;
@@ -1506,9 +1500,8 @@ pub async fn terminal_read(
     Ok(session.to_dto())
 }
 
-#[tauri::command]
-pub async fn terminal_kill(
-    terminal_store: State<'_, TerminalSessionStore>,
+pub async fn kill_legacy_session_internal(
+    terminal_store: TerminalSessionStore,
     session_id: String,
 ) -> CommandResult<TerminalSessionDto> {
     let pid = {
@@ -1532,4 +1525,55 @@ pub async fn terminal_kill(
     session.updated_at = current_timestamp();
 
     Ok(session.to_dto())
+}
+
+#[tauri::command]
+pub async fn terminal_create_session(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    terminal_store: State<'_, TerminalSessionStore>,
+    project_id: String,
+    cwd: Option<String>,
+) -> CommandResult<TerminalSessionDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    create_legacy_session_internal(
+        workspace_path,
+        git_state.inner().clone(),
+        terminal_store.inner().clone(),
+        project_id,
+        cwd,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn terminal_run(
+    terminal_store: State<'_, TerminalSessionStore>,
+    session_id: String,
+    command: String,
+    timeout_ms: Option<u64>,
+) -> CommandResult<TerminalSessionDto> {
+    run_legacy_session_internal(
+        terminal_store.inner().clone(),
+        session_id,
+        command,
+        timeout_ms,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn terminal_read(
+    terminal_store: State<'_, TerminalSessionStore>,
+    session_id: String,
+) -> CommandResult<TerminalSessionDto> {
+    read_legacy_session_internal(terminal_store.inner().clone(), session_id).await
+}
+
+#[tauri::command]
+pub async fn terminal_kill(
+    terminal_store: State<'_, TerminalSessionStore>,
+    session_id: String,
+) -> CommandResult<TerminalSessionDto> {
+    kill_legacy_session_internal(terminal_store.inner().clone(), session_id).await
 }
