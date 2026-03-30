@@ -4,9 +4,9 @@
   "version": "../package.json",
   "identifier": "com.macro.app",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "bun run build:copilot-bridge && bun run dev",
     "devUrl": "http://localhost:1422",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "bun run build:copilot-bridge && bun run build",
     "frontendDist": "../dist"
   },
   "bundle": {
