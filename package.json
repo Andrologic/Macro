@@ -18,6 +18,7 @@
     "tauri:dev": "bun run build:copilot-bridge && bunx tauri dev",
     "tauri:build": "bun run build:copilot-bridge && NODE_ENV=production bunx tauri build",
     "tauri:build:debug": "bun run build:copilot-bridge && bunx tauri build --debug",
+    "icons:apple": "bash ./dev/generate-apple-icons.sh",
     "install:tauri": "bun install && cd src-tauri && cargo build --release",
     "clean": "rm -rf dist node_modules src-tauri/target bun.lockb bun.lock .vite",
     "clean:cache": "rm -rf node_modules/.vite ~/.bun/install/cache",

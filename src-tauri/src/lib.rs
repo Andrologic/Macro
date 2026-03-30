@@ -22,6 +22,10 @@ use git::GitState;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::Manager;
+#[cfg(target_os = "macos")]
+use tauri::TitleBarStyle;
+#[cfg(target_os = "macos")]
+use tauri::utils::config::Color;
 use tokio::sync::{Mutex, RwLock};
 
 pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
@@ -39,6 +43,22 @@ struct WindowSizePayload {
 struct WindowPositionPayload {
     x: i32,
     y: i32,
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn set_macos_app_icon_png_bytes(png_bytes: &[u8]) -> Result<(), String> {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::{MainThreadMarker, NSData};
+
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let app = NSApplication::sharedApplication(mtm);
+    let data = NSData::with_bytes(png_bytes);
+    let app_icon = NSImage::initWithData(NSImage::alloc(), &data)
+        .ok_or_else(|| "Failed to decode macOS app icon PNG".to_string())?;
+
+    unsafe { app.setApplicationIconImage(Some(&app_icon)) };
+    Ok(())
 }
 
 // Command to show the main window explicitly from frontend
@@ -129,6 +149,32 @@ async fn window_set_zoom(window: tauri::WebviewWindow, scale: f64) -> Result<(),
     window.set_zoom(scale).map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn set_macos_app_icon(
+    window: tauri::WebviewWindow,
+    png_bytes: Vec<u8>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+
+        window
+            .run_on_main_thread(move || {
+                let result = unsafe { set_macos_app_icon_png_bytes(&png_bytes) };
+                let _ = sender.send(result);
+            })
+            .map_err(|error| error.to_string())?;
+
+        receiver.await.map_err(|error| error.to_string())?
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, png_bytes);
+        Ok(())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging
@@ -151,6 +197,13 @@ pub fn run() {
         .manage(GitState::new())
         .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_decorations(true)?;
+                window.set_title_bar_style(TitleBarStyle::Overlay)?;
+                window.set_background_color(Some(Color::from((9, 9, 11, 255))))?;
+            }
+
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
 
@@ -215,6 +268,7 @@ pub fn run() {
             window_outer_position,
             window_scale_factor,
             window_set_zoom,
+            set_macos_app_icon,
             commands::db_list_conversations,
             commands::db_get_chat_snapshot,
             commands::db_get_conversation,

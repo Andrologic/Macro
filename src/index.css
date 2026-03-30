@@ -34,6 +34,13 @@
     --input: 39 39 42;
     --ring: 99 102 241;
     --radius: 8px;
+    --macro-titlebar-bg-start: #111116;
+    --macro-titlebar-bg-mid: #09090b;
+    --macro-titlebar-bg-end: #070709;
+    --macro-titlebar-border: rgba(255, 255, 255, 0.12);
+    --macro-titlebar-highlight: rgba(255, 255, 255, 0.08);
+    --macro-titlebar-control-bg: rgba(255, 255, 255, 0.08);
+    --macro-titlebar-control-border: rgba(255, 255, 255, 0.12);
   }
 
   body {
@@ -99,6 +106,64 @@
 
   .card-hover {
     @apply card hover:border-border/70 hover:shadow-[0_0_20px_-4px_rgba(99,102,241,0.3)] transition-all duration-200;
+  }
+
+  .macro-topbar {
+    min-height: var(--macro-titlebar-height, 48px);
+    border-bottom: 1px solid rgb(var(--border) / 0.9);
+    background: rgb(var(--card));
+    position: relative;
+    z-index: 40;
+    cursor: grab;
+    user-select: none;
+  }
+
+  .macro-topbar--native-macos {
+    border-bottom-color: var(--macro-titlebar-border);
+    background: var(--macro-titlebar-bg-mid);
+    box-shadow: inset 0 1px 0 var(--macro-titlebar-highlight);
+    backdrop-filter: blur(14px);
+  }
+
+  .macro-topbar:active {
+    cursor: grabbing;
+  }
+
+  .macro-topbar-inner {
+    box-sizing: border-box;
+    height: var(--macro-titlebar-height, 48px);
+    min-height: var(--macro-titlebar-height, 48px);
+    align-items: center;
+    padding-inline: 1rem;
+  }
+
+  .macro-topbar--native-macos .macro-topbar-inner {
+    min-height: var(--macro-titlebar-height, 56px);
+    height: var(--macro-titlebar-height, 56px);
+    align-items: end;
+    padding: 1rem 1rem 0.5rem;
+  }
+
+  .macro-topbar--native-macos .macro-topbar-leading,
+  .macro-topbar--native-macos .macro-topbar-center,
+  .macro-topbar--native-macos .macro-topbar-trailing {
+    padding-top: 1px;
+  }
+
+  .macro-topbar--native-macos .macro-topbar-brand {
+    padding-left: 4rem;
+  }
+
+  .macro-topbar-center {
+    padding-inline: 0.5rem;
+  }
+
+  [data-tauri-drag-region] {
+    app-region: drag;
+  }
+
+  [data-tauri-drag-region='false'] {
+    app-region: no-drag;
   }
 
   /* Toast styles */
