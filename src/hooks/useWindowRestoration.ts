@@ -19,9 +19,12 @@ import {
   windowOuterPosition,
   windowOuterSize,
   windowScaleFactor,
+  windowSetBackgroundColor,
   windowSetPosition,
   windowSetSize,
+  windowSetTheme,
 } from "../services/tauriWindow";
+import { getPlatformChromeState } from "../utils/desktopPlatform";
 import { isPageShuttingDown } from "../utils/pageLifecycle";
 import { devLogger } from "../utils/devLogger";
 
@@ -41,6 +44,8 @@ let windowApi: WindowApi | null = null;
 let windowApiPromise: Promise<WindowApi | null> | null = null;
 let lastSavedState: string | null = null;
 let restorePromise: Promise<void> | null = null;
+
+type NativeWindowThemePreference = 'light' | 'dark' | null;
 
 /**
  * Check if running in Tauri environment
@@ -100,6 +105,8 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
         PREF_KEYS.WINDOW_X,
         PREF_KEYS.WINDOW_Y,
         PREF_KEYS.IS_MAXIMIZED,
+        PREF_KEYS.NATIVE_MACOS_TITLEBAR_BG,
+        PREF_KEYS.NATIVE_MACOS_TITLEBAR_THEME,
       ]);
 
       const width = prefs[PREF_KEYS.WINDOW_WIDTH] as number | undefined;
@@ -107,6 +114,19 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
       const x = prefs[PREF_KEYS.WINDOW_X] as number | null;
       const y = prefs[PREF_KEYS.WINDOW_Y] as number | null;
       const isMaximized = prefs[PREF_KEYS.IS_MAXIMIZED] as boolean;
+      const nativeMacosTitlebarBg = prefs[PREF_KEYS.NATIVE_MACOS_TITLEBAR_BG] as string | undefined;
+      const nativeMacosTitlebarTheme = prefs[PREF_KEYS.NATIVE_MACOS_TITLEBAR_THEME] as NativeWindowThemePreference | undefined;
+
+      if (getPlatformChromeState().usesNativeMacosTitlebar) {
+        await Promise.all([
+          nativeMacosTitlebarBg
+            ? windowSetBackgroundColor(nativeMacosTitlebarBg)
+            : Promise.resolve(),
+          nativeMacosTitlebarTheme
+            ? windowSetTheme(nativeMacosTitlebarTheme)
+            : Promise.resolve(),
+        ]);
+      }
 
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -240,4 +260,15 @@ export function useWindowRestoration() {
       }
     };
   }, [debouncedSave]);
+}
+
+export function __resetWindowRestorationForTests(): void {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+  }
+  saveTimeout = null;
+  windowApi = null;
+  windowApiPromise = null;
+  lastSavedState = null;
+  restorePromise = null;
 }

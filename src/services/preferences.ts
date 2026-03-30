@@ -53,6 +53,8 @@ export const PREF_KEYS = {
   TERMINAL_LAST_MANUAL_PROJECT_BY_TASK: "terminalLastManualProjectByTask",
   NOTIFICATION_CENTER_ITEMS: "notificationCenterItems",
   CHAT_ARCHIVED_CONVERSATION_IDS: "chatArchivedConversationIds",
+  NATIVE_MACOS_TITLEBAR_BG: "nativeMacosTitlebarBg",
+  NATIVE_MACOS_TITLEBAR_THEME: "nativeMacosTitlebarTheme",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -102,6 +104,8 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.TERMINAL_LAST_MANUAL_PROJECT_BY_TASK]: {},
   [PREF_KEYS.NOTIFICATION_CENTER_ITEMS]: [],
   [PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS]: [],
+  [PREF_KEYS.NATIVE_MACOS_TITLEBAR_BG]: "#09090b",
+  [PREF_KEYS.NATIVE_MACOS_TITLEBAR_THEME]: "dark",
 };
 
 // Store instance (singleton)
@@ -228,4 +232,3 @@ export async function clearPreferences(): Promise<void> {
     console.error("Failed to clear preferences:", error);
   }
 }
-
