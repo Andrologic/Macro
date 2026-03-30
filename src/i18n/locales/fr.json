@@ -813,11 +813,18 @@
     "connectBrowserHint": "Connectez-vous avec ChatGPT dans votre navigateur.",
     "connectChatGpt": "Connectez-vous avec ChatGPT",
     "connectingChatGpt": "Connexion…",
+    "connectCopilot": "Connect GitHub Copilot",
+    "connectingCopilot": "Connecting...",
     "disconnect": "Déconnecter",
     "chatgptLinked": "ChatGPT lié",
+    "copilotLinked": "GitHub Copilot linked",
     "chatgptDisconnected": "ChatGPT déconnecté",
+    "copilotDisconnected": "GitHub Copilot disconnected",
     "failedConnectChatGpt": "Échec de la connexion avec ChatGPT",
+    "failedConnectCopilot": "Failed to connect with GitHub Copilot",
     "failedDisconnect": "Échec de la déconnexion",
+    "connectCopilotHint": "Install GitHub Copilot CLI, then connect your GitHub account.",
+    "installCopilotCli": "Install Copilot CLI",
     "noProvidersFound": "Aucun provider ne correspond à votre recherche.",
     "status": {
       "connecting": "Connexion",
@@ -830,7 +837,13 @@
       "noKey": "Pas de clé",
       "checking": "Vérification",
       "active": "Actif",
-      "offline": "Hors ligne"
+      "offline": "Hors ligne",
+      "cliMissing": "CLI missing",
+      "policyBlocked": "Policy blocked",
+      "connected": "Connecté",
+      "downloading": "Téléchargement",
+      "runtimeMissing": "Non installe",
+      "updateRequired": "Mise a jour requise"
     },
     "types": {
       "openaiCompatible": "Compatible avec OpenAI",
@@ -855,6 +868,27 @@
       "callback_denied": "La connexion ChatGPT a été refusée.",
       "callback_invalid": "La réponse de rappel ChatGPT n'était pas valide.",
       "secret_persist_failed": "La connexion ChatGPT a réussi, mais la session n'a pas pu être enregistrée."
+    },
+    "copilot": {
+      "downloadRuntime": "Telecharger Copilot",
+      "runtimeDownloaded": "Le runtime GitHub Copilot est pret",
+      "runtimeDownloadFailed": "Impossible de telecharger le runtime GitHub Copilot",
+      "downloadHint": "Telechargez le runtime officiel GitHub Copilot pour continuer.",
+      "updateHint": "Telechargez un runtime GitHub Copilot gere par Macro pour continuer.",
+      "troubleshootHint": "GitHub Copilot necessite une intervention avant de pouvoir etre utilise.",
+      "connectHint": "Connectez GitHub Copilot pour terminer la configuration.",
+      "troubleshoot": "Depanner",
+      "recheckStatus": "Re-verifier le statut",
+      "oauthConnectedHint": "Utilisez Copilot CLI sur cette machine pour changer de compte.",
+      "ghCliConnectedHint": "Utilise la session GitHub CLI disponible sur cette machine.",
+      "envConnectedHint": "Utilise un token Copilot fourni par l environnement de cette machine.",
+      "connectedInTerminalHint": "Connecte dans la session terminal de cette machine.",
+      "finishLoginTitle": "Terminez la connexion dans votre navigateur",
+      "deviceCode": "Code appareil",
+      "browserUrl": "URL du navigateur",
+      "copyCode": "Copier le code",
+      "codeCopied": "Code copié",
+      "openBrowser": "Ouvrir le navigateur"
     }
   },
   "tools": {

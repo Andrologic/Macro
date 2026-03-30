@@ -9,7 +9,11 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions } from './webSearch';
 import * as tauriIpc from './tauriIpc';
-import type { ToolTrace } from '../types';
+import {
+  requireMacroToolRegistryEntry,
+  toFunctionToolShape,
+} from '../shared/macroToolRegistry';
+import type { ProjectMount, ToolTrace } from '../types';
 import { devLogger } from '../utils/devLogger';
 
 // Global references to active streaming resources for cancellation
@@ -114,6 +118,11 @@ export interface StreamingChatOptions {
     snippet?: string;
   }>;
   allowedToolIds?: string[];
+  workspacePath?: string | null;
+  defaultWorkspacePath?: string | null;
+  projectMounts?: ProjectMount[];
+  virtualRootEnabled?: boolean;
+  focusedProjectId?: string | null;
   showToolTraces?: boolean;
   guidedToolRetry?: {
     requiredToolNames: string[];
@@ -316,805 +325,61 @@ export const __testables = {
 };
 
 // Tool definitions for the LLM
-const WEB_SEARCH_TOOL = {
-  type: 'function',
-  function: {
-    name: 'web_search',
-    description: 'Search the web for current information. Use this when you need up-to-date information about any topic.',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'The search query to look up',
-        },
-      },
-      required: ['query'],
-    },
-  },
-};
-
-const WEB_FETCH_TOOL = {
-  type: 'function',
-  function: {
-    name: 'web_fetch',
-    description: 'Fetch and read the content of a specific URL.',
-    parameters: {
-      type: 'object',
-      properties: {
-        url: {
-          type: 'string',
-          description: 'URL to fetch and read',
-        },
-      },
-      required: ['url'],
-    },
-  },
-};
-
-const MARK_SOURCE_PASSAGE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'mark_source_passage',
-    description: 'Store important source passages. Use kind="interesting" for notable excerpts and kind="used" for excerpts directly used in the final answer.',
-    parameters: {
-      type: 'object',
-      properties: {
-        title: {
-          type: 'string',
-          description: 'Short title of the passage.',
-        },
-        passage: {
-          type: 'string',
-          description: 'Important excerpt to save.',
-        },
-        kind: {
-          type: 'string',
-          enum: ['interesting', 'used'],
-          description: 'Classification of the passage: interesting while analyzing, or used in the final answer.',
-        },
-        reason: {
-          type: 'string',
-          description: 'Optional short reason describing why this passage matters.',
-        },
-        source: {
-          type: 'string',
-          description: 'Source label such as filename or site/domain.',
-        },
-        url: {
-          type: 'string',
-          description: 'URL of the source when available.',
-        },
-      },
-      required: ['title', 'passage'],
-    },
-  },
-};
-
-const READ_SOURCES_TOOL = {
-  type: 'function',
-  function: {
-    name: 'read_sources',
-    description: 'Read saved source passages from the current conversation. Can filter by kind and query.',
-    parameters: {
-      type: 'object',
-      properties: {
-        kind: {
-          type: 'string',
-          enum: ['all', 'interesting', 'used'],
-          description: 'Optional filter by source passage kind.',
-        },
-        query: {
-          type: 'string',
-          description: 'Optional keyword filter over title, passage, source, url, and reason.',
-        },
-        limit: {
-          type: 'number',
-          description: 'Optional maximum number of passages to return (1-50).',
-        },
-        include_snippet: {
-          type: 'boolean',
-          description: 'Include full passage snippets in results. Defaults to true.',
-        },
-      },
-      required: [],
-    },
-  },
-};
-
-const EDIT_SOURCE_PASSAGE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'edit_source_passage',
-    description: 'Update, reclassify, or delete a saved source passage by citation_id.',
-    parameters: {
-      type: 'object',
-      properties: {
-        citation_id: {
-          type: 'string',
-          description: 'ID of the source citation to modify.',
-        },
-        action: {
-          type: 'string',
-          enum: ['update', 'reclassify', 'delete'],
-          description: 'Type of modification to apply.',
-        },
-        title: {
-          type: 'string',
-          description: 'Updated title for action="update".',
-        },
-        passage: {
-          type: 'string',
-          description: 'Updated passage text for action="update".',
-        },
-        source: {
-          type: 'string',
-          description: 'Updated source label for action="update".',
-        },
-        url: {
-          type: 'string',
-          description: 'Updated URL for action="update".',
-        },
-        reason: {
-          type: 'string',
-          description: 'Updated or new reason for action="update".',
-        },
-        kind: {
-          type: 'string',
-          enum: ['interesting', 'used'],
-          description: 'Required for action="reclassify". Optional for action="update".',
-        },
-      },
-      required: ['citation_id', 'action'],
-    },
-  },
-};
-
-const READ_FILE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'read_file',
-    description: 'Read a file already attached in the conversation context. Use this when asked to analyze or inspect a file.',
-    parameters: {
-      type: 'object',
-      properties: {
-        file: {
-          type: 'string',
-          description: 'File name/path/source to read (example: hotas.pr0).',
-        },
-        extract_text: {
-          type: 'boolean',
-          description: 'Optional hint to request text extraction for binary-like formats (e.g. .docx).',
-        },
-      },
-      required: ['file'],
-    },
-  },
-};
-
-const LIST_TOOL = {
-  type: 'function',
-  function: {
-    name: 'list',
-    description: 'List files and directories under a path in the local workspace. In a global project, the visible root can be virtual and contain only subproject mounts such as api/ or web/.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Directory path to list. Defaults to the current execution workspace root for this conversation.' },
-        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
-        recursive: { type: 'boolean', description: 'Whether to list recursively.' },
-        include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
-        max_depth: { type: 'number', description: 'Maximum recursion depth when recursive=true.' },
-      },
-      required: [],
-    },
-  },
-};
-
-const READ_WORKSPACE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'read',
-    description: 'Read a file from the local execution workspace by path. In a virtual global project root, prefer paths like api/src/server.ts or pass project_id.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Path of the file to read.' },
-        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
-        start_line: { type: 'number', description: 'Optional 1-based start line.' },
-        end_line: { type: 'number', description: 'Optional 1-based end line.' },
-      },
-      required: ['path'],
-    },
-  },
-};
-
-const WRITE_WORKSPACE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'write',
-    description: 'Create or overwrite a file in the current execution workspace with full content. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Path of the file to write.' },
-        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
-        content: { type: 'string', description: 'Final file content.' },
-        create_dirs: { type: 'boolean', description: 'Create missing parent directories.' },
-      },
-      required: ['path', 'content'],
-    },
-  },
-};
-
-const EDIT_WORKSPACE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'edit',
-    description: 'Edit a file in the current execution workspace by replacing exact text. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Path of the file to edit.' },
-        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
-        old_text: { type: 'string', description: 'Exact text to replace.' },
-        new_text: { type: 'string', description: 'Replacement text.' },
-        replace_all: { type: 'boolean', description: 'Replace all matches (default false = first only).' },
-      },
-      required: ['path', 'old_text', 'new_text'],
-    },
-  },
-};
-
-const GLOB_WORKSPACE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'glob',
-    description: 'Find files in the current execution workspace matching a glob pattern. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.',
-    parameters: {
-      type: 'object',
-      properties: {
-        pattern: { type: 'string', description: 'Glob pattern.' },
-        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
-        include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
-      },
-      required: ['pattern'],
-    },
-  },
-};
-
-const GREP_WORKSPACE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'grep',
-    description: 'Search text in files under the current execution workspace. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Text or regex to search for.' },
-        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
-        is_regexp: { type: 'boolean', description: 'Treat query as regex when true.' },
-        include_pattern: { type: 'string', description: 'Optional file glob filter.' },
-        include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
-        max_results: { type: 'number', description: 'Maximum result rows to return.' },
-      },
-      required: ['query'],
-    },
-  },
-};
-
-const GIT_STATUS_TOOL = {
-  type: 'function',
-  function: {
-    name: 'git_status',
-    description: 'Get git status for exactly one subproject repository context. There is no git status at the virtual global root.',
-    parameters: {
-      type: 'object',
-      properties: {
-        project_id: { type: 'string', description: 'Optional subproject identifier when you want to force which subproject to use.' },
-        repo_path: { type: 'string', description: 'Optional repository path override. In a virtual global root, you can use mount-prefixed values such as api or api/src.' },
-      },
-      required: [],
-    },
-  },
-};
-
-const GIT_LOG_TOOL = {
-  type: 'function',
-  function: {
-    name: 'git_log',
-    description: 'Get git commit history.',
-    parameters: {
-      type: 'object',
-      properties: {
-        repo_path: { type: 'string' },
-        project_id: { type: 'string' },
-        limit: { type: 'number' },
-        branch: { type: 'string' },
-      },
-      required: [],
-    },
-  },
-};
-
-const GIT_BRANCH_LIST_TOOL = {
-  type: 'function',
-  function: {
-    name: 'git_branch_list',
-    description: 'List local and remote branches.',
-    parameters: {
-      type: 'object',
-      properties: {
-        repo_path: { type: 'string' },
-        project_id: { type: 'string' },
-      },
-      required: [],
-    },
-  },
-};
-
-const GIT_DIFF_TOOL = {
-  type: 'function',
-  function: {
-    name: 'git_diff',
-    description: 'Generate repository diff.',
-    parameters: {
-      type: 'object',
-      properties: {
-        repo_path: { type: 'string' },
-        project_id: { type: 'string' },
-        base: { type: 'string' },
-        head: { type: 'string' },
-        context_lines: { type: 'number' },
-        ignore_whitespace: { type: 'boolean' },
-        paths: { type: 'array', items: { type: 'string' } },
-      },
-      required: [],
-    },
-  },
-};
-
-const GIT_GET_TREE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'git_get_tree',
-    description: 'Get predicted git tree for current branch/repository.',
-    parameters: {
-      type: 'object',
-      properties: {
-        repo_path: { type: 'string' },
-        project_id: { type: 'string' },
-        branch: { type: 'string' },
-      },
-      required: [],
-    },
-  },
-};
-
-const GIT_ADD_TOOL = {
-  type: 'function',
-  function: {
-    name: 'git_add',
-    description: 'Stage files in the repository index.',
-    parameters: {
-      type: 'object',
-      properties: {
-        repo_path: { type: 'string' },
-        project_id: { type: 'string' },
-        paths: { type: 'array', items: { type: 'string' } },
-      },
-      required: [],
-    },
-  },
-};
-
-const GIT_COMMIT_TOOL = {
-  type: 'function',
-  function: {
-    name: 'git_commit',
-    description: 'Create commit in repository.',
-    parameters: {
-      type: 'object',
-      properties: {
-        repo_path: { type: 'string' },
-        project_id: { type: 'string' },
-        message: { type: 'string' },
-        stage_all: { type: 'boolean' },
-      },
-      required: ['message'],
-    },
-  },
-};
-
-const GIT_CHECKOUT_TOOL = {
-  type: 'function',
-  function: {
-    name: 'git_checkout',
-    description: 'Checkout branch or commit, optionally creating branch.',
-    parameters: {
-      type: 'object',
-      properties: {
-        repo_path: { type: 'string' },
-        project_id: { type: 'string' },
-        branch_or_commit: { type: 'string' },
-        create: { type: 'boolean' },
-      },
-      required: ['branch_or_commit'],
-    },
-  },
-};
-
-const GIT_MERGE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'git_merge',
-    description: 'Merge a source branch into a target branch for exactly one subproject repository context.',
-    parameters: {
-      type: 'object',
-      properties: {
-        repo_path: { type: 'string' },
-        project_id: { type: 'string' },
-        branch_name: { type: 'string' },
-        into_branch: { type: 'string' },
-      },
-      required: ['branch_name', 'into_branch'],
-    },
-  },
-};
-
-const GIT_RESET_TOOL = {
-  type: 'function',
-  function: {
-    name: 'git_reset',
-    description: 'Reset repository to commit/HEAD in soft/mixed/hard mode.',
-    parameters: {
-      type: 'object',
-      properties: {
-        repo_path: { type: 'string' },
-        project_id: { type: 'string' },
-        mode: { type: 'string', enum: ['soft', 'mixed', 'hard'] },
-        commit: { type: 'string' },
-        confirm: { type: 'boolean' },
-      },
-      required: ['mode'],
-    },
-  },
-};
-
-const GIT_STASH_TOOL = {
-  type: 'function',
-  function: {
-    name: 'git_stash',
-    description: 'Stash local changes.',
-    parameters: {
-      type: 'object',
-      properties: {
-        repo_path: { type: 'string' },
-        project_id: { type: 'string' },
-        message: { type: 'string' },
-      },
-      required: [],
-    },
-  },
-};
-
-const TERMINAL_CREATE_SESSION_TOOL = {
-  type: 'function',
-  function: {
-    name: 'terminal_create_session',
-    description: 'Create a terminal session bound to exactly one subproject. project_id is required. There is no terminal at the virtual global root.',
-    parameters: {
-      type: 'object',
-      properties: {
-        project_id: { type: 'string', description: 'Required subproject identifier.' },
-        cwd: { type: 'string', description: 'Optional directory under the selected subproject or worktree.' },
-      },
-      required: ['project_id'],
-    },
-  },
-};
-
-const TERMINAL_RUN_TOOL = {
-  type: 'function',
-  function: {
-    name: 'terminal_run',
-    description: 'Run a shell command inside an existing terminal session.',
-    parameters: {
-      type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'Terminal session identifier returned by terminal_create_session.' },
-        command: { type: 'string', description: 'Shell command to execute.' },
-        timeout_ms: { type: 'number', description: 'Optional timeout in milliseconds.' },
-      },
-      required: ['session_id', 'command'],
-    },
-  },
-};
-
-const TERMINAL_READ_TOOL = {
-  type: 'function',
-  function: {
-    name: 'terminal_read',
-    description: 'Read the latest output and status from an existing terminal session.',
-    parameters: {
-      type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'Terminal session identifier returned by terminal_create_session.' },
-      },
-      required: ['session_id'],
-    },
-  },
-};
-
-const TERMINAL_KILL_TOOL = {
-  type: 'function',
-  function: {
-    name: 'terminal_kill',
-    description: 'Kill the active process in an existing terminal session.',
-    parameters: {
-      type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'Terminal session identifier returned by terminal_create_session.' },
-      },
-      required: ['session_id'],
-    },
-  },
-};
-
-const ADD_NEED_TOOL = {
-  type: 'function',
-  function: {
-    name: 'need_add',
-    description: 'Add a structured user or system need for the project. Use this during the Architect phase to gather requirements.',
-    parameters: {
-      type: 'object',
-      properties: {
-        title: { type: 'string', description: 'Short title of the need.' },
-        description: { type: 'string', description: 'Detailed description of what is needed.' },
-        target_branch: { type: 'string', description: 'Optional target code branch for the active plan context.' },
-        category: { type: 'string', enum: ['functional', 'technical', 'ux', 'security', 'other'], description: 'Category of the need.' },
-        priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Priority level.' },
-        tags: { type: 'array', items: { type: 'string' }, description: 'Keywords or tags.' },
-      },
-      required: ['title', 'description', 'category', 'priority'],
-    },
-  },
-};
-
-export const GENERATE_PLAN_TOOL = {
-  type: 'function',
-  function: {
-    name: 'strategy_generate',
-    description: 'Generate a structured strategy for the active plan based on collected needs. New plans use a generated plan identifier as the canonical slug, so plan branches are plan/<plan-id> and feature branches are feature/<plan-id>/<feature-slug>.',
-    parameters: {
-      type: 'object',
-      properties: {
-        plan_id: { type: 'string', description: 'Optional existing plan ID to update.' },
-        plan_title: { type: 'string', description: 'Optional secondary plan label to persist. For legacy plans this remains a title alias.' },
-        plan_description: { type: 'string', description: 'Optional plan description for persistence in @macro metadata.' },
-        target_branch: { type: 'string', description: 'Code branch this plan is associated with.' },
-        nodes: {
-          type: 'array',
-          items: {
-            type: 'object',
-              properties: {
-                title: { type: 'string' },
-                description: { type: 'string' },
-                type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
-                assignedBranch: { type: 'string', description: 'The git branch name this task belongs to, e.g. "feature/1710000000000/auth-api"' },
-                dependencies: { type: 'array', items: { type: 'string' }, description: 'Titles of nodes this one depends on.' },
-              },
-              required: ['title', 'type', 'assignedBranch'],
-          },
-          description: 'List of plan nodes representing the tasks to be done.',
-        },
-      },
-      required: ['nodes'],
-    },
-  },
-};
-
-export const CREATE_PLAN_TOOL = {
-  type: 'function',
-  function: {
-    name: 'plan_create',
-    description: 'Create a new Architect plan stored under the @macro branch metadata for a target code branch. New plans are created immediately with a generated identifier; title is optional and treated as an initial secondary label.',
-    parameters: {
-      type: 'object',
-      properties: {
-        label: { type: 'string', description: 'Optional secondary plan label.' },
-        title: { type: 'string', description: 'Legacy alias for label. Optional.' },
-        description: { type: 'string' },
-        target_branch: { type: 'string', description: 'Code branch this plan belongs to (e.g. develop, feature/auth).' },
-        status: { type: 'string', enum: ['draft', 'validated', 'in_progress', 'completed', 'archived', 'deleted'] },
-        set_active: { type: 'boolean' },
-      },
-      required: [],
-    },
-  },
-};
-
-export const LIST_PLANS_TOOL = {
-  type: 'function',
-  function: {
-    name: 'plan_list',
-    description: 'List plans for a code branch in the @macro branch metadata.',
-    parameters: {
-      type: 'object',
-      properties: {
-        target_branch: { type: 'string' },
-        include_deleted: { type: 'boolean' },
-        include_archived: { type: 'boolean' },
-      },
-      required: [],
-    },
-  },
-};
-
-export const GET_PLAN_TOOL = {
-  type: 'function',
-  function: {
-    name: 'plan_get',
-    description: 'Read a specific plan and its nodes from @macro metadata.',
-    parameters: {
-      type: 'object',
-      properties: {
-        plan_id: { type: 'string' },
-        target_branch: { type: 'string' },
-      },
-      required: ['plan_id'],
-    },
-  },
-};
-
-export const UPDATE_PLAN_TOOL = {
-  type: 'function',
-  function: {
-    name: 'plan_update',
-    description: 'Update the optional label/title alias or description for an existing plan. For new plans, label changes never rename the canonical id or slug used for git branches.',
-    parameters: {
-      type: 'object',
-      properties: {
-        plan_id: { type: 'string' },
-        label: { type: 'string', description: 'Optional secondary label for the plan.' },
-        title: { type: 'string', description: 'Legacy alias. For new plans this updates the optional secondary label.' },
-        description: { type: 'string' },
-        target_branch: { type: 'string' },
-      },
-      required: ['plan_id'],
-    },
-  },
-};
-
-export const DELETE_PLAN_TOOL = {
-  type: 'function',
-  function: {
-    name: 'plan_delete',
-    description: 'Delete a plan. Soft delete by default; hard delete when hard_delete=true.',
-    parameters: {
-      type: 'object',
-      properties: {
-        plan_id: { type: 'string' },
-        target_branch: { type: 'string' },
-        hard_delete: { type: 'boolean' },
-      },
-      required: ['plan_id'],
-    },
-  },
-};
-
-export const RESTORE_PLAN_TOOL = {
-  type: 'function',
-  function: {
-    name: 'plan_restore',
-    description: 'Restore a soft-deleted plan back to draft status.',
-    parameters: {
-      type: 'object',
-      properties: {
-        plan_id: { type: 'string' },
-        target_branch: { type: 'string' },
-      },
-      required: ['plan_id'],
-    },
-  },
-};
-
-export const SET_ACTIVE_PLAN_TOOL = {
-  type: 'function',
-  function: {
-    name: 'plan_set_active',
-    description: 'Set active plan for a target code branch in @macro metadata.',
-    parameters: {
-      type: 'object',
-      properties: {
-        plan_id: { type: 'string' },
-        target_branch: { type: 'string' },
-      },
-      required: ['plan_id'],
-    },
-  },
-};
-
-const GET_STRATEGY_TOOL = {
-  type: 'function',
-  function: {
-    name: 'strategy_get',
-    description: 'Read the current strategy (nodes and branches) for the active plan.',
-    parameters: {
-      type: 'object',
-      properties: {
-        target_branch: { type: 'string' },
-      },
-      required: [],
-    },
-  },
-};
-
-const UPDATE_STRATEGY_TOOL = {
-  type: 'function',
-  function: {
-    name: 'strategy_update',
-    description: 'Modify strategy for the active plan. You can replace all nodes or apply operations (add, update, remove).',
-    parameters: {
-      type: 'object',
-      properties: {
-        target_branch: { type: 'string' },
-        replace: { type: 'boolean', description: 'If true, replace strategy with provided nodes.' },
-        nodes: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              title: { type: 'string' },
-              description: { type: 'string' },
-              type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
-              assignedBranch: { type: 'string' },
-              status: { type: 'string', enum: ['pending', 'in-progress', 'completed', 'blocked'] },
-              dependencies: { type: 'array', items: { type: 'string' } },
-            },
-            required: ['title', 'type'],
-          },
-        },
-        operations: {
-          type: 'array',
-          description: 'Patch operations applied in order.',
-          items: {
-            type: 'object',
-            properties: {
-              action: { type: 'string', enum: ['add', 'update', 'remove'] },
-              node_id: { type: 'string' },
-              title: { type: 'string' },
-              description: { type: 'string' },
-              type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
-              assignedBranch: { type: 'string' },
-              status: { type: 'string', enum: ['pending', 'in-progress', 'completed', 'blocked'] },
-              dependencies: { type: 'array', items: { type: 'string' } },
-            },
-            required: ['action'],
-          },
-        },
-      },
-      required: [],
-    },
-  },
-};
-
-const DELETE_STRATEGY_TOOL = {
-  type: 'function',
-  function: {
-    name: 'strategy_delete',
-    description: 'Delete all strategy nodes and predicted branches for the active plan. Requires confirm=true.',
-    parameters: {
-      type: 'object',
-      properties: {
-        target_branch: { type: 'string' },
-        confirm: { type: 'boolean' },
-      },
-      required: ['confirm'],
-    },
-  },
-};
+const WEB_SEARCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_search'));
+const WEB_FETCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_fetch'));
+const MARK_SOURCE_PASSAGE_TOOL = toFunctionToolShape(
+  requireMacroToolRegistryEntry('mark_source_passage')
+);
+const READ_SOURCES_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('read_sources'));
+const EDIT_SOURCE_PASSAGE_TOOL = toFunctionToolShape(
+  requireMacroToolRegistryEntry('edit_source_passage')
+);
+const READ_FILE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('read_file'));
+const LIST_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('list'));
+const READ_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('read'));
+const WRITE_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('write'));
+const EDIT_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('edit'));
+const GLOB_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('glob'));
+const GREP_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('grep'));
+const GIT_STATUS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_status'));
+const GIT_LOG_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_log'));
+const GIT_BRANCH_LIST_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_branch_list'));
+const GIT_DIFF_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_diff'));
+const GIT_GET_TREE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_get_tree'));
+const GIT_ADD_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_add'));
+const GIT_COMMIT_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_commit'));
+const GIT_CHECKOUT_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_checkout'));
+const GIT_MERGE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_merge'));
+const GIT_RESET_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_reset'));
+const GIT_STASH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_stash'));
+const TERMINAL_CREATE_SESSION_TOOL = toFunctionToolShape(
+  requireMacroToolRegistryEntry('terminal_create_session')
+);
+const TERMINAL_RUN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('terminal_run'));
+const TERMINAL_READ_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('terminal_read'));
+const TERMINAL_KILL_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('terminal_kill'));
+const ADD_NEED_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('need_add'));
+export const GENERATE_PLAN_TOOL = toFunctionToolShape(
+  requireMacroToolRegistryEntry('strategy_generate')
+);
+export const CREATE_PLAN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_create'));
+export const LIST_PLANS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_list'));
+export const GET_PLAN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_get'));
+export const UPDATE_PLAN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_update'));
+export const DELETE_PLAN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_delete'));
+export const RESTORE_PLAN_TOOL = toFunctionToolShape(
+  requireMacroToolRegistryEntry('plan_restore')
+);
+export const SET_ACTIVE_PLAN_TOOL = toFunctionToolShape(
+  requireMacroToolRegistryEntry('plan_set_active')
+);
+const GET_STRATEGY_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('strategy_get'));
+const UPDATE_STRATEGY_TOOL = toFunctionToolShape(
+  requireMacroToolRegistryEntry('strategy_update')
+);
+const DELETE_STRATEGY_TOOL = toFunctionToolShape(
+  requireMacroToolRegistryEntry('strategy_delete')
+);
 
 /**
  * Send a streaming chat completion request
@@ -1143,6 +408,8 @@ const clearTauriListeners = () => {
 interface StreamingTurnResult {
   content: string;
   toolCalls: ToolCall[];
+  toolTraces?: ToolTrace[];
+  hiddenContext?: string;
 }
 
 const getValidToolCalls = (toolCalls: ToolCall[]): ToolCall[] =>
@@ -1223,16 +490,23 @@ const collectAllowedTools = (params: {
   return tools;
 };
 
-const streamChatGptTurnViaTauri = async (params: {
+const streamNativeTurnViaTauri = async (params: {
   providerId: string;
+  providerType: string;
   modelId: string;
   messages: StreamMessage[];
   tools: unknown[];
+  allowedToolIds?: string[];
+  workspacePath?: string | null;
+  defaultWorkspacePath?: string | null;
+  projectMounts?: ProjectMount[];
+  virtualRootEnabled?: boolean;
+  focusedProjectId?: string | null;
   signal?: AbortSignal;
   onDelta: (delta: string) => void;
 }): Promise<StreamingTurnResult> => {
   if (!tauriIpc.isTauriAvailable()) {
-    throw new Error('ChatGPT provider requires the desktop backend.');
+    throw new Error(`${params.providerType} provider requires the desktop backend.`);
   }
 
   clearTauriListeners();
@@ -1286,6 +560,8 @@ const streamChatGptTurnViaTauri = async (params: {
               resolve({
                 content: event.payload.output_text || fullContent,
                 toolCalls: event.payload.tool_calls || [],
+                toolTraces: event.payload.tool_traces ?? undefined,
+                hiddenContext: event.payload.hidden_context ?? undefined,
               })
             );
           }),
@@ -1313,6 +589,12 @@ const streamChatGptTurnViaTauri = async (params: {
           tools: params.tools,
           toolChoice: 'auto',
           parallelToolCalls: false,
+          workspacePath: params.workspacePath,
+          defaultWorkspacePath: params.defaultWorkspacePath,
+          projectMounts: params.projectMounts,
+          virtualRootEnabled: params.virtualRootEnabled,
+          focusedProjectId: params.focusedProjectId,
+          allowedToolIds: params.allowedToolIds,
         });
       } catch (error) {
         if (params.signal) {
@@ -1393,11 +675,18 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
 
       const shouldBufferTurnOutput = enforceGuidedToolRetry;
       let streamedTurnContent = '';
-      const turnResult = await streamChatGptTurnViaTauri({
+      const turnResult = await streamNativeTurnViaTauri({
         providerId,
+        providerType: 'chatgpt',
         modelId,
         messages: currentMessages,
         tools,
+        allowedToolIds: options.allowedToolIds,
+        workspacePath: options.workspacePath,
+        defaultWorkspacePath: options.defaultWorkspacePath,
+        projectMounts: options.projectMounts,
+        virtualRootEnabled: options.virtualRootEnabled,
+        focusedProjectId: options.focusedProjectId,
         signal: options.signal,
         onDelta: (delta) => {
           streamedTurnContent += delta;
@@ -1699,9 +988,46 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
   }
 };
 
+const streamChatViaCopilotProvider = async (options: StreamingChatOptions): Promise<void> => {
+  try {
+    const turn = await streamNativeTurnViaTauri({
+      providerId: options.providerId,
+      providerType: 'copilot',
+      modelId: options.modelId,
+      messages: options.messages,
+      tools: [],
+      allowedToolIds: options.allowedToolIds,
+      workspacePath: options.workspacePath,
+      defaultWorkspacePath: options.defaultWorkspacePath,
+      projectMounts: options.projectMounts,
+      virtualRootEnabled: options.virtualRootEnabled,
+      focusedProjectId: options.focusedProjectId,
+      signal: options.signal,
+      onDelta: options.onToken,
+    });
+
+    if (turn.toolTraces) {
+      options.onToolTracesUpdate?.(turn.toolTraces);
+    }
+
+    options.onComplete({
+      visibleContent: turn.content,
+      toolTraces: turn.toolTraces ?? [],
+      hiddenContext: turn.hiddenContext,
+    });
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    options.onError(err);
+  }
+};
+
 export async function streamChat(options: StreamingChatOptions): Promise<void> {
   if (options.providerType === 'chatgpt') {
     return streamChatViaChatGptProvider(options);
+  }
+
+  if (options.providerType === 'copilot') {
+    return streamChatViaCopilotProvider(options);
   }
 
   const {
@@ -2339,19 +1665,30 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     onError,
   } = options;
 
-  if (providerType === 'chatgpt') {
+  if (providerType === 'chatgpt' || providerType === 'copilot') {
     try {
-      const turn = await streamChatGptTurnViaTauri({
+      const turn = await streamNativeTurnViaTauri({
         providerId,
+        providerType,
         modelId,
         messages,
         tools: [],
+        allowedToolIds: options.allowedToolIds,
+        workspacePath: options.workspacePath,
+        defaultWorkspacePath: options.defaultWorkspacePath,
+        projectMounts: options.projectMounts,
+        virtualRootEnabled: options.virtualRootEnabled,
+        focusedProjectId: options.focusedProjectId,
         signal: options.signal,
         onDelta: () => {
           // No-op for metadata generation.
         },
       });
-      onComplete(emptyStreamCompletionResult(turn.content));
+      onComplete({
+        visibleContent: turn.content,
+        toolTraces: turn.toolTraces ?? [],
+        hiddenContext: turn.hiddenContext,
+      });
       return turn.content;
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));

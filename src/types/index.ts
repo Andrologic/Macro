@@ -370,7 +370,17 @@ export interface ProviderConfig {
   isEnabled: boolean;
   isLocal: boolean;
   nativeToolCalling?: boolean;
-  authStatus?: 'authenticated' | 'unauthenticated' | 'authorizing' | 'refreshing' | 'expired' | 'error';
+  authStatus?:
+    | 'authenticated'
+    | 'unauthenticated'
+    | 'authorizing'
+    | 'refreshing'
+    | 'expired'
+    | 'error'
+    | 'connected'
+    | 'login_required'
+    | 'policy_blocked'
+    | 'quota_or_auth_error';
   authSource?: string;
   planType?: string;
   accountLabel?: string;

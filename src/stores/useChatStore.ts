@@ -50,6 +50,7 @@ import {
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from '../services/macroSyncService';
 import { resolveProjectExecutionContext } from '../services/projectExecutionContext';
 import { parseMessageQuickReplies } from '../services/chatQuickReplies';
+import { filterCopilotSupportedToolIds } from '../shared/macroToolRegistry';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
@@ -600,8 +601,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const providerHasAuthSession = (provider: { providerType: string; authStatus?: string }): boolean => {
-    return provider.providerType === 'chatgpt'
-      && ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '');
+    if (provider.providerType === 'chatgpt') {
+      return ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '');
+    }
+
+    if (provider.providerType === 'copilot') {
+      return provider.authStatus === 'connected';
+    }
+
+    return false;
   };
 
   const hasProviderCredentials = (providerId: string): boolean => {
@@ -2012,13 +2020,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     }
 
-    return [
-      {
-        role: 'system' as const,
-        content: systemInstructions.join(' ') || 'Use context information when it is provided.',
-      },
-      ...preparedMessages,
-    ];
+    return {
+      messages: [
+        {
+          role: 'system' as const,
+          content: systemInstructions.join(' ') || 'Use context information when it is provided.',
+        },
+        ...preparedMessages,
+      ],
+      executionContext,
+    };
   };
 
   const recalcConversation = (
@@ -2203,27 +2214,42 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return [];
     }
 
+    const providerState = useProviderStore.getState();
+    const selectedProvider = providerState.providerConfigs.find(
+      (provider) => provider.id === providerState.selectedProviderId
+    );
+    const filterForSelectedProvider = (toolIds: string[]): string[] =>
+      selectedProvider?.providerType === 'copilot'
+        ? filterCopilotSupportedToolIds(toolIds)
+        : toolIds;
+
     const mode = useAppStore.getState().mode;
     const modePolicy = await getModePolicyForCurrentMode();
     const toolsState = useToolsStore.getState();
 
     if (mode === 'Chat') {
       const enabledChatTools = toolsState.getEnabledChatToolIds();
-      return enabledChatTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId));
+      return filterForSelectedProvider(
+        enabledChatTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId))
+      );
     }
 
     if (mode === 'Debug') {
       const enabledTools = Object.values(toolsState.internalTools)
         .filter((tool) => toolsState.isToolEnabled(tool.id))
         .map((tool) => tool.id);
-      return enabledTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId));
+      return filterForSelectedProvider(
+        enabledTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId))
+      );
     }
 
     const enabledTools = Object.values(toolsState.internalTools)
       .filter((tool) => toolsState.isToolEnabled(tool.id))
       .map((tool) => tool.id);
 
-    return enabledTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId));
+    return filterForSelectedProvider(
+      enabledTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId))
+    );
   };
 
   const buildGuidedToolRetryPolicy = (params: {
@@ -2683,7 +2709,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const allowedToolIds = await getAllowedToolIdsForCurrentMode();
     const showToolTraces = useAppStore.getState().mode === 'Debug';
-    const messagesForRequest = await prepareMessagesForRequest(
+    const preparedRequest = await prepareMessagesForRequest(
       params.conversationId,
       allowedToolIds,
       params.replyToMessageId
@@ -2708,7 +2734,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return {
       allowedToolIds,
       showToolTraces,
-      messagesForRequest,
+      messagesForRequest: preparedRequest.messages,
+      executionContext: preparedRequest.executionContext,
       fileToolContext,
       enableWebSearch,
       enableWebFetch,
@@ -2746,6 +2773,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     selectedModelId: string;
     providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>;
     messagesForRequest: StreamMessage[];
+    executionContext: {
+      workspacePath: string | null;
+      defaultWorkspacePath: string | null;
+      projectMounts: ReturnType<typeof resolveProjectExecutionContext>['projectMounts'];
+      virtualRootEnabled: boolean;
+      focusedProjectId: string | null;
+    };
     fileToolContext: Array<{ title: string; source: string; path?: string; snippet?: string }>;
     allowedToolIds: string[];
     guidedToolRetry?: {
@@ -2781,6 +2815,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: params.messagesForRequest,
           fileToolContext: params.fileToolContext,
           allowedToolIds: params.allowedToolIds,
+          workspacePath: params.executionContext.workspacePath,
+          defaultWorkspacePath: params.executionContext.defaultWorkspacePath,
+          projectMounts: params.executionContext.projectMounts,
+          virtualRootEnabled: params.executionContext.virtualRootEnabled,
+          focusedProjectId: params.executionContext.focusedProjectId,
           guidedToolRetry: params.guidedToolRetry,
           showToolTraces: params.showToolTraces,
           enableWebSearch: params.enableWebSearch,
@@ -4018,6 +4057,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             selectedModelId,
             providerConfig,
             messagesForRequest: streamLaunch.messagesForRequest,
+            executionContext: streamLaunch.executionContext,
             fileToolContext: streamLaunch.fileToolContext,
             allowedToolIds: streamLaunch.allowedToolIds,
             guidedToolRetry: streamLaunch.guidedToolRetry,
@@ -4180,6 +4220,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           selectedModelId,
           providerConfig,
           messagesForRequest: streamLaunch.messagesForRequest,
+          executionContext: streamLaunch.executionContext,
           fileToolContext: streamLaunch.fileToolContext,
           allowedToolIds: streamLaunch.allowedToolIds,
           guidedToolRetry: streamLaunch.guidedToolRetry,

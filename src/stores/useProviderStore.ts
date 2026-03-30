@@ -27,7 +27,11 @@ const computeIsFreeModel = (model: AIModel): boolean => {
   return isFreePricing(model.pricing);
 };
 
-const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'openai', 'openrouter']);
+const LINKED_PROVIDER_TYPES = new Set(['chatgpt', 'copilot']);
+const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'copilot', 'openai', 'openrouter']);
+
+export const isLinkedProviderType = (providerType?: string | null): boolean =>
+  !!providerType && LINKED_PROVIDER_TYPES.has(providerType);
 
 const supportsNativeToolCallingForProviderType = (providerType?: string | null): boolean =>
   !!providerType && NATIVE_TOOL_CALLING_PROVIDER_TYPES.has(providerType);
@@ -119,16 +123,25 @@ const getModeSelectionFromPreference = (
   return normalizePersistedSelection(modeSelections[getSelectionModeKey(mode)]);
 };
 
-const providerHasAuthSession = (provider: ProviderConfig): boolean => {
-  if (provider.providerType !== 'chatgpt') {
-    return false;
+export const providerHasAuthSession = (
+  provider: Pick<ProviderConfig, 'providerType' | 'authStatus'>
+): boolean => {
+  if (provider.providerType === 'chatgpt') {
+    return ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '');
   }
 
-  return ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '');
+  if (provider.providerType === 'copilot') {
+    return provider.authStatus === 'connected';
+  }
+
+  return false;
 };
 
-const providerHasCredentials = (provider: ProviderConfig): boolean => {
-  return provider.isEnabled && (provider.isLocal || !!provider.apiKey?.trim() || providerHasAuthSession(provider));
+export const providerHasCredentials = (
+  provider: Pick<ProviderConfig, 'isEnabled' | 'isLocal' | 'apiKey' | 'providerType' | 'authStatus'>
+): boolean => {
+  const hasApiKey = !isLinkedProviderType(provider.providerType) && !!provider.apiKey?.trim();
+  return provider.isEnabled && (provider.isLocal || hasApiKey || providerHasAuthSession(provider));
 };
 
 const mergeLocalProviderConfig = async (
@@ -138,6 +151,10 @@ const mergeLocalProviderConfig = async (
   if (!localConfig?.providers) return providerConfigs;
 
   return providerConfigs.map((provider) => {
+    if (isLinkedProviderType(provider.providerType)) {
+      return provider;
+    }
+
     const localProvider = findProviderConfig(localConfig, provider.id, provider.name);
     if (!localProvider) return provider;
 
@@ -164,7 +181,11 @@ const normalizeDbProviderConfig = (config: tauriIpc.DbProviderConfig): ProviderC
     isLocal: config.is_local,
     authStatus:
       (config.auth_status as ProviderConfig['authStatus']) ??
-      (config.provider_type === 'chatgpt' ? 'unauthenticated' : undefined),
+      (config.provider_type === 'chatgpt'
+        ? 'unauthenticated'
+        : config.provider_type === 'copilot'
+          ? 'login_required'
+          : undefined),
     authSource: config.auth_source ?? undefined,
     planType: config.plan_type ?? undefined,
     accountLabel: config.account_label ?? undefined,
@@ -175,7 +196,7 @@ const toProviderStatus = (
   config: ProviderConfig,
   connectionStatus: 'online' | 'offline' | 'checking' | undefined = undefined
 ): AIProvider['status'] => {
-  if (config.providerType === 'chatgpt') {
+  if (isLinkedProviderType(config.providerType)) {
     return providerHasAuthSession(config) ? 'online' : 'offline';
   }
 
@@ -213,6 +234,88 @@ interface ProviderAuthErrorState {
   message: string;
 }
 
+interface CopilotDownloadState {
+  requestId: string;
+  phase: string;
+  message: string;
+  downloadedBytes: number;
+  totalBytes: number | null;
+}
+
+interface CopilotAuthState {
+  requestId: string;
+  phase: string;
+  message: string;
+  verificationUrl: string | null;
+  userCode: string | null;
+}
+
+const isCopilotConnected = (status?: tauriIpc.CopilotStatusDto | null): boolean =>
+  !!status && status.runtime_status === 'ready' && status.auth_status === 'connected';
+
+const getCopilotStatusMessage = (status: tauriIpc.CopilotStatusDto): string => {
+  if (status.runtime_status === 'downloading') {
+    return status.status_message || 'Downloading GitHub Copilot runtime...';
+  }
+
+  if (status.runtime_status === 'missing') {
+    return 'GitHub Copilot is not installed in Macro yet.';
+  }
+
+  if (status.runtime_status === 'update_required') {
+    return (
+      status.error_message ||
+      `GitHub Copilot needs a compatible ${status.min_cli_version}+ runtime before it can connect.`
+    );
+  }
+
+  if (status.runtime_status === 'error') {
+    return (
+      status.error_message ||
+      status.status_message ||
+      'GitHub Copilot runtime is unavailable right now.'
+    );
+  }
+
+  if (status.auth_status === 'connected') {
+    return `GitHub Copilot connected${status.account_label ? ` (${status.account_label})` : ''}.`;
+  }
+
+  if (status.auth_status === 'login_required') {
+    return 'Connect GitHub Copilot to finish setup.';
+  }
+
+  return (
+    status.error_message ||
+    status.status_message ||
+    'GitHub Copilot is not available right now.'
+  );
+};
+
+const getCopilotAuthError = (
+  status: tauriIpc.CopilotStatusDto
+): ProviderAuthErrorState | undefined => {
+  if (
+    status.auth_status === 'policy_blocked' ||
+    status.auth_status === 'quota_or_auth_error' ||
+    (status.auth_status === 'error' && status.runtime_status !== 'missing' && status.runtime_status !== 'update_required')
+  ) {
+    return {
+      code: status.error_code || status.auth_status,
+      message: getCopilotStatusMessage(status),
+    };
+  }
+
+  if (status.runtime_status === 'error') {
+    return {
+      code: status.error_code || 'copilot_runtime_error',
+      message: getCopilotStatusMessage(status),
+    };
+  }
+
+  return undefined;
+};
+
 interface ProviderStore {
   // State
   providerConfigs: ProviderConfig[];
@@ -227,6 +330,9 @@ interface ProviderStore {
   connectionStatus: Record<string, 'online' | 'offline' | 'checking'>;
   authErrorsByProvider: Record<string, ProviderAuthErrorState | undefined>;
   authRequestIdsByProvider: Record<string, string | undefined>;
+  copilotStatusByProvider: Record<string, tauriIpc.CopilotStatusDto | undefined>;
+  copilotDownloadStateByProvider: Record<string, CopilotDownloadState | undefined>;
+  copilotAuthStateByProvider: Record<string, CopilotAuthState | undefined>;
 
   // Actions
   initialize: () => Promise<void>;
@@ -250,6 +356,10 @@ interface ProviderStore {
   deleteProviderConfig: (id: string) => Promise<void>;
   startChatGptAuth: (providerId?: string) => Promise<void>;
   cancelChatGptAuth: (providerId: string) => Promise<void>;
+  startCopilotRuntimeDownload: (providerId?: string) => Promise<void>;
+  cancelCopilotRuntimeDownload: (providerId: string) => Promise<void>;
+  startCopilotAuth: (providerId?: string) => Promise<void>;
+  cancelCopilotAuth: (providerId: string) => Promise<void>;
   disconnectProviderAuth: (providerId: string) => Promise<ProviderConfig>;
   testConnection: (providerId: string) => Promise<{ success: boolean; message: string }>;
   supportsNativeToolCalling: (providerId?: string | null, modelId?: string | null) => boolean;
@@ -269,6 +379,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   connectionStatus: {},
   authErrorsByProvider: {},
   authRequestIdsByProvider: {},
+  copilotStatusByProvider: {},
+  copilotDownloadStateByProvider: {},
+  copilotAuthStateByProvider: {},
 
   supportsNativeToolCalling: (providerId?: string | null, modelId?: string | null) => {
     if (!providerId) return false;
@@ -304,9 +417,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const models = get().modelsByProvider[provider.id] || [];
 
       const hasCredentials = providerHasCredentials(provider);
-      const shouldCheckConnectivity = provider.isEnabled && hasCredentials;
+      const shouldCheckConnectivity =
+        provider.isEnabled && (provider.providerType === 'copilot' || hasCredentials);
 
       if (!shouldCheckConnectivity) {
+        continue;
+      }
+
+      if (provider.providerType === 'copilot') {
+        connectivityChecks.push(testConnection(provider.id));
         continue;
       }
 
@@ -418,6 +537,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         const mockConfigs = [
           { id: 'openai', name: 'OpenAI', providerType: 'openai', baseUrl: 'https://api.openai.com/v1', isEnabled: true, isLocal: false },
           { id: 'chatgpt', name: 'ChatGPT', providerType: 'chatgpt', baseUrl: 'https://chatgpt.com/backend-api', isEnabled: true, isLocal: false, authStatus: 'unauthenticated' },
+          { id: 'copilot', name: 'GitHub Copilot', providerType: 'copilot', baseUrl: 'copilot://cli', isEnabled: true, isLocal: false, authStatus: 'login_required' },
           { id: 'zai', name: 'z.ai', providerType: 'openai', baseUrl: 'https://api.z.ai/api/coding/paas/v4', isEnabled: true, isLocal: false },
           { id: 'anthropic', name: 'Anthropic', providerType: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', isEnabled: true, isLocal: false },
           { id: 'openrouter', name: 'OpenRouter', providerType: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', isEnabled: true, isLocal: false },
@@ -521,8 +641,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return modelsByProvider[providerId] || [];
     }
 
-    if (config.providerType === 'chatgpt') {
-      if (!providerHasAuthSession(config)) {
+    if (isLinkedProviderType(config.providerType)) {
+      const copilotStatus =
+        config.providerType === 'copilot' ? get().copilotStatusByProvider[providerId] : undefined;
+      const hasLinkedSession =
+        config.providerType === 'copilot'
+          ? isCopilotConnected(copilotStatus) || providerHasAuthSession(config)
+          : providerHasAuthSession(config);
+
+      if (!hasLinkedSession) {
         return modelsByProvider[providerId] || [];
       }
 
@@ -555,7 +682,17 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
         return normalized;
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to sync ChatGPT models';
+        if (tauriIpc.isTauriAvailable()) {
+          try {
+            await get().loadProviderConfigs();
+          } catch {
+            // Ignore provider metadata refresh failures after sync errors.
+          }
+        }
+
+        const providerLabel = config.providerType === 'copilot' ? 'GitHub Copilot' : 'ChatGPT';
+        const message =
+          error instanceof Error ? error.message : `Failed to sync ${providerLabel} models`;
         set((state) => ({
           connectionStatus: { ...state.connectionStatus, [providerId]: 'offline' },
           providers: state.providers.map((p) =>
@@ -850,29 +987,39 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   updateProviderConfig: async (id: string, updates: Partial<ProviderConfig>) => {
     try {
+      const currentConfig = get().providerConfigs.find((provider) => provider.id === id);
+      const providerType = updates.providerType ?? currentConfig?.providerType;
+      const persistedUpdates = isLinkedProviderType(providerType)
+        ? {
+            ...updates,
+            baseUrl: undefined,
+            apiKey: undefined,
+          }
+        : updates;
+
       if (tauriIpc.isTauriAvailable()) {
         await tauriIpc.updateProviderConfig({
           id,
-          name: updates.name,
-          baseUrl: updates.baseUrl,
-          apiKey: updates.apiKey,
-          isEnabled: updates.isEnabled,
+          name: persistedUpdates.name,
+          baseUrl: persistedUpdates.baseUrl,
+          apiKey: persistedUpdates.apiKey,
+          isEnabled: persistedUpdates.isEnabled,
         });
       }
 
       // Update local state
       set((state) => ({
         providerConfigs: state.providerConfigs.map((c) =>
-          c.id === id ? applyNativeToolCallingToProviderConfig({ ...c, ...updates }) : c
+          c.id === id ? applyNativeToolCallingToProviderConfig({ ...c, ...persistedUpdates }) : c
         ),
         providers: state.providers.map((p) =>
           p.id === id
             ? applyNativeToolCallingToProvider(
                 {
                   ...p,
-                  name: updates.name ?? p.name,
-                  baseUrl: updates.baseUrl ?? p.baseUrl,
-                  isEnabled: updates.isEnabled ?? p.isEnabled,
+                  name: persistedUpdates.name ?? p.name,
+                  baseUrl: persistedUpdates.baseUrl ?? p.baseUrl,
+                  isEnabled: persistedUpdates.isEnabled ?? p.isEnabled,
                 },
                 get().providerConfigs.find((provider) => provider.id === id)?.providerType
               )
@@ -881,10 +1028,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }));
 
       const config = get().providerConfigs.find((c) => c.id === id);
-      const shouldScan =
-        config?.providerType === 'chatgpt'
-          ? providerHasAuthSession({ ...config, ...updates } as ProviderConfig)
-          : (updates.apiKey && updates.apiKey.trim() !== '') || config?.isLocal === true;
+      const nextConfig = config ? ({ ...config, ...persistedUpdates } as ProviderConfig) : null;
+      const shouldScan = nextConfig
+        ? isLinkedProviderType(nextConfig.providerType)
+          ? providerHasAuthSession(nextConfig)
+          : (!!persistedUpdates.apiKey && persistedUpdates.apiKey.trim() !== '') || nextConfig.isLocal === true
+        : false;
       if (shouldScan) {
         await get().loadProviderModels(id);
         const models = get().modelsByProvider[id] || [];
@@ -939,7 +1088,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
         await get().loadProviderSettings(created.id);
 
-        if (newConfig.isLocal || newConfig.apiKey) {
+        if (providerHasCredentials(newConfig)) {
           await get().scanModelsForProvider(created.id);
         }
       } else {
@@ -963,7 +1112,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           providers: [...state.providers, newProvider],
         }));
 
-        if (newConfig.isLocal || newConfig.apiKey) {
+        if (providerHasCredentials(newConfig)) {
           await get().scanModelsForProvider(id);
         }
       }
@@ -1117,9 +1266,330 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }));
   },
 
+  startCopilotRuntimeDownload: async (providerId = 'copilot') => {
+    if (!tauriIpc.isTauriAvailable()) {
+      throw new Error('GitHub Copilot runtime download requires the desktop app.');
+    }
+
+    const provider = get().providerConfigs.find((entry) => entry.id === providerId);
+    if (!provider || provider.providerType !== 'copilot') {
+      throw new Error('GitHub Copilot provider not found.');
+    }
+
+    const requestId = createRequestId();
+
+    set((state) => ({
+      authErrorsByProvider: { ...state.authErrorsByProvider, [providerId]: undefined },
+      copilotDownloadStateByProvider: {
+        ...state.copilotDownloadStateByProvider,
+        [providerId]: {
+          requestId,
+          phase: 'starting',
+          message: 'Preparing GitHub Copilot download...',
+          downloadedBytes: 0,
+          totalBytes: null,
+        },
+      },
+      copilotAuthStateByProvider: {
+        ...state.copilotAuthStateByProvider,
+        [providerId]: undefined,
+      },
+      connectionStatus: { ...state.connectionStatus, [providerId]: 'checking' },
+    }));
+
+    const cleanupListeners = (unlisteners: UnlistenFn[]) => {
+      unlisteners.forEach((unlisten) => {
+        try {
+          unlisten();
+        } catch {
+          // Ignore listener cleanup errors.
+        }
+      });
+    };
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        let unlisteners: UnlistenFn[] = [];
+
+        const finish = (fn: () => void, activeUnlisteners: UnlistenFn[]) => {
+          if (settled) return;
+          settled = true;
+          cleanupListeners(activeUnlisteners);
+          fn();
+        };
+
+        void (async () => {
+          try {
+            unlisteners = await Promise.all([
+              listen<tauriIpc.CopilotDownloadProgressEvent>(
+                'ai:copilot-download-progress',
+                (event) => {
+                  if (event.payload.request_id !== requestId) return;
+                  set((state) => ({
+                    copilotDownloadStateByProvider: {
+                      ...state.copilotDownloadStateByProvider,
+                      [providerId]: {
+                        requestId,
+                        phase: event.payload.phase,
+                        message: event.payload.message,
+                        downloadedBytes: event.payload.downloaded_bytes,
+                        totalBytes: event.payload.total_bytes,
+                      },
+                    },
+                  }));
+                }
+              ),
+              listen<tauriIpc.CopilotDownloadCompleteEvent>(
+                'ai:copilot-download-complete',
+                (event) => {
+                  if (event.payload.request_id !== requestId) return;
+                  finish(() => resolve(), unlisteners);
+                }
+              ),
+              listen<tauriIpc.CopilotDownloadErrorEvent>('ai:copilot-download-error', (event) => {
+                if (event.payload.request_id !== requestId) return;
+                const error = new Error(event.payload.message);
+                (error as Error & { code?: string }).code = event.payload.code;
+                finish(() => reject(error), unlisteners);
+              }),
+            ]);
+
+            await tauriIpc.aiDownloadCopilotRuntime({ requestId, providerId });
+          } catch (error) {
+            finish(
+              () =>
+                reject(
+                  new Error(
+                    getErrorMessage(error, 'Failed to start GitHub Copilot runtime download.')
+                  )
+                ),
+              unlisteners
+            );
+          }
+        })();
+      });
+    } catch (error) {
+      const message = getErrorMessage(error, 'Failed to download GitHub Copilot runtime.');
+      const isCancelled = message === 'GitHub Copilot runtime download was cancelled.';
+      set((state) => ({
+        authErrorsByProvider: {
+          ...state.authErrorsByProvider,
+          [providerId]: isCancelled
+            ? undefined
+            : { code: 'copilot_download_failed', message },
+        },
+      }));
+      await get().testConnection(providerId);
+      throw new Error(message);
+    } finally {
+      set((state) => ({
+        copilotDownloadStateByProvider: {
+          ...state.copilotDownloadStateByProvider,
+          [providerId]:
+            state.copilotDownloadStateByProvider[providerId]?.requestId === requestId
+              ? undefined
+              : state.copilotDownloadStateByProvider[providerId],
+        },
+      }));
+    }
+
+    const result = await get().testConnection(providerId);
+    if (result.success) {
+      await get().loadProviderModels(providerId);
+      await get().scanModelsForProvider(providerId);
+    }
+  },
+
+  cancelCopilotRuntimeDownload: async (providerId: string) => {
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+
+    const requestId = get().copilotDownloadStateByProvider[providerId]?.requestId;
+    if (!requestId) {
+      return;
+    }
+
+    await tauriIpc.aiCancelCopilotRuntimeDownload(requestId);
+    set((state) => ({
+      copilotDownloadStateByProvider: {
+        ...state.copilotDownloadStateByProvider,
+        [providerId]: undefined,
+      },
+    }));
+    await get().testConnection(providerId);
+  },
+
+  startCopilotAuth: async (providerId = 'copilot') => {
+    if (!tauriIpc.isTauriAvailable()) {
+      throw new Error('GitHub Copilot authentication requires the desktop app.');
+    }
+
+    const provider = get().providerConfigs.find((entry) => entry.id === providerId);
+    if (!provider || provider.providerType !== 'copilot') {
+      throw new Error('GitHub Copilot provider not found.');
+    }
+
+    const requestId = createRequestId();
+
+    set((state) => ({
+      authErrorsByProvider: { ...state.authErrorsByProvider, [providerId]: undefined },
+      copilotAuthStateByProvider: {
+        ...state.copilotAuthStateByProvider,
+        [providerId]: {
+          requestId,
+          phase: 'starting',
+          message: 'Starting GitHub Copilot login...',
+          verificationUrl: null,
+          userCode: null,
+        },
+      },
+      connectionStatus: { ...state.connectionStatus, [providerId]: 'checking' },
+    }));
+
+    const cleanupListeners = (unlisteners: UnlistenFn[]) => {
+      unlisteners.forEach((unlisten) => {
+        try {
+          unlisten();
+        } catch {
+          // Ignore listener cleanup errors.
+        }
+      });
+    };
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        let unlisteners: UnlistenFn[] = [];
+
+        const finish = (fn: () => void, activeUnlisteners: UnlistenFn[]) => {
+          if (settled) return;
+          settled = true;
+          cleanupListeners(activeUnlisteners);
+          fn();
+        };
+
+        void (async () => {
+          try {
+            unlisteners = await Promise.all([
+              listen<tauriIpc.CopilotAuthProgressEvent>('ai:copilot-auth-progress', (event) => {
+                if (event.payload.request_id !== requestId) return;
+                set((state) => ({
+                  copilotAuthStateByProvider: {
+                    ...state.copilotAuthStateByProvider,
+                    [providerId]: {
+                      requestId,
+                      phase: event.payload.phase,
+                      message: event.payload.message,
+                      verificationUrl: event.payload.verification_url,
+                      userCode: event.payload.user_code,
+                    },
+                  },
+                }));
+              }),
+              listen<tauriIpc.CopilotAuthCompleteEvent>('ai:copilot-auth-complete', (event) => {
+                if (event.payload.request_id !== requestId) return;
+                finish(() => resolve(), unlisteners);
+              }),
+              listen<tauriIpc.CopilotAuthCancelledEvent>(
+                'ai:copilot-auth-cancelled',
+                (event) => {
+                  if (event.payload.request_id !== requestId) return;
+                  finish(
+                    () => reject(new Error('GitHub Copilot login was cancelled.')),
+                    unlisteners
+                  );
+                }
+              ),
+              listen<tauriIpc.CopilotAuthErrorEvent>('ai:copilot-auth-error', (event) => {
+                if (event.payload.request_id !== requestId) return;
+                const error = new Error(event.payload.message);
+                (error as Error & { code?: string }).code = event.payload.code;
+                finish(() => reject(error), unlisteners);
+              }),
+            ]);
+
+            await tauriIpc.aiStartCopilotAuth({ requestId, providerId });
+          } catch (error) {
+            finish(
+              () =>
+                reject(
+                  new Error(getErrorMessage(error, 'Failed to start GitHub Copilot login.'))
+                ),
+              unlisteners
+            );
+          }
+        })();
+      });
+    } catch (error) {
+      const message = getErrorMessage(error, 'Failed to connect with GitHub Copilot.');
+      const isCancelled = message === 'GitHub Copilot login was cancelled.';
+      const code =
+        error instanceof Error && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
+          ? (error as { code: string }).code
+          : 'copilot_auth_failed';
+      set((state) => ({
+        authErrorsByProvider: {
+          ...state.authErrorsByProvider,
+          [providerId]:
+            isCancelled
+              ? undefined
+              : {
+                  code,
+                  message,
+                },
+        },
+      }));
+      await get().testConnection(providerId);
+      throw new Error(message);
+    } finally {
+      set((state) => ({
+        copilotAuthStateByProvider: {
+          ...state.copilotAuthStateByProvider,
+          [providerId]:
+            state.copilotAuthStateByProvider[providerId]?.requestId === requestId
+              ? undefined
+              : state.copilotAuthStateByProvider[providerId],
+        },
+      }));
+    }
+
+    const result = await get().testConnection(providerId);
+    if (result.success) {
+      await get().loadProviderModels(providerId);
+      await get().scanModelsForProvider(providerId);
+    }
+  },
+
+  cancelCopilotAuth: async (providerId: string) => {
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+
+    const requestId = get().copilotAuthStateByProvider[providerId]?.requestId;
+    if (!requestId) {
+      return;
+    }
+
+    await tauriIpc.aiCancelCopilotAuth(requestId);
+    set((state) => ({
+      copilotAuthStateByProvider: {
+        ...state.copilotAuthStateByProvider,
+        [providerId]: undefined,
+      },
+    }));
+    await get().testConnection(providerId);
+  },
+
   disconnectProviderAuth: async (providerId: string) => {
     if (!tauriIpc.isTauriAvailable()) {
       throw new Error('Provider auth disconnect requires the desktop app.');
+    }
+
+    const provider = get().providerConfigs.find((entry) => entry.id === providerId);
+    if (provider?.providerType === 'copilot') {
+      throw new Error('GitHub Copilot sign-out is managed in your terminal. Run `copilot logout` there.');
     }
 
     try {
@@ -1151,15 +1621,96 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       connectionStatus: { ...state.connectionStatus, [providerId]: 'checking' },
     }));
 
-    if (config.providerType === 'chatgpt') {
-      if (config.authStatus === 'authorizing') {
-        return { success: false, message: 'Browser login is in progress.' };
+    if (isLinkedProviderType(config.providerType)) {
+      if (config.providerType !== 'copilot' && config.authStatus === 'authorizing') {
+        return {
+          success: false,
+          message: 'Browser login is in progress.',
+        };
+      }
+
+      if (config.providerType === 'copilot') {
+        if (!tauriIpc.isTauriAvailable()) {
+          const message = 'GitHub Copilot status checks require the desktop app.';
+          set((state) => ({
+            connectionStatus: {
+              ...state.connectionStatus,
+              [providerId]: 'offline',
+            },
+            providers: state.providers.map((p) =>
+              p.id === providerId ? { ...p, status: 'offline' } : p
+            ),
+          }));
+
+          return { success: false, message };
+        }
+
+        try {
+          const status = await tauriIpc.aiGetCopilotStatus(providerId);
+          const success = isCopilotConnected(status);
+          const message = getCopilotStatusMessage(status);
+          const authError = getCopilotAuthError(status);
+
+          set((state) => ({
+            copilotStatusByProvider: {
+              ...state.copilotStatusByProvider,
+              [providerId]: status,
+            },
+            connectionStatus: {
+              ...state.connectionStatus,
+              [providerId]: success ? 'online' : 'offline',
+            },
+            authErrorsByProvider: {
+              ...state.authErrorsByProvider,
+              [providerId]: authError,
+            },
+            providerConfigs: state.providerConfigs.map((provider) =>
+              provider.id === providerId
+                ? applyNativeToolCallingToProviderConfig({
+                    ...provider,
+                    authStatus: status.auth_status as ProviderConfig['authStatus'],
+                    authSource: status.auth_source ?? undefined,
+                    accountLabel: status.account_label ?? undefined,
+                  })
+                : provider
+            ),
+            providers: state.providers.map((p) =>
+              p.id === providerId
+                ? { ...p, status: success ? 'online' : 'offline' }
+                : p
+            ),
+          }));
+
+          return { success, message };
+        } catch (error) {
+          const message = getErrorMessage(error, 'Failed to check GitHub Copilot status.');
+          set((state) => ({
+            connectionStatus: {
+              ...state.connectionStatus,
+              [providerId]: 'offline',
+            },
+            copilotStatusByProvider: {
+              ...state.copilotStatusByProvider,
+              [providerId]: undefined,
+            },
+            authErrorsByProvider: {
+              ...state.authErrorsByProvider,
+              [providerId]: { code: 'copilot_health_failed', message },
+            },
+            providers: state.providers.map((p) =>
+              p.id === providerId ? { ...p, status: 'offline' } : p
+            ),
+          }));
+
+          return { success: false, message };
+        }
       }
 
       const success = providerHasAuthSession(config);
-      const message = success
-        ? `ChatGPT linked${config.planType ? ` (${config.planType})` : ''}.`
-        : 'Not linked. Use Connect with ChatGPT.';
+      const message =
+        success
+          ? `ChatGPT linked${config.planType ? ` (${config.planType})` : ''}.`
+          : 'Not linked. Use Connect with ChatGPT.';
 
       set((state) => ({
         connectionStatus: {

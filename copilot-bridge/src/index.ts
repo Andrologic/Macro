@@ -1,0 +1,2075 @@
+import {
+  CopilotClient,
+  defineTool,
+  type ModelInfo,
+  type PermissionRequest,
+  type PermissionRequestResult,
+  type Tool,
+} from '@github/copilot-sdk';
+import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { createInterface } from 'node:readline';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import {
+  filterCopilotSupportedToolIds,
+  getMacroToolRegistryEntry,
+  type JsonSchema,
+} from '../../src/shared/macroToolRegistry';
+
+const MIN_CLI_VERSION = '1.0.12';
+const CLI_NAME = 'copilot';
+const MAX_READ_BYTES = 256_000;
+const MAX_GREP_RESULTS = 200;
+const MAX_GLOB_RESULTS = 500;
+const TOOL_HOST_URL_ENV = 'MACRO_TOOL_HOST_URL';
+const TOOL_HOST_BEARER_TOKEN_ENV = 'MACRO_TOOL_HOST_BEARER_TOKEN';
+
+type JsonRecord = Record<string, unknown>;
+
+interface BridgeProjectMount {
+  project_id: string;
+  mount_name: string;
+  workspace_path: string | null;
+  display_name?: string;
+}
+
+interface BridgeChatMessageImageUrl {
+  url: string;
+}
+
+interface BridgeChatMessagePart {
+  type: string;
+  text?: string;
+  image_url?: BridgeChatMessageImageUrl;
+}
+
+interface BridgeToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+interface BridgeChatMessage {
+  role: string;
+  content: string | BridgeChatMessagePart[];
+  tool_calls?: BridgeToolCall[];
+  tool_call_id?: string;
+}
+
+interface BridgeSendRequest {
+  model_id: string;
+  messages: BridgeChatMessage[];
+  allowed_tool_ids?: string[];
+  workspace_path?: string | null;
+  default_workspace_path?: string | null;
+  project_mounts?: BridgeProjectMount[];
+  virtual_root_enabled?: boolean;
+  focused_project_id?: string | null;
+}
+
+interface ToolHostClient {
+  baseUrl: string;
+  bearerToken: string;
+}
+
+interface SourcePassageRecord {
+  id: string;
+  title: string;
+  passage: string;
+  source?: string;
+  url?: string;
+  kind: 'interesting' | 'used';
+  reason?: string;
+  updated_at: string;
+}
+
+interface CliProbe {
+  cliPath: string;
+  installed: boolean;
+  version: string | null;
+  versionOk: boolean;
+  error?: string;
+}
+
+interface BridgeHealthResult {
+  ok: boolean;
+  cli_path: string;
+  cli_installed: boolean;
+  cli_version: string | null;
+  min_cli_version: string;
+  version_ok: boolean;
+  auth_status: string;
+  auth_source?: string;
+  account_label?: string;
+  status_message?: string;
+  error_code?: string;
+  error_message?: string;
+}
+
+interface WorkspaceCandidate {
+  id: string;
+  mountName: string;
+  displayName: string;
+  workspacePath: string;
+}
+
+interface WorkspaceContext {
+  defaultWorkspacePath: string | null;
+  focusedProjectId: string | null;
+  virtualRootEnabled: boolean;
+  candidates: WorkspaceCandidate[];
+}
+
+interface ToolTraceSnapshot {
+  tool_call_id: string;
+  tool_name: string;
+  detail?: string;
+  status: 'running' | 'done';
+}
+
+class BridgeError extends Error {
+  code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+const emitJson = (payload: JsonRecord): void => {
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
+};
+
+const readStdinJson = async <T>(): Promise<T | null> => {
+  if (process.stdin.isTTY) {
+    return null;
+  }
+
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  if (!text) {
+    return null;
+  }
+
+  return JSON.parse(text) as T;
+};
+
+const normalizePath = (value?: string | null): string | null => {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return null;
+  return path.resolve(trimmed);
+};
+
+const sanitizeRelativePath = (value?: string | null): string => {
+  return (value || '.')
+    .trim()
+    .replace(/^['"`]+/, '')
+    .replace(/['"`]+$/, '')
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '') || '.';
+};
+
+const escapeToolContextAttribute = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+const buildToolContextBlock = (
+  toolCallId: string,
+  toolName: string,
+  detail: string | undefined,
+  result: string
+): string | null => {
+  if (!result.trim()) return null;
+  const attrs = [
+    `tool_call_id="${escapeToolContextAttribute(toolCallId)}"`,
+    `tool="${escapeToolContextAttribute(toolName)}"`,
+    detail ? `detail="${escapeToolContextAttribute(detail)}"` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return `<tool_context ${attrs}>\n${result}\n</tool_context>`;
+};
+
+const contentToText = (content: BridgeChatMessage['content']): string => {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  return content
+    .map((part) => {
+      if (part.type === 'text') {
+        return part.text || '';
+      }
+      if (part.type === 'image_url') {
+        return part.image_url?.url ? `[image:${part.image_url.url}]` : '[image]';
+      }
+      return '';
+    })
+    .filter((value) => value.trim().length > 0)
+    .join('\n');
+};
+
+const requireToolHostClient = (): ToolHostClient => {
+  const baseUrl = process.env[TOOL_HOST_URL_ENV]?.trim();
+  const bearerToken = process.env[TOOL_HOST_BEARER_TOKEN_ENV]?.trim();
+  if (!baseUrl || !bearerToken) {
+    throw new BridgeError(
+      'tool_host_missing',
+      'Macro tool host is unavailable for GitHub Copilot tool execution.'
+    );
+  }
+  return { baseUrl, bearerToken };
+};
+
+const toolHostRequest = async <T>(client: ToolHostClient, pathValue: string, init?: RequestInit): Promise<T> => {
+  const response = await fetch(`${client.baseUrl}${pathValue}`, {
+    ...init,
+    headers: {
+      Accept: 'application/json',
+      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      Authorization: `Bearer ${client.bearerToken}`,
+      ...(init?.headers || {}),
+    },
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      (payload && typeof payload === 'object' && 'message' in payload && typeof payload.message === 'string'
+        ? payload.message
+        : `Tool host request failed (${response.status})`);
+    throw new BridgeError('tool_host_request_failed', message);
+  }
+
+  return payload as T;
+};
+
+const executeToolHost = async (params: {
+  mode: string;
+  toolId: string;
+  args: JsonRecord;
+  workspacePath?: string | null;
+  workspaceScope?: string | null;
+}): Promise<string> => {
+  const client = requireToolHostClient();
+  const payload = await toolHostRequest<{ result: string }>(client, '/api/v1/tools/execute', {
+    method: 'POST',
+    body: JSON.stringify({
+      mode: params.mode,
+      tool_id: params.toolId,
+      args: params.args,
+      workspace_path: params.workspacePath ?? null,
+      workspace_scope: params.workspaceScope ?? null,
+    }),
+  });
+  return payload.result;
+};
+
+const validateToolViaHost = async (params: {
+  mode: string;
+  toolId: string;
+  path?: string | null;
+}): Promise<void> => {
+  const client = requireToolHostClient();
+  const payload = await toolHostRequest<{
+    allowed: boolean;
+    reason?: string | null;
+  }>(client, '/api/v1/tools/validate', {
+    method: 'POST',
+    body: JSON.stringify({
+      mode: params.mode,
+      tool_id: params.toolId,
+      path: params.path ?? null,
+    }),
+  });
+
+  if (!payload.allowed) {
+    throw new BridgeError(
+      'tool_not_allowed',
+      payload.reason || `Tool ${params.toolId} is not allowed in this mode.`
+    );
+  }
+};
+
+const normalizeUrl = (input: string): string => {
+  const trimmed = input.trim();
+  if (!trimmed) return trimmed;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+};
+
+const stripHtmlToText = (html: string): string =>
+  html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const extractPageTitle = (html: string): string => {
+  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
+  return match?.[1]?.replace(/\s+/g, ' ').trim() || '';
+};
+
+const fetchWebPageDirect = async (inputUrl: string): Promise<string> => {
+  const normalizedUrl = normalizeUrl(inputUrl);
+  if (!normalizedUrl) {
+    throw new BridgeError('invalid_url', 'URL is required for web_fetch.');
+  }
+
+  const parsed = new URL(normalizedUrl);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new BridgeError('invalid_url', 'Only HTTP and HTTPS URLs are supported.');
+  }
+
+  const response = await fetch(normalizedUrl, {
+    method: 'GET',
+    headers: {
+      Accept: 'text/html,application/xhtml+xml',
+      'User-Agent': 'Macro/1.0 (+https://macro.app)',
+    },
+  });
+
+  if (!response.ok) {
+    throw new BridgeError('web_fetch_failed', `Failed to fetch URL (${response.status}).`);
+  }
+
+  const html = await response.text();
+  const title = extractPageTitle(html) || parsed.hostname.replace(/^www\./i, '');
+  const content = stripHtmlToText(html).slice(0, 12000);
+  const snippet = content.slice(0, 350);
+
+  return JSON.stringify(
+    {
+      url: normalizedUrl,
+      title,
+      snippet,
+      content,
+    },
+    null,
+    2
+  );
+};
+
+const parseToolContextBlocks = (text: string): Array<{ tool: string | null; body: string }> => {
+  const blocks: Array<{ tool: string | null; body: string }> = [];
+  const regex = /<tool_context\b([^>]*)>([\s\S]*?)<\/tool_context>/gi;
+  let match: RegExpExecArray | null = null;
+  while ((match = regex.exec(text)) !== null) {
+    const attrs = match[1] || '';
+    const body = (match[2] || '').trim();
+    const toolMatch = /\btool="([^"]+)"/i.exec(attrs);
+    blocks.push({
+      tool: toolMatch?.[1] || null,
+      body,
+    });
+  }
+  return blocks;
+};
+
+const extractSourcePassages = (messages: BridgeChatMessage[]): Map<string, SourcePassageRecord> => {
+  const passages = new Map<string, SourcePassageRecord>();
+
+  for (const message of messages) {
+    const text = contentToText(message.content);
+    if (!text.includes('<tool_context')) continue;
+
+    for (const block of parseToolContextBlocks(text)) {
+      if (block.tool !== 'mark_source_passage' && block.tool !== 'edit_source_passage') {
+        continue;
+      }
+
+      let payload: unknown;
+      try {
+        payload = JSON.parse(block.body);
+      } catch {
+        continue;
+      }
+      if (!payload || typeof payload !== 'object') continue;
+      const record = payload as Record<string, unknown>;
+      if (record.type !== 'source_passage') continue;
+
+      if (record.action === 'mark') {
+        const citation = record.citation as SourcePassageRecord | undefined;
+        if (citation?.id) {
+          passages.set(citation.id, citation);
+        }
+        continue;
+      }
+
+      const citationId =
+        typeof record.citation_id === 'string' ? record.citation_id.trim() : '';
+      if (!citationId) continue;
+
+      if (record.action === 'delete') {
+        passages.delete(citationId);
+        continue;
+      }
+
+      const citation = record.citation as SourcePassageRecord | undefined;
+      if (citation?.id) {
+        passages.set(citation.id, citation);
+      }
+    }
+  }
+
+  return passages;
+};
+
+const readSourcePassages = (messages: BridgeChatMessage[], args: JsonRecord): string => {
+  const kind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : 'all';
+  const query = typeof args.query === 'string' ? args.query.trim().toLowerCase() : '';
+  const includeSnippet = args.include_snippet !== false;
+  const limitRaw = typeof args.limit === 'number' ? args.limit : 20;
+  const limit = Math.max(1, Math.min(Math.floor(limitRaw), 50));
+
+  const passages = Array.from(extractSourcePassages(messages).values())
+    .filter((citation) => kind === 'all' || citation.kind === kind)
+    .filter((citation) => {
+      if (!query) return true;
+      return [citation.title, citation.passage, citation.source, citation.url, citation.reason]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    })
+    .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+    .slice(0, limit)
+    .map((citation) => ({
+      citation_id: citation.id,
+      title: citation.title,
+      kind: citation.kind,
+      source: citation.source || null,
+      url: citation.url || null,
+      reason: citation.reason || null,
+      updated_at: citation.updated_at,
+      ...(includeSnippet ? { passage: citation.passage } : {}),
+    }));
+
+  return JSON.stringify(
+    {
+      total: passages.length,
+      passages,
+    },
+    null,
+    2
+  );
+};
+
+const markSourcePassage = (args: JsonRecord): string => {
+  const title = typeof args.title === 'string' ? args.title.trim() : '';
+  const passage = typeof args.passage === 'string' ? args.passage.trim() : '';
+  if (!title || !passage) {
+    throw new BridgeError(
+      'invalid_source_passage',
+      'mark_source_passage requires both title and passage.'
+    );
+  }
+
+  const citation: SourcePassageRecord = {
+    id: `srcp_${randomUUID()}`,
+    title,
+    passage,
+    source: typeof args.source === 'string' ? args.source.trim() || undefined : undefined,
+    url: typeof args.url === 'string' ? args.url.trim() || undefined : undefined,
+    kind: args.kind === 'interesting' ? 'interesting' : 'used',
+    reason: typeof args.reason === 'string' ? args.reason.trim() || undefined : undefined,
+    updated_at: new Date().toISOString(),
+  };
+
+  return JSON.stringify(
+    {
+      type: 'source_passage',
+      action: 'mark',
+      citation,
+    },
+    null,
+    2
+  );
+};
+
+const editSourcePassage = (messages: BridgeChatMessage[], args: JsonRecord): string => {
+  const citationId = typeof args.citation_id === 'string' ? args.citation_id.trim() : '';
+  const action = typeof args.action === 'string' ? args.action.trim().toLowerCase() : '';
+  if (!citationId || !action) {
+    throw new BridgeError(
+      'invalid_source_passage',
+      'edit_source_passage requires citation_id and action.'
+    );
+  }
+
+  const passages = extractSourcePassages(messages);
+  const existing = passages.get(citationId);
+  if (!existing) {
+    throw new BridgeError(
+      'source_passage_not_found',
+      `Unknown source passage citation_id "${citationId}".`
+    );
+  }
+
+  if (action === 'delete') {
+    return JSON.stringify(
+      {
+        type: 'source_passage',
+        action: 'delete',
+        citation_id: citationId,
+      },
+      null,
+      2
+    );
+  }
+
+  if (action === 'reclassify') {
+    const nextKind = args.kind === 'interesting' ? 'interesting' : args.kind === 'used' ? 'used' : null;
+    if (!nextKind) {
+      throw new BridgeError(
+        'invalid_source_passage',
+        'edit_source_passage with action="reclassify" requires kind.'
+      );
+    }
+
+    return JSON.stringify(
+      {
+        type: 'source_passage',
+        action: 'edit',
+        citation_id: citationId,
+        citation: {
+          ...existing,
+          kind: nextKind,
+          updated_at: new Date().toISOString(),
+        },
+      },
+      null,
+      2
+    );
+  }
+
+  if (action !== 'update') {
+    throw new BridgeError(
+      'invalid_source_passage',
+      `Unsupported edit_source_passage action "${action}".`
+    );
+  }
+
+  const nextTitle = typeof args.title === 'string' ? args.title.trim() : existing.title;
+  const nextPassage =
+    typeof args.passage === 'string' ? args.passage.trim() : existing.passage;
+  if (!nextTitle || !nextPassage) {
+    throw new BridgeError(
+      'invalid_source_passage',
+      'Updated source passage requires non-empty title and passage.'
+    );
+  }
+
+  return JSON.stringify(
+    {
+      type: 'source_passage',
+      action: 'edit',
+      citation_id: citationId,
+      citation: {
+        ...existing,
+        title: nextTitle,
+        passage: nextPassage,
+        source: typeof args.source === 'string' ? args.source.trim() || undefined : existing.source,
+        url: typeof args.url === 'string' ? args.url.trim() || undefined : existing.url,
+        reason:
+          typeof args.reason === 'string' ? args.reason.trim() || undefined : existing.reason,
+        kind: args.kind === 'interesting' || args.kind === 'used' ? args.kind : existing.kind,
+        updated_at: new Date().toISOString(),
+      },
+    },
+    null,
+    2
+  );
+};
+
+const serializeConversationPrompt = (messages: BridgeChatMessage[]): { system: string; prompt: string } => {
+  const systemMessages = messages
+    .filter((message) => message.role === 'system')
+    .map((message) => contentToText(message.content).trim())
+    .filter(Boolean);
+
+  const transcript = messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => {
+      const label = message.role.toUpperCase();
+      const body = contentToText(message.content).trim() || '(empty)';
+      const parts = [`[${label}]`, body];
+
+      if (message.tool_calls?.length) {
+        for (const toolCall of message.tool_calls) {
+          parts.push(
+            `[ASSISTANT_TOOL_REQUEST ${toolCall.id}] ${toolCall.function.name} ${toolCall.function.arguments}`
+          );
+        }
+      }
+
+      if (message.role === 'tool' && message.tool_call_id) {
+        parts[0] = `[TOOL_RESULT ${message.tool_call_id}]`;
+      }
+
+      return parts.join('\n');
+    })
+    .join('\n\n');
+
+  const prompt = [
+    'You are continuing an existing Macro conversation.',
+    'Use the transcript below as the authoritative conversation history.',
+    'Answer the latest user request only. If a workspace tool is needed, use it before answering.',
+    '<conversation>',
+    transcript || '[no prior messages]',
+    '</conversation>',
+  ].join('\n\n');
+
+  return {
+    system: systemMessages.join('\n\n').trim(),
+    prompt,
+  };
+};
+
+const formatToolTraceDetail = (toolName: string, args: JsonRecord): string | undefined => {
+  if (toolName === 'read_file') {
+    const file = typeof args.file === 'string' ? args.file.trim() : '';
+    const extractText = args.extract_text === true ? 'extract_text=true' : '';
+    return [file, extractText].filter(Boolean).join(', ') || undefined;
+  }
+
+  if (toolName === 'list' || toolName === 'read' || toolName === 'write' || toolName === 'edit') {
+    return typeof args.path === 'string' ? args.path.trim() : undefined;
+  }
+
+  if (toolName === 'glob') {
+    return typeof args.pattern === 'string' ? args.pattern.trim() : undefined;
+  }
+
+  if (toolName === 'grep') {
+    return typeof args.query === 'string' ? args.query.trim() : undefined;
+  }
+
+  return undefined;
+};
+
+const parseVersion = (value: string): number[] | null => {
+  const match = value.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return match.slice(1).map((part) => Number(part));
+};
+
+const compareVersions = (left: string, right: string): number => {
+  const leftParts = parseVersion(left);
+  const rightParts = parseVersion(right);
+  if (!leftParts || !rightParts) return 0;
+
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const a = leftParts[index] ?? 0;
+    const b = rightParts[index] ?? 0;
+    if (a > b) return 1;
+    if (a < b) return -1;
+  }
+  return 0;
+};
+
+const getCliPath = (): string => {
+  const override = (process.env.MACRO_COPILOT_CLI_PATH || '').trim();
+  if (override) {
+    return override;
+  }
+
+  const resolver = process.platform === 'win32' ? 'where.exe' : 'which';
+  const result = spawnSync(resolver, [CLI_NAME], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    shell: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  if (result.status === 0) {
+    const candidate = `${result.stdout || ''}\n${result.stderr || ''}`
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return CLI_NAME;
+};
+
+const runCliCommand = async (args: string[]): Promise<{ code: number; output: string }> => {
+  const cliPath = getCliPath();
+  const child = spawn(cliPath, args, {
+    cwd: process.cwd(),
+    shell: process.platform === 'win32',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let output = '';
+  const recordLine = (line: string) => {
+    output += `${line}\n`;
+  };
+
+  if (!child.stdout || !child.stderr) {
+    throw new BridgeError('spawn_failed', 'Failed to start Copilot CLI subprocess.');
+  }
+
+  const stdout = createInterface({ input: child.stdout });
+  const stderr = createInterface({ input: child.stderr });
+
+  stdout.on('line', (line) => recordLine(line));
+  stderr.on('line', (line) => recordLine(line));
+
+  const result = await new Promise<{ code: number; output: string }>((resolve, reject) => {
+    child.once('error', (error) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        reject(new BridgeError('cli_missing', 'GitHub Copilot CLI was not found on PATH.'));
+        return;
+      }
+      reject(new BridgeError('spawn_failed', error.message));
+    });
+
+    child.once('exit', (code) => {
+      resolve({ code: code ?? 1, output: output.trim() });
+    });
+  });
+
+  stdout.close();
+  stderr.close();
+  return result;
+};
+
+const probeCli = async (): Promise<CliProbe> => {
+  const cliPath = getCliPath();
+
+  try {
+    const result = await runCliCommand(['version']);
+    const versionMatch = result.output.match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/);
+    const version = versionMatch?.[1] || null;
+    const versionOk = version ? compareVersions(version, MIN_CLI_VERSION) >= 0 : false;
+
+    return {
+      cliPath,
+      installed: result.code === 0,
+      version,
+      versionOk,
+      error: result.code === 0 ? undefined : result.output || 'Unable to determine Copilot CLI version.',
+    };
+  } catch (error) {
+    if (error instanceof BridgeError) {
+      return {
+        cliPath,
+        installed: false,
+        version: null,
+        versionOk: false,
+        error: error.message,
+      };
+    }
+
+    return {
+      cliPath,
+      installed: false,
+      version: null,
+      versionOk: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+};
+
+const mapAuthStatus = (
+  probe: CliProbe,
+  auth: {
+    isAuthenticated: boolean;
+    authType?: string;
+    login?: string;
+    statusMessage?: string;
+  } | null,
+  error?: BridgeError | null
+): BridgeHealthResult => {
+  if (!probe.installed || !probe.versionOk) {
+    return {
+      ok: false,
+      cli_path: probe.cliPath,
+      cli_installed: probe.installed,
+      cli_version: probe.version,
+      min_cli_version: MIN_CLI_VERSION,
+      version_ok: probe.versionOk,
+      auth_status: 'cli_missing',
+      error_code: probe.installed ? 'cli_version_unsupported' : 'cli_missing',
+      error_message:
+        probe.error ||
+        (probe.installed
+          ? `GitHub Copilot CLI ${MIN_CLI_VERSION}+ is required.`
+          : 'GitHub Copilot CLI was not found on PATH.'),
+    };
+  }
+
+  if (error?.code === 'policy_blocked') {
+    return {
+      ok: false,
+      cli_path: probe.cliPath,
+      cli_installed: true,
+      cli_version: probe.version,
+      min_cli_version: MIN_CLI_VERSION,
+      version_ok: true,
+      auth_status: 'policy_blocked',
+      auth_source: auth?.authType ? `cli:${auth.authType}` : 'cli',
+      account_label: auth?.login,
+      status_message: auth?.statusMessage,
+      error_code: error.code,
+      error_message: error.message,
+    };
+  }
+
+  if (error?.code === 'quota_or_auth_error') {
+    return {
+      ok: false,
+      cli_path: probe.cliPath,
+      cli_installed: true,
+      cli_version: probe.version,
+      min_cli_version: MIN_CLI_VERSION,
+      version_ok: true,
+      auth_status: 'quota_or_auth_error',
+      auth_source: auth?.authType ? `cli:${auth.authType}` : 'cli',
+      account_label: auth?.login,
+      status_message: auth?.statusMessage,
+      error_code: error.code,
+      error_message: error.message,
+    };
+  }
+
+  if (!auth?.isAuthenticated) {
+    return {
+      ok: false,
+      cli_path: probe.cliPath,
+      cli_installed: true,
+      cli_version: probe.version,
+      min_cli_version: MIN_CLI_VERSION,
+      version_ok: true,
+      auth_status: 'login_required',
+      auth_source: auth?.authType ? `cli:${auth.authType}` : undefined,
+      account_label: auth?.login,
+      status_message: auth?.statusMessage,
+      error_code: error?.code,
+      error_message: error?.message,
+    };
+  }
+
+  return {
+    ok: true,
+    cli_path: probe.cliPath,
+    cli_installed: true,
+    cli_version: probe.version,
+    min_cli_version: MIN_CLI_VERSION,
+    version_ok: true,
+    auth_status: 'connected',
+    auth_source: auth.authType ? `cli:${auth.authType}` : 'cli',
+    account_label: auth.login,
+    status_message: auth.statusMessage,
+  };
+};
+
+const classifySdkError = (error: unknown): BridgeError => {
+  if (error instanceof BridgeError) {
+    return error;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes('not authenticated') ||
+    normalized.includes('login required') ||
+    normalized.includes('authentication') ||
+    normalized.includes('oauth')
+  ) {
+    return new BridgeError('login_required', message);
+  }
+
+  if (
+    normalized.includes('policy') ||
+    normalized.includes('organization') ||
+    normalized.includes('disabled by administrator')
+  ) {
+    return new BridgeError('policy_blocked', message);
+  }
+
+  if (
+    normalized.includes('quota') ||
+    normalized.includes('premium') ||
+    normalized.includes('subscription') ||
+    normalized.includes('billing')
+  ) {
+    return new BridgeError('quota_or_auth_error', message);
+  }
+
+  return new BridgeError('copilot_error', message);
+};
+
+const withClient = async <T>(callback: (client: CopilotClient) => Promise<T>): Promise<T> => {
+  const probe = await probeCli();
+  if (!probe.installed || !probe.versionOk) {
+    throw new BridgeError(
+      probe.installed ? 'cli_version_unsupported' : 'cli_missing',
+      probe.error ||
+        (probe.installed
+          ? `GitHub Copilot CLI ${MIN_CLI_VERSION}+ is required.`
+          : 'GitHub Copilot CLI was not found on PATH.')
+    );
+  }
+
+  const client = new CopilotClient({
+    cliPath: probe.cliPath,
+    autoStart: false,
+    useStdio: true,
+    useLoggedInUser: true,
+    logLevel: 'error',
+  });
+
+  await client.start();
+  try {
+    return await callback(client);
+  } finally {
+    await client.stop();
+  }
+};
+
+const buildWorkspaceContext = (request: BridgeSendRequest): WorkspaceContext => {
+  const defaultWorkspacePath =
+    normalizePath(request.default_workspace_path) || normalizePath(request.workspace_path);
+
+  const candidates = (request.project_mounts || [])
+    .map((mount) => {
+      const workspacePath = normalizePath(mount.workspace_path);
+      if (!workspacePath) {
+        return null;
+      }
+      return {
+        id: mount.project_id,
+        mountName: mount.mount_name,
+        displayName: mount.display_name || mount.mount_name || mount.project_id,
+        workspacePath,
+      } satisfies WorkspaceCandidate;
+    })
+    .filter((candidate): candidate is WorkspaceCandidate => Boolean(candidate));
+
+  return {
+    defaultWorkspacePath,
+    focusedProjectId: request.focused_project_id || null,
+    virtualRootEnabled: Boolean(request.virtual_root_enabled && candidates.length > 0),
+    candidates,
+  };
+};
+
+const slugifyAlias = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+const getCandidateAliases = (candidate: WorkspaceCandidate): string[] => {
+  const tail = candidate.workspacePath.split(path.sep).filter(Boolean).pop() || '';
+  return Array.from(
+    new Set(
+      [
+        candidate.id,
+        candidate.mountName,
+        candidate.displayName,
+        slugifyAlias(candidate.displayName),
+        tail,
+        slugifyAlias(tail),
+      ]
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+};
+
+const findCandidateByProject = (
+  projectId: string | null | undefined,
+  context: WorkspaceContext
+): WorkspaceCandidate | null => {
+  if (!projectId) return null;
+  const normalized = projectId.trim().toLowerCase();
+  return (
+    context.candidates.find((candidate) => getCandidateAliases(candidate).includes(normalized)) ||
+    null
+  );
+};
+
+const stripCandidatePrefix = (
+  inputPath: string,
+  context: WorkspaceContext
+): { candidate: WorkspaceCandidate; relativePath: string } | null => {
+  const normalizedInput = sanitizeRelativePath(inputPath);
+  if (!normalizedInput || normalizedInput === '.') return null;
+
+  for (const candidate of context.candidates) {
+    for (const alias of getCandidateAliases(candidate)) {
+      if (normalizedInput === alias) {
+        return { candidate, relativePath: '.' };
+      }
+
+      if (normalizedInput.startsWith(`${alias}/`)) {
+        return {
+          candidate,
+          relativePath: normalizedInput.slice(alias.length + 1) || '.',
+        };
+      }
+    }
+  }
+
+  return null;
+};
+
+const isAbsolutePath = (value: string): boolean => path.isAbsolute(value) || /^[a-zA-Z]:[\\/]/.test(value);
+
+const ensureWithinWorkspace = (workspacePath: string, inputPath: string): string => {
+  const resolved = path.resolve(workspacePath, inputPath || '.');
+  const relative = path.relative(workspacePath, resolved);
+
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new BridgeError('path_outside_workspace', `Path escapes the workspace: ${inputPath}`);
+  }
+
+  return resolved;
+};
+
+const isHiddenName = (name: string): boolean => name.startsWith('.');
+
+const pathExists = async (value: string): Promise<boolean> => {
+  try {
+    await fs.access(value);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const resolveWorkspaceTarget = async (params: {
+  rawPath?: string | null;
+  projectId?: string | null;
+  context: WorkspaceContext;
+  preferFocusedProject?: boolean;
+  searchExistingPath?: boolean;
+}): Promise<{ candidate: WorkspaceCandidate | null; relativePath: string; virtualRoot: boolean }> => {
+  const relativeInput = sanitizeRelativePath(params.rawPath || '.');
+  const explicitCandidate = findCandidateByProject(params.projectId, params.context);
+  if (explicitCandidate) {
+    return {
+      candidate: explicitCandidate,
+      relativePath: stripCandidatePrefix(relativeInput, params.context)?.relativePath || relativeInput,
+      virtualRoot: false,
+    };
+  }
+
+  const prefixed = stripCandidatePrefix(relativeInput, params.context);
+  if (prefixed) {
+    return {
+      candidate: prefixed.candidate,
+      relativePath: prefixed.relativePath,
+      virtualRoot: false,
+    };
+  }
+
+  if (isAbsolutePath(relativeInput)) {
+    for (const candidate of params.context.candidates) {
+      const normalizedRoot = path.resolve(candidate.workspacePath);
+      const normalizedInput = path.resolve(relativeInput);
+      if (normalizedInput === normalizedRoot || normalizedInput.startsWith(`${normalizedRoot}${path.sep}`)) {
+        return {
+          candidate,
+          relativePath: path.relative(normalizedRoot, normalizedInput) || '.',
+          virtualRoot: false,
+        };
+      }
+    }
+
+    if (params.context.defaultWorkspacePath) {
+      return {
+        candidate: null,
+        relativePath: path.relative(params.context.defaultWorkspacePath, path.resolve(relativeInput)) || '.',
+        virtualRoot: false,
+      };
+    }
+  }
+
+  if (params.context.virtualRootEnabled && (!relativeInput || relativeInput === '.')) {
+    return {
+      candidate: null,
+      relativePath: '.',
+      virtualRoot: true,
+    };
+  }
+
+  const focusedCandidate =
+    findCandidateByProject(params.context.focusedProjectId, params.context) ||
+    params.context.candidates[0] ||
+    null;
+
+  if (params.preferFocusedProject && focusedCandidate) {
+    return {
+      candidate: focusedCandidate,
+      relativePath: relativeInput,
+      virtualRoot: false,
+    };
+  }
+
+  if (params.searchExistingPath && relativeInput !== '.' && params.context.candidates.length > 0) {
+    const matches: WorkspaceCandidate[] = [];
+    for (const candidate of params.context.candidates) {
+      try {
+        const absolutePath = ensureWithinWorkspace(candidate.workspacePath, relativeInput);
+        if (await pathExists(absolutePath)) {
+          matches.push(candidate);
+          if (matches.length > 1) {
+            break;
+          }
+        }
+      } catch {
+        // Ignore invalid candidate/path combinations.
+      }
+    }
+
+    if (matches.length === 1) {
+      return {
+        candidate: matches[0],
+        relativePath: relativeInput,
+        virtualRoot: false,
+      };
+    }
+
+    if (matches.length > 1) {
+      throw new BridgeError(
+        'ambiguous_path',
+        `Path "${relativeInput}" is ambiguous across multiple subprojects. Prefix it with a mount name or pass project_id.`
+      );
+    }
+  }
+
+  if (focusedCandidate) {
+    return {
+      candidate: focusedCandidate,
+      relativePath: relativeInput,
+      virtualRoot: false,
+    };
+  }
+
+  return {
+    candidate: null,
+    relativePath: relativeInput,
+    virtualRoot: false,
+  };
+};
+
+const walkEntries = async (
+  rootPath: string,
+  relativePath = '.',
+  options?: {
+    recursive?: boolean;
+    includeHidden?: boolean;
+    maxDepth?: number;
+  },
+  depth = 0
+): Promise<Array<{ relativePath: string; absolutePath: string; kind: 'file' | 'directory' }>> => {
+  const absolutePath = ensureWithinWorkspace(rootPath, relativePath);
+  const directoryEntries = await fs.readdir(absolutePath, { withFileTypes: true });
+  const result: Array<{ relativePath: string; absolutePath: string; kind: 'file' | 'directory' }> = [];
+
+  for (const entry of directoryEntries) {
+    if (!options?.includeHidden && isHiddenName(entry.name)) {
+      continue;
+    }
+
+    const nextRelative = relativePath === '.' ? entry.name : path.posix.join(relativePath, entry.name);
+    const nextAbsolute = path.join(absolutePath, entry.name);
+    const kind = entry.isDirectory() ? 'directory' : 'file';
+    result.push({ relativePath: nextRelative, absolutePath: nextAbsolute, kind });
+
+    const canRecurse =
+      entry.isDirectory() &&
+      options?.recursive &&
+      (options.maxDepth == null || depth < options.maxDepth - 1);
+    if (canRecurse) {
+      result.push(...await walkEntries(rootPath, nextRelative, options, depth + 1));
+    }
+  }
+
+  return result;
+};
+
+const formatListResult = (
+  entries: Array<{ relativePath: string; kind: 'file' | 'directory' }>,
+  label: string
+): string => {
+  const lines = [`PATH: ${label}`];
+  if (entries.length === 0) {
+    lines.push('(empty)');
+    return lines.join('\n');
+  }
+
+  for (const entry of entries.sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+    lines.push(`${entry.kind === 'directory' ? '[dir]' : '[file]'} ${entry.relativePath}`);
+  }
+
+  return lines.join('\n');
+};
+
+const readTextFile = async (absolutePath: string): Promise<string> => {
+  const buffer = await fs.readFile(absolutePath);
+  const content = buffer.subarray(0, MAX_READ_BYTES).toString('utf8');
+  if (buffer.byteLength > MAX_READ_BYTES) {
+    return `${content}\n\n[truncated to ${MAX_READ_BYTES} bytes]`;
+  }
+  return content;
+};
+
+const formatWithLineNumbers = (lines: string[], startLine: number): string =>
+  lines
+    .map((line, index) => `${String(startLine + index).padStart(4, ' ')} | ${line}`)
+    .join('\n');
+
+const readWorkspaceFile = async (params: {
+  context: WorkspaceContext;
+  pathValue: string;
+  projectId?: string | null;
+  startLine?: number;
+  endLine?: number;
+}): Promise<string> => {
+  const target = await resolveWorkspaceTarget({
+    rawPath: params.pathValue,
+    projectId: params.projectId,
+    context: params.context,
+    searchExistingPath: true,
+  });
+
+  if (!target.candidate) {
+    const workspacePath = params.context.defaultWorkspacePath;
+    if (!workspacePath) {
+      throw new BridgeError('missing_workspace', 'No workspace is configured for this Copilot request.');
+    }
+    const absolutePath = ensureWithinWorkspace(workspacePath, target.relativePath);
+    const text = await readTextFile(absolutePath);
+    return `FILE: ${sanitizeRelativePath(params.pathValue)}\n\n${text}`;
+  }
+
+  const absolutePath = ensureWithinWorkspace(target.candidate.workspacePath, target.relativePath);
+  const text = await readTextFile(absolutePath);
+  const allLines = text.replace(/\r\n/g, '\n').split('\n');
+  const startLine = Math.max(1, params.startLine || 1);
+  const endLine = Math.max(startLine, params.endLine || allLines.length);
+  const slice = allLines.slice(startLine - 1, endLine);
+  const virtualPath =
+    params.context.virtualRootEnabled
+      ? `${target.candidate.mountName}/${target.relativePath === '.' ? '' : target.relativePath}`.replace(/\/$/, '')
+      : target.relativePath;
+
+  return `FILE: ${virtualPath || target.candidate.mountName}\n\n${formatWithLineNumbers(slice, startLine)}`;
+};
+
+const listWorkspace = async (params: {
+  context: WorkspaceContext;
+  pathValue?: string | null;
+  projectId?: string | null;
+  recursive?: boolean;
+  includeHidden?: boolean;
+  maxDepth?: number;
+}): Promise<string> => {
+  const target = await resolveWorkspaceTarget({
+    rawPath: params.pathValue,
+    projectId: params.projectId,
+    context: params.context,
+    searchExistingPath: true,
+  });
+
+  if (target.virtualRoot) {
+    return formatListResult(
+      params.context.candidates.map((candidate) => ({
+        relativePath: candidate.mountName,
+        kind: 'directory' as const,
+      })),
+      '.'
+    );
+  }
+
+  if (!target.candidate) {
+    const workspacePath = params.context.defaultWorkspacePath;
+    if (!workspacePath) {
+      throw new BridgeError('missing_workspace', 'No workspace is configured for this Copilot request.');
+    }
+    const entries = await walkEntries(workspacePath, target.relativePath, {
+      recursive: params.recursive,
+      includeHidden: params.includeHidden,
+      maxDepth: params.maxDepth,
+    });
+    return formatListResult(
+      entries.map((entry) => ({ relativePath: entry.relativePath, kind: entry.kind })),
+      sanitizeRelativePath(params.pathValue)
+    );
+  }
+
+  const entries = await walkEntries(target.candidate.workspacePath, target.relativePath, {
+    recursive: params.recursive,
+    includeHidden: params.includeHidden,
+    maxDepth: params.maxDepth,
+  });
+  const normalizedEntries = entries.map((entry) => ({
+    relativePath: params.context.virtualRootEnabled
+      ? path.posix.join(target.candidate!.mountName, entry.relativePath)
+      : entry.relativePath,
+    kind: entry.kind,
+  }));
+
+  return formatListResult(normalizedEntries, sanitizeRelativePath(params.pathValue));
+};
+
+const pathMatchesGlob = (inputPath: string, pattern: string): boolean => {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '__DOUBLE_STAR__')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '.')
+    .replace(/__DOUBLE_STAR__/g, '.*');
+  return new RegExp(`^${escaped}$`, 'i').test(inputPath);
+};
+
+const globWorkspace = async (params: {
+  context: WorkspaceContext;
+  pattern: string;
+  projectId?: string | null;
+  includeHidden?: boolean;
+}): Promise<string> => {
+  const explicitTarget = await resolveWorkspaceTarget({
+    rawPath: '.',
+    projectId: params.projectId,
+    context: params.context,
+  });
+
+  const candidates =
+    explicitTarget.candidate
+      ? [explicitTarget.candidate]
+      : params.context.candidates.length > 0
+        ? params.context.candidates
+        : params.context.defaultWorkspacePath
+          ? [{
+              id: '__default__',
+              mountName: '',
+              displayName: 'Workspace',
+              workspacePath: params.context.defaultWorkspacePath,
+            }]
+          : [];
+
+  const matches: string[] = [];
+  for (const candidate of candidates) {
+    const entries = await walkEntries(candidate.workspacePath, '.', {
+      recursive: true,
+      includeHidden: params.includeHidden,
+    });
+
+    for (const entry of entries) {
+      if (entry.kind !== 'file') continue;
+      const relativePath = entry.relativePath.replace(/\\/g, '/');
+      const virtualPath =
+        params.context.virtualRootEnabled && candidate.mountName
+          ? path.posix.join(candidate.mountName, relativePath)
+          : relativePath;
+      if (pathMatchesGlob(virtualPath, params.pattern) || pathMatchesGlob(relativePath, params.pattern)) {
+        matches.push(virtualPath);
+        if (matches.length >= MAX_GLOB_RESULTS) {
+          return matches.join('\n');
+        }
+      }
+    }
+  }
+
+  return matches.join('\n') || '(no matches)';
+};
+
+const grepWorkspace = async (params: {
+  context: WorkspaceContext;
+  query: string;
+  projectId?: string | null;
+  includePattern?: string | null;
+  includeHidden?: boolean;
+  isRegexp?: boolean;
+  maxResults?: number;
+}): Promise<string> => {
+  const explicitTarget = await resolveWorkspaceTarget({
+    rawPath: '.',
+    projectId: params.projectId,
+    context: params.context,
+  });
+
+  const candidates =
+    explicitTarget.candidate
+      ? [explicitTarget.candidate]
+      : params.context.candidates.length > 0
+        ? params.context.candidates
+        : params.context.defaultWorkspacePath
+          ? [{
+              id: '__default__',
+              mountName: '',
+              displayName: 'Workspace',
+              workspacePath: params.context.defaultWorkspacePath,
+            }]
+          : [];
+
+  const matcher = params.isRegexp
+    ? new RegExp(params.query, 'i')
+    : null;
+  const results: string[] = [];
+  const maxResults = Math.max(1, Math.min(params.maxResults || MAX_GREP_RESULTS, MAX_GREP_RESULTS));
+
+  for (const candidate of candidates) {
+    const entries = await walkEntries(candidate.workspacePath, '.', {
+      recursive: true,
+      includeHidden: params.includeHidden,
+    });
+
+    for (const entry of entries) {
+      if (entry.kind !== 'file') continue;
+
+      const relativePath = entry.relativePath.replace(/\\/g, '/');
+      const virtualPath =
+        params.context.virtualRootEnabled && candidate.mountName
+          ? path.posix.join(candidate.mountName, relativePath)
+          : relativePath;
+
+      if (params.includePattern && !pathMatchesGlob(virtualPath, params.includePattern) && !pathMatchesGlob(relativePath, params.includePattern)) {
+        continue;
+      }
+
+      const text = await readTextFile(entry.absolutePath);
+      const lines = text.replace(/\r\n/g, '\n').split('\n');
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+        const line = lines[lineIndex];
+        const matched = matcher ? matcher.test(line) : line.toLowerCase().includes(params.query.toLowerCase());
+        if (!matched) continue;
+
+        results.push(`${virtualPath}:${lineIndex + 1}: ${line}`);
+        if (results.length >= maxResults) {
+          return results.join('\n');
+        }
+      }
+    }
+  }
+
+  return results.join('\n') || '(no matches)';
+};
+
+const writeWorkspaceFile = async (params: {
+  context: WorkspaceContext;
+  pathValue: string;
+  projectId?: string | null;
+  content: string;
+  createDirs?: boolean;
+}): Promise<string> => {
+  const target = await resolveWorkspaceTarget({
+    rawPath: params.pathValue,
+    projectId: params.projectId,
+    context: params.context,
+    preferFocusedProject: true,
+  });
+
+  const workspaceRoot = target.candidate?.workspacePath || params.context.defaultWorkspacePath;
+  if (!workspaceRoot) {
+    throw new BridgeError('missing_workspace', 'No workspace is configured for this Copilot request.');
+  }
+
+  const absolutePath = ensureWithinWorkspace(workspaceRoot, target.relativePath);
+  if (params.createDirs) {
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+  }
+
+  await fs.writeFile(absolutePath, params.content, 'utf8');
+  const relativeLabel =
+    target.candidate && params.context.virtualRootEnabled
+      ? path.posix.join(target.candidate.mountName, target.relativePath)
+      : target.relativePath;
+
+  return `WROTE: ${relativeLabel}`;
+};
+
+const editWorkspaceFile = async (params: {
+  context: WorkspaceContext;
+  pathValue: string;
+  projectId?: string | null;
+  oldText: string;
+  newText: string;
+  replaceAll?: boolean;
+}): Promise<string> => {
+  const target = await resolveWorkspaceTarget({
+    rawPath: params.pathValue,
+    projectId: params.projectId,
+    context: params.context,
+    preferFocusedProject: true,
+    searchExistingPath: true,
+  });
+
+  const workspaceRoot = target.candidate?.workspacePath || params.context.defaultWorkspacePath;
+  if (!workspaceRoot) {
+    throw new BridgeError('missing_workspace', 'No workspace is configured for this Copilot request.');
+  }
+
+  const absolutePath = ensureWithinWorkspace(workspaceRoot, target.relativePath);
+  const original = await fs.readFile(absolutePath, 'utf8');
+
+  if (!original.includes(params.oldText)) {
+    throw new BridgeError('edit_target_not_found', 'The specified old_text was not found in the target file.');
+  }
+
+  const updated = params.replaceAll
+    ? original.split(params.oldText).join(params.newText)
+    : original.replace(params.oldText, params.newText);
+
+  await fs.writeFile(absolutePath, updated, 'utf8');
+  const relativeLabel =
+    target.candidate && params.context.virtualRootEnabled
+      ? path.posix.join(target.candidate.mountName, target.relativePath)
+      : target.relativePath;
+
+  return `EDITED: ${relativeLabel}`;
+};
+
+const findReadFileTarget = async (context: WorkspaceContext, fileValue: string): Promise<string> => {
+  const normalized = sanitizeRelativePath(fileValue);
+  if (normalized.includes('/')) {
+    return normalized;
+  }
+
+  const matches: string[] = [];
+  for (const candidate of context.candidates) {
+    const entries = await walkEntries(candidate.workspacePath, '.', { recursive: true });
+    for (const entry of entries) {
+      if (entry.kind !== 'file') continue;
+      if (path.basename(entry.relativePath).toLowerCase() === normalized.toLowerCase()) {
+        const virtualPath = context.virtualRootEnabled
+          ? path.posix.join(candidate.mountName, entry.relativePath)
+          : entry.relativePath;
+        matches.push(virtualPath);
+        if (matches.length > 1) {
+          throw new BridgeError(
+            'ambiguous_file',
+            `File "${fileValue}" matches multiple workspace files. Provide a more specific path.`
+          );
+        }
+      }
+    }
+  }
+
+  return matches[0] || normalized;
+};
+
+const CHAT_SAFE_TOOL_IDS = new Set(['read_sources', 'read_file', 'web_search', 'web_fetch']);
+const LOCAL_WORKSPACE_TOOL_IDS = new Set(['read_file', 'list', 'read', 'write', 'edit', 'glob', 'grep']);
+const TOOL_HOST_TOOL_IDS = new Set([
+  'git_status',
+  'git_log',
+  'git_branch_list',
+  'git_diff',
+  'git_get_tree',
+  'git_add',
+  'git_commit',
+  'git_checkout',
+  'git_merge',
+  'git_reset',
+  'git_stash',
+  'terminal_create_session',
+  'terminal_run',
+  'terminal_read',
+  'terminal_kill',
+]);
+const LOCAL_BRIDGE_TOOL_IDS = new Set([
+  ...LOCAL_WORKSPACE_TOOL_IDS,
+  'mark_source_passage',
+  'read_sources',
+  'edit_source_passage',
+  'web_fetch',
+]);
+
+const inferMacroMode = (allowedToolIds: string[]): string => {
+  if (allowedToolIds.some((toolId) => toolId === 'need_add' || toolId.startsWith('plan_') || toolId.startsWith('strategy_'))) {
+    return 'Architect';
+  }
+  if (allowedToolIds.every((toolId) => CHAT_SAFE_TOOL_IDS.has(toolId))) {
+    return 'Chat';
+  }
+  return 'Implement';
+};
+
+const maybeValidateLocalWorkspaceTool = async (
+  mode: string,
+  toolId: string,
+  pathValue?: string | null
+): Promise<void> => {
+  if (!pathValue || mode !== 'Architect') return;
+  await validateToolViaHost({
+    mode,
+    toolId,
+    path: pathValue,
+  });
+};
+
+const routeToolHostTarget = async (params: {
+  context: WorkspaceContext;
+  rawPath?: string | null;
+  projectId?: string | null;
+  preferFocusedProject?: boolean;
+  searchExistingPath?: boolean;
+}): Promise<{ workspacePath: string; relativePath: string }> => {
+  const target = await resolveWorkspaceTarget({
+    rawPath: params.rawPath,
+    projectId: params.projectId,
+    context: params.context,
+    preferFocusedProject: params.preferFocusedProject,
+    searchExistingPath: params.searchExistingPath,
+  });
+
+  const workspacePath = target.candidate?.workspacePath || params.context.defaultWorkspacePath;
+  if (!workspacePath) {
+    throw new BridgeError('missing_workspace', 'No workspace is configured for this Copilot request.');
+  }
+
+  return {
+    workspacePath,
+    relativePath: target.relativePath || '.',
+  };
+};
+
+const executeCopilotMacroTool = async (
+  request: BridgeSendRequest,
+  context: WorkspaceContext,
+  toolId: string,
+  args: JsonRecord
+): Promise<string> => {
+  const mode = inferMacroMode(request.allowed_tool_ids || []);
+
+  if (toolId === 'read_file') {
+    const fileValue = typeof args.file === 'string' ? args.file : '';
+    const target = await findReadFileTarget(context, fileValue);
+    await maybeValidateLocalWorkspaceTool(mode, 'read', target);
+    return readWorkspaceFile({
+      context,
+      pathValue: target,
+    });
+  }
+
+  if (toolId === 'list') {
+    const pathValue = typeof args.path === 'string' ? args.path : '.';
+    await maybeValidateLocalWorkspaceTool(mode, toolId, pathValue);
+    return listWorkspace({
+      context,
+      pathValue,
+      projectId: typeof args.project_id === 'string' ? args.project_id : null,
+      recursive: args.recursive === true,
+      includeHidden: args.include_hidden === true,
+      maxDepth: typeof args.max_depth === 'number' ? args.max_depth : undefined,
+    });
+  }
+
+  if (toolId === 'read') {
+    const pathValue = typeof args.path === 'string' ? args.path : '';
+    await maybeValidateLocalWorkspaceTool(mode, toolId, pathValue);
+    return readWorkspaceFile({
+      context,
+      pathValue,
+      projectId: typeof args.project_id === 'string' ? args.project_id : null,
+      startLine: typeof args.start_line === 'number' ? args.start_line : undefined,
+      endLine: typeof args.end_line === 'number' ? args.end_line : undefined,
+    });
+  }
+
+  if (toolId === 'write') {
+    const pathValue = typeof args.path === 'string' ? args.path : '';
+    await maybeValidateLocalWorkspaceTool(mode, toolId, pathValue);
+    return writeWorkspaceFile({
+      context,
+      pathValue,
+      projectId: typeof args.project_id === 'string' ? args.project_id : null,
+      content: typeof args.content === 'string' ? args.content : '',
+      createDirs: args.create_dirs === true,
+    });
+  }
+
+  if (toolId === 'edit') {
+    const pathValue = typeof args.path === 'string' ? args.path : '';
+    await maybeValidateLocalWorkspaceTool(mode, toolId, pathValue);
+    return editWorkspaceFile({
+      context,
+      pathValue,
+      projectId: typeof args.project_id === 'string' ? args.project_id : null,
+      oldText: typeof args.old_text === 'string' ? args.old_text : '',
+      newText: typeof args.new_text === 'string' ? args.new_text : '',
+      replaceAll: args.replace_all === true,
+    });
+  }
+
+  if (toolId === 'glob') {
+    return globWorkspace({
+      context,
+      pattern: typeof args.pattern === 'string' ? args.pattern : '',
+      projectId: typeof args.project_id === 'string' ? args.project_id : null,
+      includeHidden: args.include_hidden === true,
+    });
+  }
+
+  if (toolId === 'grep') {
+    return grepWorkspace({
+      context,
+      query: typeof args.query === 'string' ? args.query : '',
+      projectId: typeof args.project_id === 'string' ? args.project_id : null,
+      includePattern: typeof args.include_pattern === 'string' ? args.include_pattern : null,
+      includeHidden: args.include_hidden === true,
+      isRegexp: args.is_regexp === true,
+      maxResults: typeof args.max_results === 'number' ? args.max_results : undefined,
+    });
+  }
+
+  if (toolId === 'mark_source_passage') {
+    return markSourcePassage(args);
+  }
+
+  if (toolId === 'read_sources') {
+    return readSourcePassages(request.messages, args);
+  }
+
+  if (toolId === 'edit_source_passage') {
+    return editSourcePassage(request.messages, args);
+  }
+
+  if (toolId === 'web_fetch') {
+    return fetchWebPageDirect(typeof args.url === 'string' ? args.url : '');
+  }
+
+  if (toolId === 'terminal_create_session') {
+    const explicitProjectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
+    const resolvedProjectId =
+      explicitProjectId ||
+      context.focusedProjectId ||
+      context.candidates[0]?.id ||
+      '';
+    if (!resolvedProjectId) {
+      throw new BridgeError(
+        'missing_project_id',
+        'terminal_create_session requires project_id when no focused subproject is available.'
+      );
+    }
+
+    return executeToolHost({
+      mode,
+      toolId,
+      args: {
+        ...args,
+        project_id: resolvedProjectId,
+      },
+    });
+  }
+
+  if (TOOL_HOST_TOOL_IDS.has(toolId)) {
+    if (toolId.startsWith('terminal_')) {
+      return executeToolHost({
+        mode,
+        toolId,
+        args,
+      });
+    }
+
+    const rawRepoPath = typeof args.repo_path === 'string' ? args.repo_path : '.';
+    const routed = await routeToolHostTarget({
+      context,
+      rawPath: rawRepoPath,
+      projectId: typeof args.project_id === 'string' ? args.project_id : null,
+      preferFocusedProject: true,
+      searchExistingPath: rawRepoPath !== '.',
+    });
+
+    const nextArgs: JsonRecord = { ...args, repo_path: routed.relativePath || '.' };
+    delete nextArgs.project_id;
+
+    return executeToolHost({
+      mode,
+      toolId,
+      args: nextArgs,
+      workspacePath: routed.workspacePath,
+    });
+  }
+
+  throw new BridgeError(
+    'unsupported_tool',
+    `Macro Copilot bridge does not support tool "${toolId}" yet.`
+  );
+};
+
+const buildMacroTools = (request: BridgeSendRequest): Tool[] => {
+  const context = buildWorkspaceContext(request);
+  const allowedToolIds = filterCopilotSupportedToolIds(request.allowed_tool_ids || []);
+
+  return allowedToolIds
+    .map((toolId) => getMacroToolRegistryEntry(toolId))
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    .map((entry) =>
+      defineTool(entry.id, {
+        description: entry.description,
+        parameters: entry.parameters as JsonSchema & { type: 'object' },
+        overridesBuiltInTool: entry.copilot?.overridesBuiltInTool === true,
+        handler: async (args: JsonRecord) => {
+          try {
+            return await executeCopilotMacroTool(request, context, entry.id, args);
+          } catch (error) {
+            return `Error executing ${entry.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          }
+        },
+      })
+    );
+};
+
+const handleHealth = async (): Promise<void> => {
+  const probe = await probeCli();
+  if (!probe.installed || !probe.versionOk) {
+    emitJson(mapAuthStatus(probe, null, null));
+    return;
+  }
+
+  try {
+    const result = await withClient(async (client) => {
+      const auth = await client.getAuthStatus();
+      return mapAuthStatus(probe, auth, null);
+    });
+    emitJson(result);
+  } catch (error) {
+    const classified = classifySdkError(error);
+    let auth: Awaited<ReturnType<CopilotClient['getAuthStatus']>> | null = null;
+
+    try {
+      auth = await withClient((client) => client.getAuthStatus());
+    } catch {
+      auth = null;
+    }
+
+    emitJson(mapAuthStatus(probe, auth, classified));
+  }
+};
+
+const modelDescription = (model: ModelInfo): string | null => {
+  const parts: string[] = [];
+  if (model.capabilities.supports.vision) {
+    parts.push('vision');
+  }
+  if (model.capabilities.supports.reasoningEffort && model.supportedReasoningEfforts?.length) {
+    parts.push(`reasoning:${model.supportedReasoningEfforts.join('/')}`);
+  }
+  return parts.length > 0 ? `Copilot model (${parts.join(', ')})` : null;
+};
+
+const handleModels = async (): Promise<void> => {
+  const probe = await probeCli();
+  if (!probe.installed || !probe.versionOk) {
+    throw new BridgeError(
+      probe.installed ? 'cli_version_unsupported' : 'cli_missing',
+      probe.error ||
+        (probe.installed
+          ? `GitHub Copilot CLI ${MIN_CLI_VERSION}+ is required.`
+          : 'GitHub Copilot CLI was not found on PATH.')
+    );
+  }
+
+  const models = await withClient(async (client) => {
+    const auth = await client.getAuthStatus();
+    if (!auth.isAuthenticated) {
+      throw new BridgeError('login_required', auth.statusMessage || 'GitHub Copilot CLI is not logged in.');
+    }
+
+    return client.listModels();
+  });
+
+  emitJson({
+    models: models.map((model) => ({
+      model_id: model.id,
+      name: model.name || model.id,
+      description: modelDescription(model),
+      owned_by: 'github-copilot',
+    })),
+  });
+};
+
+const handleSend = async (): Promise<void> => {
+  const request = await readStdinJson<BridgeSendRequest>();
+  if (!request) {
+    throw new BridgeError('invalid_request', 'Missing Copilot send request payload.');
+  }
+
+  const probe = await probeCli();
+  if (!probe.installed || !probe.versionOk) {
+    throw new BridgeError(
+      probe.installed ? 'cli_version_unsupported' : 'cli_missing',
+      probe.error ||
+        (probe.installed
+          ? `GitHub Copilot CLI ${MIN_CLI_VERSION}+ is required.`
+          : 'GitHub Copilot CLI was not found on PATH.')
+    );
+  }
+
+  const { system, prompt } = serializeConversationPrompt(request.messages);
+  const tools = buildMacroTools(request);
+  const allowedToolNames = new Set(tools.map((tool) => tool.name));
+  const toolTraces = new Map<string, ToolTraceSnapshot>();
+  const hiddenContextBlocks: string[] = [];
+  let finalContent = '';
+  let lastError: string | null = null;
+
+  await withClient(async (client) => {
+    const auth = await client.getAuthStatus();
+    if (!auth.isAuthenticated) {
+      throw new BridgeError('login_required', auth.statusMessage || 'GitHub Copilot CLI is not logged in.');
+    }
+
+    const session = await client.createSession({
+      model: request.model_id,
+      workingDirectory:
+        normalizePath(request.workspace_path) ||
+        normalizePath(request.default_workspace_path) ||
+        undefined,
+      streaming: true,
+      systemMessage: system ? { mode: 'append', content: system } : undefined,
+      tools,
+      availableTools: Array.from(allowedToolNames),
+      onPermissionRequest: (permissionRequest: PermissionRequest): PermissionRequestResult => {
+        if (
+          permissionRequest.kind === 'custom-tool' &&
+          typeof permissionRequest.toolName === 'string' &&
+          allowedToolNames.has(permissionRequest.toolName)
+        ) {
+          return { kind: 'approved' };
+        }
+
+        return { kind: 'denied-no-approval-rule-and-could-not-request-from-user' };
+      },
+    });
+
+    try {
+      session.on((event) => {
+        if (event.type === 'assistant.message_delta') {
+          if (event.data.deltaContent) {
+            emitJson({ type: 'delta', delta: event.data.deltaContent });
+          }
+          return;
+        }
+
+        if (event.type === 'assistant.message') {
+          finalContent = event.data.content || finalContent;
+          return;
+        }
+
+        if (event.type === 'tool.execution_start') {
+          const args = (event.data.arguments || {}) as JsonRecord;
+          const detail = formatToolTraceDetail(event.data.toolName, args);
+          const trace: ToolTraceSnapshot = {
+            tool_call_id: event.data.toolCallId,
+            tool_name: event.data.toolName,
+            detail,
+            status: 'running',
+          };
+          toolTraces.set(event.data.toolCallId, trace);
+          emitJson({ type: 'tool_trace', ...trace });
+          return;
+        }
+
+        if (event.type === 'tool.execution_complete') {
+          const existing = toolTraces.get(event.data.toolCallId);
+          const trace: ToolTraceSnapshot = {
+            tool_call_id: event.data.toolCallId,
+            tool_name: existing?.tool_name || 'tool',
+            detail: existing?.detail,
+            status: 'done',
+          };
+          toolTraces.set(event.data.toolCallId, trace);
+          emitJson({ type: 'tool_trace', ...trace });
+
+          const resultText =
+            event.data.result?.detailedContent ||
+            event.data.result?.content ||
+            '';
+          const block = buildToolContextBlock(
+            event.data.toolCallId,
+            trace.tool_name,
+            trace.detail,
+            resultText
+          );
+          if (block) {
+            hiddenContextBlocks.push(block);
+          }
+          return;
+        }
+
+        if (event.type === 'session.error') {
+          lastError = event.data.message || 'GitHub Copilot session failed.';
+          return;
+        }
+
+        if (event.type === 'session.warning') {
+          if (event.data.message) {
+            lastError = event.data.message;
+          }
+        }
+      });
+
+      const assistantMessage = await session.sendAndWait({ prompt }, 300_000);
+      finalContent = assistantMessage?.data.content || finalContent;
+    } finally {
+      await session.disconnect();
+    }
+  });
+
+  if (!finalContent && lastError) {
+    throw classifySdkError(new Error(lastError));
+  }
+
+  emitJson({
+    type: 'done',
+    content: finalContent,
+    hidden_context: hiddenContextBlocks.join('\n\n').trim() || undefined,
+    tool_traces: Array.from(toolTraces.values()),
+  });
+};
+
+const main = async (): Promise<void> => {
+  const command = process.argv[2];
+
+  switch (command) {
+    case 'health':
+      await handleHealth();
+      return;
+    case 'models':
+      await handleModels();
+      return;
+    case 'send':
+      await handleSend();
+      return;
+    default:
+      throw new BridgeError(
+        'unknown_command',
+        `Unknown bridge command "${command || ''}". Expected one of: health, models, send.`
+      );
+  }
+};
+
+void main().catch((error) => {
+  const classified = classifySdkError(error);
+  emitJson({
+    type: 'error',
+    code: classified.code,
+    message: classified.message,
+  });
+  process.exitCode = 1;
+});
