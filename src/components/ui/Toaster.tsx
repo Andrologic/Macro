@@ -26,6 +26,10 @@ type ToastMessage = Parameters<typeof sonnerToast>[0];
 type SonnerToastArgs = Parameters<typeof sonnerToast>;
 type SonnerCustomToastArgs = Parameters<typeof sonnerToast.custom>;
 type ToastId = string | number;
+type NotificationToastMethod = (
+  message: ToastMessage,
+  options?: NotificationOptions
+) => ToastId | typeof NOTIFICATIONS_DISABLED_RESULT;
 
 export interface NotificationActionSpec {
   label: string;
@@ -37,6 +41,7 @@ export interface NotificationActionSpec {
 export interface NotificationOptions extends ExternalToast {
   actions?: NotificationActionSpec[];
   notificationKey?: string;
+  desktopEligible?: boolean;
 }
 
 interface TrackableToastContent {
@@ -136,7 +141,12 @@ const toSonnerToastOptions = (
     return { id: toastId };
   }
 
-  const { actions: _actions, notificationKey: _notificationKey, ...sonnerOptions } = options;
+  const {
+    actions: _actions,
+    notificationKey: _notificationKey,
+    desktopEligible: _desktopEligible,
+    ...sonnerOptions
+  } = options;
   return {
     ...sonnerOptions,
     id: toastId,
@@ -274,6 +284,19 @@ const emitTrackedToast = (
   return result;
 };
 
+const emitVisibleToast = (
+  method: (message: ToastMessage, options?: ExternalToast) => ToastId,
+  message: ToastMessage,
+  options?: NotificationOptions
+): ToastId | typeof NOTIFICATIONS_DISABLED_RESULT => {
+  if (!notificationsEnabled()) {
+    return NOTIFICATIONS_DISABLED_RESULT;
+  }
+
+  const { toastId } = resolveToastIdentity(options);
+  return method(message, toSonnerToastOptions(options, toastId));
+};
+
 function callVisibleToast<TArgs extends unknown[], TResult>(
   method: (...args: TArgs) => TResult,
   ...args: TArgs
@@ -389,8 +412,8 @@ export const toast = Object.assign(
   ((...args: SonnerToastArgs) =>
     callVisibleToast(sonnerToast, ...args)) as typeof sonnerToast,
   {
-    success: (...args: SonnerToastArgs) =>
-      callVisibleToast(sonnerToast.success, ...args),
+    success: ((message: ToastMessage, options?: NotificationOptions) =>
+      emitVisibleToast(sonnerToast.success, message, options)) as NotificationToastMethod,
     info: (message: ToastMessage, options?: NotificationOptions) =>
       emitTrackedToast('info', message, options),
     warning: (message: ToastMessage, options?: NotificationOptions) =>

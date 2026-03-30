@@ -31,6 +31,14 @@ pub struct AiChatRequest {
     pub tools: Vec<Value>,
     pub tool_choice: Option<String>,
     pub parallel_tool_calls: Option<bool>,
+    pub workspace_path: Option<String>,
+    pub default_workspace_path: Option<String>,
+    #[serde(default)]
+    pub project_mounts: Vec<AiProjectMount>,
+    pub virtual_root_enabled: Option<bool>,
+    pub focused_project_id: Option<String>,
+    #[serde(default)]
+    pub allowed_tool_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +95,10 @@ pub struct AiStreamDoneEvent {
     pub request_id: String,
     pub output_text: String,
     pub tool_calls: Vec<AiToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_traces: Option<Vec<AiToolTrace>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden_context: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,6 +131,22 @@ pub struct AiAuthErrorEvent {
     pub provider_id: String,
     pub code: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiProjectMount {
+    pub project_id: String,
+    pub mount_name: String,
+    pub workspace_path: Option<String>,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiToolTrace {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub detail: Option<String>,
+    pub status: String,
 }
 
 #[derive(Debug, Deserialize)]

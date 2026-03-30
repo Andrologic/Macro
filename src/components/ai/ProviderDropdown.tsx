@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useProviderStore } from '../../stores/useProviderStore';
+import { providerHasCredentials, useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 
@@ -10,15 +10,7 @@ export const ProviderDropdown: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const enabledProviders = providerConfigs.filter((provider) =>
-    provider.isEnabled &&
-    (
-      provider.isLocal ||
-      !!provider.apiKey?.trim() ||
-      (provider.providerType === 'chatgpt' &&
-        ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? ''))
-    )
-  );
+  const enabledProviders = providerConfigs.filter((provider) => providerHasCredentials(provider));
   const selectedProvider = providerConfigs.find((p) => p.id === selectedProviderId);
 
   const handleSelect = (providerId: string) => {

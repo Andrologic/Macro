@@ -3,7 +3,7 @@ mod codex_files;
 mod models;
 mod session;
 mod stream;
-mod types;
+pub(crate) mod types;
 
 #[cfg(test)]
 mod tests;

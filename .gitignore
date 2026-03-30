@@ -18,6 +18,7 @@ dist-ssr
 
 # Bun
 .bun/
+*.bun-build
 bun.lockb
 
 # Editor directories and files
@@ -44,6 +45,7 @@ direnv/.direnvrc
 # Tauri
 src-tauri/target/
 src-tauri/macro.db
+src-tauri/resources/macro-copilot-bridge*
 
 # Local AI keys
 public/ai-keys.local.json

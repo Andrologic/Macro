@@ -1,0 +1,776 @@
+export type JsonSchema =
+  | {
+      type: 'object';
+      properties?: Record<string, JsonSchema>;
+      required?: string[];
+      description?: string;
+      enum?: string[];
+      items?: JsonSchema;
+    }
+  | {
+      type: 'array';
+      items: JsonSchema;
+      description?: string;
+    }
+  | {
+      type: 'string' | 'number' | 'boolean';
+      description?: string;
+      enum?: string[];
+    };
+
+export interface MacroToolRegistryEntry {
+  id: string;
+  description: string;
+  parameters: JsonSchema;
+  copilot?: {
+    overridesBuiltInTool?: boolean;
+  };
+}
+
+const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
+  'mark_source_passage',
+  'read_sources',
+  'edit_source_passage',
+  'read_file',
+  'web_fetch',
+  'list',
+  'read',
+  'write',
+  'edit',
+  'glob',
+  'grep',
+  'git_status',
+  'git_log',
+  'git_branch_list',
+  'git_diff',
+  'git_get_tree',
+  'git_add',
+  'git_commit',
+  'git_checkout',
+  'git_merge',
+  'git_reset',
+  'git_stash',
+  'terminal_create_session',
+  'terminal_run',
+  'terminal_read',
+  'terminal_kill',
+]);
+
+const objectTool = (
+  id: string,
+  description: string,
+  parameters: JsonSchema
+): MacroToolRegistryEntry => ({
+  id,
+  description,
+  parameters,
+});
+
+export const MACRO_TOOL_REGISTRY = [
+  objectTool('web_search', 'Search the web for current information. Use this when you need up-to-date information about any topic.', {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'The search query to look up',
+      },
+    },
+    required: ['query'],
+  }),
+  objectTool('web_fetch', 'Fetch and read the content of a specific URL.', {
+    type: 'object',
+    properties: {
+      url: {
+        type: 'string',
+        description: 'URL to fetch and read',
+      },
+    },
+    required: ['url'],
+  }),
+  objectTool(
+    'mark_source_passage',
+    'Store important source passages. Use kind="interesting" for notable excerpts and kind="used" for excerpts directly used in the final answer.',
+    {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description: 'Short title of the passage.',
+        },
+        passage: {
+          type: 'string',
+          description: 'Important excerpt to save.',
+        },
+        kind: {
+          type: 'string',
+          enum: ['interesting', 'used'],
+          description:
+            'Classification of the passage: interesting while analyzing, or used in the final answer.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Optional short reason describing why this passage matters.',
+        },
+        source: {
+          type: 'string',
+          description: 'Source label such as filename or site/domain.',
+        },
+        url: {
+          type: 'string',
+          description: 'URL of the source when available.',
+        },
+      },
+      required: ['title', 'passage'],
+    }
+  ),
+  objectTool('read_sources', 'Read saved source passages from the current conversation. Can filter by kind and query.', {
+    type: 'object',
+    properties: {
+      kind: {
+        type: 'string',
+        enum: ['all', 'interesting', 'used'],
+        description: 'Optional filter by source passage kind.',
+      },
+      query: {
+        type: 'string',
+        description: 'Optional keyword filter over title, passage, source, url, and reason.',
+      },
+      limit: {
+        type: 'number',
+        description: 'Optional maximum number of passages to return (1-50).',
+      },
+      include_snippet: {
+        type: 'boolean',
+        description: 'Include full passage snippets in results. Defaults to true.',
+      },
+    },
+    required: [],
+  }),
+  objectTool('edit_source_passage', 'Update, reclassify, or delete a saved source passage by citation_id.', {
+    type: 'object',
+    properties: {
+      citation_id: {
+        type: 'string',
+        description: 'ID of the source citation to modify.',
+      },
+      action: {
+        type: 'string',
+        enum: ['update', 'reclassify', 'delete'],
+        description: 'Type of modification to apply.',
+      },
+      title: {
+        type: 'string',
+        description: 'Updated title for action="update".',
+      },
+      passage: {
+        type: 'string',
+        description: 'Updated passage text for action="update".',
+      },
+      source: {
+        type: 'string',
+        description: 'Updated source label for action="update".',
+      },
+      url: {
+        type: 'string',
+        description: 'Updated URL for action="update".',
+      },
+      reason: {
+        type: 'string',
+        description: 'Updated or new reason for action="update".',
+      },
+      kind: {
+        type: 'string',
+        enum: ['interesting', 'used'],
+        description: 'Required for action="reclassify". Optional for action="update".',
+      },
+    },
+    required: ['citation_id', 'action'],
+  }),
+  {
+    ...objectTool(
+      'read_file',
+      'Read a file already attached in the conversation context. Use this when asked to analyze or inspect a file.',
+      {
+        type: 'object',
+        properties: {
+          file: {
+            type: 'string',
+            description: 'File name/path/source to read (example: hotas.pr0).',
+          },
+          extract_text: {
+            type: 'boolean',
+            description:
+              'Optional hint to request text extraction for binary-like formats (e.g. .docx).',
+          },
+        },
+        required: ['file'],
+      }
+    ),
+    copilot: {
+      overridesBuiltInTool: true,
+    },
+  },
+  objectTool(
+    'list',
+    'List files and directories under a path in the local workspace. In a global project, the visible root can be virtual and contain only subproject mounts such as api/ or web/.',
+    {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description:
+            'Directory path to list. Defaults to the current execution workspace root for this conversation.',
+        },
+        project_id: {
+          type: 'string',
+          description:
+            'Optional subproject identifier when you want to force which subproject to use.',
+        },
+        recursive: { type: 'boolean', description: 'Whether to list recursively.' },
+        include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
+        max_depth: {
+          type: 'number',
+          description: 'Maximum recursion depth when recursive=true.',
+        },
+      },
+      required: [],
+    }
+  ),
+  objectTool(
+    'read',
+    'Read a file from the local execution workspace by path. In a virtual global project root, prefer paths like api/src/server.ts or pass project_id.',
+    {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path of the file to read.' },
+        project_id: {
+          type: 'string',
+          description:
+            'Optional subproject identifier when you want to force which subproject to use.',
+        },
+        start_line: { type: 'number', description: 'Optional 1-based start line.' },
+        end_line: { type: 'number', description: 'Optional 1-based end line.' },
+      },
+      required: ['path'],
+    }
+  ),
+  objectTool(
+    'write',
+    'Create or overwrite a file in the current execution workspace with full content. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.',
+    {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path of the file to write.' },
+        project_id: {
+          type: 'string',
+          description:
+            'Optional subproject identifier when you want to force which subproject to use.',
+        },
+        content: { type: 'string', description: 'Final file content.' },
+        create_dirs: { type: 'boolean', description: 'Create missing parent directories.' },
+      },
+      required: ['path', 'content'],
+    }
+  ),
+  objectTool(
+    'edit',
+    'Edit a file in the current execution workspace by replacing exact text. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.',
+    {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path of the file to edit.' },
+        project_id: {
+          type: 'string',
+          description:
+            'Optional subproject identifier when you want to force which subproject to use.',
+        },
+        old_text: { type: 'string', description: 'Exact text to replace.' },
+        new_text: { type: 'string', description: 'Replacement text.' },
+        replace_all: {
+          type: 'boolean',
+          description: 'Replace all matches (default false = first only).',
+        },
+      },
+      required: ['path', 'old_text', 'new_text'],
+    }
+  ),
+  objectTool(
+    'glob',
+    'Find files in the current execution workspace matching a glob pattern. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.',
+    {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Glob pattern.' },
+        project_id: {
+          type: 'string',
+          description:
+            'Optional subproject identifier when you want to force which subproject to use.',
+        },
+        include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
+      },
+      required: ['pattern'],
+    }
+  ),
+  objectTool(
+    'grep',
+    'Search text in files under the current execution workspace. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.',
+    {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Text or regex to search for.' },
+        project_id: {
+          type: 'string',
+          description:
+            'Optional subproject identifier when you want to force which subproject to use.',
+        },
+        is_regexp: { type: 'boolean', description: 'Treat query as regex when true.' },
+        include_pattern: { type: 'string', description: 'Optional file glob filter.' },
+        include_hidden: { type: 'boolean', description: 'Include hidden files/folders.' },
+        max_results: { type: 'number', description: 'Maximum result rows to return.' },
+      },
+      required: ['query'],
+    }
+  ),
+  objectTool(
+    'git_status',
+    'Get git status for exactly one subproject repository context. There is no git status at the virtual global root.',
+    {
+      type: 'object',
+      properties: {
+        project_id: {
+          type: 'string',
+          description:
+            'Optional subproject identifier when you want to force which subproject to use.',
+        },
+        repo_path: {
+          type: 'string',
+          description:
+            'Optional repository path override. In a virtual global root, you can use mount-prefixed values such as api or api/src.',
+        },
+      },
+      required: [],
+    }
+  ),
+  objectTool('git_log', 'Get git commit history.', {
+    type: 'object',
+    properties: {
+      repo_path: { type: 'string' },
+      project_id: { type: 'string' },
+      limit: { type: 'number' },
+      branch: { type: 'string' },
+    },
+    required: [],
+  }),
+  objectTool('git_branch_list', 'List local and remote branches.', {
+    type: 'object',
+    properties: {
+      repo_path: { type: 'string' },
+      project_id: { type: 'string' },
+    },
+    required: [],
+  }),
+  objectTool('git_diff', 'Generate repository diff.', {
+    type: 'object',
+    properties: {
+      repo_path: { type: 'string' },
+      project_id: { type: 'string' },
+      base: { type: 'string' },
+      head: { type: 'string' },
+      context_lines: { type: 'number' },
+      ignore_whitespace: { type: 'boolean' },
+      paths: { type: 'array', items: { type: 'string' } },
+    },
+    required: [],
+  }),
+  objectTool('git_get_tree', 'Get predicted git tree for current branch/repository.', {
+    type: 'object',
+    properties: {
+      repo_path: { type: 'string' },
+      project_id: { type: 'string' },
+      branch: { type: 'string' },
+    },
+    required: [],
+  }),
+  objectTool('git_add', 'Stage files in the repository index.', {
+    type: 'object',
+    properties: {
+      repo_path: { type: 'string' },
+      project_id: { type: 'string' },
+      paths: { type: 'array', items: { type: 'string' } },
+    },
+    required: [],
+  }),
+  objectTool('git_commit', 'Create commit in repository.', {
+    type: 'object',
+    properties: {
+      repo_path: { type: 'string' },
+      project_id: { type: 'string' },
+      message: { type: 'string' },
+      stage_all: { type: 'boolean' },
+    },
+    required: ['message'],
+  }),
+  objectTool('git_checkout', 'Checkout branch or commit, optionally creating branch.', {
+    type: 'object',
+    properties: {
+      repo_path: { type: 'string' },
+      project_id: { type: 'string' },
+      branch_or_commit: { type: 'string' },
+      create: { type: 'boolean' },
+    },
+    required: ['branch_or_commit'],
+  }),
+  objectTool(
+    'git_merge',
+    'Merge a source branch into a target branch for exactly one subproject repository context.',
+    {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string' },
+        project_id: { type: 'string' },
+        branch_name: { type: 'string' },
+        into_branch: { type: 'string' },
+      },
+      required: ['branch_name', 'into_branch'],
+    }
+  ),
+  objectTool('git_reset', 'Reset repository to commit/HEAD in soft/mixed/hard mode.', {
+    type: 'object',
+    properties: {
+      repo_path: { type: 'string' },
+      project_id: { type: 'string' },
+      mode: { type: 'string', enum: ['soft', 'mixed', 'hard'] },
+      commit: { type: 'string' },
+      confirm: { type: 'boolean' },
+    },
+    required: ['mode'],
+  }),
+  objectTool('git_stash', 'Stash local changes.', {
+    type: 'object',
+    properties: {
+      repo_path: { type: 'string' },
+      project_id: { type: 'string' },
+      message: { type: 'string' },
+    },
+    required: [],
+  }),
+  objectTool(
+    'terminal_create_session',
+    'Create a terminal session bound to exactly one subproject. project_id is required. There is no terminal at the virtual global root.',
+    {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string', description: 'Required subproject identifier.' },
+        cwd: {
+          type: 'string',
+          description: 'Optional directory under the selected subproject or worktree.',
+        },
+      },
+      required: ['project_id'],
+    }
+  ),
+  objectTool('terminal_run', 'Run a shell command inside an existing terminal session.', {
+    type: 'object',
+    properties: {
+      session_id: {
+        type: 'string',
+        description:
+          'Terminal session identifier returned by terminal_create_session.',
+      },
+      command: { type: 'string', description: 'Shell command to execute.' },
+      timeout_ms: { type: 'number', description: 'Optional timeout in milliseconds.' },
+    },
+    required: ['session_id', 'command'],
+  }),
+  objectTool('terminal_read', 'Read the latest output and status from an existing terminal session.', {
+    type: 'object',
+    properties: {
+      session_id: {
+        type: 'string',
+        description:
+          'Terminal session identifier returned by terminal_create_session.',
+      },
+    },
+    required: ['session_id'],
+  }),
+  objectTool('terminal_kill', 'Kill the active process in an existing terminal session.', {
+    type: 'object',
+    properties: {
+      session_id: {
+        type: 'string',
+        description:
+          'Terminal session identifier returned by terminal_create_session.',
+      },
+    },
+    required: ['session_id'],
+  }),
+  objectTool(
+    'need_add',
+    'Add a structured user or system need for the project. Use this during the Architect phase to gather requirements.',
+    {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short title of the need.' },
+        description: { type: 'string', description: 'Detailed description of what is needed.' },
+        target_branch: {
+          type: 'string',
+          description: 'Optional target code branch for the active plan context.',
+        },
+        category: {
+          type: 'string',
+          enum: ['functional', 'technical', 'ux', 'security', 'other'],
+          description: 'Category of the need.',
+        },
+        priority: {
+          type: 'string',
+          enum: ['low', 'medium', 'high'],
+          description: 'Priority level.',
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Keywords or tags.',
+        },
+      },
+      required: ['title', 'description', 'category', 'priority'],
+    }
+  ),
+  objectTool(
+    'strategy_generate',
+    'Generate a structured strategy for the active plan based on collected needs. New plans use a generated plan identifier as the canonical slug, so plan branches are plan/<plan-id> and feature branches are feature/<plan-id>/<feature-slug>.',
+    {
+      type: 'object',
+      properties: {
+        plan_id: { type: 'string', description: 'Optional existing plan ID to update.' },
+        plan_title: {
+          type: 'string',
+          description:
+            'Optional secondary plan label to persist. For legacy plans this remains a title alias.',
+        },
+        plan_description: {
+          type: 'string',
+          description: 'Optional plan description for persistence in @macro metadata.',
+        },
+        target_branch: { type: 'string', description: 'Code branch this plan is associated with.' },
+        nodes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              description: { type: 'string' },
+              type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+              assignedBranch: {
+                type: 'string',
+                description:
+                  'The git branch name this task belongs to, e.g. "feature/1710000000000/auth-api"',
+              },
+              dependencies: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Titles of nodes this one depends on.',
+              },
+            },
+            required: ['title', 'type', 'assignedBranch'],
+          },
+          description: 'List of plan nodes representing the tasks to be done.',
+        },
+      },
+      required: ['nodes'],
+    }
+  ),
+  objectTool(
+    'plan_create',
+    'Create a new Architect plan stored under the @macro branch metadata for a target code branch. New plans are created immediately with a generated identifier; title is optional and treated as an initial secondary label.',
+    {
+      type: 'object',
+      properties: {
+        label: { type: 'string', description: 'Optional secondary plan label.' },
+        title: { type: 'string', description: 'Legacy alias for label. Optional.' },
+        description: { type: 'string' },
+        target_branch: {
+          type: 'string',
+          description: 'Code branch this plan belongs to (e.g. develop, feature/auth).',
+        },
+        status: {
+          type: 'string',
+          enum: ['draft', 'validated', 'in_progress', 'completed', 'archived', 'deleted'],
+        },
+        set_active: { type: 'boolean' },
+      },
+      required: [],
+    }
+  ),
+  objectTool('plan_list', 'List plans for a code branch in the @macro branch metadata.', {
+    type: 'object',
+    properties: {
+      target_branch: { type: 'string' },
+      include_deleted: { type: 'boolean' },
+      include_archived: { type: 'boolean' },
+    },
+    required: [],
+  }),
+  objectTool('plan_get', 'Read a specific plan and its nodes from @macro metadata.', {
+    type: 'object',
+    properties: {
+      plan_id: { type: 'string' },
+      target_branch: { type: 'string' },
+    },
+    required: ['plan_id'],
+  }),
+  objectTool(
+    'plan_update',
+    'Update the optional label/title alias or description for an existing plan. For new plans, label changes never rename the canonical id or slug used for git branches.',
+    {
+      type: 'object',
+      properties: {
+        plan_id: { type: 'string' },
+        label: { type: 'string', description: 'Optional secondary label for the plan.' },
+        title: {
+          type: 'string',
+          description:
+            'Legacy alias. For new plans this updates the optional secondary label.',
+        },
+        description: { type: 'string' },
+        target_branch: { type: 'string' },
+      },
+      required: ['plan_id'],
+    }
+  ),
+  objectTool('plan_delete', 'Delete a plan. Soft delete by default; hard delete when hard_delete=true.', {
+    type: 'object',
+    properties: {
+      plan_id: { type: 'string' },
+      target_branch: { type: 'string' },
+      hard_delete: { type: 'boolean' },
+    },
+    required: ['plan_id'],
+  }),
+  objectTool('plan_restore', 'Restore a soft-deleted plan back to draft status.', {
+    type: 'object',
+    properties: {
+      plan_id: { type: 'string' },
+      target_branch: { type: 'string' },
+    },
+    required: ['plan_id'],
+  }),
+  objectTool('plan_set_active', 'Set active plan for a target code branch in @macro metadata.', {
+    type: 'object',
+    properties: {
+      plan_id: { type: 'string' },
+      target_branch: { type: 'string' },
+    },
+    required: ['plan_id'],
+  }),
+  objectTool('strategy_get', 'Read the current strategy (nodes and branches) for the active plan.', {
+    type: 'object',
+    properties: {
+      target_branch: { type: 'string' },
+    },
+    required: [],
+  }),
+  objectTool(
+    'strategy_update',
+    'Modify strategy for the active plan. You can replace all nodes or apply operations (add, update, remove).',
+    {
+      type: 'object',
+      properties: {
+        target_branch: { type: 'string' },
+        replace: {
+          type: 'boolean',
+          description: 'If true, replace strategy with provided nodes.',
+        },
+        nodes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              title: { type: 'string' },
+              description: { type: 'string' },
+              type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+              assignedBranch: { type: 'string' },
+              status: {
+                type: 'string',
+                enum: ['pending', 'in-progress', 'completed', 'blocked'],
+              },
+              dependencies: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['title', 'type'],
+          },
+        },
+        operations: {
+          type: 'array',
+          description: 'Patch operations applied in order.',
+          items: {
+            type: 'object',
+            properties: {
+              action: { type: 'string', enum: ['add', 'update', 'remove'] },
+              node_id: { type: 'string' },
+              title: { type: 'string' },
+              description: { type: 'string' },
+              type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+              assignedBranch: { type: 'string' },
+              status: {
+                type: 'string',
+                enum: ['pending', 'in-progress', 'completed', 'blocked'],
+              },
+              dependencies: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['action'],
+          },
+        },
+      },
+      required: [],
+    }
+  ),
+  objectTool(
+    'strategy_delete',
+    'Delete all strategy nodes and predicted branches for the active plan. Requires confirm=true.',
+    {
+      type: 'object',
+      properties: {
+        target_branch: { type: 'string' },
+        confirm: { type: 'boolean' },
+      },
+      required: ['confirm'],
+    }
+  ),
+] satisfies MacroToolRegistryEntry[];
+
+const registryMap = new Map(MACRO_TOOL_REGISTRY.map((entry) => [entry.id, entry] as const));
+
+export const getMacroToolRegistryEntry = (toolId: string): MacroToolRegistryEntry | undefined =>
+  registryMap.get(toolId);
+
+export const requireMacroToolRegistryEntry = (toolId: string): MacroToolRegistryEntry => {
+  const entry = registryMap.get(toolId);
+  if (!entry) {
+    throw new Error(`Unknown Macro tool registry entry: ${toolId}`);
+  }
+  return entry;
+};
+
+export const isMacroToolSupportedByCopilot = (toolId: string): boolean =>
+  COPILOT_SUPPORTED_TOOL_ID_SET.has(toolId);
+
+export const filterCopilotSupportedToolIds = (toolIds: string[]): string[] =>
+  toolIds.filter(isMacroToolSupportedByCopilot);
+
+export interface FunctionToolShape {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: JsonSchema;
+  };
+}
+
+export const toFunctionToolShape = (entry: MacroToolRegistryEntry): FunctionToolShape => ({
+  type: 'function',
+  function: {
+    name: entry.id,
+    description: entry.description,
+    parameters: entry.parameters,
+  },
+});

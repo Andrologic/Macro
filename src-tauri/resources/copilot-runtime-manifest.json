@@ -1,0 +1,78 @@
+{
+  "version": "1.0.12",
+  "generatedAt": "2026-03-29T17:30:01.666Z",
+  "runtimes": {
+    "windows-x64": {
+      "packageName": "@github/copilot-win32-x64",
+      "version": "1.0.12",
+      "platform": "win32",
+      "arch": "x64",
+      "url": "https://registry.npmjs.org/@github/copilot-win32-x64/-/copilot-win32-x64-1.0.12.tgz",
+      "archiveSha256": "95f7f4ece330613cb24fbd18a8bbe15ceb01fdbf9c092ee23293d45a85f0dd23",
+      "archiveSize": 57320570,
+      "binaryName": "copilot.exe",
+      "binarySha256": "3519e435b12c3ac383b37ddc6fe9d49da371a36c5811d92399b699a22ed61c35",
+      "binarySize": 113536480
+    },
+    "windows-arm64": {
+      "packageName": "@github/copilot-win32-arm64",
+      "version": "1.0.12",
+      "platform": "win32",
+      "arch": "arm64",
+      "url": "https://registry.npmjs.org/@github/copilot-win32-arm64/-/copilot-win32-arm64-1.0.12.tgz",
+      "archiveSha256": "8edab890fa1dd1fd31c7ae26ae3ad2dc7042744d258a65f69e465dcb975209cc",
+      "archiveSize": 55449681,
+      "binaryName": "copilot.exe",
+      "binarySha256": "6fd02529a8cfcf5af9cd497e3ae44ba28a63786994e9a4d0a54f64d8857cca80",
+      "binarySize": 104407008
+    },
+    "macos-x64": {
+      "packageName": "@github/copilot-darwin-x64",
+      "version": "1.0.12",
+      "platform": "darwin",
+      "arch": "x64",
+      "url": "https://registry.npmjs.org/@github/copilot-darwin-x64/-/copilot-darwin-x64-1.0.12.tgz",
+      "archiveSha256": "6f882e49db4e3f6f161469e54c3552848d39a9f70218c98a20f4e5fd54266819",
+      "archiveSize": 61734967,
+      "binaryName": "copilot",
+      "binarySha256": "0baf8daa10cf525f2a84a616ca591d10787519ce637bb7568de7c81c98ad8a1d",
+      "binarySize": 141871344
+    },
+    "macos-arm64": {
+      "packageName": "@github/copilot-darwin-arm64",
+      "version": "1.0.12",
+      "platform": "darwin",
+      "arch": "arm64",
+      "url": "https://registry.npmjs.org/@github/copilot-darwin-arm64/-/copilot-darwin-arm64-1.0.12.tgz",
+      "archiveSha256": "c9fb84af35f20a2fcf246da572058835634f14b0be977618f60c2338759e99c8",
+      "archiveSize": 58731756,
+      "binaryName": "copilot",
+      "binarySha256": "46adcc0efef58c72136b200870cc464ada90a6cabc825efa5dfb80a342babfd4",
+      "binarySize": 137541760
+    },
+    "linux-x64": {
+      "packageName": "@github/copilot-linux-x64",
+      "version": "1.0.12",
+      "platform": "linux",
+      "arch": "x64",
+      "url": "https://registry.npmjs.org/@github/copilot-linux-x64/-/copilot-linux-x64-1.0.12.tgz",
+      "archiveSha256": "47243cd0df9a8fdae347322424661f5d103c4ead7bf9fba5fc2371aa6d7af223",
+      "archiveSize": 62999660,
+      "binaryName": "copilot",
+      "binarySha256": "ed35bbbd9e27446dd948d989e6a857973970912f9764017b99d5919df8a82e45",
+      "binarySize": 141757632
+    },
+    "linux-arm64": {
+      "packageName": "@github/copilot-linux-arm64",
+      "version": "1.0.12",
+      "platform": "linux",
+      "arch": "arm64",
+      "url": "https://registry.npmjs.org/@github/copilot-linux-arm64/-/copilot-linux-arm64-1.0.12.tgz",
+      "archiveSha256": "46e371f858db9ed3a152ee05b2ba7e47b2911f2db035f9542dd7898796f8688b",
+      "archiveSize": 65080806,
+      "binaryName": "copilot",
+      "binarySha256": "4cafeae7680b105853a3e664aacf56079be2f80ecdeb1d57675f38b936df5da1",
+      "binarySize": 140971136
+    }
+  }
+}

@@ -87,7 +87,7 @@ export function PanelResizer({
       document.removeEventListener('mouseup', handleMouseUp);
       document.removeEventListener('touchend', handleMouseUp);
     };
-  }, []);
+  }, [orientation]);
 
   return (
     <div
