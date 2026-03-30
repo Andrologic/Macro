@@ -10,13 +10,14 @@
   },
   "scripts": {
     "dev": "bunx vite --host",
+    "build:copilot-bridge": "node ./dev/build-copilot-bridge.mjs",
     "build": "NODE_ENV=production bunx tsc && NODE_ENV=production bunx vite build",
     "build:analyze": "NODE_ENV=production bunx vite build --mode analyze",
     "preview": "bunx vite preview",
     "tauri": "bunx tauri",
-    "tauri:dev": "bunx tauri dev",
-    "tauri:build": "NODE_ENV=production bunx tauri build",
-    "tauri:build:debug": "bunx tauri build --debug",
+    "tauri:dev": "bun run build:copilot-bridge && bunx tauri dev",
+    "tauri:build": "bun run build:copilot-bridge && NODE_ENV=production bunx tauri build",
+    "tauri:build:debug": "bun run build:copilot-bridge && bunx tauri build --debug",
     "install:tauri": "bun install && cd src-tauri && cargo build --release",
     "clean": "rm -rf dist node_modules src-tauri/target bun.lockb bun.lock .vite",
     "clean:cache": "rm -rf node_modules/.vite ~/.bun/install/cache",
@@ -32,6 +33,7 @@
     "ci": "bun install --frozen-lockfile && bun run version:check && bun run typecheck && bun run lint && bun run i18n:audit && bun run build"
   },
   "dependencies": {
+    "@github/copilot-sdk": "^0.2.0",
     "@codemirror/autocomplete": "^6.20.0",
     "@codemirror/commands": "^6.10.1",
     "@codemirror/lang-javascript": "^6.2.4",

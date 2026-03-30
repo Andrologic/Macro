@@ -813,11 +813,18 @@
     "connectBrowserHint": "ブラウザで ChatGPT に接続します。",
     "connectChatGpt": "ChatGPTで接続する",
     "connectingChatGpt": "接続中…",
+    "connectCopilot": "Connect GitHub Copilot",
+    "connectingCopilot": "Connecting...",
     "disconnect": "切断する",
     "chatgptLinked": "ChatGPT リンク済み",
+    "copilotLinked": "GitHub Copilot linked",
     "chatgptDisconnected": "ChatGPT が切断されました",
+    "copilotDisconnected": "GitHub Copilot disconnected",
     "failedConnectChatGpt": "ChatGPTとの接続に失敗しました",
+    "failedConnectCopilot": "Failed to connect with GitHub Copilot",
     "failedDisconnect": "切断に失敗しました",
+    "connectCopilotHint": "Install GitHub Copilot CLI, then connect your GitHub account.",
+    "installCopilotCli": "Install Copilot CLI",
     "noProvidersFound": "検索条件に一致するプロバイダーが見つかりません。",
     "status": {
       "connecting": "接続中",
@@ -830,7 +837,13 @@
       "noKey": "鍵なし",
       "checking": "チェック中",
       "active": "アクティブ",
-      "offline": "オフライン"
+      "offline": "オフライン",
+      "cliMissing": "CLI missing",
+      "policyBlocked": "Policy blocked",
+      "connected": "Connected",
+      "downloading": "Downloading",
+      "runtimeMissing": "Not installed",
+      "updateRequired": "Update required"
     },
     "types": {
       "openaiCompatible": "OpenAI対応",
@@ -855,6 +868,27 @@
       "callback_denied": "ChatGPT ログインが拒否されました。",
       "callback_invalid": "ChatGPT コールバック応答が無効でした。",
       "secret_persist_failed": "ChatGPT ログインは成功しましたが、セッションを保存できませんでした。"
+    },
+    "copilot": {
+      "downloadRuntime": "Download Copilot",
+      "runtimeDownloaded": "GitHub Copilot runtime is ready",
+      "runtimeDownloadFailed": "Failed to download GitHub Copilot runtime",
+      "downloadHint": "Download the official GitHub Copilot runtime to continue.",
+      "updateHint": "Download a Macro-managed GitHub Copilot runtime to continue.",
+      "troubleshootHint": "GitHub Copilot needs attention before it can be used.",
+      "connectHint": "Connect GitHub Copilot to finish setup.",
+      "troubleshoot": "Troubleshoot",
+      "recheckStatus": "Re-check status",
+      "oauthConnectedHint": "Use Copilot CLI on this machine to switch accounts.",
+      "ghCliConnectedHint": "Using the GitHub CLI session available on this machine.",
+      "envConnectedHint": "Using a Copilot token provided by this machine environment.",
+      "connectedInTerminalHint": "Connected in this machine terminal session.",
+      "finishLoginTitle": "Finish login in your browser",
+      "deviceCode": "Device code",
+      "browserUrl": "Browser URL",
+      "copyCode": "Copy code",
+      "codeCopied": "Device code copied",
+      "openBrowser": "Open browser"
     }
   },
   "tools": {

@@ -6,10 +6,19 @@ import {
   UPDATE_PLAN_TOOL,
 } from './streamingChat';
 
+const asObjectSchema = (
+  schema: unknown
+): {
+  properties: Record<string, unknown>;
+  required?: string[];
+} => schema as {
+  properties: Record<string, unknown>;
+  required?: string[];
+};
+
 describe('streamingChat Architect tool contracts', () => {
   it('does not require title for plan_create and exposes label support', () => {
-    const properties = CREATE_PLAN_TOOL.function.parameters.properties as Record<string, unknown>;
-    const required = CREATE_PLAN_TOOL.function.parameters.required as string[];
+    const { properties, required = [] } = asObjectSchema(CREATE_PLAN_TOOL.function.parameters);
 
     expect(required).not.toContain('title');
     expect(properties.label).toBeDefined();
@@ -17,16 +26,15 @@ describe('streamingChat Architect tool contracts', () => {
   });
 
   it('documents plan_title as a label alias for strategy generation', () => {
-    const planTitleProperty = (
-      GENERATE_PLAN_TOOL.function.parameters.properties as Record<string, { description?: string }>
-    ).plan_title;
+    const planTitleProperty = asObjectSchema(GENERATE_PLAN_TOOL.function.parameters).properties
+      .plan_title as { description?: string };
 
     expect(String(GENERATE_PLAN_TOOL.function.description)).toContain('plan/<plan-id>');
     expect(String(planTitleProperty.description)).toContain('secondary plan label');
   });
 
   it('documents plan_update title as a legacy alias without changing canonical ids', () => {
-    const properties = UPDATE_PLAN_TOOL.function.parameters.properties as Record<
+    const properties = asObjectSchema(UPDATE_PLAN_TOOL.function.parameters).properties as Record<
       string,
       { description?: string }
     >;

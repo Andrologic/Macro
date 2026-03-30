@@ -97,12 +97,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     predictedBranches,
   } = useAppStore();
   const {
-    messages,
     conversations,
+    messages,
     selectedConversationId,
     createConversation,
     ensureConversationForCurrentMode,
-    getConversationMessages,
     hydrationStatus,
     restoreStatus,
     isLoading,
@@ -142,8 +141,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   // Filter messages by selected conversation
   const currentMessages = useMemo(
-    () => (selectedConversationId ? getConversationMessages(selectedConversationId) : []),
-    [getConversationMessages, messages, selectedConversationId]
+    () =>
+      selectedConversationId
+        ? messages.filter((message) => message.conversation_id === selectedConversationId)
+        : [],
+    [messages, selectedConversationId]
   );
   const isConversationPending =
     hydrationStatus === 'idle' ||
