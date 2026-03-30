@@ -11,6 +11,8 @@ import { initializeDesktopNotifications } from './services/desktopNotifications'
 import { useAppStore } from './stores/useAppStore';
 import { Skeleton } from './components/shared/Skeleton';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
+import { getPlatformChromeState } from './utils/desktopPlatform';
+import { getTitleBarLayout } from './components/layout/titleBarLayout';
 
 // =============================================================================
 // LAZY LOADED MODALS - Code Splitting for Non-Critical UI
@@ -40,6 +42,9 @@ const CodeFileViewerModal = lazy(() => import('./components/modals/CodeFileViewe
 // =============================================================================
 
 const App: React.FC = () => {
+  const platformChrome = getPlatformChromeState();
+  const titleBarLayout = getTitleBarLayout(platformChrome);
+
   // Restore window size/position from preferences
   useWindowRestoration();
   useUiZoom();
@@ -174,8 +179,10 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="h-screen w-screen bg-background grid grid-rows-[48px_1fr_32px] overflow-hidden">
-      {/* Header */}
+    <div
+      className="macro-app-shell h-screen w-screen bg-background overflow-hidden"
+      style={{ display: 'grid', gridTemplateRows: `${titleBarLayout.titleBarHeightPx}px 1fr 32px` }}
+    >
       <Header
         isLeftOpen={isLeftOpen}
         isRightOpen={isRightOpen}
