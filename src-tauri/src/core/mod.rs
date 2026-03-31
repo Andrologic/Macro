@@ -1,4 +1,5 @@
 pub mod config;
+pub mod environment;
 pub mod error;
 pub mod logging;
 pub mod tool_policy;
@@ -11,6 +12,7 @@ pub mod error_tests;
 pub use config::load_config;
 #[allow(unused_imports)]
 pub use config::AppConfig;
+pub use environment::init_process_environment;
 #[allow(unused_imports)]
 pub use error::BackendError;
 pub use error::Result;

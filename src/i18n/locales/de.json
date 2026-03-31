@@ -45,7 +45,8 @@
     "selectAll": "Alles auswählen",
     "archive": "Archiv",
     "confirmDelete": "Bist du sicher?",
-    "now": "jetzt"
+    "now": "jetzt",
+    "restore": "Restore"
   },
   "header": {
     "architect": "Architect",
@@ -248,7 +249,26 @@
       "noSourceResults": "Keine Ergebnisse für diesen Filter",
       "noPassagesMarked": "Keine markierten Passagen",
       "noPassagesMarkedDescription": "Hier erscheinen Passagen, wenn die KI das Quellenmarkierungstool aufruft."
-    }
+    },
+    "conversationActions": "Conversation actions",
+    "conversationArchived": "Conversation archived",
+    "conversationsArchived": "Conversations archived",
+    "conversationRestored": "Conversation restored",
+    "conversationsRestored": "Conversations restored",
+    "archivedConversationCount_one": "{{count}} archived conversation",
+    "archivedConversationCount_other": "{{count}} archived conversations",
+    "archivedConversationCount": "{{count}} archived conversations",
+    "activeConversations": "Active conversations",
+    "selectedCount_one": "{{count}} selected",
+    "selectedCount_other": "{{count}} selected",
+    "selectedCount": "{{count}} selected",
+    "multiSelect": "Multi-select",
+    "archivedView": "Archived view",
+    "noArchivedResults": "No archived conversations match this search",
+    "noArchivedConversations": "No archived conversations yet",
+    "noActiveConversations": "No active conversations",
+    "noActiveConversationsDescription": "Start a new conversation to see it here.",
+    "deleteArchivedConversationsTitle": "Delete archived conversations"
   },
   "settings": {
     "title": "Einstellungen",
@@ -642,7 +662,8 @@
       "commitMessageRequired": "Eine Commit-Message ist erforderlich.",
       "commitSucceededTaskNotCompleted": "Änderungen wurden übernommen, die Aufgabe konnte jedoch nicht automatisch abgeschlossen werden.",
       "deletedChangeReadOnly": "Gelöschte Dateien sind während der Überprüfung schreibgeschützt. Stellen Sie sie stattdessen aus dem Taskflow wieder her."
-    }
+    },
+    "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project."
   },
   "architect": {
     "needs": "Identifizierte Bedürfnisse",
@@ -1156,5 +1177,23 @@
     "before": "Vorher",
     "after": "Nachher",
     "empty": "// leer"
+  },
+  "terminal": {
+    "title": "Terminal",
+    "openOnLaunch": "Open terminal on launch",
+    "openOnLaunchDescription": "Open a terminal automatically when a task starts.",
+    "chooseProject": "Choose project",
+    "currentProject": "Current project",
+    "manualDraftUnavailable": "Manual draft unavailable",
+    "manualDraftBlockedTitle": "Manual draft unavailable",
+    "manualDraftBlockedDescription": "Start or select a task before opening a manual draft terminal.",
+    "manualDraftBanner": "Manual draft terminals are only available once a task has a project context.",
+    "newTerminal": "New terminal",
+    "chooseProjectBeforeOpen": "Choose a project before opening a terminal.",
+    "noTerminalForSubProject": "No terminal is available for this subproject yet.",
+    "openWithPlus": "Open one with the + button.",
+    "disconnected": "Disconnected",
+    "disconnectedDescription": "This terminal session is no longer attached to a live process.",
+    "reconnect": "Reconnect"
   }
 }

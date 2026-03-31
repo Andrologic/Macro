@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tauri::{AppHandle, Emitter, Manager};
 use tar::Archive;
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
@@ -68,7 +68,9 @@ struct BridgeModelsResponse {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BridgeSendEvent {
-    Delta { delta: String },
+    Delta {
+        delta: String,
+    },
     ToolTrace {
         #[serde(flatten)]
         _extra: HashMap<String, Value>,
@@ -78,7 +80,10 @@ enum BridgeSendEvent {
         hidden_context: Option<String>,
         tool_traces: Option<Vec<AiToolTrace>>,
     },
-    Error { code: Option<String>, message: String },
+    Error {
+        code: Option<String>,
+        message: String,
+    },
     Progress {
         #[serde(flatten)]
         _extra: HashMap<String, Value>,
@@ -244,21 +249,31 @@ fn bridge_filename() -> &'static str {
     }
 }
 
-fn bridge_candidates(app_handle: &AppHandle) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        candidates.push(resource_dir.join(bridge_filename()));
+fn bridge_sidecar_filename() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        format!(
+            "macro-copilot-bridge-{}.exe",
+            env!("TAURI_ENV_TARGET_TRIPLE")
+        )
     }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join(bridge_filename()),
-    );
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        format!("macro-copilot-bridge-{}", env!("TAURI_ENV_TARGET_TRIPLE"))
+    }
+}
+
+fn bridge_candidates(_app_handle: &AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(parent) = current_exe.parent() {
             candidates.push(parent.join(bridge_filename()));
         }
     }
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    candidates.push(manifest_dir.join("binaries").join(bridge_sidecar_filename()));
+    candidates.push(manifest_dir.join("resources").join(bridge_filename()));
     candidates
 }
 
@@ -281,7 +296,7 @@ fn resolve_bridge_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
         .find(|candidate| candidate.exists())
         .ok_or_else(|| {
             format!(
-                "Macro Copilot bridge executable was not found. Expected {} in app resources.",
+                "Macro Copilot bridge executable was not found. Expected {} in the packaged app bundle or dev sidecar directory.",
                 bridge_filename()
             )
         })
@@ -357,7 +372,10 @@ fn current_platform_key() -> Result<&'static str, String> {
         ("macos", "aarch64") => Ok("macos-arm64"),
         ("linux", "x86_64") => Ok("linux-x64"),
         ("linux", "aarch64") => Ok("linux-arm64"),
-        (os, arch) => Err(format!("Unsupported Copilot runtime target: {}-{}", os, arch)),
+        (os, arch) => Err(format!(
+            "Unsupported Copilot runtime target: {}-{}",
+            os, arch
+        )),
     }
 }
 
@@ -378,7 +396,12 @@ fn current_runtime_asset(
         .runtimes
         .get(&platform_key)
         .cloned()
-        .ok_or_else(|| format!("Copilot runtime manifest missing entry for {}.", platform_key))?;
+        .ok_or_else(|| {
+            format!(
+                "Copilot runtime manifest missing entry for {}.",
+                platform_key
+            )
+        })?;
     Ok((platform_key, manifest, asset))
 }
 
@@ -561,7 +584,10 @@ fn bridge_health_to_status(runtime: &ResolvedRuntime, health: BridgeHealthResult
         ok: health.ok && auth_status == "connected",
         runtime_source: runtime.source.as_str().to_string(),
         runtime_status: "ready".to_string(),
-        runtime_version: health.cli_version.clone().or_else(|| Some(runtime.version.clone())),
+        runtime_version: health
+            .cli_version
+            .clone()
+            .or_else(|| Some(runtime.version.clone())),
         min_cli_version: health.min_cli_version,
         auth_status,
         auth_source: health.auth_source,
@@ -648,13 +674,15 @@ async fn inspect_runtime_path(
     source: RuntimeSource,
     expected_version: &str,
 ) -> Result<ResolvedRuntime, ProbeIssue> {
-    let version = detect_runtime_version(cli_path).await.map_err(|error| ProbeIssue {
-        runtime_source: source.clone(),
-        runtime_status: "error".to_string(),
-        runtime_version: None,
-        error_code: "runtime_probe_failed".to_string(),
-        error_message: error,
-    })?;
+    let version = detect_runtime_version(cli_path)
+        .await
+        .map_err(|error| ProbeIssue {
+            runtime_source: source.clone(),
+            runtime_status: "error".to_string(),
+            runtime_version: None,
+            error_code: "runtime_probe_failed".to_string(),
+            error_message: error,
+        })?;
 
     validate_runtime_version(&version, expected_version).map_err(|error| ProbeIssue {
         runtime_source: source.clone(),
@@ -708,7 +736,10 @@ async fn probe_managed_runtime(
             runtime_status: "error".to_string(),
             runtime_version: None,
             error_code: "managed_runtime_inaccessible".to_string(),
-            error_message: format!("Managed GitHub Copilot runtime is not accessible: {}", error),
+            error_message: format!(
+                "Managed GitHub Copilot runtime is not accessible: {}",
+                error
+            ),
         }),
     }
 }
@@ -730,7 +761,9 @@ async fn probe_candidate_paths(candidates: Vec<PathBuf>, expected_version: &str)
         }
     }
 
-    first_issue.map(RuntimeProbe::Issue).unwrap_or(RuntimeProbe::Absent)
+    first_issue
+        .map(RuntimeProbe::Issue)
+        .unwrap_or(RuntimeProbe::Absent)
 }
 
 fn system_cli_candidates() -> Vec<PathBuf> {
@@ -785,13 +818,14 @@ async fn probe_dev_runtime(_asset: &CopilotRuntimeAsset) -> RuntimeProbe {
 async fn resolve_runtime(
     app_handle: &AppHandle,
 ) -> Result<(ResolvedRuntime, CopilotRuntimeAsset), ProbeIssue> {
-    let (platform_key, _manifest, asset) = current_runtime_asset(app_handle).map_err(|error| ProbeIssue {
-        runtime_source: RuntimeSource::None,
-        runtime_status: "error".to_string(),
-        runtime_version: None,
-        error_code: "runtime_manifest_missing".to_string(),
-        error_message: error,
-    })?;
+    let (platform_key, _manifest, asset) =
+        current_runtime_asset(app_handle).map_err(|error| ProbeIssue {
+            runtime_source: RuntimeSource::None,
+            runtime_status: "error".to_string(),
+            runtime_version: None,
+            error_code: "runtime_manifest_missing".to_string(),
+            error_message: error,
+        })?;
 
     let managed = probe_managed_runtime(app_handle, &platform_key, &asset).await;
     if let RuntimeProbe::Ready(runtime) = managed.clone() {
@@ -829,7 +863,13 @@ async fn read_bridge_health(
     app_handle: &AppHandle,
     runtime: &ResolvedRuntime,
 ) -> Result<BridgeHealthResult, String> {
-    run_bridge_json_command(app_handle, &["health"], &bridge_envs(app_handle, runtime), None).await
+    run_bridge_json_command(
+        app_handle,
+        &["health"],
+        &bridge_envs(app_handle, runtime),
+        None,
+    )
+    .await
 }
 
 async fn get_status_inner(
@@ -862,7 +902,10 @@ async fn get_status_inner(
         }
     };
 
-    if status.runtime_status == "ready" && status.auth_status == "error" && status.error_code.is_none() {
+    if status.runtime_status == "ready"
+        && status.auth_status == "error"
+        && status.error_code.is_none()
+    {
         status.error_code = Some("copilot_error".to_string());
     }
 
@@ -1059,8 +1102,8 @@ async fn write_managed_runtime_metadata(
         installed_at: chrono::Utc::now().to_rfc3339(),
         binary_sha256: asset.binary_sha256.clone(),
     };
-    let value_json =
-        serde_json::to_string(&metadata).map_err(|error| format!("Failed to encode metadata: {}", error))?;
+    let value_json = serde_json::to_string(&metadata)
+        .map_err(|error| format!("Failed to encode metadata: {}", error))?;
     repository::set_app_setting(pool, COPILOT_RUNTIME_METADATA_KEY, &value_json)
         .await
         .map_err(|error| error.to_string())?;
@@ -1072,7 +1115,8 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
-        let read = std::io::Read::read(&mut file, &mut buffer).map_err(|error| error.to_string())?;
+        let read =
+            std::io::Read::read(&mut file, &mut buffer).map_err(|error| error.to_string())?;
         if read == 0 {
             break;
         }
@@ -1090,7 +1134,9 @@ fn extract_archive(archive_path: &Path, destination: &Path) -> Result<(), String
     let archive_file = File::open(archive_path).map_err(|error| error.to_string())?;
     let decoder = GzDecoder::new(archive_file);
     let mut archive = Archive::new(decoder);
-    archive.unpack(destination).map_err(|error| error.to_string())
+    archive
+        .unpack(destination)
+        .map_err(|error| error.to_string())
 }
 
 fn cleanup_old_managed_versions(
@@ -1181,8 +1227,9 @@ async fn install_runtime_archive(
             return Err("Download cancelled.".to_string());
         }
 
-        let chunk = chunk_result
-            .map_err(|error| format!("Failed while downloading GitHub Copilot runtime: {}", error))?;
+        let chunk = chunk_result.map_err(|error| {
+            format!("Failed while downloading GitHub Copilot runtime: {}", error)
+        })?;
         archive_hash.update(&chunk);
         file.write_all(&chunk)
             .await
@@ -1190,7 +1237,9 @@ async fn install_runtime_archive(
         downloaded_bytes += chunk.len() as u64;
 
         if downloaded_bytes.saturating_sub(last_reported) >= DOWNLOAD_PROGRESS_GRANULARITY_BYTES
-            || total_bytes.map(|total| downloaded_bytes >= total).unwrap_or(false)
+            || total_bytes
+                .map(|total| downloaded_bytes >= total)
+                .unwrap_or(false)
         {
             last_reported = downloaded_bytes;
             emit_download_progress(
@@ -1255,7 +1304,9 @@ async fn install_runtime_archive(
     .await
     .map_err(|error| format!("Failed to verify Copilot runtime binary: {}", error))??;
     if binary_sha != asset.binary_sha256 {
-        return Err("Extracted GitHub Copilot runtime binary failed checksum verification.".to_string());
+        return Err(
+            "Extracted GitHub Copilot runtime binary failed checksum verification.".to_string(),
+        );
     }
 
     emit_download_progress(
@@ -1737,11 +1788,7 @@ async fn stream_chat_inner(
         .map_err(|issue| issue.error_message)?;
     let payload = serde_json::to_string(&request)
         .map_err(|error| format!("Failed to serialize Copilot request: {}", error))?;
-    let mut child = spawn_bridge(
-        &app_handle,
-        &["send"],
-        &bridge_envs(&app_handle, &runtime),
-    )?;
+    let mut child = spawn_bridge(&app_handle, &["send"], &bridge_envs(&app_handle, &runtime))?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
