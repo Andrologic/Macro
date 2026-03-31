@@ -34,6 +34,9 @@ bun run tauri:dev
 
 # Build Tauri app
 bun run tauri:build
+
+# Build a macOS DMG
+bun run tauri:build:dmg
 ```
 
 ## Available Scripts
@@ -45,6 +48,7 @@ bun run tauri:build
 | `bun run preview` | Preview production build |
 | `bun run tauri:dev` | Run Tauri in development mode |
 | `bun run tauri:build` | Build Tauri application |
+| `bun run tauri:build:dmg` | Build a native macOS DMG installer |
 | `bun run typecheck` | Run TypeScript type checking |
 | `bun run lint` | Run ESLint |
 | `bun run clean` | Clean build artifacts |
@@ -247,9 +251,15 @@ bun run tauri:dev
 
 # Production build
 bun run tauri:build
+
+# Native macOS DMG
+bun run tauri:build:dmg
 ```
 
 Built applications will be in `src-tauri/target/release/bundle/`.
+
+On macOS, the DMG is generated at `src-tauri/target/release/bundle/dmg/`.
+The Finder presentation intentionally stays minimal and native: app on the left, `Applications` shortcut on the right, no custom background image.
 
 ### Apple Silicon Sidecar Build
 
