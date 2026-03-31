@@ -53,7 +53,7 @@ bun run tauri:build
 | `bun run version:sync` | Sync secondary version manifests from `package.json` |
 | `bun run version:check` | Verify version consistency across app manifests |
 | `bun run version:bump` | Bump `package.json` version and sync dependent files |
-| `bun run ci` | CI pipeline (install + typecheck + build) |
+| `bun run ci` | CI pipeline (install + typecheck + lint + i18n audit + cargo check + build) |
 
 ## Versioning
 
@@ -88,8 +88,17 @@ Weekly releases are automated through [`.github/workflows/weekly-release.yml`](.
 
 - schedule-driven releases only run from the repository default branch on GitHub
 - the current cron is Monday at 08:17 UTC (`17 8 * * 1`)
-- the workflow bumps the app to the next `weekly` prerelease, commits the version files, tags `v<version>`, and publishes a GitHub prerelease
+- the workflow bumps the app to the next `weekly` prerelease, commits the version files, tags `v<version>`, and publishes a signed Apple Silicon GitHub prerelease
 - release candidates stay manual and should be cut locally with `bun run version:bump rc`
+
+## Stable macOS Releases
+
+Stable macOS releases are published through [`.github/workflows/release-macos.yml`](.github/workflows/release-macos.yml).
+
+- target architecture is Apple Silicon only (`aarch64-apple-darwin`)
+- output bundles are notarized `.app` and `.dmg` artifacts
+- auto-update is intentionally disabled for now; users update by downloading a newer release manually
+- the workflow expects Apple signing and notarization secrets to be configured in GitHub Actions
 
 ## Bun Configuration
 
@@ -215,7 +224,9 @@ sudo apt install libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg
 ```
 
 **macOS:**
-No additional dependencies required.
+No additional dependencies required for day-to-day development.
+
+For local signed or notarized release builds, install full Xcode in addition to the Command Line Tools.
 
 **Windows:**
 No additional dependencies required.
@@ -239,6 +250,25 @@ bun run tauri:build
 ```
 
 Built applications will be in `src-tauri/target/release/bundle/`.
+
+### Apple Silicon Sidecar Build
+
+The Copilot bridge is compiled as a Tauri sidecar into `src-tauri/binaries/` before desktop builds.
+
+- local macOS Apple Silicon builds emit `macro-copilot-bridge-aarch64-apple-darwin`
+- Tauri embeds the final packaged sidecar as `macro-copilot-bridge` inside the app bundle
+- the sidecar uses macOS entitlements compatible with Bun's JavaScript runtime
+
+### macOS Release Runbook
+
+1. Ensure `bun run ci` passes locally.
+2. Bump and sync the version in `package.json`.
+3. Confirm the Apple signing secrets are configured in GitHub Actions:
+   `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_P8`.
+4. Trigger [`.github/workflows/release-macos.yml`](.github/workflows/release-macos.yml).
+5. Wait for the workflow to build, sign, notarize, staple, and validate the Apple Silicon `.app` and `.dmg`.
+6. Download the release artifact on a clean Apple Silicon Mac and smoke test:
+   app launch from Finder, terminal commands, Git access, Copilot bridge startup, keychain access, and notifications.
 
 ### Headless Kernel (No GUI)
 

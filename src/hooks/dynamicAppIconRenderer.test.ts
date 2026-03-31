@@ -2,12 +2,9 @@ import { describe, expect, it } from 'bun:test';
 import type { Theme } from '../types/theme';
 import {
   deriveDynamicAppIconPalette,
-  buildMacosDynamicAppIconSvg,
+  buildMacosDynamicAppIconThemeSpec,
   buildWindowsDynamicAppIconSvg,
   shouldUseMacosDynamicAppIcon,
-  MACOS_DYNAMIC_APP_ICON_CORNER_RADIUS,
-  MACOS_DYNAMIC_APP_ICON_LOGO_INSET,
-  MACOS_DYNAMIC_APP_ICON_LOGO_SIZE,
 } from './dynamicAppIconRenderer';
 
 const darkTheme: Theme = {
@@ -45,13 +42,14 @@ describe('dynamicAppIconRenderer', () => {
     expect(palette.logoEndColor).toBe('#4f52c1');
   });
 
-  it('builds the macOS SVG with the expected Apple-style surface and logo inset', () => {
-    const svg = buildMacosDynamicAppIconSvg(darkTheme);
+  it('builds the macOS theme spec from the resolved theme colors', () => {
+    const spec = buildMacosDynamicAppIconThemeSpec(darkTheme);
 
-    expect(svg).toContain(`rx="${MACOS_DYNAMIC_APP_ICON_CORNER_RADIUS}"`);
-    expect(svg).toContain('fill="#09090b"');
-    expect(svg).toContain(`x="${MACOS_DYNAMIC_APP_ICON_LOGO_INSET}"`);
-    expect(svg).toContain(`width="${MACOS_DYNAMIC_APP_ICON_LOGO_SIZE}"`);
+    expect(spec).toEqual({
+      backgroundColor: '#09090b',
+      logoStartColor: '#6366f1',
+      logoEndColor: '#4f52c1',
+    });
   });
 
   it('keeps the Windows-style icon transparent behind the logo', () => {
@@ -59,7 +57,8 @@ describe('dynamicAppIconRenderer', () => {
 
     expect(svg).toContain('viewBox="0 0 24 24"');
     expect(svg).not.toContain('<rect');
-    expect(svg).toContain('stroke="url(#dynamic-app-icon-grad)"');
+    expect(svg).toContain('stop-color="#6366f1"');
+    expect(svg).toContain('stop-color="#4f52c1"');
   });
 
   it('uses the native macOS icon bridge only in Tauri on macOS', () => {

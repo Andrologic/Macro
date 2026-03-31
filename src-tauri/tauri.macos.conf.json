@@ -1,9 +1,17 @@
 {
+  "bundle": {
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist",
+      "infoPlist": "Info.plist"
+    }
+  },
   "app": {
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "macro",
+        "title": "Macro",
         "width": 800,
         "height": 600,
         "decorations": true,
