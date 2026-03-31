@@ -107,9 +107,6 @@ export default defineConfig(({ command }) => {
         output: {
           // Manual chunks for optimal code splitting
           manualChunks: {
-            // React core - loaded first
-            "react-vendor": ["react", "react-dom"],
-
             // State management
             "state-vendor": ["zustand", "jotai"],
 
@@ -132,6 +129,37 @@ export default defineConfig(({ command }) => {
               "@codemirror/autocomplete",
               "@codemirror/commands",
               "@codemirror/lint",
+            ],
+
+            // Rich text composer
+            "lexical-vendor": [
+              "lexical",
+              "@lexical/react/LexicalComposer",
+              "@lexical/react/LexicalPlainTextPlugin",
+              "@lexical/react/LexicalContentEditable",
+              "@lexical/react/LexicalHistoryPlugin",
+              "@lexical/react/LexicalOnChangePlugin",
+              "@lexical/react/LexicalComposerContext",
+              "@lexical/clipboard",
+              "@lexical/selection",
+              "@lexical/utils",
+            ],
+
+            // Markdown, syntax highlighting, and diagram rendering
+            "markdown-vendor": [
+              "react-markdown",
+              "remark-gfm",
+              "remark-math",
+              "rehype-katex",
+              "katex",
+              "highlight.js",
+              "mermaid",
+            ],
+
+            // Terminal runtime
+            "terminal-vendor": [
+              "xterm",
+              "xterm-addon-fit",
             ],
 
             // Utilities
