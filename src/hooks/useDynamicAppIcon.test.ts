@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { Theme } from '../types/theme';
 import { syncDynamicAppIcon } from './useDynamicAppIcon';
+import type { MacosDynamicAppIconThemeSpec } from './dynamicAppIconRenderer';
 
 const darkTheme: Theme = {
   name: 'Macro Dark',
@@ -30,15 +31,21 @@ const darkTheme: Theme = {
 
 describe('syncDynamicAppIcon', () => {
   const renderWindowsAppIconPngBytes = mock(async (_theme: Theme) => new Uint8Array([1, 2, 3]));
-  const renderMacosAppIconPngBytes = mock(async (_theme: Theme) => new Uint8Array([4, 5, 6]));
+  const buildMacosAppIconThemeSpec = mock(
+    (_theme: Theme): MacosDynamicAppIconThemeSpec => ({
+      backgroundColor: '#09090b',
+      logoStartColor: '#6366f1',
+      logoEndColor: '#4f52c1',
+    })
+  );
   const setWindowIconFromPng = mock(async (_pngBytes: Uint8Array) => undefined);
-  const setMacosAppIcon = mock(async (_pngBytes: Uint8Array) => undefined);
+  const setMacosAppIconTheme = mock(async (_spec: MacosDynamicAppIconThemeSpec) => undefined);
 
   beforeEach(() => {
     renderWindowsAppIconPngBytes.mockClear();
-    renderMacosAppIconPngBytes.mockClear();
+    buildMacosAppIconThemeSpec.mockClear();
     setWindowIconFromPng.mockClear();
-    setMacosAppIcon.mockClear();
+    setMacosAppIconTheme.mockClear();
   });
 
   it('skips icon work entirely outside Tauri', async () => {
@@ -46,31 +53,36 @@ describe('syncDynamicAppIcon', () => {
       isTauriEnvironment: () => false,
       getPlatform: () => 'macos',
       renderWindowsAppIconPngBytes,
-      renderMacosAppIconPngBytes,
+      buildMacosAppIconThemeSpec,
       setWindowIconFromPng,
-      setMacosAppIcon,
+      setMacosAppIconTheme,
     });
 
     expect(renderWindowsAppIconPngBytes).not.toHaveBeenCalled();
-    expect(renderMacosAppIconPngBytes).not.toHaveBeenCalled();
+    expect(buildMacosAppIconThemeSpec).not.toHaveBeenCalled();
     expect(setWindowIconFromPng).not.toHaveBeenCalled();
-    expect(setMacosAppIcon).not.toHaveBeenCalled();
+    expect(setMacosAppIconTheme).not.toHaveBeenCalled();
   });
 
-  it('routes the icon through the dedicated macOS renderer and native bridge on macOS', async () => {
+  it('routes the icon through the dedicated macOS native bridge on macOS', async () => {
     await syncDynamicAppIcon(darkTheme, {
       isTauriEnvironment: () => true,
       getPlatform: () => 'macos',
       renderWindowsAppIconPngBytes,
-      renderMacosAppIconPngBytes,
+      buildMacosAppIconThemeSpec,
       setWindowIconFromPng,
-      setMacosAppIcon,
+      setMacosAppIconTheme,
     });
 
-    expect(renderMacosAppIconPngBytes).toHaveBeenCalledTimes(1);
+    expect(buildMacosAppIconThemeSpec).toHaveBeenCalledTimes(1);
+    expect(buildMacosAppIconThemeSpec).toHaveBeenCalledWith(darkTheme);
     expect(renderWindowsAppIconPngBytes).not.toHaveBeenCalled();
-    expect(setMacosAppIcon).toHaveBeenCalledTimes(1);
-    expect(setMacosAppIcon).toHaveBeenCalledWith(new Uint8Array([4, 5, 6]));
+    expect(setMacosAppIconTheme).toHaveBeenCalledTimes(1);
+    expect(setMacosAppIconTheme).toHaveBeenCalledWith({
+      backgroundColor: '#09090b',
+      logoStartColor: '#6366f1',
+      logoEndColor: '#4f52c1',
+    });
     expect(setWindowIconFromPng).not.toHaveBeenCalled();
   });
 
@@ -79,15 +91,15 @@ describe('syncDynamicAppIcon', () => {
       isTauriEnvironment: () => true,
       getPlatform: () => 'windows',
       renderWindowsAppIconPngBytes,
-      renderMacosAppIconPngBytes,
+      buildMacosAppIconThemeSpec,
       setWindowIconFromPng,
-      setMacosAppIcon,
+      setMacosAppIconTheme,
     });
 
     expect(renderWindowsAppIconPngBytes).toHaveBeenCalledTimes(1);
-    expect(renderMacosAppIconPngBytes).not.toHaveBeenCalled();
+    expect(buildMacosAppIconThemeSpec).not.toHaveBeenCalled();
     expect(setWindowIconFromPng).toHaveBeenCalledTimes(1);
     expect(setWindowIconFromPng).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
-    expect(setMacosAppIcon).not.toHaveBeenCalled();
+    expect(setMacosAppIconTheme).not.toHaveBeenCalled();
   });
 });

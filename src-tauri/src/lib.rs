@@ -3,6 +3,8 @@ pub mod commands;
 pub mod core;
 mod db;
 mod dev_overrides;
+#[cfg(target_os = "macos")]
+mod macos_dynamic_app_icon;
 mod secrets;
 
 // Placeholder modules for critical manual implementation
@@ -16,16 +18,16 @@ pub mod workspace;
 
 use ai::AiState;
 use commands::DbPool;
-use core::{init_logging, load_config};
+use core::{init_logging, init_process_environment, load_config};
 use fs::watcher::init_watcher;
 use git::GitState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use tauri::utils::config::Color;
 use tauri::Manager;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
-#[cfg(target_os = "macos")]
-use tauri::utils::config::Color;
 use tokio::sync::{Mutex, RwLock};
 
 pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
@@ -45,20 +47,12 @@ struct WindowPositionPayload {
     y: i32,
 }
 
-#[cfg(target_os = "macos")]
-unsafe fn set_macos_app_icon_png_bytes(png_bytes: &[u8]) -> Result<(), String> {
-    use objc2::AllocAnyThread;
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::{MainThreadMarker, NSData};
-
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    let app = NSApplication::sharedApplication(mtm);
-    let data = NSData::with_bytes(png_bytes);
-    let app_icon = NSImage::initWithData(NSImage::alloc(), &data)
-        .ok_or_else(|| "Failed to decode macOS app icon PNG".to_string())?;
-
-    unsafe { app.setApplicationIconImage(Some(&app_icon)) };
-    Ok(())
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MacosAppIconThemeSpec {
+    background_color: String,
+    logo_start_color: String,
+    logo_end_color: String,
 }
 
 // Command to show the main window explicitly from frontend
@@ -150,9 +144,9 @@ async fn window_set_zoom(window: tauri::WebviewWindow, scale: f64) -> Result<(),
 }
 
 #[tauri::command]
-async fn set_macos_app_icon(
+async fn set_macos_app_icon_theme(
     window: tauri::WebviewWindow,
-    png_bytes: Vec<u8>,
+    spec: MacosAppIconThemeSpec,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -160,7 +154,7 @@ async fn set_macos_app_icon(
 
         window
             .run_on_main_thread(move || {
-                let result = unsafe { set_macos_app_icon_png_bytes(&png_bytes) };
+                let result = macos_dynamic_app_icon::set_application_icon_for_theme(&spec);
                 let _ = sender.send(result);
             })
             .map_err(|error| error.to_string())?;
@@ -170,13 +164,15 @@ async fn set_macos_app_icon(
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, png_bytes);
+        let _ = (window, spec);
         Ok(())
     }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    init_process_environment();
+
     // Initialize logging
     init_logging();
 
@@ -268,7 +264,7 @@ pub fn run() {
             window_outer_position,
             window_scale_factor,
             window_set_zoom,
-            set_macos_app_icon,
+            set_macos_app_icon_theme,
             commands::db_list_conversations,
             commands::db_get_chat_snapshot,
             commands::db_get_conversation,

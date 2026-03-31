@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "macro",
+  "productName": "Macro",
   "version": "../package.json",
-  "identifier": "com.macro.app",
+  "identifier": "com.macro.desktop",
   "build": {
     "beforeDevCommand": "bun run build:copilot-bridge && bun run dev",
     "devUrl": "http://localhost:1422",
@@ -12,8 +12,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/macro-copilot-bridge"
+    ],
     "resources": [
-      "resources/macro-copilot-bridge*",
       "resources/copilot-runtime-manifest.json",
       "resources/licenses/github-copilot-cli-LICENSE.md"
     ],
@@ -28,7 +30,7 @@
   "app": {
     "windows": [
       {
-        "title": "macro",
+        "title": "Macro",
         "width": 800,
         "height": 600,
         "decorations": false,
@@ -37,7 +39,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' customprotocol: asset:; connect-src 'self' ipc: http://ipc.localhost https: http://localhost:* http://127.0.0.1:*; img-src 'self' asset: http://asset.localhost blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'"
     }
   }
 }

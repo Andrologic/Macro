@@ -45,7 +45,8 @@
     "selectAll": "すべて選択",
     "archive": "アーカイブ",
     "confirmDelete": "本気ですか？",
-    "now": "今"
+    "now": "今",
+    "restore": "Restore"
   },
   "header": {
     "architect": "Architect",
@@ -248,7 +249,26 @@
       "noSourceResults": "このフィルターには結果がありません",
       "noPassagesMarked": "マークされた通路はありません",
       "noPassagesMarkedDescription": "AI がソースマーキングツールを呼び出すと、ここにパッセージが表示されます。"
-    }
+    },
+    "conversationActions": "Conversation actions",
+    "conversationArchived": "Conversation archived",
+    "conversationsArchived": "Conversations archived",
+    "conversationRestored": "Conversation restored",
+    "conversationsRestored": "Conversations restored",
+    "archivedConversationCount_one": "{{count}} archived conversation",
+    "archivedConversationCount_other": "{{count}} archived conversations",
+    "archivedConversationCount": "{{count}} archived conversations",
+    "activeConversations": "Active conversations",
+    "selectedCount_one": "{{count}} selected",
+    "selectedCount_other": "{{count}} selected",
+    "selectedCount": "{{count}} selected",
+    "multiSelect": "Multi-select",
+    "archivedView": "Archived view",
+    "noArchivedResults": "No archived conversations match this search",
+    "noArchivedConversations": "No archived conversations yet",
+    "noActiveConversations": "No active conversations",
+    "noActiveConversationsDescription": "Start a new conversation to see it here.",
+    "deleteArchivedConversationsTitle": "Delete archived conversations"
   },
   "settings": {
     "title": "設定",
@@ -642,7 +662,8 @@
       "commitMessageRequired": "コミットメッセージは必須です。",
       "commitSucceededTaskNotCompleted": "変更はコミットされましたが、タスクを自動的に完了できませんでした。",
       "deletedChangeReadOnly": "削除されたファイルは、レビュー中は読み取り専用になります。代わりにタスク・フローからそれらを復元してください。"
-    }
+    },
+    "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project."
   },
   "architect": {
     "needs": "特定されたニーズ",
@@ -1156,5 +1177,23 @@
     "before": "前に",
     "after": "後",
     "empty": "// 空の"
+  },
+  "terminal": {
+    "title": "Terminal",
+    "openOnLaunch": "Open terminal on launch",
+    "openOnLaunchDescription": "Open a terminal automatically when a task starts.",
+    "chooseProject": "Choose project",
+    "currentProject": "Current project",
+    "manualDraftUnavailable": "Manual draft unavailable",
+    "manualDraftBlockedTitle": "Manual draft unavailable",
+    "manualDraftBlockedDescription": "Start or select a task before opening a manual draft terminal.",
+    "manualDraftBanner": "Manual draft terminals are only available once a task has a project context.",
+    "newTerminal": "New terminal",
+    "chooseProjectBeforeOpen": "Choose a project before opening a terminal.",
+    "noTerminalForSubProject": "No terminal is available for this subproject yet.",
+    "openWithPlus": "Open one with the + button.",
+    "disconnected": "Disconnected",
+    "disconnectedDescription": "This terminal session is no longer attached to a live process.",
+    "reconnect": "Reconnect"
   }
 }

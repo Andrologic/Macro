@@ -230,13 +230,15 @@ async fn tool_execute(
                 .map(str::to_string);
 
             match session_id {
-                Ok(session_id) => read_legacy_session_internal(state.terminal_store.clone(), session_id)
-                    .await
-                    .and_then(|dto| {
-                        serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
-                            message: error.to_string(),
+                Ok(session_id) => {
+                    read_legacy_session_internal(state.terminal_store.clone(), session_id)
+                        .await
+                        .and_then(|dto| {
+                            serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
+                                message: error.to_string(),
+                            })
                         })
-                    }),
+                }
                 Err(error) => Err(error),
             }
         }
@@ -253,13 +255,15 @@ async fn tool_execute(
                 .map(str::to_string);
 
             match session_id {
-                Ok(session_id) => kill_legacy_session_internal(state.terminal_store.clone(), session_id)
-                    .await
-                    .and_then(|dto| {
-                        serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
-                            message: error.to_string(),
+                Ok(session_id) => {
+                    kill_legacy_session_internal(state.terminal_store.clone(), session_id)
+                        .await
+                        .and_then(|dto| {
+                            serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
+                                message: error.to_string(),
+                            })
                         })
-                    }),
+                }
                 Err(error) => Err(error),
             }
         }

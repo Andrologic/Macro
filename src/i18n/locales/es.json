@@ -45,7 +45,8 @@
     "selectAll": "Seleccionar todo",
     "archive": "Archivo",
     "confirmDelete": "¿Estás seguro?",
-    "now": "ahora"
+    "now": "ahora",
+    "restore": "Restore"
   },
   "header": {
     "architect": "Architect",
@@ -248,7 +249,26 @@
       "noSourceResults": "No hay resultados para este filtro",
       "noPassagesMarked": "Sin pasajes marcados",
       "noPassagesMarkedDescription": "Los pasajes aparecen aquí cuando la IA llama a la herramienta de marcado de fuentes."
-    }
+    },
+    "conversationActions": "Conversation actions",
+    "conversationArchived": "Conversation archived",
+    "conversationsArchived": "Conversations archived",
+    "conversationRestored": "Conversation restored",
+    "conversationsRestored": "Conversations restored",
+    "archivedConversationCount_one": "{{count}} archived conversation",
+    "archivedConversationCount_other": "{{count}} archived conversations",
+    "archivedConversationCount": "{{count}} archived conversations",
+    "activeConversations": "Active conversations",
+    "selectedCount_one": "{{count}} selected",
+    "selectedCount_other": "{{count}} selected",
+    "selectedCount": "{{count}} selected",
+    "multiSelect": "Multi-select",
+    "archivedView": "Archived view",
+    "noArchivedResults": "No archived conversations match this search",
+    "noArchivedConversations": "No archived conversations yet",
+    "noActiveConversations": "No active conversations",
+    "noActiveConversationsDescription": "Start a new conversation to see it here.",
+    "deleteArchivedConversationsTitle": "Delete archived conversations"
   },
   "settings": {
     "title": "Configuración",
@@ -642,7 +662,8 @@
       "commitMessageRequired": "El mensaje de commit es obligatorio.",
       "commitSucceededTaskNotCompleted": "Se confirmaron los cambios, pero la tarea no se pudo completar automáticamente.",
       "deletedChangeReadOnly": "Los archivos eliminados son de solo lectura durante la revisión. En su lugar, restáurelos desde el flujo de tareas."
-    }
+    },
+    "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project."
   },
   "architect": {
     "needs": "Necesidades identificadas",
@@ -1156,5 +1177,23 @@
     "before": "antes",
     "after": "después",
     "empty": "// vacío"
+  },
+  "terminal": {
+    "title": "Terminal",
+    "openOnLaunch": "Open terminal on launch",
+    "openOnLaunchDescription": "Open a terminal automatically when a task starts.",
+    "chooseProject": "Choose project",
+    "currentProject": "Current project",
+    "manualDraftUnavailable": "Manual draft unavailable",
+    "manualDraftBlockedTitle": "Manual draft unavailable",
+    "manualDraftBlockedDescription": "Start or select a task before opening a manual draft terminal.",
+    "manualDraftBanner": "Manual draft terminals are only available once a task has a project context.",
+    "newTerminal": "New terminal",
+    "chooseProjectBeforeOpen": "Choose a project before opening a terminal.",
+    "noTerminalForSubProject": "No terminal is available for this subproject yet.",
+    "openWithPlus": "Open one with the + button.",
+    "disconnected": "Disconnected",
+    "disconnectedDescription": "This terminal session is no longer attached to a live process.",
+    "reconnect": "Reconnect"
   }
 }
