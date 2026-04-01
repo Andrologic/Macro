@@ -287,7 +287,7 @@
       "shortcuts": "Configurar atajos de teclado y combinaciones de teclas",
       "providers": "Configurar claves API y puntos finales",
       "models": "Administrar los parámetros de los modelos disponibles.",
-      "notifications": "Configura la entrega de notificaciones dentro de la app y en el escritorio"
+      "notifications": "Configura los canales de notificación para los eventos clave del flujo de trabajo"
     },
     "language_region": "Idioma y región",
     "language": "Idioma",
@@ -295,10 +295,7 @@
     "application": "Solicitud",
     "sound_effects": "Efectos de sonido",
     "sound_effects_desc": "Reproducir sonidos al completar tareas o errores",
-    "desktop_notifications": "Notificaciones de escritorio",
-    "desktop_notifications_desc": "Mostrar notificaciones de escritorio nativas para eventos importantes",
     "desktopNotificationsRuntime": "Estado de ejecución",
-    "desktopNotificationsStatusDisabled": "Desactivado",
     "desktopNotificationsStatusAllowed": "Permitido",
     "desktopNotificationsStatusDenied": "Denegado",
     "desktopNotificationsStatusUnsupported": "No compatible",
@@ -343,8 +340,27 @@
     "notifications": "Notificaciones",
     "notificationsDelivery": "Entrega",
     "inAppNotifications": "Notificaciones dentro de la app",
-    "inAppNotificationsDesc": "Muestra toasts dentro de Macro y conserva las alertas importantes en el centro de notificaciones.",
-    "inAppNotificationsUpdateFailed": "No se pudieron actualizar las preferencias de notificaciones dentro de la app"
+    "inAppNotificationsUpdateFailed": "No se pudieron actualizar las preferencias de notificaciones dentro de la app",
+    "inAppNotificationsScopedDesc": "Controla las notificaciones dentro de la app sin categoría que no están cubiertas por las reglas de canales siguientes.",
+    "notificationChannels": "Canales de notificación",
+    "notificationChannelsDesc": "Elige cómo debe entregarse cada evento importante del flujo de trabajo: toast, escritorio, ambos o desactivado.",
+    "desktopNotificationsPermissionHint": "Macro solicita permiso para las notificaciones de escritorio la primera vez que se envía una notificación elegible en segundo plano.",
+    "notificationCategoryTaskAttention": "Solicitudes de atención en tareas",
+    "notificationCategoryTaskAttentionDesc": "Ramas faltantes u otros problemas de tarea que requieren una acción explícita del usuario.",
+    "notificationCategoryTaskRunCompleted": "Ejecuciones de comandos de tarea completadas",
+    "notificationCategoryTaskRunCompletedDesc": "Los comandos largos de los repositorios de la tarea terminaron correctamente.",
+    "notificationCategoryTaskCompleted": "Tareas completadas",
+    "notificationCategoryTaskCompletedDesc": "Una tarea se completó correctamente.",
+    "notificationCategoryGitSyncCompleted": "Sincronización de Git completada",
+    "notificationCategoryGitSyncCompletedDesc": "Las operaciones de pull/push de código y sincronización de @macro terminaron correctamente.",
+    "notificationCategoryGitSyncAttention": "Atención requerida en la sincronización de Git",
+    "notificationCategoryGitSyncAttentionDesc": "Conflictos, fallos o acciones pendientes de sincronización de metadatos requieren atención.",
+    "notificationChannelMode": {
+      "off": "Desactivado",
+      "toast": "Toast",
+      "desktop": "Escritorio",
+      "both": "Toast + Escritorio"
+    }
   },
   "project": {
     "projects": "Proyectos",

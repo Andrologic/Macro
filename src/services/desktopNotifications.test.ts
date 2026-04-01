@@ -32,28 +32,6 @@ const requestPermissionMock = mock(async (): Promise<DesktopNotificationPermissi
 const sendNotificationMock = mock((_payload?: unknown) => undefined);
 let tauriRuntime = true;
 let focusChangedListener: FocusChangedListener = null;
-type AppStoreState = {
-  desktopNotificationsEnabled: boolean;
-};
-
-const useAppStore: {
-  state: AppStoreState;
-  getState: () => AppStoreState;
-  setState: (nextState: Partial<AppStoreState>) => void;
-} = {
-  state: {
-    desktopNotificationsEnabled: true,
-  },
-  getState() {
-    return this.state;
-  },
-  setState(nextState: Partial<typeof useAppStore.state>) {
-    this.state = {
-      ...this.state,
-      ...nextState,
-    };
-  },
-};
 
 mock.module('@tauri-apps/plugin-notification', () => ({
   isPermissionGranted: isPermissionGrantedMock,
@@ -74,10 +52,6 @@ mock.module('@tauri-apps/api/window', () => ({
 
 mock.module('../utils/isTauriEnvironment', () => ({
   isTauriEnvironment: () => tauriRuntime,
-}));
-
-mock.module('../stores/useAppStore', () => ({
-  useAppStore,
 }));
 
 const desktopNotifications = await import('./desktopNotifications');
@@ -131,7 +105,6 @@ describe('desktopNotifications service', () => {
     documentFocused = true;
     installDomStubs('Win32');
     desktopNotifications.__testables.reset();
-    useAppStore.setState({ desktopNotificationsEnabled: true });
 
     isPermissionGrantedMock.mockReset();
     isPermissionGrantedMock.mockImplementation(async () => true);

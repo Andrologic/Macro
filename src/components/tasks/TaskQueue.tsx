@@ -460,6 +460,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       ),
       {
         notificationKey: toastId,
+        notification: {
+          category: 'task_attention_required',
+        },
         duration: 12000,
         closeButton: true,
         actions: [
@@ -853,7 +856,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               '{{count}} subprojects executed successfully.',
               { count: result.completedCount }
             ),
-            desktopEligible: true,
+            notification: {
+              category: 'task_run_completed',
+            },
           }
         );
         return;
