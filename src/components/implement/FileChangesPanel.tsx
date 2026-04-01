@@ -444,7 +444,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     try {
       await finishTask(currentTask.id);
       resetReviewState();
-      toast.success(t('implement.taskFinished', 'Task finished'));
+      toast.success(t('implement.taskFinished', 'Task finished'), {
+        notification: {
+          category: 'task_completed',
+        },
+      });
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
       toast.error(messageText || t('implement.completeTaskFailed', 'Failed to complete task'));

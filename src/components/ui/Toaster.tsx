@@ -10,6 +10,15 @@ import {
   toast as sonnerToast,
   type ExternalToast,
 } from 'sonner';
+import { maybeSendDesktopNotification } from '../../services/desktopNotifications';
+import {
+  DEFAULT_NOTIFICATION_CHANNEL_MODES,
+  isDesktopChannelMode,
+  isToastChannelMode,
+  sanitizeNotificationChannelMode,
+  type NotificationCategory,
+} from '../../services/notificationChannels';
+import { useAppStore } from '../../stores/useAppStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import {
   useNotificationCenterStore,
@@ -26,6 +35,7 @@ type ToastMessage = Parameters<typeof sonnerToast>[0];
 type SonnerToastArgs = Parameters<typeof sonnerToast>;
 type SonnerCustomToastArgs = Parameters<typeof sonnerToast.custom>;
 type ToastId = string | number;
+type EmittableNotificationLevel = NotificationLevel | 'success';
 type NotificationToastMethod = (
   message: ToastMessage,
   options?: NotificationOptions
@@ -41,7 +51,11 @@ export interface NotificationActionSpec {
 export interface NotificationOptions extends ExternalToast {
   actions?: NotificationActionSpec[];
   notificationKey?: string;
-  desktopEligible?: boolean;
+  notification?: {
+    category: NotificationCategory;
+    title?: string;
+    body?: string;
+  };
 }
 
 interface TrackableToastContent {
@@ -57,7 +71,7 @@ interface NormalizedNotificationActionSpec {
 }
 
 interface ActionableNotificationToastBodyProps {
-  level: NotificationLevel;
+  level: EmittableNotificationLevel;
   title: ReactNode;
   description?: ReactNode;
   actions: NormalizedNotificationActionSpec[];
@@ -66,7 +80,7 @@ interface ActionableNotificationToastBodyProps {
 }
 
 interface ActionableNotificationToastProps {
-  level: NotificationLevel;
+  level: EmittableNotificationLevel;
   toastId: ToastId;
   title: ReactNode;
   description?: ReactNode;
@@ -75,7 +89,7 @@ interface ActionableNotificationToastProps {
 
 let generatedNotificationCounter = 0;
 
-const notificationsEnabled = (): boolean =>
+const uncategorizedNotificationsEnabled = (): boolean =>
   useAuthStore.getState().user?.preferences.notifications !== false;
 
 const getTrackableDescription = (data: NotificationOptions | undefined): unknown =>
@@ -144,7 +158,7 @@ const toSonnerToastOptions = (
   const {
     actions: _actions,
     notificationKey: _notificationKey,
-    desktopEligible: _desktopEligible,
+    notification: _notification,
     ...sonnerOptions
   } = options;
   return {
@@ -173,6 +187,39 @@ const getNotificationActionErrorMessage = (error: unknown): string => {
   return DEFAULT_NOTIFICATION_ACTION_ERROR_MESSAGE;
 };
 
+const getNotificationChannelMode = (options?: NotificationOptions) => {
+  const category = options?.notification?.category;
+  if (!category) {
+    return null;
+  }
+
+  return (
+    sanitizeNotificationChannelMode(
+      category,
+      useAppStore.getState().notificationChannelModes[category] ??
+        DEFAULT_NOTIFICATION_CHANNEL_MODES[category]
+    )
+  );
+};
+
+const isToastEnabledForNotification = (options?: NotificationOptions): boolean => {
+  const mode = getNotificationChannelMode(options);
+  if (mode) {
+    return isToastChannelMode(mode);
+  }
+
+  return uncategorizedNotificationsEnabled();
+};
+
+const isDesktopEnabledForNotification = (options?: NotificationOptions): boolean => {
+  const mode = getNotificationChannelMode(options);
+  if (!mode) {
+    return false;
+  }
+
+  return isDesktopChannelMode(mode);
+};
+
 export const toTrackableToastContent = (
   message?: ToastMessage,
   data?: NotificationOptions
@@ -198,6 +245,25 @@ export const toTrackableToastContent = (
   };
 };
 
+const resolveDesktopNotificationContent = (
+  message?: ToastMessage,
+  options?: NotificationOptions
+): { title: string; body?: string } | null => {
+  const configuredTitle = options?.notification?.title?.trim();
+  const configuredBody = options?.notification?.body?.trim();
+  const fallbackTitle = typeof message === 'string' ? message.trim() : '';
+  const fallbackBody =
+    typeof options?.description === 'string' ? options.description.trim() : '';
+  const title = configuredTitle || fallbackTitle;
+
+  if (!title) {
+    return null;
+  }
+
+  const body = configuredBody || fallbackBody;
+  return body ? { title, body } : { title };
+};
+
 const persistNotification = (
   level: NotificationLevel,
   notificationId: string,
@@ -220,8 +286,10 @@ const persistNotification = (
   });
 };
 
-const getLevelMethod = (level: NotificationLevel) => {
+const getLevelMethod = (level: EmittableNotificationLevel) => {
   switch (level) {
+    case 'success':
+      return sonnerToast.success;
     case 'info':
       return sonnerToast.info;
     case 'warning':
@@ -252,35 +320,77 @@ export const normalizeNotificationActions = (
       dismissOnSuccess: action.dismissOnSuccess !== false,
     }));
 
-const emitTrackedToast = (
-  level: NotificationLevel,
+const emitDesktopNotification = (
   message: ToastMessage,
+  historyId: string,
   options?: NotificationOptions
+): void => {
+  if (!isDesktopEnabledForNotification(options)) {
+    return;
+  }
+
+  const content = resolveDesktopNotificationContent(message, options);
+  if (!content) {
+    return;
+  }
+
+  void maybeSendDesktopNotification({
+    ...content,
+    notificationKey: resolveNotificationKey(options?.notificationKey) ?? historyId,
+  });
+};
+
+const emitToastChannel = (
+  level: EmittableNotificationLevel,
+  message: ToastMessage,
+  toastId: ToastId,
+  options?: NotificationOptions
+): ToastId => {
+  const sonnerOptions = toSonnerToastOptions(options, toastId);
+  const actions = normalizeNotificationActions(options?.actions);
+
+  if (actions.length === 0) {
+    return getLevelMethod(level)(message, sonnerOptions);
+  }
+
+  return sonnerToast.custom(
+    (currentToastId) => (
+      <ActionableNotificationToast
+        level={level}
+        toastId={currentToastId}
+        title={resolveToastNode(message)}
+        description={resolveToastNode(options?.description)}
+        actions={actions}
+      />
+    ),
+    sonnerOptions
+  );
+};
+
+const emitNotification = (
+  level: EmittableNotificationLevel,
+  message: ToastMessage,
+  options: NotificationOptions | undefined,
+  tracked: boolean
 ): ToastId | typeof NOTIFICATIONS_DISABLED_RESULT => {
-  if (!notificationsEnabled()) {
+  const toastEnabled = isToastEnabledForNotification(options);
+  const desktopEnabled = isDesktopEnabledForNotification(options);
+
+  if (!toastEnabled && !desktopEnabled) {
     return NOTIFICATIONS_DISABLED_RESULT;
   }
 
   const { toastId, historyId } = resolveToastIdentity(options);
-  const sonnerOptions = toSonnerToastOptions(options, toastId);
-  const actions = normalizeNotificationActions(options?.actions);
-  const result =
-    actions.length === 0
-      ? getLevelMethod(level)(message, sonnerOptions)
-      : sonnerToast.custom(
-        (currentToastId) => (
-          <ActionableNotificationToast
-            level={level}
-            toastId={currentToastId}
-            title={resolveToastNode(message)}
-            description={resolveToastNode(options?.description)}
-            actions={actions}
-          />
-        ),
-        sonnerOptions
-      );
+  let result: ToastId = historyId;
 
-  persistNotification(level, historyId, toTrackableToastContent(message, options));
+  if (toastEnabled) {
+    result = emitToastChannel(level, message, toastId, options);
+    if (tracked && level !== 'success') {
+      persistNotification(level, historyId, toTrackableToastContent(message, options));
+    }
+  }
+
+  emitDesktopNotification(message, historyId, options);
   return result;
 };
 
@@ -289,7 +399,7 @@ const emitVisibleToast = (
   message: ToastMessage,
   options?: NotificationOptions
 ): ToastId | typeof NOTIFICATIONS_DISABLED_RESULT => {
-  if (!notificationsEnabled()) {
+  if (!uncategorizedNotificationsEnabled()) {
     return NOTIFICATIONS_DISABLED_RESULT;
   }
 
@@ -301,7 +411,7 @@ function callVisibleToast<TArgs extends unknown[], TResult>(
   method: (...args: TArgs) => TResult,
   ...args: TArgs
 ): TResult | typeof NOTIFICATIONS_DISABLED_RESULT {
-  if (!notificationsEnabled()) {
+  if (!uncategorizedNotificationsEnabled()) {
     return NOTIFICATIONS_DISABLED_RESULT;
   }
 
@@ -312,7 +422,7 @@ export const executeNotificationAction = async (
   action: NormalizedNotificationActionSpec,
   toastId: ToastId,
   onError: (message: string) => void = (message) => {
-    emitTrackedToast('error', message);
+    emitNotification('error', message, undefined, true);
   }
 ): Promise<boolean> => {
   try {
@@ -339,6 +449,7 @@ function ActionableNotificationToastBody({
     <div
       className={cn(
         'w-full min-w-0 rounded-lg border p-3 text-foreground shadow-lg',
+        level === 'success' && 'border-emerald-500/30 bg-emerald-500/10',
         level === 'warning' && 'border-amber-500/30 bg-amber-500/10',
         level === 'error' && 'border-red-500/30 bg-red-500/10',
         level === 'info' && 'border-blue-500/30 bg-blue-500/10'
@@ -413,13 +524,15 @@ export const toast = Object.assign(
     callVisibleToast(sonnerToast, ...args)) as typeof sonnerToast,
   {
     success: ((message: ToastMessage, options?: NotificationOptions) =>
-      emitVisibleToast(sonnerToast.success, message, options)) as NotificationToastMethod,
+      options?.notification
+        ? emitNotification('success', message, options, false)
+        : emitVisibleToast(sonnerToast.success, message, options)) as NotificationToastMethod,
     info: (message: ToastMessage, options?: NotificationOptions) =>
-      emitTrackedToast('info', message, options),
+      emitNotification('info', message, options, true),
     warning: (message: ToastMessage, options?: NotificationOptions) =>
-      emitTrackedToast('warning', message, options),
+      emitNotification('warning', message, options, true),
     error: (message: ToastMessage, options?: NotificationOptions) =>
-      emitTrackedToast('error', message, options),
+      emitNotification('error', message, options, true),
     message: (...args: SonnerToastArgs) =>
       callVisibleToast(sonnerToast.message, ...args),
     loading: (...args: SonnerToastArgs) =>
@@ -427,7 +540,7 @@ export const toast = Object.assign(
     custom: (...args: SonnerCustomToastArgs) =>
       callVisibleToast(sonnerToast.custom, ...args),
     promise: (promiseInput: Promise<unknown> | (() => Promise<unknown>), data?: unknown) => {
-      if (!notificationsEnabled()) {
+      if (!uncategorizedNotificationsEnabled()) {
         return NOTIFICATIONS_DISABLED_RESULT as ReturnType<typeof sonnerToast.promise>;
       }
 
@@ -442,7 +555,9 @@ export const toast = Object.assign(
 export const __testables = {
   ActionableNotificationToastBody,
   executeNotificationAction,
+  getNotificationChannelMode,
   normalizeNotificationActions,
+  resolveDesktopNotificationContent,
   toTrackableToastContent,
 };
 

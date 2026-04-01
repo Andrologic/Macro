@@ -287,7 +287,7 @@
       "shortcuts": "Konfigurieren Sie Tastaturkürzel und Tastenkombinationen",
       "providers": "Konfigurieren Sie API-Schlüssel und Endpunkte",
       "models": "Verwalten Sie verfügbare Modellparameter",
-      "notifications": "In-App- und Desktop-Benachrichtigungen konfigurieren"
+      "notifications": "Benachrichtigungskanäle für wichtige Workflow-Ereignisse konfigurieren"
     },
     "language_region": "Sprache und Region",
     "language": "Sprache",
@@ -295,10 +295,7 @@
     "application": "Bewerbung",
     "sound_effects": "Soundeffekte",
     "sound_effects_desc": "Spielen Sie bei Abschluss der Aufgabe oder bei Fehlern Töne ab",
-    "desktop_notifications": "Desktop-Benachrichtigungen",
-    "desktop_notifications_desc": "Zeigen Sie native Desktop-Benachrichtigungen für wichtige Ereignisse an",
     "desktopNotificationsRuntime": "Laufzeitstatus",
-    "desktopNotificationsStatusDisabled": "Deaktiviert",
     "desktopNotificationsStatusAllowed": "Erlaubt",
     "desktopNotificationsStatusDenied": "Verweigert",
     "desktopNotificationsStatusUnsupported": "Nicht unterstützt",
@@ -343,8 +340,27 @@
     "notifications": "Benachrichtigungen",
     "notificationsDelivery": "Zustellung",
     "inAppNotifications": "In-App-Benachrichtigungen",
-    "inAppNotificationsDesc": "Toasts in Macro anzeigen und wichtige Hinweise im Benachrichtigungszentrum behalten.",
-    "inAppNotificationsUpdateFailed": "In-App-Benachrichtigungseinstellungen konnten nicht aktualisiert werden"
+    "inAppNotificationsUpdateFailed": "In-App-Benachrichtigungseinstellungen konnten nicht aktualisiert werden",
+    "inAppNotificationsScopedDesc": "Steuert nicht kategorisierte In-App-Benachrichtigungen, die nicht von den folgenden Kanalregeln abgedeckt werden.",
+    "notificationChannels": "Benachrichtigungskanäle",
+    "notificationChannelsDesc": "Wählen Sie, wie jedes wichtige Workflow-Ereignis zugestellt werden soll: Toast, Desktop, beides oder aus.",
+    "desktopNotificationsPermissionHint": "Macro fragt beim ersten zulässigen Hintergrundereignis nach der Berechtigung für Desktop-Benachrichtigungen.",
+    "notificationCategoryTaskAttention": "Aufgaben mit Handlungsbedarf",
+    "notificationCategoryTaskAttentionDesc": "Fehlende Branches oder andere Aufgabenprobleme, die eine ausdrückliche Benutzeraktion erfordern.",
+    "notificationCategoryTaskRunCompleted": "Abgeschlossene Aufgabenbefehle",
+    "notificationCategoryTaskRunCompletedDesc": "Länger laufende Befehle für Aufgaben-Repositories wurden erfolgreich abgeschlossen.",
+    "notificationCategoryTaskCompleted": "Abgeschlossene Aufgaben",
+    "notificationCategoryTaskCompletedDesc": "Eine Aufgabe wurde erfolgreich abgeschlossen.",
+    "notificationCategoryGitSyncCompleted": "Git-Synchronisierung abgeschlossen",
+    "notificationCategoryGitSyncCompletedDesc": "Code-Pull/Push- und @macro-Synchronisierungsvorgänge wurden erfolgreich abgeschlossen.",
+    "notificationCategoryGitSyncAttention": "Git-Synchronisierung benötigt Aufmerksamkeit",
+    "notificationCategoryGitSyncAttentionDesc": "Konflikte, Fehler oder ausstehende Metadaten-Synchronisierungsaktionen erfordern Aufmerksamkeit.",
+    "notificationChannelMode": {
+      "off": "Aus",
+      "toast": "Toast",
+      "desktop": "Desktop",
+      "both": "Toast + Desktop"
+    }
   },
   "project": {
     "projects": "Projekte",

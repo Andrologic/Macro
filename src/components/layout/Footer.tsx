@@ -183,7 +183,12 @@ export const Footer: React.FC = () => {
             'footer.sync.macroConflictGenericDescription',
             '@macro has unresolved conflicts. Resolve manually or launch AI guidance.'
           );
-      toast.error(t('footer.sync.macroConflictDetected', '@macro conflict detected'), { description });
+      toast.error(t('footer.sync.macroConflictDetected', '@macro conflict detected'), {
+        description,
+        notification: {
+          category: 'git_sync_attention_required',
+        },
+      });
       lastConflictToastAtRef.current = now;
     },
     [t]
@@ -293,7 +298,9 @@ export const Footer: React.FC = () => {
       const result = await tauriIpc.gitPull({ repoPath });
       toast.success(t('footer.sync.codePullComplete', 'Code pull complete'), {
         description: formatGitOutput(result.output, translate),
-        desktopEligible: true,
+        notification: {
+          category: 'git_sync_completed',
+        },
       });
     } catch (error) {
       const message = toServiceError(error).message;
@@ -314,7 +321,9 @@ export const Footer: React.FC = () => {
       const result = await tauriIpc.gitPush({ repoPath });
       toast.success(t('footer.sync.codePushComplete', 'Code push complete'), {
         description: formatGitOutput(result.output, translate),
-        desktopEligible: true,
+        notification: {
+          category: 'git_sync_completed',
+        },
       });
     } catch (error) {
       const message = toServiceError(error).message;
@@ -344,15 +353,23 @@ export const Footer: React.FC = () => {
       } else if (result.state === 'failed') {
         toast.error(t('footer.sync.macroPullFailed', '@macro pull failed'), {
           description: getMacroSyncDescription(result) || t('footer.sync.macroUnknownSyncError', 'Unknown metadata sync error.'),
+          notification: {
+            category: 'git_sync_attention_required',
+          },
         });
       } else if (result.state === 'pending') {
         toast.info(t('footer.sync.macroPullBlocked', '@macro pull blocked'), {
           description: getMacroSyncDescription(result) || t('footer.sync.macroSyncRequiresAction', 'Metadata sync still requires another action first.'),
+          notification: {
+            category: 'git_sync_attention_required',
+          },
         });
       } else {
         toast.success(t('footer.sync.macroPullComplete', '@macro pull complete'), {
           description: formatGitOutput(result.output, translate),
-          desktopEligible: true,
+          notification: {
+            category: 'git_sync_completed',
+          },
         });
       }
       return result;
@@ -382,11 +399,16 @@ export const Footer: React.FC = () => {
       } else if (result.committed) {
         toast.success(t('footer.sync.macroCommitComplete', '@macro commit complete'), {
           description: formatGitOutput(result.output, translate),
-          desktopEligible: true,
+          notification: {
+            category: 'git_sync_completed',
+          },
         });
       } else if (result.state === 'failed') {
         toast.error(t('footer.sync.macroCommitFailed', '@macro commit failed'), {
           description: getMacroSyncDescription(result) || t('footer.sync.macroCommitFailedDescription', 'Metadata commit failed.'),
+          notification: {
+            category: 'git_sync_attention_required',
+          },
         });
       } else {
         toast.info(t('footer.sync.macroCommitNotNeeded', '@macro commit not needed'), {
@@ -418,6 +440,9 @@ export const Footer: React.FC = () => {
       } else if (result.state === 'failed') {
         toast.error(t('footer.sync.macroPushFailed', '@macro push failed'), {
           description: getMacroSyncDescription(result) || t('footer.sync.macroUnknownSyncError', 'Unknown metadata sync error.'),
+          notification: {
+            category: 'git_sync_attention_required',
+          },
         });
       } else if (result.state === 'pending') {
         toast.info(t('footer.sync.macroPushPartiallyComplete', '@macro push partially complete'), {
@@ -425,11 +450,16 @@ export const Footer: React.FC = () => {
             getMacroSyncDescription(result) ||
             formatGitOutput(result.output, translate) ||
             t('footer.sync.macroPendingDifferences', 'Metadata sync still has pending local or remote differences.'),
+          notification: {
+            category: 'git_sync_attention_required',
+          },
         });
       } else {
         toast.success(t('footer.sync.macroPushComplete', '@macro push complete'), {
           description: formatGitOutput(result.output, translate),
-          desktopEligible: true,
+          notification: {
+            category: 'git_sync_completed',
+          },
         });
       }
       return result;
