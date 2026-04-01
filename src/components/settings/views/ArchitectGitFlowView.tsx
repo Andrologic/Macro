@@ -12,6 +12,9 @@ const defaultSettings: ArchitectGitNamingSettings = {
   baseBranch: 'develop',
   planBranchTemplate: 'plan/{planSlug}',
   featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+  releaseBranchTemplate: 'release/{releaseSlug}',
+  hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+  bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
   syncTargetBeforeFinish: true,
 };
 
@@ -31,10 +34,21 @@ export const ArchitectGitFlowView: React.FC = () => {
 
   useEffect(() => {
     const loadSettings = async () => {
-      const [baseBranch, planTemplate, featureTemplate, syncTargetBeforeFinish] = await Promise.all([
+      const [
+        baseBranch,
+        planTemplate,
+        featureTemplate,
+        releaseTemplate,
+        hotfixTemplate,
+        bugfixTemplate,
+        syncTargetBeforeFinish,
+      ] = await Promise.all([
         loadPreference<string>(PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH),
         loadPreference<string>(PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE),
         loadPreference<string>(PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE),
+        loadPreference<string>(PREF_KEYS.ARCHITECT_RELEASE_BRANCH_TEMPLATE),
+        loadPreference<string>(PREF_KEYS.ARCHITECT_HOTFIX_BRANCH_TEMPLATE),
+        loadPreference<string>(PREF_KEYS.ARCHITECT_BUGFIX_BRANCH_TEMPLATE),
         loadPreference<boolean>(PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH),
       ]);
 
@@ -42,6 +56,9 @@ export const ArchitectGitFlowView: React.FC = () => {
         baseBranch: baseBranch || defaultSettings.baseBranch,
         planBranchTemplate: planTemplate || defaultSettings.planBranchTemplate,
         featureBranchTemplate: featureTemplate || defaultSettings.featureBranchTemplate,
+        releaseBranchTemplate: releaseTemplate || defaultSettings.releaseBranchTemplate,
+        hotfixBranchTemplate: hotfixTemplate || defaultSettings.hotfixBranchTemplate,
+        bugfixBranchTemplate: bugfixTemplate || defaultSettings.bugfixBranchTemplate,
         syncTargetBeforeFinish: syncTargetBeforeFinish ?? defaultSettings.syncTargetBeforeFinish,
       });
     };
@@ -59,8 +76,24 @@ export const ArchitectGitFlowView: React.FC = () => {
         planSlug: '1710000000000',
         featureSlug: 'invoice-retry',
       }),
+      releaseBranch: renderTemplatePreview(settings.releaseBranchTemplate, {
+        releaseSlug: 'v1.5.0',
+      }),
+      hotfixBranch: renderTemplatePreview(settings.hotfixBranchTemplate, {
+        hotfixSlug: 'auth-timeout',
+      }),
+      bugfixBranch: renderTemplatePreview(settings.bugfixBranchTemplate, {
+        bugfixSlug: 'checkout-tax-rounding',
+      }),
     }),
-    [settings.baseBranch, settings.planBranchTemplate, settings.featureBranchTemplate]
+    [
+      settings.baseBranch,
+      settings.planBranchTemplate,
+      settings.featureBranchTemplate,
+      settings.releaseBranchTemplate,
+      settings.hotfixBranchTemplate,
+      settings.bugfixBranchTemplate,
+    ]
   );
 
   const handleSave = async () => {
@@ -76,6 +109,18 @@ export const ArchitectGitFlowView: React.FC = () => {
       savePreference(
         PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE,
         settings.featureBranchTemplate.trim() || defaultSettings.featureBranchTemplate
+      ),
+      savePreference(
+        PREF_KEYS.ARCHITECT_RELEASE_BRANCH_TEMPLATE,
+        settings.releaseBranchTemplate.trim() || defaultSettings.releaseBranchTemplate
+      ),
+      savePreference(
+        PREF_KEYS.ARCHITECT_HOTFIX_BRANCH_TEMPLATE,
+        settings.hotfixBranchTemplate.trim() || defaultSettings.hotfixBranchTemplate
+      ),
+      savePreference(
+        PREF_KEYS.ARCHITECT_BUGFIX_BRANCH_TEMPLATE,
+        settings.bugfixBranchTemplate.trim() || defaultSettings.bugfixBranchTemplate
       ),
       savePreference(PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH, settings.syncTargetBeforeFinish),
     ]);
@@ -98,7 +143,7 @@ export const ArchitectGitFlowView: React.FC = () => {
         <p className="text-xs text-muted-foreground">
           {t(
             'settings.architectGitFlow.subtitle',
-            'Control the target branch and automatic branch naming used when validating plans.'
+            'Configure the default Git Flow profile applied to new subprojects. Existing subprojects can override these values individually.'
           )}
         </p>
       </section>
@@ -140,6 +185,42 @@ export const ArchitectGitFlowView: React.FC = () => {
           />
         </div>
 
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-foreground">
+            {t('settings.architectGitFlow.releaseTemplateLabel', 'Release branch template')}
+          </label>
+          <input
+            value={settings.releaseBranchTemplate}
+            onChange={(event) => setSettings((prev) => ({ ...prev, releaseBranchTemplate: event.target.value }))}
+            className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+            placeholder="release/{releaseSlug}"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-foreground">
+            {t('settings.architectGitFlow.hotfixTemplateLabel', 'Hotfix branch template')}
+          </label>
+          <input
+            value={settings.hotfixBranchTemplate}
+            onChange={(event) => setSettings((prev) => ({ ...prev, hotfixBranchTemplate: event.target.value }))}
+            className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+            placeholder="hotfix/{hotfixSlug}"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-foreground">
+            {t('settings.architectGitFlow.bugfixTemplateLabel', 'Bugfix branch template')}
+          </label>
+          <input
+            value={settings.bugfixBranchTemplate}
+            onChange={(event) => setSettings((prev) => ({ ...prev, bugfixBranchTemplate: event.target.value }))}
+            className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+            placeholder="bugfix/{bugfixSlug}"
+          />
+        </div>
+
         <label className="flex items-start gap-3 rounded-lg border border-border/50 bg-muted/10 px-3 py-3">
           <input
             type="checkbox"
@@ -174,6 +255,9 @@ export const ArchitectGitFlowView: React.FC = () => {
           <div>{t('settings.architectGitFlow.previewTarget', 'Target')}: {previews.targetBranch}</div>
           <div>{t('settings.architectGitFlow.previewPlan', 'Plan')}: {previews.planBranch}</div>
           <div>{t('settings.architectGitFlow.previewFeature', 'Feature')}: {previews.featureBranch}</div>
+          <div>{t('settings.architectGitFlow.previewRelease', 'Release')}: {previews.releaseBranch}</div>
+          <div>{t('settings.architectGitFlow.previewHotfix', 'Hotfix')}: {previews.hotfixBranch}</div>
+          <div>{t('settings.architectGitFlow.previewBugfix', 'Bugfix')}: {previews.bugfixBranch}</div>
         </div>
       </section>
 

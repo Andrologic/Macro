@@ -8,6 +8,7 @@ export interface ArchitectAutoPlanDependencies {
     label?: string;
     projectId?: string;
     projectIds?: string[];
+    targetBranchesByProjectId?: Record<string, string>;
     status?: ArchitectPlanRecord['status'];
     setActive?: boolean;
   }) => Promise<ArchitectPlanRecord>;
@@ -33,8 +34,10 @@ export interface ArchitectAutoPlanDependencies {
     label?: string;
     projectIds?: string[];
     expectedProjectIds?: string[];
+    targetBranchesByProjectId?: Record<string, string>;
     setActive?: boolean;
   }) => Promise<ArchitectPlanRecord>;
+  getTargetBranchesByProjectId?: (projectIds: string[]) => Record<string, string>;
 }
 
 export interface EnsureProjectGroupPlanResult {
@@ -231,6 +234,7 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
           planId: blankPlan.id,
           projectIds: mergedProjectIds,
           expectedProjectIds: mergedProjectIds,
+          targetBranchesByProjectId: deps.getTargetBranchesByProjectId?.(mergedProjectIds),
           setActive: true,
         });
         const needs = await deps.getArchitectPlanNeeds(params.branchName, expandedPlan.id);
@@ -259,6 +263,7 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       label: deps.DEFAULT_NEW_PLAN_LABEL,
       projectId: params.scopedProjectIds[0] || undefined,
       projectIds: params.scopedProjectIds,
+      targetBranchesByProjectId: deps.getTargetBranchesByProjectId?.(params.scopedProjectIds),
       status: 'draft',
       setActive: true,
     });

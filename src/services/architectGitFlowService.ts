@@ -1,9 +1,10 @@
-import type { PlanNode, PredictedBranch, ProjectGroup } from '../types';
+import type { PlanNode, PredictedBranch, ProjectGitFlowSettings, ProjectGroup } from '../types';
 import { useAppStore } from '../stores/useAppStore';
 import * as tauriIpc from './tauriIpc';
 import {
   archiveArchitectPlan,
   deleteArchitectPlan,
+  getArchitectPlanTargetBranchForProject,
   getGitFlowBaseBranch,
   getArchitectPlan,
   toPlanIntegrationBranch,
@@ -16,8 +17,12 @@ import {
   normalizeStrategyDependencies,
   toBranchWorktreeKey,
 } from './implementTaskDerivation';
-import { shouldSyncTargetBranchBeforeFinish } from './architectGitNaming';
+import {
+  renderGitFlowBranchName,
+  shouldSyncTargetBranchBeforeFinish,
+} from './architectGitNaming';
 import { toServiceError } from './contracts/errors';
+import { getPlanNodeBranchIntent, getPredictedBranchIntentKey, type WorkBranchIntent } from './gitFlowBranchIntents';
 import {
   buildValidProjectRegistrySnapshot,
   isSyntheticProjectId,
@@ -26,6 +31,151 @@ import {
 import { devLogger } from '../utils/devLogger';
 
 const BRANCH_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
+
+const getProjectGitFlowSettings = (
+  getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined,
+  projectId: string
+): ProjectGitFlowSettings | undefined => getProjectById(projectId)?.gitFlowSettings ?? undefined;
+
+const renderPlanBranchNameForProject = (params: {
+  planSlug: string;
+  projectId: string;
+  getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined;
+}): string =>
+  renderGitFlowBranchName({
+    branchType: 'plan',
+    planSlug: params.planSlug,
+    settings: getProjectGitFlowSettings(params.getProjectById, params.projectId),
+  });
+
+const renderWorkBranchNameForProject = (params: {
+  planSlug: string;
+  projectId: string;
+  intent: WorkBranchIntent;
+  getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined;
+}): string =>
+  renderGitFlowBranchName({
+    branchType: params.intent.branchType,
+    planSlug: params.planSlug,
+    branchSlug: params.intent.branchSlug,
+    settings: getProjectGitFlowSettings(params.getProjectById, params.projectId),
+  });
+
+const resolvePlanProjectBaseBranchName = (
+  plan: ArchitectPlanRecord,
+  projectId: string
+): string => getArchitectPlanTargetBranchForProject(plan, projectId);
+
+const resolveBranchSourceRef = (
+  branches: ArchitectGitFlowGitBranches,
+  targetBranchName: string,
+  projectLabel?: string
+): string => {
+  const local = new Set((branches.local || []).map((branch) => branch.name));
+  const remote = new Set((branches.remote || []).map((branch) => branch.name));
+
+  if (local.has(targetBranchName)) return targetBranchName;
+  if (remote.has(`origin/${targetBranchName}`)) return `origin/${targetBranchName}`;
+
+  throw new Error(
+    `Missing target branch "${targetBranchName}". Create or fetch it before validating this plan${projectLabel ? `, or update GitFlow settings for ${projectLabel}` : ''}.`
+  );
+};
+
+const buildPredictedBranchesForProjectPlan = (params: {
+  nodes: PlanNode[];
+  existingBranches: PredictedBranch[];
+  plan: ArchitectPlanRecord;
+  getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined;
+}): PredictedBranch[] => {
+  const branchTaskMap = new Map<string, {
+    projectId: string;
+    taskIds: string[];
+    branchName: string;
+    parentBranch: string;
+    branchType: PredictedBranch['branchType'];
+    branchSlug: PredictedBranch['branchSlug'];
+  }>();
+  const planSlug = params.plan.slug || params.plan.title;
+
+  params.nodes.forEach((node) => {
+    const branchIntent = getPlanNodeBranchIntent(node);
+    for (const projectId of normalizeNodeProjectIds(node)) {
+      const branchName = renderWorkBranchNameForProject({
+        planSlug,
+        projectId,
+        intent: branchIntent,
+        getProjectById: params.getProjectById,
+      });
+      const parentBranch = renderPlanBranchNameForProject({
+        planSlug,
+        projectId,
+        getProjectById: params.getProjectById,
+      });
+      const key = `${projectId}::${branchIntent.key}`;
+      if (!branchTaskMap.has(key)) {
+        branchTaskMap.set(key, {
+          projectId,
+          taskIds: [],
+          branchName,
+          parentBranch,
+          branchType: branchIntent.branchType,
+          branchSlug: branchIntent.branchSlug,
+        });
+      }
+      branchTaskMap.get(key)!.taskIds.push(node.id);
+    }
+  });
+
+  const existingByKey = new Map(
+    (params.existingBranches || []).map((branch) => [`${branch.projectId}::${getPredictedBranchIntentKey(branch)}`, branch])
+  );
+
+  return Array.from(branchTaskMap.entries()).map(([key, value], index) => {
+    const existing = existingByKey.get(key);
+    return {
+      id: existing?.id || `branch-${value.projectId}-${Date.now()}-${index}`,
+      name: value.branchName,
+      color: existing?.color || BRANCH_COLORS[index % BRANCH_COLORS.length],
+      parentBranch: value.parentBranch,
+      projectId: value.projectId,
+      taskIds: Array.from(new Set(value.taskIds)),
+      status: existing?.status || 'pending',
+      branchType: value.branchType,
+      branchSlug: value.branchSlug,
+    };
+  });
+};
+
+const listPlanBranchNamesForProject = (params: {
+  plan: ArchitectPlanRecord;
+  projectId: string;
+  getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined;
+}): string[] => {
+  const predictedBranchNames = (params.plan.predictedBranches || [])
+    .filter((branch) => branch.projectId === params.projectId)
+    .map((branch) => branch.name)
+    .filter((name) => name.trim().length > 0);
+  if (predictedBranchNames.length > 0) {
+    return Array.from(new Set(predictedBranchNames));
+  }
+
+  const planSlug = params.plan.slug || params.plan.title;
+  return Array.from(
+    new Set(
+      (params.plan.nodes || [])
+        .filter((node) => normalizeNodeProjectIds(node).includes(params.projectId))
+        .map((node) =>
+          renderWorkBranchNameForProject({
+            planSlug,
+            projectId: params.projectId,
+            intent: getPlanNodeBranchIntent(node),
+            getProjectById: params.getProjectById,
+          })
+        )
+    )
+  );
+};
 
 export interface ProvisionedPlanRepositoryResult {
   projectId: string;
@@ -139,6 +289,7 @@ interface CleanupPlanRepositoryTarget extends ResolvedProjectRepository {
 
 interface ArchitectGitFlowProjectRef {
   path?: string | null;
+  gitFlowSettings?: ProjectGitFlowSettings | null;
 }
 
 interface ArchitectGitFlowProjectGroup {
@@ -892,191 +1043,41 @@ const preflightPlanRepositories = async (params: {
   );
 };
 
+void [
+  resolveProjectRepoPaths,
+  normalizePlanNodesForGitFlow,
+  buildPredictedBranchesForPlan,
+  resolveDevelopBaseRef,
+  cleanupPlanBranchesInternal,
+  preflightPlanRepositories,
+];
+
 export const provisionPlanBranches = async (
   plan: ArchitectPlanRecord,
   explicitRepoPath?: string
-): Promise<ProvisionPlanBranchesResult> => {
-  const planBranchName = toPlanIntegrationBranch(plan.slug || plan.title);
-  const featureBranchesByProject = new Map<string, string[]>();
-
-  for (const node of plan.nodes || []) {
-    const branchName = node.assignedBranch || 'work';
-    for (const projectId of normalizeNodeProjectIds(node)) {
-      const existing = featureBranchesByProject.get(projectId) || [];
-      if (!existing.includes(branchName)) {
-        existing.push(branchName);
-      }
-      featureBranchesByProject.set(projectId, existing);
-    }
-  }
-
-  if (!tauriIpc.isTauriAvailable()) {
-    const existingFeatureBranches = Array.from(featureBranchesByProject.values()).flat();
-    return {
-      planBranchName,
-      repositories: [],
-      createdPlanBranch: false,
-      createdFeatureBranches: [],
-      existingFeatureBranches,
-    };
-  }
-
-  const repositories = resolvePlanProjectRepoPathsFromAppState(useAppStore.getState(), plan, explicitRepoPath, {
-    errorMessage: 'Unable to resolve repository path for this plan. Select at least one project before validating the plan.',
-    logContext: 'provision',
-  });
-
-  const results: ProvisionedPlanRepositoryResult[] = [];
-  for (const repository of repositories) {
-    const branches = await tauriIpc.gitBranchList(repository.repoPath);
-    const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
-    const createdFeatureBranches: string[] = [];
-    const existingFeatureBranches: string[] = [];
-
-    let createdPlanBranch = false;
-    if (!localBranchNames.has(planBranchName)) {
-      const fromRef = resolveDevelopBaseRef(branches);
-      await tauriIpc.gitBranchCreate({
-        repoPath: repository.repoPath,
-        branchName: planBranchName,
-        fromRef,
-      });
-      localBranchNames.add(planBranchName);
-      createdPlanBranch = true;
-    }
-
-    for (const featureBranch of featureBranchesByProject.get(repository.projectId) || []) {
-      if (localBranchNames.has(featureBranch)) {
-        existingFeatureBranches.push(featureBranch);
-        continue;
-      }
-
-      await tauriIpc.gitBranchCreate({
-        repoPath: repository.repoPath,
-        branchName: featureBranch,
-        fromRef: planBranchName,
-      });
-      localBranchNames.add(featureBranch);
-      createdFeatureBranches.push(featureBranch);
-    }
-
-    results.push({
-      projectId: repository.projectId,
-      repoPath: repository.repoPath,
-      planBranchName,
-      createdPlanBranch,
-      createdFeatureBranches,
-      existingFeatureBranches,
-    });
-  }
-
-  return {
-    planBranchName,
-    repositories: results,
-    createdPlanBranch: results.some((result) => result.createdPlanBranch),
-    createdFeatureBranches: results.flatMap((result) => result.createdFeatureBranches),
-    existingFeatureBranches: results.flatMap((result) => result.existingFeatureBranches),
-  };
-};
+): Promise<ProvisionPlanBranchesResult> =>
+  defaultArchitectGitFlowService.provisionPlanBranches(plan, explicitRepoPath);
 
 export const validatePlanAndProvisionBranches = async (params: {
   branchName: string;
   planId: string;
   repoPath?: string;
   setActive?: boolean;
-}): Promise<{ plan: ArchitectPlanRecord; provision: ProvisionPlanBranchesResult }> => {
-  const plan = await getArchitectPlan(params.branchName, params.planId);
-  if (!plan || plan.status === 'deleted') {
-    throw new Error(`Plan ${params.planId} is unavailable.`);
-  }
-
-  if (!Array.isArray(plan.nodes) || plan.nodes.length === 0) {
-    throw new Error('Cannot validate a plan without strategy nodes. Generate strategy first.');
-  }
-
-  const normalizedNodes = normalizePlanNodesForGitFlow(plan);
-  const planBranchName = toPlanIntegrationBranch(plan.slug || plan.title);
-  const normalizedPredictedBranches = buildPredictedBranchesForPlan(
-    normalizedNodes,
-    plan.predictedBranches || [],
-    planBranchName
-  );
-  const normalizedStrategy = normalizeStrategyDependencies(normalizedNodes, normalizedPredictedBranches);
-  const projectIds = getPlanProjectIds({
-    ...plan,
-    nodes: normalizedStrategy.nodes,
-    predictedBranches: normalizedStrategy.predictedBranches,
-  });
-
-  const normalizedPlan: ArchitectPlanRecord = {
-    ...plan,
-    projectId: projectIds[0],
-    projectIds,
-    nodes: normalizedStrategy.nodes,
-    predictedBranches: normalizedStrategy.predictedBranches,
-  };
-
-  const provision = await provisionPlanBranches(normalizedPlan, params.repoPath);
-
-  const validatedPlan = await updateArchitectPlan({
-    branchName: params.branchName,
-    planId: plan.id,
-    status: 'validated',
-    nodes: normalizedPlan.nodes,
-    predictedBranches: normalizedPlan.predictedBranches,
-    projectId: normalizedPlan.projectId,
-    setActive: params.setActive !== false,
-  });
-
-  return {
-    plan: {
-      ...validatedPlan,
-      projectId: normalizedPlan.projectId,
-      projectIds,
-      nodes: normalizedPlan.nodes,
-      predictedBranches: normalizedPlan.predictedBranches,
-    },
-    provision,
-  };
-};
+}): Promise<{ plan: ArchitectPlanRecord; provision: ProvisionPlanBranchesResult }> =>
+  defaultArchitectGitFlowService.validatePlanAndProvisionBranches(params);
 
 export const mergeFeatureBranchIntoPlanBranch = async (params: {
   projectId: string;
   branchName: string;
   planBranchName: string;
   repoPath?: string;
-}): Promise<string> => {
-  const repository = resolveProjectRepoPaths([params.projectId], params.repoPath)[0];
-  if (!repository?.repoPath) {
-    throw new Error(`Unable to resolve repository path for project ${params.projectId}.`);
-  }
-
-  return tauriIpc.gitMerge({
-    repoPath: repository.repoPath,
-    branchName: params.branchName,
-    intoBranch: params.planBranchName,
-  });
-};
+}): Promise<string> => defaultArchitectGitFlowService.mergeFeatureBranchIntoPlanBranch(params);
 
 export const loadPlanReview = async (params: {
   branchName: string;
   planId: string;
   repoPath?: string;
-}): Promise<PlanReviewResult> => {
-  const plan = await getArchitectPlan(params.branchName, params.planId);
-  if (!plan || plan.status === 'deleted') {
-    throw new Error(`Plan ${params.planId} is unavailable.`);
-  }
-
-  return {
-    plan,
-    tasks: buildPlanReviewTasks(plan),
-    repositories: await preflightPlanRepositories({
-      plan,
-      explicitRepoPath: params.repoPath,
-    }),
-  };
-};
+}): Promise<PlanReviewResult> => defaultArchitectGitFlowService.loadPlanReview(params);
 
 export const finalizePlanIntoBaseBranch = async (params: {
   branchName: string;
@@ -1086,64 +1087,7 @@ export const finalizePlanIntoBaseBranch = async (params: {
   plan: ArchitectPlanRecord;
   repositories: FinalizedPlanRepositoryResult[];
   cleanup: CleanupPlanRepositoryResult[];
-}> => {
-  const plan = await getArchitectPlan(params.branchName, params.planId);
-  if (!plan || plan.status === 'deleted') {
-    throw new Error(`Plan ${params.planId} is unavailable.`);
-  }
-  assertPlanReadyForFinalization(plan);
-
-  const preflightRepositories = await preflightPlanRepositories({
-    plan,
-    explicitRepoPath: params.repoPath,
-  });
-
-  if (preflightRepositories.some((repository) => repository.blockingReason)) {
-    throw createPlanFinalizationBlockedError({
-      planId: plan.id,
-      branchName: params.branchName,
-      repositories: preflightRepositories,
-    });
-  }
-
-  await preflightPlanCleanup(buildCleanupPlanTargets(plan, params.repoPath));
-
-  const finalizedRepositories: FinalizedPlanRepositoryResult[] = [];
-  for (const repository of preflightRepositories) {
-    const mergeOutput = repository.hasChanges
-      ? await tauriIpc.gitMerge({
-        repoPath: repository.repoPath,
-        branchName: repository.planBranchName,
-        intoBranch: repository.baseBranchName,
-      })
-      : undefined;
-
-    finalizedRepositories.push({
-      projectId: repository.projectId,
-      repoPath: repository.repoPath,
-      planBranchName: repository.planBranchName,
-      baseBranchName: repository.baseBranchName,
-      mergeOutput,
-      });
-  }
-
-  await updateArchitectPlan({
-    branchName: params.branchName,
-    planId: plan.id,
-    status: 'completed',
-    setActive: false,
-  });
-  const archivedPlan = await archiveArchitectPlan(params.branchName, plan.id);
-  const cleanup = await cleanupPlanBranches(archivedPlan, params.repoPath, {
-    allowRetained: true,
-  });
-
-  return {
-    plan: archivedPlan,
-    repositories: finalizedRepositories,
-    cleanup,
-  };
-};
+}> => defaultArchitectGitFlowService.finalizePlanIntoBaseBranch(params);
 
 export const cleanupPlanBranches = async (
   plan: ArchitectPlanRecord,
@@ -1151,9 +1095,8 @@ export const cleanupPlanBranches = async (
   options?: {
     allowRetained?: boolean;
   }
-): Promise<CleanupPlanRepositoryResult[]> => {
-  return cleanupPlanBranchesInternal(plan, explicitRepoPath, options);
-};
+): Promise<CleanupPlanRepositoryResult[]> =>
+  defaultArchitectGitFlowService.cleanupPlanBranches(plan, explicitRepoPath, options);
 
 const PLAN_DELETE_REQUIRES_ARCHIVE_MESSAGE = 'Archive the plan before deleting it.';
 
@@ -1166,46 +1109,7 @@ export const deletePlanAndCleanupBranches = async (params: {
   deletedBranches: string[];
   deletedWorktreeKeys: string[];
   repositories: CleanupPlanRepositoryResult[];
-}> => {
-  const plan = await getArchitectPlan(params.branchName, params.planId);
-  if (!plan) {
-    throw new Error(`Plan ${params.planId} is unavailable.`);
-  }
-
-  if (plan.status !== 'archived' && plan.status !== 'deleted') {
-    throw new Error(PLAN_DELETE_REQUIRES_ARCHIVE_MESSAGE);
-  }
-
-  if (plan.status === 'deleted') {
-    await deleteArchitectPlan({
-      branchName: params.branchName,
-      planId: params.planId,
-      hardDelete: params.hardDelete !== false,
-    });
-
-    return {
-      deletedBranches: [],
-      deletedWorktreeKeys: [],
-      repositories: [],
-    };
-  }
-
-  const repositories = await cleanupPlanBranches(plan, params.repoPath);
-
-  await deleteArchitectPlan({
-    branchName: params.branchName,
-    planId: params.planId,
-    hardDelete: params.hardDelete ?? true,
-  });
-
-  return {
-    deletedBranches: repositories.flatMap((repository) => repository.deletedBranches),
-    deletedWorktreeKeys: repositories.flatMap((repository) =>
-      repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
-    ),
-    repositories,
-  };
-};
+}> => defaultArchitectGitFlowService.deletePlanAndCleanupBranches(params);
 
 export const createArchitectGitFlowService = (
   overrides: (Partial<ArchitectGitFlowDependencies> & {
@@ -1237,32 +1141,25 @@ export const createArchitectGitFlowService = (
     resolvePlanProjectRepoPathsFromAppState(deps.getAppState(), plan, explicitRepoPath, options);
 
   const normalizePlanNodesForGitFlowWithDeps = (plan: ArchitectPlanRecord): PlanNode[] => {
-    const planSlug = plan.slug || plan.title;
     return (plan.nodes || []).map((node) => {
       const projectIds = normalizeNodeProjectIds(node);
+      const branchIntent = getPlanNodeBranchIntent(node);
       return {
         ...node,
-        assignedBranch: deps.toPlanScopedFeatureBranch(planSlug, node.assignedBranch || node.title || 'work'),
+        assignedBranch: branchIntent.label,
+        branchType: branchIntent.branchType,
+        branchSlug: branchIntent.branchSlug,
         projectId: projectIds[0],
         projectIds,
       };
     });
   };
 
-  const resolveDevelopBaseRefWithDeps = (branches: ArchitectGitFlowGitBranches): string => {
-    const baseBranch = deps.getGitFlowBaseBranch();
-    const local = new Set((branches.local || []).map((branch) => branch.name));
-    const remote = new Set((branches.remote || []).map((branch) => branch.name));
-
-    if (local.has(baseBranch)) return baseBranch;
-    if (remote.has(`origin/${baseBranch}`)) return `origin/${baseBranch}`;
-    throw new Error(`Missing base branch "${baseBranch}". Create/fetch ${baseBranch} before validating this plan.`);
-  };
-
   const resolveSafeCheckoutBeforeDeletionWithDeps = async (
     repoPath: string,
     branchesToDelete: Set<string>,
-    branches: ArchitectGitFlowGitBranches
+    branches: ArchitectGitFlowGitBranches,
+    preferredFallbackBranch?: string
   ): Promise<string | null> => {
     const status = await deps.tauri.gitStatus(repoPath);
     const current = status.branch;
@@ -1275,6 +1172,7 @@ export const createArchitectGitFlowService = (
     const localNames = (branches.local || []).map((branch) => branch.name);
     const localSet = new Set(localNames);
     const fallbackCandidates = [
+      preferredFallbackBranch || '',
       deps.getGitFlowBaseBranch(),
       'main',
       'develop',
@@ -1297,9 +1195,15 @@ export const createArchitectGitFlowService = (
   const ensureSafeCheckoutBeforeDeletionWithDeps = async (
     repoPath: string,
     branchesToDelete: Set<string>,
-    branches: ArchitectGitFlowGitBranches
+    branches: ArchitectGitFlowGitBranches,
+    preferredFallbackBranch?: string
   ): Promise<void> => {
-    const fallback = await resolveSafeCheckoutBeforeDeletionWithDeps(repoPath, branchesToDelete, branches);
+    const fallback = await resolveSafeCheckoutBeforeDeletionWithDeps(
+      repoPath,
+      branchesToDelete,
+      branches,
+      preferredFallbackBranch
+    );
     if (!fallback) {
       return;
     }
@@ -1315,26 +1219,21 @@ export const createArchitectGitFlowService = (
     plan: ArchitectPlanRecord,
     explicitRepoPath?: string
   ): CleanupPlanRepositoryTarget[] => {
-    const planBranchName = deps.toPlanIntegrationBranch(plan.slug || plan.title);
     const repositories = resolvePlanProjectRepoPathsWithDeps(plan, explicitRepoPath, {
       logContext: 'cleanup',
     });
 
     return repositories.map((repository) => {
-      const featureBranchNames = Array.from(
-        new Set(
-          [
-            ...(plan.nodes || [])
-              .filter((node) => normalizeNodeProjectIds(node).includes(repository.projectId))
-              .map((node) => node.assignedBranch || ''),
-            ...(plan.predictedBranches || [])
-              .filter((branch) => branch.projectId === repository.projectId)
-              .map((branch) => branch.name),
-          ]
-            .filter((name) => name.trim().length > 0)
-            .map((name) => deps.toPlanScopedFeatureBranch(plan.slug || plan.title, name))
-        )
-      );
+      const planBranchName = renderPlanBranchNameForProject({
+        planSlug: plan.slug || plan.title,
+        projectId: repository.projectId,
+        getProjectById: deps.getAppState().getProjectById,
+      });
+      const featureBranchNames = listPlanBranchNamesForProject({
+        plan,
+        projectId: repository.projectId,
+        getProjectById: deps.getAppState().getProjectById,
+      });
 
       const worktrees = featureBranchNames.map((branchName) => ({
         worktreeKey: toBranchWorktreeKey(repository.projectId, branchName),
@@ -1358,7 +1257,12 @@ export const createArchitectGitFlowService = (
       const candidates = [...target.featureBranchNames, target.planBranchName].filter((name) => localBranchNames.has(name));
 
       if (candidates.length > 0) {
-        await resolveSafeCheckoutBeforeDeletionWithDeps(target.repoPath, new Set(candidates), branches);
+        await resolveSafeCheckoutBeforeDeletionWithDeps(
+          target.repoPath,
+          new Set(candidates),
+          branches,
+          deps.getAppState().getProjectById(target.projectId)?.gitFlowSettings?.baseBranch
+        );
       }
 
       for (const worktree of target.worktrees) {
@@ -1421,7 +1325,12 @@ export const createArchitectGitFlowService = (
       const branchCandidates = [...target.featureBranchNames, target.planBranchName].filter((name) => localBranchNames.has(name));
 
       if (branchCandidates.length > 0) {
-        await ensureSafeCheckoutBeforeDeletionWithDeps(target.repoPath, new Set(branchCandidates), branches);
+        await ensureSafeCheckoutBeforeDeletionWithDeps(
+          target.repoPath,
+          new Set(branchCandidates),
+          branches,
+          deps.getAppState().getProjectById(target.projectId)?.gitFlowSettings?.baseBranch
+        );
       }
 
       for (const worktree of target.worktrees) {
@@ -1493,27 +1402,31 @@ export const createArchitectGitFlowService = (
     plan: ArchitectPlanRecord;
     explicitRepoPath?: string;
   }): Promise<PlanReviewRepositoryResult[]> => {
-    const planBranchName = deps.toPlanIntegrationBranch(params.plan.slug || params.plan.title);
-    const baseBranchName = params.plan.targetBranch || deps.getGitFlowBaseBranch();
     const repositories = resolvePlanProjectRepoPathsWithDeps(params.plan, params.explicitRepoPath, {
       logContext: 'preflight',
     });
 
     return Promise.all(
       repositories.map(async (repository) => {
+        const repositoryPlanBranchName = renderPlanBranchNameForProject({
+          planSlug: params.plan.slug || params.plan.title,
+          projectId: repository.projectId,
+          getProjectById: deps.getAppState().getProjectById,
+        });
+        const repositoryBaseBranchName = resolvePlanProjectBaseBranchName(params.plan, repository.projectId);
         const status = await deps.tauri.gitStatus(repository.repoPath);
         const diff = await deps.tauri.gitDiff({
           repoPath: repository.repoPath,
-          base: baseBranchName,
-          head: planBranchName,
+          base: repositoryBaseBranchName,
+          head: repositoryPlanBranchName,
           contextLines: 3,
         });
 
         const mergeCheck = status.is_clean
           ? await deps.tauri.gitMergeCheck({
             repoPath: repository.repoPath,
-            branchName: planBranchName,
-            intoBranch: baseBranchName,
+            branchName: repositoryPlanBranchName,
+            intoBranch: repositoryBaseBranchName,
           })
           : {
             mergeable: false,
@@ -1530,8 +1443,8 @@ export const createArchitectGitFlowService = (
           id: `${repository.projectId}::${repository.repoPath}`,
           projectId: repository.projectId,
           repoPath: repository.repoPath,
-          planBranchName,
-          baseBranchName,
+          planBranchName: repositoryPlanBranchName,
+          baseBranchName: repositoryBaseBranchName,
           isClean: status.is_clean,
           hasChanges: mergeCheck.hasChanges,
           mergeable: mergeCheck.mergeable,
@@ -1551,24 +1464,28 @@ export const createArchitectGitFlowService = (
     plan: ArchitectPlanRecord,
     explicitRepoPath?: string
   ): Promise<ProvisionPlanBranchesResult> => {
-    const planBranchName = deps.toPlanIntegrationBranch(plan.slug || plan.title);
-    const featureBranchesByProject = new Map<string, string[]>();
-
-    for (const node of plan.nodes || []) {
-      const branchName = node.assignedBranch || 'work';
-      for (const projectId of normalizeNodeProjectIds(node)) {
-        const existing = featureBranchesByProject.get(projectId) || [];
-        if (!existing.includes(branchName)) {
-          existing.push(branchName);
-        }
-        featureBranchesByProject.set(projectId, existing);
-      }
-    }
+    const featureBranchesByProject = new Map<string, string[]>(
+      resolvePlanProjectRepoPathsWithDeps(plan, explicitRepoPath, {
+        errorMessage: 'Unable to resolve repository path for this plan. Select at least one project before validating the plan.',
+        logContext: 'provision',
+      }).map((repository) => [
+        repository.projectId,
+        listPlanBranchNamesForProject({
+          plan,
+          projectId: repository.projectId,
+          getProjectById: deps.getAppState().getProjectById,
+        }),
+      ])
+    );
 
     if (!deps.tauri.isTauriAvailable()) {
       const existingFeatureBranches = Array.from(featureBranchesByProject.values()).flat();
       return {
-        planBranchName,
+        planBranchName: renderPlanBranchNameForProject({
+          planSlug: plan.slug || plan.title,
+          projectId: plan.projectId || plan.projectIds?.[0] || 'project',
+          getProjectById: deps.getAppState().getProjectById,
+        }),
         repositories: [],
         createdPlanBranch: false,
         createdFeatureBranches: [],
@@ -1587,16 +1504,26 @@ export const createArchitectGitFlowService = (
       const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
       const createdFeatureBranches: string[] = [];
       const existingFeatureBranches: string[] = [];
+      const repositoryPlanBranchName = renderPlanBranchNameForProject({
+        planSlug: plan.slug || plan.title,
+        projectId: repository.projectId,
+        getProjectById: deps.getAppState().getProjectById,
+      });
+      const repositoryBaseBranchName = resolvePlanProjectBaseBranchName(plan, repository.projectId);
 
       let createdPlanBranch = false;
-      if (!localBranchNames.has(planBranchName)) {
-        const fromRef = resolveDevelopBaseRefWithDeps(branches);
+      if (!localBranchNames.has(repositoryPlanBranchName)) {
+        const fromRef = resolveBranchSourceRef(
+          branches,
+          repositoryBaseBranchName,
+          deps.getAppState().getProjectById(repository.projectId)?.path || repository.projectId
+        );
         await deps.tauri.gitBranchCreate({
           repoPath: repository.repoPath,
-          branchName: planBranchName,
+          branchName: repositoryPlanBranchName,
           fromRef,
         });
-        localBranchNames.add(planBranchName);
+        localBranchNames.add(repositoryPlanBranchName);
         createdPlanBranch = true;
       }
 
@@ -1609,7 +1536,7 @@ export const createArchitectGitFlowService = (
         await deps.tauri.gitBranchCreate({
           repoPath: repository.repoPath,
           branchName: featureBranch,
-          fromRef: planBranchName,
+          fromRef: repositoryPlanBranchName,
         });
         localBranchNames.add(featureBranch);
         createdFeatureBranches.push(featureBranch);
@@ -1618,7 +1545,7 @@ export const createArchitectGitFlowService = (
       results.push({
         projectId: repository.projectId,
         repoPath: repository.repoPath,
-        planBranchName,
+        planBranchName: repositoryPlanBranchName,
         createdPlanBranch,
         createdFeatureBranches,
         existingFeatureBranches,
@@ -1626,7 +1553,11 @@ export const createArchitectGitFlowService = (
     }
 
     return {
-      planBranchName,
+      planBranchName: results[0]?.planBranchName || renderPlanBranchNameForProject({
+        planSlug: plan.slug || plan.title,
+        projectId: plan.projectId || plan.projectIds?.[0] || 'project',
+        getProjectById: deps.getAppState().getProjectById,
+      }),
       repositories: results,
       createdPlanBranch: results.some((result) => result.createdPlanBranch),
       createdFeatureBranches: results.flatMap((result) => result.createdFeatureBranches),
@@ -1650,12 +1581,12 @@ export const createArchitectGitFlowService = (
     }
 
     const normalizedNodes = normalizePlanNodesForGitFlowWithDeps(plan);
-    const planBranchName = deps.toPlanIntegrationBranch(plan.slug || plan.title);
-    const normalizedPredictedBranches = buildPredictedBranchesForPlan(
-      normalizedNodes,
-      plan.predictedBranches || [],
-      planBranchName
-    );
+    const normalizedPredictedBranches = buildPredictedBranchesForProjectPlan({
+      nodes: normalizedNodes,
+      existingBranches: plan.predictedBranches || [],
+      plan,
+      getProjectById: deps.getAppState().getProjectById,
+    });
     const normalizedStrategy = normalizeStrategyDependencies(normalizedNodes, normalizedPredictedBranches);
     const projectIds = getPlanProjectIds({
       ...plan,
@@ -1680,6 +1611,7 @@ export const createArchitectGitFlowService = (
       nodes: normalizedPlan.nodes,
       predictedBranches: normalizedPlan.predictedBranches,
       projectId: normalizedPlan.projectId,
+      projectIds: normalizedPlan.projectIds,
       setActive: params.setActive !== false,
     });
 
@@ -1766,7 +1698,7 @@ export const createArchitectGitFlowService = (
         repositories.map((repository) =>
           deps.tauri.gitPull({
             repoPath: repository.repoPath,
-            branch: plan.targetBranch || deps.getGitFlowBaseBranch(),
+            branch: resolvePlanProjectBaseBranchName(plan, repository.projectId),
           })
         )
       );
@@ -1884,3 +1816,5 @@ export const createArchitectGitFlowService = (
     deletePlanAndCleanupBranches: deletePlanAndCleanupBranchesWithDeps,
   };
 };
+
+const defaultArchitectGitFlowService = createArchitectGitFlowService();

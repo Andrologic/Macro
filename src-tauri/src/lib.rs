@@ -394,6 +394,7 @@ pub fn run() {
             commands::workspace::workspace_import_git_repo,
             commands::workspace::workspace_rename_project_group,
             commands::workspace::workspace_rename_project,
+            commands::workspace::workspace_update_project_git_flow,
             commands::workspace::workspace_archive_project_group,
             commands::workspace::workspace_archive_project,
             commands::workspace::workspace_remove_project_group,

@@ -1048,7 +1048,13 @@ mod tests {
         .await
         .expect("resolve metadata workspace");
 
-        assert!(resolved.starts_with(explicit_repo.path()));
+        let resolved = resolved.canonicalize().expect("canonical resolved path");
+        let explicit_repo = explicit_repo
+            .path()
+            .canonicalize()
+            .expect("canonical explicit repo");
+
+        assert!(resolved.starts_with(&explicit_repo));
         assert!(resolved.ends_with(Path::new("macro-metadata-worktree")));
     }
 

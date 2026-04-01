@@ -62,6 +62,7 @@ export interface ArchitectPlanManifest {
   schemaVersion: 3;
   planId: string;
   targetBranch: string;
+  targetBranchesByProjectId?: Record<string, string>;
   status: ArchitectPlanStatus;
   expectedProjectIds: string[];
   participants: ArchitectPlanParticipant[];
@@ -87,6 +88,7 @@ export interface ArchitectPlanRecord {
   description: string;
   status: ArchitectPlanStatus;
   targetBranch: string;
+  targetBranchesByProjectId?: Record<string, string>;
   conversationId?: string;
   projectId?: string;
   projectIds?: string[];
@@ -111,6 +113,7 @@ export interface ArchitectPlanSummary {
   description: string;
   status: ArchitectPlanStatus;
   targetBranch: string;
+  targetBranchesByProjectId?: Record<string, string>;
   conversationId?: string;
   projectId?: string;
   projectIds?: string[];
@@ -259,6 +262,29 @@ const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[
 const normalizeExpectedProjectIds = (expectedProjectIds?: string[], fallbackProjectIds?: string[]): string[] =>
   normalizeProjectIds(expectedProjectIds && expectedProjectIds.length > 0 ? expectedProjectIds : fallbackProjectIds);
 
+const normalizeTargetBranchesByProjectId = (
+  targetBranchesByProjectId: Record<string, string> | null | undefined,
+  projectIds: string[],
+  fallbackTargetBranch: string
+): Record<string, string> => {
+  const normalizedFallback = normalizeBranchName(fallbackTargetBranch || DEFAULT_GIT_FLOW_BASE_BRANCH);
+  const normalizedEntries = Object.entries(targetBranchesByProjectId || {})
+    .filter(([projectId]) => typeof projectId === 'string' && projectId.trim().length > 0)
+    .map(([projectId, branchName]) => [projectId.trim(), normalizeBranchName(branchName, normalizedFallback)] as const);
+  const normalized = Object.fromEntries(normalizedEntries);
+
+  for (const projectId of projectIds) {
+    if (!normalized[projectId]) {
+      normalized[projectId] = normalizedFallback;
+    }
+  }
+
+  return normalized;
+};
+
+const hasMixedPlanTargetBranches = (targetBranchesByProjectId: Record<string, string>): boolean =>
+  new Set(Object.values(targetBranchesByProjectId).filter((branchName) => branchName.trim().length > 0)).size > 1;
+
 const hashString = (value: string): string => {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
@@ -307,6 +333,39 @@ export const getArchitectPlanProjectIds = (plan: ArchitectPlanProjectRef): strin
     (plan as ArchitectPlanSummary & { expectedProjectIds?: string[] }).expectedProjectIds,
     normalizeProjectIds(plan.projectIds, plan.projectId)
   );
+
+export const getArchitectPlanTargetBranchesByProjectId = (
+  plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'targetBranch'> & {
+    targetBranchesByProjectId?: Record<string, string>;
+    expectedProjectIds?: string[];
+  }
+): Record<string, string> =>
+  normalizeTargetBranchesByProjectId(
+    plan.targetBranchesByProjectId,
+    getArchitectPlanProjectIds(plan),
+    plan.targetBranch
+  );
+
+export const getArchitectPlanTargetBranchForProject = (
+  plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'targetBranch'> & {
+    targetBranchesByProjectId?: Record<string, string>;
+    expectedProjectIds?: string[];
+  },
+  projectId?: string | null
+): string => {
+  const targetBranchesByProjectId = getArchitectPlanTargetBranchesByProjectId(plan);
+  if (projectId && targetBranchesByProjectId[projectId]) {
+    return targetBranchesByProjectId[projectId];
+  }
+  return targetBranchesByProjectId[getArchitectPlanProjectIds(plan)[0] || ''] || plan.targetBranch;
+};
+
+export const planHasMixedTargetBranches = (
+  plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'targetBranch'> & {
+    targetBranchesByProjectId?: Record<string, string>;
+    expectedProjectIds?: string[];
+  }
+): boolean => hasMixedPlanTargetBranches(getArchitectPlanTargetBranchesByProjectId(plan));
 
 export const planMatchesProjectId = (
   plan: ArchitectPlanProjectRef,
@@ -389,6 +448,12 @@ const buildPlanMarkdown = (plan: ArchitectPlanRecord): string => {
   lines.push(`- Plan Slug: ${plan.slug}`);
   lines.push(`- Plan Integration Branch: ${toPlanIntegrationBranch(plan.slug)}`);
   lines.push(`- Target Code Branch: ${plan.targetBranch}`);
+  if (plan.targetBranchesByProjectId && Object.keys(plan.targetBranchesByProjectId).length > 0) {
+    lines.push(`- Mixed Target Branches: ${hasMixedPlanTargetBranches(plan.targetBranchesByProjectId) ? 'yes' : 'no'}`);
+    for (const [projectId, branchName] of Object.entries(plan.targetBranchesByProjectId)) {
+      lines.push(`- Target Branch [${projectId}]: ${branchName}`);
+    }
+  }
   lines.push(`- Base Code Branch: ${getGitFlowBaseBranch()}`);
   lines.push(`- Macro Branch: @macro`);
   lines.push(`- Status: ${plan.status}`);
@@ -701,6 +766,7 @@ const buildPlanManifest = async (params: {
   schemaVersion: 3,
   planId: params.plan.id,
   targetBranch: normalizeBranchName(params.plan.targetBranch),
+  targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(params.plan),
   status: params.plan.status,
   expectedProjectIds: normalizeExpectedProjectIds(params.plan.expectedProjectIds, params.plan.projectIds),
   participants: await loadParticipantSnapshots(
@@ -909,6 +975,11 @@ const sanitizeArchitectPlanRecord = (
     title: normalizedSlug === normalizedId ? normalizedId : normalizedTitle,
     label: normalizePlanLabel(plan.label),
     targetBranch: normalizeBranchName(plan.targetBranch || normalized),
+    targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
+      plan.targetBranchesByProjectId,
+      normalizedProjectIds,
+      plan.targetBranch || normalized
+    ),
     projectId: normalizedProjectIds[0],
     projectIds: normalizedProjectIds,
     expectedProjectIds: normalizeExpectedProjectIds(plan.expectedProjectIds, normalizedProjectIds),
@@ -941,6 +1012,11 @@ const sanitizeArchitectPlanRecord = (
     projectId: sanitizedProjects.projectId,
     projectIds: sanitizedProjects.projectIds,
     expectedProjectIds: normalizeExpectedProjectIds(normalizedPlan.expectedProjectIds, sanitizedProjects.projectIds),
+    targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
+      normalizedPlan.targetBranchesByProjectId,
+      sanitizedProjects.projectIds,
+      normalizedPlan.targetBranch
+    ),
     nodes: sanitizedNodes.nodes,
     predictedBranches: sanitizedPredictedBranches.predictedBranches,
   };
@@ -995,6 +1071,11 @@ const sanitizeArchitectPlanSummary = (
     title: normalizedSlug === safeId ? safeId : normalizedTitle,
     label: normalizePlanLabel(summary.label),
     targetBranch: normalizeBranchName(summary.targetBranch || branchName),
+    targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
+      summary.targetBranchesByProjectId,
+      projectIds,
+      summary.targetBranch || branchName
+    ),
     projectId: projectIds[0],
     projectIds,
     expectedProjectIds: normalizeExpectedProjectIds(summary.expectedProjectIds, projectIds),
@@ -1014,6 +1095,11 @@ const sanitizeArchitectPlanSummary = (
     projectId: sanitizedProjects.projectId,
     projectIds: sanitizedProjects.projectIds,
     expectedProjectIds: normalizeExpectedProjectIds(normalizedSummary.expectedProjectIds, sanitizedProjects.projectIds),
+    targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
+      normalizedSummary.targetBranchesByProjectId,
+      sanitizedProjects.projectIds,
+      normalizedSummary.targetBranch
+    ),
   };
   const changed =
     stableSerialize({
@@ -1482,6 +1568,11 @@ const readPlanManifestAtScope = async (params: {
     schemaVersion: 3,
     planId: safeId,
     targetBranch: normalized,
+    targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
+      parsed.targetBranchesByProjectId,
+      fallbackManifest.expectedProjectIds,
+      normalized
+    ),
     status: params.plan.status,
     expectedProjectIds: normalizeExpectedProjectIds(parsed.expectedProjectIds, fallbackManifest.expectedProjectIds),
     participants: Array.isArray(parsed.participants) ? parsed.participants : fallbackManifest.participants,
@@ -2293,6 +2384,7 @@ export const createArchitectPlan = async (input: {
   conversationId?: string;
   projectId?: string;
   projectIds?: string[];
+  targetBranchesByProjectId?: Record<string, string>;
   status?: ArchitectPlanStatus;
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
@@ -2337,6 +2429,11 @@ export const createArchitectPlan = async (input: {
     description: (input.description || '').trim(),
     status: input.status || 'draft',
     targetBranch: normalizedBranch,
+    targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
+      input.targetBranchesByProjectId,
+      projectIds,
+      normalizedBranch
+    ),
     conversationId: input.conversationId,
     projectId: projectIds[0],
     projectIds,
@@ -2379,6 +2476,7 @@ export const updateArchitectPlan = async (input: {
   status?: ArchitectPlanStatus;
   projectId?: string;
   projectIds?: string[];
+  targetBranchesByProjectId?: Record<string, string>;
   expectedProjectIds?: string[];
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
@@ -2446,6 +2544,13 @@ export const updateArchitectPlan = async (input: {
     description: input.description !== undefined ? input.description.trim() : existing.description,
     conversationId: input.conversationId !== undefined ? input.conversationId : existing.conversationId,
     status: input.status || existing.status,
+    targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
+      input.targetBranchesByProjectId !== undefined
+        ? input.targetBranchesByProjectId
+        : existing.targetBranchesByProjectId,
+      projectIds,
+      existing.targetBranch
+    ),
     projectId: projectIds[0],
     projectIds,
     expectedProjectIds,
@@ -2904,4 +3009,3 @@ export const resolveTargetBranch = (argsValue: unknown): string => {
 
 export const getGitFlowBaseBranch = (): string =>
   normalizeBranchName(getArchitectGitNamingSettings().baseBranch, DEFAULT_GIT_FLOW_BASE_BRANCH);
-
