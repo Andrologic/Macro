@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useAppStore } from '../stores/useAppStore';
 import { isTauriEnvironment, windowSetZoom } from '../services/tauriWindow';
 import { isPageShuttingDown } from '../utils/pageLifecycle';
+import { getEffectiveUiZoomScale } from '../utils/uiZoom';
 
 let lastAppliedBrowserZoom: number | null = null;
 let lastAppliedTauriZoom: number | null = null;
@@ -32,7 +33,7 @@ export function useUiZoom() {
         return;
       }
 
-      const effectiveScale = uiZoomMode === 'auto' ? 1 : uiZoomLevel;
+      const effectiveScale = getEffectiveUiZoomScale(uiZoomMode, uiZoomLevel);
 
       if (!isTauri()) {
         if (lastAppliedBrowserZoom !== effectiveScale) {
@@ -77,7 +78,7 @@ export function useUiZoom() {
           return;
         }
         console.error('Failed to apply UI zoom:', error);
-        applyBrowserZoom(uiZoomMode === 'override' ? uiZoomLevel : 1);
+        applyBrowserZoom(effectiveScale);
       }
     };
 

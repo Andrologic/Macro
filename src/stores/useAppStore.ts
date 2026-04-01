@@ -15,6 +15,7 @@ import {
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
 import { devLogger } from '../utils/devLogger';
+import { clampUiZoomLevel } from '../utils/uiZoom';
 import {
   type ProjectSwitchPolicy,
   getLocalProjectContextState,
@@ -1045,7 +1046,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   setUiZoomLevel: (level) => {
-    const clampedLevel = Math.max(0.75, Math.min(2, level));
+    const clampedLevel = clampUiZoomLevel(level);
     set({ uiZoomLevel: clampedLevel });
     void savePreference(PREF_KEYS.UI_ZOOM_LEVEL, clampedLevel);
   },
@@ -2033,7 +2034,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       ]);
 
       const normalizedZoomMode: UiZoomMode = uiZoomMode === 'override' ? 'override' : 'auto';
-      const normalizedZoomLevel = Math.max(0.75, Math.min(2, uiZoomLevel));
+      const normalizedZoomLevel = clampUiZoomLevel(uiZoomLevel);
       const normalizedImplementExecutionMode: ImplementExecutionMode =
         implementExecutionMode === 'full_auto' ? 'full_auto' : 'semi_auto';
 
