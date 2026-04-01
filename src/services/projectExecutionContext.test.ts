@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'bun:test';
-import { resolveProjectExecutionContext } from './projectExecutionContext';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+
+let importCounter = 0;
+
+const loadProjectExecutionContext = async () => {
+  mock.restore();
+  importCounter += 1;
+  return import(`./projectExecutionContext.ts?project-execution-context=${importCounter}`);
+};
 
 describe('resolveProjectExecutionContext', () => {
   const projects = [
@@ -44,7 +51,12 @@ describe('resolveProjectExecutionContext', () => {
     },
   ];
 
-  it('uses the architect conversation group as the primary scope', () => {
+  beforeEach(() => {
+    mock.restore();
+  });
+
+  it('uses the architect conversation group as the primary scope', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
       mode: 'Architect',
       projects,
@@ -94,7 +106,8 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.workspacePathsByProjectId['macro-api']).toBe('C:/dev/macro-api');
   });
 
-  it('prefers task worktrees for targeted subprojects in implement mode', () => {
+  it('prefers task worktrees for targeted subprojects in implement mode', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
       mode: 'Implement',
       projects,
@@ -155,7 +168,8 @@ describe('resolveProjectExecutionContext', () => {
     });
   });
 
-  it('falls back to the selected project when no group context is available', () => {
+  it('falls back to the selected project when no group context is available', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
       mode: 'Debug',
       projects,
@@ -178,7 +192,8 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.defaultWorkspacePath).toBe('projects/macro-web');
   });
 
-  it('returns an empty execution context in chat mode even when a project is selected', () => {
+  it('returns an empty execution context in chat mode even when a project is selected', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
       mode: 'Chat',
       projects,
@@ -220,7 +235,8 @@ describe('resolveProjectExecutionContext', () => {
     });
   });
 
-  it('falls back to the primary subproject of the selected global project when no focus repo is set', () => {
+  it('falls back to the primary subproject of the selected global project when no focus repo is set', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
       mode: 'Architect',
       projects,

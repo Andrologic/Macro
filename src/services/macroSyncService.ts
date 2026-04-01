@@ -4,6 +4,13 @@ import { toServiceError } from './contracts/errors';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
 import { getFocusedProjectForGroup, getSubProjectsForGroup } from './globalProjects';
+import {
+  getArchitectPlan,
+  getArchitectPlanProjectIds,
+  getGitFlowBaseBranch,
+  resolveTargetBranch,
+  syncArchitectPlanChatFromConversation,
+} from './architectPlanService';
 
 type MacroSyncResult = tauriIpc.MacroBranchSyncDto;
 type ManualMacroAction = 'commit' | 'pull' | 'push';
@@ -133,12 +140,6 @@ const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<Met
   const activePlanId = appState.activeArchitectPlanId;
   if (activePlanId) {
     try {
-      const {
-        getArchitectPlan,
-        getArchitectPlanProjectIds,
-        getGitFlowBaseBranch,
-        resolveTargetBranch,
-      } = await import('./architectPlanService');
       const branchName = resolveTargetBranch(appState.activePlanContext?.targetBranch || getGitFlowBaseBranch());
       const plan = await getArchitectPlan(branchName, activePlanId);
       if (plan) {
@@ -704,10 +705,6 @@ export const createMacroSyncService = (
         const appState = dependencies.getAppState();
         if (appState.activeArchitectPlanId && appState.activePlanContext?.targetBranch) {
           try {
-            const {
-              syncArchitectPlanChatFromConversation,
-              resolveTargetBranch,
-            } = await import('./architectPlanService');
             await syncArchitectPlanChatFromConversation({
               branchName: resolveTargetBranch(appState.activePlanContext.targetBranch),
               planId: appState.activeArchitectPlanId,

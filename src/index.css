@@ -140,18 +140,18 @@
   .macro-topbar--native-macos .macro-topbar-inner {
     min-height: var(--macro-titlebar-height, 56px);
     height: var(--macro-titlebar-height, 56px);
-    align-items: end;
-    padding: 1rem 1rem 0.5rem;
+    align-items: center;
+    padding: 0 1rem;
   }
 
   .macro-topbar--native-macos .macro-topbar-leading,
   .macro-topbar--native-macos .macro-topbar-center,
   .macro-topbar--native-macos .macro-topbar-trailing {
-    padding-top: 1px;
+    padding-top: 0;
   }
 
   .macro-topbar--native-macos .macro-topbar-brand {
-    padding-left: 4rem;
+    padding-left: calc(4rem + 5px);
   }
 
   .macro-topbar-center {

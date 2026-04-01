@@ -1,4 +1,5 @@
-import { preloadAllModes } from '../components/layout/ModeRouter';
+import { preloadModeComponents } from '../components/layout/ModeRouter';
+import type { AppMode } from '../types';
 import { isPageShuttingDown } from '../utils/pageLifecycle';
 import { useAIStore } from '../stores/useAIStore';
 import { useAppStore } from '../stores/useAppStore';
@@ -32,7 +33,8 @@ interface AppBootstrapDependencies {
   initializeProviders: () => Promise<void>;
   initializeShortcuts: () => Promise<void>;
   checkSession: () => Promise<void>;
-  preloadAllModes: () => void;
+  getCurrentMode: () => AppMode;
+  preloadModeComponents: (mode: AppMode) => void;
   scheduleLowPriority: (run: () => void) => void;
   now: () => number;
   log: (message: string) => void;
@@ -179,7 +181,7 @@ export const createAppBootstrapController = (
 
         if (!preloadTriggered) {
           preloadTriggered = true;
-          dependencies.preloadAllModes();
+          dependencies.preloadModeComponents(dependencies.getCurrentMode());
         }
       }
 
@@ -211,7 +213,8 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   initializeProviders: useProviderStore.getState().initialize,
   initializeShortcuts: useShortcutsStore.getState().initialize,
   checkSession: useAuthStore.getState().checkSession,
-  preloadAllModes,
+  getCurrentMode: () => useAppStore.getState().mode,
+  preloadModeComponents,
   scheduleLowPriority: createWindowLowPriorityScheduler(),
   now: () => performance.now(),
   log: (message) => devLogger.log(message),

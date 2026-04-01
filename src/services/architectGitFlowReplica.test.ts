@@ -39,6 +39,15 @@ const appState: MockAppState = {
 const workspaceFiles = new Map<string, Map<string, string>>();
 let importCounter = 0;
 let originalConsoleInfo: typeof console.info;
+const gitWorktreeInspectMock = mock(
+  async (params: { repoPath: string; taskId: string; branchName?: string | null }) => ({
+    taskId: params.taskId,
+    worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
+    branchName: params.branchName ?? 'develop',
+    status: 'ready' as const,
+    isDirty: false,
+  })
+);
 
 const normalizeFsPath = (value: string): string =>
   value.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/').replace(/\/+$/, '');
@@ -200,7 +209,13 @@ const gitBranchListMock = mock(async () => ({
 const gitBranchDeleteMock = mock(async () => undefined);
 const gitCheckoutMock = mock(async () => undefined);
 const gitBranchCreateMock = mock(async () => undefined);
-const gitWorktreeRemoveMock = mock(async () => undefined);
+const gitWorktreeRemoveMock = mock(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => ({
+  taskId: params.taskId,
+  worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
+  removedPath: true,
+  prunedRegistration: true,
+  alreadyAbsent: false,
+}));
 
 const registerModuleMocks = () => {
   mock.restore();
@@ -268,6 +283,7 @@ const registerModuleMocks = () => {
     gitBranchDelete: gitBranchDeleteMock,
     gitCheckout: gitCheckoutMock,
     gitBranchCreate: gitBranchCreateMock,
+    gitWorktreeInspect: gitWorktreeInspectMock,
     gitWorktreeRemove: gitWorktreeRemoveMock,
   }));
 
@@ -308,6 +324,7 @@ describe('architectGitFlowService replica integration', () => {
     gitBranchDeleteMock.mockClear();
     gitCheckoutMock.mockClear();
     gitBranchCreateMock.mockClear();
+    gitWorktreeInspectMock.mockClear();
     gitWorktreeRemoveMock.mockClear();
   });
 
@@ -330,6 +347,7 @@ describe('architectGitFlowService replica integration', () => {
         gitBranchDelete: gitBranchDeleteMock,
         gitCheckout: gitCheckoutMock,
         gitBranchCreate: gitBranchCreateMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
       },
       getAppState: () => ({
@@ -408,6 +426,7 @@ describe('architectGitFlowService replica integration', () => {
         gitBranchDelete: gitBranchDeleteMock,
         gitCheckout: gitCheckoutMock,
         gitBranchCreate: gitBranchCreateMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
       },
       getAppState: () => ({
