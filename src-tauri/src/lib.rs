@@ -24,6 +24,8 @@ use git::GitState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
+use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
+#[cfg(target_os = "macos")]
 use tauri::utils::config::Color;
 use tauri::Manager;
 #[cfg(target_os = "macos")]
@@ -53,6 +55,41 @@ pub(crate) struct MacosAppIconThemeSpec {
     background_color: String,
     logo_start_color: String,
     logo_end_color: String,
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn inset_traffic_lights(window: &NSWindow, x: f64, y: f64) {
+    let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else {
+        return;
+    };
+    let Some(miniaturize) = window.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
+        return;
+    };
+    let zoom = window.standardWindowButton(NSWindowButton::ZoomButton);
+
+    let Some(title_bar_container_view) = close.superview().and_then(|view| view.superview()) else {
+        return;
+    };
+
+    let close_rect = NSView::frame(&close);
+    let title_bar_frame_height = close_rect.size.height + y;
+    let mut title_bar_rect = NSView::frame(&title_bar_container_view);
+    title_bar_rect.size.height = title_bar_frame_height;
+    title_bar_rect.origin.y = window.frame().size.height - title_bar_frame_height;
+    title_bar_container_view.setFrame(title_bar_rect);
+
+    let space_between = NSView::frame(&miniaturize).origin.x - close_rect.origin.x;
+
+    let mut window_buttons = vec![close, miniaturize];
+    if let Some(zoom) = zoom {
+        window_buttons.push(zoom);
+    }
+
+    for (index, button) in window_buttons.into_iter().enumerate() {
+        let mut rect = NSView::frame(&button);
+        rect.origin.x = x + (index as f64 * space_between);
+        button.setFrameOrigin(rect.origin);
+    }
 }
 
 // Command to show the main window explicitly from frontend
@@ -141,6 +178,37 @@ async fn window_scale_factor(window: tauri::WebviewWindow) -> Result<f64, String
 #[tauri::command]
 async fn window_set_zoom(window: tauri::WebviewWindow, scale: f64) -> Result<(), String> {
     window.set_zoom(scale).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn window_set_traffic_light_position(
+    window: tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+
+        window
+            .with_webview(move |webview| {
+                let result = unsafe {
+                    let ns_window: &NSWindow = &*webview.ns_window().cast();
+                    inset_traffic_lights(ns_window, x, y);
+                    Ok::<(), String>(())
+                };
+                let _ = sender.send(result);
+            })
+            .map_err(|error| error.to_string())?;
+
+        receiver.await.map_err(|error| error.to_string())?
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, x, y);
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -264,6 +332,7 @@ pub fn run() {
             window_outer_position,
             window_scale_factor,
             window_set_zoom,
+            window_set_traffic_light_position,
             set_macos_app_icon_theme,
             commands::db_list_conversations,
             commands::db_get_chat_snapshot,

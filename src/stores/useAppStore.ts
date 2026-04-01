@@ -1,4 +1,7 @@
 import { create } from 'zustand';
+import { useChatStore } from './useChatStore';
+import { useNeedsStore } from './useNeedsStore';
+import { useTaskStore } from './useTaskStore';
 import {
   AppMode,
   AgentType,
@@ -237,7 +240,6 @@ const reconcileProjectRegistryDependencies = async (params: {
     selectedProjectId: params.selectedProjectId,
   });
 
-  const { useChatStore } = await import('./useChatStore');
   useChatStore.getState().reconcileProjectRegistry(validGroupIds, validProjectIds);
 };
 
@@ -248,9 +250,6 @@ const persistCurrentProjectContext = async (
   const appState = useAppStore.getState();
   const globalProject = getGlobalProjectById(appState.projectGroups, groupId);
   if (!globalProject) return;
-
-  const { useTaskStore } = await import('./useTaskStore');
-  const { useChatStore } = await import('./useChatStore');
 
   const taskStore = useTaskStore.getState();
   const chatStore = useChatStore.getState();
@@ -364,9 +363,6 @@ const restoreProjectContext = async (
   if (!globalProject) return;
 
   const context = await getLocalProjectContextState(groupId);
-  const { useTaskStore } = await import('./useTaskStore');
-  const { useNeedsStore } = await import('./useNeedsStore');
-
   const taskStore = useTaskStore.getState();
 
   let restoredTaskId: string | null = null;
@@ -450,7 +446,6 @@ const hydrateArchitectPlanInStore = async (input: {
   plan: Awaited<ReturnType<typeof getArchitectPlan>>;
   needs: Awaited<ReturnType<typeof getArchitectPlanNeeds>>;
 }): Promise<void> => {
-  const { useNeedsStore } = await import('./useNeedsStore');
   const plan = input.plan;
   if (!plan || plan.status === 'deleted') {
     return;

@@ -1,4 +1,5 @@
 import type { ProjectGroup } from '../types';
+import { useAppStore } from '../stores/useAppStore';
 import { getScopedProjectIds } from './globalProjects';
 
 export interface ValidProjectRegistrySnapshot {
@@ -75,7 +76,6 @@ export const buildValidProjectRegistrySnapshot = (params: {
 
 export const loadValidProjectRegistrySnapshot = async (): Promise<ValidProjectRegistrySnapshot> => {
   try {
-    const { useAppStore } = await import('../stores/useAppStore');
     const state = useAppStore.getState();
     return buildValidProjectRegistrySnapshot({
       projectGroups: state.projectGroups,

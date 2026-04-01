@@ -13,7 +13,7 @@ describe('appBootstrap', () => {
   let initializeProviders: ReturnType<typeof mock>;
   let initializeShortcuts: ReturnType<typeof mock>;
   let checkSession: ReturnType<typeof mock>;
-  let preloadAllModes: ReturnType<typeof mock>;
+  let preloadModeComponents: ReturnType<typeof mock>;
 
   beforeEach(() => {
     callOrder = [];
@@ -45,7 +45,7 @@ describe('appBootstrap', () => {
     checkSession = mock(async () => {
       callOrder.push('auth');
     });
-    preloadAllModes = mock(() => {
+    preloadModeComponents = mock(() => {
       callOrder.push('preload');
     });
   });
@@ -61,7 +61,8 @@ describe('appBootstrap', () => {
       initializeProviders,
       initializeShortcuts,
       checkSession,
-      preloadAllModes,
+      getCurrentMode: () => 'Chat',
+      preloadModeComponents,
       scheduleLowPriority: (run) => {
         lowPriorityRuns.push(run);
       },
@@ -83,7 +84,7 @@ describe('appBootstrap', () => {
     expect(checkSession.mock.calls.length).toBe(1);
     expect(initializeShortcuts.mock.calls.length).toBe(1);
     expect(initializeTerminal.mock.calls.length).toBe(1);
-    expect(preloadAllModes.mock.calls.length).toBe(1);
+    expect(preloadModeComponents.mock.calls.length).toBe(1);
     expect(lowPriorityRuns).toHaveLength(1);
     expect(callOrder.slice(0, 7)).toEqual(['app', 'tasks', 'chat', 'auth', 'shortcuts', 'terminal', 'preload']);
 

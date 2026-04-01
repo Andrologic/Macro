@@ -1,6 +1,8 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
+import { toast } from "../components/ui/Toaster";
+import { PREF_KEYS, savePreference } from "../services/preferences";
 import {
   DEFAULT_LANGUAGE,
   SUPPORTED_LANGUAGE_CODES,
@@ -51,7 +53,6 @@ export async function changeLanguage(lang: SupportedLanguage): Promise<void> {
   await i18n.changeLanguage(lang);
 
   try {
-    const { toast } = await import("../components/ui/Toaster");
     const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
     toast.success(i18n.t("toast.languageChanged", { language: languageName }));
   } catch {
@@ -59,9 +60,6 @@ export async function changeLanguage(lang: SupportedLanguage): Promise<void> {
   }
 
   try {
-    const { savePreference, PREF_KEYS } = await import(
-      "../services/preferences"
-    );
     await savePreference(PREF_KEYS.LANGUAGE, lang);
   } catch {
     // localStorage persistence remains as fallback.

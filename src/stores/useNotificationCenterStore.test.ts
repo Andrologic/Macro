@@ -69,6 +69,11 @@ describe('useNotificationCenterStore', () => {
   beforeEach(() => {
     mock.restore();
     localStorageMock.clear();
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: localStorageMock,
+      configurable: true,
+      writable: true,
+    });
   });
 
   beforeEach(async () => {
