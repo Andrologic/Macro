@@ -2861,10 +2861,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const taskAfterStream = params.resolvedTaskId
               ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
               : undefined;
+            const parsedCompletion = parseMessageQuickReplies(result.visibleContent);
             if (
               params.modeAtSend === 'Implement' &&
               params.resolvedTaskId &&
-              taskAfterStream?.status === 'InProgress'
+              taskAfterStream?.status === 'InProgress' &&
+              parsedCompletion.requiresUserReply
             ) {
               void useTaskStore.getState().markTaskAwaitingResponse(params.resolvedTaskId);
             }
@@ -3582,7 +3584,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const parsedContent =
           updatedMessage?.role === 'assistant'
             ? parseMessageQuickReplies(content)
-            : { content };
+            : {
+                content,
+                choices: undefined,
+                allowFreeResponse: undefined,
+                requiresUserReply: false,
+              };
         const updatedMessages = state.messages.map((message) =>
           message.id === messageId
             ? {
@@ -4284,6 +4291,4 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
   };
 });
-
-
 

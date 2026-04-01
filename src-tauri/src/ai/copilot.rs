@@ -272,7 +272,11 @@ fn bridge_candidates(_app_handle: &AppHandle) -> Vec<PathBuf> {
         }
     }
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    candidates.push(manifest_dir.join("binaries").join(bridge_sidecar_filename()));
+    candidates.push(
+        manifest_dir
+            .join("binaries")
+            .join(bridge_sidecar_filename()),
+    );
     candidates.push(manifest_dir.join("resources").join(bridge_filename()));
     candidates
 }
