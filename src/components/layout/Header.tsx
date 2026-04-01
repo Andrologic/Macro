@@ -295,8 +295,8 @@ export function Header({
               <span
                 className={cn(
                   'macro-topbar-brand-label',
-                  isNativeMacosTitlebar ? 'block' : 'hidden lg:block',
-                  'text-sm font-semibold text-foreground'
+                  isNativeMacosTitlebar ? 'inline-flex' : 'hidden lg:inline-flex',
+                  'items-center self-center text-sm font-semibold leading-none text-foreground'
                 )}
               >
                 Macro
