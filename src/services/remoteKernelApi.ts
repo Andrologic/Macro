@@ -1,5 +1,5 @@
 import type { AppMode } from '../types';
-import { resolveRemoteConfig } from './providers/remote';
+import { resolveRemoteConfig } from './providers/remoteConfig';
 
 interface RemoteToolModePolicy {
   allowed_tool_ids: string[];

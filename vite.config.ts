@@ -162,6 +162,26 @@ export default defineConfig(({ command }) => {
               "xterm-addon-fit",
             ],
 
+            // Desktop runtime and plugins
+            "desktop-vendor": [
+              "@tauri-apps/api/app",
+              "@tauri-apps/api/core",
+              "@tauri-apps/api/event",
+              "@tauri-apps/api/image",
+              "@tauri-apps/api/path",
+              "@tauri-apps/api/window",
+              "@tauri-apps/plugin-dialog",
+              "@tauri-apps/plugin-http",
+              "@tauri-apps/plugin-notification",
+              "@tauri-apps/plugin-opener",
+              "@tauri-apps/plugin-store",
+            ],
+
+            // Notifications UI
+            "notifications-vendor": [
+              "sonner",
+            ],
+
             // Utilities
             "utils-vendor": [
               "i18next",
@@ -173,12 +193,6 @@ export default defineConfig(({ command }) => {
               "tailwind-merge",
             ],
 
-            // Data fetching & streaming
-            "data-vendor": [
-              "@tauri-apps/api",
-              "@tauri-apps/plugin-http",
-              "@tauri-apps/plugin-store",
-            ],
           },
 
           // Chunk naming strategy

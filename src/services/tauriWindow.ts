@@ -68,6 +68,13 @@ export async function windowSetZoom(scale: number): Promise<void> {
   await invokeWindow<void>('window_set_zoom', { scale });
 }
 
+export async function windowSetTrafficLightPosition(
+  x: number,
+  y: number
+): Promise<void> {
+  await invokeWindow<void>('window_set_traffic_light_position', { x, y });
+}
+
 export async function windowSetBackgroundColor(color: string): Promise<void> {
   const window = await getCurrentTauriWindow();
   await window.setBackgroundColor(color);

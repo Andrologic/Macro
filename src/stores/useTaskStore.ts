@@ -4,6 +4,7 @@ import i18n from '../i18n';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
 import { useAppStore } from './useAppStore';
+import { useChatStore } from './useChatStore';
 import { useGitStore } from './useGitStore';
 import { useTerminalStore } from './useTerminalStore';
 import {
@@ -1404,7 +1405,6 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       }
 
       if (task.conversation_id) {
-        const { useChatStore } = await import('./useChatStore');
         await useChatStore.getState().deleteConversation(task.conversation_id, { mode: 'implement' });
       }
     } catch (error) {

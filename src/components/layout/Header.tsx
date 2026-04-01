@@ -9,6 +9,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useTauriWindow } from '../../hooks/useTauriWindow';
 import { getGlobalProjectById } from '../../services/globalProjects';
+import { windowSetTrafficLightPosition } from '../../services/tauriWindow';
 import { useAppStore } from '../../stores/useAppStore';
 import { type AppMode } from '../../types';
 import { cn } from '../../utils/cn';
@@ -17,7 +18,10 @@ import { Logo } from '../ui/Logo';
 import { Icon, type IconName } from '../ui/Icon';
 import { ProjectNavigator } from '../modals/ProjectNavigator';
 import { WindowControls } from './WindowControls';
-import { getTitleBarLayout } from './titleBarLayout';
+import {
+  getMacosTrafficLightPosition,
+  getTitleBarLayout,
+} from './titleBarLayout';
 
 const MODES_DROPDOWN_WIDTH = 192;
 const MODES_DROPDOWN_GAP = 6;
@@ -88,6 +92,7 @@ export function Header({
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [portalPosition, setPortalPosition] = useState<{ top: number; left: number } | null>(null);
 
+  const headerRef = useRef<HTMLElement>(null);
   const modeMenuRef = useRef<HTMLDivElement>(null);
   const modeMenuPortalRef = useRef<HTMLDivElement>(null);
 
@@ -153,6 +158,51 @@ export function Header({
     window.addEventListener('resize', updatePosition);
     return () => window.removeEventListener('resize', updatePosition);
   }, [modeMenuOpen]);
+
+  useEffect(() => {
+    if (!isNativeMacosTitlebar || !isTauriAvailable) {
+      return;
+    }
+
+    const headerElement = headerRef.current;
+    if (!headerElement) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncTrafficLights = () => {
+      if (cancelled) {
+        return;
+      }
+
+      const measuredHeight = headerElement.getBoundingClientRect().height || titleBarLayout.titleBarHeightPx;
+      const position = getMacosTrafficLightPosition(measuredHeight);
+      void windowSetTrafficLightPosition(position.x, position.y).catch((error) => {
+        if (!cancelled) {
+          console.error('Failed to sync macOS traffic light position:', error);
+        }
+      });
+    };
+
+    syncTrafficLights();
+
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => {
+            syncTrafficLights();
+          })
+        : null;
+
+    resizeObserver?.observe(headerElement);
+    window.addEventListener('resize', syncTrafficLights);
+
+    return () => {
+      cancelled = true;
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', syncTrafficLights);
+    };
+  }, [isNativeMacosTitlebar, isTauriAvailable, titleBarLayout.titleBarHeightPx]);
 
   const handleHeaderDoubleClick = () => {
     if (isNativeMacosTitlebar || platformChrome.disableCustomDoubleClickZoom) {
@@ -228,6 +278,7 @@ export function Header({
   return (
     <>
       <header
+        ref={headerRef}
         className={cn(
           'macro-topbar select-none shrink-0 overflow-visible',
           isNativeMacosTitlebar && 'macro-topbar--native-macos'

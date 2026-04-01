@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 let loadPreferencesMock: ReturnType<typeof mock>;
 let showMainWindowMock: ReturnType<typeof mock>;
@@ -8,6 +8,7 @@ let windowOuterPositionMock: ReturnType<typeof mock>;
 let windowOuterSizeMock: ReturnType<typeof mock>;
 let windowScaleFactorMock: ReturnType<typeof mock>;
 let windowSetBackgroundColorMock: ReturnType<typeof mock>;
+let windowSetMacosAppIconThemeMock: ReturnType<typeof mock>;
 let windowSetPositionMock: ReturnType<typeof mock>;
 let windowSetSizeMock: ReturnType<typeof mock>;
 let windowSetThemeMock: ReturnType<typeof mock>;
@@ -19,50 +20,64 @@ let chromeState: {
   usesNativeMacosTitlebar: boolean;
 };
 let invocationOrder: string[];
+let importCounter = 0;
 
-mock.module('../services/preferences', () => ({
-  PREF_KEYS: {
-    WINDOW_WIDTH: 'windowWidth',
-    WINDOW_HEIGHT: 'windowHeight',
-    WINDOW_X: 'windowX',
-    WINDOW_Y: 'windowY',
-    IS_MAXIMIZED: 'isMaximized',
-    NATIVE_MACOS_TITLEBAR_BG: 'nativeMacosTitlebarBg',
-    NATIVE_MACOS_TITLEBAR_THEME: 'nativeMacosTitlebarTheme',
-  },
-  loadPreferences: (...args: unknown[]) => loadPreferencesMock(...args),
-  savePreference: () => Promise.resolve(),
-}));
+const registerWindowRestorationMocks = () => {
+  mock.restore();
 
-mock.module('../services/tauriWindow', () => ({
-  isTauriEnvironment: () => true,
-  showMainWindow: (...args: unknown[]) => showMainWindowMock(...args),
-  windowIsMaximized: (...args: unknown[]) => windowIsMaximizedMock(...args),
-  windowMaximize: (...args: unknown[]) => windowMaximizeMock(...args),
-  windowOuterPosition: (...args: unknown[]) => windowOuterPositionMock(...args),
-  windowOuterSize: (...args: unknown[]) => windowOuterSizeMock(...args),
-  windowScaleFactor: (...args: unknown[]) => windowScaleFactorMock(...args),
-  windowSetBackgroundColor: (...args: unknown[]) => windowSetBackgroundColorMock(...args),
-  windowSetPosition: (...args: unknown[]) => windowSetPositionMock(...args),
-  windowSetSize: (...args: unknown[]) => windowSetSizeMock(...args),
-  windowSetTheme: (...args: unknown[]) => windowSetThemeMock(...args),
-}));
+  mock.module('../services/preferences', () => ({
+    PREF_KEYS: {
+      WINDOW_WIDTH: 'windowWidth',
+      WINDOW_HEIGHT: 'windowHeight',
+      WINDOW_X: 'windowX',
+      WINDOW_Y: 'windowY',
+      IS_MAXIMIZED: 'isMaximized',
+      NATIVE_MACOS_TITLEBAR_BG: 'nativeMacosTitlebarBg',
+      NATIVE_MACOS_TITLEBAR_THEME: 'nativeMacosTitlebarTheme',
+    },
+    loadPreferences: (...args: unknown[]) => loadPreferencesMock(...args),
+    savePreference: () => Promise.resolve(),
+  }));
 
-mock.module('../utils/desktopPlatform', () => ({
-  getPlatformChromeState: () => chromeState,
-}));
+  mock.module('../services/tauriWindow', () => ({
+    isTauriEnvironment: () => true,
+    showMainWindow: (...args: unknown[]) => showMainWindowMock(...args),
+    windowIsMaximized: (...args: unknown[]) => windowIsMaximizedMock(...args),
+    windowMaximize: (...args: unknown[]) => windowMaximizeMock(...args),
+    windowOuterPosition: (...args: unknown[]) => windowOuterPositionMock(...args),
+    windowOuterSize: (...args: unknown[]) => windowOuterSizeMock(...args),
+    windowScaleFactor: (...args: unknown[]) => windowScaleFactorMock(...args),
+    windowSetBackgroundColor: (...args: unknown[]) => windowSetBackgroundColorMock(...args),
+    windowSetMacosAppIconTheme: (...args: unknown[]) => windowSetMacosAppIconThemeMock(...args),
+    windowSetPosition: (...args: unknown[]) => windowSetPositionMock(...args),
+    windowSetSize: (...args: unknown[]) => windowSetSizeMock(...args),
+    windowSetTheme: (...args: unknown[]) => windowSetThemeMock(...args),
+  }));
 
-mock.module('../utils/pageLifecycle', () => ({
-  isPageShuttingDown: () => false,
-}));
+  mock.module('../utils/desktopPlatform', () => ({
+    getPlatformChromeState: () => chromeState,
+  }));
 
-mock.module('../utils/devLogger', () => ({
-  devLogger: {
-    log: () => undefined,
-  },
-}));
+  mock.module('../utils/pageLifecycle', () => ({
+    isPageShuttingDown: () => false,
+  }));
 
-const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await import('./useWindowRestoration');
+  mock.module('../utils/devLogger', () => ({
+    devLogger: {
+      log: () => undefined,
+      info: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+      debug: () => undefined,
+    },
+  }));
+};
+
+const loadWindowRestoration = async () => {
+  registerWindowRestorationMocks();
+  importCounter += 1;
+  return import(`./useWindowRestoration.ts?test=${importCounter}`);
+};
 
 describe('ensureWindowRestoredOnce', () => {
   beforeEach(() => {
@@ -105,6 +120,7 @@ describe('ensureWindowRestoredOnce', () => {
     windowSetBackgroundColorMock = mock(async () => {
       invocationOrder.push('background');
     });
+    windowSetMacosAppIconThemeMock = mock(async () => undefined);
     windowSetPositionMock = mock(async () => {
       invocationOrder.push('position');
     });
@@ -114,11 +130,19 @@ describe('ensureWindowRestoredOnce', () => {
     windowSetThemeMock = mock(async () => {
       invocationOrder.push('theme');
     });
+  });
 
-    __resetWindowRestorationForTests();
+  afterEach(() => {
+    mock.restore();
+  });
+
+  afterAll(() => {
+    mock.restore();
   });
 
   it('applies the native macOS theme snapshot before showing the window', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    __resetWindowRestorationForTests();
     await ensureWindowRestoredOnce();
 
     expect(windowSetBackgroundColorMock.mock.calls).toHaveLength(1);
@@ -129,6 +153,7 @@ describe('ensureWindowRestoredOnce', () => {
   });
 
   it('skips native macOS snapshot syncing on non-mac platforms', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
     chromeState = {
       platform: 'windows',
       isTauriWindow: true,

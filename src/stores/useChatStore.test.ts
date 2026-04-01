@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { AppMode, Conversation, ProjectGroup } from '../types';
 import type { ArchitectPlanRecord } from '../services/architectPlanService';
 
@@ -29,6 +29,9 @@ const createLocalStorageMock = (): LocalStorageMock => {
     },
   };
 };
+
+const originalWindow = globalThis.window;
+const originalLocalStorage = globalThis.localStorage;
 
 const projectGroups: ProjectGroup[] = [
   {
@@ -260,195 +263,165 @@ const importMessagesMock = mock(
     }))
 );
 
-mock.module('./useProviderStore', () => ({
-  useProviderStore: useProviderStoreMock,
-}));
-
-mock.module('./useCitationsStore', () => ({
-  useCitationsStore: {
-    getState: () => ({
-      clearCitations: () => undefined,
-      citations: [],
-      getConversationContextCitations: () => [],
-      getConversationSourceCitations: () => [],
-    }),
-  },
-}));
-
-mock.module('./useToolsStore', () => ({
-  useToolsStore: {
-    getState: () => ({
-      selectedTools: [],
-      setSelectedTools: () => undefined,
-    }),
-  },
-}));
-
-mock.module('./useAppStore', () => ({
-  useAppStore: {
-    getState: () => appState,
-    subscribe: () => () => undefined,
-  },
-}));
-
-mock.module('./useTaskStore', () => ({
-  useTaskStore: {
-    getState: () => taskStoreState,
-  },
-}));
-
-mock.module('./useNeedsStore', () => ({
-  useNeedsStore: {
-    getState: () => ({
-      replaceNeedsForPlan: () => undefined,
-    }),
-  },
-}));
-
-mock.module('./useTerminalStore', () => ({
-  useTerminalStore: {
-    getState: () => ({
-      addTerminalLine: () => undefined,
-    }),
-  },
-}));
-
-mock.module('../services/streamingChat', () => ({
-  streamChat: mock(async () => ({ usage: null })),
-  cancelStream: mock(() => undefined),
-  sendChatNonStreaming: sendChatNonStreamingMock,
-}));
-
-mock.module('../services/webSearchSettings', () => ({
-  getStreamingWebSearchConfig: () => ({
-    enableWebSearch: false,
-    enableWebFetch: false,
-    webSearchOptions: undefined,
-  }),
-}));
-
-mock.module('../services/toolModePolicy', () => ({
-  getToolModePolicy: () => 'none',
-}));
-
-mock.module('../services/workspaceToolExecutor', () => ({
-  executeWorkspaceTool: mock(async () => undefined),
-}));
-
-mock.module('../services/preferences', () => ({
-  PREF_KEYS: {
-    AI_CONTEXT_SELECTIONS: 'ai-context-selections',
-  },
-  loadPreference: mock(async () => null),
-  savePreference: mock(async () => undefined),
-}));
-
-mock.module('../services/remoteKernelApi', () => ({
-  canUseRemoteKernel: () => false,
-  getRemoteToolModePolicy: () => 'none',
-}));
-
-mock.module('../services/tauriIpc', () => ({
-  isTauriAvailable: () => tauriAvailable,
-  createMessage: mock(async () => {
-    throw new Error('unavailable');
-  }),
-  deleteConversation: deleteConversationMock,
-  deleteConversations: deleteConversationsMock,
-  gitBranchList: gitBranchListMock,
-  getChatSnapshot: getChatSnapshotMock,
-  importMessages: importMessagesMock,
-  updateConversationDetails: updateConversationDetailsMock,
-}));
-
-mock.module('../services/architectPlanService', () => ({
-  createArchitectPlan: mock(async () => {
-    throw new Error('not implemented');
-  }),
-  deleteArchitectPlan: mock(async () => undefined),
-  getArchitectPlan: getArchitectPlanMock,
-  getArchitectPlanChatMessages: getArchitectPlanChatMessagesMock,
-  getArchitectPlanProjectIds: (plan: ArchitectPlanRecord) =>
-    Array.from(new Set([plan.projectId, ...(plan.projectIds ?? [])].filter(Boolean))) as string[],
-  getArchitectPlanNeeds: mock(async () => []),
-  getGitFlowBaseBranch: () => 'develop',
-  listArchitectPlans: listArchitectPlansMock,
-  resolvePlanProjectContextId: (plan: ArchitectPlanRecord, fallbackProjectId?: string | null) =>
-    plan.projectId ?? plan.projectIds?.[0] ?? fallbackProjectId ?? null,
-  resolveTargetBranch: (branchName?: string | null) => branchName ?? 'develop',
-  restoreArchitectPlan: mock(async () => undefined),
-  saveArchitectPlanNeeds: mock(async () => undefined),
-  setActiveArchitectPlan: mock(async () => undefined),
-  syncArchitectPlanChatFromConversation: syncArchitectPlanChatFromConversationMock,
-  toPlanIntegrationBranch: (planId: string) => `plan/${planId}`,
-  toPlanScopedFeatureBranch: (planId: string, featureSlug: string) => `feature/${planId}/${featureSlug}`,
-  updateArchitectPlan: updateArchitectPlanMock,
-}));
-
-mock.module('../services/architectPlanPresentation', () => ({
-  getArchitectPlanConversationTitle: (plan: ArchitectPlanRecord) => plan.label ?? plan.title,
-  getArchitectPlanDisplayName: (plan: ArchitectPlanRecord) => plan.label ?? plan.title,
-  isDefaultNewPlanFamilyLabel: (value?: string | null) => /^new plan(?:\s+\d+)?$/i.test(value ?? ''),
-  isCanonicalArchitectPlan: () => true,
-}));
-
-mock.module('../services/architectToolNames', () => ({
-  normalizeArchitectToolId: (toolId: string) => toolId,
-}));
-
-mock.module('../services/implementTaskDerivation', () => ({
-  normalizeStrategyDependencies: (deps: string[]) => deps,
-}));
-
-mock.module('../services/localProjectContext', () => ({
-  getLocalProjectContextState: getLocalProjectContextStateMock,
-}));
-
-mock.module('../services/globalProjects', () => ({
-  getFocusedProjectForGroup: (groups: ProjectGroup[], groupId: string | null, selectedProjectId?: string | null) => {
-    const group = groups.find((candidate) => candidate.id === groupId);
-    if (!group) return null;
-    return group.projects.find((project) => project.id === selectedProjectId) ?? group.projects[0] ?? null;
-  },
-  getGlobalProjectById: (groups: ProjectGroup[], groupId: string | null) => {
-    const group = groups.find((candidate) => candidate.id === groupId);
-    if (!group) return null;
-    return {
-      id: group.id,
-      name: group.name,
-      primarySubProjectId: group.projects[0]?.id ?? null,
-    };
-  },
-  getProjectGroupByProjectId: (groups: ProjectGroup[], projectId: string | null) =>
-    groups.find((group) => group.projects.some((project) => project.id === projectId)) ?? null,
-  getScopedProjectIds: (_groups: ProjectGroup[], _groupId: string | null, selectedProjectId: string | null) =>
-    selectedProjectId ? [selectedProjectId] : [],
-}));
-
-mock.module('../services/macroSyncService', () => ({
-  syncMacroMetadataAfterStream: mock(async () => undefined),
-}));
-
-mock.module('../services/projectExecutionContext', () => ({
-  resolveProjectExecutionContext: mock(async () => ({
-    groupName: 'Macro',
-    groupId: 'group-1',
-    projectName: 'Web',
-    projectId: 'project-1',
-    focusedProjectId: 'project-1',
-    projectIds: ['project-1'],
-    taskId: null,
-    branchName: 'develop',
-    virtualRootEnabled: false,
-    projectMounts: [],
-  })),
-}));
-
-mock.module('../services/chatQuickReplies', () => ({
-  parseMessageQuickReplies: () => [],
-}));
-
 let importCounter = 0;
+let restoreCounter = 0;
+
+const SHARED_MODULE_RESTORES = [
+  ['../services/localProjectContext', '../services/localProjectContext.ts'],
+  ['../services/macroSyncService', '../services/macroSyncService.ts'],
+  ['../services/projectExecutionContext', '../services/projectExecutionContext.ts'],
+  ['../services/tauriIpc', '../services/tauriIpc.ts'],
+  ['../services/streamingChat', '../services/streamingChat.ts'],
+  ['../services/webSearchSettings', '../services/webSearchSettings.ts'],
+  ['../services/workspaceToolExecutor', '../services/workspaceToolExecutor.ts'],
+  ['../services/architectPlanService', '../services/architectPlanService.ts'],
+] as const satisfies ReadonlyArray<readonly [string, string]>;
+
+const restoreSharedModules = async () => {
+  mock.restore();
+
+  for (const [specifier, actualPath] of SHARED_MODULE_RESTORES) {
+    restoreCounter += 1;
+    const actualModule = await import(`${actualPath}?restore=${restoreCounter}`);
+    mock.module(specifier, () => actualModule);
+  }
+};
+
+const registerUseChatStoreMocks = () => {
+  mock.restore();
+
+  mock.module('./useProviderStore', () => ({
+    useProviderStore: useProviderStoreMock,
+  }));
+
+  mock.module('./useCitationsStore', () => ({
+    useCitationsStore: {
+      getState: () => ({
+        clearCitations: () => undefined,
+        citations: [],
+        getConversationContextCitations: () => [],
+        getConversationSourceCitations: () => [],
+      }),
+    },
+  }));
+
+  mock.module('./useToolsStore', () => ({
+    useToolsStore: {
+      getState: () => ({
+        selectedTools: [],
+        setSelectedTools: () => undefined,
+      }),
+    },
+  }));
+
+  mock.module('./useAppStore', () => ({
+    useAppStore: {
+      getState: () => appState,
+      subscribe: () => () => undefined,
+    },
+  }));
+
+  mock.module('./useTaskStore', () => ({
+    useTaskStore: {
+      getState: () => taskStoreState,
+    },
+  }));
+
+  mock.module('./useNeedsStore', () => ({
+    useNeedsStore: {
+      getState: () => ({
+        replaceNeedsForPlan: () => undefined,
+      }),
+    },
+  }));
+
+  mock.module('./useTerminalStore', () => ({
+    useTerminalStore: {
+      getState: () => ({
+        addTerminalLine: () => undefined,
+      }),
+    },
+  }));
+
+  mock.module('../services/streamingChat', () => ({
+    streamChat: mock(async () => ({ usage: null })),
+    cancelStream: mock(() => undefined),
+    sendChatNonStreaming: sendChatNonStreamingMock,
+  }));
+
+  mock.module('../services/webSearchSettings', () => ({
+    getStreamingWebSearchConfig: () => ({
+      enableWebSearch: false,
+      enableWebFetch: false,
+      webSearchOptions: undefined,
+    }),
+  }));
+
+  mock.module('../services/workspaceToolExecutor', () => ({
+    executeWorkspaceTool: mock(async () => undefined),
+  }));
+
+  mock.module('../services/tauriIpc', () => ({
+    isTauriAvailable: () => tauriAvailable,
+    createMessage: mock(async () => {
+      throw new Error('unavailable');
+    }),
+    deleteConversation: deleteConversationMock,
+    deleteConversations: deleteConversationsMock,
+    gitBranchList: gitBranchListMock,
+    getChatSnapshot: getChatSnapshotMock,
+    importMessages: importMessagesMock,
+    updateConversationDetails: updateConversationDetailsMock,
+  }));
+
+  mock.module('../services/architectPlanService', () => ({
+    createArchitectPlan: mock(async () => {
+      throw new Error('not implemented');
+    }),
+    deleteArchitectPlan: mock(async () => undefined),
+    getArchitectPlan: getArchitectPlanMock,
+    getArchitectPlanChatMessages: getArchitectPlanChatMessagesMock,
+    getArchitectPlanProjectIds: (plan: ArchitectPlanRecord) =>
+      Array.from(new Set([plan.projectId, ...(plan.projectIds ?? [])].filter(Boolean))) as string[],
+    getArchitectPlanNeeds: mock(async () => []),
+    getGitFlowBaseBranch: () => 'develop',
+    listArchitectPlans: listArchitectPlansMock,
+    resolvePlanProjectContextId: (plan: ArchitectPlanRecord, fallbackProjectId?: string | null) =>
+      plan.projectId ?? plan.projectIds?.[0] ?? fallbackProjectId ?? null,
+    resolveTargetBranch: (branchName?: string | null) => branchName ?? 'develop',
+    restoreArchitectPlan: mock(async () => undefined),
+    saveArchitectPlanNeeds: mock(async () => undefined),
+    setActiveArchitectPlan: mock(async () => undefined),
+    syncArchitectPlanChatFromConversation: syncArchitectPlanChatFromConversationMock,
+    toPlanIntegrationBranch: (planId: string) => `plan/${planId}`,
+    toPlanScopedFeatureBranch: (planId: string, featureSlug: string) => `feature/${planId}/${featureSlug}`,
+    updateArchitectPlan: updateArchitectPlanMock,
+  }));
+
+  mock.module('../services/localProjectContext', () => ({
+    getLocalProjectContextState: getLocalProjectContextStateMock,
+  }));
+
+  mock.module('../services/macroSyncService', () => ({
+    syncMacroMetadataAfterStream: mock(async () => undefined),
+  }));
+
+  mock.module('../services/projectExecutionContext', () => ({
+    resolveProjectExecutionContext: mock(async () => ({
+      groupName: 'Macro',
+      groupId: 'group-1',
+      projectName: 'Web',
+      projectId: 'project-1',
+      focusedProjectId: 'project-1',
+      projectIds: ['project-1'],
+      taskId: null,
+      branchName: 'develop',
+      virtualRootEnabled: false,
+      projectMounts: [],
+    })),
+  }));
+
+};
 
 const loadChatStore = async () => {
   importCounter += 1;
@@ -545,6 +518,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   let localStorageMock: LocalStorageMock;
 
   beforeEach(() => {
+    registerUseChatStoreMocks();
     localStorageMock = createLocalStorageMock();
     (globalThis as { window?: unknown }).window = {
       localStorage: localStorageMock,
@@ -599,6 +573,34 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     deleteConversationMock.mockClear();
     deleteConversationsMock.mockClear();
     importMessagesMock.mockClear();
+  });
+
+  afterEach(async () => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      writable: true,
+      value: originalWindow,
+    });
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      writable: true,
+      value: originalLocalStorage,
+    });
+    await restoreSharedModules();
+  });
+
+  afterAll(async () => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      writable: true,
+      value: originalWindow,
+    });
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      writable: true,
+      value: originalLocalStorage,
+    });
+    await restoreSharedModules();
   });
 
   it('restores a plan transcript into an existing empty conversation', async () => {
@@ -1023,7 +1025,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(architectPlans.get('1710000000000')?.description).toBe(
       'Refresh checkout state and cart recovery.'
     );
-    expect(useChatStore.getState().conversations[0]?.title).toBe('Checkout refresh');
+    expect(useChatStore.getState().conversations[0]?.title).toBe('Plan - Checkout refresh - 1710000000000');
   });
 
   it('reuses the same implement conversation for the selected task', async () => {
