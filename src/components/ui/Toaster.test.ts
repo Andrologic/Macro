@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { User } from '../../types';
+import type { NotificationChannelModes } from '../../services/notificationChannels';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -65,6 +66,47 @@ mock.module('sonner', () => ({
   Toaster: () => null,
 }));
 
+const maybeSendDesktopNotificationMock = mock(async (_input?: unknown) => true);
+
+mock.module('../../services/desktopNotifications', () => ({
+  maybeSendDesktopNotification: maybeSendDesktopNotificationMock,
+}));
+
+const defaultNotificationChannelModes: NotificationChannelModes = {
+  task_attention_required: 'both',
+  task_run_completed: 'desktop',
+  task_completed: 'both',
+  git_sync_completed: 'desktop',
+  git_sync_attention_required: 'both',
+};
+
+const useAppStore: {
+  state: {
+    notificationChannelModes: NotificationChannelModes;
+  };
+  getState: () => {
+    notificationChannelModes: NotificationChannelModes;
+  };
+  setState: (nextState: Partial<{ notificationChannelModes: NotificationChannelModes }>) => void;
+} = {
+  state: {
+    notificationChannelModes: defaultNotificationChannelModes,
+  },
+  getState() {
+    return this.state;
+  },
+  setState(nextState: Partial<typeof useAppStore.state>) {
+    this.state = {
+      ...this.state,
+      ...nextState,
+    };
+  },
+};
+
+mock.module('../../stores/useAppStore', () => ({
+  useAppStore,
+}));
+
 const { toast, __testables } = await import('./Toaster');
 const { useAuthStore } = await import('../../stores/useAuthStore');
 const { useNotificationCenterStore } = await import('../../stores/useNotificationCenterStore');
@@ -101,6 +143,9 @@ describe('toast wrapper', () => {
       items: [],
       isCenterOpen: false,
     });
+    useAppStore.setState({
+      notificationChannelModes: defaultNotificationChannelModes,
+    });
     useAuthStore.setState({
       authStatus: 'authenticated',
       user: buildUser(true),
@@ -134,6 +179,8 @@ describe('toast wrapper', () => {
     });
     sonnerToastMock.dismiss.mockReset();
     sonnerToastMock.dismiss.mockImplementation((_id?: unknown) => 'dismissed-id');
+    maybeSendDesktopNotificationMock.mockReset();
+    maybeSendDesktopNotificationMock.mockImplementation(async (_input?: unknown) => true);
   });
 
   it('stores tracked info, warning, and error toasts in the notification center', () => {
@@ -235,6 +282,126 @@ describe('toast wrapper', () => {
 
     expect(useNotificationCenterStore.getState().items).toEqual([]);
     expect(sonnerToastMock.success).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes categorized notifications to the desktop channel only', () => {
+    useAuthStore.setState({
+      user: buildUser(false),
+    });
+
+    const result = toast.success('Commands completed', {
+      description: '3 repositories executed successfully.',
+      notificationKey: 'task:run:1',
+      notification: {
+        category: 'task_run_completed',
+      },
+    });
+
+    expect(result).not.toBe('notifications-disabled');
+    expect(sonnerToastMock.success).not.toHaveBeenCalled();
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+    expect(maybeSendDesktopNotificationMock).toHaveBeenCalledWith({
+      title: 'Commands completed',
+      body: '3 repositories executed successfully.',
+      notificationKey: 'task:run:1',
+    });
+  });
+
+  it('routes categorized notifications to the toast channel only', () => {
+    useAppStore.setState({
+      notificationChannelModes: {
+        ...defaultNotificationChannelModes,
+        task_completed: 'toast',
+      },
+    });
+
+    toast.success('Task finished', {
+      notification: {
+        category: 'task_completed',
+      },
+    });
+
+    expect(sonnerToastMock.success).toHaveBeenCalledTimes(1);
+    expect(maybeSendDesktopNotificationMock).not.toHaveBeenCalled();
+  });
+
+  it('routes categorized notifications to both channels', () => {
+    toast.error('Metadata sync failed', {
+      description: 'Resolve the conflict before retrying.',
+      notificationKey: 'macro:failed:1',
+      notification: {
+        category: 'git_sync_attention_required',
+      },
+    });
+
+    expect(sonnerToastMock.error).toHaveBeenCalledTimes(1);
+    expect(useNotificationCenterStore.getState().items[0]).toMatchObject({
+      level: 'error',
+      title: 'Metadata sync failed',
+    });
+    expect(maybeSendDesktopNotificationMock).toHaveBeenCalledWith({
+      title: 'Metadata sync failed',
+      body: 'Resolve the conflict before retrying.',
+      notificationKey: 'macro:failed:1',
+    });
+  });
+
+  it('allows categorized toast delivery even when uncategorized in-app notifications are disabled', () => {
+    useAuthStore.setState({
+      user: buildUser(false),
+    });
+
+    toast.warning('Missing base branch', {
+      notification: {
+        category: 'task_attention_required',
+      },
+    });
+
+    expect(sonnerToastMock.warning).toHaveBeenCalledTimes(1);
+    expect(maybeSendDesktopNotificationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns disabled when a categorized notification mode is off', () => {
+    useAppStore.setState({
+      notificationChannelModes: {
+        ...defaultNotificationChannelModes,
+        git_sync_completed: 'off',
+      },
+    });
+
+    expect(
+      toast.success('Code pull complete', {
+        notification: {
+          category: 'git_sync_completed',
+        },
+      })
+    ).toBe('notifications-disabled');
+
+    expect(sonnerToastMock.success).not.toHaveBeenCalled();
+    expect(maybeSendDesktopNotificationMock).not.toHaveBeenCalled();
+  });
+
+  it('repairs actionable categories that somehow end up with desktop-only mode', () => {
+    useAppStore.setState({
+      notificationChannelModes: {
+        ...defaultNotificationChannelModes,
+        task_attention_required: 'desktop',
+      },
+    });
+
+    toast.warning('Missing base branch', {
+      description: 'Choose what to do next.',
+      notification: {
+        category: 'task_attention_required',
+      },
+    });
+
+    expect(sonnerToastMock.warning).toHaveBeenCalledTimes(1);
+    expect(maybeSendDesktopNotificationMock).toHaveBeenCalledWith({
+      title: 'Missing base branch',
+      body: 'Choose what to do next.',
+      notificationKey: expect.any(String),
+    });
   });
 
   it('blocks visible toasts and history when in-app notifications are disabled', () => {

@@ -1,12 +1,19 @@
-import React, { useEffect, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   getDesktopNotificationStatus,
   initializeDesktopNotifications,
   subscribeDesktopNotificationStatus,
 } from '../../../services/desktopNotifications';
+import {
+  NOTIFICATION_CATEGORIES,
+  NOTIFICATION_CATEGORY_DEFINITIONS,
+  getAllowedNotificationChannelModes,
+  type NotificationChannelMode,
+} from '../../../services/notificationChannels';
 import { useAuthStore } from '../../../stores/useAuthStore';
 import { useAppStore } from '../../../stores/useAppStore';
+import { Select } from '../../ui/Select';
 import { Switch } from '../../ui/Switch';
 import { toast } from '../../ui/Toaster';
 
@@ -14,10 +21,8 @@ export const NotificationsView: React.FC = () => {
   const { t } = useTranslation();
   const user = useAuthStore((state) => state.user);
   const updatePreferences = useAuthStore((state) => state.updatePreferences);
-  const desktopNotificationsEnabled = useAppStore((state) => state.desktopNotificationsEnabled);
-  const setDesktopNotificationsEnabled = useAppStore(
-    (state) => state.setDesktopNotificationsEnabled
-  );
+  const notificationChannelModes = useAppStore((state) => state.notificationChannelModes);
+  const setNotificationChannelMode = useAppStore((state) => state.setNotificationChannelMode);
   const desktopNotificationStatus = useSyncExternalStore(
     subscribeDesktopNotificationStatus,
     getDesktopNotificationStatus,
@@ -30,25 +35,33 @@ export const NotificationsView: React.FC = () => {
   }, []);
 
   const inAppNotificationsEnabled = user?.preferences.notifications !== false;
-  const desktopRuntimeLabel = !desktopNotificationsEnabled
-    ? t('settings.desktopNotificationsStatusDisabled', 'Disabled')
-    : desktopNotificationStatus === 'granted'
-      ? t('settings.desktopNotificationsStatusAllowed', 'Allowed')
-      : desktopNotificationStatus === 'denied'
-        ? t('settings.desktopNotificationsStatusDenied', 'Denied')
-        : desktopNotificationStatus === 'unsupported'
-          ? t('settings.desktopNotificationsStatusUnsupported', 'Unsupported')
-          : t('settings.desktopNotificationsStatusPermissionNeeded', 'Permission needed');
+  const desktopRuntimeLabel = desktopNotificationStatus === 'granted'
+    ? t('settings.desktopNotificationsStatusAllowed', 'Allowed')
+    : desktopNotificationStatus === 'denied'
+      ? t('settings.desktopNotificationsStatusDenied', 'Denied')
+      : desktopNotificationStatus === 'unsupported'
+        ? t('settings.desktopNotificationsStatusUnsupported', 'Unsupported')
+        : t('settings.desktopNotificationsStatusPermissionNeeded', 'Permission needed');
 
-  const desktopRuntimeToneClass = !desktopNotificationsEnabled
-    ? 'text-muted-foreground'
-    : desktopNotificationStatus === 'granted'
-      ? 'text-emerald-400'
-      : desktopNotificationStatus === 'denied'
-        ? 'text-red-400'
-        : desktopNotificationStatus === 'unsupported'
-          ? 'text-amber-400'
-          : 'text-blue-400';
+  const desktopRuntimeToneClass = desktopNotificationStatus === 'granted'
+    ? 'text-emerald-400'
+    : desktopNotificationStatus === 'denied'
+      ? 'text-red-400'
+      : desktopNotificationStatus === 'unsupported'
+        ? 'text-amber-400'
+        : 'text-blue-400';
+
+  const categoryRows = useMemo(
+    () =>
+      NOTIFICATION_CATEGORIES.map((category) => ({
+        category,
+        title: t(NOTIFICATION_CATEGORY_DEFINITIONS[category].titleKey),
+        description: t(NOTIFICATION_CATEGORY_DEFINITIONS[category].descriptionKey),
+        mode: notificationChannelModes[category],
+        allowedModes: getAllowedNotificationChannelModes(category),
+      })),
+    [notificationChannelModes, t]
+  );
 
   const handleInAppNotificationsChange = async (checked: boolean) => {
     if (!user) {
@@ -87,8 +100,8 @@ export const NotificationsView: React.FC = () => {
               </label>
               <p className="text-xs text-muted-foreground">
                 {t(
-                  'settings.inAppNotificationsDesc',
-                  'Show toast notifications inside Macro and keep important alerts in the notification center.'
+                  'settings.inAppNotificationsScopedDesc',
+                  'Control uncategorized in-app notifications that are not covered by the channel rules below.'
                 )}
               </p>
             </div>
@@ -101,26 +114,62 @@ export const NotificationsView: React.FC = () => {
 
           <div className="h-px bg-border/50" />
 
-          <div className="flex items-center justify-between gap-4">
-            <div className="space-y-1">
-              <label className="text-sm font-medium text-foreground">
-                {t('settings.desktop_notifications', 'Desktop Notifications')}
-              </label>
-              <p className="text-xs text-muted-foreground">
-                {t(
-                  'settings.desktop_notifications_desc',
-                  'Show native desktop notifications for important events'
-                )}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {t('settings.desktopNotificationsRuntime', 'Runtime status')}:{' '}
-                <span className={desktopRuntimeToneClass}>{desktopRuntimeLabel}</span>
-              </p>
-            </div>
-            <Switch
-              checked={desktopNotificationsEnabled}
-              onCheckedChange={setDesktopNotificationsEnabled}
-            />
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-foreground">
+              {t('settings.notificationChannels', 'Notification channels')}
+            </label>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                'settings.notificationChannelsDesc',
+                'Choose how each important workflow event should be delivered: toast, desktop, both, or off.'
+              )}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {t('settings.desktopNotificationsRuntime', 'Runtime status')}:{' '}
+              <span className={desktopRuntimeToneClass}>{desktopRuntimeLabel}</span>
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                'settings.desktopNotificationsPermissionHint',
+                'Macro asks for desktop notification permission the first time an eligible background notification is sent.'
+              )}
+            </p>
+          </div>
+
+          <div className="space-y-3 pt-2">
+            {categoryRows.map((row) => (
+              <div
+                key={row.category}
+                className="flex items-start justify-between gap-4 rounded-lg border border-border/50 bg-background/40 px-3 py-3"
+              >
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="text-sm font-medium text-foreground">
+                    {row.title}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {row.description}
+                  </p>
+                </div>
+                <div className="w-40 shrink-0">
+                  <Select
+                    value={row.mode}
+                    onChange={(event) =>
+                      setNotificationChannelMode(
+                        row.category,
+                        event.target.value as NotificationChannelMode
+                      )
+                    }
+                    className="h-9 py-1.5"
+                  >
+                    {row.allowedModes.map((mode) => (
+                      <option key={mode} value={mode}>
+                        {t(`settings.notificationChannelMode.${mode}`)}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </section>
