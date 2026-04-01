@@ -15,6 +15,7 @@ describe('parseMessageQuickReplies', () => {
 
     expect(parsed.content).toBe('Need one clarification before I continue.');
     expect(parsed.allowFreeResponse).toBe(true);
+    expect(parsed.requiresUserReply).toBe(true);
     expect(parsed.choices?.map((choice) => choice.text)).toEqual([
       'Use Stripe',
       'Use Lemon Squeezy',
@@ -33,5 +34,6 @@ describe('parseMessageQuickReplies', () => {
 
     expect(parsed.content).toBe('Question');
     expect(parsed.choices).toBeUndefined();
+    expect(parsed.requiresUserReply).toBe(false);
   });
 });

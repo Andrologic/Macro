@@ -66,7 +66,11 @@ fn merge_path_candidates(shell_path: Option<&str>, current_path: Option<&str>) -
 
     for source in [shell_path, current_path] {
         if let Some(path) = source {
-            for entry in path.split(':').map(str::trim).filter(|value| !value.is_empty()) {
+            for entry in path
+                .split(':')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
                 if seen.insert(entry.to_string()) {
                     ordered.push(entry.to_string());
                 }
