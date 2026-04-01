@@ -14,7 +14,7 @@ import type {
   TaskCatalogDto,
   ToolSettingsDto,
 } from '../contracts/dtos';
-import type { ProjectGroup } from '../../types';
+import type { Project, ProjectGroup } from '../../types';
 import type { ServiceProvider } from '../contracts/serviceProvider';
 import { resolveRemoteConfig, type RemoteConfig } from './remoteConfig';
 
@@ -220,6 +220,7 @@ export const createProject = async (_data: {
   groupId: string | null;
   groupName?: string | null;
   path?: string;
+  gitFlowSettings?: Project['gitFlowSettings'];
 }): Promise<ProjectDto> => notReady();
 
 export const importGitRepo = async (_data: {
@@ -229,6 +230,7 @@ export const importGitRepo = async (_data: {
   groupId: string | null;
   groupName?: string | null;
   path?: string;
+  gitFlowSettings?: Project['gitFlowSettings'];
 }): Promise<ProjectDto> => notReady();
 
 export const renameProjectGroup = async (_data: {
@@ -239,6 +241,11 @@ export const renameProjectGroup = async (_data: {
 export const renameProject = async (_data: {
   projectId: string;
   name: string;
+}): Promise<ProjectDto> => notReady();
+
+export const updateProjectGitFlow = async (_data: {
+  projectId: string;
+  gitFlowSettings: Project['gitFlowSettings'];
 }): Promise<ProjectDto> => notReady();
 
 export const archiveProjectGroup = async (_data: {
@@ -283,6 +290,7 @@ export const provider: ServiceProvider = {
   importGitRepo,
   renameProjectGroup,
   renameProject,
+  updateProjectGitFlow,
   archiveProjectGroup,
   archiveProject,
   removeProjectGroup,

@@ -96,6 +96,7 @@ describe('tauriIpc executeWorkspaceTool', () => {
         payload: {
           name: 'Web',
           description: '',
+          gitFlowSettings: null,
           groupId: 'group-1',
           groupName: 'Suite',
           path: 'C:/dev/web',
@@ -107,6 +108,7 @@ describe('tauriIpc executeWorkspaceTool', () => {
           gitUrl: 'https://example.com/repo.git',
           projectName: 'API',
           branch: 'main',
+          gitFlowSettings: null,
           groupId: 'group-1',
           groupName: 'Suite',
           path: 'C:/dev/api',

@@ -23,6 +23,8 @@ interface ActivePlanContextState {
   description: string;
   status: string;
   targetBranch: string;
+  targetBranchesByProjectId?: Record<string, string>;
+  hasMixedTargetBranches?: boolean;
 }
 
 interface AppState {
@@ -123,6 +125,7 @@ const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecor
     description: activePlanContext.description,
     status: activePlanContext.status as ArchitectPlanRecord['status'],
     targetBranch: activePlanContext.targetBranch,
+    targetBranchesByProjectId: activePlanContext.targetBranchesByProjectId,
     projectId: projectIds[0],
     projectIds,
     createdAt: new Date().toISOString(),

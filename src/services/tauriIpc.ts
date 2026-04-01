@@ -13,6 +13,7 @@ import type {
   PlanNode,
   PredictedBranch,
   Project,
+  ProjectGitFlowSettings,
   AppMode,
   ProjectMount,
   ToolTrace,
@@ -1272,6 +1273,7 @@ export async function workspaceCreateProject(params: {
   groupId?: string | null;
   groupName?: string | null;
   path?: string;
+  gitFlowSettings?: ProjectGitFlowSettings | null;
 }): Promise<Project> {
   return invoke<Project>('workspace_create_project', {
     name: params.name,
@@ -1279,6 +1281,7 @@ export async function workspaceCreateProject(params: {
     groupId: params.groupId ?? null,
     groupName: params.groupName ?? null,
     path: params.path ?? null,
+    gitFlowSettings: params.gitFlowSettings ?? null,
   });
 }
 
@@ -1289,6 +1292,7 @@ export async function workspaceImportGitRepo(params: {
   groupId?: string | null;
   groupName?: string | null;
   path?: string;
+  gitFlowSettings?: ProjectGitFlowSettings | null;
 }): Promise<Project> {
   return invoke<Project>('workspace_import_git_repo', {
     gitUrl: params.gitUrl,
@@ -1297,6 +1301,7 @@ export async function workspaceImportGitRepo(params: {
     groupId: params.groupId ?? null,
     groupName: params.groupName ?? null,
     path: params.path ?? null,
+    gitFlowSettings: params.gitFlowSettings ?? null,
   });
 }
 
@@ -1317,6 +1322,16 @@ export async function workspaceRenameProject(params: {
   return invoke<Project>('workspace_rename_project', {
     projectId: params.projectId,
     name: params.name,
+  });
+}
+
+export async function workspaceUpdateProjectGitFlow(params: {
+  projectId: string;
+  gitFlowSettings: ProjectGitFlowSettings;
+}): Promise<Project> {
+  return invoke<Project>('workspace_update_project_git_flow', {
+    projectId: params.projectId,
+    gitFlowSettings: params.gitFlowSettings,
   });
 }
 
@@ -1773,4 +1788,3 @@ export async function safeInvoke<T>(
     throw error;
   }
 }
-

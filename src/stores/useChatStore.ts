@@ -28,8 +28,6 @@ import {
   resolveTargetBranch,
   saveArchitectPlanNeeds,
   syncArchitectPlanChatFromConversation,
-  toPlanIntegrationBranch,
-  toPlanScopedFeatureBranch,
   updateArchitectPlan,
 } from '../services/architectPlanService';
 import {
@@ -39,6 +37,11 @@ import {
   isCanonicalArchitectPlan,
 } from '../services/architectPlanPresentation';
 import { normalizeArchitectToolId } from '../services/architectToolNames';
+import { renderGitFlowBranchName } from '../services/architectGitNaming';
+import {
+  getPlanNodeBranchIntent,
+  type WorkBranchType,
+} from '../services/gitFlowBranchIntents';
 import { normalizeStrategyDependencies } from '../services/implementTaskDerivation';
 import { getLocalProjectContextState } from '../services/localProjectContext';
 import {
@@ -991,6 +994,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         description: plan.description,
         status: plan.status,
         targetBranch: plan.targetBranch,
+        targetBranchesByProjectId: plan.targetBranchesByProjectId,
+        hasMixedTargetBranches:
+          Boolean(plan.targetBranchesByProjectId) &&
+          new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
       });
 
       const planNeeds = await getArchitectPlanNeeds(targetBranch, plan.id);
@@ -1038,6 +1045,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       description: string;
       type: PlanNodeType;
       assignedBranch: string;
+      branchType: WorkBranchType;
+      branchSlug: string;
       status: PlanNodeStatus;
       dependencies: string[];
       projectIds: string[];
@@ -1048,6 +1057,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const rawType = typeof node.type === 'string' ? node.type.trim().toLowerCase() : 'task';
       const rawStatus = typeof node.status === 'string' ? node.status.trim().toLowerCase() : 'pending';
       const assignedBranchRaw = typeof node.assignedBranch === 'string' ? node.assignedBranch.trim() : '';
+      const branchTypeRaw = typeof node.branchType === 'string' ? node.branchType.trim().toLowerCase() : '';
+      const branchSlugRaw = typeof node.branchSlug === 'string' ? node.branchSlug.trim() : '';
       const dependencies = Array.isArray(node.dependencies)
         ? node.dependencies
             .filter((dep): dep is string => typeof dep === 'string')
@@ -1073,12 +1084,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
         throw new Error(`Invalid node status for "${title}": ${rawStatus}.`);
       }
 
+      const branchIntent = getPlanNodeBranchIntent({
+        branchType: branchTypeRaw,
+        branchSlug: branchSlugRaw,
+        assignedBranch: assignedBranchRaw,
+        title,
+      });
+
       return {
         id: typeof node.id === 'string' ? node.id.trim() : undefined,
         title,
         description,
         type: rawType as PlanNodeType,
-        assignedBranch: assignedBranchRaw || 'work',
+        assignedBranch: branchIntent.label,
+        branchType: branchIntent.branchType,
+        branchSlug: branchIntent.branchSlug,
         status: rawStatus as PlanNodeStatus,
         dependencies: Array.from(new Set(dependencies)),
         projectIds: Array.from(new Set(projectIds)),
@@ -1087,32 +1107,60 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const buildPredictedBranches = (
       nodes: PlanNode[],
-      parentBranchName: string
+      planSlug: string
     ): PredictedBranch[] => {
-      const branchMap = new Map<string, { projectId: string; taskIds: string[] }>();
+      const branchMap = new Map<string, {
+        projectId: string;
+        taskIds: string[];
+        branchType: WorkBranchType;
+        branchSlug: string;
+        name: string;
+        parentBranch: string;
+      }>();
       nodes.forEach((node) => {
-        const branchName = node.assignedBranch || parentBranchName;
+        const branchIntent = getPlanNodeBranchIntent(node);
         const projectIds = Array.isArray(node.projectIds) && node.projectIds.length > 0
           ? node.projectIds
           : (node.projectId ? [node.projectId] : []);
         projectIds.forEach((projectId) => {
-          const key = `${projectId}::${branchName}`;
+          const projectSettings = useAppStore.getState().getProjectById(projectId)?.gitFlowSettings;
+          const branchName = renderGitFlowBranchName({
+            branchType: branchIntent.branchType,
+            planSlug,
+            branchSlug: branchIntent.branchSlug,
+            settings: projectSettings,
+          });
+          const parentBranch = renderGitFlowBranchName({
+            branchType: 'plan',
+            planSlug,
+            settings: projectSettings,
+          });
+          const key = `${projectId}::${branchIntent.key}`;
           if (!branchMap.has(key)) {
-            branchMap.set(key, { projectId, taskIds: [] });
+            branchMap.set(key, {
+              projectId,
+              taskIds: [],
+              branchType: branchIntent.branchType,
+              branchSlug: branchIntent.branchSlug,
+              name: branchName,
+              parentBranch,
+            });
           }
           branchMap.get(key)!.taskIds.push(node.id);
         });
       });
 
       const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
-      return Array.from(branchMap.entries()).map(([key, value], index) => ({
+      return Array.from(branchMap.values()).map((value, index) => ({
         id: `branch-${Date.now()}-${index}`,
-        name: key.split('::')[1] || parentBranchName,
+        name: value.name,
         color: colors[index % colors.length],
-        parentBranch: parentBranchName,
+        parentBranch: value.parentBranch,
         projectId: value.projectId,
         taskIds: Array.from(new Set(value.taskIds)),
         status: 'pending' as const,
+        branchType: value.branchType,
+        branchSlug: value.branchSlug,
       }));
     };
 
@@ -1122,7 +1170,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       nodesInput: unknown[];
       reuseExistingIds?: boolean;
       existingNodesForPatch?: PlanNode[];
-    }): Promise<{ planNodes: PlanNode[]; predictedBranches: PredictedBranch[]; resolvedProjectId: string | undefined; resolvedProjectIds: string[]; activePlanTitle: string; activePlanDescription: string }> => {
+    }): Promise<{
+      planNodes: PlanNode[];
+      predictedBranches: PredictedBranch[];
+      resolvedProjectId: string | undefined;
+      resolvedProjectIds: string[];
+      targetBranchesByProjectId: Record<string, string>;
+      activePlanTitle: string;
+      activePlanDescription: string;
+    }> => {
       const { targetBranch, activePlanId, nodesInput, reuseExistingIds = false, existingNodesForPatch = [] } = params;
 
       if (nodesInput.length === 0) {
@@ -1150,22 +1206,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         throw new Error(`Active plan ${activePlanId} is unavailable. Select another plan.`);
       }
 
-      const scopedBranchBySource = new Map<string, string>();
       const planSlug = activePlan.slug;
-      const scopeBranchName = (sourceBranch: string): string => {
-        const trimmed = sourceBranch.trim();
-        const alreadyScopedPrefix = `feature/${planSlug}/`;
-        if (trimmed.startsWith(alreadyScopedPrefix)) {
-          scopedBranchBySource.set(sourceBranch, trimmed);
-          return trimmed;
-        }
-        if (scopedBranchBySource.has(sourceBranch)) {
-          return scopedBranchBySource.get(sourceBranch)!;
-        }
-        const baseName = toPlanScopedFeatureBranch(planSlug, sourceBranch || 'work');
-        scopedBranchBySource.set(sourceBranch, baseName);
-        return baseName;
-      };
 
       const idBase = `plan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const existingIdByTitle = new Map(existingNodesForPatch.map((node) => [node.title, node.id]));
@@ -1188,7 +1229,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           title: node.title,
           description: node.description,
           type: node.type,
-          assignedBranch: scopeBranchName(node.assignedBranch),
+          assignedBranch: node.assignedBranch,
+          branchType: node.branchType,
+          branchSlug: node.branchSlug,
           status: node.status,
           projectId: resolvedProjectIds[0] || undefined,
           projectIds: resolvedProjectIds,
@@ -1240,16 +1283,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const predictedBranches = buildPredictedBranches(
         planNodes,
-        toPlanIntegrationBranch(planSlug)
+        planSlug
       );
 
       const normalizedStrategy = normalizeStrategyDependencies(planNodes, predictedBranches);
       const resolvedProjectIds = Array.from(new Set(normalizedStrategy.nodes.flatMap((node) => node.projectIds || (node.projectId ? [node.projectId] : []))));
+      const targetBranchesByProjectId = Object.fromEntries(
+        resolvedProjectIds.map((projectId) => [
+          projectId,
+          activePlan.targetBranchesByProjectId?.[projectId] ||
+            appState.getProjectById(projectId)?.gitFlowSettings?.baseBranch ||
+            activePlan.targetBranch,
+        ])
+      );
       return {
         planNodes: normalizedStrategy.nodes,
         predictedBranches: normalizedStrategy.predictedBranches,
         resolvedProjectId: resolvedProjectIds[0] || undefined,
         resolvedProjectIds,
+        targetBranchesByProjectId,
         activePlanTitle: activePlan.title,
         activePlanDescription: activePlan.description,
       };
@@ -1482,6 +1534,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         nodes: strategy.planNodes,
         predictedBranches: strategy.predictedBranches,
         projectId: strategy.resolvedProjectId,
+        projectIds: strategy.resolvedProjectIds,
+        targetBranchesByProjectId: strategy.targetBranchesByProjectId,
         setActive: true,
       });
 
@@ -1586,6 +1640,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const nextTypeRaw = typeof operation.type === 'string' ? operation.type.trim().toLowerCase() : target.type;
             const nextStatusRaw = typeof operation.status === 'string' ? operation.status.trim().toLowerCase() : target.status;
             const nextBranchRaw = typeof operation.assignedBranch === 'string' ? operation.assignedBranch.trim() : target.assignedBranch || 'work';
+            const nextBranchTypeRaw =
+              typeof operation.branchType === 'string' ? operation.branchType.trim().toLowerCase() : target.branchType;
+            const nextBranchSlugRaw =
+              typeof operation.branchSlug === 'string' ? operation.branchSlug.trim() : target.branchSlug;
             const nextDependencies = Array.isArray(operation.dependencies)
               ? operation.dependencies.filter((dep): dep is string => typeof dep === 'string').map((dep) => dep.trim()).filter(Boolean)
               : target.dependencies;
@@ -1597,13 +1655,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
               return `strategy_update update failed at operation ${index + 1}: invalid status ${nextStatusRaw}.`;
             }
 
+            const nextBranchIntent = getPlanNodeBranchIntent({
+              branchType: nextBranchTypeRaw,
+              branchSlug: nextBranchSlugRaw,
+              assignedBranch: nextBranchRaw,
+              title: nextTitle || target.title,
+            });
+
             working[locateIndex] = {
               ...target,
               title: nextTitle || target.title,
               description: nextDescription,
               type: nextTypeRaw as PlanNodeType,
               status: nextStatusRaw as PlanNodeStatus,
-              assignedBranch: nextBranchRaw || 'work',
+              assignedBranch: nextBranchIntent.label,
+              branchType: nextBranchIntent.branchType,
+              branchSlug: nextBranchIntent.branchSlug,
               dependencies: Array.from(new Set(nextDependencies)),
             };
             continue;
@@ -1619,6 +1686,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
               type: normalized.type,
               status: normalized.status,
               assignedBranch: normalized.assignedBranch,
+              branchType: normalized.branchType,
+              branchSlug: normalized.branchSlug,
               dependencies: normalized.dependencies,
               projectId: activePlan.projectId,
             });
@@ -1635,6 +1704,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           type: node.type,
           status: node.status,
           assignedBranch: node.assignedBranch,
+          branchType: node.branchType,
+          branchSlug: node.branchSlug,
           dependencies: node.dependencies,
         }));
       }
@@ -1658,6 +1729,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         nodes: strategy.planNodes,
         predictedBranches: strategy.predictedBranches,
         projectId: strategy.resolvedProjectId,
+        projectIds: strategy.resolvedProjectIds,
+        targetBranchesByProjectId: strategy.targetBranchesByProjectId,
         setActive: true,
       });
 
@@ -2622,6 +2695,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 description: updatedPlan.description,
                 status: updatedPlan.status,
                 targetBranch: updatedPlan.targetBranch,
+                targetBranchesByProjectId: updatedPlan.targetBranchesByProjectId,
+                hasMixedTargetBranches:
+                  Boolean(updatedPlan.targetBranchesByProjectId) &&
+                  new Set(Object.values(updatedPlan.targetBranchesByProjectId || {})).size > 1,
               });
 
               const planNeeds = await getArchitectPlanNeeds(
@@ -4291,4 +4368,3 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
   };
 });
-

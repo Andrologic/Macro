@@ -123,6 +123,12 @@ fn build_responses_request_maps_system_and_history() {
         tools: Vec::new(),
         tool_choice: Some("auto".to_string()),
         parallel_tool_calls: Some(false),
+        workspace_path: None,
+        default_workspace_path: None,
+        project_mounts: Vec::new(),
+        virtual_root_enabled: None,
+        focused_project_id: None,
+        allowed_tool_ids: Vec::new(),
     })
     .expect("request");
 
@@ -177,6 +183,12 @@ fn build_responses_request_flattens_tools_and_maps_tool_outputs() {
         })],
         tool_choice: Some("auto".to_string()),
         parallel_tool_calls: Some(false),
+        workspace_path: None,
+        default_workspace_path: None,
+        project_mounts: Vec::new(),
+        virtual_root_enabled: None,
+        focused_project_id: None,
+        allowed_tool_ids: Vec::new(),
     })
     .expect("request");
 

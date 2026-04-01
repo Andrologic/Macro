@@ -32,7 +32,7 @@ impl Default for WorkspaceState {
 }
 
 const fn default_version() -> u32 {
-    1
+    2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +89,8 @@ pub struct WorkspaceTaskExecutionTargetDto {
     pub project_id: String,
     #[serde(rename = "branchName")]
     pub branch_name: String,
+    #[serde(default, rename = "targetBranchName")]
+    pub target_branch_name: Option<String>,
     #[serde(rename = "worktreeKey")]
     pub worktree_key: String,
     #[serde(default, rename = "repoPath")]
@@ -141,6 +143,71 @@ pub struct ProjectGroupDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectGitFlowSettingsDto {
+    #[serde(default = "default_project_git_base_branch", rename = "baseBranch")]
+    pub base_branch: String,
+    #[serde(default = "default_project_git_plan_branch_template", rename = "planBranchTemplate")]
+    pub plan_branch_template: String,
+    #[serde(
+        default = "default_project_git_feature_branch_template",
+        rename = "featureBranchTemplate"
+    )]
+    pub feature_branch_template: String,
+    #[serde(
+        default = "default_project_git_release_branch_template",
+        rename = "releaseBranchTemplate"
+    )]
+    pub release_branch_template: String,
+    #[serde(
+        default = "default_project_git_hotfix_branch_template",
+        rename = "hotfixBranchTemplate"
+    )]
+    pub hotfix_branch_template: String,
+    #[serde(
+        default = "default_project_git_bugfix_branch_template",
+        rename = "bugfixBranchTemplate"
+    )]
+    pub bugfix_branch_template: String,
+}
+
+impl Default for ProjectGitFlowSettingsDto {
+    fn default() -> Self {
+        Self {
+            base_branch: default_project_git_base_branch(),
+            plan_branch_template: default_project_git_plan_branch_template(),
+            feature_branch_template: default_project_git_feature_branch_template(),
+            release_branch_template: default_project_git_release_branch_template(),
+            hotfix_branch_template: default_project_git_hotfix_branch_template(),
+            bugfix_branch_template: default_project_git_bugfix_branch_template(),
+        }
+    }
+}
+
+fn default_project_git_base_branch() -> String {
+    "develop".to_string()
+}
+
+fn default_project_git_plan_branch_template() -> String {
+    "plan/{planSlug}".to_string()
+}
+
+fn default_project_git_feature_branch_template() -> String {
+    "feature/{planSlug}/{featureSlug}".to_string()
+}
+
+fn default_project_git_release_branch_template() -> String {
+    "release/{releaseSlug}".to_string()
+}
+
+fn default_project_git_hotfix_branch_template() -> String {
+    "hotfix/{hotfixSlug}".to_string()
+}
+
+fn default_project_git_bugfix_branch_template() -> String {
+    "bugfix/{bugfixSlug}".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectDto {
     pub id: String,
     pub name: String,
@@ -149,6 +216,8 @@ pub struct ProjectDto {
     pub path: String,
     pub created_at: String,
     pub status: String,
+    #[serde(default, rename = "gitFlowSettings")]
+    pub git_flow_settings: ProjectGitFlowSettingsDto,
     pub metadata: ProjectMetadataDto,
 }
 
@@ -215,6 +284,7 @@ pub struct CreateProjectRequest {
     pub group_id: Option<String>,
     pub group_name: Option<String>,
     pub path: Option<String>,
+    pub git_flow_settings: Option<ProjectGitFlowSettingsDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,6 +295,7 @@ pub struct ImportGitRepoRequest {
     pub group_id: Option<String>,
     pub group_name: Option<String>,
     pub path: Option<String>,
+    pub git_flow_settings: Option<ProjectGitFlowSettingsDto>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

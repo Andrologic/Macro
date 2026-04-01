@@ -2,9 +2,9 @@ use crate::core::error::{BackendError, Result};
 use crate::git::GitState;
 use crate::workspace;
 use crate::workspace::metadata::{
-    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, ProjectDto, ProjectGroupDto,
-    ProjectRegistryDiagnosticsDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
-    WorkspaceTaskCatalogDto,
+    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, ProjectDto,
+    ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectRegistryDiagnosticsDto,
+    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
@@ -122,6 +122,7 @@ pub async fn workspace_create_project(
     group_id: Option<String>,
     group_name: Option<String>,
     path: Option<String>,
+    git_flow_settings: Option<ProjectGitFlowSettingsDto>,
 ) -> Result<ProjectDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
@@ -132,6 +133,7 @@ pub async fn workspace_create_project(
         group_id,
         group_name,
         path,
+        git_flow_settings,
     };
 
     workspace::create_project(&workspace_path, &metadata_root, request).await
@@ -147,6 +149,7 @@ pub async fn workspace_import_git_repo(
     group_id: Option<String>,
     group_name: Option<String>,
     path: Option<String>,
+    git_flow_settings: Option<ProjectGitFlowSettingsDto>,
 ) -> Result<ProjectDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
@@ -158,6 +161,7 @@ pub async fn workspace_import_git_repo(
         group_id,
         group_name,
         path,
+        git_flow_settings,
     };
 
     workspace::import_git_repo(&workspace_path, &metadata_root, request).await
@@ -187,6 +191,25 @@ pub async fn workspace_rename_project(
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     workspace::rename_project(&workspace_path, &metadata_root, &project_id, &name).await
+}
+
+#[tauri::command]
+pub async fn workspace_update_project_git_flow(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_id: String,
+    git_flow_settings: ProjectGitFlowSettingsDto,
+) -> Result<ProjectDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::update_project_git_flow(
+        &workspace_path,
+        &metadata_root,
+        &project_id,
+        &git_flow_settings,
+    )
+    .await
 }
 
 #[tauri::command]

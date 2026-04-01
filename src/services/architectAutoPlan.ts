@@ -1,10 +1,12 @@
 import { createArchitectAutoPlanService } from './architectAutoPlanCore';
+import { useAppStore } from '../stores/useAppStore';
 import {
   createArchitectPlan,
   getArchitectPlan,
   getArchitectPlanChatMessages,
   getArchitectPlanNeeds,
   getArchitectPlanProjectIds,
+  getGitFlowBaseBranch,
   listArchitectPlans,
   setActiveArchitectPlan,
   updateArchitectPlan,
@@ -29,6 +31,15 @@ const architectAutoPlanService = createArchitectAutoPlanService({
   isCanonicalArchitectPlan,
   isDefaultNewPlanBaseLabel,
   listArchitectPlans,
+  getTargetBranchesByProjectId: (projectIds) => {
+    const appState = useAppStore.getState();
+    return Object.fromEntries(
+      projectIds.map((projectId) => [
+        projectId,
+        appState.getProjectById(projectId)?.gitFlowSettings?.baseBranch || getGitFlowBaseBranch(),
+      ])
+    );
+  },
   setActiveArchitectPlan: async (branchName, planId) => {
     if (!planId) {
       return;

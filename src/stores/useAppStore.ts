@@ -9,6 +9,7 @@ import {
   Plan,
   ProjectGroup,
   Project,
+  ProjectGitFlowSettings,
   PlanNode,
   PredictedBranch,
 } from '../types';
@@ -26,6 +27,7 @@ import {
   upsertLocalProjectContextState,
   upsertLocalSessionContextState,
 } from '../services/localProjectContext';
+import { getDefaultProjectGitFlowSettings } from '../services/architectGitNaming';
 import {
   getArchitectPlan,
   getArchitectPlanNeeds,
@@ -112,6 +114,8 @@ export interface ArchitectPlanContext {
   description: string;
   status: string;
   targetBranch: string;
+  targetBranchesByProjectId?: Record<string, string>;
+  hasMixedTargetBranches?: boolean;
 }
 
 const upsertRememberedProject = (
@@ -547,6 +551,7 @@ interface AppStore {
   accountOpen: boolean;
   projectModalOpen: boolean;
   projectModalGroupId: string | null;
+  projectGitFlowModalProjectId: string | null;
   activeThemeId: string;
   leftPanelWidth: number;
   rightPanelWidth: number;
@@ -588,6 +593,7 @@ interface AppStore {
   toggleProjectGroup: (groupId: string) => void;
   renameProjectGroup: (groupId: string, name: string) => Promise<void>;
   renameProject: (projectId: string, name: string) => Promise<void>;
+  updateProjectGitFlow: (projectId: string, gitFlowSettings: ProjectGitFlowSettings) => Promise<void>;
   removeProjectGroup: (groupId: string) => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
   getProjectById: (id: string) => Project | undefined;
@@ -623,6 +629,8 @@ interface AppStore {
   closeAccount: () => void;
   openProjectModal: (groupId?: string | null) => void;
   closeProjectModal: () => void;
+  openProjectGitFlowModal: (projectId: string) => void;
+  closeProjectGitFlowModal: () => void;
   createProject: (data: CreateProjectData) => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
   setRightPanelWidth: (width: number) => void;
@@ -637,6 +645,7 @@ interface CreateProjectData {
   groupId: string | null;
   groupName?: string | null;
   path?: string;
+  gitFlowSettings?: ProjectGitFlowSettings;
 }
 
 interface ProjectRegistrySnapshot {
@@ -708,6 +717,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   accountOpen: false,
   projectModalOpen: false,
   projectModalGroupId: null,
+  projectGitFlowModalProjectId: null,
   activeThemeId:
     (typeof window !== 'undefined' ? window.localStorage.getItem('theme-id') : null) || 'macro-dark',
   leftPanelWidth: 280,
@@ -1405,6 +1415,109 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
+  updateProjectGitFlow: async (projectId, gitFlowSettings) => {
+    set({ isLoading: true, lastError: null });
+    try {
+      const previousState = get();
+      const requestedProject = previousState.getProjectById(projectId) ?? null;
+      logProjectRegistryAction('started', {
+        action: 'update_project_git_flow',
+        projectId,
+        beforeCount: countProjectsInRegistry(previousState.projectGroups),
+      });
+      const preflightSnapshot = await loadProjectRegistrySnapshot({
+        selectedGroupId: previousState.selectedGroupId,
+        selectedProjectId: previousState.selectedProjectId,
+      });
+      const canonicalProject = resolveCanonicalProject(
+        preflightSnapshot.normalizedRegistry.projectGroups,
+        requestedProject
+      );
+
+      if (!canonicalProject) {
+        throw {
+          code: 'PROJECT_NOT_FOUND',
+          message: 'Subproject no longer exists in Macro.',
+        };
+      }
+
+      await services.updateProjectGitFlow({
+        projectId: canonicalProject.id,
+        gitFlowSettings,
+      });
+
+      const postMutationSnapshot = await loadProjectRegistrySnapshot({
+        selectedGroupId: previousState.selectedGroupId,
+        selectedProjectId: previousState.selectedProjectId,
+      });
+      const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
+      const nextRecentProjects = reconcileRememberedProjects(
+        normalizedRegistry.projectGroups,
+        previousState.recentProjects
+      );
+      const nextMacroEnabledProjects = reconcileRememberedProjects(
+        normalizedRegistry.projectGroups,
+        previousState.macroEnabledProjects
+      );
+      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+
+      set({
+        currentPlan: postMutationSnapshot.plan,
+        projectGroups: normalizedRegistry.projectGroups,
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+        recentProjects: nextRecentProjects,
+        macroEnabledProjects: nextMacroEnabledProjects,
+        planNodes: filterPlanNodesForRegistry(
+          postMutationSnapshot.planNodes.length
+            ? postMutationSnapshot.planNodes
+            : derivePlanNodesFromPlan(postMutationSnapshot.plan),
+          validProjectIds
+        ),
+        predictedBranches: filterPredictedBranchesForRegistry(
+          postMutationSnapshot.predictedBranches,
+          validProjectIds
+        ),
+        projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
+          normalizedRegistry.report
+        ),
+        isLoading: false,
+        lastError: null,
+      });
+      void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
+      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      await persistSessionContext({
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+        mode: previousState.mode,
+      });
+      await reconcileProjectRegistryDependencies({
+        projectGroups: normalizedRegistry.projectGroups,
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+      });
+      logProjectRegistryAction('succeeded', {
+        action: 'update_project_git_flow',
+        projectId: canonicalProject.id,
+        requestedProjectId: projectId,
+        canonicalized: canonicalProject.id !== projectId,
+        afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
+        repairApplied: normalizedRegistry.report.repaired,
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
+      logProjectRegistryAction('failed', {
+        action: 'update_project_git_flow',
+        projectId,
+        error: normalized.message,
+        code: normalized.code,
+        details: normalized.details ?? null,
+      });
+      throw normalized;
+    }
+  },
+
   removeProjectGroup: async (groupId) => {
     set({ isLoading: true, lastError: null });
     try {
@@ -1854,17 +1967,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   closeProjectModal: () => set({ projectModalOpen: false, projectModalGroupId: null }),
 
+  openProjectGitFlowModal: (projectId) =>
+    set({ projectGitFlowModalProjectId: projectId }),
+
+  closeProjectGitFlowModal: () => set({ projectGitFlowModalProjectId: null }),
+
   createProject: async (data: CreateProjectData) => {
     set({ isLoading: true, lastError: null });
     try {
       const previousState = get();
+      const gitFlowSettings = data.gitFlowSettings || getDefaultProjectGitFlowSettings();
       logProjectRegistryAction('started', {
         action: 'create_project',
         groupId: data.groupId,
         path: data.path ?? null,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
       });
-      const { project: newProject } = await services.createProject(data);
+      const { project: newProject } = await services.createProject({
+        ...data,
+        gitFlowSettings,
+      });
       const state = get();
       if (state.selectedGroupId) {
         await persistCurrentProjectContext(state.selectedGroupId, state.selectedProjectId);

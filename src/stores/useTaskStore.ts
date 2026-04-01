@@ -25,6 +25,7 @@ import {
 import { shouldSyncTargetBranchBeforeFinish } from '../services/architectGitNaming';
 import {
   getArchitectPlan,
+  getArchitectPlanTargetBranchesByProjectId,
   getGitFlowBaseBranch,
   resolveTargetBranch,
   updateArchitectPlan,
@@ -121,7 +122,7 @@ const getTaskIntegrationBranch = (
   if (task.task_source === 'architect') {
     return null;
   }
-  return resolveTargetBranch(task.base_branch || getGitFlowBaseBranch());
+  return resolveTargetBranch(target.targetBranchName || task.base_branch || getGitFlowBaseBranch());
 };
 
 const getPreferredExecutionTarget = (
@@ -198,7 +199,8 @@ const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promi
 
 const resolveStandaloneStartRef = async (
   task: CatalogedImplementTask,
-  repoPath: string
+  repoPath: string,
+  preferredBaseBranch?: string | null
 ): Promise<string | null> => {
   if (!isManualStandaloneTask(task) || task.draft) {
     return null;
@@ -216,7 +218,7 @@ const resolveStandaloneStartRef = async (
     }
   }
 
-  return task.base_branch || getGitFlowBaseBranch();
+  return preferredBaseBranch || task.base_branch || getGitFlowBaseBranch();
 };
 
 const resolveTaskStartRef = async (
@@ -227,7 +229,7 @@ const resolveTaskStartRef = async (
   if (task.task_source === 'architect') {
     return target.planBranchName || null;
   }
-  return resolveStandaloneStartRef(task, repoPath);
+  return resolveStandaloneStartRef(task, repoPath, target.targetBranchName);
 };
 
 const inspectTargetWorktreePath = async (
@@ -271,7 +273,7 @@ const ensureTargetWorktreePath = async (
     .createWorktree(target.projectId, target.worktreeKey, target.branchName, fromRef);
   if (!ensured?.worktreePath) {
     const createError = useGitStore.getState().lastError?.trim();
-    const expectedBaseRef = normalizeBranchName(task.base_branch || getGitFlowBaseBranch());
+    const expectedBaseRef = normalizeBranchName(target.targetBranchName || task.base_branch || getGitFlowBaseBranch());
     const parsedMissingRef = createError ? parseMissingStartRefError(createError) : null;
     if (
       parsedMissingRef &&
@@ -743,6 +745,7 @@ const persistTaskStatusToArchitectPlan = async (
     planId: plan.id,
     nodes: plan.nodes || [],
     predictedBranches: plan.predictedBranches || [],
+    targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
   }).tasks;
   const nextPredictedBranches = applyPredictedBranchLifecycle(
     currentPlanTasks.map((currentTask) => ({
@@ -768,6 +771,7 @@ const persistTaskStatusToArchitectPlan = async (
     planId: plan.id,
     nodes: nextPlanNodes,
     predictedBranches: nextPredictedBranches,
+    targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
   });
   const nextPlanStatus = plan.status === 'validated' && status !== 'Pending'
     ? 'in_progress'
@@ -986,9 +990,9 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
-    const branchName = task.assigned_branch;
     const preferredTarget = getPreferredExecutionTarget(task, appState.selectedProjectId);
     const primaryTarget = preferredTarget || getPrimaryExecutionTarget(task);
+    const branchName = primaryTarget?.branchName || task.assigned_branch;
     const knownWorktree = primaryTarget
       ? await inspectTargetWorktreePath(primaryTarget, get().branchWorktrees)
       : null;

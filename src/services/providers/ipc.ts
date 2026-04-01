@@ -15,7 +15,7 @@ import type {
   ChatCompletionResponseDto,
 } from '../contracts/dtos';
 import type { ServiceProvider } from '../contracts/serviceProvider';
-import type { AIModel, AIProvider, ChatMessage, Conversation, ProjectGroup, Task, ToolTrace } from '../../types';
+import type { AIModel, AIProvider, ChatMessage, Conversation, Project, ProjectGroup, Task, ToolTrace } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
 import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
@@ -259,6 +259,7 @@ export const createProject = async (data: {
   groupId: string | null;
   groupName?: string | null;
   path?: string;
+  gitFlowSettings?: Project['gitFlowSettings'];
 }): Promise<ProjectDto> => {
   const project = await tauriIpc.workspaceCreateProject({
     name: data.name,
@@ -266,6 +267,7 @@ export const createProject = async (data: {
     groupId: data.groupId,
     groupName: data.groupName,
     path: data.path,
+    gitFlowSettings: data.gitFlowSettings,
   });
 
   return { project };
@@ -278,6 +280,7 @@ export const importGitRepo = async (data: {
   groupId: string | null;
   groupName?: string | null;
   path?: string;
+  gitFlowSettings?: Project['gitFlowSettings'];
 }): Promise<ProjectDto> => {
   const project = await tauriIpc.workspaceImportGitRepo({
     gitUrl: data.gitUrl,
@@ -286,6 +289,7 @@ export const importGitRepo = async (data: {
     groupId: data.groupId,
     groupName: data.groupName,
     path: data.path,
+    gitFlowSettings: data.gitFlowSettings,
   });
 
   return { project };
@@ -310,6 +314,18 @@ export const renameProject = async (data: {
   const project = await tauriIpc.workspaceRenameProject({
     projectId: data.projectId,
     name: data.name,
+  });
+
+  return { project };
+};
+
+export const updateProjectGitFlow = async (data: {
+  projectId: string;
+  gitFlowSettings: NonNullable<Project['gitFlowSettings']>;
+}): Promise<ProjectDto> => {
+  const project = await tauriIpc.workspaceUpdateProjectGitFlow({
+    projectId: data.projectId,
+    gitFlowSettings: data.gitFlowSettings,
   });
 
   return { project };
@@ -444,6 +460,7 @@ export const provider: ServiceProvider = {
   importGitRepo,
   renameProjectGroup,
   renameProject,
+  updateProjectGitFlow,
   archiveProjectGroup,
   archiveProject,
   removeProjectGroup,
