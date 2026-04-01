@@ -5,6 +5,8 @@ mod db;
 mod dev_overrides;
 #[cfg(target_os = "macos")]
 mod macos_dynamic_app_icon;
+#[cfg(target_os = "macos")]
+mod macos_window_menu;
 mod secrets;
 
 // Placeholder modules for critical manual implementation
@@ -21,10 +23,10 @@ use commands::DbPool;
 use core::{init_logging, init_process_environment, load_config};
 use fs::watcher::init_watcher;
 use git::GitState;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::utils::config::Color;
 use tauri::Manager;
@@ -262,10 +264,21 @@ pub fn run() {
         .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
             #[cfg(target_os = "macos")]
-            if let Some(window) = app.get_webview_window("main") {
-                window.set_decorations(true)?;
-                window.set_title_bar_style(TitleBarStyle::Overlay)?;
-                window.set_background_color(Some(Color::from((9, 9, 11, 255))))?;
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.set_decorations(true)?;
+                    window.set_title_bar_style(TitleBarStyle::Overlay)?;
+                    window.set_background_color(Some(Color::from((9, 9, 11, 255))))?;
+                }
+
+                let app_handle = app.handle().clone();
+                if let Err(error) = app_handle.run_on_main_thread(|| {
+                    if let Err(error) = macos_window_menu::rebind_visible_windows_menu() {
+                        tracing::warn!("Failed to rebind macOS Window menu: {}", error);
+                    }
+                }) {
+                    tracing::warn!("Failed to schedule macOS Window menu rebinding: {}", error);
+                }
             }
 
             let app_handle = app.handle().clone();
