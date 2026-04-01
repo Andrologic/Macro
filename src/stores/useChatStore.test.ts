@@ -1346,7 +1346,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
-  it('moves an implement task from pending to awaiting response around assistant streaming', async () => {
+  it('keeps an implement task in progress when the assistant reply has no quick replies', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
     taskStoreState.tasks = [
@@ -1409,9 +1409,161 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
 
     expect(taskStoreState.startTask).toHaveBeenCalledWith('manual-task-1');
+    expect(taskStoreState.markTaskAwaitingResponse).not.toHaveBeenCalled();
+    expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
+      status: 'InProgress',
+    });
+  });
+
+  it('moves an implement task to awaiting response when the assistant reply contains valid quick replies', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [
+      createManualFeatureTask({
+        draft: false,
+        title: 'Quick export',
+        status: 'Pending',
+        feature_slug: 'quick-export',
+        assigned_branch: 'feature/quick-export',
+        branch_name: 'feature/quick-export',
+      }),
+    ];
+
+    const { streamChat } = await import('../services/streamingChat');
+    (
+      streamChat as unknown as {
+        mockImplementationOnce: (implementation: (options: {
+          onComplete?: (result: {
+            visibleContent: string;
+            toolTraces: unknown[];
+            hiddenContext?: unknown;
+            usage: null;
+          }) => void;
+        }) => Promise<{ usage: null }>) => void;
+      }
+    ).mockImplementationOnce(async ({ onComplete }) => {
+      onComplete?.({
+        visibleContent: [
+          'I need one blocking choice before I continue.',
+          '',
+          '[quick-replies]',
+          '- Use CSV download only',
+          '- Add CSV and TSV',
+          '- Keep it behind a feature flag',
+          '[/quick-replies]',
+        ].join('\n'),
+        toolTraces: [],
+        hiddenContext: undefined,
+        usage: null,
+      });
+      return { usage: null };
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          task_id: 'manual-task-1',
+          title: 'Quick export',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'manual-conv',
+      content: 'Implémente l’export CSV.',
+      taskId: 'manual-task-1',
+    });
+
+    expect(taskStoreState.startTask).toHaveBeenCalledWith('manual-task-1');
     expect(taskStoreState.markTaskAwaitingResponse).toHaveBeenCalledWith('manual-task-1');
     expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
       status: 'AwaitingResponse',
+    });
+  });
+
+  it('keeps an implement task in progress when the assistant reply has malformed quick replies', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [
+      createManualFeatureTask({
+        draft: false,
+        title: 'Quick export',
+        status: 'Pending',
+        feature_slug: 'quick-export',
+        assigned_branch: 'feature/quick-export',
+        branch_name: 'feature/quick-export',
+      }),
+    ];
+
+    const { streamChat } = await import('../services/streamingChat');
+    (
+      streamChat as unknown as {
+        mockImplementationOnce: (implementation: (options: {
+          onComplete?: (result: {
+            visibleContent: string;
+            toolTraces: unknown[];
+            hiddenContext?: unknown;
+            usage: null;
+          }) => void;
+        }) => Promise<{ usage: null }>) => void;
+      }
+    ).mockImplementationOnce(async ({ onComplete }) => {
+      onComplete?.({
+        visibleContent: [
+          'I still need clarification.',
+          '',
+          '[quick-replies]',
+          '- Only one option',
+          '[/quick-replies]',
+        ].join('\n'),
+        toolTraces: [],
+        hiddenContext: undefined,
+        usage: null,
+      });
+      return { usage: null };
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          task_id: 'manual-task-1',
+          title: 'Quick export',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'manual-conv',
+      content: 'Implémente l’export CSV.',
+      taskId: 'manual-task-1',
+    });
+
+    expect(taskStoreState.startTask).toHaveBeenCalledWith('manual-task-1');
+    expect(taskStoreState.markTaskAwaitingResponse).not.toHaveBeenCalled();
+    expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
+      status: 'InProgress',
     });
   });
 
