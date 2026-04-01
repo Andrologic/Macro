@@ -14,6 +14,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { type AppMode } from '../../types';
 import { cn } from '../../utils/cn';
 import { getPlatformChromeState } from '../../utils/desktopPlatform';
+import { getEffectiveUiZoomScale } from '../../utils/uiZoom';
 import { Logo } from '../ui/Logo';
 import { Icon, type IconName } from '../ui/Icon';
 import { ProjectNavigator } from '../modals/ProjectNavigator';
@@ -78,6 +79,8 @@ export function Header({
   const openAccount = useAppStore((state) => state.openAccount);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const projectGroups = useAppStore((state) => state.projectGroups);
+  const uiZoomMode = useAppStore((state) => state.uiZoomMode);
+  const uiZoomLevel = useAppStore((state) => state.uiZoomLevel);
 
   const platformChrome = getPlatformChromeState();
   const titleBarLayout = getTitleBarLayout(platformChrome);
@@ -95,6 +98,7 @@ export function Header({
   const headerRef = useRef<HTMLElement>(null);
   const modeMenuRef = useRef<HTMLDivElement>(null);
   const modeMenuPortalRef = useRef<HTMLDivElement>(null);
+  const lastTrafficLightPositionRef = useRef<string | null>(null);
 
   const modeOptions: ModeOption[] = [
     { value: 'Architect', label: t('header.architect'), icon: 'compass' },
@@ -105,6 +109,7 @@ export function Header({
 
   const currentMode = modeOptions.find((candidate) => candidate.value === mode) || modeOptions[0];
   const isNativeMacosTitlebar = platformChrome.usesNativeMacosTitlebar;
+  const effectiveUiZoomScale = getEffectiveUiZoomScale(uiZoomMode, uiZoomLevel);
   const headerStyle = {
     '--macro-titlebar-height': `${titleBarLayout.titleBarHeightPx}px`,
   } as CSSProperties;
@@ -161,11 +166,7 @@ export function Header({
 
   useEffect(() => {
     if (!isNativeMacosTitlebar || !isTauriAvailable) {
-      return;
-    }
-
-    const headerElement = headerRef.current;
-    if (!headerElement) {
+      lastTrafficLightPositionRef.current = null;
       return;
     }
 
@@ -176,33 +177,36 @@ export function Header({
         return;
       }
 
-      const measuredHeight = headerElement.getBoundingClientRect().height || titleBarLayout.titleBarHeightPx;
-      const position = getMacosTrafficLightPosition(measuredHeight);
+      const position = getMacosTrafficLightPosition(effectiveUiZoomScale);
+      const positionKey = `${position.x}:${position.y}`;
+
+      if (lastTrafficLightPositionRef.current === positionKey) {
+        return;
+      }
+
+      lastTrafficLightPositionRef.current = positionKey;
+
       void windowSetTrafficLightPosition(position.x, position.y).catch((error) => {
         if (!cancelled) {
+          lastTrafficLightPositionRef.current = null;
           console.error('Failed to sync macOS traffic light position:', error);
         }
       });
     };
 
     syncTrafficLights();
-
-    const resizeObserver =
-      typeof ResizeObserver !== 'undefined'
-        ? new ResizeObserver(() => {
-            syncTrafficLights();
-          })
-        : null;
-
-    resizeObserver?.observe(headerElement);
     window.addEventListener('resize', syncTrafficLights);
 
     return () => {
       cancelled = true;
-      resizeObserver?.disconnect();
       window.removeEventListener('resize', syncTrafficLights);
     };
-  }, [isNativeMacosTitlebar, isTauriAvailable, titleBarLayout.titleBarHeightPx]);
+  }, [
+    effectiveUiZoomScale,
+    isNativeMacosTitlebar,
+    isTauriAvailable,
+    titleBarLayout.titleBarHeightPx,
+  ]);
 
   const handleHeaderDoubleClick = () => {
     if (isNativeMacosTitlebar || platformChrome.disableCustomDoubleClickZoom) {
