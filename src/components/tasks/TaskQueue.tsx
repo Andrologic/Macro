@@ -370,7 +370,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedProjectId,
     selectedTaskId,
     projectGroups,
-    openSettings,
+    openProjectGitFlowModal,
+    setSelectedProject,
     setSelectedTask,
   } = useAppStore();
   const getProjectById = useAppStore((state) => state.getProjectById);
@@ -496,7 +497,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             variant: 'secondary',
             onClick: () => {
               setSelectedTask(missingBaseBranchIssue.taskId);
-              openSettings('architect');
+              setSelectedProject(missingBaseBranchIssue.projectId);
+              openProjectGitFlowModal(missingBaseBranchIssue.projectId);
               clearMissingBaseBranchIssue();
             },
           },
@@ -507,7 +509,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     clearMissingBaseBranchIssue,
     createMissingBaseBranch,
     missingBaseBranchIssue,
-    openSettings,
+    openProjectGitFlowModal,
+    setSelectedProject,
     setSelectedTask,
     t,
   ]);
@@ -1133,6 +1136,19 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                 key={plan.id}
                 className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2"
               >
+                {(() => {
+                  const effectiveTargetBranch =
+                    (selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]) || plan.targetBranch;
+                  const targetSummary = plan.hasMixedTargetBranches
+                    ? selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]
+                      ? t('implement.mixedTargetsForProject', 'Mixed targets · this repo: {{branchName}}', {
+                        branchName: effectiveTargetBranch,
+                      })
+                      : t('implement.mixedTargets', 'Mixed targets')
+                    : t('implement.singleTarget', 'Target: {{branchName}}', {
+                      branchName: effectiveTargetBranch,
+                    });
+                  return (
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-xs font-medium text-emerald-500">
@@ -1140,6 +1156,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     </div>
                     <div className="text-xs text-muted-foreground truncate">
                       {planLabelsById.get(plan.id) || plan.title}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-emerald-200/80 truncate">
+                      {targetSummary}
                     </div>
                   </div>
                   <button
@@ -1162,6 +1181,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                       : t('implement.finalizePlan', 'Finalize plan')}
                   </button>
                 </div>
+                  );
+                })()}
               </div>
             ))}
           </div>

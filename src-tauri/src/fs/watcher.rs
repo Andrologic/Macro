@@ -282,8 +282,6 @@ pub fn init_watcher(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use tempfile::TempDir;
 
     #[test]
     fn test_should_ignore_path() {

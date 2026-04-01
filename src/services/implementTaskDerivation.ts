@@ -6,6 +6,11 @@ import type {
   TaskExecutionTarget,
   TaskStatus,
 } from '../types';
+import {
+  getPlanNodeBranchIntent,
+  getPredictedBranchIntent,
+  getPredictedBranchIntentKey,
+} from './gitFlowBranchIntents';
 
 const BRANCH_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
@@ -113,22 +118,23 @@ const toBranchTaskOrder = (
 
   for (const branch of predictedBranches) {
     const branchName = normalizeBranchName(branch.name);
+    const branchKey = getPredictedBranchIntentKey(branch);
     const orderedIds = branch.taskIds.filter((taskId) => nodeById.has(taskId));
     const deduped = unique(orderedIds);
 
     for (const taskId of deduped) {
       const node = nodeById.get(taskId);
-      if (node) {
+      if (node && !node.branchType && !node.branchSlug) {
         node.assignedBranch = branchName;
       }
     }
 
-    if (!orderByBranch.has(branchName)) {
-      orderByBranch.set(branchName, deduped);
+    if (!orderByBranch.has(branchKey)) {
+      orderByBranch.set(branchKey, deduped);
       continue;
     }
 
-    const existing = orderByBranch.get(branchName)!;
+    const existing = orderByBranch.get(branchKey)!;
     for (const taskId of deduped) {
       if (!existing.includes(taskId)) {
         existing.push(taskId);
@@ -137,14 +143,17 @@ const toBranchTaskOrder = (
   }
 
   for (const node of nodes) {
-    const branchName = normalizeBranchName(node.assignedBranch);
-    node.assignedBranch = branchName;
+    const branchIntent = getPlanNodeBranchIntent(node);
+    const branchKey = branchIntent.key;
+    node.assignedBranch = node.assignedBranch ? normalizeBranchName(node.assignedBranch) : branchIntent.label;
+    node.branchType = branchIntent.branchType;
+    node.branchSlug = branchIntent.branchSlug;
 
-    if (!orderByBranch.has(branchName)) {
-      orderByBranch.set(branchName, []);
+    if (!orderByBranch.has(branchKey)) {
+      orderByBranch.set(branchKey, []);
     }
 
-    const branchOrder = orderByBranch.get(branchName)!;
+    const branchOrder = orderByBranch.get(branchKey)!;
     if (!branchOrder.includes(node.id)) {
       branchOrder.push(node.id);
     }
@@ -163,14 +172,15 @@ const normalizePredictedBranches = (
   const seenKeys = new Set<string>();
 
   for (const branch of predictedBranches) {
+    const branchIntent = getPredictedBranchIntent(branch);
     const branchName = normalizeBranchName(branch.name);
     const projectId = normalizeProjectId(branch.projectId);
     if (!projectId) continue;
 
-    const taskIds = branchTaskOrder.get(branchName) || [];
-    const cacheKey = toBranchCacheKey(projectId, branchName);
+    const taskIds = branchTaskOrder.get(branchIntent.key) || [];
+    const cacheKey = `${projectId}::${branchIntent.key}`;
     if (seenKeys.has(cacheKey)) {
-      const existing = normalized.find((candidate) => toBranchCacheKey(candidate.projectId, candidate.name) === cacheKey);
+      const existing = normalized.find((candidate) => `${candidate.projectId}::${getPredictedBranchIntentKey(candidate)}` === cacheKey);
       if (existing) {
         existing.taskIds = unique([...existing.taskIds, ...taskIds]);
       }
@@ -182,21 +192,26 @@ const normalizePredictedBranches = (
       name: branchName,
       projectId,
       taskIds,
+      branchType: branchIntent.branchType,
+      branchSlug: branchIntent.branchSlug,
     });
     seenKeys.add(cacheKey);
   }
 
   let colorIndex = normalized.length;
-  for (const [branchName, taskIds] of branchTaskOrder.entries()) {
+  for (const [branchKey, taskIds] of branchTaskOrder.entries()) {
     const projectIds = unique(
       taskIds.flatMap((taskId) => {
         const node = nodeById.get(taskId);
         return node ? normalizeNodeProjectIds(node) : [];
       })
     );
+    const firstNode = taskIds.map((taskId) => nodeById.get(taskId)).find(Boolean) || null;
+    const branchIntent = firstNode ? getPlanNodeBranchIntent(firstNode) : null;
+    const branchName = branchIntent?.label || branchKey;
 
     for (const projectId of projectIds) {
-      const cacheKey = toBranchCacheKey(projectId, branchName);
+      const cacheKey = `${projectId}::${branchKey}`;
       if (seenKeys.has(cacheKey)) continue;
 
       normalized.push({
@@ -207,6 +222,8 @@ const normalizePredictedBranches = (
         projectId,
         taskIds,
         status: 'pending',
+        branchType: branchIntent?.branchType,
+        branchSlug: branchIntent?.branchSlug,
       });
       colorIndex += 1;
       seenKeys.add(cacheKey);
@@ -262,9 +279,12 @@ export const normalizeStrategyDependencies = (
 ): NormalizedStrategyResult => {
   const clonedNodes: PlanNode[] = nodesInput.map((node) => {
     const projectIds = normalizeNodeProjectIds(node);
+    const branchIntent = getPlanNodeBranchIntent(node);
     return {
       ...node,
-      assignedBranch: normalizeBranchName(node.assignedBranch),
+      assignedBranch: normalizeBranchName(node.assignedBranch) || branchIntent.label,
+      branchType: branchIntent.branchType,
+      branchSlug: branchIntent.branchSlug,
       dependencies: [...node.dependencies],
       projectId: projectIds[0],
       projectIds,
@@ -279,12 +299,17 @@ export const normalizeStrategyDependencies = (
   }
 
   const predictedBranches = predictedBranchesInput
-    .map((branch) => ({
-      ...branch,
-      name: normalizeBranchName(branch.name),
-      projectId: normalizeProjectId(branch.projectId) || '',
-      taskIds: [...branch.taskIds],
-    }))
+    .map((branch) => {
+      const branchIntent = getPredictedBranchIntent(branch);
+      return {
+        ...branch,
+        name: normalizeBranchName(branch.name) || branchIntent.label,
+        projectId: normalizeProjectId(branch.projectId) || '',
+        taskIds: [...branch.taskIds],
+        branchType: branchIntent.branchType,
+        branchSlug: branchIntent.branchSlug,
+      };
+    })
     .filter((branch) => branch.projectId.length > 0);
 
   const branchTaskOrder = toBranchTaskOrder(clonedNodes, predictedBranches);
@@ -333,19 +358,24 @@ const shouldFlagTaskForRevalidation = (status: TaskStatus, blockedByTaskIds: str
 const buildExecutionTargets = (
   node: PlanNode,
   predictedBranches: PredictedBranch[],
-  planBranchName: string | undefined
+  planBranchName: string | undefined,
+  targetBranchesByProjectId?: Record<string, string>
 ): TaskExecutionTarget[] => {
-  const branchName = normalizeBranchName(node.assignedBranch);
+  const branchIntent = getPlanNodeBranchIntent(node);
   const projectIds = normalizeNodeProjectIds(node);
 
   return projectIds.map((projectId) => {
     const predictedBranch = predictedBranches.find(
-      (branch) => branch.projectId === projectId && normalizeBranchName(branch.name) === branchName
+      (branch) =>
+        branch.projectId === projectId &&
+        getPredictedBranchIntentKey(branch) === branchIntent.key
     );
+    const branchName = predictedBranch?.name || normalizeBranchName(node.assignedBranch) || branchIntent.label;
 
     return {
       projectId,
       branchName,
+      targetBranchName: targetBranchesByProjectId?.[projectId],
       worktreeKey: toBranchWorktreeKey(projectId, branchName),
       planBranchName: planBranchName || predictedBranch?.parentBranch || undefined,
       predictedBranchId: predictedBranch?.id ?? null,
@@ -357,6 +387,7 @@ export const deriveImplementTasksFromStrategy = (params: {
   planId: string;
   nodes: PlanNode[];
   predictedBranches: PredictedBranch[];
+  targetBranchesByProjectId?: Record<string, string>;
 }): {
   tasks: DerivedImplementTask[];
   nodes: PlanNode[];
@@ -365,7 +396,7 @@ export const deriveImplementTasksFromStrategy = (params: {
 } => {
   const normalized = normalizeStrategyDependencies(params.nodes, params.predictedBranches);
   const branchByProjectAndName = new Map(
-    normalized.predictedBranches.map((branch) => [toBranchCacheKey(branch.projectId, branch.name), branch])
+    normalized.predictedBranches.map((branch) => [`${branch.projectId}::${getPredictedBranchIntentKey(branch)}`, branch])
   );
   const planBranchName = normalized.predictedBranches[0]?.parentBranch || undefined;
 
@@ -387,13 +418,19 @@ export const deriveImplementTasksFromStrategy = (params: {
   }
 
   const initialTasks: DerivedImplementTask[] = normalized.nodes.map((node) => {
-    const branchName = normalizeBranchName(node.assignedBranch);
-    const executionTargets = buildExecutionTargets(node, normalized.predictedBranches, planBranchName);
+    const branchIntent = getPlanNodeBranchIntent(node);
+    const executionTargets = buildExecutionTargets(
+      node,
+      normalized.predictedBranches,
+      planBranchName,
+      params.targetBranchesByProjectId
+    );
     const primaryTarget = executionTargets[0] || null;
     const branch = primaryTarget
-      ? branchByProjectAndName.get(toBranchCacheKey(primaryTarget.projectId, branchName)) || null
+      ? branchByProjectAndName.get(`${primaryTarget.projectId}::${branchIntent.key}`) || null
       : null;
-    const branchTaskIndex = normalized.branchTaskOrder[branchName]?.indexOf(node.id) ?? -1;
+    const branchName = primaryTarget?.branchName || normalizeBranchName(node.assignedBranch) || branchIntent.label;
+    const branchTaskIndex = normalized.branchTaskOrder[branchIntent.key]?.indexOf(node.id) ?? -1;
     const status = mapNodeStatusToTaskStatus(node.status);
     const projectIds = executionTargets.map((target) => target.projectId);
 

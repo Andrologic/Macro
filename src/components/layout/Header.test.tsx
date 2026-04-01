@@ -36,6 +36,7 @@ let chromeState: {
   disableCustomDoubleClickZoom: boolean;
   usesNativeMacosTitlebar: boolean;
 };
+let importCounter = 0;
 
 const createStoreHook = <T,>(getSnapshot: () => T) => {
   const hook = ((selector?: (state: T) => unknown) => {
@@ -49,55 +50,60 @@ const createStoreHook = <T,>(getSnapshot: () => T) => {
 
 const useAppStore = createStoreHook(() => appState);
 
-mock.module('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key: string, fallback?: string) => fallback ?? key,
-  }),
-}));
+const registerHeaderMocks = () => {
+  mock.restore();
 
-mock.module('../../i18n', () => ({
-  default: {
-    t: (_key: string, fallback: string) => fallback,
-  },
-}));
+  mock.module('react-i18next', () => ({
+    useTranslation: () => ({
+      t: (key: string, fallback?: string) => fallback ?? key,
+    }),
+  }));
 
-mock.module('../../stores/useAppStore', () => ({
-  useAppStore,
-}));
+  mock.module('../../i18n', () => ({
+    default: {
+      t: (_key: string, fallback: string) => fallback,
+    },
+  }));
 
-mock.module('../../hooks/useTauriWindow', () => ({
-  useTauriWindow: () => tauriWindowState,
-}));
+  mock.module('../../stores/useAppStore', () => ({
+    useAppStore,
+  }));
 
-mock.module('../../services/tauriWindow', () => ({
-  windowSetTrafficLightPosition: (...args: [number, number]) =>
-    windowSetTrafficLightPositionMock(...args),
-}));
+  mock.module('../../hooks/useTauriWindow', () => ({
+    useTauriWindow: () => tauriWindowState,
+  }));
 
-mock.module('../../utils/desktopPlatform', () => ({
-  getPlatformChromeState: () => chromeState,
-}));
+  mock.module('../../services/tauriWindow', () => ({
+    windowSetTrafficLightPosition: (...args: [number, number]) =>
+      windowSetTrafficLightPositionMock(...args),
+  }));
 
-mock.module('../ui/Icon', () => ({
-  Icon: ({ name }: { name: string }) => <span data-icon={name} />,
-}));
+  mock.module('../../utils/desktopPlatform', () => ({
+    getPlatformChromeState: () => chromeState,
+  }));
 
-mock.module('../ui/Logo', () => ({
-  Logo: () => <span data-testid="logo" />,
-}));
+  mock.module('../ui/Icon', () => ({
+    Icon: ({ name }: { name: string }) => <span data-icon={name} />,
+  }));
 
-mock.module('../modals/ProjectNavigator', () => ({
-  ProjectNavigator: () => null,
-}));
+  mock.module('../ui/Logo', () => ({
+    Logo: () => <span data-testid="logo" />,
+  }));
 
-mock.module('../../services/globalProjects', () => ({
-  getGlobalProjectById: () => ({ name: 'Macro Repo' }),
-}));
+  mock.module('../modals/ProjectNavigator', () => ({
+    ProjectNavigator: () => null,
+  }));
 
-const {
-  Header,
-  resolveMacosTitlebarMouseAction,
-} = await import('./Header');
+  mock.module('../../services/globalProjects', () => ({
+    getGlobalProjectById: () => ({ name: 'Macro Repo' }),
+  }));
+};
+
+const loadHeader = async () => {
+  registerHeaderMocks();
+  importCounter += 1;
+  return import(`./Header.tsx?test=${importCounter}`);
+};
 
 describe('Header', () => {
   let container: HTMLDivElement | null = null;
@@ -138,9 +144,11 @@ describe('Header', () => {
     root = null;
     container?.remove();
     container = null;
+    mock.restore();
   });
 
-  it('uses the default centered layout on Windows', () => {
+  it('uses the default centered layout on Windows', async () => {
+    const { Header } = await loadHeader();
     const html = renderToStaticMarkup(
       <Header
         isLeftOpen
@@ -160,7 +168,8 @@ describe('Header', () => {
     expect(html).not.toContain('macro-native-titlebar');
   });
 
-  it('uses a single native macOS top bar without custom window controls', () => {
+  it('uses a single native macOS top bar without custom window controls', async () => {
+    const { Header } = await loadHeader();
     chromeState = {
       platform: 'macos',
       isTauriWindow: true,
@@ -213,6 +222,7 @@ describe('Header', () => {
   });
 
   it('repositions native macOS traffic lights when ui zoom changes', async () => {
+    const { Header } = await loadHeader();
     chromeState = {
       platform: 'macos',
       isTauriWindow: true,
@@ -282,7 +292,8 @@ describe('Header', () => {
     expect(windowSetTrafficLightPositionMock).toHaveBeenCalledWith(15, 30);
   });
 
-  it('starts dragging on macOS title bar mouse down', () => {
+  it('starts dragging on macOS title bar mouse down', async () => {
+    const { resolveMacosTitlebarMouseAction } = await loadHeader();
     expect(
       resolveMacosTitlebarMouseAction({
         button: 0,
@@ -293,7 +304,8 @@ describe('Header', () => {
     ).toBe('start-dragging');
   });
 
-  it('toggles maximize on macOS title bar double click', () => {
+  it('toggles maximize on macOS title bar double click', async () => {
+    const { resolveMacosTitlebarMouseAction } = await loadHeader();
     expect(
       resolveMacosTitlebarMouseAction({
         button: 0,
@@ -304,7 +316,8 @@ describe('Header', () => {
     ).toBe('toggle-maximize');
   });
 
-  it('keeps interactive macOS zones out of drag handling', () => {
+  it('keeps interactive macOS zones out of drag handling', async () => {
+    const { resolveMacosTitlebarMouseAction } = await loadHeader();
     expect(
       resolveMacosTitlebarMouseAction({
         button: 0,

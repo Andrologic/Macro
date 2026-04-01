@@ -30,6 +30,7 @@ import type {
 } from '../contracts/dtos';
 import type { ServiceProvider } from '../contracts/serviceProvider';
 import type { Project, ProjectGroup } from '../../types';
+import { getDefaultProjectGitFlowSettings } from '../architectGitNaming';
 import { delay, maybeFail } from '../utils';
 
 const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
@@ -246,6 +247,7 @@ export const createProject = async (data: {
   groupId: string | null;
   groupName?: string | null;
   path?: string;
+  gitFlowSettings?: Project['gitFlowSettings'];
 }): Promise<ProjectDto> => {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
@@ -257,6 +259,7 @@ export const createProject = async (data: {
     path: data.path || data.name.toLowerCase().replace(/\s+/g, '-'),
     created_at: new Date().toISOString(),
     status: 'active',
+    gitFlowSettings: data.gitFlowSettings || getDefaultProjectGitFlowSettings(),
     metadata: {
       description: data.description,
       tags: [],
@@ -276,6 +279,7 @@ export const importGitRepo = async (data: {
   groupId: string | null;
   groupName?: string | null;
   path?: string;
+  gitFlowSettings?: Project['gitFlowSettings'];
 }): Promise<ProjectDto> => {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
@@ -287,6 +291,7 @@ export const importGitRepo = async (data: {
     path: data.path || data.projectName.toLowerCase().replace(/\s+/g, '-'),
     created_at: new Date().toISOString(),
     status: 'active',
+    gitFlowSettings: data.gitFlowSettings || getDefaultProjectGitFlowSettings(),
     metadata: {
       description: `Imported from ${data.gitUrl}`,
       tags: [],
@@ -339,6 +344,7 @@ export const renameProject = async (data: {
       path: '.',
       created_at: new Date().toISOString(),
       status: 'active',
+      gitFlowSettings: getDefaultProjectGitFlowSettings(),
       metadata: {
         description: '',
         tags: [],
@@ -347,6 +353,39 @@ export const renameProject = async (data: {
         dependencies: [],
       },
     };
+
+  return simulate({ project });
+};
+
+export const updateProjectGitFlow = async (data: {
+  projectId: string;
+  gitFlowSettings: Project['gitFlowSettings'];
+}): Promise<ProjectDto> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+
+  const existingProject = mockProjects
+    .flatMap((group) => group.projects)
+    .find((project) => project.id === data.projectId);
+
+  const project: Project = existingProject
+    ? { ...existingProject, gitFlowSettings: data.gitFlowSettings }
+    : {
+        id: data.projectId,
+        name: 'Project',
+        mountName: 'project',
+        path: '.',
+        created_at: new Date().toISOString(),
+        status: 'active',
+        gitFlowSettings: data.gitFlowSettings,
+        metadata: {
+          description: '',
+          tags: [],
+          team_members: [],
+          api_contracts: [],
+          dependencies: [],
+        },
+      };
 
   return simulate({ project });
 };
@@ -553,6 +592,7 @@ export const provider: ServiceProvider = {
   importGitRepo,
   renameProjectGroup,
   renameProject,
+  updateProjectGitFlow,
   archiveProjectGroup,
   archiveProject,
   removeProjectGroup,

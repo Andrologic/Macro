@@ -95,6 +95,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     removeProjectGroup,
     removeProject,
     openProjectModal,
+    openProjectGitFlowModal,
   } = useAppStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -408,6 +409,16 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                                   data-project-nav-menu="true"
                                   onClick={(e) => e.stopPropagation()}
                                 >
+                                  <button
+                                    onClick={() => {
+                                      openProjectGitFlowModal(project.id);
+                                      setMenuOpenFor(null);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+                                  >
+                                    <Icon name="git-branch" size={12} />
+                                    {t('projects.gitFlowSettings', 'GitFlow settings')}
+                                  </button>
                                   <button
                                     onClick={() => {
                                       setRenameTarget({ type: 'project', project });
