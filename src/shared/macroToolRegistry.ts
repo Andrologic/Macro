@@ -537,7 +537,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     'strategy_generate',
-    'Generate a structured strategy for the active plan based on collected needs. New plans use a generated plan identifier as the canonical slug, so plan branches are plan/<plan-id> and feature branches are feature/<plan-id>/<feature-slug>.',
+    'Generate a structured strategy for the active plan based on collected needs. Express branch intent with branchType + branchSlug. Concrete branch names are derived later from each subproject GitFlow profile.',
     {
       type: 'object',
       properties: {
@@ -560,10 +560,19 @@ export const MACRO_TOOL_REGISTRY = [
               title: { type: 'string' },
               description: { type: 'string' },
               type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+              branchType: {
+                type: 'string',
+                enum: ['feature', 'release', 'hotfix', 'bugfix'],
+                description: 'Preferred branch family for this node.',
+              },
+              branchSlug: {
+                type: 'string',
+                description: 'Slug for the work branch, without the family prefix.',
+              },
               assignedBranch: {
                 type: 'string',
                 description:
-                  'The git branch name this task belongs to, e.g. "feature/1710000000000/auth-api"',
+                  'Legacy fallback branch label. Prefer branchType + branchSlug.',
               },
               dependencies: {
                 type: 'array',
@@ -571,7 +580,7 @@ export const MACRO_TOOL_REGISTRY = [
                 description: 'Titles of nodes this one depends on.',
               },
             },
-            required: ['title', 'type', 'assignedBranch'],
+            required: ['title', 'type'],
           },
           description: 'List of plan nodes representing the tasks to be done.',
         },
@@ -671,7 +680,7 @@ export const MACRO_TOOL_REGISTRY = [
   }),
   objectTool(
     'strategy_update',
-    'Modify strategy for the active plan. You can replace all nodes or apply operations (add, update, remove).',
+    'Modify strategy for the active plan. Prefer branchType + branchSlug when creating or updating nodes; assignedBranch remains legacy fallback.',
     {
       type: 'object',
       properties: {
@@ -689,6 +698,8 @@ export const MACRO_TOOL_REGISTRY = [
               title: { type: 'string' },
               description: { type: 'string' },
               type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+              branchType: { type: 'string', enum: ['feature', 'release', 'hotfix', 'bugfix'] },
+              branchSlug: { type: 'string' },
               assignedBranch: { type: 'string' },
               status: {
                 type: 'string',
@@ -710,6 +721,8 @@ export const MACRO_TOOL_REGISTRY = [
               title: { type: 'string' },
               description: { type: 'string' },
               type: { type: 'string', enum: ['spec', 'feature', 'task', 'milestone'] },
+              branchType: { type: 'string', enum: ['feature', 'release', 'hotfix', 'bugfix'] },
+              branchSlug: { type: 'string' },
               assignedBranch: { type: 'string' },
               status: {
                 type: 'string',

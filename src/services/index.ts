@@ -87,6 +87,8 @@ export const services = {
     callProviderMethod('renameProjectGroup', data),
   renameProject: (data: Parameters<ServiceProvider['renameProject']>[0]) =>
     callProviderMethod('renameProject', data),
+  updateProjectGitFlow: (data: Parameters<ServiceProvider['updateProjectGitFlow']>[0]) =>
+    callProviderMethod('updateProjectGitFlow', data),
   archiveProjectGroup: (data: Parameters<ServiceProvider['archiveProjectGroup']>[0]) =>
     callProviderMethod('archiveProjectGroup', data),
   archiveProject: (data: Parameters<ServiceProvider['archiveProject']>[0]) =>

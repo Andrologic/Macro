@@ -77,6 +77,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     projectGroups,
     selectedGroupId,
     selectedProjectId,
+    getProjectById,
   } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   const [plans, setPlans] = useState<ArchitectPlanSummary[]>([]);
@@ -278,6 +279,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             description: plan.description,
             status: plan.status,
             targetBranch: plan.targetBranch,
+            targetBranchesByProjectId: plan.targetBranchesByProjectId,
+            hasMixedTargetBranches:
+              Boolean(plan.targetBranchesByProjectId) &&
+              new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
           });
           const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
           useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
@@ -342,6 +347,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         description: plan.description,
         status: plan.status,
         targetBranch: plan.targetBranch,
+        targetBranchesByProjectId: plan.targetBranchesByProjectId,
+        hasMixedTargetBranches:
+          Boolean(plan.targetBranchesByProjectId) &&
+          new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
       });
       const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
       useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
@@ -379,6 +388,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         label: DEFAULT_NEW_PLAN_LABEL,
         projectId: scopedProjectIds[0] || undefined,
         projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
+        targetBranchesByProjectId: Object.fromEntries(
+          scopedProjectIds.map((projectId) => [
+            projectId,
+            getProjectById(projectId)?.gitFlowSettings?.baseBranch || targetBranch,
+          ])
+        ),
         status: 'draft',
         setActive: true,
       });
@@ -733,6 +748,20 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const canArchivePlan =
                 plan.status === 'archived' ||
                 !(isCanonicalPlan && isDefaultNewPlanFamilyLabel(plan.label));
+              const effectiveTargetBranch =
+                (selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]) || plan.targetBranch;
+              const hasMixedTargetBranches =
+                Boolean(plan.targetBranchesByProjectId) &&
+                new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1;
+              const targetSummary = hasMixedTargetBranches
+                ? selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]
+                  ? t('architect.planSelector.mixedTargetsForProject', 'Mixed targets · this repo: {{branchName}}', {
+                    branchName: effectiveTargetBranch,
+                  })
+                  : t('architect.planSelector.mixedTargets', 'Mixed targets')
+                : t('architect.planSelector.targetBranch', 'Target: {{branchName}}', {
+                  branchName: effectiveTargetBranch,
+                });
               const renameLabel = isCanonicalPlan
                 ? t('architect.planSelector.editPlanLabel', 'Edit plan label')
                 : t('architect.planSelector.renamePlan', 'Rename plan');
@@ -886,6 +915,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                       </span>
                     )}
                   </div>
+                  <div className="mt-1 text-[11px] text-muted-foreground truncate">
+                    {targetSummary}
+                  </div>
                 </button>
               );
             })}
@@ -1017,4 +1049,3 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 };
 
 export default PlanSelector;
-

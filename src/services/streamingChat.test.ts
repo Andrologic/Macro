@@ -29,7 +29,7 @@ describe('streamingChat Architect tool contracts', () => {
     const planTitleProperty = asObjectSchema(GENERATE_PLAN_TOOL.function.parameters).properties
       .plan_title as { description?: string };
 
-    expect(String(GENERATE_PLAN_TOOL.function.description)).toContain('plan/<plan-id>');
+    expect(String(GENERATE_PLAN_TOOL.function.description)).toContain('branchType + branchSlug');
     expect(String(planTitleProperty.description)).toContain('secondary plan label');
   });
 

@@ -347,10 +347,13 @@ mod tests {
         let scale = draw_rect.width / 1024.0;
         let scaled_visible_width = visible_bounds.width * scale;
         let scaled_visible_height = visible_bounds.height * scale;
+        let visible_center_x = draw_rect.x + visible_bounds.mid_x() * scale;
+        let visible_center_y = draw_rect.y + visible_bounds.mid_y() * scale;
+        let frame = logo_frame_rect();
 
         assert!(scaled_visible_width <= ICON_LOGO_FRAME_SIZE + f64::EPSILON);
         assert!(scaled_visible_height <= ICON_LOGO_FRAME_SIZE + f64::EPSILON);
-        assert!((draw_rect.x + draw_rect.width / 2.0 - 512.0).abs() < 0.01);
-        assert!((draw_rect.y + draw_rect.height / 2.0 - 512.0).abs() < 0.01);
+        assert!((visible_center_x - frame.mid_x()).abs() < 0.01);
+        assert!((visible_center_y - frame.mid_y()).abs() < 0.01);
     }
 }

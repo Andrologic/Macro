@@ -7,6 +7,7 @@ import { useUiZoom } from './hooks/useUiZoom';
 import { PanelResizer } from './components/layout/PanelResizer';
 import { ModeRouter } from './components/layout/ModeRouter';
 import { appBootstrap } from './services/appBootstrap';
+import { initializeDesktopNotifications } from './services/desktopNotifications';
 import { useAppStore } from './stores/useAppStore';
 import { Skeleton } from './components/shared/Skeleton';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
@@ -22,6 +23,7 @@ const DiffModal = lazy(() => import('./components/modals/DiffModal'));
 const SettingsModal = lazy(() => import('./components/settings/SettingsModal'));
 const AccountModal = lazy(() => import('./components/modals/AccountModal'));
 const ProjectModal = lazy(() => import('./components/modals/ProjectModal'));
+const ProjectGitFlowModal = lazy(() => import('./components/modals/ProjectGitFlowModal'));
 const CodeFileViewerModal = lazy(() => import('./components/modals/CodeFileViewerModal'));
 
 // =============================================================================
@@ -157,7 +159,6 @@ const App: React.FC = () => {
   useEffect(() => {
     void (async () => {
       await appBootstrap.ensureStarted();
-      const { initializeDesktopNotifications } = await import('./services/desktopNotifications');
       await initializeDesktopNotifications();
     })();
   }, []);
@@ -238,6 +239,7 @@ const App: React.FC = () => {
         <SettingsModal />
         <AccountModal />
         <ProjectModal />
+        <ProjectGitFlowModal />
         <CodeFileViewerModal />
       </Suspense>
 

@@ -4,7 +4,12 @@ import {
   toBranchWorktreeKey,
   type DerivedImplementTask,
 } from './implementTaskDerivation';
-import type { ArchitectPlanRecord, ArchitectPlanStatus } from './architectPlanService';
+import {
+  getArchitectPlanTargetBranchesByProjectId,
+  planHasMixedTargetBranches,
+  type ArchitectPlanRecord,
+  type ArchitectPlanStatus,
+} from './architectPlanService';
 
 export type ImplementTaskSource = 'architect' | 'standalone';
 export type ImplementTaskCatalogSource = 'architect' | 'mixed' | 'fallback' | 'empty';
@@ -16,6 +21,8 @@ export interface ImplementTaskPlanSummary {
   label?: string;
   status: ArchitectPlanStatus;
   targetBranch: string;
+  targetBranchesByProjectId?: Record<string, string>;
+  hasMixedTargetBranches?: boolean;
   projectIds: string[];
   taskCount: number;
   completedTaskCount: number;
@@ -29,6 +36,8 @@ export interface CatalogedImplementTask extends DerivedImplementTask {
   plan_title: string | null;
   plan_status: ArchitectPlanStatus | null;
   plan_target_branch: string | null;
+  plan_target_branches_by_project_id?: Record<string, string> | null;
+  has_mixed_target_branches?: boolean;
   draft: boolean;
   standalone_kind: 'legacy' | 'manual_feature';
   base_branch: string | null;
@@ -64,11 +73,13 @@ const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[
 
 const buildFallbackExecutionTargets = (
   projectIds: string[],
-  branchName: string
+  branchName: string,
+  targetBranchName?: string | null
 ): TaskExecutionTarget[] => {
   return projectIds.map((projectId) => ({
     projectId,
     branchName,
+    targetBranchName: targetBranchName || undefined,
     worktreeKey: toBranchWorktreeKey(projectId, branchName),
   }));
 };
@@ -119,7 +130,7 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       ? raw.execution_targets
       : isDraft || !assignedBranch
         ? []
-        : buildFallbackExecutionTargets(projectIds, assignedBranch);
+        : buildFallbackExecutionTargets(projectIds, assignedBranch, raw.base_branch ?? null);
 
     return {
       ...task,
@@ -148,6 +159,8 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       plan_title: null,
       plan_status: null,
       plan_target_branch: null,
+      plan_target_branches_by_project_id: null,
+      has_mixed_target_branches: false,
     } satisfies CatalogedImplementTask;
   });
 
@@ -192,10 +205,12 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
 export const deriveImplementTasksFromArchitectPlan = (
   plan: ArchitectPlanRecord
 ): CatalogedImplementTask[] => {
+  const targetBranchesByProjectId = getArchitectPlanTargetBranchesByProjectId(plan);
   const strategy = deriveImplementTasksFromStrategy({
     planId: plan.id,
     nodes: plan.nodes || [],
     predictedBranches: plan.predictedBranches || [],
+    targetBranchesByProjectId,
   });
 
   return strategy.tasks.map((task) => ({
@@ -204,6 +219,8 @@ export const deriveImplementTasksFromArchitectPlan = (
     plan_title: plan.title,
     plan_status: plan.status,
     plan_target_branch: plan.targetBranch,
+    plan_target_branches_by_project_id: targetBranchesByProjectId,
+    has_mixed_target_branches: planHasMixedTargetBranches(plan),
     draft: false,
     standalone_kind: 'legacy' as const,
     base_branch: null,
@@ -287,6 +304,8 @@ export const buildImplementTaskCatalog = (params: {
         label: plan.label,
         status: plan.status,
         targetBranch: plan.targetBranch,
+        targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
+        hasMixedTargetBranches: planHasMixedTargetBranches(plan),
         projectIds: unique(
           [
             ...(Array.isArray(plan.projectIds) ? plan.projectIds : []),

@@ -14,7 +14,7 @@ import type {
   TaskCatalogDto,
   ToolSettingsDto,
 } from './dtos';
-import type { ProjectGroup } from '../../types';
+import type { ProjectGitFlowSettings, ProjectGroup } from '../../types';
 
 export interface ServiceProvider {
   getAppBootstrap: () => Promise<AppBootstrapDto>;
@@ -54,6 +54,7 @@ export interface ServiceProvider {
     groupId: string | null;
     groupName?: string | null;
     path?: string;
+    gitFlowSettings?: ProjectGitFlowSettings;
   }) => Promise<ProjectDto>;
   importGitRepo: (data: {
     gitUrl: string;
@@ -62,6 +63,7 @@ export interface ServiceProvider {
     groupId: string | null;
     groupName?: string | null;
     path?: string;
+    gitFlowSettings?: ProjectGitFlowSettings;
   }) => Promise<ProjectDto>;
   renameProjectGroup: (data: {
     groupId: string;
@@ -70,6 +72,10 @@ export interface ServiceProvider {
   renameProject: (data: {
     projectId: string;
     name: string;
+  }) => Promise<ProjectDto>;
+  updateProjectGitFlow: (data: {
+    projectId: string;
+    gitFlowSettings: ProjectGitFlowSettings;
   }) => Promise<ProjectDto>;
   archiveProjectGroup: (data: {
     groupId: string;

@@ -20,6 +20,16 @@ export type ImplementExecutionMode = 'semi_auto' | 'full_auto';
 // Plan Node types for dependency graph
 export type PlanNodeStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
 export type PlanNodeType = 'spec' | 'feature' | 'task' | 'milestone';
+export type GitFlowBranchType = 'plan' | 'feature' | 'release' | 'hotfix' | 'bugfix';
+
+export interface ProjectGitFlowSettings {
+  baseBranch: string;
+  planBranchTemplate: string;
+  featureBranchTemplate: string;
+  releaseBranchTemplate: string;
+  hotfixBranchTemplate: string;
+  bugfixBranchTemplate: string;
+}
 
 export interface PlanNode {
   id: string;
@@ -29,6 +39,8 @@ export interface PlanNode {
   status: PlanNodeStatus;
   dependencies: string[];
   assignedBranch?: string;
+  branchType?: Exclude<GitFlowBranchType, 'plan'>;
+  branchSlug?: string;
   projectId?: string;
   projectIds?: string[];
   estimatedTime?: string;
@@ -48,12 +60,15 @@ export interface PredictedBranch {
   parentBranch: string | null;
   projectId: string;
   taskIds: string[];
+  branchType?: GitFlowBranchType;
+  branchSlug?: string;
   status: 'pending' | 'active' | 'merged';
 }
 
 export interface TaskExecutionTarget {
   projectId: string;
   branchName: string;
+  targetBranchName?: string;
   worktreeKey: string;
   repoPath?: string;
   planBranchName?: string;
@@ -185,6 +200,7 @@ export interface Project {
   path: string;
   created_at: string;
   status: ProjectStatus;
+  gitFlowSettings?: ProjectGitFlowSettings;
   metadata: ProjectMetadata;
 }
 
@@ -432,4 +448,3 @@ export interface AuthCredentials {
   email: string;
   password: string;
 }
-

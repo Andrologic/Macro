@@ -4,9 +4,10 @@ use crate::core::error::{BackendError, Result};
 use chrono::Utc;
 use metadata::{
     CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, PlanDto, ProjectDto,
-    ProjectGroupDto, ProjectMetadataDto, ProjectRegistryDiagnosticsDto,
-    ProjectRegistryRepairReportDto, WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceState,
-    WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
+    ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto,
+    ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto, WorkspaceBootstrapDto,
+    WorkspaceMetadataDto, WorkspaceState, WorkspaceTaskCatalogDto,
+    WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -614,6 +615,7 @@ pub async fn create_project(
         &request.description,
         request.path.as_deref(),
         workspace_path,
+        request.git_flow_settings.as_ref(),
     );
     ensure_unique_project_name_in_group(
         &state.project_groups,
@@ -681,6 +683,7 @@ pub async fn import_git_repo(
         &description,
         request.path.as_deref(),
         workspace_path,
+        request.git_flow_settings.as_ref(),
     );
     ensure_unique_project_name_in_group(
         &state.project_groups,
@@ -822,6 +825,60 @@ pub async fn rename_project(
     tracing::info!(
         action = "project_registry_action_succeeded",
         operation = "rename_project",
+        project_id = %project_id,
+        after_group_count = sanitized_state.project_groups.len(),
+        after_project_count = count_projects(&sanitized_state.project_groups),
+        repair_applied = repair_report.has_repairs()
+    );
+    Ok(updated_project)
+}
+
+pub async fn update_project_git_flow(
+    workspace_path: &PathBuf,
+    metadata_root: &PathBuf,
+    project_id: &str,
+    git_flow_settings: &ProjectGitFlowSettingsDto,
+) -> Result<ProjectDto> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    tracing::info!(
+        action = "project_registry_action_started",
+        operation = "update_project_git_flow",
+        project_id = %project_id
+    );
+    let mut updated_project: Option<ProjectDto> = None;
+
+    for group in state.project_groups.iter_mut() {
+        if let Some(project) = group
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        {
+            project.git_flow_settings = normalize_project_git_flow_settings(Some(git_flow_settings));
+            updated_project = Some(project.clone());
+            break;
+        }
+    }
+
+    updated_project
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+
+    let (sanitized_state, repair_report) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "update_project_git_flow",
+    )
+    .await?;
+    let updated_project = sanitized_state
+        .project_groups
+        .iter()
+        .flat_map(|group| group.projects.iter())
+        .find(|project| project.id == project_id)
+        .cloned()
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+    tracing::info!(
+        action = "project_registry_action_succeeded",
+        operation = "update_project_git_flow",
         project_id = %project_id,
         after_group_count = sanitized_state.project_groups.len(),
         after_project_count = count_projects(&sanitized_state.project_groups),
@@ -1126,6 +1183,8 @@ fn build_manual_feature_execution_targets(
         .map(|project_id| WorkspaceTaskExecutionTargetDto {
             project_id: project_id.clone(),
             branch_name: branch_name.to_string(),
+            target_branch_name: find_project_by_id(project_groups, project_id)
+                .map(|project| project.git_flow_settings.base_branch.clone()),
             worktree_key: to_branch_worktree_key(project_id, branch_name),
             repo_path: find_project_by_id(project_groups, project_id)
                 .map(|project| project.path.clone()),
@@ -1381,7 +1440,12 @@ fn sanitize_workspace_state(
 
             seen_paths.insert(normalized_key);
             valid_project_ids.insert(project.id.clone());
-            sanitized_projects.push(project);
+            sanitized_projects.push(ProjectDto {
+                git_flow_settings: normalize_project_git_flow_settings(Some(
+                    &project.git_flow_settings,
+                )),
+                ..project
+            });
         }
 
         if sanitized_projects.is_empty() {
@@ -1671,6 +1735,7 @@ fn build_project(
     description: &str,
     path: Option<&str>,
     workspace_path: &PathBuf,
+    git_flow_settings: Option<&ProjectGitFlowSettingsDto>,
 ) -> ProjectDto {
     let now = Utc::now().to_rfc3339();
     let slug = slugify(name);
@@ -1698,6 +1763,7 @@ fn build_project(
         path: project_path,
         created_at: now,
         status: "active".to_string(),
+        git_flow_settings: normalize_project_git_flow_settings(git_flow_settings),
         metadata: ProjectMetadataDto {
             description: description.to_string(),
             tags: Vec::new(),
@@ -1706,6 +1772,47 @@ fn build_project(
             dependencies: Vec::new(),
         },
     }
+}
+
+fn normalize_project_git_flow_settings(
+    settings: Option<&ProjectGitFlowSettingsDto>,
+) -> ProjectGitFlowSettingsDto {
+    let defaults = ProjectGitFlowSettingsDto::default();
+    let input = settings.cloned().unwrap_or_default();
+
+    ProjectGitFlowSettingsDto {
+        base_branch: normalize_base_branch(Some(input.base_branch.as_str())),
+        plan_branch_template: normalize_branch_template(
+            Some(input.plan_branch_template.as_str()),
+            defaults.plan_branch_template.as_str(),
+        ),
+        feature_branch_template: normalize_branch_template(
+            Some(input.feature_branch_template.as_str()),
+            defaults.feature_branch_template.as_str(),
+        ),
+        release_branch_template: normalize_branch_template(
+            Some(input.release_branch_template.as_str()),
+            defaults.release_branch_template.as_str(),
+        ),
+        hotfix_branch_template: normalize_branch_template(
+            Some(input.hotfix_branch_template.as_str()),
+            defaults.hotfix_branch_template.as_str(),
+        ),
+        bugfix_branch_template: normalize_branch_template(
+            Some(input.bugfix_branch_template.as_str()),
+            defaults.bugfix_branch_template.as_str(),
+        ),
+    }
+}
+
+fn normalize_branch_template(value: Option<&str>, fallback: &str) -> String {
+    value
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(|branch| branch.replace('\\', "/"))
+        .map(|branch| branch.trim_start_matches("refs/heads/").to_string())
+        .map(|branch| branch.trim_matches('/').to_string())
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn normalize_group_name(group_name: Option<&str>, fallback_name: &str) -> String {
@@ -1999,6 +2106,14 @@ mod tests {
             name: id.to_string(),
             mount_name: String::new(),
             path: path.to_string(),
+            git_flow_settings: ProjectGitFlowSettingsDto {
+                base_branch: "develop".to_string(),
+                plan_branch_template: "plan/{planSlug}".to_string(),
+                feature_branch_template: "feature/{planSlug}/{featureSlug}".to_string(),
+                release_branch_template: "release/{releaseSlug}".to_string(),
+                hotfix_branch_template: "hotfix/{hotfixSlug}".to_string(),
+                bugfix_branch_template: "bugfix/{bugfixSlug}".to_string(),
+            },
             created_at: "2026-03-14T00:00:00.000Z".to_string(),
             status: "active".to_string(),
             metadata: ProjectMetadataDto {
