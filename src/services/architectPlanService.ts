@@ -1,5 +1,6 @@
 import type { PlanNode, PredictedBranch } from '../types';
 import type { Need } from '../types';
+import { useAppStore } from '../stores/useAppStore';
 import * as tauriIpc from './tauriIpc';
 import { devLogger } from '../utils/devLogger';
 import {
@@ -663,7 +664,6 @@ const loadParticipantSnapshots = async (
   const repoPathByProjectId = registrySnapshot?.repoPathByProjectId ?? new Map<string, string>();
 
   try {
-    const { useAppStore } = await import('../stores/useAppStore');
     const projects = useAppStore.getState().projectGroups.flatMap((group) => group.projects);
     return uniqueProjectIds.map((projectId) => {
       const project = projects.find((candidate) => candidate.id === projectId);
@@ -2156,7 +2156,6 @@ const commitMetadataScopes = async (
 
   let metadataAutoPush = false;
   try {
-    const { useAppStore } = await import('../stores/useAppStore');
     metadataAutoPush = Boolean(useAppStore.getState().metadataAutoPush);
   } catch {
     metadataAutoPush = false;
@@ -2905,5 +2904,4 @@ export const resolveTargetBranch = (argsValue: unknown): string => {
 
 export const getGitFlowBaseBranch = (): string =>
   normalizeBranchName(getArchitectGitNamingSettings().baseBranch, DEFAULT_GIT_FLOW_BASE_BRANCH);
-
 

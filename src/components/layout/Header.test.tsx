@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
+  getMacosTrafficLightPosition,
   getTitleBarLayout,
 } from './titleBarLayout';
 
@@ -61,6 +62,10 @@ mock.module('../../stores/useAppStore', () => ({
 
 mock.module('../../hooks/useTauriWindow', () => ({
   useTauriWindow: () => tauriWindowState,
+}));
+
+mock.module('../../services/tauriWindow', () => ({
+  windowSetTrafficLightPosition: () => Promise.resolve(),
 }));
 
 mock.module('../../utils/desktopPlatform', () => ({
@@ -169,6 +174,14 @@ describe('Header', () => {
       getTitleBarLayout({ platform: 'windows', usesNativeMacosTitlebar: false })
     ).toEqual({
       titleBarHeightPx: 48,
+    });
+    expect(getMacosTrafficLightPosition(56)).toEqual({
+      x: 15,
+      y: 30,
+    });
+    expect(getMacosTrafficLightPosition(64)).toEqual({
+      x: 15,
+      y: 34,
     });
   });
 

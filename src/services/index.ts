@@ -1,59 +1,108 @@
-import * as mockProvider from './providers/mock';
-import * as ipcProvider from './providers/ipc';
-import * as remoteProvider from './providers/remote';
 import { isTauriAvailable } from './tauriIpc';
 import type { ServiceProvider } from './contracts/serviceProvider';
 
 export type DataProvider = 'mock' | 'ipc';
 export type ServiceTransport = 'desktop' | 'remote';
 
+type ServiceProviderModule = {
+  provider: ServiceProvider;
+};
+
 const envProvider = import.meta.env.VITE_DATA_PROVIDER as DataProvider | undefined;
 const providerName: DataProvider = envProvider ?? (isTauriAvailable() ? 'ipc' : 'mock');
 const envTransport = import.meta.env.VITE_BACKEND_TRANSPORT as ServiceTransport | undefined;
 const transport: ServiceTransport = envTransport ?? 'desktop';
 
-const providerByTransport: Record<ServiceTransport, Record<DataProvider, ServiceProvider>> = {
-  desktop: {
-    mock: mockProvider.provider,
-    ipc: ipcProvider.provider,
-  },
-  remote: {
-    mock: mockProvider.provider,
-    ipc: remoteProvider.provider,
-  },
+let providerPromise: Promise<ServiceProvider> | null = null;
+
+const loadServiceProviderModule = async (
+  targetTransport: ServiceTransport,
+  targetProvider: DataProvider
+): Promise<ServiceProviderModule> => {
+  if (targetTransport === 'remote') {
+    if (targetProvider === 'mock') {
+      return import('./providers/mock');
+    }
+
+    return import('./providers/remote');
+  }
+
+  if (targetProvider === 'mock') {
+    return import('./providers/mock');
+  }
+
+  return import('./providers/ipc');
 };
 
-const provider: ServiceProvider =
-  transport === 'desktop' && providerName === 'ipc' && !isTauriAvailable()
-    ? providerByTransport.desktop.mock
-    : providerByTransport[transport][providerName];
+const getServiceProvider = async (): Promise<ServiceProvider> => {
+  if (!providerPromise) {
+    const resolvedProviderName =
+      transport === 'desktop' && providerName === 'ipc' && !isTauriAvailable()
+        ? 'mock'
+        : providerName;
+
+    providerPromise = loadServiceProviderModule(transport, resolvedProviderName).then(
+      (module) => module.provider
+    );
+  }
+
+  return providerPromise;
+};
+
+const callProviderMethod = async <MethodName extends keyof ServiceProvider>(
+  methodName: MethodName,
+  ...args: Parameters<ServiceProvider[MethodName]>
+): Promise<Awaited<ReturnType<ServiceProvider[MethodName]>>> => {
+  const provider = await getServiceProvider();
+  const method = provider[methodName] as (...methodArgs: Parameters<ServiceProvider[MethodName]>) => ReturnType<ServiceProvider[MethodName]>;
+  const result = await method(...args);
+  return result as Awaited<ReturnType<ServiceProvider[MethodName]>>;
+};
 
 export const services = {
-  getAppBootstrap: provider.getAppBootstrap,
-  listConversations: provider.listConversations,
-  listMessages: provider.listMessages,
-  listTasks: provider.listTasks,
-  getGitTreeForProject: provider.getGitTreeForProject,
-  gitWorktreeCreate: provider.gitWorktreeCreate,
-  gitWorktreeRemove: provider.gitWorktreeRemove,
-  getFileContent: provider.getFileContent,
-  listCommits: provider.listCommits,
-  listProviders: provider.listProviders,
-  listModels: provider.listModels,
-  sendChat: provider.sendChat,
-  createProject: provider.createProject,
-  importGitRepo: provider.importGitRepo,
-  renameProjectGroup: provider.renameProjectGroup,
-  renameProject: provider.renameProject,
-  archiveProjectGroup: provider.archiveProjectGroup,
-  archiveProject: provider.archiveProject,
-  removeProjectGroup: provider.removeProjectGroup,
-  removeProject: provider.removeProject,
-  closeProject: provider.closeProject,
-  getToolSettings: provider.getToolSettings,
-  updateToolSettings: provider.updateToolSettings,
-  getMCPServerSettings: provider.getMCPServerSettings,
-  updateMCPServerSettings: provider.updateMCPServerSettings,
+  getAppBootstrap: () => callProviderMethod('getAppBootstrap'),
+  listConversations: () => callProviderMethod('listConversations'),
+  listMessages: (conversationId?: string) => callProviderMethod('listMessages', conversationId),
+  listTasks: () => callProviderMethod('listTasks'),
+  getGitTreeForProject: (projectId: string) => callProviderMethod('getGitTreeForProject', projectId),
+  gitWorktreeCreate: (
+    projectId: string,
+    taskId: string,
+    branchName: string,
+    fromRef?: string | null
+  ) => callProviderMethod('gitWorktreeCreate', projectId, taskId, branchName, fromRef),
+  gitWorktreeRemove: (projectId: string, taskId: string) =>
+    callProviderMethod('gitWorktreeRemove', projectId, taskId),
+  getFileContent: (path: string) => callProviderMethod('getFileContent', path),
+  listCommits: (projectId?: string) => callProviderMethod('listCommits', projectId),
+  listProviders: () => callProviderMethod('listProviders'),
+  listModels: (providerId?: string) => callProviderMethod('listModels', providerId),
+  sendChat: (request: Parameters<ServiceProvider['sendChat']>[0]) =>
+    callProviderMethod('sendChat', request),
+  createProject: (data: Parameters<ServiceProvider['createProject']>[0]) =>
+    callProviderMethod('createProject', data),
+  importGitRepo: (data: Parameters<ServiceProvider['importGitRepo']>[0]) =>
+    callProviderMethod('importGitRepo', data),
+  renameProjectGroup: (data: Parameters<ServiceProvider['renameProjectGroup']>[0]) =>
+    callProviderMethod('renameProjectGroup', data),
+  renameProject: (data: Parameters<ServiceProvider['renameProject']>[0]) =>
+    callProviderMethod('renameProject', data),
+  archiveProjectGroup: (data: Parameters<ServiceProvider['archiveProjectGroup']>[0]) =>
+    callProviderMethod('archiveProjectGroup', data),
+  archiveProject: (data: Parameters<ServiceProvider['archiveProject']>[0]) =>
+    callProviderMethod('archiveProject', data),
+  removeProjectGroup: (data: Parameters<ServiceProvider['removeProjectGroup']>[0]) =>
+    callProviderMethod('removeProjectGroup', data),
+  removeProject: (data: Parameters<ServiceProvider['removeProject']>[0]) =>
+    callProviderMethod('removeProject', data),
+  closeProject: (data: Parameters<ServiceProvider['closeProject']>[0]) =>
+    callProviderMethod('closeProject', data),
+  getToolSettings: () => callProviderMethod('getToolSettings'),
+  updateToolSettings: (settings: Parameters<ServiceProvider['updateToolSettings']>[0]) =>
+    callProviderMethod('updateToolSettings', settings),
+  getMCPServerSettings: () => callProviderMethod('getMCPServerSettings'),
+  updateMCPServerSettings: (settings: Parameters<ServiceProvider['updateMCPServerSettings']>[0]) =>
+    callProviderMethod('updateMCPServerSettings', settings),
 };
 
 export type Services = typeof services;

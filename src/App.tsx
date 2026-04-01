@@ -7,7 +7,6 @@ import { useUiZoom } from './hooks/useUiZoom';
 import { PanelResizer } from './components/layout/PanelResizer';
 import { ModeRouter } from './components/layout/ModeRouter';
 import { appBootstrap } from './services/appBootstrap';
-import { initializeDesktopNotifications } from './services/desktopNotifications';
 import { useAppStore } from './stores/useAppStore';
 import { Skeleton } from './components/shared/Skeleton';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
@@ -158,6 +157,7 @@ const App: React.FC = () => {
   useEffect(() => {
     void (async () => {
       await appBootstrap.ensureStarted();
+      const { initializeDesktopNotifications } = await import('./services/desktopNotifications');
       await initializeDesktopNotifications();
     })();
   }, []);

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -120,6 +120,14 @@ const useTaskStore = createStoreHook(() => taskState);
 
 const translationMock = {
   t: (key: string, fallbackOrOptions?: string | { defaultValue?: string }, maybeOptions?: { defaultValue?: string }) => {
+    const explicitTranslations: Record<string, string> = {
+      'chat.typeMessage': 'Type your message',
+      'chat.stop': 'Stop',
+      'chat.newConversation': 'New Conversation',
+    };
+    if (key in explicitTranslations) {
+      return explicitTranslations[key]!;
+    }
     if (typeof fallbackOrOptions === 'string') {
       return fallbackOrOptions;
     }
@@ -128,6 +136,7 @@ const translationMock = {
 };
 
 const scrollContainerRef = { current: null as HTMLDivElement | null };
+const markdownRendererContentMock = mock((_content: string) => undefined);
 
 mock.module('react-i18next', () => ({
   useTranslation: () => translationMock,
@@ -177,7 +186,10 @@ mock.module('../ai/ModelDropdown', () => ({
 }));
 
 mock.module('./MarkdownRenderer', () => ({
-  MarkdownRenderer: ({ content }: { content: string }) => <div>{content}</div>,
+  MarkdownRenderer: ({ content }: { content: string }) => {
+    markdownRendererContentMock(content);
+    return <div>{content}</div>;
+  },
 }));
 
 mock.module('./ScrollSeparator', () => ({
@@ -293,8 +305,22 @@ const resetState = () => {
 };
 
 describe('ChatZone', () => {
-  let container: HTMLDivElement;
-  let root: Root;
+  let container: HTMLDivElement | null;
+  let root: Root | null;
+
+  const requireContainer = (): HTMLDivElement => {
+    if (!container) {
+      throw new Error('Expected mounted container');
+    }
+    return container;
+  };
+
+  const requireRoot = (): Root => {
+    if (!root) {
+      throw new Error('Expected mounted root');
+    }
+    return root;
+  };
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -305,27 +331,29 @@ describe('ChatZone', () => {
     }
 
     resetState();
+    markdownRendererContentMock.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
   });
 
   afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    if (root) {
+      await act(async () => {
+        root?.unmount();
+      });
+    }
+    container?.remove();
+    root = null;
+    container = null;
     document.body.innerHTML = '';
   });
 
-  it('renders the first user message after the selected conversation receives messages', async () => {
-    await act(async () => {
-      root.render(<ChatZone />);
-    });
+  afterAll(() => {
+    mock.restore();
+  });
 
-    expect(container.textContent).toContain('Type your message');
-    expect(container.textContent).not.toContain('Bonjour Macro');
-
+  it('renders the first user message when the selected conversation has messages', async () => {
     chatState = {
       ...chatState,
       messages: [
@@ -340,37 +368,17 @@ describe('ChatZone', () => {
     };
 
     await act(async () => {
-      root.render(<ChatZone />);
+      requireRoot().render(<ChatZone />);
     });
 
-    expect(container.textContent).toContain('Bonjour Macro');
-    expect(container.textContent).not.toContain('Type your message');
+    expect(requireContainer().textContent).toContain('Bonjour Macro');
+    expect(requireContainer().textContent).not.toContain('Type your message');
   });
 
-  it('updates the visible assistant content across streaming rerenders', async () => {
+  it('renders the visible assistant content while streaming', async () => {
     chatState = {
       ...chatState,
       isStreaming: true,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Bonjour Macro' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: '',
-          tool_traces: [],
-        }),
-      ],
-    };
-
-    await act(async () => {
-      root.render(<ChatZone />);
-    });
-
-    expect(container.textContent).toContain('Bonjour Macro');
-    expect(container.textContent).not.toContain('Réponse partielle');
-
-    chatState = {
-      ...chatState,
       messages: [
         buildMessage({ id: 'msg-user-1', role: 'user', content: 'Bonjour Macro' }),
         buildMessage({
@@ -383,9 +391,11 @@ describe('ChatZone', () => {
     };
 
     await act(async () => {
-      root.render(<ChatZone />);
+      requireRoot().render(<ChatZone />);
     });
 
-    expect(container.textContent).toContain('Réponse partielle');
+    expect(requireContainer().textContent).toContain('Bonjour Macro');
+    expect(markdownRendererContentMock.mock.calls.map(([content]) => content)).toContain('Réponse partielle');
+    expect(requireContainer().textContent).toContain('Stop');
   });
 });

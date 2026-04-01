@@ -1,4 +1,5 @@
 import type { PlanNode, PredictedBranch, ProjectGroup, Task } from '../types';
+import { useAppStore } from '../stores/useAppStore';
 import {
   getArchitectPlan,
   getGitFlowBaseBranch,
@@ -177,10 +178,7 @@ const resolveCandidateTargetBranches = (
 
 export const createLoadImplementTaskCatalog = (
   dependencies: LoadImplementTaskCatalogDependencies = {
-    getAppState: async () => {
-      const { useAppStore } = await import('../stores/useAppStore');
-      return useAppStore.getState();
-    },
+    getAppState: () => useAppStore.getState(),
     listArchitectPlans,
     getArchitectPlan,
     listArchitectPlanTargetBranches,

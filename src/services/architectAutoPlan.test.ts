@@ -1,11 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
-  createArchitectPlan,
-  getArchitectPlan,
-  listArchitectPlans,
-  updateArchitectPlan,
-} from './architectPlanService';
-import { ensureProjectGroupPlan } from './architectAutoPlan';
+  DEFAULT_NEW_PLAN_LABEL,
+  getArchitectPlanEditableName,
+  getNextDefaultNewPlanLabel,
+  isCanonicalArchitectPlan,
+  isDefaultNewPlanBaseLabel,
+} from './architectPlanPresentation';
+import { createArchitectAutoPlanService } from './architectAutoPlanCore';
+import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -37,23 +39,180 @@ const createLocalStorageMock = (): LocalStorageMock => {
 
 const branchName = 'develop';
 
+const createArchitectAutoPlanHarness = () => {
+  const plans = new Map<string, ArchitectPlanRecord>();
+  let activePlanId: string | null = null;
+
+  const toSummary = (plan: ArchitectPlanRecord): ArchitectPlanSummary => ({
+    id: plan.id,
+    slug: plan.slug,
+    title: plan.title,
+    label: plan.label,
+    description: plan.description,
+    status: plan.status,
+    targetBranch: plan.targetBranch,
+    conversationId: plan.conversationId,
+    projectId: plan.projectId,
+    projectIds: plan.projectIds,
+    expectedProjectIds: plan.expectedProjectIds,
+    createdAt: plan.createdAt,
+    updatedAt: plan.updatedAt,
+    nodeCount: plan.nodes.length,
+  });
+
+  const clonePlan = (plan: ArchitectPlanRecord): ArchitectPlanRecord => ({
+    ...plan,
+    projectIds: plan.projectIds ? [...plan.projectIds] : undefined,
+    expectedProjectIds: plan.expectedProjectIds ? [...plan.expectedProjectIds] : undefined,
+    nodes: [...plan.nodes],
+    predictedBranches: [...plan.predictedBranches],
+  });
+
+  const createArchitectPlan = async (params: {
+    branchName: string;
+    planId?: string;
+    label?: string;
+    projectId?: string;
+    projectIds?: string[];
+    status?: ArchitectPlanRecord['status'];
+    setActive?: boolean;
+  }) => {
+    const id = params.planId ?? `plan-${plans.size + 1}`;
+    const now = new Date().toISOString();
+    const projectIds = params.projectIds ?? (params.projectId ? [params.projectId] : []);
+    const plan: ArchitectPlanRecord = {
+      id,
+      slug: id,
+      title: id,
+      label: params.label ?? id,
+      description: '',
+      status: params.status ?? 'draft',
+      targetBranch: params.branchName,
+      conversationId: undefined,
+      projectId: params.projectId ?? projectIds[0],
+      projectIds: projectIds.length > 0 ? [...projectIds] : undefined,
+      expectedProjectIds: projectIds.length > 0 ? [...projectIds] : undefined,
+      createdAt: now,
+      updatedAt: now,
+      nodes: [],
+      predictedBranches: [],
+    };
+    plans.set(plan.id, plan);
+    if (params.setActive) {
+      activePlanId = plan.id;
+    }
+    return clonePlan(plan);
+  };
+
+  const getArchitectPlan = async (_branchName: string, planId: string) => {
+    const plan = plans.get(planId);
+    return plan ? clonePlan(plan) : null;
+  };
+
+  const listArchitectPlans = async (_branchName?: string, _includeArchived?: boolean, _includeDeleted?: boolean) => ({
+    activePlanId,
+    plans: Array.from(plans.values()).map((plan) => toSummary(clonePlan(plan))),
+  });
+
+  const updateArchitectPlan = async (params: {
+    branchName: string;
+    planId: string;
+    label?: string;
+    description?: string;
+    projectIds?: string[];
+    expectedProjectIds?: string[];
+    setActive?: boolean;
+  }) => {
+    const existing = plans.get(params.planId);
+    if (!existing) {
+      throw new Error(`Unknown plan ${params.planId}`);
+    }
+    const updated: ArchitectPlanRecord = {
+      ...existing,
+      label: params.label ?? existing.label,
+      description: params.description ?? existing.description,
+      projectIds: params.projectIds ? [...params.projectIds] : existing.projectIds ? [...existing.projectIds] : undefined,
+      expectedProjectIds: params.expectedProjectIds
+        ? [...params.expectedProjectIds]
+        : existing.expectedProjectIds
+          ? [...existing.expectedProjectIds]
+          : existing.projectIds
+            ? [...existing.projectIds]
+            : undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    if (updated.projectIds?.length) {
+      updated.projectId = updated.projectIds[0];
+    }
+    plans.set(updated.id, updated);
+    if (params.setActive) {
+      activePlanId = updated.id;
+    }
+    return clonePlan(updated);
+  };
+
+  const setActiveArchitectPlan = async (_branchName: string, planId: string | null) => {
+    activePlanId = planId;
+  };
+
+  const getArchitectPlanNeeds = async (_branchName: string, _planId: string) => [];
+  const getArchitectPlanChatMessages = async (_branchName: string, _planId: string) => [];
+  const getArchitectPlanProjectIds = (plan: Pick<ArchitectPlanSummary, 'projectId' | 'projectIds'>) =>
+    Array.from(new Set([plan.projectId, ...(plan.projectIds ?? [])].filter(Boolean))) as string[];
+
+  return {
+    createArchitectPlan,
+    getArchitectPlan,
+    listArchitectPlans,
+    updateArchitectPlan,
+    ensureProjectGroupPlan: createArchitectAutoPlanService({
+      DEFAULT_NEW_PLAN_LABEL,
+      createArchitectPlan,
+      getArchitectPlan,
+      getArchitectPlanChatMessages,
+      getArchitectPlanEditableName,
+      getArchitectPlanNeeds,
+      getArchitectPlanProjectIds,
+      getNextDefaultNewPlanLabel,
+      isCanonicalArchitectPlan,
+      isDefaultNewPlanBaseLabel,
+      listArchitectPlans,
+      setActiveArchitectPlan,
+      updateArchitectPlan,
+    }).ensureProjectGroupPlan,
+  };
+};
+
 describe('architectAutoPlan', () => {
   let storage: LocalStorageMock;
 
   beforeEach(() => {
     storage = createLocalStorageMock();
-    (globalThis as { window?: unknown }).window = {
-      localStorage: storage,
-    };
+    const windowValue =
+      globalThis.window && typeof globalThis.window === 'object'
+        ? (globalThis.window as unknown as Record<string, unknown>)
+        : {};
+    Object.defineProperty(windowValue, 'localStorage', {
+      value: storage,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'window', {
+      value: windowValue,
+      configurable: true,
+      writable: true,
+    });
     (globalThis as { localStorage?: unknown }).localStorage = storage;
   });
 
   afterEach(() => {
     delete (globalThis as { window?: unknown }).window;
     delete (globalThis as { localStorage?: unknown }).localStorage;
+    mock.restore();
   });
 
   it('creates and activates a default blank plan when none exists for the scope', async () => {
+    const { ensureProjectGroupPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
     const ensured = await ensureProjectGroupPlan({
       branchName,
       scopedProjectIds: ['web'],
@@ -70,6 +229,8 @@ describe('architectAutoPlan', () => {
   });
 
   it('expands an existing blank plan scope instead of creating a second plan', async () => {
+    const { createArchitectPlan, ensureProjectGroupPlan, listArchitectPlans, getArchitectPlan } =
+      createArchitectAutoPlanHarness();
     const created = await createArchitectPlan({
       branchName,
       planId: 'blank-plan',
@@ -99,6 +260,8 @@ describe('architectAutoPlan', () => {
   });
 
   it('does not expand a plan automatically once it is no longer blank', async () => {
+    const { createArchitectPlan, ensureProjectGroupPlan, getArchitectPlan, updateArchitectPlan } =
+      createArchitectAutoPlanHarness();
     const created = await createArchitectPlan({
       branchName,
       planId: 'started-plan',
