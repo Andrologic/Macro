@@ -287,7 +287,7 @@
       "shortcuts": "Configurer les raccourcis clavier et les raccourcis clavier",
       "providers": "Configurer les clés API et les points de terminaison",
       "models": "Gérer les paramètres des modèles disponibles",
-      "notifications": "Configurer les notifications intégrées et desktop"
+      "notifications": "Configurer les canaux de notification pour les événements clés des workflows"
     },
     "language_region": "Langue et région",
     "language": "Langue",
@@ -295,10 +295,7 @@
     "application": "Demande",
     "sound_effects": "Effets sonores",
     "sound_effects_desc": "Jouer des sons à la fin d'une tâche ou en cas d'erreur",
-    "desktop_notifications": "Notifications sur le bureau",
-    "desktop_notifications_desc": "Afficher les notifications natives du bureau pour les événements importants",
     "desktopNotificationsRuntime": "État d'exécution",
-    "desktopNotificationsStatusDisabled": "Désactivé",
     "desktopNotificationsStatusAllowed": "Autorisé",
     "desktopNotificationsStatusDenied": "Refusé",
     "desktopNotificationsStatusUnsupported": "Non pris en charge",
@@ -343,8 +340,27 @@
     "notifications": "Notifications",
     "notificationsDelivery": "Diffusion",
     "inAppNotifications": "Notifications intégrées",
-    "inAppNotificationsDesc": "Afficher les toasts dans Macro et conserver les alertes importantes dans le centre de notifications.",
-    "inAppNotificationsUpdateFailed": "Échec de la mise à jour des préférences de notifications intégrées"
+    "inAppNotificationsUpdateFailed": "Échec de la mise à jour des préférences de notifications intégrées",
+    "inAppNotificationsScopedDesc": "Contrôler les notifications intégrées non catégorisées qui ne sont pas couvertes par les règles de canaux ci-dessous.",
+    "notificationChannels": "Canaux de notification",
+    "notificationChannelsDesc": "Choisissez comment chaque événement important du workflow doit être diffusé : toast, bureau, les deux ou désactivé.",
+    "desktopNotificationsPermissionHint": "Macro demande l’autorisation des notifications bureau lors du premier envoi admissible quand l’application est en arrière-plan.",
+    "notificationCategoryTaskAttention": "Demandes d’attention sur les tâches",
+    "notificationCategoryTaskAttentionDesc": "Branches manquantes ou autres problèmes de tâche nécessitant une action explicite.",
+    "notificationCategoryTaskRunCompleted": "Commandes de tâche terminées",
+    "notificationCategoryTaskRunCompletedDesc": "Les commandes longues sur les dépôts de la tâche se sont terminées avec succès.",
+    "notificationCategoryTaskCompleted": "Tâches terminées",
+    "notificationCategoryTaskCompletedDesc": "Une tâche a été terminée avec succès.",
+    "notificationCategoryGitSyncCompleted": "Synchronisation Git terminée",
+    "notificationCategoryGitSyncCompletedDesc": "Les opérations de pull/push du code et de synchro @macro se sont terminées avec succès.",
+    "notificationCategoryGitSyncAttention": "Attention requise sur la synchro Git",
+    "notificationCategoryGitSyncAttentionDesc": "Des conflits, échecs ou actions de synchronisation de métadonnées en attente nécessitent votre attention.",
+    "notificationChannelMode": {
+      "off": "Désactivé",
+      "toast": "Toast",
+      "desktop": "Bureau",
+      "both": "Toast + Bureau"
+    }
   },
   "project": {
     "projects": "Projets",

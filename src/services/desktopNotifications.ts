@@ -4,7 +4,6 @@ import {
   requestPermission,
   sendNotification,
 } from '@tauri-apps/plugin-notification';
-import { useAppStore } from '../stores/useAppStore';
 import { isTauriEnvironment } from '../utils/isTauriEnvironment';
 
 export type DesktopNotificationPermissionStatus =
@@ -171,10 +170,6 @@ const dispatchDesktopNotification = async (
 ): Promise<boolean> => {
   if (!isSupportedRuntime()) {
     setStatus('unsupported');
-    return false;
-  }
-
-  if (!useAppStore.getState().desktopNotificationsEnabled) {
     return false;
   }
 

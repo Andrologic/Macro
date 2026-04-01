@@ -6,6 +6,7 @@
  */
 
 import { load, Store } from "@tauri-apps/plugin-store";
+import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
 
 // Preference keys
 export const PREF_KEYS = {
@@ -42,7 +43,7 @@ export const PREF_KEYS = {
   PROMPT_CHAT: "promptChat",
   PROMPT_DEBUG: "promptDebug",
   IMPLEMENT_EXECUTION_MODE: "implementExecutionMode",
-  DESKTOP_NOTIFICATIONS_ENABLED: "desktopNotificationsEnabled",
+  NOTIFICATION_CHANNEL_MODES: "notificationChannelModes",
   ARCHITECT_GIT_BASE_BRANCH: "architectGitBaseBranch",
   ARCHITECT_PLAN_BRANCH_TEMPLATE: "architectPlanBranchTemplate",
   ARCHITECT_FEATURE_BRANCH_TEMPLATE: "architectFeatureBranchTemplate",
@@ -93,7 +94,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.PROMPT_CHAT]: "You are a helpful AI assistant.",
   [PREF_KEYS.PROMPT_DEBUG]: "You are the Debugger. Use workspace tools to investigate and fix issues.",
   [PREF_KEYS.IMPLEMENT_EXECUTION_MODE]: "semi_auto",
-  [PREF_KEYS.DESKTOP_NOTIFICATIONS_ENABLED]: true,
+  [PREF_KEYS.NOTIFICATION_CHANNEL_MODES]: DEFAULT_NOTIFICATION_CHANNEL_MODES,
   [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'develop',
   [PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE]: 'plan/{planSlug}',
   [PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE]: 'feature/{planSlug}/{featureSlug}',
