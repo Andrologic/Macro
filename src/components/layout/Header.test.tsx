@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   getMacosTrafficLightPosition,
@@ -12,6 +14,8 @@ type AppStoreState = {
   setMode: (mode: AppMode) => void;
   openSettings: () => void;
   openAccount: () => void;
+  uiZoomMode: 'auto' | 'override';
+  uiZoomLevel: number;
   selectedGroupId: string | null;
   projectGroups: unknown[];
 };
@@ -24,6 +28,7 @@ type TauriWindowState = {
 
 let appState: AppStoreState;
 let tauriWindowState: TauriWindowState;
+let windowSetTrafficLightPositionMock: ReturnType<typeof mock>;
 let chromeState: {
   platform: 'macos' | 'windows' | 'linux' | 'web';
   isTauriWindow: boolean;
@@ -65,7 +70,8 @@ mock.module('../../hooks/useTauriWindow', () => ({
 }));
 
 mock.module('../../services/tauriWindow', () => ({
-  windowSetTrafficLightPosition: () => Promise.resolve(),
+  windowSetTrafficLightPosition: (...args: [number, number]) =>
+    windowSetTrafficLightPositionMock(...args),
 }));
 
 mock.module('../../utils/desktopPlatform', () => ({
@@ -94,12 +100,17 @@ const {
 } = await import('./Header');
 
 describe('Header', () => {
+  let container: HTMLDivElement | null = null;
+  let root: Root | null = null;
+
   beforeEach(() => {
     appState = {
       mode: 'Architect',
       setMode: () => undefined,
       openSettings: () => undefined,
       openAccount: () => undefined,
+      uiZoomMode: 'auto',
+      uiZoomLevel: 1,
       selectedGroupId: 'group-1',
       projectGroups: [],
     };
@@ -108,6 +119,7 @@ describe('Header', () => {
       toggleMaximize: () => undefined,
       startDragging: () => undefined,
     };
+    windowSetTrafficLightPositionMock = mock(() => Promise.resolve());
     chromeState = {
       platform: 'windows',
       isTauriWindow: true,
@@ -115,6 +127,17 @@ describe('Header', () => {
       disableCustomDoubleClickZoom: false,
       usesNativeMacosTitlebar: false,
     };
+  });
+
+  afterEach(async () => {
+    if (root) {
+      await act(async () => {
+        root?.unmount();
+      });
+    }
+    root = null;
+    container?.remove();
+    container = null;
   });
 
   it('uses the default centered layout on Windows', () => {
@@ -130,7 +153,7 @@ describe('Header', () => {
     expect(html).toContain('--macro-titlebar-height:48px');
     expect(html).toContain('macro-topbar-inner');
     expect(html).toContain('macro-topbar-center');
-    expect(html).toContain('macro-topbar-brand-label hidden lg:block');
+    expect(html).toContain('macro-topbar-brand-label hidden lg:inline-flex');
     expect(html).toContain('data-icon="minus"');
     expect(html).toContain('data-icon="maximize"');
     expect(html).toContain('data-icon="x"');
@@ -157,7 +180,7 @@ describe('Header', () => {
 
     expect(html).toContain('--macro-titlebar-height:56px');
     expect(html).toContain('macro-topbar--native-macos');
-    expect(html).toContain('macro-topbar-brand-label block');
+    expect(html).toContain('macro-topbar-brand-label inline-flex');
     expect(html).not.toContain('data-icon="minus"');
     expect(html).not.toContain('data-icon="maximize"');
     expect(html).not.toContain('data-icon="x"');
@@ -175,14 +198,88 @@ describe('Header', () => {
     ).toEqual({
       titleBarHeightPx: 48,
     });
-    expect(getMacosTrafficLightPosition(56)).toEqual({
+    expect(getMacosTrafficLightPosition(1)).toEqual({
       x: 15,
       y: 30,
     });
-    expect(getMacosTrafficLightPosition(64)).toEqual({
-      x: 15,
-      y: 34,
+    expect(getMacosTrafficLightPosition(1.5)).toEqual({
+      x: 23,
+      y: 45,
     });
+    expect(getMacosTrafficLightPosition(2)).toEqual({
+      x: 30,
+      y: 60,
+    });
+  });
+
+  it('repositions native macOS traffic lights when ui zoom changes', async () => {
+    chromeState = {
+      platform: 'macos',
+      isTauriWindow: true,
+      showCustomWindowControls: false,
+      disableCustomDoubleClickZoom: true,
+      usesNativeMacosTitlebar: true,
+    };
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <Header
+          isLeftOpen
+          isRightOpen
+          onToggleLeft={() => undefined}
+          onToggleRight={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).toHaveBeenCalledWith(15, 30);
+
+    windowSetTrafficLightPositionMock.mockClear();
+    appState = {
+      ...appState,
+      uiZoomMode: 'override',
+      uiZoomLevel: 1.5,
+    };
+
+    await act(async () => {
+      root?.render(
+        <Header
+          isLeftOpen
+          isRightOpen
+          onToggleLeft={() => undefined}
+          onToggleRight={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).toHaveBeenCalledWith(23, 45);
+
+    windowSetTrafficLightPositionMock.mockClear();
+    appState = {
+      ...appState,
+      uiZoomMode: 'auto',
+      uiZoomLevel: 1.5,
+    };
+
+    await act(async () => {
+      root?.render(
+        <Header
+          isLeftOpen
+          isRightOpen
+          onToggleLeft={() => undefined}
+          onToggleRight={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).toHaveBeenCalledWith(15, 30);
   });
 
   it('starts dragging on macOS title bar mouse down', () => {
