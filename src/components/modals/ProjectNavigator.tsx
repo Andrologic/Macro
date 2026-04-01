@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import {
   DndContext,
@@ -27,8 +28,52 @@ interface ProjectNavigatorProps {
 interface ProjectItemProps {
   project: Project;
   onSelect: () => void;
-  onMenuOpen: (e: React.MouseEvent) => void;
+  onMenuOpen: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
+
+interface MenuPosition {
+  top: number;
+  left: number;
+}
+
+type ProjectNavigatorMenuState =
+  | { type: 'group'; group: ProjectGroup; position: MenuPosition }
+  | { type: 'project'; project: Project; position: MenuPosition };
+
+const PROJECT_NAV_MENU_WIDTH = 160;
+const PROJECT_NAV_MENU_HEIGHT = 120;
+const PROJECT_NAV_MENU_GAP = 4;
+const PROJECT_NAV_MENU_VIEWPORT_PADDING = 12;
+
+const getProjectNavMenuPosition = (trigger: HTMLElement | null): MenuPosition => {
+  if (!trigger) {
+    return {
+      top: PROJECT_NAV_MENU_VIEWPORT_PADDING,
+      left: PROJECT_NAV_MENU_VIEWPORT_PADDING,
+    };
+  }
+
+  const rect = trigger.getBoundingClientRect();
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const preferredLeft = rect.right - PROJECT_NAV_MENU_WIDTH;
+  const left = Math.min(
+    Math.max(PROJECT_NAV_MENU_VIEWPORT_PADDING, preferredLeft),
+    viewportWidth - PROJECT_NAV_MENU_WIDTH - PROJECT_NAV_MENU_VIEWPORT_PADDING
+  );
+  const wouldOverflowBottom =
+    rect.bottom + PROJECT_NAV_MENU_GAP + PROJECT_NAV_MENU_HEIGHT >
+    viewportHeight - PROJECT_NAV_MENU_VIEWPORT_PADDING;
+  const preferredTop = wouldOverflowBottom
+    ? rect.top - PROJECT_NAV_MENU_HEIGHT - PROJECT_NAV_MENU_GAP
+    : rect.bottom + PROJECT_NAV_MENU_GAP;
+  const top = Math.min(
+    Math.max(PROJECT_NAV_MENU_VIEWPORT_PADDING, preferredTop),
+    viewportHeight - PROJECT_NAV_MENU_HEIGHT - PROJECT_NAV_MENU_VIEWPORT_PADDING
+  );
+
+  return { top, left };
+};
 
 const ProjectItem: React.FC<ProjectItemProps> = ({
   project,
@@ -99,7 +144,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   } = useAppStore();
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
+  const [menuState, setMenuState] = useState<ProjectNavigatorMenuState | null>(null);
   const [draggedProject, setDraggedProject] = useState<Project | null>(null);
   const [renameTarget, setRenameTarget] = useState<
     { type: 'group'; group: ProjectGroup } | { type: 'project'; project: Project } | null
@@ -187,7 +232,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     try {
       setIsSubmittingConfirm(true);
       await removeProjectGroup(group.id);
-      setMenuOpenFor(null);
+      setMenuState(null);
       setRemoveTarget(null);
       toast.success(t('projects.groupRemoved', 'Projet global retire de Macro'));
     } catch (error) {
@@ -220,7 +265,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     try {
       setIsSubmittingConfirm(true);
       await removeProject(project.id);
-      setMenuOpenFor(null);
+      setMenuState(null);
       setRemoveTarget(null);
       toast.success(t('projects.projectRemoved', 'Sous-projet retire de Macro'));
     } catch (error) {
@@ -237,16 +282,122 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       if (target?.closest('[data-project-nav-menu="true"]')) {
         return;
       }
-      setMenuOpenFor(null);
+      setMenuState(null);
     };
 
-    if (menuOpenFor) {
+    if (menuState) {
       document.addEventListener('click', handleClickOutside);
       return () => document.removeEventListener('click', handleClickOutside);
     }
-  }, [menuOpenFor]);
+  }, [menuState]);
+
+  React.useEffect(() => {
+    if (!menuState) {
+      return;
+    }
+
+    const handleDismiss = () => setMenuState(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenuState(null);
+      }
+    };
+
+    window.addEventListener('resize', handleDismiss);
+    window.addEventListener('scroll', handleDismiss, true);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('resize', handleDismiss);
+      window.removeEventListener('scroll', handleDismiss, true);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menuState]);
 
   if (!isOpen) return null;
+
+  const projectMenuPortal =
+    menuState && typeof document !== 'undefined'
+      ? createPortal(
+          <div
+            className="fixed z-[9999] w-40 overflow-hidden rounded-lg border border-border bg-card py-1 shadow-2xl"
+            style={{
+              top: `${menuState.position.top}px`,
+              left: `${menuState.position.left}px`,
+            }}
+            data-project-nav-menu="true"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {menuState.type === 'group' ? (
+              <>
+                <button
+                  onClick={() => {
+                    handleAddSubproject(menuState.group.id);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                >
+                  <Icon name="plus" size={12} />
+                  {t('projects.addSubproject', 'Add subproject')}
+                </button>
+                <button
+                  onClick={() => {
+                    setRenameTarget({ type: 'group', group: menuState.group });
+                    setMenuState(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                >
+                  <Icon name="edit" size={12} />
+                  {t('common.rename', 'Rename')}
+                </button>
+                <button
+                  onClick={() => {
+                    setRemoveTarget({ type: 'group', group: menuState.group });
+                    setMenuState(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10"
+                >
+                  <Icon name="x" size={12} />
+                  {t('projects.removeFromMacro', 'Retirer de Macro')}
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => {
+                    openProjectGitFlowModal(menuState.project.id);
+                    setMenuState(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                >
+                  <Icon name="git-branch" size={12} />
+                  {t('projects.gitFlowSettings', 'GitFlow settings')}
+                </button>
+                <button
+                  onClick={() => {
+                    setRenameTarget({ type: 'project', project: menuState.project });
+                    setMenuState(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                >
+                  <Icon name="edit" size={12} />
+                  {t('common.rename', 'Rename')}
+                </button>
+                <button
+                  onClick={() => {
+                    setRemoveTarget({ type: 'project', project: menuState.project });
+                    setMenuState(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10"
+                >
+                  <Icon name="x" size={12} />
+                  {t('projects.removeFromMacro', 'Retirer de Macro')}
+                </button>
+              </>
+            )}
+          </div>,
+          document.body
+        )
+      : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -325,7 +476,16 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setMenuOpenFor(menuOpenFor === group.id ? null : group.id);
+                            const trigger = e.currentTarget;
+                            setMenuState((current) =>
+                              current?.type === 'group' && current.group.id === group.id
+                                ? null
+                                : {
+                                    type: 'group',
+                                    group,
+                                    position: getProjectNavMenuPosition(trigger),
+                                  }
+                            );
                           }}
                           data-project-nav-menu="true"
                           className="p-1 rounded hover:bg-accent transition-colors"
@@ -348,50 +508,11 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                         </button>
                       </div>
 
-                      {menuOpenFor === group.id && (
-                        <div
-                          className="absolute right-2 top-full mt-1 w-40 bg-card border border-border rounded-lg shadow-lg py-1 z-20"
-                          data-project-nav-menu="true"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <button
-                            onClick={() => {
-                              handleAddSubproject(group.id);
-                            }}
-                            className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
-                          >
-                            <Icon name="plus" size={12} />
-                            {t('projects.addSubproject', 'Add subproject')}
-                          </button>
-                          <button
-                            onClick={() => {
-                              setRenameTarget({ type: 'group', group });
-                              setMenuOpenFor(null);
-                            }}
-                            className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
-                          >
-                            <Icon name="edit" size={12} />
-                            {t('common.rename', 'Rename')}
-                          </button>
-                          <button
-                            onClick={() => {
-                              setRemoveTarget({ type: 'group', group });
-                              setMenuOpenFor(null);
-                            }}
-                            className="w-full px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10 flex items-center gap-2"
-                          >
-                            <Icon name="x" size={12} />
-                            {t('projects.removeFromMacro', 'Retirer de Macro')}
-                          </button>
-                        </div>
-                      )}
                     </div>
 
                     {group.isOpen && (
                       <div className="px-2 py-2 space-y-1 bg-muted/30">
                         {group.projects.map((project) => {
-                          const isProjectMenuOpen = menuOpenFor === project.id;
-
                           return (
                             <div key={project.id} className="relative">
                               <ProjectItem
@@ -399,48 +520,18 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                                 onSelect={() => handleSelectGroup(group.id)}
                                 onMenuOpen={(e) => {
                                   e.stopPropagation();
-                                  setMenuOpenFor(isProjectMenuOpen ? null : project.id);
+                                  const trigger = e.currentTarget;
+                                  setMenuState((current) =>
+                                    current?.type === 'project' && current.project.id === project.id
+                                      ? null
+                                      : {
+                                          type: 'project',
+                                          project,
+                                          position: getProjectNavMenuPosition(trigger),
+                                        }
+                                  );
                                 }}
                               />
-
-                              {isProjectMenuOpen && (
-                                <div
-                                  className="absolute right-2 top-full mt-1 w-40 bg-card border border-border rounded-lg shadow-lg py-1 z-20"
-                                  data-project-nav-menu="true"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  <button
-                                    onClick={() => {
-                                      openProjectGitFlowModal(project.id);
-                                      setMenuOpenFor(null);
-                                    }}
-                                    className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
-                                  >
-                                    <Icon name="git-branch" size={12} />
-                                    {t('projects.gitFlowSettings', 'GitFlow settings')}
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      setRenameTarget({ type: 'project', project });
-                                      setMenuOpenFor(null);
-                                    }}
-                                    className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
-                                  >
-                                    <Icon name="edit" size={12} />
-                                    {t('common.rename', 'Rename')}
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      setRemoveTarget({ type: 'project', project });
-                                      setMenuOpenFor(null);
-                                    }}
-                                    className="w-full px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10 flex items-center gap-2"
-                                  >
-                                    <Icon name="x" size={12} />
-                                    {t('projects.removeFromMacro', 'Retirer de Macro')}
-                                  </button>
-                                </div>
-                              )}
                             </div>
                           );
                         })}
@@ -550,6 +641,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
           }
         }}
       />
+      {projectMenuPortal}
     </div>
   );
 };
