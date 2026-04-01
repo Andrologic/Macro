@@ -6,12 +6,16 @@ export interface ParsedQuickReplies {
   content: string;
   choices?: AIChoice[];
   allowFreeResponse?: boolean;
+  requiresUserReply: boolean;
 }
 
 export const parseMessageQuickReplies = (content: string): ParsedQuickReplies => {
   const match = content.match(QUICK_REPLY_BLOCK_PATTERN);
   if (!match) {
-    return { content };
+    return {
+      content,
+      requiresUserReply: false,
+    };
   }
 
   const options = match[1]
@@ -27,7 +31,10 @@ export const parseMessageQuickReplies = (content: string): ParsedQuickReplies =>
     .trim();
 
   if (options.length !== 3) {
-    return { content: cleanedContent };
+    return {
+      content: cleanedContent,
+      requiresUserReply: false,
+    };
   }
 
   return {
@@ -37,5 +44,6 @@ export const parseMessageQuickReplies = (content: string): ParsedQuickReplies =>
       text,
     })),
     allowFreeResponse: true,
+    requiresUserReply: true,
   };
 };
