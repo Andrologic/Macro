@@ -53,7 +53,9 @@ import {
   getGlobalProjectById,
   getFocusedProjectIdForGroup,
   getProjectGroupByProjectId,
+  getScopedActionableProjectIds,
   getScopedProjectIds,
+  getScopedReadOnlyProjectIds,
 } from '../services/globalProjects';
 import {
   countProjectsInRegistry,
@@ -495,13 +497,24 @@ const ensureAutoPlanForSelection = async (input: {
     input.groupId,
     input.projectId
   );
-  if (scopedProjectIds.length === 0) {
+  const actionableProjectIds = getScopedActionableProjectIds(
+    appState.projectGroups,
+    input.groupId,
+    input.projectId
+  );
+  const readOnlyProjectIds = getScopedReadOnlyProjectIds(
+    appState.projectGroups,
+    input.groupId,
+    input.projectId
+  );
+  if (scopedProjectIds.length === 0 || actionableProjectIds.length === 0) {
     return;
   }
 
   const ensuredPlan = await ensureProjectGroupPlan({
     branchName: getGitFlowBaseBranch(),
-    scopedProjectIds,
+    scopedProjectIds: actionableProjectIds,
+    contextProjectIds: readOnlyProjectIds,
   });
   if (!ensuredPlan) {
     return;
@@ -594,6 +607,7 @@ interface AppStore {
   renameProjectGroup: (groupId: string, name: string) => Promise<void>;
   renameProject: (projectId: string, name: string) => Promise<void>;
   updateProjectGitFlow: (projectId: string, gitFlowSettings: ProjectGitFlowSettings) => Promise<void>;
+  updateProjectAccess: (projectId: string, userReadOnly: boolean) => Promise<void>;
   removeProjectGroup: (groupId: string) => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
   getProjectById: (id: string) => Project | undefined;
@@ -1509,6 +1523,111 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ isLoading: false, lastError: normalized.message });
       logProjectRegistryAction('failed', {
         action: 'update_project_git_flow',
+        projectId,
+        error: normalized.message,
+        code: normalized.code,
+        details: normalized.details ?? null,
+      });
+      throw normalized;
+    }
+  },
+
+  updateProjectAccess: async (projectId, userReadOnly) => {
+    set({ isLoading: true, lastError: null });
+    try {
+      const previousState = get();
+      const requestedProject = previousState.getProjectById(projectId) ?? null;
+      logProjectRegistryAction('started', {
+        action: 'update_project_access',
+        projectId,
+        beforeCount: countProjectsInRegistry(previousState.projectGroups),
+        userReadOnly,
+      });
+      const preflightSnapshot = await loadProjectRegistrySnapshot({
+        selectedGroupId: previousState.selectedGroupId,
+        selectedProjectId: previousState.selectedProjectId,
+      });
+      const canonicalProject = resolveCanonicalProject(
+        preflightSnapshot.normalizedRegistry.projectGroups,
+        requestedProject
+      );
+
+      if (!canonicalProject) {
+        throw {
+          code: 'PROJECT_NOT_FOUND',
+          message: 'Subproject no longer exists in Macro.',
+        };
+      }
+
+      await services.updateProjectAccess({
+        projectId: canonicalProject.id,
+        userReadOnly,
+      });
+
+      const postMutationSnapshot = await loadProjectRegistrySnapshot({
+        selectedGroupId: previousState.selectedGroupId,
+        selectedProjectId: previousState.selectedProjectId,
+      });
+      const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
+      const nextRecentProjects = reconcileRememberedProjects(
+        normalizedRegistry.projectGroups,
+        previousState.recentProjects
+      );
+      const nextMacroEnabledProjects = reconcileRememberedProjects(
+        normalizedRegistry.projectGroups,
+        previousState.macroEnabledProjects
+      );
+      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+
+      set({
+        currentPlan: postMutationSnapshot.plan,
+        projectGroups: normalizedRegistry.projectGroups,
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+        recentProjects: nextRecentProjects,
+        macroEnabledProjects: nextMacroEnabledProjects,
+        planNodes: filterPlanNodesForRegistry(
+          postMutationSnapshot.planNodes.length
+            ? postMutationSnapshot.planNodes
+            : derivePlanNodesFromPlan(postMutationSnapshot.plan),
+          validProjectIds
+        ),
+        predictedBranches: filterPredictedBranchesForRegistry(
+          postMutationSnapshot.predictedBranches,
+          validProjectIds
+        ),
+        projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
+          normalizedRegistry.report
+        ),
+        isLoading: false,
+        lastError: null,
+      });
+      void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
+      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      await persistSessionContext({
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+        mode: previousState.mode,
+      });
+      await reconcileProjectRegistryDependencies({
+        projectGroups: normalizedRegistry.projectGroups,
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+      });
+      logProjectRegistryAction('succeeded', {
+        action: 'update_project_access',
+        projectId: canonicalProject.id,
+        requestedProjectId: projectId,
+        canonicalized: canonicalProject.id !== projectId,
+        afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
+        repairApplied: normalizedRegistry.report.repaired,
+        userReadOnly,
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
+      logProjectRegistryAction('failed', {
+        action: 'update_project_access',
         projectId,
         error: normalized.message,
         code: normalized.code,

@@ -33,6 +33,18 @@ export interface ProjectGitFlowSettings {
   bugfixBranchTemplate: string;
 }
 
+export interface ProjectGitFlowDetection {
+  repoDetected: boolean;
+  branches: string[];
+  currentBranch?: string | null;
+  suggestedMainBranch?: string | null;
+  suggestedBaseBranch?: string | null;
+  suggestedCommitBranch?: string | null;
+  requiresConfirmation: boolean;
+  setupState: 'not_git' | 'unborn' | 'single_main_only' | 'ready' | 'needs_branch_confirmation';
+  hasInitialCommit: boolean;
+}
+
 export interface PlanNode {
   id: string;
   title: string;
@@ -203,6 +215,10 @@ export interface Project {
   created_at: string;
   status: ProjectStatus;
   gitFlowSettings?: ProjectGitFlowSettings;
+  userReadOnly?: boolean;
+  gitSetupState?: 'ready' | 'not_git' | 'unborn';
+  isReadOnly?: boolean;
+  readOnlyReason?: 'manual' | 'missing_git' | 'missing_initial_commit' | 'manual_and_missing_git' | null;
   metadata: ProjectMetadata;
 }
 
@@ -227,6 +243,7 @@ export interface ProjectMount {
   mountName: string;
   displayName: string;
   workspacePath: string | null;
+  isReadOnly?: boolean;
 }
 
 export interface FileChange {
@@ -240,6 +257,7 @@ export interface Task {
   plan_id: string;
   project_id: string;
   project_ids?: string[];
+  context_project_ids?: string[];
   title: string;
   description: string;
   status: TaskStatus;
@@ -278,6 +296,7 @@ export interface Plan {
   updated_at: string;
   status: PlanStatus;
   project_ids: string[];
+  context_project_ids?: string[];
   tasks: Task[];
   predicted_git_trees: Record<string, PredictedGitTree>;
 }

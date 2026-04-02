@@ -8,6 +8,7 @@ export interface ArchitectAutoPlanDependencies {
     label?: string;
     projectId?: string;
     projectIds?: string[];
+    contextProjectIds?: string[];
     targetBranchesByProjectId?: Record<string, string>;
     status?: ArchitectPlanRecord['status'];
     setActive?: boolean;
@@ -33,6 +34,7 @@ export interface ArchitectAutoPlanDependencies {
     planId: string;
     label?: string;
     projectIds?: string[];
+    contextProjectIds?: string[];
     expectedProjectIds?: string[];
     targetBranchesByProjectId?: Record<string, string>;
     setActive?: boolean;
@@ -110,6 +112,7 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
   const ensureScopedBlankPlan = async (params: {
     branchName: string;
     scopedProjectIds: string[];
+    contextProjectIds?: string[];
   }): Promise<ArchitectPlanRecord | null> => {
     const fullResult = await listScopedPlans(params.branchName, params.scopedProjectIds);
     const draftCandidates = fullResult.scopedPlans.filter(isDraftPlaceholderCandidate);
@@ -194,6 +197,7 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
   const ensureProjectGroupPlan = async (params: {
     branchName: string;
     scopedProjectIds: string[];
+    contextProjectIds?: string[];
   }): Promise<EnsureProjectGroupPlanResult | null> => {
     if (params.scopedProjectIds.length === 0) {
       return null;
@@ -220,6 +224,10 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
         blankPlan.expectedProjectIds,
         params.scopedProjectIds
       );
+      const mergedContextProjectIds = mergeProjectIds(
+        blankPlan.contextProjectIds,
+        params.contextProjectIds
+      );
 
       if (!coversScope(mergedProjectIds, params.scopedProjectIds)) {
         return null;
@@ -227,12 +235,14 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
 
       if (
         !coversScope(blankPlan.projectIds || [], params.scopedProjectIds) ||
-        !coversScope(blankPlan.expectedProjectIds || blankPlan.projectIds || [], params.scopedProjectIds)
+        !coversScope(blankPlan.expectedProjectIds || blankPlan.projectIds || [], params.scopedProjectIds) ||
+        !coversScope(blankPlan.contextProjectIds || [], params.contextProjectIds || [])
       ) {
         const expandedPlan = await deps.updateArchitectPlan({
           branchName: params.branchName,
           planId: blankPlan.id,
           projectIds: mergedProjectIds,
+          contextProjectIds: mergedContextProjectIds,
           expectedProjectIds: mergedProjectIds,
           targetBranchesByProjectId: deps.getTargetBranchesByProjectId?.(mergedProjectIds),
           setActive: true,
@@ -263,6 +273,7 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       label: deps.DEFAULT_NEW_PLAN_LABEL,
       projectId: params.scopedProjectIds[0] || undefined,
       projectIds: params.scopedProjectIds,
+      contextProjectIds: params.contextProjectIds,
       targetBranchesByProjectId: deps.getTargetBranchesByProjectId?.(params.scopedProjectIds),
       status: 'draft',
       setActive: true,

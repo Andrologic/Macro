@@ -233,6 +233,23 @@ const getManualTerminalUnavailableMessage = (): string => {
   return 'Select a task before opening a terminal.';
 };
 
+const assertProjectSupportsTerminal = (projectId: string): Project => {
+  const appState = useAppStore.getState();
+  const project =
+    (typeof appState.getProjectById === 'function' ? appState.getProjectById(projectId) : null) ||
+    appState.projectGroups
+      .flatMap((group) => group.projects)
+      .find((candidate) => candidate.id === projectId) ||
+    null;
+  if (!project) {
+    throw new Error(`Unknown project id: ${projectId}`);
+  }
+  if (project.isReadOnly) {
+    throw new Error(`Subproject "${project.name}" is read-only. Terminal sessions are unavailable.`);
+  }
+  return project;
+};
+
 const resolvePromptTaskLabel = (
   task: TaskWithTargets | null,
   conversations: Array<{ id: string; title: string; task_id?: string | null }>
@@ -784,6 +801,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     createSession: async ({ projectId, cwd }) => {
+      assertProjectSupportsTerminal(projectId);
       const session = await tauriIpc.terminalCreateSession({ projectId, cwd: cwd ?? null });
       return get().upsertSession(session);
     },
@@ -1037,6 +1055,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         throw new Error(getManualTerminalUnavailableMessage());
       }
 
+      assertProjectSupportsTerminal(projectId);
+
       const context = resolveManualTerminalContext({
         projectId,
         groupId,
@@ -1096,6 +1116,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
 
     ensureTaskTab: async ({ taskId, projectId, cwd, title, reveal, promptContext }) => {
       await get().initialize();
+      assertProjectSupportsTerminal(projectId);
       const existing = Object.values(get().tabs).find(
         (tab) => tab.kind === 'task' && tab.taskId === taskId && tab.projectId === projectId
       );

@@ -121,6 +121,8 @@ pub struct ManualFeatureDto {
     pub base_branch: String,
     #[serde(default, rename = "projectIds")]
     pub project_ids: Vec<String>,
+    #[serde(default, rename = "contextProjectIds")]
+    pub context_project_ids: Vec<String>,
     #[serde(default, rename = "executionTargets")]
     pub execution_targets: Vec<WorkspaceTaskExecutionTargetDto>,
     #[serde(rename = "createdAt")]
@@ -142,7 +144,7 @@ pub struct ProjectGroupDto {
     pub projects: Vec<ProjectDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectGitFlowSettingsDto {
     #[serde(default = "default_project_git_base_branch", rename = "baseBranch")]
     pub base_branch: String,
@@ -178,6 +180,30 @@ pub struct ProjectGitFlowSettingsDto {
         rename = "bugfixBranchTemplate"
     )]
     pub bugfix_branch_template: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectGitFlowDetectionDto {
+    #[serde(rename = "repoDetected")]
+    pub repo_detected: bool,
+    pub branches: Vec<String>,
+    #[serde(default, rename = "currentBranch")]
+    pub current_branch: Option<String>,
+    #[serde(default, rename = "suggestedMainBranch")]
+    pub suggested_main_branch: Option<String>,
+    #[serde(default, rename = "suggestedBaseBranch")]
+    pub suggested_base_branch: Option<String>,
+    #[serde(default, rename = "suggestedCommitBranch")]
+    pub suggested_commit_branch: Option<String>,
+    #[serde(rename = "requiresConfirmation")]
+    pub requires_confirmation: bool,
+    #[serde(
+        default = "default_project_git_detection_setup_state",
+        rename = "setupState"
+    )]
+    pub setup_state: String,
+    #[serde(default, rename = "hasInitialCommit")]
+    pub has_initial_commit: bool,
 }
 
 impl Default for ProjectGitFlowSettingsDto {
@@ -239,6 +265,14 @@ pub struct ProjectDto {
     pub status: String,
     #[serde(default, rename = "gitFlowSettings")]
     pub git_flow_settings: ProjectGitFlowSettingsDto,
+    #[serde(default, rename = "userReadOnly")]
+    pub user_read_only: bool,
+    #[serde(default = "default_project_git_setup_state", rename = "gitSetupState")]
+    pub git_setup_state: String,
+    #[serde(default, rename = "isReadOnly")]
+    pub is_read_only: bool,
+    #[serde(default, rename = "readOnlyReason")]
+    pub read_only_reason: Option<String>,
     pub metadata: ProjectMetadataDto,
 }
 
@@ -259,6 +293,8 @@ pub struct PlanDto {
     pub updated_at: String,
     pub status: String,
     pub project_ids: Vec<String>,
+    #[serde(default, rename = "contextProjectIds")]
+    pub context_project_ids: Vec<String>,
     #[serde(default)]
     pub tasks: Vec<Value>,
     #[serde(default)]
@@ -335,6 +371,7 @@ pub struct ProjectRegistryRepairReportDto {
     pub manual_feature_targets_removed: usize,
     pub plan_nodes_removed: usize,
     pub predicted_branches_removed: usize,
+    pub git_flow_settings_auto_updated: usize,
 }
 
 impl ProjectRegistryRepairReportDto {
@@ -353,7 +390,16 @@ impl ProjectRegistryRepairReportDto {
             || self.manual_feature_targets_removed > 0
             || self.plan_nodes_removed > 0
             || self.predicted_branches_removed > 0
+            || self.git_flow_settings_auto_updated > 0
     }
+}
+
+fn default_project_git_setup_state() -> String {
+    "ready".to_string()
+}
+
+fn default_project_git_detection_setup_state() -> String {
+    "not_git".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

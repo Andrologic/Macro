@@ -207,6 +207,41 @@ describe('architectPlanService', () => {
     expect(reloaded?.expectedProjectIds).toEqual(['web', 'api']);
   });
 
+  it('persists read-only context project ids separately from actionable project ids', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000013',
+      projectIds: ['web'],
+      contextProjectIds: ['docs'],
+    });
+
+    expect(created.projectIds).toEqual(['web']);
+    expect(created.contextProjectIds).toEqual(['docs']);
+
+    const updated = await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      projectIds: ['web', 'api'],
+      expectedProjectIds: ['web', 'api'],
+      contextProjectIds: ['docs', 'storybook'],
+    });
+
+    expect(updated.projectIds).toEqual(['web', 'api']);
+    expect(updated.expectedProjectIds).toEqual(['web', 'api']);
+    expect(updated.contextProjectIds).toEqual(['docs', 'storybook']);
+
+    const reloaded = await service.getArchitectPlan(branchName, created.id);
+    expect(reloaded?.projectIds).toEqual(['web', 'api']);
+    expect(reloaded?.expectedProjectIds).toEqual(['web', 'api']);
+    expect(reloaded?.contextProjectIds).toEqual(['docs', 'storybook']);
+
+    const listed = await service.listArchitectPlans(branchName, true, true);
+    expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.contextProjectIds).toEqual([
+      'docs',
+      'storybook',
+    ]);
+  });
+
   it('preserves legacy title rename behavior and uses stored slugs for branch naming', async () => {
     const legacyPlan: ArchitectPlanRecord = {
       id: 'legacy-plan',

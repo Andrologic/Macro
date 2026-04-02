@@ -29,7 +29,8 @@ interface GitStore {
     projectId: string,
     taskId: string,
     branchName: string,
-    fromRef?: string | null
+    fromRef?: string | null,
+    preferredCommitBranch?: string | null
   ) => Promise<GitWorktreeEnsureResult | null>;
   removeWorktree: (projectId: string, taskId: string) => Promise<GitWorktreeRemoveResult | null>;
 }
@@ -72,10 +73,22 @@ export const useGitStore = create<GitStore>((set) => ({
     }
   },
 
-  createWorktree: async (projectId: string, taskId: string, branchName: string, fromRef?: string | null) => {
+  createWorktree: async (
+    projectId: string,
+    taskId: string,
+    branchName: string,
+    fromRef?: string | null,
+    preferredCommitBranch?: string | null
+  ) => {
     set({ isLoading: true, lastError: null });
     try {
-      const result = await services.gitWorktreeCreate(projectId, taskId, branchName, fromRef);
+      const result = await services.gitWorktreeCreate(
+        projectId,
+        taskId,
+        branchName,
+        fromRef,
+        preferredCommitBranch
+      );
       set({ isLoading: false });
       return result;
     } catch (error) {

@@ -108,6 +108,11 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
           />
         </div>
         <span className="text-sm text-foreground truncate">{project.name}</span>
+        {project.isReadOnly && (
+          <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+            Read-only
+          </span>
+        )}
       </div>
 
       <div className="flex items-center gap-2">
@@ -370,7 +375,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
                 >
                   <Icon name="git-branch" size={12} />
-                  {t('projects.gitFlowSettings', 'GitFlow settings')}
+                  {t('projects.projectSettings', 'Project settings')}
                 </button>
                 <button
                   onClick={() => {

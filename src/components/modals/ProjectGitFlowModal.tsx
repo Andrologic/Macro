@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
+import { services } from '../../services';
 import { Icon } from '../ui/Icon';
 import {
   getDefaultProjectGitFlowSettings,
@@ -53,11 +54,13 @@ export const ProjectGitFlowModal: React.FC = () => {
   const projectId = useAppStore((state) => state.projectGitFlowModalProjectId);
   const getProjectById = useAppStore((state) => state.getProjectById);
   const updateProjectGitFlow = useAppStore((state) => state.updateProjectGitFlow);
+  const updateProjectAccess = useAppStore((state) => state.updateProjectAccess);
   const closeProjectGitFlowModal = useAppStore((state) => state.closeProjectGitFlowModal);
   const project = projectId ? getProjectById(projectId) : null;
   const [settings, setSettings] = useState<ProjectGitFlowSettings>(() => getDefaultProjectGitFlowSettings());
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [isAccessSaving, setIsAccessSaving] = useState(false);
 
   useEffect(() => {
     if (!project) {
@@ -66,6 +69,7 @@ export const ProjectGitFlowModal: React.FC = () => {
     setSettings(resolveProjectGitFlowSettings(project.gitFlowSettings));
     setIsSaving(false);
     setSaveSuccess(false);
+    setIsAccessSaving(false);
   }, [project]);
 
   const appDefaults = useMemo(() => getDefaultProjectGitFlowSettings(), []);
@@ -76,9 +80,78 @@ export const ProjectGitFlowModal: React.FC = () => {
     return null;
   }
 
+  const accessBadgeLabel = project.isReadOnly
+    ? t('projects.accessReadOnly', 'Read-only')
+    : t('projects.accessEditable', 'Editable');
+  const accessReason = project.readOnlyReason === 'manual'
+    ? t('projects.accessManualReadOnly', 'This subproject is manually forced to read-only.')
+    : project.readOnlyReason === 'missing_git'
+      ? t('projects.accessMissingGit', 'Git is not initialized yet. This subproject stays read-only until Git is initialized.')
+      : project.readOnlyReason === 'missing_initial_commit'
+        ? t(
+            'projects.accessMissingInitialCommit',
+            'This repository has no initial commit yet. Create one to make the subproject editable.'
+          )
+        : project.readOnlyReason === 'manual_and_missing_git'
+          ? t(
+              'projects.accessManualAndMissingGit',
+              'This subproject is manually read-only and Git is not initialized yet.'
+            )
+          : t(
+              'projects.accessEditableHelp',
+              'Editable subprojects can create worktrees, branches, terminal sessions, and implementation tasks.'
+            );
+
   const handleClose = () => {
     if (!isSaving) {
       closeProjectGitFlowModal();
+    }
+  };
+
+  const handleToggleAccess = async () => {
+    if (!projectId || isAccessSaving || project.gitSetupState !== 'ready') {
+      return;
+    }
+
+    setIsAccessSaving(true);
+    try {
+      await updateProjectAccess(projectId, !project.userReadOnly);
+      toast.success(
+        project.userReadOnly
+          ? t('projects.projectNowEditable', '{{projectName}} is editable again.', {
+              projectName: project.name,
+            })
+          : t('projects.projectNowReadOnly', '{{projectName}} is now read-only.', {
+              projectName: project.name,
+            })
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
+      toast.error(message);
+    } finally {
+      setIsAccessSaving(false);
+    }
+  };
+
+  const handlePrepareProjectGit = async () => {
+    if (!projectId || isAccessSaving) {
+      return;
+    }
+
+    setIsAccessSaving(true);
+    try {
+      await services.prepareProjectGit({ path: project.path });
+      await updateProjectAccess(projectId, false);
+      toast.success(
+        t('projects.projectGitPrepared', 'Git is ready for {{projectName}}.', {
+          projectName: project.name,
+        })
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
+      toast.error(message);
+    } finally {
+      setIsAccessSaving(false);
     }
   };
 
@@ -130,12 +203,12 @@ export const ProjectGitFlowModal: React.FC = () => {
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <div>
             <h2 className="text-sm font-semibold text-foreground">
-              {t('projects.gitFlowModalTitle', 'GitFlow settings')}
+              {t('projects.projectSettingsTitle', 'Project settings')}
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
               {t(
-                'projects.gitFlowModalSubtitle',
-                'Override the development branch, main branch, and planned or independent feature branch naming used by this subproject.'
+                'projects.projectSettingsSubtitle',
+                'Manage access mode and override the branch naming used by this subproject.'
               )}{' '}
               <span className="text-foreground">{project.name}</span>
             </p>
@@ -150,6 +223,77 @@ export const ProjectGitFlowModal: React.FC = () => {
         </div>
 
         <div className="space-y-5 px-5 py-5">
+          <section className="rounded-xl border border-border/50 bg-muted/20 p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-foreground">
+                  {t('projects.projectAccessTitle', 'Access')}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'rounded-full px-2.5 py-1 text-[11px] font-semibold',
+                      project.isReadOnly
+                        ? 'bg-amber-500/15 text-amber-300'
+                        : 'bg-emerald-500/15 text-emerald-300'
+                    )}
+                  >
+                    {accessBadgeLabel}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {project.gitSetupState === 'ready'
+                      ? t('projects.projectAccessGitReady', 'Git ready')
+                      : project.gitSetupState === 'unborn'
+                        ? t('projects.projectAccessGitUnborn', 'Initial commit missing')
+                        : t('projects.projectAccessGitMissing', 'Git missing')}
+                  </span>
+                </div>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {accessReason}
+                </p>
+              </div>
+
+              <div className="flex shrink-0 items-center gap-2">
+                {project.gitSetupState === 'ready' ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleAccess()}
+                    disabled={isAccessSaving}
+                    className={cn(
+                      'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                      project.userReadOnly
+                        ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/20'
+                        : 'bg-amber-500/15 text-amber-300 hover:bg-amber-500/20',
+                      isAccessSaving && 'cursor-not-allowed opacity-60'
+                    )}
+                  >
+                    {isAccessSaving
+                      ? t('common.saving', 'Saving...')
+                      : project.userReadOnly
+                        ? t('projects.makeEditable', 'Make editable')
+                        : t('projects.makeReadOnly', 'Make read-only')}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handlePrepareProjectGit()}
+                    disabled={isAccessSaving}
+                    className={cn(
+                      'rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90',
+                      isAccessSaving && 'cursor-not-allowed opacity-60'
+                    )}
+                  >
+                    {isAccessSaving
+                      ? t('common.saving', 'Saving...')
+                      : project.gitSetupState === 'unborn'
+                        ? t('projects.createInitialCommitAction', 'Create initial commit')
+                        : t('projects.initializeGitAction', 'Initialize Git')}
+                  </button>
+                )}
+              </div>
+            </div>
+          </section>
+
           <div className="grid gap-4 md:grid-cols-2">
             {renderInput(
               t('projects.gitFlowMainBranch', 'Main branch'),

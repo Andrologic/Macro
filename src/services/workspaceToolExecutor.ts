@@ -12,12 +12,14 @@ import { getFocusedProjectForGroup, getSubProjectsForGroup } from './globalProje
 
 type ToolArgs = Record<string, unknown>;
 const isGitTool = (toolName: string): boolean => toolName.startsWith('git_');
-const gitBackendToolIds = new Set([
+const gitReadToolIds = new Set([
   'git_status',
   'git_log',
   'git_branch_list',
   'git_diff',
   'git_get_tree',
+]);
+const gitMutatingToolIds = new Set([
   'git_add',
   'git_commit',
   'git_checkout',
@@ -25,6 +27,7 @@ const gitBackendToolIds = new Set([
   'git_reset',
   'git_stash',
 ]);
+const gitBackendToolIds = new Set([...gitReadToolIds, ...gitMutatingToolIds]);
 
 export interface ExecuteWorkspaceToolOptions {
   workspacePath?: string | null;
@@ -141,6 +144,7 @@ interface ProjectWorkspaceCandidate {
   name: string;
   mountName: string;
   workspacePath: string | null;
+  isReadOnly: boolean;
 }
 
 const slugifyProjectAlias = (value: string): string =>
@@ -161,6 +165,7 @@ const getProjectWorkspaceCandidates = (
       workspacePath: normalizeWorkspacePath(
         options.workspacePathsByProjectId?.[mount.projectId] || mount.workspacePath
       ),
+      isReadOnly: Boolean(mount.isReadOnly),
     }));
   }
 
@@ -177,6 +182,7 @@ const getProjectWorkspaceCandidates = (
     workspacePath:
       normalizeWorkspacePath(options.workspacePathsByProjectId?.[project.id]) ||
       normalizeWorkspacePath(project.path),
+    isReadOnly: Boolean(project.isReadOnly),
   }));
 };
 
@@ -312,7 +318,7 @@ const getVirtualRootEntries = (candidates: ProjectWorkspaceCandidate[]) =>
     name: candidate.mountName,
     kind: 'directory',
     is_hidden: false,
-    is_readonly: false,
+    is_readonly: candidate.isReadOnly,
   }));
 
 const formatResolvedWorkspacePath = (
@@ -347,8 +353,114 @@ const normalizeDirEntryForVirtualRoot = (
     path: mode === 'Debug' ? entry.path : virtualPath,
     relative_path: virtualPath,
     name: entry.name,
+    is_readonly: entry.is_readonly || candidate.isReadOnly,
   };
   return nextEntry;
+};
+
+const isMutatingWorkspaceTool = (toolName: string): boolean =>
+  toolName === 'write' || toolName === 'edit' || gitMutatingToolIds.has(toolName) || toolName === 'terminal_create_session';
+
+const getFirstActionableCandidate = (
+  candidates: ProjectWorkspaceCandidate[],
+  preferredIds: Array<string | null | undefined>
+): ProjectWorkspaceCandidate | null => {
+  for (const preferredId of preferredIds) {
+    const preferred = getProjectWorkspaceCandidate(preferredId, candidates);
+    if (preferred && !preferred.isReadOnly) {
+      return preferred;
+    }
+  }
+  return candidates.find((candidate) => !candidate.isReadOnly) || null;
+};
+
+const hasExplicitProjectTarget = (
+  toolName: string,
+  args: ToolArgs,
+  candidates: ProjectWorkspaceCandidate[]
+): boolean => {
+  if (getExplicitToolProjectId(args, candidates)) {
+    return true;
+  }
+
+  const rawPath = sanitizePathInput(
+    isGitTool(toolName) ? toString(args.repo_path) : toString(args.path)
+  );
+  if (!rawPath) {
+    return false;
+  }
+
+  if (!isAbsolutePath(rawPath)) {
+    return Boolean(stripProjectAliasPrefix(rawPath, candidates));
+  }
+
+  return Boolean(findProjectByAbsolutePath(rawPath, candidates));
+};
+
+const buildReadOnlyToolError = (
+  toolName: string,
+  candidate: ProjectWorkspaceCandidate
+): string => {
+  const label = candidate.name || candidate.mountName || candidate.id;
+  if (toolName === 'terminal_create_session') {
+    return `Error executing terminal_create_session: subproject "${label}" is read-only.`;
+  }
+  if (toolName === 'write' || toolName === 'edit') {
+    return `Error executing ${toolName}: subproject "${label}" is read-only.`;
+  }
+  if (gitMutatingToolIds.has(toolName)) {
+    return `Error executing ${toolName}: subproject "${label}" is read-only.`;
+  }
+  return `Subproject "${label}" is read-only.`;
+};
+
+const resolveMutatingVirtualTarget = async (params: {
+  toolName: string;
+  rawPath: string;
+  args: ToolArgs;
+  candidates: ProjectWorkspaceCandidate[];
+  focusedProjectId?: string | null;
+  defaultProjectId?: string | null;
+}): Promise<{
+  target: Awaited<ReturnType<typeof resolveVirtualToolTarget>>;
+  error: string | null;
+}> => {
+  const target = await resolveVirtualToolTarget(params);
+  if (!isMutatingWorkspaceTool(params.toolName) || !target.candidate?.isReadOnly) {
+    return { target, error: null };
+  }
+
+  if (target.explicitTarget) {
+    return {
+      target,
+      error: buildReadOnlyToolError(params.toolName, target.candidate),
+    };
+  }
+
+  const fallbackCandidate = getFirstActionableCandidate(params.candidates, [
+    params.focusedProjectId,
+    params.defaultProjectId,
+  ]);
+  if (!fallbackCandidate) {
+    return {
+      target,
+      error: buildReadOnlyToolError(params.toolName, target.candidate),
+    };
+  }
+
+  return {
+    target: {
+      candidate: fallbackCandidate,
+      relativePath:
+        params.toolName === 'write' || params.toolName === 'edit'
+          ? params.rawPath || '.'
+          : '.',
+      explicitTarget: false,
+      usedFocusedProject: false,
+      matchCount: 1,
+    },
+    error: null,
+  };
 };
 
 export const resolveToolWorkspaceRouting = (
@@ -714,11 +826,35 @@ export const executeWorkspaceTool = async (
   const rawArgs = { ...args };
   const routing = resolveToolWorkspaceRouting(toolName, args, options);
   args = routing.args;
-  const effectiveWorkspacePath =
+  let effectiveProjectId = routing.projectId;
+  let effectiveWorkspacePath =
     normalizeWorkspacePath(routing.workspacePath) ||
     normalizeWorkspacePath(options.defaultWorkspacePath) ||
     normalizeWorkspacePath(options.workspacePath) ||
     normalizeWorkspacePath(getSelectedProjectRoot());
+  const explicitProjectTarget = hasExplicitProjectTarget(toolName, rawArgs, candidates);
+
+  if (!virtualRootCandidate && isMutatingWorkspaceTool(toolName)) {
+    const routedCandidate = getProjectWorkspaceCandidate(effectiveProjectId, candidates);
+    if (routedCandidate?.isReadOnly) {
+      if (explicitProjectTarget) {
+        return buildReadOnlyToolError(toolName, routedCandidate);
+      }
+
+      const fallbackCandidate = getFirstActionableCandidate(candidates, [
+        focusedProjectId,
+        options.projectId,
+        routing.projectId,
+      ]);
+      if (!fallbackCandidate) {
+        return buildReadOnlyToolError(toolName, routedCandidate);
+      }
+
+      effectiveProjectId = fallbackCandidate.id;
+      effectiveWorkspacePath =
+        normalizeWorkspacePath(fallbackCandidate.workspacePath) || effectiveWorkspacePath;
+    }
+  }
 
   if (!useTauri && !useRemoteKernel) {
     return 'Workspace tools require Tauri runtime.';
@@ -958,7 +1094,7 @@ export const executeWorkspaceTool = async (
         const content = toString(rawArgs.content);
         if (!inputPath) return 'Missing path argument for write tool.';
 
-        const target = await resolveVirtualToolTarget({
+        const { target, error } = await resolveMutatingVirtualTarget({
           toolName,
           rawPath: inputPath,
           args: rawArgs,
@@ -966,6 +1102,9 @@ export const executeWorkspaceTool = async (
           focusedProjectId,
           defaultProjectId: options.projectId,
         });
+        if (error) {
+          return error;
+        }
 
         if (!target.candidate?.workspacePath) {
           return 'Error executing write: select a subproject with project_id or a mount-prefixed path before writing.';
@@ -1004,7 +1143,7 @@ export const executeWorkspaceTool = async (
         if (!inputPath) return 'Missing path argument for edit tool.';
         if (!oldText) return 'Missing old_text argument for edit tool.';
 
-        const target = await resolveVirtualToolTarget({
+        const { target, error } = await resolveMutatingVirtualTarget({
           toolName,
           rawPath: inputPath,
           args: rawArgs,
@@ -1012,6 +1151,9 @@ export const executeWorkspaceTool = async (
           focusedProjectId,
           defaultProjectId: options.projectId,
         });
+        if (error) {
+          return error;
+        }
 
         if (!target.candidate?.workspacePath) {
           return 'Error executing edit: select a subproject with project_id or a mount-prefixed path before editing.';
@@ -1156,7 +1298,7 @@ export const executeWorkspaceTool = async (
       }
 
       if (isGitTool(toolName)) {
-        const target = await resolveVirtualToolTarget({
+        const { target, error } = await resolveMutatingVirtualTarget({
           toolName,
           rawPath: rawGitPath,
           args: rawArgs,
@@ -1164,6 +1306,9 @@ export const executeWorkspaceTool = async (
           focusedProjectId,
           defaultProjectId: options.projectId,
         });
+        if (error) {
+          return error;
+        }
 
         if (!target.candidate?.workspacePath) {
           return 'Error executing git tool: select a subproject with project_id or a mount-prefixed repo_path before running git commands.';

@@ -273,9 +273,16 @@ const ensureTargetWorktreePath = async (
 
   const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
   const fromRef = repoPath ? await resolveTaskStartRef(task, target, repoPath) : null;
+  const preferredCommitBranch = target.targetBranchName || task.base_branch || null;
   const ensured = await useGitStore
     .getState()
-    .createWorktree(target.projectId, target.worktreeKey, target.branchName, fromRef);
+    .createWorktree(
+      target.projectId,
+      target.worktreeKey,
+      target.branchName,
+      fromRef,
+      preferredCommitBranch
+    );
   if (!ensured?.worktreePath) {
     const createError = useGitStore.getState().lastError?.trim();
     const expectedBaseRef = normalizeBranchName(target.targetBranchName || task.base_branch || getGitFlowBaseBranch());
@@ -686,6 +693,7 @@ interface TaskStore {
     conversationId: string;
     groupId?: string | null;
     projectIds: string[];
+    contextProjectIds?: string[];
     baseBranch?: string | null;
     title?: string | null;
     description?: string | null;
@@ -1046,6 +1054,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         conversationId: params.conversationId,
         groupId: params.groupId ?? null,
         projectIds: params.projectIds,
+        contextProjectIds: params.contextProjectIds ?? [],
         baseBranch: params.baseBranch ?? null,
         title: params.title ?? null,
         description: params.description ?? null,

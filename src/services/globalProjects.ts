@@ -1,6 +1,12 @@
 import type { GlobalProject, Project, ProjectGroup } from '../types';
 import type { LocalProjectContextState } from './localProjectContext';
 
+export const isProjectReadOnly = (project: Pick<Project, 'isReadOnly'> | null | undefined): boolean =>
+  Boolean(project?.isReadOnly);
+
+export const isProjectActionable = (project: Pick<Project, 'isReadOnly'> | null | undefined): boolean =>
+  Boolean(project) && !project?.isReadOnly;
+
 export const toGlobalProject = (group: ProjectGroup): GlobalProject => ({
   groupId: group.id,
   name: group.name,
@@ -97,3 +103,25 @@ export const getScopedProjectIds = (
 
   return [];
 };
+
+export const getScopedActionableProjectIds = (
+  groups: ProjectGroup[],
+  groupId: string | null | undefined,
+  projectId: string | null | undefined
+): string[] =>
+  getScopedProjectIds(groups, groupId, projectId).filter((scopedProjectId) =>
+    groups
+      .flatMap((group) => group.projects)
+      .some((project) => project.id === scopedProjectId && isProjectActionable(project))
+  );
+
+export const getScopedReadOnlyProjectIds = (
+  groups: ProjectGroup[],
+  groupId: string | null | undefined,
+  projectId: string | null | undefined
+): string[] =>
+  getScopedProjectIds(groups, groupId, projectId).filter((scopedProjectId) =>
+    groups
+      .flatMap((group) => group.projects)
+      .some((project) => project.id === scopedProjectId && isProjectReadOnly(project))
+  );
