@@ -7,6 +7,7 @@ interface ConfirmPromptModalProps {
   isOpen: boolean;
   title: string;
   description?: string;
+  children?: React.ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   confirmVariant?: 'primary' | 'error';
@@ -22,6 +23,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   isOpen,
   title,
   description,
+  children,
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   confirmVariant = 'primary',
@@ -60,6 +62,10 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
         <h3 className="text-sm font-semibold text-foreground">{title}</h3>
         {description && (
           <p className="mt-2 text-sm text-muted-foreground">{description}</p>
+        )}
+
+        {children && (
+          <div className="mt-3">{children}</div>
         )}
 
         {showInput && (

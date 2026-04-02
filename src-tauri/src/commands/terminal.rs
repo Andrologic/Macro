@@ -29,6 +29,13 @@ pub struct TerminalSessionStore {
     live_tabs: Arc<Mutex<HashMap<String, LiveTerminalSession>>>,
 }
 
+impl TerminalSessionStore {
+    pub(crate) async fn live_tab_ids(&self) -> Vec<String> {
+        let live_tabs = self.live_tabs.lock().await;
+        live_tabs.keys().cloned().collect()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalTabDto {
     pub id: String,

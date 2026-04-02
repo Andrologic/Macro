@@ -9,12 +9,14 @@ import type {
   PredictedGitTree,
   GitCommit,
   Plan,
+  ProjectAccessChangePreview,
   ProjectGroup,
   PlanNode,
   PredictedBranch,
   Project,
   ProjectGitFlowDetection,
   ProjectGitFlowSettings,
+  ProjectGitSetupAction,
   AppMode,
   ProjectMount,
   ToolTrace,
@@ -1277,6 +1279,26 @@ export async function workspaceDetectProjectGitFlow(params: {
   });
 }
 
+export async function workspacePreviewProjectGitSetup(params: {
+  path?: string;
+}): Promise<ProjectGitFlowDetection> {
+  return invoke<ProjectGitFlowDetection>('workspace_preview_project_git_setup', {
+    path: params.path ?? null,
+  });
+}
+
+export async function workspaceApplyProjectGitSetup(params: {
+  path: string;
+  action: ProjectGitSetupAction;
+  expectedRepoRootPath?: string | null;
+}): Promise<ProjectGitFlowDetection> {
+  return invoke<ProjectGitFlowDetection>('workspace_apply_project_git_setup', {
+    path: params.path,
+    action: params.action,
+    expectedRepoRootPath: params.expectedRepoRootPath ?? null,
+  });
+}
+
 export async function workspacePrepareProjectGit(params: {
   path: string;
 }): Promise<ProjectGitFlowDetection> {
@@ -1360,10 +1382,22 @@ export async function workspaceUpdateProjectGitFlow(params: {
 export async function workspaceUpdateProjectAccess(params: {
   projectId: string;
   userReadOnly: boolean;
+  confirmedMigration?: boolean;
 }): Promise<Project> {
   return invoke<Project>('workspace_update_project_access', {
     projectId: params.projectId,
     userReadOnly: params.userReadOnly,
+    confirmedMigration: params.confirmedMigration ?? false,
+  });
+}
+
+export async function workspacePreviewProjectAccessChange(params: {
+  projectId: string;
+  targetReadOnly: boolean;
+}): Promise<ProjectAccessChangePreview> {
+  return invoke<ProjectAccessChangePreview>('workspace_preview_project_access_change', {
+    projectId: params.projectId,
+    targetReadOnly: params.targetReadOnly,
   });
 }
 

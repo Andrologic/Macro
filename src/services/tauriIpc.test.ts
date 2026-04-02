@@ -170,6 +170,60 @@ describe('tauriIpc executeWorkspaceTool', () => {
     ]);
   });
 
+  it('uses camelCase payload keys for workspace git setup and access previews', async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.workspacePreviewProjectGitSetup({
+      path: 'C:/dev/web',
+    });
+    await tauriIpc.workspaceApplyProjectGitSetup({
+      path: 'C:/dev/web',
+      action: 'create_initial_commit',
+      expectedRepoRootPath: 'C:/dev',
+    });
+    await tauriIpc.workspacePreviewProjectAccessChange({
+      projectId: 'project-1',
+      targetReadOnly: true,
+    });
+    await tauriIpc.workspaceUpdateProjectAccess({
+      projectId: 'project-1',
+      userReadOnly: true,
+      confirmedMigration: true,
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: 'workspace_preview_project_git_setup',
+        payload: {
+          path: 'C:/dev/web',
+        },
+      },
+      {
+        command: 'workspace_apply_project_git_setup',
+        payload: {
+          path: 'C:/dev/web',
+          action: 'create_initial_commit',
+          expectedRepoRootPath: 'C:/dev',
+        },
+      },
+      {
+        command: 'workspace_preview_project_access_change',
+        payload: {
+          projectId: 'project-1',
+          targetReadOnly: true,
+        },
+      },
+      {
+        command: 'workspace_update_project_access',
+        payload: {
+          projectId: 'project-1',
+          userReadOnly: true,
+          confirmedMigration: true,
+        },
+      },
+    ]);
+  });
+
   it('uses camelCase payload keys for terminal commands', async () => {
     const tauriIpc = await loadTauriIpc();
 

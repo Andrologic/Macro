@@ -1,5 +1,5 @@
 use super::models::*;
-use super::DbResult;
+use super::{ensure_git_tracking_tables, DbResult};
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use std::collections::HashSet;
@@ -263,6 +263,7 @@ pub async fn upsert_git_repository(
     pool: &SqlitePool,
     input: CreateGitRepositoryInput,
 ) -> DbResult<GitRepositoryRecord> {
+    ensure_git_tracking_tables(pool).await?;
     let now = chrono::Utc::now().to_rfc3339();
     let new_id = uuid::Uuid::new_v4().to_string();
 
@@ -313,6 +314,7 @@ pub async fn upsert_git_worktree(
     pool: &SqlitePool,
     input: CreateGitWorktreeInput,
 ) -> DbResult<GitWorktreeRecord> {
+    ensure_git_tracking_tables(pool).await?;
     let now = chrono::Utc::now().to_rfc3339();
     let new_id = uuid::Uuid::new_v4().to_string();
 
@@ -385,6 +387,7 @@ pub async fn list_git_worktrees_by_project(
     pool: &SqlitePool,
     project_id: &str,
 ) -> DbResult<Vec<GitWorktreeRecord>> {
+    ensure_git_tracking_tables(pool).await?;
     let rows = sqlx::query(
         r#"
         SELECT id, repo_id, project_id, task_id, worktree_name, path, branch, head_commit,
@@ -416,6 +419,31 @@ pub async fn list_git_worktrees_by_project(
             is_prunable: row.get::<i32, _>("is_prunable") != 0,
         })
         .collect())
+}
+
+pub async fn update_git_worktree_project_access(
+    pool: &SqlitePool,
+    project_id: &str,
+    is_active: bool,
+    is_prunable: bool,
+) -> DbResult<()> {
+    ensure_git_tracking_tables(pool).await?;
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"
+        UPDATE git_worktrees
+        SET is_active = ?, is_prunable = ?, updated_at = ?
+        WHERE project_id = ?
+        "#,
+    )
+    .bind(if is_active { 1 } else { 0 })
+    .bind(if is_prunable { 1 } else { 0 })
+    .bind(now)
+    .bind(project_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 // ============ MESSAGES ============

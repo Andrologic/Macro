@@ -14,7 +14,13 @@ import type {
   TaskCatalogDto,
   ToolSettingsDto,
 } from './dtos';
-import type { ProjectGitFlowDetection, ProjectGitFlowSettings, ProjectGroup } from '../../types';
+import type {
+  ProjectAccessChangePreview,
+  ProjectGitFlowDetection,
+  ProjectGitFlowSettings,
+  ProjectGitSetupAction,
+  ProjectGroup,
+} from '../../types';
 
 export interface ServiceProvider {
   getAppBootstrap: () => Promise<AppBootstrapDto>;
@@ -60,6 +66,14 @@ export interface ServiceProvider {
   detectProjectGitFlow: (data: {
     path?: string;
   }) => Promise<ProjectGitFlowDetection>;
+  previewProjectGitSetup: (data: {
+    path?: string;
+  }) => Promise<ProjectGitFlowDetection>;
+  applyProjectGitSetup: (data: {
+    path: string;
+    action: ProjectGitSetupAction;
+    expectedRepoRootPath?: string | null;
+  }) => Promise<ProjectGitFlowDetection>;
   prepareProjectGit: (data: {
     path: string;
   }) => Promise<ProjectGitFlowDetection>;
@@ -87,7 +101,12 @@ export interface ServiceProvider {
   updateProjectAccess: (data: {
     projectId: string;
     userReadOnly: boolean;
+    confirmedMigration?: boolean;
   }) => Promise<ProjectDto>;
+  previewProjectAccessChange: (data: {
+    projectId: string;
+    targetReadOnly: boolean;
+  }) => Promise<ProjectAccessChangePreview>;
   archiveProjectGroup: (data: {
     groupId: string;
   }) => Promise<{ projectGroup: ProjectGroup }>;

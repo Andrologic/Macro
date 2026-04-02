@@ -24,6 +24,76 @@ fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
 }
 
+pub(crate) async fn ensure_git_tracking_tables(pool: &SqlitePool) -> DbResult<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS git_repositories (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            default_branch TEXT,
+            last_commit TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_git_repositories_path
+        ON git_repositories(path);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS git_worktrees (
+            id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            worktree_name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            head_commit TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_used_at TEXT,
+            is_active INTEGER DEFAULT 1,
+            is_prunable INTEGER DEFAULT 0,
+            FOREIGN KEY (repo_id) REFERENCES git_repositories(id) ON DELETE CASCADE
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_git_worktrees_path
+        ON git_worktrees(path);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_git_worktrees_task
+        ON git_worktrees(repo_id, task_id);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 /// Initialize the desktop database connection pool in the app data directory.
 pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     let app_dir = app_handle
@@ -195,6 +265,8 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     )
     .execute(pool)
     .await?;
+
+    ensure_git_tracking_tables(pool).await?;
 
     sqlx::query(
         r#"
@@ -530,12 +602,38 @@ async fn insert_default_providers(pool: &SqlitePool) -> DbResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::app_db_path;
+    use super::{app_db_path, create_pool};
+    use sqlx::Row;
     use std::path::Path;
+    use tempfile::TempDir;
 
     #[test]
     fn app_db_path_is_rooted_in_app_data_dir() {
         let app_dir = Path::new("/tmp/macro-app-data");
         assert_eq!(app_db_path(app_dir), app_dir.join("macro.db"));
+    }
+
+    #[tokio::test]
+    async fn create_pool_runs_git_tracking_migrations() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let pool = create_pool(&db_path).await.expect("db pool");
+
+        let table_names = sqlx::query(
+            r#"
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name IN ('git_repositories', 'git_worktrees')
+            ORDER BY name ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("table lookup")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<Vec<_>>();
+
+        assert_eq!(table_names, vec!["git_repositories", "git_worktrees"]);
     }
 }

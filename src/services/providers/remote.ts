@@ -218,6 +218,16 @@ export const detectProjectGitFlow = async (_data: {
   path?: string;
 }): Promise<ProjectGitFlowDetection> => notReady();
 
+export const previewProjectGitSetup = async (_data: {
+  path?: string;
+}): Promise<ProjectGitFlowDetection> => notReady();
+
+export const applyProjectGitSetup = async (_data: {
+  path: string;
+  action: 'initialize_repo' | 'create_initial_commit' | 'create_develop';
+  expectedRepoRootPath?: string | null;
+}): Promise<ProjectGitFlowDetection> => notReady();
+
 export const prepareProjectGit = async (_data: {
   path: string;
 }): Promise<ProjectGitFlowDetection> => notReady();
@@ -259,7 +269,13 @@ export const updateProjectGitFlow = async (_data: {
 export const updateProjectAccess = async (_data: {
   projectId: string;
   userReadOnly: boolean;
+  confirmedMigration?: boolean;
 }): Promise<ProjectDto> => notReady();
+
+export const previewProjectAccessChange = async (_data: {
+  projectId: string;
+  targetReadOnly: boolean;
+}) => notReady();
 
 export const archiveProjectGroup = async (_data: {
   groupId: string;
@@ -300,6 +316,8 @@ export const provider: ServiceProvider = {
   listModels,
   sendChat,
   detectProjectGitFlow,
+  previewProjectGitSetup,
+  applyProjectGitSetup,
   prepareProjectGit,
   createProject,
   importGitRepo,
@@ -307,6 +325,7 @@ export const provider: ServiceProvider = {
   renameProject,
   updateProjectGitFlow,
   updateProjectAccess,
+  previewProjectAccessChange,
   archiveProjectGroup,
   archiveProject,
   removeProjectGroup,

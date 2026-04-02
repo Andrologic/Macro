@@ -204,6 +204,61 @@ pub struct ProjectGitFlowDetectionDto {
     pub setup_state: String,
     #[serde(default, rename = "hasInitialCommit")]
     pub has_initial_commit: bool,
+    #[serde(default, rename = "resolvedRepoRootPath")]
+    pub resolved_repo_root_path: Option<String>,
+    #[serde(
+        default = "default_project_git_detection_repo_resolution",
+        rename = "repoResolution"
+    )]
+    pub repo_resolution: String,
+    #[serde(default, rename = "initialCommitPreviewPaths")]
+    pub initial_commit_preview_paths: Vec<String>,
+    #[serde(default, rename = "initialCommitPreviewCount")]
+    pub initial_commit_preview_count: usize,
+    #[serde(default, rename = "initialCommitRiskFlags")]
+    pub initial_commit_risk_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProjectAccessMigrationItemDto {
+    #[serde(default)]
+    pub count: usize,
+    #[serde(default)]
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProjectAccessMigrationSummaryDto {
+    #[serde(default)]
+    pub plans: ProjectAccessMigrationItemDto,
+    #[serde(default, rename = "manualFeatures")]
+    pub manual_features: ProjectAccessMigrationItemDto,
+    #[serde(default)]
+    pub tasks: ProjectAccessMigrationItemDto,
+    #[serde(default)]
+    pub worktrees: ProjectAccessMigrationItemDto,
+    #[serde(default, rename = "predictedBranches")]
+    pub predicted_branches: ProjectAccessMigrationItemDto,
+    #[serde(default, rename = "planNodes")]
+    pub plan_nodes: ProjectAccessMigrationItemDto,
+    #[serde(default, rename = "executionTargets")]
+    pub execution_targets: ProjectAccessMigrationItemDto,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProjectAccessChangePreviewDto {
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    #[serde(rename = "targetReadOnly")]
+    pub target_read_only: bool,
+    #[serde(rename = "canApply")]
+    pub can_apply: bool,
+    #[serde(rename = "requiresConfirmation")]
+    pub requires_confirmation: bool,
+    #[serde(default, rename = "blockingReasons")]
+    pub blocking_reasons: Vec<String>,
+    #[serde(default, rename = "migrationSummary")]
+    pub migration_summary: ProjectAccessMigrationSummaryDto,
 }
 
 impl Default for ProjectGitFlowSettingsDto {
@@ -224,6 +279,10 @@ impl Default for ProjectGitFlowSettingsDto {
 
 fn default_project_git_base_branch() -> String {
     "develop".to_string()
+}
+
+fn default_project_git_detection_repo_resolution() -> String {
+    "none".to_string()
 }
 
 fn default_project_git_main_branch() -> String {

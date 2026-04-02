@@ -1,14 +1,18 @@
+use crate::commands::terminal::TerminalSessionStore;
+use crate::commands::{CommandError, DbPool};
 use crate::core::error::{BackendError, Result};
+use crate::db::repository;
 use crate::git::GitState;
 use crate::workspace;
 use crate::workspace::metadata::{
-    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, ProjectDto,
-    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
+    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, ProjectAccessChangePreviewDto,
+    ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
     ProjectRegistryDiagnosticsDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
     WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use tauri::State;
 
@@ -22,6 +26,44 @@ async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> 
     tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&workspace_path))
         .await
         .map_err(to_join_error)?
+}
+
+fn to_backend_error(error: CommandError) -> BackendError {
+    BackendError::Internal {
+        message: error.message,
+    }
+}
+
+fn to_backend_db_error(error: crate::db::DbError) -> BackendError {
+    BackendError::Internal {
+        message: error.to_string(),
+    }
+}
+
+async fn load_db_pool(pool: &State<'_, DbPool>) -> Result<sqlx::SqlitePool> {
+    crate::commands::get_pool(pool)
+        .await
+        .map_err(to_backend_error)
+}
+
+async fn load_live_terminal_project_ids(
+    db_pool: &sqlx::SqlitePool,
+    terminal_store: &TerminalSessionStore,
+) -> Result<HashSet<String>> {
+    let stored_tabs = repository::list_terminal_tabs(db_pool)
+        .await
+        .map_err(to_backend_db_error)?;
+    let live_tab_ids = terminal_store
+        .live_tab_ids()
+        .await
+        .into_iter()
+        .collect::<HashSet<_>>();
+
+    Ok(stored_tabs
+        .into_iter()
+        .filter(|tab| live_tab_ids.contains(&tab.id))
+        .map(|tab| tab.project_id)
+        .collect())
 }
 
 #[tauri::command]
@@ -91,19 +133,88 @@ pub async fn workspace_detect_project_git_flow(
     path: Option<String>,
 ) -> Result<ProjectGitFlowDetectionDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    Ok(workspace::detect_project_git_flow(
+    Ok(workspace::preview_project_git_setup(
         &workspace_path,
         path.as_deref(),
     ))
 }
 
 #[tauri::command]
+pub async fn workspace_preview_project_git_setup(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    path: Option<String>,
+) -> Result<ProjectGitFlowDetectionDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    Ok(workspace::preview_project_git_setup(
+        &workspace_path,
+        path.as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub async fn workspace_apply_project_git_setup(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    path: String,
+    action: String,
+    expected_repo_root_path: Option<String>,
+) -> Result<ProjectGitFlowDetectionDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let detection = workspace::apply_project_git_setup(
+        &workspace_path,
+        &path,
+        &action,
+        expected_repo_root_path.as_deref(),
+    )
+    .await?;
+    workspace::refresh_project_registry_state(&workspace_path, &metadata_root).await?;
+    Ok(detection)
+}
+
+#[tauri::command]
 pub async fn workspace_prepare_project_git(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
     path: String,
 ) -> Result<ProjectGitFlowDetectionDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    workspace::prepare_project_git(&workspace_path, &path).await
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let detection = workspace::prepare_project_git(&workspace_path, &path).await?;
+    workspace::refresh_project_registry_state(&workspace_path, &metadata_root).await?;
+    Ok(detection)
+}
+
+#[tauri::command]
+pub async fn workspace_preview_project_access_change(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
+    terminal_store: State<'_, TerminalSessionStore>,
+    project_id: String,
+    target_read_only: bool,
+) -> Result<ProjectAccessChangePreviewDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let db_pool = load_db_pool(&pool).await?;
+    let worktrees = repository::list_git_worktrees_by_project(&db_pool, &project_id)
+        .await
+        .map_err(to_backend_db_error)?;
+    let live_terminal_project_ids =
+        load_live_terminal_project_ids(&db_pool, terminal_store.inner()).await?;
+
+    workspace::preview_project_access_change(
+        &workspace_path,
+        &metadata_root,
+        &project_id,
+        target_read_only,
+        &worktrees,
+        &live_terminal_project_ids,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -240,14 +351,70 @@ pub async fn workspace_update_project_git_flow(
 pub async fn workspace_update_project_access(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
+    terminal_store: State<'_, TerminalSessionStore>,
     project_id: String,
     user_read_only: bool,
+    confirmed_migration: bool,
 ) -> Result<ProjectDto> {
+    tracing::info!(
+        action = "workspace_update_project_access_command_started",
+        project_id = %project_id,
+        user_read_only = user_read_only,
+        confirmed_migration = confirmed_migration
+    );
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::update_project_access(&workspace_path, &metadata_root, &project_id, user_read_only)
+    let db_pool = load_db_pool(&pool).await?;
+    let worktrees = repository::list_git_worktrees_by_project(&db_pool, &project_id)
         .await
+        .map_err(to_backend_db_error)?;
+    let live_terminal_project_ids =
+        load_live_terminal_project_ids(&db_pool, terminal_store.inner()).await?;
+    let access_preview = workspace::preview_project_access_change(
+        &workspace_path,
+        &metadata_root,
+        &project_id,
+        user_read_only,
+        &worktrees,
+        &live_terminal_project_ids,
+    )
+    .await?;
+    tracing::info!(
+        action = "workspace_update_project_access_command_preview",
+        project_id = %project_id,
+        user_read_only = user_read_only,
+        confirmed_migration = confirmed_migration,
+        worktree_count = worktrees.len(),
+        live_terminal_project_count = live_terminal_project_ids.len(),
+        preview_can_apply = access_preview.can_apply,
+        preview_requires_confirmation = access_preview.requires_confirmation,
+        preview_blocking_reasons = ?access_preview.blocking_reasons
+    );
+    let project = workspace::update_project_access(
+        &workspace_path,
+        &metadata_root,
+        &project_id,
+        user_read_only,
+        confirmed_migration,
+        Some(&access_preview),
+    )
+    .await?;
+    if user_read_only {
+        repository::update_git_worktree_project_access(&db_pool, &project_id, false, true)
+            .await
+            .map_err(to_backend_db_error)?;
+    }
+    tracing::info!(
+        action = "workspace_update_project_access_command_succeeded",
+        project_id = %project_id,
+        user_read_only = project.user_read_only,
+        is_read_only = project.is_read_only,
+        git_setup_state = %project.git_setup_state,
+        read_only_reason = ?project.read_only_reason
+    );
+    Ok(project)
 }
 
 #[tauri::command]

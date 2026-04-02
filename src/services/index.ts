@@ -92,6 +92,10 @@ export const services = {
     callProviderMethod('createProject', data),
   detectProjectGitFlow: (data: Parameters<ServiceProvider['detectProjectGitFlow']>[0]) =>
     callProviderMethod('detectProjectGitFlow', data),
+  previewProjectGitSetup: (data: Parameters<ServiceProvider['previewProjectGitSetup']>[0]) =>
+    callProviderMethod('previewProjectGitSetup', data),
+  applyProjectGitSetup: (data: Parameters<ServiceProvider['applyProjectGitSetup']>[0]) =>
+    callProviderMethod('applyProjectGitSetup', data),
   prepareProjectGit: (data: Parameters<ServiceProvider['prepareProjectGit']>[0]) =>
     callProviderMethod('prepareProjectGit', data),
   importGitRepo: (data: Parameters<ServiceProvider['importGitRepo']>[0]) =>
@@ -104,6 +108,8 @@ export const services = {
     callProviderMethod('updateProjectGitFlow', data),
   updateProjectAccess: (data: Parameters<ServiceProvider['updateProjectAccess']>[0]) =>
     callProviderMethod('updateProjectAccess', data),
+  previewProjectAccessChange: (data: Parameters<ServiceProvider['previewProjectAccessChange']>[0]) =>
+    callProviderMethod('previewProjectAccessChange', data),
   archiveProjectGroup: (data: Parameters<ServiceProvider['archiveProjectGroup']>[0]) =>
     callProviderMethod('archiveProjectGroup', data),
   archiveProject: (data: Parameters<ServiceProvider['archiveProject']>[0]) =>
