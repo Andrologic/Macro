@@ -454,7 +454,8 @@ const buildPlanMarkdown = (plan: ArchitectPlanRecord): string => {
       lines.push(`- Target Branch [${projectId}]: ${branchName}`);
     }
   }
-  lines.push(`- Base Code Branch: ${getGitFlowBaseBranch()}`);
+  lines.push(`- Main Code Branch: ${getGitFlowMainBranch()}`);
+  lines.push(`- Development Code Branch: ${getGitFlowBaseBranch()}`);
   lines.push(`- Macro Branch: @macro`);
   lines.push(`- Status: ${plan.status}`);
   if (plan.conversationId) {
@@ -3009,3 +3010,6 @@ export const resolveTargetBranch = (argsValue: unknown): string => {
 
 export const getGitFlowBaseBranch = (): string =>
   normalizeBranchName(getArchitectGitNamingSettings().baseBranch, DEFAULT_GIT_FLOW_BASE_BRANCH);
+
+export const getGitFlowMainBranch = (): string =>
+  normalizeBranchName(getArchitectGitNamingSettings().mainBranch, 'main');
