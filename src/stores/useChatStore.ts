@@ -37,7 +37,7 @@ import {
   isCanonicalArchitectPlan,
 } from '../services/architectPlanPresentation';
 import { normalizeArchitectToolId } from '../services/architectToolNames';
-import { renderGitFlowBranchName } from '../services/architectGitNaming';
+import { renderGitFlowBranchName, renderStandaloneFeatureBranchName } from '../services/architectGitNaming';
 import {
   getPlanNodeBranchIntent,
   type WorkBranchType,
@@ -2393,7 +2393,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         content:
           'Generate concise metadata for a standalone implementation feature. Return ONLY valid JSON with keys: title, description, featureSlug. ' +
           'title: 3-7 words, specific and action-oriented. description: one clear sentence under 180 characters. ' +
-          'featureSlug: lowercase kebab-case branch slug without the "feature/" prefix.' +
+          'featureSlug: lowercase kebab-case branch slug without any branch prefix; the concrete branch name is rendered later from each subproject\'s independent feature template.' +
           unavailableBranchSummary,
       },
       {
@@ -2452,34 +2452,48 @@ export const useChatStore = create<ChatStore>((set, get) => {
       )
     );
 
-    const findConflictingProjectsForBranchName = async (branchName: string): Promise<string[]> => {
-      if (!tauriIpc.isTauriAvailable()) {
-        return [];
-      }
-
+    const renderManualFeatureBranchCandidates = (featureSlug: string): Array<{ projectId: string; branchName: string }> => {
       const projectIdsToCheck = projectIds.length > 0
         ? projectIds
         : (appState.selectedGroupId
           ? getScopedProjectIds(appState.projectGroups, appState.selectedGroupId, null)
           : []);
 
+      return projectIdsToCheck.map((projectId) => ({
+        projectId,
+        branchName: renderStandaloneFeatureBranchName({
+          featureSlug,
+          settings: appState.getProjectById(projectId)?.gitFlowSettings,
+        }),
+      }));
+    };
+
+    const findConflictingBranchCandidates = async (
+      featureSlug: string
+    ): Promise<Array<{ projectId: string; branchName: string }>> => {
+      if (!tauriIpc.isTauriAvailable()) {
+        return [];
+      }
+
+      const branchCandidates = renderManualFeatureBranchCandidates(featureSlug);
+
       const conflictResults = await Promise.all(
-        projectIdsToCheck.map(async (projectId) => {
-          const repoPath = appState.getProjectById(projectId)?.path?.trim();
+        branchCandidates.map(async (candidate) => {
+          const repoPath = appState.getProjectById(candidate.projectId)?.path?.trim();
           if (!repoPath) {
             return null;
           }
 
           const branches = await tauriIpc.gitBranchList(repoPath);
           const branchTaken = [...branches.local, ...branches.remote].some((branch) =>
-            branchNameMatchesCandidate(branch.name, branchName)
+            branchNameMatchesCandidate(branch.name, candidate.branchName)
           );
 
-          return branchTaken ? projectId : null;
+          return branchTaken ? candidate : null;
         })
       );
 
-      return conflictResults.filter((projectId): projectId is string => Boolean(projectId));
+      return conflictResults.filter((candidate): candidate is { projectId: string; branchName: string } => Boolean(candidate));
     };
 
     const requestManualFeatureMetadata = async (unavailableBranchNames: string[]) => {
@@ -2505,9 +2519,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       for (let suffix = 0; suffix < 50; suffix += 1) {
         const candidateSlug =
           suffix === 0 ? normalizedBaseSlug : normalizeManualFeatureSlugInput(`${normalizedBaseSlug}-${suffix + 1}`);
-        const candidateBranchName = `feature/${candidateSlug}`;
-        const conflictingProjectIds = await findConflictingProjectsForBranchName(candidateBranchName);
-        if (conflictingProjectIds.length === 0) {
+        const conflictingCandidates = await findConflictingBranchCandidates(candidateSlug);
+        if (conflictingCandidates.length === 0) {
           return candidateSlug;
         }
       }
@@ -2536,13 +2549,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       }
 
-      const branchName = `feature/${metadata.featureSlug}`;
-      const conflictingProjectIds = await findConflictingProjectsForBranchName(branchName);
-      if (conflictingProjectIds.length === 0) {
+      const conflictingCandidates = await findConflictingBranchCandidates(metadata.featureSlug);
+      if (conflictingCandidates.length === 0) {
         break;
       }
 
-      unavailableBranchNames = Array.from(new Set([...unavailableBranchNames, branchName]));
+      unavailableBranchNames = Array.from(
+        new Set([
+          ...unavailableBranchNames,
+          ...conflictingCandidates.map((candidate) => candidate.branchName),
+        ])
+      );
       if (attempt === MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT - 1) {
         metadata = {
           ...metadata,

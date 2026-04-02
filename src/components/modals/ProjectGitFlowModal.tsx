@@ -5,6 +5,7 @@ import { Icon } from '../ui/Icon';
 import {
   getDefaultProjectGitFlowSettings,
   renderGitFlowBranchName,
+  renderStandaloneFeatureBranchName,
   resolveProjectGitFlowSettings,
   validateProjectGitFlowSettings,
 } from '../../services/architectGitNaming';
@@ -13,6 +14,7 @@ import { cn } from '../../utils/cn';
 import { toast } from '../ui/Toaster';
 
 const buildTemplatePreview = (settings: ProjectGitFlowSettings) => ({
+  mainBranch: settings.mainBranch,
   baseBranch: settings.baseBranch,
   planBranch: renderGitFlowBranchName({
     branchType: 'plan',
@@ -23,6 +25,10 @@ const buildTemplatePreview = (settings: ProjectGitFlowSettings) => ({
     branchType: 'feature',
     planSlug: '20260401-checkout-rework',
     branchSlug: 'invoice-retry',
+    settings,
+  }),
+  standaloneFeatureBranch: renderStandaloneFeatureBranchName({
+    featureSlug: 'quick-export',
     settings,
   }),
   releaseBranch: renderGitFlowBranchName({
@@ -129,7 +135,7 @@ export const ProjectGitFlowModal: React.FC = () => {
             <p className="mt-1 text-xs text-muted-foreground">
               {t(
                 'projects.gitFlowModalSubtitle',
-                'Override the branch naming and target branch used by this subproject.'
+                'Override the development branch, main branch, and planned or independent feature branch naming used by this subproject.'
               )}{' '}
               <span className="text-foreground">{project.name}</span>
             </p>
@@ -146,7 +152,13 @@ export const ProjectGitFlowModal: React.FC = () => {
         <div className="space-y-5 px-5 py-5">
           <div className="grid gap-4 md:grid-cols-2">
             {renderInput(
-              t('projects.gitFlowBaseBranch', 'Target/base branch'),
+              t('projects.gitFlowMainBranch', 'Main branch'),
+              settings.mainBranch,
+              'mainBranch',
+              'main'
+            )}
+            {renderInput(
+              t('projects.gitFlowBaseBranch', 'Development/target branch'),
               settings.baseBranch,
               'baseBranch',
               'develop'
@@ -162,6 +174,12 @@ export const ProjectGitFlowModal: React.FC = () => {
               settings.featureBranchTemplate,
               'featureBranchTemplate',
               'feature/{planSlug}/{featureSlug}'
+            )}
+            {renderInput(
+              t('projects.gitFlowStandaloneFeatureTemplate', 'Independent feature branch template'),
+              settings.standaloneFeatureBranchTemplate,
+              'standaloneFeatureBranchTemplate',
+              'feature/{featureSlug}'
             )}
             {renderInput(
               t('projects.gitFlowReleaseTemplate', 'Release branch template'),
@@ -188,9 +206,15 @@ export const ProjectGitFlowModal: React.FC = () => {
               {t('projects.gitFlowPreviewTitle', 'Preview')}
             </div>
             <div className="mt-2 space-y-1 font-mono text-xs text-muted-foreground">
-              <div>{t('projects.gitFlowPreviewTarget', 'Target')}: {previews.baseBranch}</div>
+              <div>{t('projects.gitFlowPreviewMain', 'Main')}: {previews.mainBranch}</div>
+              <div>{t('projects.gitFlowPreviewTarget', 'Development target')}: {previews.baseBranch}</div>
               <div>{t('projects.gitFlowPreviewPlan', 'Plan')}: {previews.planBranch}</div>
               <div>{t('projects.gitFlowPreviewFeature', 'Feature')}: {previews.featureBranch}</div>
+              <div>
+                {t('projects.gitFlowPreviewStandaloneFeature', 'Independent feature')}:
+                {' '}
+                {previews.standaloneFeatureBranch}
+              </div>
               <div>{t('projects.gitFlowPreviewRelease', 'Release')}: {previews.releaseBranch}</div>
               <div>{t('projects.gitFlowPreviewHotfix', 'Hotfix')}: {previews.hotfixBranch}</div>
               <div>{t('projects.gitFlowPreviewBugfix', 'Bugfix')}: {previews.bugfixBranch}</div>

@@ -25,9 +25,13 @@ const REQUIRED_TOKENS_BY_BRANCH_TYPE: Record<GitFlowBranchType, string[]> = {
 
 const DEFAULT_PROJECT_SETTINGS: ProjectGitFlowSettings = {
   baseBranch: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH] || 'develop'),
+  mainBranch: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH] || 'main'),
   planBranchTemplate: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE] || 'plan/{planSlug}'),
   featureBranchTemplate: String(
     PREF_DEFAULTS[PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE] || 'feature/{planSlug}/{featureSlug}'
+  ),
+  standaloneFeatureBranchTemplate: String(
+    PREF_DEFAULTS[PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE] || 'feature/{featureSlug}'
   ),
   releaseBranchTemplate: String(
     PREF_DEFAULTS[PREF_KEYS.ARCHITECT_RELEASE_BRANCH_TEMPLATE] || 'release/{releaseSlug}'
@@ -107,6 +111,10 @@ const normalizeProjectGitFlowSettings = (
   settings?: Partial<ProjectGitFlowSettings> | null
 ): ProjectGitFlowSettings => ({
   baseBranch: normalizeBranchName(settings?.baseBranch || DEFAULT_PROJECT_SETTINGS.baseBranch, DEFAULT_PROJECT_SETTINGS.baseBranch),
+  mainBranch: normalizeBranchName(
+    settings?.mainBranch || DEFAULT_PROJECT_SETTINGS.mainBranch,
+    DEFAULT_PROJECT_SETTINGS.mainBranch
+  ),
   planBranchTemplate: normalizeTemplate(
     settings?.planBranchTemplate || DEFAULT_PROJECT_SETTINGS.planBranchTemplate,
     DEFAULT_PROJECT_SETTINGS.planBranchTemplate
@@ -114,6 +122,10 @@ const normalizeProjectGitFlowSettings = (
   featureBranchTemplate: normalizeTemplate(
     settings?.featureBranchTemplate || DEFAULT_PROJECT_SETTINGS.featureBranchTemplate,
     DEFAULT_PROJECT_SETTINGS.featureBranchTemplate
+  ),
+  standaloneFeatureBranchTemplate: normalizeTemplate(
+    settings?.standaloneFeatureBranchTemplate || DEFAULT_PROJECT_SETTINGS.standaloneFeatureBranchTemplate,
+    DEFAULT_PROJECT_SETTINGS.standaloneFeatureBranchTemplate
   ),
   releaseBranchTemplate: normalizeTemplate(
     settings?.releaseBranchTemplate || DEFAULT_PROJECT_SETTINGS.releaseBranchTemplate,
@@ -164,10 +176,14 @@ const replaceTemplateTokens = (
 export const getDefaultProjectGitFlowSettings = (): ProjectGitFlowSettings =>
   normalizeProjectGitFlowSettings({
     baseBranch: readStoredValue(PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH) || DEFAULT_PROJECT_SETTINGS.baseBranch,
+    mainBranch: readStoredValue(PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH) || DEFAULT_PROJECT_SETTINGS.mainBranch,
     planBranchTemplate:
       readStoredValue(PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE) || DEFAULT_PROJECT_SETTINGS.planBranchTemplate,
     featureBranchTemplate:
       readStoredValue(PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE) || DEFAULT_PROJECT_SETTINGS.featureBranchTemplate,
+    standaloneFeatureBranchTemplate:
+      readStoredValue(PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE) ||
+      DEFAULT_PROJECT_SETTINGS.standaloneFeatureBranchTemplate,
     releaseBranchTemplate:
       readStoredValue(PREF_KEYS.ARCHITECT_RELEASE_BRANCH_TEMPLATE) || DEFAULT_PROJECT_SETTINGS.releaseBranchTemplate,
     hotfixBranchTemplate:
@@ -194,10 +210,18 @@ export const validateProjectGitFlowSettings = (settings: ProjectGitFlowSettings)
     errors.push('Base branch cannot be empty.');
   }
 
+  if (!normalized.mainBranch) {
+    errors.push('Main branch cannot be empty.');
+  }
+
   (Object.keys(TEMPLATE_KEY_BY_BRANCH_TYPE) as GitFlowBranchType[]).forEach((branchType) => {
     const template = getTemplateForBranchType(branchType, normalized);
     errors.push(...validateTemplateForBranchType(branchType, template));
   });
+
+  if (!normalized.standaloneFeatureBranchTemplate.includes('{featureSlug}')) {
+    errors.push('Independent feature branch template must include {featureSlug}.');
+  }
 
   return errors;
 };
@@ -283,8 +307,30 @@ export const toPlanFeatureBranchName = (
     settings,
   });
 
+export const toStandaloneFeatureBranchName = (
+  featureSlug: string,
+  settings?: Partial<ProjectGitFlowSettings> | null
+): string => {
+  const resolvedSettings = resolveProjectGitFlowSettings(settings);
+  const safeBranchSlug = sanitizeBranchSlugInput(featureSlug, 'feature');
+  return normalizeBranchName(
+    replaceTemplateTokens(resolvedSettings.standaloneFeatureBranchTemplate, {
+      featureSlug: safeBranchSlug,
+    }),
+    `feature/${safeBranchSlug}`
+  );
+};
+
+export const renderStandaloneFeatureBranchName = (params: {
+  featureSlug: string;
+  settings?: Partial<ProjectGitFlowSettings> | null;
+}): string => toStandaloneFeatureBranchName(params.featureSlug, params.settings);
+
 export const getProjectBaseBranch = (settings?: Partial<ProjectGitFlowSettings> | null): string =>
   resolveProjectGitFlowSettings(settings).baseBranch;
+
+export const getProjectMainBranch = (settings?: Partial<ProjectGitFlowSettings> | null): string =>
+  resolveProjectGitFlowSettings(settings).mainBranch;
 
 export const shouldSyncTargetBranchBeforeFinish = (): boolean =>
   getArchitectGitNamingSettings().syncTargetBeforeFinish;
