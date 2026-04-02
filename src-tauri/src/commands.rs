@@ -23,6 +23,7 @@ use regex::RegexBuilder;
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::SqlitePool;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
@@ -121,15 +122,15 @@ fn format_with_line_numbers(lines: &[&str], start_line: usize) -> String {
 }
 
 async fn resolve_workspace_for_tool_path(
-    workspace: &std::path::PathBuf,
+    workspace: &Path,
     git_state: &GitState,
     path: Option<&str>,
     workspace_scope: Option<&str>,
-) -> CommandResult<std::path::PathBuf> {
+) -> CommandResult<PathBuf> {
     let metadata_scope = matches!(workspace_scope.map(str::trim), Some("metadata"));
     let Some(path) = path else {
         if metadata_scope {
-            let workspace_for_task = workspace.clone();
+            let workspace_for_task = workspace.to_path_buf();
             let git_state_for_task = git_state.clone();
             return tokio::task::spawn_blocking(move || {
                 git_state_for_task
@@ -139,14 +140,14 @@ async fn resolve_workspace_for_tool_path(
             .await
             .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?;
         }
-        return Ok(workspace.clone());
+        return Ok(workspace.to_path_buf());
     };
 
     if !metadata_scope && !is_macro_scoped_path(path) {
-        return Ok(workspace.clone());
+        return Ok(workspace.to_path_buf());
     }
 
-    let workspace_for_task = workspace.clone();
+    let workspace_for_task = workspace.to_path_buf();
     let git_state_for_task = git_state.clone();
     tokio::task::spawn_blocking(move || {
         git_state_for_task
@@ -158,18 +159,18 @@ async fn resolve_workspace_for_tool_path(
 }
 
 fn resolve_requested_workspace(
-    default_workspace: &std::path::PathBuf,
-    metadata_workspace: &std::path::PathBuf,
+    default_workspace: &Path,
+    metadata_workspace: &Path,
     requested_workspace: Option<&str>,
-) -> CommandResult<std::path::PathBuf> {
+) -> CommandResult<PathBuf> {
     let Some(requested_workspace) = requested_workspace
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        return Ok(default_workspace.clone());
+        return Ok(default_workspace.to_path_buf());
     };
 
-    let requested_path = std::path::PathBuf::from(requested_workspace);
+    let requested_path = PathBuf::from(requested_workspace);
     let candidate = if requested_path.is_absolute() {
         requested_path
     } else {
@@ -207,9 +208,10 @@ fn to_macro_virtual_relative(path: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_workspace_tool(
-    default_workspace: std::path::PathBuf,
-    metadata_workspace: std::path::PathBuf,
+    default_workspace: PathBuf,
+    metadata_workspace: PathBuf,
     git_state: GitState,
     mode: String,
     tool_id: String,
@@ -913,7 +915,7 @@ pub async fn execute_workspace_tool(
                     .lock()
                     .map_err(|_| command_error("Failed to lock repository"))?;
 
-                if mode == "hard" && confirm.unwrap_or(false) != true {
+                if mode == "hard" && !confirm.unwrap_or(false) {
                     return Err(command_error("Hard reset is destructive; set confirm=true"));
                 }
 
@@ -973,6 +975,7 @@ pub async fn execute_workspace_tool(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn tool_execute_workspace(
     workspace_root: State<'_, WorkspaceRoot>,
     workspace_metadata_root: State<'_, WorkspaceMetadataRoot>,
@@ -1524,8 +1527,8 @@ mod tests {
         fs::create_dir_all(&project_dir).expect("create project dir");
 
         let resolved = resolve_requested_workspace(
-            &default_workspace.path().to_path_buf(),
-            &metadata_workspace.path().to_path_buf(),
+            default_workspace.path(),
+            metadata_workspace.path(),
             Some("projects/smartcards"),
         )
         .expect("resolve requested workspace");

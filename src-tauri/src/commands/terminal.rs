@@ -247,8 +247,8 @@ fn canonicalize_existing_dir(path: &Path) -> CommandResult<PathBuf> {
 }
 
 async fn resolve_project_target(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     project_id: &str,
 ) -> CommandResult<ProjectTerminalTarget> {
     let groups = workspace::list_projects(workspace_path, metadata_root)
@@ -905,6 +905,7 @@ pub async fn terminal_list_tabs(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn terminal_create_tab(
     app_handle: AppHandle,
     workspace_root: State<'_, WorkspaceMetadataRoot>,

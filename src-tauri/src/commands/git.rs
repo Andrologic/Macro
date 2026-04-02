@@ -519,7 +519,7 @@ fn build_macro_sync_dto(
     })
 }
 
-pub fn validate_repo_path(repo_path: &str, workspace: &PathBuf) -> Result<PathBuf> {
+pub fn validate_repo_path(repo_path: &str, workspace: &Path) -> Result<PathBuf> {
     let repo_path = Path::new(repo_path);
     let validated = if repo_path.is_absolute() {
         let canonical = repo_path
@@ -693,7 +693,7 @@ fn collect_files(path: &Path) -> Result<Vec<PathBuf>> {
         for entry in walkdir::WalkDir::new(path) {
             let entry = entry.map_err(|e| BackendError::Io {
                 message: e.to_string(),
-                source: std::io::Error::new(std::io::ErrorKind::Other, e),
+                source: std::io::Error::other(e),
             })?;
             if entry.file_type().is_file() {
                 let file_path = entry.path().to_path_buf();
@@ -2120,7 +2120,7 @@ pub async fn git_reset(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        if mode == "hard" && confirm.unwrap_or(false) != true {
+        if mode == "hard" && !confirm.unwrap_or(false) {
             return Err(BackendError::Git {
                 message: "Hard reset is destructive; set confirm=true".to_string(),
             });
@@ -2158,6 +2158,7 @@ pub async fn git_stash(
 
 #[tauri::command]
 /// Generate a diff between commits or working tree.
+#[allow(clippy::too_many_arguments)]
 pub async fn git_diff(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
@@ -2828,7 +2829,7 @@ mod tests {
 
         let validated = validate_repo_path(
             repo_dir.path().to_str().expect("repo path"),
-            &workspace.path().to_path_buf(),
+            workspace.path(),
         )
         .expect("validate repo path");
 

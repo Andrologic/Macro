@@ -722,11 +722,11 @@ mod tests {
         // BUT the function checks existence first! So we must create files.
         let f1 = workspace.join("main.rs");
         File::create(&f1).unwrap();
-        assert_eq!(is_binary_file(&f1).unwrap(), false);
+        assert!(!is_binary_file(&f1).unwrap());
 
         let f2 = workspace.join("doc.md");
         File::create(&f2).unwrap();
-        assert_eq!(is_binary_file(&f2).unwrap(), false);
+        assert!(!is_binary_file(&f2).unwrap());
 
         cleanup_workspace(&workspace);
     }
@@ -736,11 +736,11 @@ mod tests {
         let workspace = setup_workspace("binary_check_ext");
         let f1 = workspace.join("image.png");
         File::create(&f1).unwrap();
-        assert_eq!(is_binary_file(&f1).unwrap(), true);
+        assert!(is_binary_file(&f1).unwrap());
 
         let f2 = workspace.join("program.exe");
         File::create(&f2).unwrap();
-        assert_eq!(is_binary_file(&f2).unwrap(), true);
+        assert!(is_binary_file(&f2).unwrap());
 
         cleanup_workspace(&workspace);
     }
@@ -755,7 +755,7 @@ mod tests {
 
         // This will fall back to content check because "Makefile" logic is not correctly hit by extension logic
         // But content is text, so it should return false.
-        assert_eq!(is_binary_file(&file_path).unwrap(), false);
+        assert!(!is_binary_file(&file_path).unwrap());
 
         cleanup_workspace(&workspace);
     }
@@ -768,7 +768,7 @@ mod tests {
         let mut file = File::create(&file_path).unwrap();
         file.write_all(b"target/\n**/*.log").unwrap();
 
-        assert_eq!(is_binary_file(&file_path).unwrap(), false);
+        assert!(!is_binary_file(&file_path).unwrap());
 
         cleanup_workspace(&workspace);
     }
@@ -782,7 +782,7 @@ mod tests {
         // Write some null bytes
         file.write_all(b"Hello\0World").unwrap();
 
-        assert_eq!(is_binary_file(&file_path).unwrap(), true);
+        assert!(is_binary_file(&file_path).unwrap());
 
         cleanup_workspace(&workspace);
     }

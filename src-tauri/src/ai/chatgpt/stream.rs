@@ -336,7 +336,7 @@ pub(super) fn build_responses_request(
     })
 }
 
-fn extract_completed_items<'a>(payload: &'a Value) -> Option<&'a Vec<Value>> {
+fn extract_completed_items(payload: &Value) -> Option<&Vec<Value>> {
     payload
         .get("response")
         .and_then(|response| response.get("output"))
