@@ -82,7 +82,7 @@ pub fn map_macro_virtual_path(path: &str) -> String {
 
 /// Internal function that reads file content. This is separated for testability.
 pub async fn read_file_internal(
-    workspace: &PathBuf,
+    workspace: &Path,
     path: String,
     allow_outside_workspace: Option<bool>,
 ) -> Result<FileContentDto, BackendError> {
@@ -125,13 +125,13 @@ pub async fn read_file_internal(
     let is_binary = is_binary_file(&validated_path)?;
     if is_binary {
         // Return binary file response
-        return Ok(FileContentDto {
+        Ok(FileContentDto {
             is_binary: true,
             content: "".to_string(),
             encoding: "none".to_string(),
             language: "binary".to_string(),
             size: file_metadata.len(),
-        });
+        })
     } else {
         // Read text file content
         let content = tokio::fs::read_to_string(&validated_path)
@@ -140,13 +140,13 @@ pub async fn read_file_internal(
         // Detect language
         let language = get_file_language(&validated_path).unwrap_or_else(|| "Unknown".to_string());
         // Return text file response
-        return Ok(FileContentDto {
+        Ok(FileContentDto {
             content,
             language,
             is_binary: false,
             size: file_metadata.len(),
             encoding: "utf-8".to_string(),
-        });
+        })
     }
 }
 
@@ -179,7 +179,7 @@ pub async fn fs_read_file(
 
 /// Internal function for writing files with atomic write support
 pub async fn write_file_internal(
-    workspace: &PathBuf,
+    workspace: &Path,
     path: String,
     content: String,
     create_dirs: Option<bool>,
@@ -264,6 +264,7 @@ pub async fn write_file_internal(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn fs_write_file(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
     git_state: tauri::State<'_, GitState>,
@@ -301,7 +302,7 @@ pub async fn fs_write_file(
 
 /// Internal function for listing directory contents
 pub async fn list_dir_internal(
-    workspace: &PathBuf,
+    workspace: &Path,
     path: String,
     recursive: Option<bool>,
     include_hidden: Option<bool>,
@@ -407,7 +408,7 @@ fn should_ignore_path(path: &Path, include_hidden: bool) -> bool {
     }
 
     // Check default ignored patterns
-    DEFAULT_IGNORED.iter().any(|&pattern| file_name == pattern)
+    DEFAULT_IGNORED.contains(&file_name)
 }
 
 /// Create a DirEntryDto from a file system entry
@@ -484,6 +485,7 @@ async fn create_dir_entry_dto(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn fs_list_dir(
     workspace_root: tauri::State<'_, WorkspaceRoot>,
     git_state: tauri::State<'_, GitState>,
@@ -522,10 +524,7 @@ pub async fn fs_list_dir(
 }
 
 /// Internal function for getting file stats
-pub async fn stat_internal(
-    workspace: &PathBuf,
-    path: String,
-) -> Result<FileStatsDto, BackendError> {
+pub async fn stat_internal(workspace: &Path, path: String) -> Result<FileStatsDto, BackendError> {
     let path_buf = PathBuf::from(&path);
     let validated_path = validate_path_for_write(&path_buf, workspace)?;
 
@@ -999,7 +998,7 @@ mod tests {
 
         // Create a binary file (with null bytes)
         let binary_file_path = workspace_path.join("binary.bin");
-        fs::write(&binary_file_path, &[0u8, 255u8, 128u8, 0u8])
+        fs::write(&binary_file_path, [0u8, 255u8, 128u8, 0u8])
             .expect("Failed to create binary file");
 
         // Create an empty file

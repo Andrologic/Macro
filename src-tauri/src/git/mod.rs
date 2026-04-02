@@ -291,6 +291,12 @@ impl GitState {
     }
 }
 
+impl Default for GitState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[allow(dead_code)]
 pub struct GitRepository {
     pub repo: Arc<Mutex<Repository>>,

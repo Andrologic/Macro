@@ -336,7 +336,7 @@ fn copilot_temp_root(app_handle: &AppHandle) -> Result<PathBuf, String> {
 
 fn parse_version_parts(value: &str) -> Option<(u64, u64, u64)> {
     let mut parts = value
-        .split(|character| character == '.' || character == '-' || character == '+')
+        .split(['.', '-', '+'])
         .take(3)
         .map(|part| part.parse::<u64>().ok());
     Some((parts.next()??, parts.next()??, parts.next()??))

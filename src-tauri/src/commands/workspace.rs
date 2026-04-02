@@ -114,6 +114,7 @@ pub async fn workspace_set_active_root(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn workspace_create_project(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
@@ -140,6 +141,7 @@ pub async fn workspace_create_project(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn workspace_import_git_repo(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
@@ -273,6 +275,7 @@ pub async fn workspace_remove_project(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn workspace_create_manual_feature_draft(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
