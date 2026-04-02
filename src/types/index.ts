@@ -21,6 +21,25 @@ export type ImplementExecutionMode = 'semi_auto' | 'full_auto';
 export type PlanNodeStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
 export type PlanNodeType = 'spec' | 'feature' | 'task' | 'milestone';
 export type GitFlowBranchType = 'plan' | 'feature' | 'release' | 'hotfix' | 'bugfix';
+export type ProjectGitSetupState =
+  | 'not_git'
+  | 'unborn'
+  | 'single_main_only'
+  | 'ready'
+  | 'needs_branch_confirmation';
+export type ProjectGitRepoResolution =
+  | 'none'
+  | 'selected_folder'
+  | 'parent_repo'
+  | 'new_local_repo';
+export type ProjectGitSetupAction = 'initialize_repo' | 'create_initial_commit' | 'create_develop';
+export type ProjectGitSetupRiskFlag = 'env_file' | 'dependency_dir' | 'build_output';
+export type ProjectAccessBlockingReason =
+  | 'dirty_worktree'
+  | 'live_terminal'
+  | 'last_actionable_plan'
+  | 'last_actionable_feature'
+  | 'last_actionable_task';
 
 export interface ProjectGitFlowSettings {
   baseBranch: string;
@@ -41,8 +60,37 @@ export interface ProjectGitFlowDetection {
   suggestedBaseBranch?: string | null;
   suggestedCommitBranch?: string | null;
   requiresConfirmation: boolean;
-  setupState: 'not_git' | 'unborn' | 'single_main_only' | 'ready' | 'needs_branch_confirmation';
+  setupState: ProjectGitSetupState;
   hasInitialCommit: boolean;
+  resolvedRepoRootPath?: string | null;
+  repoResolution: ProjectGitRepoResolution;
+  initialCommitPreviewPaths: string[];
+  initialCommitPreviewCount: number;
+  initialCommitRiskFlags: ProjectGitSetupRiskFlag[];
+}
+
+export interface ProjectAccessMigrationItem {
+  count: number;
+  labels: string[];
+}
+
+export interface ProjectAccessMigrationSummary {
+  plans: ProjectAccessMigrationItem;
+  manualFeatures: ProjectAccessMigrationItem;
+  tasks: ProjectAccessMigrationItem;
+  worktrees: ProjectAccessMigrationItem;
+  predictedBranches: ProjectAccessMigrationItem;
+  planNodes: ProjectAccessMigrationItem;
+  executionTargets: ProjectAccessMigrationItem;
+}
+
+export interface ProjectAccessChangePreview {
+  projectId: string;
+  targetReadOnly: boolean;
+  canApply: boolean;
+  requiresConfirmation: boolean;
+  blockingReasons: ProjectAccessBlockingReason[];
+  migrationSummary: ProjectAccessMigrationSummary;
 }
 
 export interface PlanNode {
@@ -216,7 +264,7 @@ export interface Project {
   status: ProjectStatus;
   gitFlowSettings?: ProjectGitFlowSettings;
   userReadOnly?: boolean;
-  gitSetupState?: 'ready' | 'not_git' | 'unborn';
+  gitSetupState?: Extract<ProjectGitSetupState, 'ready' | 'not_git' | 'unborn'>;
   isReadOnly?: boolean;
   readOnlyReason?: 'manual' | 'missing_git' | 'missing_initial_commit' | 'manual_and_missing_git' | null;
   metadata: ProjectMetadata;

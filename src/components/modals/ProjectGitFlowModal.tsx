@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { services } from '../../services';
+import { toServiceError } from '../../services/contracts/errors';
 import { Icon } from '../ui/Icon';
+import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import {
   getDefaultProjectGitFlowSettings,
   renderGitFlowBranchName,
@@ -10,9 +12,21 @@ import {
   resolveProjectGitFlowSettings,
   validateProjectGitFlowSettings,
 } from '../../services/architectGitNaming';
-import type { ProjectGitFlowSettings } from '../../types';
+import type {
+  ProjectAccessChangePreview,
+  ProjectGitFlowSettings,
+  ProjectGitSetupRiskFlag,
+} from '../../types';
 import { cn } from '../../utils/cn';
+import { devLogger } from '../../utils/devLogger';
 import { toast } from '../ui/Toaster';
+import {
+  buildProjectSetupPromptDetails,
+  getProjectSetupAction,
+  hasProjectSetupRisks,
+  shouldPromptToCreateDevelop,
+  type ProjectSetupPromptDetails,
+} from './projectGitSetup';
 
 const buildTemplatePreview = (settings: ProjectGitFlowSettings) => ({
   mainBranch: settings.mainBranch,
@@ -55,12 +69,15 @@ export const ProjectGitFlowModal: React.FC = () => {
   const getProjectById = useAppStore((state) => state.getProjectById);
   const updateProjectGitFlow = useAppStore((state) => state.updateProjectGitFlow);
   const updateProjectAccess = useAppStore((state) => state.updateProjectAccess);
+  const refreshProjectRegistry = useAppStore((state) => state.refreshProjectRegistry);
   const closeProjectGitFlowModal = useAppStore((state) => state.closeProjectGitFlowModal);
   const project = projectId ? getProjectById(projectId) : null;
   const [settings, setSettings] = useState<ProjectGitFlowSettings>(() => getDefaultProjectGitFlowSettings());
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [isAccessSaving, setIsAccessSaving] = useState(false);
+  const [accessPreview, setAccessPreview] = useState<ProjectAccessChangePreview | null>(null);
+  const [projectSetupPrompt, setProjectSetupPrompt] = useState<ProjectSetupPromptDetails | null>(null);
 
   useEffect(() => {
     if (!project) {
@@ -70,15 +87,120 @@ export const ProjectGitFlowModal: React.FC = () => {
     setIsSaving(false);
     setSaveSuccess(false);
     setIsAccessSaving(false);
+    setAccessPreview(null);
+    setProjectSetupPrompt(null);
   }, [project]);
 
   const appDefaults = useMemo(() => getDefaultProjectGitFlowSettings(), []);
   const validationErrors = useMemo(() => validateProjectGitFlowSettings(settings), [settings]);
   const previews = useMemo(() => buildTemplatePreview(settings), [settings]);
+  const resolvedProjectPath = project?.path ?? '';
+
+  const getRiskFlagLabel = (riskFlag: ProjectGitSetupRiskFlag): string => {
+    if (riskFlag === 'env_file') {
+      return t('project.gitSetupRiskEnvFile', 'Environment files detected (.env*)');
+    }
+    if (riskFlag === 'dependency_dir') {
+      return t('project.gitSetupRiskDependencyDir', 'Dependency directories detected (node_modules, vendor, .pnpm)');
+    }
+    return t('project.gitSetupRiskBuildOutput', 'Build artifacts detected (dist, build, coverage)');
+  };
+
+  const getBlockingReasonMessage = (reason: string): string => {
+    if (reason === 'dirty_worktree') {
+      return t(
+        'projects.accessBlockDirtyWorktree',
+        'This subproject still has a dirty worktree. Clean it up before switching to read-only.'
+      );
+    }
+    if (reason === 'live_terminal') {
+      return t(
+        'projects.accessBlockLiveTerminal',
+        'A live terminal session is still attached to this subproject. Close it before switching to read-only.'
+      );
+    }
+    if (reason === 'last_actionable_plan') {
+      return t(
+        'projects.accessBlockLastActionablePlan',
+        'This subproject is the last editable repository in an active plan.'
+      );
+    }
+    if (reason === 'last_actionable_feature') {
+      return t(
+        'projects.accessBlockLastActionableFeature',
+        'This subproject is the last editable repository in a manual feature.'
+      );
+    }
+    if (reason === 'last_actionable_task') {
+      return t(
+        'projects.accessBlockLastActionableTask',
+        'This subproject is the last editable repository in an active task.'
+      );
+    }
+    return t('common.error', 'An error occurred');
+  };
+
+  const continueProjectSetupFlow = (detection: Awaited<ReturnType<typeof services.previewProjectGitSetup>>) => {
+    const setupState = detection.setupState || (detection.repoDetected ? 'ready' : 'not_git');
+    if (!detection.repoDetected || setupState === 'not_git') {
+      setProjectSetupPrompt(buildProjectSetupPromptDetails('init_git', resolvedProjectPath, detection));
+      return;
+    }
+    if (setupState === 'unborn') {
+      setProjectSetupPrompt(buildProjectSetupPromptDetails('initial_commit', resolvedProjectPath, detection));
+      return;
+    }
+    if (
+      shouldPromptToCreateDevelop(
+        setupState,
+        detection.suggestedMainBranch ?? detection.suggestedCommitBranch ?? detection.currentBranch
+      )
+    ) {
+      setProjectSetupPrompt(buildProjectSetupPromptDetails('create_develop', resolvedProjectPath, detection));
+      return;
+    }
+    setProjectSetupPrompt(null);
+  };
+
+  const logProjectAccessEvent = (phase: string, payload: Record<string, unknown>) => {
+    devLogger.info(
+      JSON.stringify({
+        event: 'project_access_modal',
+        phase,
+        at: new Date().toISOString(),
+        projectId: project?.id ?? projectId ?? null,
+        projectName: project?.name ?? null,
+        ...payload,
+      })
+    );
+  };
 
   if (!project) {
     return null;
   }
+
+  const renderMigrationItem = (label: string, item: ProjectAccessChangePreview['migrationSummary'][keyof ProjectAccessChangePreview['migrationSummary']]) => {
+    if (item.count === 0) {
+      return null;
+    }
+
+    const visibleLabels = item.labels.slice(0, 3);
+    const remainingCount = Math.max(0, item.count - visibleLabels.length);
+    return (
+      <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs font-medium text-foreground">{label}</div>
+          <div className="text-[11px] text-muted-foreground">{item.count}</div>
+        </div>
+        {visibleLabels.length > 0 && (
+          <div className="mt-1.5 text-[11px] text-muted-foreground">
+            {visibleLabels.join(', ')}
+            {remainingCount > 0 ? ` +${remainingCount}` : ''}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const accessBadgeLabel = project.isReadOnly
     ? t('projects.accessReadOnly', 'Read-only')
@@ -115,7 +237,42 @@ export const ProjectGitFlowModal: React.FC = () => {
 
     setIsAccessSaving(true);
     try {
-      await updateProjectAccess(projectId, !project.userReadOnly);
+      const targetReadOnly = !project.userReadOnly;
+      logProjectAccessEvent('toggle_requested', {
+        targetReadOnly,
+        gitSetupState: project.gitSetupState ?? null,
+        isReadOnly: project.isReadOnly ?? false,
+        userReadOnly: project.userReadOnly ?? false,
+        readOnlyReason: project.readOnlyReason ?? null,
+      });
+      if (targetReadOnly) {
+        const preview = await services.previewProjectAccessChange({
+          projectId,
+          targetReadOnly: true,
+        });
+        logProjectAccessEvent('preview_received', {
+          canApply: preview.canApply,
+          requiresConfirmation: preview.requiresConfirmation,
+          blockingReasons: preview.blockingReasons,
+          migrationSummary: preview.migrationSummary,
+        });
+        if (!preview.canApply) {
+          toast.error(
+            preview.blockingReasons.map(getBlockingReasonMessage).join(' ')
+          );
+          return;
+        }
+        if (preview.requiresConfirmation) {
+          setAccessPreview(preview);
+          return;
+        }
+      }
+
+      await updateProjectAccess(projectId, targetReadOnly, false);
+      logProjectAccessEvent('toggle_applied', {
+        targetReadOnly,
+        confirmedMigration: false,
+      });
       toast.success(
         project.userReadOnly
           ? t('projects.projectNowEditable', '{{projectName}} is editable again.', {
@@ -126,7 +283,14 @@ export const ProjectGitFlowModal: React.FC = () => {
             })
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
+      const normalized = toServiceError(error);
+      console.error('[ProjectGitFlowModal] read-only toggle failed', normalized);
+      logProjectAccessEvent('toggle_failed', {
+        error: normalized.message,
+        code: normalized.code,
+        details: normalized.details ?? null,
+      });
+      const message = normalized.message || t('common.error', 'An error occurred');
       toast.error(message);
     } finally {
       setIsAccessSaving(false);
@@ -140,13 +304,112 @@ export const ProjectGitFlowModal: React.FC = () => {
 
     setIsAccessSaving(true);
     try {
-      await services.prepareProjectGit({ path: project.path });
-      await updateProjectAccess(projectId, false);
+      const detection = await services.previewProjectGitSetup({ path: project.path });
+      continueProjectSetupFlow(detection);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
+      toast.error(message);
+    } finally {
+      setIsAccessSaving(false);
+    }
+  };
+
+  const handleConfirmAccessPreview = async () => {
+    if (!projectId || !accessPreview || isAccessSaving) {
+      return;
+    }
+
+    setIsAccessSaving(true);
+    try {
+      logProjectAccessEvent('confirmation_apply_requested', {
+        targetReadOnly: accessPreview.targetReadOnly,
+        blockingReasons: accessPreview.blockingReasons,
+        migrationSummary: accessPreview.migrationSummary,
+      });
+      await updateProjectAccess(projectId, accessPreview.targetReadOnly, true);
+      setAccessPreview(null);
+      logProjectAccessEvent('confirmation_apply_succeeded', {
+        targetReadOnly: true,
+        confirmedMigration: true,
+      });
       toast.success(
-        t('projects.projectGitPrepared', 'Git is ready for {{projectName}}.', {
+        t('projects.projectNowReadOnly', '{{projectName}} is now read-only.', {
           projectName: project.name,
         })
       );
+    } catch (error) {
+      const normalized = toServiceError(error);
+      console.error('[ProjectGitFlowModal] confirmed read-only toggle failed', normalized);
+      logProjectAccessEvent('confirmation_apply_failed', {
+        error: normalized.message,
+        code: normalized.code,
+        details: normalized.details ?? null,
+      });
+      const message = normalized.message || t('common.error', 'An error occurred');
+      toast.error(message);
+    } finally {
+      setIsAccessSaving(false);
+    }
+  };
+
+  const handleConfirmProjectSetupPrompt = async () => {
+    if (!projectId || !projectSetupPrompt || isAccessSaving) {
+      return;
+    }
+
+    setIsAccessSaving(true);
+    try {
+      const nextDetection = await services.applyProjectGitSetup({
+        path: projectSetupPrompt.projectPath,
+        action: getProjectSetupAction(projectSetupPrompt.kind),
+        expectedRepoRootPath: projectSetupPrompt.resolvedRepoRootPath ?? null,
+      });
+      await refreshProjectRegistry();
+
+      if (projectSetupPrompt.kind === 'create_develop') {
+        const updatedSettings = resolveProjectGitFlowSettings({
+          ...settings,
+          mainBranch: projectSetupPrompt.mainBranch || settings.mainBranch || 'main',
+          baseBranch: 'develop',
+        });
+        setSettings(updatedSettings);
+        await updateProjectGitFlow(projectId, updatedSettings);
+      }
+
+      continueProjectSetupFlow(nextDetection);
+      if (nextDetection.setupState === 'ready') {
+        toast.success(
+          t('projects.projectGitPrepared', 'Git is ready for {{projectName}}.', {
+            projectName: project.name,
+          })
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
+      toast.error(message);
+    } finally {
+      setIsAccessSaving(false);
+    }
+  };
+
+  const handleDeclineProjectSetupPrompt = async () => {
+    if (!projectId || !projectSetupPrompt || isAccessSaving) {
+      return;
+    }
+
+    setIsAccessSaving(true);
+    try {
+      if (projectSetupPrompt.kind === 'create_develop') {
+        const fallbackBranch = projectSetupPrompt.mainBranch || settings.mainBranch || 'main';
+        const updatedSettings = resolveProjectGitFlowSettings({
+          ...settings,
+          mainBranch: fallbackBranch,
+          baseBranch: fallbackBranch,
+        });
+        setSettings(updatedSettings);
+        await updateProjectGitFlow(projectId, updatedSettings);
+      }
+      setProjectSetupPrompt(null);
     } catch (error) {
       const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
       toast.error(message);
@@ -418,6 +681,176 @@ export const ProjectGitFlowModal: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {accessPreview && (
+        <ConfirmPromptModal
+          isOpen
+          title={t('projects.readOnlyImpactTitle', 'Switch to read-only?')}
+          description={t(
+            'projects.readOnlyImpactDescription',
+            'Macro will remove this subproject from editable plan and task targets, but keep it available for context and read access.'
+          )}
+          confirmLabel={t('projects.makeReadOnly', 'Make read-only')}
+          cancelLabel={t('common.cancel', 'Cancel')}
+          isSubmitting={isAccessSaving}
+          onCancel={() => {
+            if (!isAccessSaving) {
+              setAccessPreview(null);
+            }
+          }}
+          onConfirm={() => {
+            void handleConfirmAccessPreview();
+          }}
+        >
+          <div className="space-y-2">
+            {renderMigrationItem(
+              t('projects.readOnlyImpactPlans', 'Plans'),
+              accessPreview.migrationSummary.plans
+            )}
+            {renderMigrationItem(
+              t('projects.readOnlyImpactManualFeatures', 'Manual features'),
+              accessPreview.migrationSummary.manualFeatures
+            )}
+            {renderMigrationItem(
+              t('projects.readOnlyImpactTasks', 'Tasks'),
+              accessPreview.migrationSummary.tasks
+            )}
+            {renderMigrationItem(
+              t('projects.readOnlyImpactWorktrees', 'Worktrees'),
+              accessPreview.migrationSummary.worktrees
+            )}
+            {renderMigrationItem(
+              t('projects.readOnlyImpactPredictedBranches', 'Predicted branches'),
+              accessPreview.migrationSummary.predictedBranches
+            )}
+            {renderMigrationItem(
+              t('projects.readOnlyImpactPlanNodes', 'Plan nodes'),
+              accessPreview.migrationSummary.planNodes
+            )}
+            {renderMigrationItem(
+              t('projects.readOnlyImpactExecutionTargets', 'Execution targets'),
+              accessPreview.migrationSummary.executionTargets
+            )}
+          </div>
+        </ConfirmPromptModal>
+      )}
+
+      {projectSetupPrompt && (
+        <ConfirmPromptModal
+          isOpen
+          title={
+            projectSetupPrompt.kind === 'init_git'
+              ? t('project.initGitTitle', 'Initialize Git?')
+              : projectSetupPrompt.kind === 'initial_commit'
+                ? t('project.initialCommitTitle', 'Create the initial commit?')
+                : t('project.createDevelopTitle', 'Create develop?')
+          }
+          description={
+            projectSetupPrompt.kind === 'init_git'
+              ? t(
+                  'project.initGitDescription',
+                  'This folder is not a Git repository yet. Initialize Git now to enable worktrees and editable workflows. If you skip this step, the subproject will stay read-only.'
+                )
+              : projectSetupPrompt.kind === 'initial_commit'
+                ? t(
+                    'project.initialCommitDescription',
+                    'This repository has no initial commit yet. Create it now to enable branches, worktrees, and editable workflows. If you skip this step, the subproject will stay read-only.'
+                  )
+                : t(
+                    'project.createDevelopDescription',
+                    'This repository only has a main branch. Create develop from {{mainBranch}} now? If you skip this step, future features will merge directly into {{mainBranch}}.',
+                    {
+                      mainBranch: projectSetupPrompt.mainBranch || 'main',
+                      branchName: projectSetupPrompt.mainBranch || 'main',
+                    }
+                  )
+          }
+          confirmLabel={
+            projectSetupPrompt.kind === 'create_develop'
+              ? t('project.createDevelopConfirm', 'Create develop')
+              : projectSetupPrompt.kind === 'initial_commit'
+                ? t('project.createInitialCommitConfirm', 'Create initial commit')
+                : t('project.initGitConfirm', 'Initialize Git')
+          }
+          cancelLabel={
+            projectSetupPrompt.kind === 'create_develop'
+              ? t('project.createDevelopDecline', 'Keep {{branchName}} only', {
+                  branchName: projectSetupPrompt.mainBranch || 'main',
+                })
+              : t('project.keepReadOnly', 'Keep read-only')
+          }
+          isSubmitting={isAccessSaving}
+          onCancel={() => {
+            void handleDeclineProjectSetupPrompt();
+          }}
+          onConfirm={() => {
+            void handleConfirmProjectSetupPrompt();
+          }}
+        >
+          <div className="space-y-3">
+            {projectSetupPrompt.resolvedRepoRootPath && (
+              <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                  {t('project.gitSetupRepoRootLabel', 'Git repository root')}
+                </div>
+                <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
+                  {projectSetupPrompt.resolvedRepoRootPath}
+                </div>
+              </div>
+            )}
+
+            {projectSetupPrompt.kind === 'initial_commit' && (
+              <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs font-semibold text-foreground">
+                    {t('project.initialCommitPreviewTitle', 'Initial commit preview')}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {t('project.initialCommitPreviewCount', '{{count}} file(s)', {
+                      count: projectSetupPrompt.initialCommitPreviewCount,
+                    })}
+                  </div>
+                </div>
+
+                {hasProjectSetupRisks(projectSetupPrompt.initialCommitRiskFlags) && (
+                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-200">
+                    <div className="font-medium text-amber-100">
+                      {t(
+                        'project.initialCommitWarningTitle',
+                        'Review the repository before creating the first commit.'
+                      )}
+                    </div>
+                    <ul className="mt-1.5 space-y-1 text-[11px]">
+                      {projectSetupPrompt.initialCommitRiskFlags.map((riskFlag) => (
+                        <li key={riskFlag}>{getRiskFlagLabel(riskFlag)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {projectSetupPrompt.initialCommitPreviewPaths.length > 0 ? (
+                  <div className="max-h-44 overflow-y-auto rounded-md border border-border/50 bg-background/70 px-2.5 py-2">
+                    <ul className="space-y-1 font-mono text-[11px] text-muted-foreground">
+                      {projectSetupPrompt.initialCommitPreviewPaths.map((path) => (
+                        <li key={path} className="break-all">
+                          {path}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">
+                    {t(
+                      'project.initialCommitPreviewEmpty',
+                      'No tracked files were previewed. Macro will still create an empty initial commit if needed.'
+                    )}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        </ConfirmPromptModal>
+      )}
     </div>
   );
 };

@@ -11,7 +11,12 @@ import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import { getArchitectPlanDisplayName } from '../../services/architectPlanPresentation';
 import { getGitFlowBaseBranch } from '../../services/architectPlanService';
 import { taskMatchesProjectId } from '../../services/implementTaskCatalog';
-import { getProjectGroupByProjectId, getScopedProjectIds } from '../../services/globalProjects';
+import {
+  getProjectGroupByProjectId,
+  getScopedActionableProjectIds,
+  getScopedProjectIds,
+  getScopedReadOnlyProjectIds,
+} from '../../services/globalProjects';
 import {
   getTaskRepositoryDescriptors,
   type ReviewRepositoryUiState,
@@ -675,14 +680,49 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     };
   };
 
+  const scopedProjectIds = useMemo(
+    () => getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const scopedActionableProjectIds = useMemo(
+    () => getScopedActionableProjectIds(projectGroups, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const scopedReadOnlyProjectIds = useMemo(
+    () => getScopedReadOnlyProjectIds(projectGroups, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const scopedReadOnlyProjects = useMemo(
+    () =>
+      scopedReadOnlyProjectIds
+        .map((projectId) => getProjectById(projectId))
+        .filter((project): project is NonNullable<typeof project> => Boolean(project)),
+    [getProjectById, scopedReadOnlyProjectIds]
+  );
+  const firstReadOnlyProject = scopedReadOnlyProjects[0] ?? null;
+  const isReadOnlyOnlyScope =
+    scopedProjectIds.length > 0 && scopedActionableProjectIds.length === 0;
+  const readOnlyCtaLabel = firstReadOnlyProject?.readOnlyReason === 'missing_git'
+    ? t('projects.initializeGitAction', 'Initialize Git')
+    : firstReadOnlyProject?.readOnlyReason === 'missing_initial_commit'
+      ? t('projects.createInitialCommitAction', 'Create initial commit')
+      : t('projects.projectSettings', 'Project settings');
+
+  const openReadOnlyProjectSettings = () => {
+    if (!firstReadOnlyProject) {
+      return;
+    }
+    setSelectedProject(firstReadOnlyProject.id);
+    openProjectGitFlowModal(firstReadOnlyProject.id);
+  };
+
   const scopedTasks = useMemo(() => {
-    const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
     if (scopedProjectIds.length === 0) return [];
 
     return tasks.filter((task) =>
       scopedProjectIds.some((projectId) => taskMatchesProjectId(task, projectId))
     );
-  }, [tasks, selectedProjectId, selectedGroupId, projectGroups]);
+  }, [scopedProjectIds, tasks]);
 
   const availablePlanSummaries = useMemo(() => {
     const scopedPlanIds = new Set(
@@ -1094,19 +1134,55 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           <button
             type="button"
             onClick={() => void handleCreateManualFeature()}
-            disabled={Boolean(pendingTaskId)}
+            disabled={Boolean(pendingTaskId) || isReadOnlyOnlyScope}
             className={cn(
               'inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors',
-              pendingTaskId
+              pendingTaskId || isReadOnlyOnlyScope
                 ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
                 : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
             )}
-            title={t('implement.createStandaloneTask', 'Créer une tâche indépendante')}
+            title={
+              isReadOnlyOnlyScope
+                ? t(
+                    'implement.readOnlyOnlyAction',
+                    'At least one editable repository is required to create a standalone feature.'
+                  )
+                : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
+            }
           >
             <Icon name={pendingTaskId ? 'loader' : 'plus'} size={12} className={pendingTaskId ? 'animate-spin' : undefined} />
           </button>
         </div>
       </div>
+
+      {isReadOnlyOnlyScope && (
+        <div className="border-b border-border px-4 py-4">
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-4">
+            <div className="text-sm font-medium text-amber-100">
+              {t(
+                'projects.readOnlyWorkspaceTitle',
+                'This scope is currently read-only.'
+              )}
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-amber-50/80">
+              {t(
+                'projects.readOnlyWorkspaceImplementBody',
+                'Implementation needs at least one editable repository. Read-only subprojects stay available for navigation, search, and context.'
+              )}
+            </p>
+            {firstReadOnlyProject && (
+              <button
+                type="button"
+                onClick={openReadOnlyProjectSettings}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-amber-400/30 bg-amber-100/10 px-2.5 py-1.5 text-xs font-medium text-amber-50 transition-colors hover:bg-amber-100/15"
+              >
+                <Icon name="settings" size={12} />
+                {readOnlyCtaLabel}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="px-4 py-3 border-b border-border">
         <div className="mb-3">
