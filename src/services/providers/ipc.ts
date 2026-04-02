@@ -273,6 +273,26 @@ export const detectProjectGitFlow = async (data: {
   });
 };
 
+export const previewProjectGitSetup = async (data: {
+  path?: string;
+}): Promise<ProjectGitFlowDetection> => {
+  return tauriIpc.workspacePreviewProjectGitSetup({
+    path: data.path,
+  });
+};
+
+export const applyProjectGitSetup = async (data: {
+  path: string;
+  action: 'initialize_repo' | 'create_initial_commit' | 'create_develop';
+  expectedRepoRootPath?: string | null;
+}): Promise<ProjectGitFlowDetection> => {
+  return tauriIpc.workspaceApplyProjectGitSetup({
+    path: data.path,
+    action: data.action,
+    expectedRepoRootPath: data.expectedRepoRootPath ?? null,
+  });
+};
+
 export const prepareProjectGit = async (data: {
   path: string;
 }): Promise<ProjectGitFlowDetection> => {
@@ -362,13 +382,25 @@ export const updateProjectGitFlow = async (data: {
 export const updateProjectAccess = async (data: {
   projectId: string;
   userReadOnly: boolean;
+  confirmedMigration?: boolean;
 }): Promise<ProjectDto> => {
   const project = await tauriIpc.workspaceUpdateProjectAccess({
     projectId: data.projectId,
     userReadOnly: data.userReadOnly,
+    confirmedMigration: data.confirmedMigration ?? false,
   });
 
   return { project };
+};
+
+export const previewProjectAccessChange = async (data: {
+  projectId: string;
+  targetReadOnly: boolean;
+}) => {
+  return tauriIpc.workspacePreviewProjectAccessChange({
+    projectId: data.projectId,
+    targetReadOnly: data.targetReadOnly,
+  });
 };
 
 export const archiveProjectGroup = async (data: {
@@ -497,6 +529,8 @@ export const provider: ServiceProvider = {
   listModels,
   sendChat,
   detectProjectGitFlow,
+  previewProjectGitSetup,
+  applyProjectGitSetup,
   prepareProjectGit,
   createProject,
   importGitRepo,
@@ -504,6 +538,7 @@ export const provider: ServiceProvider = {
   renameProject,
   updateProjectGitFlow,
   updateProjectAccess,
+  previewProjectAccessChange,
   archiveProjectGroup,
   archiveProject,
   removeProjectGroup,

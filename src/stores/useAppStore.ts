@@ -607,7 +607,11 @@ interface AppStore {
   renameProjectGroup: (groupId: string, name: string) => Promise<void>;
   renameProject: (projectId: string, name: string) => Promise<void>;
   updateProjectGitFlow: (projectId: string, gitFlowSettings: ProjectGitFlowSettings) => Promise<void>;
-  updateProjectAccess: (projectId: string, userReadOnly: boolean) => Promise<void>;
+  updateProjectAccess: (
+    projectId: string,
+    userReadOnly: boolean,
+    confirmedMigration?: boolean
+  ) => Promise<void>;
   removeProjectGroup: (groupId: string) => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
   getProjectById: (id: string) => Project | undefined;
@@ -646,6 +650,7 @@ interface AppStore {
   openProjectGitFlowModal: (projectId: string) => void;
   closeProjectGitFlowModal: () => void;
   createProject: (data: CreateProjectData) => Promise<void>;
+  refreshProjectRegistry: () => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
   setRightPanelWidth: (width: number) => void;
   setLeftPanelOpen: (open: boolean) => void;
@@ -1532,7 +1537,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  updateProjectAccess: async (projectId, userReadOnly) => {
+  updateProjectAccess: async (projectId, userReadOnly, confirmedMigration = false) => {
     set({ isLoading: true, lastError: null });
     try {
       const previousState = get();
@@ -1542,6 +1547,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
         projectId,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
         userReadOnly,
+        confirmedMigration,
+        requestedProjectState: requestedProject
+          ? {
+              id: requestedProject.id,
+              name: requestedProject.name,
+              gitSetupState: requestedProject.gitSetupState ?? null,
+              userReadOnly: requestedProject.userReadOnly ?? false,
+              isReadOnly: requestedProject.isReadOnly ?? false,
+              readOnlyReason: requestedProject.readOnlyReason ?? null,
+            }
+          : null,
       });
       const preflightSnapshot = await loadProjectRegistrySnapshot({
         selectedGroupId: previousState.selectedGroupId,
@@ -1562,6 +1578,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await services.updateProjectAccess({
         projectId: canonicalProject.id,
         userReadOnly,
+        confirmedMigration,
       });
 
       const postMutationSnapshot = await loadProjectRegistrySnapshot({
@@ -1622,6 +1639,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
         repairApplied: normalizedRegistry.report.repaired,
         userReadOnly,
+        confirmedMigration,
       });
     } catch (error) {
       const normalized = toServiceError(error);
@@ -1629,6 +1647,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       logProjectRegistryAction('failed', {
         action: 'update_project_access',
         projectId,
+        userReadOnly,
+        confirmedMigration,
         error: normalized.message,
         code: normalized.code,
         details: normalized.details ?? null,
@@ -2229,6 +2249,67 @@ export const useAppStore = create<AppStore>((set, get) => ({
         path: data.path ?? null,
         error: normalized.message,
       });
+      throw normalized;
+    }
+  },
+
+  refreshProjectRegistry: async () => {
+    set({ isLoading: true, lastError: null });
+    try {
+      const previousState = get();
+      const snapshot = await loadProjectRegistrySnapshot({
+        selectedGroupId: previousState.selectedGroupId,
+        selectedProjectId: previousState.selectedProjectId,
+      });
+      const normalizedRegistry = snapshot.normalizedRegistry;
+      const nextRecentProjects = reconcileRememberedProjects(
+        normalizedRegistry.projectGroups,
+        previousState.recentProjects
+      );
+      const nextMacroEnabledProjects = reconcileRememberedProjects(
+        normalizedRegistry.projectGroups,
+        previousState.macroEnabledProjects
+      );
+      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+
+      set({
+        currentPlan: snapshot.plan,
+        projectGroups: normalizedRegistry.projectGroups,
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+        recentProjects: nextRecentProjects,
+        macroEnabledProjects: nextMacroEnabledProjects,
+        planNodes: filterPlanNodesForRegistry(
+          snapshot.planNodes.length
+            ? snapshot.planNodes
+            : derivePlanNodesFromPlan(snapshot.plan),
+          validProjectIds
+        ),
+        predictedBranches: filterPredictedBranchesForRegistry(
+          snapshot.predictedBranches,
+          validProjectIds
+        ),
+        projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
+          normalizedRegistry.report
+        ),
+        isLoading: false,
+        lastError: null,
+      });
+      void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
+      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      await persistSessionContext({
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+        mode: previousState.mode,
+      });
+      await reconcileProjectRegistryDependencies({
+        projectGroups: normalizedRegistry.projectGroups,
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
       throw normalized;
     }
   },
