@@ -3,8 +3,9 @@ use crate::git::GitState;
 use crate::workspace;
 use crate::workspace::metadata::{
     CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, ProjectDto,
-    ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectRegistryDiagnosticsDto,
-    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceTaskCatalogDto,
+    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
+    ProjectRegistryDiagnosticsDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
+    WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
@@ -82,6 +83,27 @@ pub async fn workspace_get_project_registry_diagnostics(
 pub async fn workspace_get_active_root(workspace_root: State<'_, WorkspaceRoot>) -> Result<String> {
     let workspace_path = workspace_root.inner().read().await.clone();
     Ok(workspace_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn workspace_detect_project_git_flow(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    path: Option<String>,
+) -> Result<ProjectGitFlowDetectionDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    Ok(workspace::detect_project_git_flow(
+        &workspace_path,
+        path.as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub async fn workspace_prepare_project_git(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    path: String,
+) -> Result<ProjectGitFlowDetectionDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    workspace::prepare_project_git(&workspace_path, &path).await
 }
 
 #[tauri::command]
@@ -215,6 +237,20 @@ pub async fn workspace_update_project_git_flow(
 }
 
 #[tauri::command]
+pub async fn workspace_update_project_access(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_id: String,
+    user_read_only: bool,
+) -> Result<ProjectDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::update_project_access(&workspace_path, &metadata_root, &project_id, user_read_only)
+        .await
+}
+
+#[tauri::command]
 pub async fn workspace_archive_project_group(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
@@ -283,6 +319,7 @@ pub async fn workspace_create_manual_feature_draft(
     conversation_id: String,
     group_id: Option<String>,
     project_ids: Vec<String>,
+    context_project_ids: Vec<String>,
     base_branch: Option<String>,
     title: Option<String>,
     description: Option<String>,
@@ -297,6 +334,7 @@ pub async fn workspace_create_manual_feature_draft(
         &task_id,
         &conversation_id,
         &project_ids,
+        &context_project_ids,
         base_branch.as_deref(),
         title.as_deref(),
         description.as_deref(),

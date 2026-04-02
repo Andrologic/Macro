@@ -14,7 +14,7 @@ import type {
   TaskCatalogDto,
   ToolSettingsDto,
 } from '../contracts/dtos';
-import type { Project, ProjectGroup } from '../../types';
+import type { Project, ProjectGitFlowDetection, ProjectGroup } from '../../types';
 import type { ServiceProvider } from '../contracts/serviceProvider';
 import { resolveRemoteConfig, type RemoteConfig } from './remoteConfig';
 
@@ -180,7 +180,8 @@ export const gitWorktreeCreate = async (
   _projectId: string,
   _taskId: string,
   _branchName: string,
-  _fromRef?: string | null
+  _fromRef?: string | null,
+  _preferredCommitBranch?: string | null
 ): Promise<{
   taskId: string;
   worktreePath: string;
@@ -213,6 +214,13 @@ export const listModels = async (_providerId?: string): Promise<ModelsDto> => no
 export const sendChat = async (
   _request: ChatCompletionRequestDto
 ): Promise<ChatCompletionResponseDto> => notReady();
+export const detectProjectGitFlow = async (_data: {
+  path?: string;
+}): Promise<ProjectGitFlowDetection> => notReady();
+
+export const prepareProjectGit = async (_data: {
+  path: string;
+}): Promise<ProjectGitFlowDetection> => notReady();
 
 export const createProject = async (_data: {
   name: string;
@@ -246,6 +254,11 @@ export const renameProject = async (_data: {
 export const updateProjectGitFlow = async (_data: {
   projectId: string;
   gitFlowSettings: Project['gitFlowSettings'];
+}): Promise<ProjectDto> => notReady();
+
+export const updateProjectAccess = async (_data: {
+  projectId: string;
+  userReadOnly: boolean;
 }): Promise<ProjectDto> => notReady();
 
 export const archiveProjectGroup = async (_data: {
@@ -286,11 +299,14 @@ export const provider: ServiceProvider = {
   listProviders,
   listModels,
   sendChat,
+  detectProjectGitFlow,
+  prepareProjectGit,
   createProject,
   importGitRepo,
   renameProjectGroup,
   renameProject,
   updateProjectGitFlow,
+  updateProjectAccess,
   archiveProjectGroup,
   archiveProject,
   removeProjectGroup,

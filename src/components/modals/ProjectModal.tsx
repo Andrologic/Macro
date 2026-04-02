@@ -2,13 +2,45 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
+import { services } from '../../services';
+import * as tauriIpc from '../../services/tauriIpc';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
 import { GroupCombobox } from '../ui/GroupCombobox';
+import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { toServiceError } from '../../services/contracts/errors';
+import {
+  resolveProjectGitFlowSettings,
+  validateProjectGitFlowSettings,
+} from '../../services/architectGitNaming';
 import { cn } from '../../utils/cn';
+import { ProjectGitFlowConfirmationModal } from './ProjectGitFlowConfirmationModal';
 
 type ProjectModalMode = 'new_group' | 'existing_group';
+
+interface PendingProjectCreation {
+  name: string;
+  description: string;
+  groupId: string | null;
+  groupName?: string | null;
+  path?: string;
+  gitFlowSettings?: ReturnType<typeof resolveProjectGitFlowSettings>;
+}
+
+interface PendingGitFlowConfirmation {
+  createPayload: PendingProjectCreation;
+  branches: string[];
+  currentBranch: string | null;
+  mainBranch: string;
+  baseBranch: string;
+}
+
+interface PendingProjectSetupPrompt {
+  kind: 'init_git' | 'initial_commit' | 'create_develop';
+  createPayload: PendingProjectCreation;
+  projectPath: string;
+  mainBranch?: string | null;
+}
 
 const normalizeProjectPath = (value: string): string =>
   value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -16,6 +48,15 @@ const normalizeProjectPath = (value: string): string =>
 const inferProjectNameFromPath = (value: string): string => {
   const parts = value.trim().replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean);
   return parts[parts.length - 1] || '';
+};
+
+const shouldPromptToCreateDevelop = (setupState?: string, mainBranch?: string | null): boolean => {
+  if (setupState !== 'single_main_only') {
+    return false;
+  }
+
+  const normalizedMainBranch = (mainBranch || '').trim().toLowerCase();
+  return normalizedMainBranch === 'main' || normalizedMainBranch === 'master' || normalizedMainBranch === 'trunk';
 };
 
 export const ProjectModal: React.FC = () => {
@@ -35,6 +76,10 @@ export const ProjectModal: React.FC = () => {
   const [subProjectPath, setSubProjectPath] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pendingGitFlowConfirmation, setPendingGitFlowConfirmation] =
+    useState<PendingGitFlowConfirmation | null>(null);
+  const [pendingProjectSetupPrompt, setPendingProjectSetupPrompt] =
+    useState<PendingProjectSetupPrompt | null>(null);
 
   const preselectedGroup = useMemo(
     () => projectGroups.find((group) => group.id === projectModalGroupId) ?? null,
@@ -57,6 +102,8 @@ export const ProjectModal: React.FC = () => {
     setSubProjectPath('');
     setError('');
     setIsSubmitting(false);
+    setPendingGitFlowConfirmation(null);
+    setPendingProjectSetupPrompt(null);
   }, [preselectedGroup, projectModalOpen]);
 
   if (!projectModalOpen) return null;
@@ -75,6 +122,108 @@ export const ProjectModal: React.FC = () => {
   const destinationSummary = isAttachingToExistingGroup
     ? targetGroup?.name || t('project.chooseGlobalProject', 'Choose a global project')
     : globalProjectName.trim() || t('project.newGlobalProject', 'New global project');
+  const pendingGitFlowValidationError = pendingGitFlowConfirmation
+    ? pendingGitFlowConfirmation.branches.length > 1 &&
+      pendingGitFlowConfirmation.mainBranch === pendingGitFlowConfirmation.baseBranch
+      ? t(
+          'projects.gitFlowConfirmDistinctBranches',
+          'Choose two different branches for main and development.'
+        )
+      : validateProjectGitFlowSettings(
+          resolveProjectGitFlowSettings({
+            mainBranch: pendingGitFlowConfirmation.mainBranch,
+            baseBranch: pendingGitFlowConfirmation.baseBranch,
+          })
+        )[0] ?? null
+    : null;
+
+  const persistProject = async (payload: PendingProjectCreation) => {
+    await createProject(payload);
+    closeProjectModal();
+  };
+
+  const continueProjectCreation = async (
+    payload: PendingProjectCreation,
+    projectPath?: string,
+    detectionOverride?: Awaited<ReturnType<typeof services.detectProjectGitFlow>>
+  ) => {
+    if (!projectPath?.trim()) {
+      await persistProject(payload);
+      return;
+    }
+
+    const detection =
+      detectionOverride ||
+      await services.detectProjectGitFlow({
+        path: projectPath,
+      });
+    const setupState = detection.setupState || (detection.repoDetected ? 'ready' : 'not_git');
+
+    if (!detection.repoDetected || setupState === 'not_git') {
+      setPendingProjectSetupPrompt({
+        kind: 'init_git',
+        createPayload: payload,
+        projectPath,
+      });
+      return;
+    }
+
+    if (setupState === 'unborn') {
+      setPendingProjectSetupPrompt({
+        kind: 'initial_commit',
+        createPayload: payload,
+        projectPath,
+      });
+      return;
+    }
+
+    if (detection.repoDetected && (detection.requiresConfirmation || setupState === 'needs_branch_confirmation')) {
+      const branches = Array.from(
+        new Set(
+          [
+            ...detection.branches,
+            detection.currentBranch ?? null,
+            detection.suggestedMainBranch ?? null,
+            detection.suggestedBaseBranch ?? null,
+          ].filter((branch): branch is string => Boolean(branch?.trim()))
+        )
+      );
+      const defaultBranch = branches[0] || '';
+      setPendingGitFlowConfirmation({
+        createPayload: payload,
+        branches,
+        currentBranch: detection.currentBranch ?? null,
+        mainBranch: detection.suggestedMainBranch ?? detection.currentBranch ?? defaultBranch,
+        baseBranch:
+          detection.suggestedBaseBranch ??
+          detection.currentBranch ??
+          detection.suggestedMainBranch ??
+          defaultBranch,
+      });
+      return;
+    }
+
+    if (
+      shouldPromptToCreateDevelop(
+        setupState,
+        detection.suggestedMainBranch ?? detection.suggestedCommitBranch ?? detection.currentBranch
+      )
+    ) {
+      setPendingProjectSetupPrompt({
+        kind: 'create_develop',
+        createPayload: payload,
+        projectPath,
+        mainBranch:
+          detection.suggestedMainBranch ??
+          detection.suggestedCommitBranch ??
+          detection.currentBranch ??
+          'main',
+      });
+      return;
+    }
+
+    await persistProject(payload);
+  };
 
   const handleBrowsePath = async () => {
     const selectedPath = await open({
@@ -96,6 +245,97 @@ export const ProjectModal: React.FC = () => {
       if (inferredName) {
         setSubProjectName(inferredName);
       }
+    }
+  };
+
+  const handleConfirmRareGitFlow = async () => {
+    if (
+      !pendingGitFlowConfirmation ||
+      isSubmitting ||
+      pendingGitFlowValidationError
+    ) {
+      return;
+    }
+
+    setError('');
+    setIsSubmitting(true);
+    try {
+      await persistProject({
+        ...pendingGitFlowConfirmation.createPayload,
+        gitFlowSettings: resolveProjectGitFlowSettings({
+          mainBranch: pendingGitFlowConfirmation.mainBranch,
+          baseBranch: pendingGitFlowConfirmation.baseBranch,
+        }),
+      });
+    } catch (submitError: unknown) {
+      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleConfirmProjectSetupPrompt = async () => {
+    if (!pendingProjectSetupPrompt || isSubmitting) {
+      return;
+    }
+
+    setError('');
+    setIsSubmitting(true);
+    try {
+      if (
+        pendingProjectSetupPrompt.kind === 'init_git' ||
+        pendingProjectSetupPrompt.kind === 'initial_commit'
+      ) {
+        const detection = await services.prepareProjectGit({
+          path: pendingProjectSetupPrompt.projectPath,
+        });
+        setPendingProjectSetupPrompt(null);
+        await continueProjectCreation(
+          pendingProjectSetupPrompt.createPayload,
+          pendingProjectSetupPrompt.projectPath,
+          detection
+        );
+        return;
+      }
+
+      if (pendingProjectSetupPrompt.kind === 'create_develop') {
+        if (!tauriIpc.isTauriAvailable()) {
+          throw new Error('Creating develop requires the desktop runtime.');
+        }
+
+        await tauriIpc.gitBranchCreate({
+          repoPath: pendingProjectSetupPrompt.projectPath,
+          branchName: 'develop',
+          fromRef: pendingProjectSetupPrompt.mainBranch || 'main',
+        });
+        setPendingProjectSetupPrompt(null);
+        await continueProjectCreation(
+          pendingProjectSetupPrompt.createPayload,
+          pendingProjectSetupPrompt.projectPath
+        );
+      }
+    } catch (submitError: unknown) {
+      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeclineProjectSetupPrompt = async () => {
+    if (!pendingProjectSetupPrompt || isSubmitting) {
+      return;
+    }
+
+    setError('');
+    setIsSubmitting(true);
+    try {
+      const payload = pendingProjectSetupPrompt.createPayload;
+      setPendingProjectSetupPrompt(null);
+      await persistProject(payload);
+    } catch (submitError: unknown) {
+      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -146,16 +386,17 @@ export const ProjectModal: React.FC = () => {
       return;
     }
 
+    const createPayload: PendingProjectCreation = {
+      name: trimmedSubProjectName,
+      description: '',
+      groupId: isAttachingToExistingGroup ? targetGroupId : null,
+      groupName: isAttachingToExistingGroup ? null : trimmedGlobalProjectName,
+      path: trimmedSubProjectPath || undefined,
+    };
+
     try {
       setIsSubmitting(true);
-      await createProject({
-        name: trimmedSubProjectName,
-        description: '',
-        groupId: isAttachingToExistingGroup ? targetGroupId : null,
-        groupName: isAttachingToExistingGroup ? null : trimmedGlobalProjectName,
-        path: trimmedSubProjectPath || undefined,
-      });
-      closeProjectModal();
+      await continueProjectCreation(createPayload, trimmedSubProjectPath || undefined);
     } catch (submitError: unknown) {
       setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
     } finally {
@@ -369,6 +610,89 @@ export const ProjectModal: React.FC = () => {
           </Button>
         </footer>
       </div>
+
+      {pendingGitFlowConfirmation && (
+        <ProjectGitFlowConfirmationModal
+          projectName={subProjectName.trim() || inferProjectNameFromPath(subProjectPath) || destinationSummary}
+          branches={pendingGitFlowConfirmation.branches}
+          currentBranch={pendingGitFlowConfirmation.currentBranch}
+          mainBranch={pendingGitFlowConfirmation.mainBranch}
+          baseBranch={pendingGitFlowConfirmation.baseBranch}
+          isSubmitting={isSubmitting}
+          validationMessage={pendingGitFlowValidationError}
+          errorMessage={pendingGitFlowValidationError ? null : error}
+          onChangeMainBranch={(mainBranch) => {
+            setError('');
+            setPendingGitFlowConfirmation((prev) =>
+              prev ? { ...prev, mainBranch } : prev
+            );
+          }}
+          onChangeBaseBranch={(baseBranch) => {
+            setError('');
+            setPendingGitFlowConfirmation((prev) =>
+              prev ? { ...prev, baseBranch } : prev
+            );
+          }}
+          onClose={() => {
+            if (isSubmitting) {
+              return;
+            }
+            setPendingGitFlowConfirmation(null);
+          }}
+          onConfirm={() => void handleConfirmRareGitFlow()}
+        />
+      )}
+
+      {pendingProjectSetupPrompt && (
+        <ConfirmPromptModal
+          isOpen
+          title={
+            pendingProjectSetupPrompt.kind === 'init_git'
+              ? t('project.initGitTitle', 'Initialize Git?')
+              : pendingProjectSetupPrompt.kind === 'initial_commit'
+                ? t('project.initialCommitTitle', 'Create the initial commit?')
+                : t('project.createDevelopTitle', 'Create develop?')
+          }
+          description={
+            pendingProjectSetupPrompt.kind === 'init_git'
+              ? t(
+                  'project.initGitDescription',
+                  'This folder is not a Git repository yet. Initialize Git now to enable worktrees and editable workflows. If you skip this step, the subproject will be added as read-only.'
+                )
+              : pendingProjectSetupPrompt.kind === 'initial_commit'
+                ? t(
+                    'project.initialCommitDescription',
+                    'This repository has no initial commit yet. Create it now to enable branches, worktrees, and editable workflows. If you skip this step, the subproject will be added as read-only.'
+                  )
+                : t(
+                    'project.createDevelopDescription',
+                    'This repository only has a main branch. Create develop from {{mainBranch}} now? If you skip this step, future features will merge directly into {{mainBranch}}.',
+                    {
+                      mainBranch: pendingProjectSetupPrompt.mainBranch || 'main',
+                    }
+                  )
+          }
+          confirmLabel={
+            pendingProjectSetupPrompt.kind === 'create_develop'
+              ? t('project.createDevelopConfirm', 'Create develop')
+              : pendingProjectSetupPrompt.kind === 'initial_commit'
+                ? t('project.createInitialCommitConfirm', 'Create commit')
+                : t('project.initGitConfirm', 'Initialize Git')
+          }
+          cancelLabel={
+            pendingProjectSetupPrompt.kind === 'create_develop'
+              ? t('project.createDevelopDecline', 'Keep main as target')
+              : t('project.keepReadOnly', 'Keep read-only')
+          }
+          isSubmitting={isSubmitting}
+          onCancel={() => {
+            void handleDeclineProjectSetupPrompt();
+          }}
+          onConfirm={() => {
+            void handleConfirmProjectSetupPrompt();
+          }}
+        />
+      )}
     </div>
   );
 };

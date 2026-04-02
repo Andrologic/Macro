@@ -48,6 +48,7 @@ import {
   getFocusedProjectForGroup,
   getGlobalProjectById,
   getProjectGroupByProjectId,
+  getScopedActionableProjectIds,
   getScopedProjectIds,
 } from '../services/globalProjects';
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from '../services/macroSyncService';
@@ -1189,7 +1190,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       const appState = useAppStore.getState();
-      const selectedProjectIds = getScopedProjectIds(
+      const selectedProjectIds = getScopedActionableProjectIds(
         appState.projectGroups,
         appState.selectedGroupId,
         appState.selectedProjectId
@@ -1803,13 +1804,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
 
       if (normalizedToolName === 'terminal_create_session') {
+        const explicitProjectId =
+          typeof args.project_id === 'string' && args.project_id.trim().length > 0
+            ? args.project_id.trim()
+            : null;
         const projectId =
-          (typeof args.project_id === 'string' && args.project_id.trim()) ||
+          explicitProjectId ||
+          executionContext.actionableProjectIds[0] ||
           executionContext.focusedProjectId ||
           executionContext.projectId;
 
         if (!projectId) {
           return 'Missing project_id argument for terminal_create_session.';
+        }
+
+        if (explicitProjectId) {
+          const explicitProject = appState.getProjectById(explicitProjectId);
+          if (explicitProject?.isReadOnly) {
+            return `Error executing terminal_create_session: subproject "${explicitProject.name}" is read-only.`;
+          }
         }
 
         const session = await useTerminalStore.getState().createSession({
@@ -2456,7 +2469,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const projectIdsToCheck = projectIds.length > 0
         ? projectIds
         : (appState.selectedGroupId
-          ? getScopedProjectIds(appState.projectGroups, appState.selectedGroupId, null)
+          ? getScopedActionableProjectIds(appState.projectGroups, appState.selectedGroupId, null)
           : []);
 
       return projectIdsToCheck.map((projectId) => ({

@@ -261,6 +261,13 @@ async fn resolve_project_target(
         .find(|project| project.id == project_id)
         .ok_or_else(|| command_error(format!("Unknown project id: {}", project_id)))?;
 
+    if project.is_read_only {
+        return Err(command_error(format!(
+            "Subproject \"{}\" is read-only. Terminal sessions are unavailable.",
+            project.name
+        )));
+    }
+
     let workspace_path =
         canonicalize_existing_dir(&resolve_project_path(workspace_path, &project.path))?;
 

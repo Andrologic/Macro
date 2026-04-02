@@ -518,14 +518,26 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const handleCreateManualFeature = async () => {
     if (pendingTaskId || !selectedGroupId) return;
     const selectedGroup = projectGroups.find((group) => group.id === selectedGroupId);
-    const projectIds = selectedGroup?.projects.map((project) => project.id) ?? [];
+    const actionableProjectIds =
+      selectedGroup?.projects
+        .filter((project) => !project.isReadOnly)
+        .map((project) => project.id) ?? [];
+    const contextProjectIds =
+      selectedGroup?.projects
+        .filter((project) => project.isReadOnly)
+        .map((project) => project.id) ?? [];
     const conversationProjectId =
-      (selectedProjectId && projectIds.includes(selectedProjectId) ? selectedProjectId : null) ||
-      selectedGroup?.projects[0]?.id ||
+      (selectedProjectId && actionableProjectIds.includes(selectedProjectId) ? selectedProjectId : null) ||
+      actionableProjectIds[0] ||
       null;
 
-    if (projectIds.length === 0) {
-      toast.error(t('implement.manualFeatureMissingProjects', 'No repository is available for this global project.'));
+    if (actionableProjectIds.length === 0) {
+      toast.error(
+        t(
+          'implement.manualFeatureMissingProjects',
+          'No editable repository is available for this global project.'
+        )
+      );
       return;
     }
 
@@ -544,7 +556,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         taskId,
         conversationId: conversation.id,
         groupId: selectedGroupId,
-        projectIds,
+        projectIds: actionableProjectIds,
+        contextProjectIds,
         baseBranch: getGitFlowBaseBranch(),
         title: t('implement.manualFeatureUntitled', 'New feature'),
         description: '',

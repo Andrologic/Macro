@@ -13,6 +13,7 @@ import type {
   PlanNode,
   PredictedBranch,
   Project,
+  ProjectGitFlowDetection,
   ProjectGitFlowSettings,
   AppMode,
   ProjectMount,
@@ -264,6 +265,7 @@ export interface ProjectRegistryRepairReportDto {
   current_plan_task_targets_removed: number;
   plan_nodes_removed: number;
   predicted_branches_removed: number;
+  git_flow_settings_auto_updated: number;
 }
 
 export interface ProjectRegistryDiagnosticsDto {
@@ -495,6 +497,7 @@ export interface WorkspaceManualFeatureDto {
   mergedAt: string | null;
   baseBranch: string;
   projectIds: string[];
+  contextProjectIds: string[];
   executionTargets: WorkspaceManualFeatureExecutionTargetDto[];
   createdAt: string;
   updatedAt: string;
@@ -1153,12 +1156,14 @@ export async function gitWorktreeCreate(params: {
   taskId: string;
   branchName: string;
   fromRef?: string | null;
+  preferredCommitBranch?: string | null;
 }): Promise<GitWorktreeEnsureDto> {
   return invoke<GitWorktreeEnsureDto>('git_worktree_create', {
     repoPath: params.repoPath,
     taskId: params.taskId,
     branchName: params.branchName,
     fromRef: params.fromRef ?? null,
+    preferredCommitBranch: params.preferredCommitBranch ?? null,
   });
 }
 
@@ -1264,6 +1269,22 @@ export async function workspaceGetActiveRoot(): Promise<string> {
   return invoke<string>('workspace_get_active_root');
 }
 
+export async function workspaceDetectProjectGitFlow(params: {
+  path?: string;
+}): Promise<ProjectGitFlowDetection> {
+  return invoke<ProjectGitFlowDetection>('workspace_detect_project_git_flow', {
+    path: params.path ?? null,
+  });
+}
+
+export async function workspacePrepareProjectGit(params: {
+  path: string;
+}): Promise<ProjectGitFlowDetection> {
+  return invoke<ProjectGitFlowDetection>('workspace_prepare_project_git', {
+    path: params.path,
+  });
+}
+
 export async function workspaceSetActiveRoot(path: string): Promise<string> {
   return invoke<string>('workspace_set_active_root', { path });
 }
@@ -1336,6 +1357,16 @@ export async function workspaceUpdateProjectGitFlow(params: {
   });
 }
 
+export async function workspaceUpdateProjectAccess(params: {
+  projectId: string;
+  userReadOnly: boolean;
+}): Promise<Project> {
+  return invoke<Project>('workspace_update_project_access', {
+    projectId: params.projectId,
+    userReadOnly: params.userReadOnly,
+  });
+}
+
 export async function workspaceArchiveProjectGroup(params: {
   groupId: string;
 }): Promise<ProjectGroup> {
@@ -1385,6 +1416,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
   conversationId: string;
   groupId?: string | null;
   projectIds: string[];
+  contextProjectIds?: string[];
   baseBranch?: string | null;
   title?: string | null;
   description?: string | null;
@@ -1394,6 +1426,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
     conversationId: params.conversationId,
     groupId: params.groupId ?? null,
     projectIds: params.projectIds,
+    contextProjectIds: params.contextProjectIds ?? [],
     baseBranch: params.baseBranch ?? null,
     title: params.title ?? null,
     description: params.description ?? null,

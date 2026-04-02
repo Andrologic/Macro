@@ -17,6 +17,10 @@ describe('resolveProjectExecutionContext', () => {
       path: 'projects/macro-web',
       created_at: '2026-03-05T00:00:00.000Z',
       status: 'active' as const,
+      userReadOnly: false,
+      gitSetupState: 'ready' as const,
+      isReadOnly: false,
+      readOnlyReason: null,
       metadata: {
         description: '',
         tags: [],
@@ -32,6 +36,10 @@ describe('resolveProjectExecutionContext', () => {
       path: 'C:/dev/macro-api',
       created_at: '2026-03-05T00:00:00.000Z',
       status: 'active' as const,
+      userReadOnly: false,
+      gitSetupState: 'ready' as const,
+      isReadOnly: false,
+      readOnlyReason: null,
       metadata: {
         description: '',
         tags: [],
@@ -84,6 +92,8 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.groupName).toBe('Macro Suite');
     expect(context.projectId).toBe('macro-api');
     expect(context.projectIds).toEqual(['macro-web', 'macro-api']);
+    expect(context.actionableProjectIds).toEqual(['macro-web', 'macro-api']);
+    expect(context.contextProjectIds).toEqual([]);
     expect(context.focusedProjectId).toBe('macro-api');
     expect(context.virtualRootEnabled).toBe(true);
     expect(context.projectMounts).toEqual([
@@ -93,6 +103,7 @@ describe('resolveProjectExecutionContext', () => {
         mountName: 'web',
         displayName: 'Macro Web',
         workspacePath: 'projects/macro-web',
+        isReadOnly: false,
       },
       {
         projectId: 'macro-api',
@@ -100,6 +111,7 @@ describe('resolveProjectExecutionContext', () => {
         mountName: 'api',
         displayName: 'Macro API',
         workspacePath: 'C:/dev/macro-api',
+        isReadOnly: false,
       },
     ]);
     expect(context.workspacePathsByProjectId['macro-web']).toBe('projects/macro-web');
@@ -161,6 +173,8 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.focusedProjectId).toBe('macro-api');
     expect(context.virtualRootEnabled).toBe(true);
     expect(context.branchName).toBe('feature/payments');
+    expect(context.actionableProjectIds).toEqual(['macro-api', 'macro-web']);
+    expect(context.contextProjectIds).toEqual([]);
     expect(context.workspacePath).toBe('C:/worktrees/macro-api-payments');
     expect(context.workspacePathsByProjectId).toEqual({
       'macro-api': 'C:/worktrees/macro-api-payments',
@@ -180,6 +194,8 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.projectId).toBe('macro-web');
     expect(context.focusedProjectId).toBe('macro-web');
     expect(context.virtualRootEnabled).toBe(false);
+    expect(context.actionableProjectIds).toEqual(['macro-web']);
+    expect(context.contextProjectIds).toEqual([]);
     expect(context.projectMounts).toEqual([
       {
         projectId: 'macro-web',
@@ -187,6 +203,7 @@ describe('resolveProjectExecutionContext', () => {
         mountName: 'web',
         displayName: 'Macro Web',
         workspacePath: 'projects/macro-web',
+        isReadOnly: false,
       },
     ]);
     expect(context.defaultWorkspacePath).toBe('projects/macro-web');
@@ -222,6 +239,8 @@ describe('resolveProjectExecutionContext', () => {
       groupId: null,
       groupName: null,
       projectIds: [],
+      actionableProjectIds: [],
+      contextProjectIds: [],
       projectMounts: [],
       focusedProjectId: null,
       virtualRootEnabled: false,
@@ -249,6 +268,8 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.projectId).toBe('macro-web');
     expect(context.focusedProjectId).toBe('macro-web');
     expect(context.virtualRootEnabled).toBe(true);
+    expect(context.actionableProjectIds).toEqual(['macro-web', 'macro-api']);
+    expect(context.contextProjectIds).toEqual([]);
     expect(context.defaultWorkspacePath).toBe('projects/macro-web');
   });
 });

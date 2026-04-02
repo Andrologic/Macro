@@ -18,7 +18,11 @@ import {
   type ArchitectPlanSummary,
 } from '../../services/architectPlanService';
 import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
-import { getScopedProjectIds } from '../../services/globalProjects';
+import {
+  getScopedActionableProjectIds,
+  getScopedProjectIds,
+  getScopedReadOnlyProjectIds,
+} from '../../services/globalProjects';
 import { useAppStore } from '../../stores/useAppStore';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useTaskStore } from '../../stores/useTaskStore';
@@ -109,6 +113,14 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   }, [plans, activePlanId]);
   const scopedProjectIds = useMemo(
     () => getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const scopedActionableProjectIds = useMemo(
+    () => getScopedActionableProjectIds(projectGroups, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const contextProjectIds = useMemo(
+    () => getScopedReadOnlyProjectIds(projectGroups, selectedGroupId, selectedProjectId),
     [projectGroups, selectedGroupId, selectedProjectId]
   );
   const readyPlanSummaries = useTaskStore((state) => state.planSummaries);
@@ -373,9 +385,20 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setFormError(null);
     setIsLoading(true);
     try {
+      if (scopedActionableProjectIds.length === 0) {
+        const message = t(
+          'implement.manualFeatureMissingProjects',
+          'No editable repository is available for this global project.'
+        );
+        setError(message);
+        toast.error(message);
+        return;
+      }
+
       const existingBlankPlan = await ensureScopedBlankPlan({
         branchName: targetBranch,
-        scopedProjectIds,
+        scopedProjectIds: scopedActionableProjectIds,
+        contextProjectIds,
       });
       if (existingBlankPlan) {
         await loadPlans(false);
@@ -386,10 +409,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const created = await createArchitectPlan({
         branchName: targetBranch,
         label: DEFAULT_NEW_PLAN_LABEL,
-        projectId: scopedProjectIds[0] || undefined,
-        projectIds: scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
+        projectId: scopedActionableProjectIds[0] || undefined,
+        projectIds: scopedActionableProjectIds.length > 0 ? scopedActionableProjectIds : undefined,
+        contextProjectIds,
         targetBranchesByProjectId: Object.fromEntries(
-          scopedProjectIds.map((projectId) => [
+          scopedActionableProjectIds.map((projectId) => [
             projectId,
             getProjectById(projectId)?.gitFlowSettings?.baseBranch || targetBranch,
           ])

@@ -1,11 +1,18 @@
 import type { AppMode, Conversation, Project, ProjectGroup, ProjectMount, TaskExecutionTarget } from '../types';
 import { buildProjectMounts } from './projectMounts';
-import { getFocusedProjectForGroup, getGlobalProjectById, getProjectGroupByProjectId } from './globalProjects';
+import {
+  getFocusedProjectForGroup,
+  getGlobalProjectById,
+  getProjectGroupByProjectId,
+  isProjectActionable,
+  isProjectReadOnly,
+} from './globalProjects';
 
 export interface ExecutionTaskLike {
   id: string;
   project_id: string;
   project_ids?: string[];
+  context_project_ids?: string[];
   assigned_branch?: string | null;
   execution_targets?: TaskExecutionTarget[];
 }
@@ -28,6 +35,8 @@ export interface ProjectExecutionContext {
   groupId: string | null;
   groupName: string | null;
   projectIds: string[];
+  actionableProjectIds: string[];
+  contextProjectIds: string[];
   projectMounts: ProjectMount[];
   focusedProjectId: string | null;
   virtualRootEnabled: boolean;
@@ -71,6 +80,8 @@ export const resolveProjectExecutionContext = (
       groupId: null,
       groupName: null,
       projectIds: [],
+      actionableProjectIds: [],
+      contextProjectIds: [],
       projectMounts: [],
       focusedProjectId: null,
       virtualRootEnabled: false,
@@ -109,6 +120,7 @@ export const resolveProjectExecutionContext = (
     ...(task?.project_ids || []),
     task?.project_id,
   ]);
+  const taskContextProjectIds = uniqueStrings(task?.context_project_ids || []);
   const conversationProjectId = cleanString(conversation?.project_id);
   const conversationGroupId = cleanString(conversation?.group_id);
 
@@ -137,10 +149,17 @@ export const resolveProjectExecutionContext = (
     null;
   const scopedProjectIds = uniqueStrings([
     ...(taskProjectIds.length > 0 ? taskProjectIds : []),
+    ...taskContextProjectIds,
     ...(globalProject?.subProjectIds || []),
     conversationProjectId,
     focusedProjectId,
   ]);
+  const actionableProjectIds = scopedProjectIds.filter((scopedProjectId) =>
+    isProjectActionable(projectById.get(scopedProjectId) || null)
+  );
+  const contextProjectIds = scopedProjectIds.filter((scopedProjectId) =>
+    isProjectReadOnly(projectById.get(scopedProjectId) || null)
+  );
 
   const projectId =
     cleanString(executionTarget?.projectId) ||
@@ -198,25 +217,30 @@ export const resolveProjectExecutionContext = (
   const fallbackProjectMounts =
     projectMounts.length > 0
       ? projectMounts
-      : scopedProjectIds
-          .map((scopedProjectId) => {
-            const scopedProject = projectById.get(scopedProjectId);
-            if (!scopedProject) return null;
-            return {
-              projectId: scopedProject.id,
-              groupId: getProjectGroupByProjectId(projectGroups, scopedProject.id)?.id || null,
-              mountName: scopedProject.mountName,
-              displayName: scopedProject.name,
-              workspacePath: workspacePathsByProjectId[scopedProject.id] || cleanString(scopedProject.path),
-            };
-          })
-          .filter((mount): mount is ProjectMount => Boolean(mount));
+      : scopedProjectIds.reduce<ProjectMount[]>((mounts, scopedProjectId) => {
+          const scopedProject = projectById.get(scopedProjectId);
+          if (!scopedProject) {
+            return mounts;
+          }
+
+          mounts.push({
+            projectId: scopedProject.id,
+            groupId: getProjectGroupByProjectId(projectGroups, scopedProject.id)?.id || null,
+            mountName: scopedProject.mountName,
+            displayName: scopedProject.name,
+            workspacePath: workspacePathsByProjectId[scopedProject.id] || cleanString(scopedProject.path),
+            isReadOnly: Boolean(scopedProject.isReadOnly),
+          });
+          return mounts;
+        }, []);
   const virtualRootEnabled = Boolean(inferredGroupId && fallbackProjectMounts.length > 0);
 
   return {
     groupId: inferredGroupId,
     groupName: cleanString(globalProject?.name),
     projectIds: scopedProjectIds,
+    actionableProjectIds,
+    contextProjectIds,
     projectMounts: fallbackProjectMounts,
     focusedProjectId,
     virtualRootEnabled,
