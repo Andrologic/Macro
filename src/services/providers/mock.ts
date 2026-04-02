@@ -278,6 +278,79 @@ export const detectProjectGitFlow = async (_data: {
     requiresConfirmation: false,
     setupState: 'not_git',
     hasInitialCommit: false,
+    resolvedRepoRootPath: null,
+    repoResolution: 'none',
+    initialCommitPreviewPaths: [],
+    initialCommitPreviewCount: 0,
+    initialCommitRiskFlags: [],
+  });
+};
+
+export const previewProjectGitSetup = async (data: {
+  path?: string;
+}): Promise<ProjectGitFlowDetection> => {
+  return detectProjectGitFlow(data);
+};
+
+export const applyProjectGitSetup = async (data: {
+  path: string;
+  action: 'initialize_repo' | 'create_initial_commit' | 'create_develop';
+  expectedRepoRootPath?: string | null;
+}): Promise<ProjectGitFlowDetection> => {
+  const repoPath = data.expectedRepoRootPath ?? data.path;
+  if (data.action === 'initialize_repo') {
+    return simulate({
+      repoDetected: true,
+      branches: ['main'],
+      currentBranch: 'main',
+      suggestedMainBranch: 'main',
+      suggestedBaseBranch: 'main',
+      suggestedCommitBranch: 'main',
+      requiresConfirmation: false,
+      setupState: 'unborn',
+      hasInitialCommit: false,
+      resolvedRepoRootPath: repoPath,
+      repoResolution: 'new_local_repo',
+      initialCommitPreviewPaths: ['README.md'],
+      initialCommitPreviewCount: 1,
+      initialCommitRiskFlags: [],
+    });
+  }
+
+  if (data.action === 'create_initial_commit') {
+    return simulate({
+      repoDetected: true,
+      branches: ['main'],
+      currentBranch: 'main',
+      suggestedMainBranch: 'main',
+      suggestedBaseBranch: 'main',
+      suggestedCommitBranch: 'main',
+      requiresConfirmation: false,
+      setupState: 'single_main_only',
+      hasInitialCommit: true,
+      resolvedRepoRootPath: repoPath,
+      repoResolution: 'selected_folder',
+      initialCommitPreviewPaths: ['README.md'],
+      initialCommitPreviewCount: 1,
+      initialCommitRiskFlags: [],
+    });
+  }
+
+  return simulate({
+    repoDetected: true,
+    branches: ['main', 'develop'],
+    currentBranch: 'main',
+    suggestedMainBranch: 'main',
+    suggestedBaseBranch: 'develop',
+    suggestedCommitBranch: 'develop',
+    requiresConfirmation: false,
+    setupState: 'ready',
+    hasInitialCommit: true,
+    resolvedRepoRootPath: repoPath,
+    repoResolution: 'selected_folder',
+    initialCommitPreviewPaths: [],
+    initialCommitPreviewCount: 0,
+    initialCommitRiskFlags: [],
   });
 };
 
@@ -294,6 +367,11 @@ export const prepareProjectGit = async (_data: {
     requiresConfirmation: false,
     setupState: 'single_main_only',
     hasInitialCommit: true,
+    resolvedRepoRootPath: _data.path,
+    repoResolution: 'selected_folder',
+    initialCommitPreviewPaths: [],
+    initialCommitPreviewCount: 0,
+    initialCommitRiskFlags: [],
   });
 
 export const createProject = async (data: {
@@ -448,6 +526,7 @@ export const updateProjectGitFlow = async (data: {
 export const updateProjectAccess = async (data: {
   projectId: string;
   userReadOnly: boolean;
+  confirmedMigration?: boolean;
 }): Promise<ProjectDto> => {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
@@ -495,6 +574,27 @@ export const updateProjectAccess = async (data: {
 
   return simulate({ project });
 };
+
+export const previewProjectAccessChange = async (data: {
+  projectId: string;
+  targetReadOnly: boolean;
+}) =>
+  simulate({
+    projectId: data.projectId,
+    targetReadOnly: data.targetReadOnly,
+    canApply: true,
+    requiresConfirmation: data.targetReadOnly,
+    blockingReasons: [],
+    migrationSummary: {
+      plans: { count: data.targetReadOnly ? 1 : 0, labels: data.targetReadOnly ? ['Checkout revamp'] : [] },
+      manualFeatures: { count: 0, labels: [] },
+      tasks: { count: 1, labels: data.targetReadOnly ? ['Refine API contract'] : [] },
+      worktrees: { count: 0, labels: [] },
+      predictedBranches: { count: 1, labels: data.targetReadOnly ? ['feature/checkout-rework'] : [] },
+      planNodes: { count: 1, labels: data.targetReadOnly ? ['Scope edge cases'] : [] },
+      executionTargets: { count: 0, labels: [] },
+    },
+  });
 
 export const archiveProjectGroup = async (data: {
   groupId: string;
@@ -695,6 +795,8 @@ export const provider: ServiceProvider = {
   listModels,
   sendChat,
   detectProjectGitFlow,
+  previewProjectGitSetup,
+  applyProjectGitSetup,
   prepareProjectGit,
   createProject,
   importGitRepo,
@@ -702,6 +804,7 @@ export const provider: ServiceProvider = {
   renameProject,
   updateProjectGitFlow,
   updateProjectAccess,
+  previewProjectAccessChange,
   archiveProjectGroup,
   archiveProject,
   removeProjectGroup,

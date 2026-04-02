@@ -82,6 +82,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     selectedGroupId,
     selectedProjectId,
     getProjectById,
+    openProjectGitFlowModal,
+    setSelectedProject,
   } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   const [plans, setPlans] = useState<ArchitectPlanSummary[]>([]);
@@ -123,6 +125,15 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     () => getScopedReadOnlyProjectIds(projectGroups, selectedGroupId, selectedProjectId),
     [projectGroups, selectedGroupId, selectedProjectId]
   );
+  const scopedReadOnlyProjects = useMemo(
+    () =>
+      contextProjectIds
+        .map((projectId) => getProjectById(projectId))
+        .filter((project): project is NonNullable<typeof project> => Boolean(project)),
+    [contextProjectIds, getProjectById]
+  );
+  const firstReadOnlyProject = scopedReadOnlyProjects[0] ?? null;
+  const isReadOnlyOnlyScope = scopedProjectIds.length > 0 && scopedActionableProjectIds.length === 0;
   const readyPlanSummaries = useTaskStore((state) => state.planSummaries);
 
   const displayedActivePlanTitle = useMemo(() => {
@@ -158,6 +169,20 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const message = toServiceError(value).message.trim();
       return message && message !== 'Unknown error' ? message : fallback;
     })();
+
+  const readOnlyCtaLabel = firstReadOnlyProject?.readOnlyReason === 'missing_git'
+    ? t('projects.initializeGitAction', 'Initialize Git')
+    : firstReadOnlyProject?.readOnlyReason === 'missing_initial_commit'
+      ? t('projects.createInitialCommitAction', 'Create initial commit')
+      : t('projects.projectSettings', 'Project settings');
+
+  const openReadOnlyProjectSettings = () => {
+    if (!firstReadOnlyProject) {
+      return;
+    }
+    setSelectedProject(firstReadOnlyProject.id);
+    openProjectGitFlowModal(firstReadOnlyProject.id);
+  };
 
   const clearActivePlanSelection = () => {
     setActivePlanId(null);
@@ -719,7 +744,21 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                 </button>
                 <button
                   onClick={() => void handleCreatePlan()}
-                  className="h-7 shrink-0 px-2 rounded-md text-xs border border-border hover:bg-accent flex items-center gap-1.5"
+                  disabled={isReadOnlyOnlyScope}
+                  title={
+                    isReadOnlyOnlyScope
+                      ? t(
+                          'architect.planSelector.readOnlyOnlyAction',
+                          'At least one editable repository is required to create a plan.'
+                        )
+                      : undefined
+                  }
+                  className={cn(
+                    'h-7 shrink-0 px-2 rounded-md text-xs border flex items-center gap-1.5',
+                    isReadOnlyOnlyScope
+                      ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
+                      : 'border-border hover:bg-accent'
+                  )}
                 >
                   <Icon name="plus" size={12} />
                   {t('architect.planSelector.create', 'Create')}
@@ -748,7 +787,34 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               </div>
             )}
 
-            {!error && !isLoading && plans.length === 0 && (
+            {!error && !isLoading && isReadOnlyOnlyScope && (
+              <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-4">
+                <div className="text-sm font-medium text-amber-100">
+                  {t(
+                    'projects.readOnlyWorkspaceTitle',
+                    'This scope is currently read-only.'
+                  )}
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-amber-50/80">
+                  {t(
+                    'projects.readOnlyWorkspaceArchitectBody',
+                    'Plans need at least one editable repository. Read-only subprojects still stay available for context and code reading.'
+                  )}
+                </p>
+                {firstReadOnlyProject && (
+                  <button
+                    type="button"
+                    onClick={openReadOnlyProjectSettings}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-amber-400/30 bg-amber-100/10 px-2.5 py-1.5 text-xs font-medium text-amber-50 transition-colors hover:bg-amber-100/15"
+                  >
+                    <Icon name="settings" size={12} />
+                    {readOnlyCtaLabel}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {!error && !isLoading && !isReadOnlyOnlyScope && plans.length === 0 && (
               <div className="px-2 py-6 text-xs text-muted-foreground text-center">
                 {t('architect.planSelector.empty', 'No plans yet.')}
               </div>

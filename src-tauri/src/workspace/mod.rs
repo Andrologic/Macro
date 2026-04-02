@@ -1,15 +1,18 @@
 pub mod metadata;
 
 use crate::core::error::{BackendError, Result};
+use crate::db::models::GitWorktreeRecord;
 use crate::git::detect_preferred_git_flow_branches;
+use crate::git::repo::get_status_options;
 use chrono::Utc;
-use git2::{IndexAddOption, Repository, RepositoryInitOptions, Signature};
+use git2::{BranchType, IndexAddOption, Repository, RepositoryInitOptions, Signature};
 use metadata::{
-    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, PlanDto, ProjectDto,
-    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto,
-    ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto, WorkspaceBootstrapDto,
-    WorkspaceMetadataDto, WorkspaceState, WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto,
-    WorkspaceTaskPlanSummaryDto,
+    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, PlanDto,
+    ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto, ProjectAccessMigrationSummaryDto,
+    ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
+    ProjectMetadataDto, ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto,
+    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceState, WorkspaceTaskCatalogDto,
+    WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -33,9 +36,172 @@ const READ_ONLY_REASON_MISSING_GIT: &str = "missing_git";
 const READ_ONLY_REASON_MISSING_INITIAL_COMMIT: &str = "missing_initial_commit";
 const READ_ONLY_REASON_MANUAL_AND_MISSING_GIT: &str = "manual_and_missing_git";
 const DEVELOP_PROMPT_MAIN_BRANCHES: &[&str] = &["main", "master", "trunk"];
+const GIT_RESOLUTION_NONE: &str = "none";
+const GIT_RESOLUTION_SELECTED_FOLDER: &str = "selected_folder";
+const GIT_RESOLUTION_PARENT_REPO: &str = "parent_repo";
+const GIT_RESOLUTION_NEW_LOCAL_REPO: &str = "new_local_repo";
+const INITIAL_COMMIT_PREVIEW_LIMIT: usize = 20;
+const ACCESS_BLOCK_DIRTY_WORKTREE: &str = "dirty_worktree";
+const ACCESS_BLOCK_LIVE_TERMINAL: &str = "live_terminal";
+const ACCESS_BLOCK_LAST_ACTIONABLE_PLAN: &str = "last_actionable_plan";
+const ACCESS_BLOCK_LAST_ACTIONABLE_FEATURE: &str = "last_actionable_feature";
+const ACCESS_BLOCK_LAST_ACTIONABLE_TASK: &str = "last_actionable_task";
+
+struct ProjectGitProbe {
+    requested_path: PathBuf,
+    repo: Option<Repository>,
+    resolved_repo_root_path: Option<PathBuf>,
+    repo_resolution: &'static str,
+}
+
+#[derive(Debug, Clone, Default)]
+struct InitialCommitPreview {
+    paths: Vec<String>,
+    total_count: usize,
+    risk_flags: Vec<String>,
+}
 
 fn count_projects(groups: &[ProjectGroupDto]) -> usize {
     groups.iter().map(|group| group.projects.len()).sum()
+}
+
+fn normalize_repo_resolution(
+    requested_path: &Path,
+    repo_root_path: Option<&Path>,
+    repo_detected: bool,
+) -> &'static str {
+    if !repo_detected {
+        return GIT_RESOLUTION_NEW_LOCAL_REPO;
+    }
+
+    match repo_root_path {
+        Some(repo_root_path)
+            if normalized_path_key(repo_root_path) == normalized_path_key(requested_path) =>
+        {
+            GIT_RESOLUTION_SELECTED_FOLDER
+        }
+        Some(_) => GIT_RESOLUTION_PARENT_REPO,
+        None => GIT_RESOLUTION_NONE,
+    }
+}
+
+fn resolve_project_git_probe(
+    workspace_path: &Path,
+    project_path: Option<&str>,
+) -> Option<ProjectGitProbe> {
+    let project_path = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+
+    let requested_path = resolve_project_path(workspace_path, project_path);
+    let mut probe_path = requested_path.clone();
+    while !probe_path.exists() && probe_path.pop() {}
+
+    let repo = Repository::discover(&probe_path)
+        .or_else(|_| Repository::open(&probe_path))
+        .ok();
+    let resolved_repo_root_path = repo
+        .as_ref()
+        .map(|repo| resolve_repo_workdir(repo, repo.path()));
+    let repo_resolution = normalize_repo_resolution(
+        &requested_path,
+        resolved_repo_root_path.as_deref(),
+        repo.is_some(),
+    );
+
+    Some(ProjectGitProbe {
+        requested_path,
+        repo,
+        resolved_repo_root_path,
+        repo_resolution,
+    })
+}
+
+fn collect_initial_commit_risk_flags(path: &str, flags: &mut HashSet<String>) {
+    let normalized = path.trim().replace('\\', "/").to_lowercase();
+    if normalized.is_empty() {
+        return;
+    }
+
+    let file_name = normalized.rsplit('/').next().unwrap_or_default();
+    if file_name == ".env"
+        || file_name.starts_with(".env.")
+        || file_name.ends_with(".env")
+        || file_name.ends_with(".env.local")
+    {
+        flags.insert("env_file".to_string());
+    }
+
+    if normalized
+        .split('/')
+        .any(|segment| matches!(segment, "node_modules" | ".pnpm" | "vendor"))
+    {
+        flags.insert("dependency_dir".to_string());
+    }
+
+    if normalized.split('/').any(|segment| {
+        matches!(
+            segment,
+            "dist" | "build" | "coverage" | ".next" | "out" | "target"
+        )
+    }) {
+        flags.insert("build_output".to_string());
+    }
+}
+
+fn collect_initial_commit_preview(repo: &Repository) -> Result<InitialCommitPreview> {
+    if repo_has_initial_commit(repo) {
+        return Ok(InitialCommitPreview::default());
+    }
+
+    let statuses = repo
+        .statuses(Some(&mut get_status_options()))
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to inspect repository status: {}", error),
+        })?;
+    let mut unique_paths = HashSet::new();
+    let mut preview_paths = Vec::new();
+    let mut risk_flags = HashSet::new();
+
+    for entry in statuses.iter() {
+        let candidate_path = entry
+            .path()
+            .or_else(|| {
+                entry
+                    .head_to_index()
+                    .and_then(|delta| delta.new_file().path())
+                    .and_then(|path| path.to_str())
+            })
+            .or_else(|| {
+                entry
+                    .index_to_workdir()
+                    .and_then(|delta| delta.new_file().path())
+                    .and_then(|path| path.to_str())
+            })
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        let Some(path) = candidate_path else {
+            continue;
+        };
+        if !unique_paths.insert(path.to_string()) {
+            continue;
+        }
+        collect_initial_commit_risk_flags(path, &mut risk_flags);
+        if preview_paths.len() < INITIAL_COMMIT_PREVIEW_LIMIT {
+            preview_paths.push(path.to_string());
+        }
+    }
+
+    let total_count = unique_paths.len();
+    let mut risk_flags = risk_flags.into_iter().collect::<Vec<_>>();
+    risk_flags.sort();
+
+    Ok(InitialCommitPreview {
+        paths: preview_paths,
+        total_count,
+        risk_flags,
+    })
 }
 
 fn is_auto_detected_branch_family(value: &str, candidates: &[&str]) -> bool {
@@ -156,74 +322,105 @@ fn normalize_project_access(mut project: ProjectDto, git_setup_state: &str) -> P
     project
 }
 
+fn empty_git_flow_detection() -> ProjectGitFlowDetectionDto {
+    ProjectGitFlowDetectionDto {
+        repo_detected: false,
+        branches: Vec::new(),
+        current_branch: None,
+        suggested_main_branch: None,
+        suggested_base_branch: None,
+        suggested_commit_branch: None,
+        requires_confirmation: false,
+        setup_state: PROJECT_GIT_DETECTION_NOT_GIT.to_string(),
+        has_initial_commit: false,
+        resolved_repo_root_path: None,
+        repo_resolution: GIT_RESOLUTION_NONE.to_string(),
+        initial_commit_preview_paths: Vec::new(),
+        initial_commit_preview_count: 0,
+        initial_commit_risk_flags: Vec::new(),
+    }
+}
+
+fn build_project_git_flow_detection(
+    probe: &ProjectGitProbe,
+    detection: Option<crate::git::GitFlowBranchDetection>,
+    has_initial_commit: bool,
+    initial_commit_preview: InitialCommitPreview,
+) -> ProjectGitFlowDetectionDto {
+    let detection = detection.unwrap_or_else(|| crate::git::GitFlowBranchDetection {
+        branch_candidates: Vec::new(),
+        current_branch: None,
+        main_branch: None,
+        base_branch: None,
+        commit_branch: None,
+        requires_confirmation: false,
+    });
+    let setup_state = if probe.repo.is_none() {
+        PROJECT_GIT_DETECTION_NOT_GIT.to_string()
+    } else if !has_initial_commit {
+        PROJECT_GIT_DETECTION_UNBORN.to_string()
+    } else {
+        detection_setup_state(&detection, has_initial_commit).to_string()
+    };
+
+    ProjectGitFlowDetectionDto {
+        repo_detected: probe.repo.is_some(),
+        branches: detection.branch_candidates,
+        current_branch: detection.current_branch,
+        suggested_main_branch: detection.main_branch,
+        suggested_base_branch: detection.base_branch,
+        suggested_commit_branch: detection.commit_branch,
+        requires_confirmation: detection.requires_confirmation,
+        setup_state,
+        has_initial_commit,
+        resolved_repo_root_path: probe
+            .resolved_repo_root_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+            .or_else(|| {
+                if probe.repo.is_some() {
+                    None
+                } else {
+                    Some(probe.requested_path.to_string_lossy().to_string())
+                }
+            }),
+        repo_resolution: probe.repo_resolution.to_string(),
+        initial_commit_preview_paths: initial_commit_preview.paths,
+        initial_commit_preview_count: initial_commit_preview.total_count,
+        initial_commit_risk_flags: initial_commit_preview.risk_flags,
+    }
+}
+
 fn detect_project_git_flow_internal(
     workspace_path: &Path,
     project_path: Option<&str>,
 ) -> ProjectGitFlowDetectionDto {
-    let Some(project_path) = project_path
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return ProjectGitFlowDetectionDto {
-            repo_detected: false,
-            branches: Vec::new(),
-            current_branch: None,
-            suggested_main_branch: None,
-            suggested_base_branch: None,
-            suggested_commit_branch: None,
-            requires_confirmation: false,
-            setup_state: PROJECT_GIT_DETECTION_NOT_GIT.to_string(),
-            has_initial_commit: false,
-        };
+    let Some(probe) = resolve_project_git_probe(workspace_path, project_path) else {
+        return empty_git_flow_detection();
     };
 
-    let mut probe_path = resolve_project_path(workspace_path, project_path);
-    while !probe_path.exists() && probe_path.pop() {}
-
-    let repo = match Repository::discover(&probe_path).or_else(|_| Repository::open(&probe_path)) {
-        Ok(repo) => repo,
-        Err(_) => {
-            return ProjectGitFlowDetectionDto {
-                repo_detected: false,
-                branches: Vec::new(),
-                current_branch: None,
-                suggested_main_branch: None,
-                suggested_base_branch: None,
-                suggested_commit_branch: None,
-                requires_confirmation: false,
-                setup_state: PROJECT_GIT_DETECTION_NOT_GIT.to_string(),
-                has_initial_commit: false,
-            }
-        }
+    let Some(repo) = probe.repo.as_ref() else {
+        return build_project_git_flow_detection(
+            &probe,
+            None,
+            false,
+            InitialCommitPreview::default(),
+        );
     };
-    let has_initial_commit = repo_has_initial_commit(&repo);
+
+    let has_initial_commit = repo_has_initial_commit(repo);
     if !has_initial_commit {
-        return ProjectGitFlowDetectionDto {
-            repo_detected: true,
-            branches: Vec::new(),
-            current_branch: None,
-            suggested_main_branch: None,
-            suggested_base_branch: None,
-            suggested_commit_branch: None,
-            requires_confirmation: false,
-            setup_state: PROJECT_GIT_DETECTION_UNBORN.to_string(),
-            has_initial_commit: false,
-        };
+        let preview = collect_initial_commit_preview(repo).unwrap_or_default();
+        return build_project_git_flow_detection(&probe, None, false, preview);
     }
-    let detected = detect_preferred_git_flow_branches(&repo);
-    let setup_state = detection_setup_state(&detected, has_initial_commit).to_string();
 
-    ProjectGitFlowDetectionDto {
-        repo_detected: true,
-        branches: detected.branch_candidates,
-        current_branch: detected.current_branch,
-        suggested_main_branch: detected.main_branch,
-        suggested_base_branch: detected.base_branch,
-        suggested_commit_branch: detected.commit_branch,
-        requires_confirmation: detected.requires_confirmation,
-        setup_state,
-        has_initial_commit,
-    }
+    let detected = detect_preferred_git_flow_branches(repo);
+    build_project_git_flow_detection(
+        &probe,
+        Some(detected),
+        true,
+        InitialCommitPreview::default(),
+    )
 }
 
 pub fn detect_project_git_flow(
@@ -286,9 +483,49 @@ fn create_initial_commit(repo: &Repository) -> Result<()> {
     Ok(())
 }
 
-pub async fn prepare_project_git(
+fn create_develop_branch(repo: &Repository, from_ref: &str) -> Result<()> {
+    if repo
+        .find_branch("develop", BranchType::Local)
+        .map(|_| true)
+        .or_else(|error| {
+            if error.code() == git2::ErrorCode::NotFound {
+                Ok(false)
+            } else {
+                Err(error)
+            }
+        })
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to inspect develop branch: {}", error),
+        })?
+    {
+        return Ok(());
+    }
+
+    let target = repo
+        .revparse_single(from_ref)
+        .and_then(|object| object.peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to resolve branch source '{}': {}", from_ref, error),
+        })?;
+    repo.branch("develop", &target, false)
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to create develop branch: {}", error),
+        })?;
+    Ok(())
+}
+
+pub fn preview_project_git_setup(
+    workspace_path: &Path,
+    project_path: Option<&str>,
+) -> ProjectGitFlowDetectionDto {
+    detect_project_git_flow_internal(workspace_path, project_path)
+}
+
+pub async fn apply_project_git_setup(
     workspace_path: &Path,
     project_path: &str,
+    action: &str,
+    expected_repo_root_path: Option<&str>,
 ) -> Result<ProjectGitFlowDetectionDto> {
     let resolved_project_path = resolve_project_path(workspace_path, project_path);
     fs::create_dir_all(&resolved_project_path)
@@ -301,31 +538,105 @@ pub async fn prepare_project_git(
             ),
         })?;
 
-    let repo = match Repository::discover(&resolved_project_path)
-        .or_else(|_| Repository::open(&resolved_project_path))
-    {
-        Ok(repo) => repo,
-        Err(_) => {
-            let mut opts = RepositoryInitOptions::new();
-            opts.initial_head("main");
-            Repository::init_opts(&resolved_project_path, &opts).map_err(|e| BackendError::Git {
-                message: format!(
-                    "Failed to initialize git repository at {}: {}",
-                    resolved_project_path.display(),
-                    e
-                ),
-            })?
+    let existing_probe = resolve_project_git_probe(workspace_path, Some(project_path))
+        .ok_or_else(|| BackendError::Validation("Project path is required".to_string()))?;
+    if let Some(expected_repo_root_path) = expected_repo_root_path {
+        let expected_path_key = normalized_path_key(Path::new(expected_repo_root_path));
+        let actual_path_key = existing_probe
+            .resolved_repo_root_path
+            .as_ref()
+            .map(|path| normalized_path_key(path))
+            .unwrap_or_else(|| normalized_path_key(&resolved_project_path));
+        if expected_path_key != actual_path_key {
+            return Err(BackendError::Validation(
+                "Project Git setup target changed. Refresh and try again.".to_string(),
+            ));
+        }
+    }
+
+    let repo = match action {
+        "initialize_repo" => match existing_probe.repo {
+            Some(repo) => repo,
+            None => {
+                let mut opts = RepositoryInitOptions::new();
+                opts.initial_head("main");
+                Repository::init_opts(&resolved_project_path, &opts).map_err(|error| {
+                    BackendError::Git {
+                        message: format!(
+                            "Failed to initialize git repository at {}: {}",
+                            resolved_project_path.display(),
+                            error
+                        ),
+                    }
+                })?
+            }
+        },
+        "create_initial_commit" | "create_develop" => existing_probe.repo.ok_or_else(|| {
+            BackendError::Validation(
+                "Git must be initialized before applying this setup step.".to_string(),
+            )
+        })?,
+        _ => {
+            return Err(BackendError::Validation(format!(
+                "Unsupported project Git setup action: {}",
+                action
+            )))
         }
     };
 
-    if !repo_has_initial_commit(&repo) {
-        create_initial_commit(&repo)?;
+    match action {
+        "initialize_repo" => {}
+        "create_initial_commit" => create_initial_commit(&repo)?,
+        "create_develop" => {
+            let detection = detect_project_git_flow_internal(workspace_path, Some(project_path));
+            let source_branch = detection
+                .suggested_main_branch
+                .or(detection.suggested_commit_branch)
+                .or(detection.current_branch)
+                .unwrap_or_else(|| "main".to_string());
+            create_develop_branch(&repo, &source_branch)?;
+        }
+        _ => {}
     }
 
     Ok(detect_project_git_flow_internal(
         workspace_path,
         Some(project_path),
     ))
+}
+
+pub async fn prepare_project_git(
+    workspace_path: &Path,
+    project_path: &str,
+) -> Result<ProjectGitFlowDetectionDto> {
+    let detection =
+        apply_project_git_setup(workspace_path, project_path, "initialize_repo", None).await?;
+    if detection.setup_state == PROJECT_GIT_DETECTION_UNBORN {
+        return apply_project_git_setup(
+            workspace_path,
+            project_path,
+            "create_initial_commit",
+            detection.resolved_repo_root_path.as_deref(),
+        )
+        .await;
+    }
+
+    Ok(detection)
+}
+
+pub async fn refresh_project_registry_state(
+    workspace_path: &Path,
+    metadata_root: &Path,
+) -> Result<()> {
+    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    let _ = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "refresh_project_registry_state",
+    )
+    .await?;
+    Ok(())
 }
 
 fn auto_detect_project_git_flow_settings(
@@ -1248,12 +1559,414 @@ pub async fn update_project_git_flow(
     Ok(updated_project)
 }
 
+fn preview_item_from_labels(labels: HashSet<String>) -> ProjectAccessMigrationItemDto {
+    let mut labels = labels
+        .into_iter()
+        .filter(|label| !label.trim().is_empty())
+        .collect::<Vec<_>>();
+    labels.sort();
+    ProjectAccessMigrationItemDto {
+        count: labels.len(),
+        labels,
+    }
+}
+
+fn blocking_reasons_message(blocking_reasons: &[String]) -> String {
+    if blocking_reasons.is_empty() {
+        return "unknown_reason".to_string();
+    }
+
+    blocking_reasons.join(", ")
+}
+
+fn inspect_worktree_dirty(worktree: &GitWorktreeRecord) -> bool {
+    let path = Path::new(&worktree.path);
+    if !path.exists() {
+        return false;
+    }
+
+    Repository::open(path)
+        .ok()
+        .and_then(|repo| {
+            let mut status_options = get_status_options();
+            repo.statuses(Some(&mut status_options))
+                .ok()
+                .map(|statuses| !statuses.is_empty())
+        })
+        .unwrap_or(false)
+}
+
+fn task_status_is_active(status: &str) -> bool {
+    !matches!(status.trim(), "" | "Completed" | "Failed")
+}
+
+fn is_task_entry_active(task: &serde_json::Map<String, Value>) -> bool {
+    if task
+        .get("archived_at")
+        .and_then(|value| value.as_str())
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    if task
+        .get("draft")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    task.get("status")
+        .and_then(|value| value.as_str())
+        .map(task_status_is_active)
+        .unwrap_or(false)
+}
+
+fn collect_task_actionable_project_ids(
+    task: &serde_json::Map<String, Value>,
+    actionable_project_ids: &HashSet<String>,
+) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    if let Some(project_id) = task.get("project_id").and_then(|value| value.as_str()) {
+        if actionable_project_ids.contains(project_id) {
+            ids.insert(project_id.to_string());
+        }
+    }
+    if let Some(project_ids) = task.get("project_ids").and_then(|value| value.as_array()) {
+        for project_id in project_ids.iter().filter_map(|value| value.as_str()) {
+            if actionable_project_ids.contains(project_id) {
+                ids.insert(project_id.to_string());
+            }
+        }
+    }
+    if let Some(targets) = task
+        .get("execution_targets")
+        .and_then(|value| value.as_array())
+    {
+        for target in targets {
+            if let Some(project_id) = target.get("projectId").and_then(|value| value.as_str()) {
+                if actionable_project_ids.contains(project_id) {
+                    ids.insert(project_id.to_string());
+                }
+            }
+        }
+    }
+    ids
+}
+
+pub async fn preview_project_access_change(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    project_id: &str,
+    target_read_only: bool,
+    worktrees: &[GitWorktreeRecord],
+    live_terminal_project_ids: &HashSet<String>,
+) -> Result<ProjectAccessChangePreviewDto> {
+    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    let project = state
+        .project_groups
+        .iter()
+        .flat_map(|group| group.projects.iter())
+        .find(|project| project.id == project_id)
+        .cloned()
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+
+    let actionable_project_ids = collect_actionable_project_ids(&state.project_groups);
+    let mut blocking_reasons = Vec::new();
+    let mut plan_labels = HashSet::new();
+    let mut manual_feature_labels = HashSet::new();
+    let mut task_labels = HashSet::new();
+    let mut worktree_labels = HashSet::new();
+    let mut predicted_branch_labels = HashSet::new();
+    let mut plan_node_labels = HashSet::new();
+    let mut execution_target_labels = HashSet::new();
+
+    if !target_read_only {
+        return Ok(ProjectAccessChangePreviewDto {
+            project_id: project_id.to_string(),
+            target_read_only,
+            can_apply: project.git_setup_state == PROJECT_GIT_SETUP_READY,
+            requires_confirmation: false,
+            blocking_reasons,
+            migration_summary: ProjectAccessMigrationSummaryDto::default(),
+        });
+    }
+
+    if project.user_read_only {
+        return Ok(ProjectAccessChangePreviewDto {
+            project_id: project_id.to_string(),
+            target_read_only,
+            can_apply: true,
+            requires_confirmation: false,
+            blocking_reasons,
+            migration_summary: ProjectAccessMigrationSummaryDto::default(),
+        });
+    }
+
+    for worktree in worktrees
+        .iter()
+        .filter(|worktree| worktree.project_id == project_id)
+    {
+        worktree_labels.insert(if worktree.branch.trim().is_empty() {
+            worktree.task_id.clone()
+        } else {
+            format!("{} ({})", worktree.branch, worktree.task_id)
+        });
+        if inspect_worktree_dirty(worktree)
+            && !blocking_reasons
+                .iter()
+                .any(|reason| reason == ACCESS_BLOCK_DIRTY_WORKTREE)
+        {
+            blocking_reasons.push(ACCESS_BLOCK_DIRTY_WORKTREE.to_string());
+        }
+    }
+
+    if live_terminal_project_ids.contains(project_id) {
+        blocking_reasons.push(ACCESS_BLOCK_LIVE_TERMINAL.to_string());
+    }
+
+    if let Some(plan) = state.current_plan.as_ref() {
+        if plan.project_ids.iter().any(|value| value == project_id) {
+            plan_labels.insert(plan.description.clone());
+            let remaining_actionable = plan
+                .project_ids
+                .iter()
+                .filter(|candidate| candidate.as_str() != project_id)
+                .filter(|candidate| actionable_project_ids.contains(candidate.as_str()))
+                .count();
+            if remaining_actionable == 0 {
+                blocking_reasons.push(ACCESS_BLOCK_LAST_ACTIONABLE_PLAN.to_string());
+            }
+        }
+
+        for task in &plan.tasks {
+            let Some(task_object) = task.as_object() else {
+                continue;
+            };
+            let actionable_targets =
+                collect_task_actionable_project_ids(task_object, &actionable_project_ids);
+            if !actionable_targets.contains(project_id) {
+                continue;
+            }
+            let task_label = task_object
+                .get("title")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("Unnamed task")
+                .to_string();
+            task_labels.insert(task_label.clone());
+
+            if let Some(targets) = task_object
+                .get("execution_targets")
+                .and_then(|value| value.as_array())
+            {
+                for target in targets {
+                    if target
+                        .get("projectId")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value == project_id)
+                        .unwrap_or(false)
+                    {
+                        let branch_label = target
+                            .get("branchName")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("execution target");
+                        execution_target_labels
+                            .insert(format!("{} · {}", task_label, branch_label));
+                    }
+                }
+            }
+
+            if is_task_entry_active(task_object) && actionable_targets.len() <= 1 {
+                blocking_reasons.push(ACCESS_BLOCK_LAST_ACTIONABLE_TASK.to_string());
+            }
+        }
+    }
+
+    for feature in &state.manual_features {
+        let feature_project_ids = feature
+            .project_ids
+            .iter()
+            .filter(|candidate| actionable_project_ids.contains(candidate.as_str()))
+            .cloned()
+            .collect::<HashSet<_>>();
+        let target_matches = feature_project_ids.contains(project_id)
+            || feature
+                .execution_targets
+                .iter()
+                .any(|target| target.project_id == project_id);
+        if !target_matches {
+            continue;
+        }
+
+        manual_feature_labels.insert(feature.title.clone());
+        for target in feature
+            .execution_targets
+            .iter()
+            .filter(|target| target.project_id == project_id)
+        {
+            execution_target_labels.insert(format!("{} · {}", feature.title, target.branch_name));
+        }
+
+        let archived = feature
+            .archived_at
+            .as_ref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        if !archived && feature_project_ids.len() <= 1 {
+            blocking_reasons.push(ACCESS_BLOCK_LAST_ACTIONABLE_FEATURE.to_string());
+        }
+    }
+
+    for node in state
+        .plan_nodes
+        .iter()
+        .filter(|node| node.project_id.as_deref() == Some(project_id))
+    {
+        plan_node_labels.insert(node.title.clone());
+    }
+
+    for branch in state
+        .predicted_branches
+        .iter()
+        .filter(|branch| branch.project_id == project_id)
+    {
+        predicted_branch_labels.insert(branch.name.clone());
+    }
+
+    let mut unique_blocking_reasons = HashSet::new();
+    blocking_reasons.retain(|reason| unique_blocking_reasons.insert(reason.clone()));
+    let migration_summary = ProjectAccessMigrationSummaryDto {
+        plans: preview_item_from_labels(plan_labels),
+        manual_features: preview_item_from_labels(manual_feature_labels),
+        tasks: preview_item_from_labels(task_labels),
+        worktrees: preview_item_from_labels(worktree_labels),
+        predicted_branches: preview_item_from_labels(predicted_branch_labels),
+        plan_nodes: preview_item_from_labels(plan_node_labels),
+        execution_targets: preview_item_from_labels(execution_target_labels),
+    };
+    let requires_confirmation = blocking_reasons.is_empty()
+        && [
+            migration_summary.plans.count,
+            migration_summary.manual_features.count,
+            migration_summary.tasks.count,
+            migration_summary.worktrees.count,
+            migration_summary.predicted_branches.count,
+            migration_summary.plan_nodes.count,
+            migration_summary.execution_targets.count,
+        ]
+        .into_iter()
+        .any(|count| count > 0);
+
+    if blocking_reasons.is_empty() {
+        tracing::info!(
+            action = "project_access_preview_ready",
+            project_id = %project_id,
+            target_read_only = target_read_only,
+            project_git_setup_state = %project.git_setup_state,
+            project_user_read_only = project.user_read_only,
+            project_is_read_only = project.is_read_only,
+            worktree_count = worktrees.iter().filter(|worktree| worktree.project_id == project_id).count(),
+            live_terminal_attached = live_terminal_project_ids.contains(project_id),
+            requires_confirmation = requires_confirmation,
+            plan_migration_count = migration_summary.plans.count,
+            manual_feature_migration_count = migration_summary.manual_features.count,
+            task_migration_count = migration_summary.tasks.count,
+            worktree_migration_count = migration_summary.worktrees.count,
+            predicted_branch_migration_count = migration_summary.predicted_branches.count,
+            plan_node_migration_count = migration_summary.plan_nodes.count,
+            execution_target_migration_count = migration_summary.execution_targets.count
+        );
+    } else {
+        tracing::warn!(
+            action = "project_access_preview_blocked",
+            project_id = %project_id,
+            target_read_only = target_read_only,
+            project_git_setup_state = %project.git_setup_state,
+            project_user_read_only = project.user_read_only,
+            project_is_read_only = project.is_read_only,
+            worktree_count = worktrees.iter().filter(|worktree| worktree.project_id == project_id).count(),
+            live_terminal_attached = live_terminal_project_ids.contains(project_id),
+            blocking_reasons = ?blocking_reasons,
+            plan_migration_count = migration_summary.plans.count,
+            manual_feature_migration_count = migration_summary.manual_features.count,
+            task_migration_count = migration_summary.tasks.count,
+            worktree_migration_count = migration_summary.worktrees.count,
+            predicted_branch_migration_count = migration_summary.predicted_branches.count,
+            plan_node_migration_count = migration_summary.plan_nodes.count,
+            execution_target_migration_count = migration_summary.execution_targets.count
+        );
+    }
+
+    Ok(ProjectAccessChangePreviewDto {
+        project_id: project_id.to_string(),
+        target_read_only,
+        can_apply: blocking_reasons.is_empty(),
+        requires_confirmation,
+        blocking_reasons,
+        migration_summary,
+    })
+}
+
 pub async fn update_project_access(
     workspace_path: &Path,
     metadata_root: &Path,
     project_id: &str,
     user_read_only: bool,
+    confirmed_migration: bool,
+    access_preview: Option<&ProjectAccessChangePreviewDto>,
 ) -> Result<ProjectDto> {
+    tracing::info!(
+        action = "project_access_update_requested",
+        project_id = %project_id,
+        user_read_only = user_read_only,
+        confirmed_migration = confirmed_migration,
+        preview_available = access_preview.is_some()
+    );
+
+    if user_read_only {
+        let preview = access_preview.ok_or_else(|| {
+            tracing::warn!(
+                action = "project_access_update_rejected",
+                project_id = %project_id,
+                user_read_only = user_read_only,
+                reason = "missing_preview"
+            );
+            BackendError::Validation(
+                "Project access change requires a validated preview.".to_string(),
+            )
+        })?;
+        if !preview.can_apply {
+            tracing::warn!(
+                action = "project_access_update_rejected",
+                project_id = %project_id,
+                user_read_only = user_read_only,
+                confirmed_migration = confirmed_migration,
+                blocking_reasons = ?preview.blocking_reasons,
+                requires_confirmation = preview.requires_confirmation
+            );
+            return Err(BackendError::Validation(format!(
+                "This subproject cannot be switched to read-only right now: {}.",
+                blocking_reasons_message(&preview.blocking_reasons)
+            )));
+        }
+        if preview.requires_confirmation && !confirmed_migration {
+            tracing::warn!(
+                action = "project_access_update_rejected",
+                project_id = %project_id,
+                user_read_only = user_read_only,
+                confirmed_migration = confirmed_migration,
+                reason = "missing_confirmation"
+            );
+            return Err(BackendError::Validation(
+                "Project access change requires confirmation.".to_string(),
+            ));
+        }
+    }
+
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let mut updated_project: Option<ProjectDto> = None;
 
@@ -1263,6 +1976,18 @@ pub async fn update_project_access(
             .iter_mut()
             .find(|project| project.id == project_id)
         {
+            if !user_read_only && project.git_setup_state != PROJECT_GIT_SETUP_READY {
+                tracing::warn!(
+                    action = "project_access_update_rejected",
+                    project_id = %project_id,
+                    user_read_only = user_read_only,
+                    project_git_setup_state = %project.git_setup_state,
+                    reason = "git_not_ready"
+                );
+                return Err(BackendError::Validation(
+                    "Git must be ready before this subproject can become editable.".to_string(),
+                ));
+            }
             project.user_read_only = user_read_only;
             updated_project = Some(project.clone());
             break;
@@ -1279,13 +2004,24 @@ pub async fn update_project_access(
         "update_project_access",
     )
     .await?;
-    sanitized_state
+    let updated_project = sanitized_state
         .project_groups
         .iter()
         .flat_map(|group| group.projects.iter())
         .find(|project| project.id == project_id)
         .cloned()
-        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+
+    tracing::info!(
+        action = "project_access_update_succeeded",
+        project_id = %project_id,
+        user_read_only = updated_project.user_read_only,
+        is_read_only = updated_project.is_read_only,
+        git_setup_state = %updated_project.git_setup_state,
+        read_only_reason = ?updated_project.read_only_reason
+    );
+
+    Ok(updated_project)
 }
 
 pub async fn archive_project_group(
