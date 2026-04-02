@@ -15,7 +15,17 @@ import type {
   ChatCompletionResponseDto,
 } from '../contracts/dtos';
 import type { ServiceProvider } from '../contracts/serviceProvider';
-import type { AIModel, AIProvider, ChatMessage, Conversation, Project, ProjectGroup, Task, ToolTrace } from '../../types';
+import type {
+  AIModel,
+  AIProvider,
+  ChatMessage,
+  Conversation,
+  Project,
+  ProjectGitFlowDetection,
+  ProjectGroup,
+  Task,
+  ToolTrace,
+} from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
 import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
@@ -177,7 +187,8 @@ export const gitWorktreeCreate = async (
   projectId: string,
   taskId: string,
   branchName: string,
-  fromRef?: string | null
+  fromRef?: string | null,
+  preferredCommitBranch?: string | null
 ): Promise<{
   taskId: string;
   worktreePath: string;
@@ -192,6 +203,7 @@ export const gitWorktreeCreate = async (
     taskId,
     branchName,
     fromRef: fromRef ?? null,
+    preferredCommitBranch: preferredCommitBranch ?? null,
   });
 };
 
@@ -252,6 +264,22 @@ export const listModels = async (providerId?: string): Promise<ModelsDto> => {
 export const sendChat = async (
   request: ChatCompletionRequestDto
 ): Promise<ChatCompletionResponseDto> => sendChatFallback(request);
+
+export const detectProjectGitFlow = async (data: {
+  path?: string;
+}): Promise<ProjectGitFlowDetection> => {
+  return tauriIpc.workspaceDetectProjectGitFlow({
+    path: data.path,
+  });
+};
+
+export const prepareProjectGit = async (data: {
+  path: string;
+}): Promise<ProjectGitFlowDetection> => {
+  return tauriIpc.workspacePrepareProjectGit({
+    path: data.path,
+  });
+};
 
 export const createProject = async (data: {
   name: string;
@@ -326,6 +354,18 @@ export const updateProjectGitFlow = async (data: {
   const project = await tauriIpc.workspaceUpdateProjectGitFlow({
     projectId: data.projectId,
     gitFlowSettings: data.gitFlowSettings,
+  });
+
+  return { project };
+};
+
+export const updateProjectAccess = async (data: {
+  projectId: string;
+  userReadOnly: boolean;
+}): Promise<ProjectDto> => {
+  const project = await tauriIpc.workspaceUpdateProjectAccess({
+    projectId: data.projectId,
+    userReadOnly: data.userReadOnly,
   });
 
   return { project };
@@ -456,11 +496,14 @@ export const provider: ServiceProvider = {
   listProviders,
   listModels,
   sendChat,
+  detectProjectGitFlow,
+  prepareProjectGit,
   createProject,
   importGitRepo,
   renameProjectGroup,
   renameProject,
   updateProjectGitFlow,
+  updateProjectAccess,
   archiveProjectGroup,
   archiveProject,
   removeProjectGroup,

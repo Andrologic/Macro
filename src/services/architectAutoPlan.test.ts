@@ -54,6 +54,7 @@ const createArchitectAutoPlanHarness = () => {
     conversationId: plan.conversationId,
     projectId: plan.projectId,
     projectIds: plan.projectIds,
+    contextProjectIds: plan.contextProjectIds,
     expectedProjectIds: plan.expectedProjectIds,
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
@@ -63,6 +64,7 @@ const createArchitectAutoPlanHarness = () => {
   const clonePlan = (plan: ArchitectPlanRecord): ArchitectPlanRecord => ({
     ...plan,
     projectIds: plan.projectIds ? [...plan.projectIds] : undefined,
+    contextProjectIds: plan.contextProjectIds ? [...plan.contextProjectIds] : undefined,
     expectedProjectIds: plan.expectedProjectIds ? [...plan.expectedProjectIds] : undefined,
     nodes: [...plan.nodes],
     predictedBranches: [...plan.predictedBranches],
@@ -74,6 +76,7 @@ const createArchitectAutoPlanHarness = () => {
     label?: string;
     projectId?: string;
     projectIds?: string[];
+    contextProjectIds?: string[];
     status?: ArchitectPlanRecord['status'];
     setActive?: boolean;
   }) => {
@@ -91,6 +94,7 @@ const createArchitectAutoPlanHarness = () => {
       conversationId: undefined,
       projectId: params.projectId ?? projectIds[0],
       projectIds: projectIds.length > 0 ? [...projectIds] : undefined,
+      contextProjectIds: params.contextProjectIds ? [...params.contextProjectIds] : undefined,
       expectedProjectIds: projectIds.length > 0 ? [...projectIds] : undefined,
       createdAt: now,
       updatedAt: now,
@@ -120,6 +124,7 @@ const createArchitectAutoPlanHarness = () => {
     label?: string;
     description?: string;
     projectIds?: string[];
+    contextProjectIds?: string[];
     expectedProjectIds?: string[];
     setActive?: boolean;
   }) => {
@@ -132,6 +137,11 @@ const createArchitectAutoPlanHarness = () => {
       label: params.label ?? existing.label,
       description: params.description ?? existing.description,
       projectIds: params.projectIds ? [...params.projectIds] : existing.projectIds ? [...existing.projectIds] : undefined,
+      contextProjectIds: params.contextProjectIds
+        ? [...params.contextProjectIds]
+        : existing.contextProjectIds
+          ? [...existing.contextProjectIds]
+          : undefined,
       expectedProjectIds: params.expectedProjectIds
         ? [...params.expectedProjectIds]
         : existing.expectedProjectIds
@@ -257,6 +267,36 @@ describe('architectAutoPlan', () => {
     const reloaded = await getArchitectPlan(branchName, created.id);
     expect(reloaded?.projectIds).toEqual(['web', 'api']);
     expect(reloaded?.expectedProjectIds).toEqual(['web', 'api']);
+  });
+
+  it('keeps read-only subprojects as context when expanding a blank plan', async () => {
+    const { createArchitectPlan, ensureProjectGroupPlan, getArchitectPlan } =
+      createArchitectAutoPlanHarness();
+    const created = await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan-with-context',
+      label: 'new plan',
+      projectIds: ['web'],
+      contextProjectIds: ['docs'],
+      status: 'draft',
+      setActive: true,
+    });
+
+    const ensured = await ensureProjectGroupPlan({
+      branchName,
+      scopedProjectIds: ['web', 'api'],
+      contextProjectIds: ['docs', 'storybook'],
+    });
+
+    expect(ensured).not.toBeNull();
+    expect(ensured?.action).toBe('expanded_blank');
+    expect(ensured?.plan.id).toBe(created.id);
+    expect(ensured?.plan.projectIds).toEqual(['web', 'api']);
+    expect(ensured?.plan.contextProjectIds).toEqual(['docs', 'storybook']);
+
+    const reloaded = await getArchitectPlan(branchName, created.id);
+    expect(reloaded?.projectIds).toEqual(['web', 'api']);
+    expect(reloaded?.contextProjectIds).toEqual(['docs', 'storybook']);
   });
 
   it('does not expand a plan automatically once it is no longer blank', async () => {

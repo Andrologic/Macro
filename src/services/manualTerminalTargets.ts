@@ -64,11 +64,14 @@ export const getTaskProjectIds = (task: TaskWithTargets | null | undefined): str
 export const resolvePreferredManualProjectId = (
   params: ResolvePreferredManualProjectIdParams
 ): string | null => {
-  if (params.projects.length === 0) {
+  const actionableProjects = params.projects.filter((project) => !project.isReadOnly);
+  const candidateProjects = actionableProjects.length > 0 ? actionableProjects : params.projects;
+
+  if (candidateProjects.length === 0) {
     return null;
   }
 
-  const projectIdSet = new Set(params.projects.map((project) => project.id));
+  const projectIdSet = new Set(candidateProjects.map((project) => project.id));
   const rememberedProjectId =
     params.taskId && params.lastManualProjectIdByTaskId
       ? params.lastManualProjectIdByTaskId[params.taskId] ?? null
@@ -82,7 +85,7 @@ export const resolvePreferredManualProjectId = (
     return params.selectedProjectId;
   }
 
-  return params.projects[0]?.id ?? null;
+  return candidateProjects[0]?.id ?? null;
 };
 
 export const resolveTerminalGroupId = (
@@ -137,25 +140,28 @@ export const resolveSelectedTaskTerminalScope = (
       : params.projectGroups
           .flatMap((group) => group.projects)
           .filter((project) => allowedProjectIds.has(project.id));
+  const actionableScopedProjects = scopedProjects.filter((project) => !project.isReadOnly);
+  const terminalProjects =
+    actionableScopedProjects.length > 0 ? actionableScopedProjects : scopedProjects;
 
-  if (scopedProjects.length === 0) {
+  if (terminalProjects.length === 0) {
     return null;
   }
 
-  const scopedProjectIds = scopedProjects.map((project) => project.id);
+  const scopedProjectIds = terminalProjects.map((project) => project.id);
   const scopedProjectIdSet = new Set(scopedProjectIds);
   const preferredProjectId =
     resolvePreferredManualProjectId({
       taskId,
       selectedProjectId: params.selectedProjectId,
-      projects: scopedProjects,
+      projects: terminalProjects,
       lastManualProjectIdByTaskId: params.lastManualProjectIdByTaskId,
-    }) ?? scopedProjects[0]?.id;
+    }) ?? terminalProjects[0]?.id;
 
   const visibleProjectId =
     params.selectedProjectId && scopedProjectIdSet.has(params.selectedProjectId)
       ? params.selectedProjectId
-      : scopedProjects[0]?.id;
+      : terminalProjects[0]?.id;
 
   if (!preferredProjectId || !visibleProjectId) {
     return null;
@@ -167,7 +173,7 @@ export const resolveSelectedTaskTerminalScope = (
     projectId: visibleProjectId,
     preferredProjectId,
     scopedProjectIds,
-    projects: scopedProjects,
+    projects: terminalProjects,
   };
 };
 

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use git2::{BranchType, Repository, RepositoryInitOptions, Signature, WorktreeAddOptions};
@@ -24,6 +25,519 @@ const MACRO_WORKTREE_NAME: &str = "macro-metadata";
 const MACRO_WORKTREE_DIR_NAME: &str = "macro-metadata-worktree";
 const LEGACY_METADATA_DIR_NAME: &str = ".macro";
 const TASK_WORKTREE_GITIGNORE_RULE: &str = "/.macro/";
+const TASK_WORKTREE_GITIGNORE_COMMIT_MESSAGE: &str = "chore(gitignore): ignore Macro worktrees";
+const PREFERRED_MAIN_BRANCHES: &[&str] = &["main", "master", "trunk", "default"];
+const PREFERRED_BASE_BRANCHES: &[&str] = &[
+    "develop",
+    "dev",
+    "development",
+    "integration",
+    "next",
+    "staging",
+    "preprod",
+    "qa",
+    "test",
+];
+const NON_BASE_BRANCH_PREFIXES: &[&str] = &[
+    "feature/",
+    "feature-",
+    "feat/",
+    "feat-",
+    "fix/",
+    "fix-",
+    "bugfix/",
+    "bugfix-",
+    "hotfix/",
+    "hotfix-",
+    "release/",
+    "release-",
+    "chore/",
+    "chore-",
+    "docs/",
+    "docs-",
+    "work/",
+    "work-",
+    "task/",
+    "task-",
+    "tasks/",
+    "tasks-",
+    "story/",
+    "story-",
+    "experiment/",
+    "experiment-",
+    "spike/",
+    "spike-",
+    "wip/",
+    "wip-",
+    "user/",
+    "user-",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GitFlowBranchDetection {
+    pub main_branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub commit_branch: Option<String>,
+    pub current_branch: Option<String>,
+    pub branch_candidates: Vec<String>,
+    pub requires_confirmation: bool,
+}
+
+fn current_branch_name(repo: &Repository) -> Option<String> {
+    if repo.head_detached().ok()? {
+        return None;
+    }
+
+    repo.head()
+        .ok()
+        .and_then(|head| head.shorthand().map(|value| value.to_string()))
+}
+
+fn branch_exists(repo: &Repository, branch_name: &str, branch_type: BranchType) -> bool {
+    repo.find_branch(branch_name, branch_type).is_ok()
+}
+
+fn distinct_branch_names(repo: &Repository) -> Vec<String> {
+    let mut names = Vec::new();
+    for branch_type in [BranchType::Local, BranchType::Remote] {
+        if let Ok(branches) = repo.branches(Some(branch_type)) {
+            for branch in branches.flatten() {
+                let name = branch
+                    .0
+                    .name()
+                    .ok()
+                    .flatten()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(|name| name.strip_prefix("origin/").unwrap_or(name).to_string());
+                if let Some(name) = name {
+                    if name == "HEAD" || name == "origin/HEAD" {
+                        continue;
+                    }
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+fn resolve_origin_head_branch(repo: &Repository) -> Option<String> {
+    repo.find_reference("refs/remotes/origin/HEAD")
+        .ok()
+        .and_then(|reference| reference.symbolic_target().map(str::to_string))
+        .and_then(|target| {
+            target
+                .strip_prefix("refs/remotes/origin/")
+                .map(str::to_string)
+        })
+}
+
+fn detect_preferred_branch_name(repo: &Repository, candidates: &[&str]) -> Option<String> {
+    for candidate in candidates {
+        if branch_exists(repo, candidate, BranchType::Local) {
+            return Some((*candidate).to_string());
+        }
+    }
+
+    for candidate in candidates {
+        if branch_exists(repo, &format!("origin/{}", candidate), BranchType::Remote) {
+            return Some((*candidate).to_string());
+        }
+    }
+
+    None
+}
+
+fn matches_branch_family(branch_name: &str, candidates: &[&str]) -> bool {
+    let normalized = branch_name.trim().to_lowercase();
+    candidates.iter().any(|candidate| normalized == *candidate)
+}
+
+fn is_known_main_branch_name(branch_name: &str) -> bool {
+    matches_branch_family(branch_name, PREFERRED_MAIN_BRANCHES)
+}
+
+fn is_known_base_branch_name(branch_name: &str) -> bool {
+    is_known_main_branch_name(branch_name)
+        || matches_branch_family(branch_name, PREFERRED_BASE_BRANCHES)
+}
+
+fn looks_like_work_branch(branch_name: &str) -> bool {
+    let normalized = branch_name.trim().to_lowercase();
+    normalized == MACRO_BRANCH_NAME.to_lowercase()
+        || NON_BASE_BRANCH_PREFIXES
+            .iter()
+            .any(|prefix| normalized.starts_with(prefix))
+}
+
+fn is_viable_base_branch_name(branch_name: &str, main_branch: Option<&str>) -> bool {
+    let normalized = branch_name.trim();
+    !normalized.is_empty()
+        && normalized != MACRO_BRANCH_NAME
+        && Some(normalized) != main_branch
+        && !looks_like_work_branch(normalized)
+}
+
+fn detect_unique_non_work_branch(
+    repo: &Repository,
+    excluded_branch: Option<&str>,
+    current_branch: Option<&str>,
+) -> Option<String> {
+    let candidates = distinct_branch_names(repo)
+        .into_iter()
+        .filter(|branch_name| is_viable_base_branch_name(branch_name, excluded_branch))
+        .filter(|branch_name| {
+            Some(branch_name.as_str()) == current_branch
+                || branch_exists(repo, &format!("origin/{}", branch_name), BranchType::Remote)
+        })
+        .collect::<Vec<_>>();
+
+    if candidates.len() == 1 {
+        candidates.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn count_viable_branch_candidates(branch_names: &[String]) -> usize {
+    branch_names
+        .iter()
+        .filter(|branch_name| !looks_like_work_branch(branch_name))
+        .count()
+}
+
+fn should_confirm_git_flow_branch_mapping(
+    main_branch: Option<&str>,
+    base_branch: Option<&str>,
+    branch_candidates: &[String],
+) -> bool {
+    let viable_branch_count = count_viable_branch_candidates(branch_candidates);
+    if viable_branch_count <= 1 {
+        return false;
+    }
+
+    main_branch.is_none()
+        || main_branch.is_some_and(|branch_name| !is_known_main_branch_name(branch_name))
+        || base_branch.is_none()
+        || base_branch.is_some_and(|branch_name| !is_known_base_branch_name(branch_name))
+        || matches!(
+            (main_branch, base_branch),
+            (Some(main_branch), Some(base_branch)) if main_branch == base_branch
+        )
+}
+
+fn resolve_commit_branch_override(
+    repo: &Repository,
+    preferred_commit_branch: Option<&str>,
+    current_branch: Option<&str>,
+) -> Option<String> {
+    let preferred_commit_branch = preferred_commit_branch
+        .map(str::trim)
+        .filter(|branch_name| !branch_name.is_empty())?;
+
+    if Some(preferred_commit_branch) == current_branch
+        || branch_exists(repo, preferred_commit_branch, BranchType::Local)
+        || branch_exists(
+            repo,
+            &format!("origin/{}", preferred_commit_branch),
+            BranchType::Remote,
+        )
+    {
+        return Some(preferred_commit_branch.to_string());
+    }
+
+    None
+}
+
+pub(crate) fn detect_preferred_git_flow_branches(repo: &Repository) -> GitFlowBranchDetection {
+    let current = current_branch_name(repo);
+    let branch_candidates = distinct_branch_names(repo);
+    let main_branch = resolve_origin_head_branch(repo)
+        .or_else(|| detect_preferred_branch_name(repo, PREFERRED_MAIN_BRANCHES))
+        .or_else(|| detect_unique_non_work_branch(repo, None, current.as_deref()));
+    let base_branch = detect_preferred_branch_name(repo, PREFERRED_BASE_BRANCHES)
+        .or_else(|| {
+            current.clone().filter(|branch_name| {
+                is_viable_base_branch_name(branch_name, main_branch.as_deref())
+            })
+        })
+        .or_else(|| detect_unique_non_work_branch(repo, main_branch.as_deref(), current.as_deref()))
+        .or_else(|| main_branch.clone());
+    let commit_branch = base_branch
+        .clone()
+        .or_else(|| main_branch.clone())
+        .or(current.clone());
+    let requires_confirmation = should_confirm_git_flow_branch_mapping(
+        main_branch.as_deref(),
+        base_branch.as_deref(),
+        &branch_candidates,
+    );
+
+    GitFlowBranchDetection {
+        main_branch,
+        base_branch,
+        commit_branch,
+        current_branch: current,
+        branch_candidates,
+        requires_confirmation,
+    }
+}
+
+fn task_worktree_gitignore_rule_exists(content: &str) -> bool {
+    content.lines().any(|line| {
+        matches!(
+            line.trim_end_matches('\r').trim(),
+            ".macro" | "/.macro" | "/.macro/"
+        )
+    })
+}
+
+fn append_task_worktree_gitignore_rule(content: &mut String) -> bool {
+    if task_worktree_gitignore_rule_exists(content) {
+        return false;
+    }
+
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+
+    content.push_str(TASK_WORKTREE_GITIGNORE_RULE);
+    content.push('\n');
+    true
+}
+
+fn ensure_task_worktree_rule_in_file(path: &Path) -> Result<bool> {
+    let mut content = if path.exists() {
+        fs::read_to_string(path).map_err(|e| BackendError::Io {
+            message: e.to_string(),
+            source: e,
+        })?
+    } else {
+        String::new()
+    };
+
+    let changed = append_task_worktree_gitignore_rule(&mut content);
+    if !changed {
+        return Ok(false);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| BackendError::Io {
+            message: e.to_string(),
+            source: e,
+        })?;
+    }
+
+    fs::write(path, content).map_err(|e| BackendError::Io {
+        message: e.to_string(),
+        source: e,
+    })?;
+
+    Ok(true)
+}
+
+fn ensure_task_worktree_rule_in_exclude(repo: &Repository) -> Result<()> {
+    let exclude_path = repo.path().join("info").join("exclude");
+    let _ = ensure_task_worktree_rule_in_file(&exclude_path)?;
+    Ok(())
+}
+
+fn ensure_local_branch_available(repo: &Repository, branch_name: &str) -> Result<()> {
+    if branch_exists(repo, branch_name, BranchType::Local) {
+        return Ok(());
+    }
+
+    let remote_name = format!("origin/{}", branch_name);
+    let remote_branch = repo
+        .find_branch(&remote_name, BranchType::Remote)
+        .map_err(|_| BackendError::Git {
+            message: format!("Cannot resolve branch '{}'", branch_name),
+        })?;
+    let commit = remote_branch
+        .get()
+        .peel_to_commit()
+        .map_err(|e| BackendError::Git {
+            message: format!(
+                "Cannot create local branch '{}' from remote '{}': {}",
+                branch_name, remote_name, e
+            ),
+        })?;
+    repo.branch(branch_name, &commit, false)
+        .map_err(|e| BackendError::Git {
+            message: format!("Failed to create local branch '{}': {}", branch_name, e),
+        })?;
+    Ok(())
+}
+
+fn commit_gitignore_rule_with_cli(workdir: &Path) -> Result<()> {
+    let add_output = Command::new("git")
+        .current_dir(workdir)
+        .args(["add", "--", ".gitignore"])
+        .output()
+        .map_err(|e| BackendError::Io {
+            message: e.to_string(),
+            source: e,
+        })?;
+    if !add_output.status.success() {
+        return Err(BackendError::Git {
+            message: String::from_utf8_lossy(&add_output.stderr)
+                .trim()
+                .to_string(),
+        });
+    }
+
+    let diff_output = Command::new("git")
+        .current_dir(workdir)
+        .args(["diff", "--cached", "--quiet", "--", ".gitignore"])
+        .output()
+        .map_err(|e| BackendError::Io {
+            message: e.to_string(),
+            source: e,
+        })?;
+    if diff_output.status.code() == Some(0) {
+        return Ok(());
+    }
+    if diff_output.status.code() != Some(1) {
+        return Err(BackendError::Git {
+            message: String::from_utf8_lossy(&diff_output.stderr)
+                .trim()
+                .to_string(),
+        });
+    }
+
+    let commit_output = Command::new("git")
+        .current_dir(workdir)
+        .args([
+            "-c",
+            "user.name=Macro",
+            "-c",
+            "user.email=macro@local",
+            "commit",
+            "-m",
+            TASK_WORKTREE_GITIGNORE_COMMIT_MESSAGE,
+            "--",
+            ".gitignore",
+        ])
+        .output()
+        .map_err(|e| BackendError::Io {
+            message: e.to_string(),
+            source: e,
+        })?;
+
+    if !commit_output.status.success() {
+        return Err(BackendError::Git {
+            message: String::from_utf8_lossy(&commit_output.stderr)
+                .trim()
+                .to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn render_gitignore_with_rule(content: &str) -> Option<String> {
+    let mut next = content.to_string();
+    if append_task_worktree_gitignore_rule(&mut next) {
+        Some(next)
+    } else {
+        None
+    }
+}
+
+fn read_branch_gitignore<'repo>(
+    repo: &'repo Repository,
+    branch_name: &str,
+) -> Result<(git2::Commit<'repo>, String)> {
+    ensure_local_branch_available(repo, branch_name)?;
+    let branch = repo
+        .find_branch(branch_name, BranchType::Local)
+        .map_err(|e| BackendError::Git {
+            message: format!("Failed to open branch '{}': {}", branch_name, e),
+        })?;
+    let commit = branch
+        .get()
+        .peel_to_commit()
+        .map_err(|e| BackendError::Git {
+            message: format!("Failed to resolve branch '{}': {}", branch_name, e),
+        })?;
+    let tree = commit.tree().map_err(|e| BackendError::Git {
+        message: format!("Failed to read tree for branch '{}': {}", branch_name, e),
+    })?;
+
+    let content = match tree.get_name(".gitignore") {
+        Some(entry) => {
+            let object = entry.to_object(repo).map_err(|e| BackendError::Git {
+                message: format!("Failed to read .gitignore from '{}': {}", branch_name, e),
+            })?;
+            let blob = object.as_blob().ok_or_else(|| BackendError::Git {
+                message: format!(".gitignore on '{}' is not a blob", branch_name),
+            })?;
+            String::from_utf8(blob.content().to_vec())
+                .map_err(|e| BackendError::Validation(e.to_string()))?
+        }
+        None => String::new(),
+    };
+
+    Ok((commit, content))
+}
+
+fn commit_gitignore_rule_to_branch(repo: &Repository, branch_name: &str) -> Result<bool> {
+    let (parent_commit, existing_content) = read_branch_gitignore(repo, branch_name)?;
+    let Some(next_content) = render_gitignore_with_rule(&existing_content) else {
+        return Ok(false);
+    };
+
+    let parent_tree = parent_commit.tree().map_err(|e| BackendError::Git {
+        message: format!("Failed to read tree for branch '{}': {}", branch_name, e),
+    })?;
+    let blob_id = repo
+        .blob(next_content.as_bytes())
+        .map_err(|e| BackendError::Git {
+            message: format!(
+                "Failed to write .gitignore blob for '{}': {}",
+                branch_name, e
+            ),
+        })?;
+    let mut treebuilder = repo
+        .treebuilder(Some(&parent_tree))
+        .map_err(|e| BackendError::Git {
+            message: format!("Failed to create treebuilder for '{}': {}", branch_name, e),
+        })?;
+    treebuilder
+        .insert(".gitignore", blob_id, 0o100644)
+        .map_err(|e| BackendError::Git {
+            message: format!("Failed to update .gitignore for '{}': {}", branch_name, e),
+        })?;
+    let tree_id = treebuilder.write().map_err(|e| BackendError::Git {
+        message: format!("Failed to write tree for '{}': {}", branch_name, e),
+    })?;
+    let tree = repo.find_tree(tree_id).map_err(|e| BackendError::Git {
+        message: format!("Failed to open new tree for '{}': {}", branch_name, e),
+    })?;
+    let signature = repo
+        .signature()
+        .or_else(|_| Signature::now("Macro", "macro@local"))
+        .map_err(|e| BackendError::Git {
+            message: format!("Failed to build signature for '{}': {}", branch_name, e),
+        })?;
+
+    repo.commit(
+        Some(&format!("refs/heads/{}", branch_name)),
+        &signature,
+        &signature,
+        TASK_WORKTREE_GITIGNORE_COMMIT_MESSAGE,
+        &tree,
+        &[&parent_commit],
+    )
+    .map_err(|e| BackendError::Git {
+        message: format!("Failed to commit .gitignore on '{}': {}", branch_name, e),
+    })?;
+
+    Ok(true)
+}
 
 fn ensure_metadata_branch_exists(repo: &Repository) -> Result<()> {
     if repo
@@ -131,40 +645,38 @@ fn ensure_metadata_gitignore_override(worktree_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_task_worktree_gitignore_rule(workdir: &Path) -> Result<()> {
-    let gitignore_path = workdir.join(".gitignore");
-    let mut content = if gitignore_path.exists() {
-        fs::read_to_string(&gitignore_path).map_err(|e| BackendError::Io {
-            message: e.to_string(),
-            source: e,
-        })?
-    } else {
-        String::new()
+fn ensure_task_worktree_gitignore_rule(
+    repo: &Repository,
+    workdir: &Path,
+    preferred_commit_branch: Option<&str>,
+) -> Result<()> {
+    ensure_task_worktree_rule_in_exclude(repo)?;
+
+    let detection = detect_preferred_git_flow_branches(repo);
+    let commit_branch = resolve_commit_branch_override(
+        repo,
+        preferred_commit_branch,
+        detection.current_branch.as_deref(),
+    )
+    .or_else(|| {
+        if detection.requires_confirmation {
+            None
+        } else {
+            detection.commit_branch.clone()
+        }
+    });
+    let Some(commit_branch) = commit_branch else {
+        return Ok(());
     };
 
-    let has_existing_rule = content.lines().any(|line| {
-        matches!(
-            line.trim_end_matches('\r').trim(),
-            ".macro" | "/.macro" | "/.macro/"
-        )
-    });
-
-    if has_existing_rule {
+    if detection.current_branch.as_deref() == Some(commit_branch.as_str()) {
+        if ensure_task_worktree_rule_in_file(&workdir.join(".gitignore"))? {
+            commit_gitignore_rule_with_cli(workdir)?;
+        }
         return Ok(());
     }
 
-    if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
-    }
-
-    content.push_str(TASK_WORKTREE_GITIGNORE_RULE);
-    content.push('\n');
-
-    fs::write(&gitignore_path, content).map_err(|e| BackendError::Io {
-        message: e.to_string(),
-        source: e,
-    })?;
-
+    let _ = commit_gitignore_rule_to_branch(repo, &commit_branch)?;
     Ok(())
 }
 
@@ -236,7 +748,7 @@ impl GitState {
         let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
             message: "Bare repositories are not supported for worktrees".to_string(),
         })?;
-        ensure_task_worktree_gitignore_rule(workdir)?;
+        ensure_task_worktree_gitignore_rule(repo, workdir, None)?;
 
         let git_dir = repo.path();
         let worktree_path = git_dir.join(MACRO_WORKTREE_DIR_NAME);
@@ -346,7 +858,9 @@ mod tests {
     use tempfile::TempDir;
 
     fn init_repo(path: &Path) -> Repository {
-        let repo = Repository::init(path).expect("init repo");
+        let mut opts = RepositoryInitOptions::new();
+        opts.initial_head("main");
+        let repo = Repository::init_opts(path, &opts).expect("init repo");
         let file_path = path.join("README.md");
         fs::write(&file_path, "hello").expect("write file");
 
@@ -388,6 +902,39 @@ mod tests {
             .and_then(|head| head.shorthand().map(|value| value.to_string()))
     }
 
+    fn read_branch_file(repo: &Repository, branch_name: &str, path: &str) -> Option<String> {
+        let branch = repo.find_branch(branch_name, BranchType::Local).ok()?;
+        let commit = branch.get().peel_to_commit().ok()?;
+        let tree = commit.tree().ok()?;
+        let entry = tree.get_name(path)?;
+        let object = entry.to_object(repo).ok()?;
+        let blob = object.as_blob()?;
+        String::from_utf8(blob.content().to_vec()).ok()
+    }
+
+    fn set_origin_head(repo: &Repository, branch_name: &str) {
+        let commit_id = repo
+            .find_branch(branch_name, BranchType::Local)
+            .expect("find local branch")
+            .get()
+            .target()
+            .expect("branch target");
+        repo.reference(
+            &format!("refs/remotes/origin/{}", branch_name),
+            commit_id,
+            true,
+            "set remote branch",
+        )
+        .expect("create remote branch ref");
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            &format!("refs/remotes/origin/{}", branch_name),
+            true,
+            "set origin head",
+        )
+        .expect("set origin head");
+    }
+
     #[test]
     fn test_ensure_task_worktree_creates_path() {
         let temp = TempDir::new().expect("temp dir");
@@ -395,7 +942,7 @@ mod tests {
         let state = GitState::new();
 
         let ensured = state
-            .ensure_task_worktree(&repo, "123", "task-123", None)
+            .ensure_task_worktree(&repo, "123", "task-123", None, None)
             .expect("worktree");
         let worktree_path = ensured.worktree_path;
 
@@ -417,7 +964,7 @@ mod tests {
         fs::write(temp.path().join(".gitignore"), "node_modules").expect("write gitignore");
 
         state
-            .ensure_task_worktree(&repo, "124", "task-124", None)
+            .ensure_task_worktree(&repo, "124", "task-124", None, None)
             .expect("worktree");
 
         assert_eq!(
@@ -445,6 +992,7 @@ mod tests {
                     &format!("reuse-{index}"),
                     &format!("task-reuse-{index}"),
                     None,
+                    None,
                 )
                 .expect("worktree");
 
@@ -462,11 +1010,11 @@ mod tests {
         let state = GitState::new();
 
         let first_path = state
-            .ensure_task_worktree(&repo, "125", "task-125", None)
+            .ensure_task_worktree(&repo, "125", "task-125", None, None)
             .expect("first worktree")
             .worktree_path;
         let second_path = state
-            .ensure_task_worktree(&repo, "125", "task-125", None)
+            .ensure_task_worktree(&repo, "125", "task-125", None, None)
             .expect("second worktree")
             .worktree_path;
 
@@ -497,13 +1045,208 @@ mod tests {
     }
 
     #[test]
+    fn test_ensure_task_worktree_commits_gitignore_to_develop_from_another_branch() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let head_commit = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .expect("head commit");
+        repo.branch("develop", &head_commit, false)
+            .expect("create develop branch");
+        checkout_branch(&repo, "feature/active");
+
+        let state = GitState::new();
+        state
+            .ensure_task_worktree(&repo, "cross-branch", "task-cross-branch", None, None)
+            .expect("worktree");
+
+        assert_eq!(
+            current_branch_name_for_test(&repo).as_deref(),
+            Some("feature/active")
+        );
+        assert!(!temp.path().join(".gitignore").exists());
+        assert_eq!(
+            read_branch_file(&repo, "develop", ".gitignore").as_deref(),
+            Some("/.macro/\n")
+        );
+        assert!(fs::read_to_string(repo.path().join("info").join("exclude"))
+            .expect("read exclude")
+            .contains(TASK_WORKTREE_GITIGNORE_RULE));
+    }
+
+    #[test]
+    fn test_ensure_task_worktree_skips_gitignore_commit_for_rare_conventions_without_confirmation()
+    {
+        let temp = TempDir::new().expect("temp dir");
+        let mut opts = RepositoryInitOptions::new();
+        opts.initial_head("stable");
+        let repo = Repository::init_opts(temp.path(), &opts).expect("init repo");
+        let file_path = temp.path().join("README.md");
+        fs::write(&file_path, "hello").expect("write file");
+
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add");
+        let tree_id = index.write_tree().expect("write tree");
+        {
+            let tree = repo.find_tree(tree_id).expect("tree");
+            let sig = git2::Signature::now("Tester", "tester@example.com").expect("sig");
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .expect("commit");
+        }
+
+        let head_commit = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .expect("head commit");
+        repo.branch("integration-ready", &head_commit, false)
+            .expect("create integration branch");
+
+        let state = GitState::new();
+        state
+            .ensure_task_worktree(&repo, "rare-skip", "task-rare-skip", None, None)
+            .expect("worktree");
+
+        assert!(!temp.path().join(".gitignore").exists());
+        assert_eq!(read_branch_file(&repo, "stable", ".gitignore"), None);
+        assert_eq!(
+            read_branch_file(&repo, "integration-ready", ".gitignore"),
+            None
+        );
+        assert!(fs::read_to_string(repo.path().join("info").join("exclude"))
+            .expect("read exclude")
+            .contains(TASK_WORKTREE_GITIGNORE_RULE));
+    }
+
+    #[test]
+    fn test_ensure_task_worktree_uses_explicit_preferred_commit_branch_for_rare_conventions() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut opts = RepositoryInitOptions::new();
+        opts.initial_head("stable");
+        let repo = Repository::init_opts(temp.path(), &opts).expect("init repo");
+        let file_path = temp.path().join("README.md");
+        fs::write(&file_path, "hello").expect("write file");
+
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add");
+        let tree_id = index.write_tree().expect("write tree");
+        {
+            let tree = repo.find_tree(tree_id).expect("tree");
+            let sig = git2::Signature::now("Tester", "tester@example.com").expect("sig");
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .expect("commit");
+        }
+
+        let head_commit = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .expect("head commit");
+        repo.branch("integration-ready", &head_commit, false)
+            .expect("create integration branch");
+        checkout_branch(&repo, "feature/active");
+
+        let state = GitState::new();
+        state
+            .ensure_task_worktree(
+                &repo,
+                "rare-confirmed",
+                "task-rare-confirmed",
+                None,
+                Some("integration-ready"),
+            )
+            .expect("worktree");
+
+        assert!(!temp.path().join(".gitignore").exists());
+        assert_eq!(
+            read_branch_file(&repo, "integration-ready", ".gitignore").as_deref(),
+            Some("/.macro/\n")
+        );
+        assert_eq!(read_branch_file(&repo, "stable", ".gitignore"), None);
+    }
+
+    #[test]
+    fn test_detect_preferred_git_flow_branches_supports_custom_conventions() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut opts = RepositoryInitOptions::new();
+        opts.initial_head("trunk");
+        let repo = Repository::init_opts(temp.path(), &opts).expect("init repo");
+        let file_path = temp.path().join("README.md");
+        fs::write(&file_path, "hello").expect("write file");
+
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add");
+        let tree_id = index.write_tree().expect("write tree");
+        {
+            let tree = repo.find_tree(tree_id).expect("tree");
+            let sig = git2::Signature::now("Tester", "tester@example.com").expect("sig");
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .expect("commit");
+        }
+
+        let head_commit = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .expect("head commit");
+        repo.branch("integration", &head_commit, false)
+            .expect("create integration branch");
+        set_origin_head(&repo, "trunk");
+
+        let detection = detect_preferred_git_flow_branches(&repo);
+        assert_eq!(detection.main_branch.as_deref(), Some("trunk"));
+        assert_eq!(detection.base_branch.as_deref(), Some("integration"));
+        assert_eq!(detection.commit_branch.as_deref(), Some("integration"));
+        assert_eq!(detection.current_branch.as_deref(), Some("trunk"));
+        assert!(detection.branch_candidates.contains(&"trunk".to_string()));
+        assert!(detection
+            .branch_candidates
+            .contains(&"integration".to_string()));
+        assert!(!detection.requires_confirmation);
+    }
+
+    #[test]
+    fn test_detect_preferred_git_flow_branches_flags_rare_conventions_for_confirmation() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut opts = RepositoryInitOptions::new();
+        opts.initial_head("stable");
+        let repo = Repository::init_opts(temp.path(), &opts).expect("init repo");
+        let file_path = temp.path().join("README.md");
+        fs::write(&file_path, "hello").expect("write file");
+
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add");
+        let tree_id = index.write_tree().expect("write tree");
+        {
+            let tree = repo.find_tree(tree_id).expect("tree");
+            let sig = git2::Signature::now("Tester", "tester@example.com").expect("sig");
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .expect("commit");
+        }
+
+        let head_commit = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .expect("head commit");
+        repo.branch("integration-ready", &head_commit, false)
+            .expect("create integration-ready branch");
+
+        let detection = detect_preferred_git_flow_branches(&repo);
+        assert_eq!(detection.main_branch.as_deref(), Some("stable"));
+        assert_eq!(detection.base_branch.as_deref(), Some("stable"));
+        assert!(detection.requires_confirmation);
+        assert!(detection.branch_candidates.contains(&"stable".to_string()));
+        assert!(detection
+            .branch_candidates
+            .contains(&"integration-ready".to_string()));
+    }
+
+    #[test]
     fn test_remove_task_worktree_cleans_up() {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(temp.path());
         let state = GitState::new();
 
         let worktree_path = state
-            .ensure_task_worktree(&repo, "456", "task-456", None)
+            .ensure_task_worktree(&repo, "456", "task-456", None, None)
             .expect("worktree")
             .worktree_path;
 
@@ -527,7 +1270,7 @@ mod tests {
         let state = GitState::new();
 
         let worktree_path = state
-            .ensure_task_worktree(&repo, "789", "task-789", None)
+            .ensure_task_worktree(&repo, "789", "task-789", None, None)
             .expect("worktree")
             .worktree_path;
 
@@ -553,7 +1296,7 @@ mod tests {
         let state = GitState::new();
 
         let worktree_path = state
-            .ensure_task_worktree(&repo, "790", "task-790", None)
+            .ensure_task_worktree(&repo, "790", "task-790", None, None)
             .expect("worktree")
             .worktree_path;
 
@@ -574,13 +1317,13 @@ mod tests {
         let state = GitState::new();
 
         let ensured = state
-            .ensure_task_worktree(&repo, "stale-cache", "task-stale-cache", None)
+            .ensure_task_worktree(&repo, "stale-cache", "task-stale-cache", None, None)
             .expect("worktree");
         let worktree_path = ensured.worktree_path.clone();
         fs::remove_dir_all(&worktree_path).expect("remove worktree path");
 
         let repaired = state
-            .ensure_task_worktree(&repo, "stale-cache", "task-stale-cache", None)
+            .ensure_task_worktree(&repo, "stale-cache", "task-stale-cache", None, None)
             .expect("repaired worktree");
 
         assert_eq!(repaired.status, TaskWorktreeEnsureStatus::Repaired);
@@ -595,7 +1338,13 @@ mod tests {
         let state = GitState::new();
 
         let worktree_path = state
-            .ensure_task_worktree(&repo, "registered-missing", "task-registered-missing", None)
+            .ensure_task_worktree(
+                &repo,
+                "registered-missing",
+                "task-registered-missing",
+                None,
+                None,
+            )
             .expect("worktree")
             .worktree_path;
 
@@ -603,7 +1352,13 @@ mod tests {
         assert!(repo.find_worktree("taskregistered-missing").is_ok());
 
         let repaired = state
-            .ensure_task_worktree(&repo, "registered-missing", "task-registered-missing", None)
+            .ensure_task_worktree(
+                &repo,
+                "registered-missing",
+                "task-registered-missing",
+                None,
+                None,
+            )
             .expect("repaired worktree");
 
         assert_eq!(repaired.status, TaskWorktreeEnsureStatus::Repaired);
@@ -622,7 +1377,7 @@ mod tests {
         fs::write(orphan_path.join("README.md"), "orphan").expect("write orphan file");
 
         let repaired = state
-            .ensure_task_worktree(&repo, "orphan", "task-orphan", None)
+            .ensure_task_worktree(&repo, "orphan", "task-orphan", None, None)
             .expect("repaired worktree");
 
         assert_eq!(repaired.status, TaskWorktreeEnsureStatus::Repaired);
@@ -637,11 +1392,11 @@ mod tests {
         let state = GitState::new();
 
         let legacy = state
-            .ensure_task_worktree(&repo, "legacy-key", "feature-legacy", None)
+            .ensure_task_worktree(&repo, "legacy-key", "feature-legacy", None, None)
             .expect("legacy worktree");
 
         let reused = state
-            .ensure_task_worktree(&repo, "current-key", "feature-legacy", None)
+            .ensure_task_worktree(&repo, "current-key", "feature-legacy", None, None)
             .expect("reused worktree");
 
         assert_eq!(reused.status, TaskWorktreeEnsureStatus::Repaired);
@@ -657,7 +1412,7 @@ mod tests {
         let state = GitState::new();
 
         let legacy_path = state
-            .ensure_task_worktree(&repo, "legacy-remove", "feature-legacy-remove", None)
+            .ensure_task_worktree(&repo, "legacy-remove", "feature-legacy-remove", None, None)
             .expect("legacy worktree")
             .worktree_path;
 
@@ -686,7 +1441,7 @@ mod tests {
         checkout_branch(&repo, "feature-detach");
 
         let ensured = state
-            .ensure_task_worktree(&repo, "detach", "feature-detach", None)
+            .ensure_task_worktree(&repo, "detach", "feature-detach", None, None)
             .expect("worktree");
         let worktree_repo = Repository::open(&ensured.worktree_path).expect("open worktree repo");
 
@@ -708,7 +1463,7 @@ mod tests {
         fs::write(temp.path().join("README.md"), "dirty primary").expect("write dirty file");
 
         let err = state
-            .ensure_task_worktree(&repo, "dirty-primary", "feature-dirty-primary", None)
+            .ensure_task_worktree(&repo, "dirty-primary", "feature-dirty-primary", None, None)
             .expect_err("dirty primary checkout should fail");
 
         match err {

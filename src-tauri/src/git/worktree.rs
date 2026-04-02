@@ -404,6 +404,7 @@ impl GitState {
         task_id: &str,
         branch_name: &str,
         from_ref: Option<&str>,
+        preferred_commit_branch: Option<&str>,
     ) -> Result<TaskWorktreeEnsureResult> {
         let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
             message: "Bare repositories are not supported for worktrees".to_string(),
@@ -416,7 +417,7 @@ impl GitState {
 
         match inspection.status {
             TaskWorktreeStatus::Ready => {
-                ensure_task_worktree_gitignore_rule(workdir)?;
+                ensure_task_worktree_gitignore_rule(repo, workdir, preferred_commit_branch)?;
                 self.register_worktree(task_id, inspection.worktree_path.clone());
                 return Ok(TaskWorktreeEnsureResult {
                     task_id: task_id.to_string(),
@@ -452,7 +453,7 @@ impl GitState {
         if repaired {
             inspection = self.inspect_task_worktree_internal(repo, task_id, Some(branch_name))?;
             if inspection.status == TaskWorktreeStatus::Ready {
-                ensure_task_worktree_gitignore_rule(workdir)?;
+                ensure_task_worktree_gitignore_rule(repo, workdir, preferred_commit_branch)?;
                 self.register_worktree(task_id, inspection.worktree_path.clone());
                 return Ok(TaskWorktreeEnsureResult {
                     task_id: task_id.to_string(),
@@ -493,7 +494,7 @@ impl GitState {
         }
 
         release_branch_from_primary_workdir(repo, branch_name)?;
-        ensure_task_worktree_gitignore_rule(workdir)?;
+        ensure_task_worktree_gitignore_rule(repo, workdir, preferred_commit_branch)?;
 
         let worktree_path = task_worktree_path(repo, task_id)?;
         let reference = repo

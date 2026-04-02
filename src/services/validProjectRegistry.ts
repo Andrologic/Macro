@@ -1,11 +1,19 @@
 import type { ProjectGroup } from '../types';
 import { useAppStore } from '../stores/useAppStore';
-import { getScopedProjectIds } from './globalProjects';
+import {
+  getScopedActionableProjectIds,
+  getScopedProjectIds,
+  getScopedReadOnlyProjectIds,
+} from './globalProjects';
 
 export interface ValidProjectRegistrySnapshot {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   scopedProjectIds: string[];
+  actionableProjectIds: string[];
+  readOnlyProjectIds: string[];
+  actionableProjectIdSet: Set<string>;
+  readOnlyProjectIdSet: Set<string>;
   validProjectIds: string[];
   validProjectIdSet: Set<string>;
   repoPathByProjectId: Map<string, string>;
@@ -16,6 +24,10 @@ const emptySnapshot = (): ValidProjectRegistrySnapshot => ({
   selectedGroupId: null,
   selectedProjectId: null,
   scopedProjectIds: [],
+  actionableProjectIds: [],
+  readOnlyProjectIds: [],
+  actionableProjectIdSet: new Set<string>(),
+  readOnlyProjectIdSet: new Set<string>(),
   validProjectIds: [],
   validProjectIdSet: new Set<string>(),
   repoPathByProjectId: new Map<string, string>(),
@@ -38,6 +50,10 @@ export const buildValidProjectRegistrySnapshot = (params: {
 }): ValidProjectRegistrySnapshot => {
   const validProjectIds: string[] = [];
   const validProjectIdSet = new Set<string>();
+  const actionableProjectIds: string[] = [];
+  const actionableProjectIdSet = new Set<string>();
+  const readOnlyProjectIds: string[] = [];
+  const readOnlyProjectIdSet = new Set<string>();
   const repoPathByProjectId = new Map<string, string>();
 
   for (const group of params.projectGroups) {
@@ -49,6 +65,13 @@ export const buildValidProjectRegistrySnapshot = (params: {
       }
       validProjectIds.push(projectId);
       validProjectIdSet.add(projectId);
+      if (project.isReadOnly) {
+        readOnlyProjectIds.push(projectId);
+        readOnlyProjectIdSet.add(projectId);
+        continue;
+      }
+      actionableProjectIds.push(projectId);
+      actionableProjectIdSet.add(projectId);
       repoPathByProjectId.set(projectId, repoPath);
     }
   }
@@ -62,11 +85,33 @@ export const buildValidProjectRegistrySnapshot = (params: {
       ).filter((projectId) => validProjectIdSet.has(projectId))
     )
   );
+  const scopedActionableProjectIds = Array.from(
+    new Set(
+      getScopedActionableProjectIds(
+        params.projectGroups,
+        params.selectedGroupId ?? null,
+        params.selectedProjectId ?? null
+      ).filter((projectId) => actionableProjectIdSet.has(projectId))
+    )
+  );
+  const scopedReadOnlyProjectIds = Array.from(
+    new Set(
+      getScopedReadOnlyProjectIds(
+        params.projectGroups,
+        params.selectedGroupId ?? null,
+        params.selectedProjectId ?? null
+      ).filter((projectId) => readOnlyProjectIdSet.has(projectId))
+    )
+  );
 
   return {
     selectedGroupId: params.selectedGroupId ?? null,
     selectedProjectId: params.selectedProjectId ?? null,
     scopedProjectIds,
+    actionableProjectIds: scopedActionableProjectIds,
+    readOnlyProjectIds: scopedReadOnlyProjectIds,
+    actionableProjectIdSet,
+    readOnlyProjectIdSet,
     validProjectIds,
     validProjectIdSet,
     repoPathByProjectId,
