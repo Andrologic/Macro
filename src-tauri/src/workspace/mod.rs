@@ -4,10 +4,9 @@ use crate::core::error::{BackendError, Result};
 use chrono::Utc;
 use metadata::{
     CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, PlanDto, ProjectDto,
-    ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto,
-    ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto, WorkspaceBootstrapDto,
-    WorkspaceMetadataDto, WorkspaceState, WorkspaceTaskCatalogDto,
-    WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
+    ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto, ProjectRegistryDiagnosticsDto,
+    ProjectRegistryRepairReportDto, WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceState,
+    WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -287,7 +286,19 @@ pub async fn finalize_manual_feature(
         feature.conversation_id = next_conversation_id.to_string();
     }
 
-    let branch_name = format!("feature/{}", normalized_feature_slug);
+    let execution_targets = build_manual_feature_execution_targets(
+        &feature.project_ids,
+        &normalized_feature_slug,
+        &project_groups,
+    );
+    let branch_name = execution_targets
+        .first()
+        .map(|target| target.branch_name.clone())
+        .unwrap_or_else(|| render_standalone_feature_branch_name(None, &normalized_feature_slug));
+    let base_branch = execution_targets
+        .first()
+        .and_then(|target| target.target_branch_name.clone())
+        .unwrap_or_else(|| feature.base_branch.clone());
     feature.draft = false;
     feature.title = normalized_title.to_string();
     feature.description = normalized_description.to_string();
@@ -296,8 +307,8 @@ pub async fn finalize_manual_feature(
     feature.archived_at = None;
     feature.archive_reason = None;
     feature.merged_at = None;
-    feature.execution_targets =
-        build_manual_feature_execution_targets(&feature.project_ids, &branch_name, &project_groups);
+    feature.base_branch = base_branch;
+    feature.execution_targets = execution_targets;
     feature.updated_at = Utc::now().to_rfc3339();
 
     let (sanitized_state, _) = persist_sanitized_state(
@@ -853,7 +864,8 @@ pub async fn update_project_git_flow(
             .iter_mut()
             .find(|project| project.id == project_id)
         {
-            project.git_flow_settings = normalize_project_git_flow_settings(Some(git_flow_settings));
+            project.git_flow_settings =
+                normalize_project_git_flow_settings(Some(git_flow_settings));
             updated_project = Some(project.clone());
             break;
         }
@@ -1113,6 +1125,14 @@ fn normalize_base_branch(value: Option<&str>) -> String {
         .to_string()
 }
 
+fn replace_template_tokens(template: &str, replacements: &[(&str, &str)]) -> String {
+    replacements
+        .iter()
+        .fold(template.to_string(), |output, (token, value)| {
+            output.replace(&format!("{{{}}}", token), value)
+        })
+}
+
 fn normalized_project_id(project_id: &str) -> String {
     let normalized = project_id
         .to_lowercase()
@@ -1175,19 +1195,25 @@ fn to_branch_worktree_key(project_id: &str, branch_name: &str) -> String {
 
 fn build_manual_feature_execution_targets(
     project_ids: &[String],
-    branch_name: &str,
+    feature_slug: &str,
     project_groups: &[ProjectGroupDto],
 ) -> Vec<WorkspaceTaskExecutionTargetDto> {
     project_ids
         .iter()
-        .map(|project_id| WorkspaceTaskExecutionTargetDto {
-            project_id: project_id.clone(),
-            branch_name: branch_name.to_string(),
-            target_branch_name: find_project_by_id(project_groups, project_id)
-                .map(|project| project.git_flow_settings.base_branch.clone()),
-            worktree_key: to_branch_worktree_key(project_id, branch_name),
-            repo_path: find_project_by_id(project_groups, project_id)
-                .map(|project| project.path.clone()),
+        .map(|project_id| {
+            let project = find_project_by_id(project_groups, project_id);
+            let branch_name = render_standalone_feature_branch_name(
+                project.map(|project| &project.git_flow_settings),
+                feature_slug,
+            );
+            WorkspaceTaskExecutionTargetDto {
+                project_id: project_id.clone(),
+                branch_name: branch_name.clone(),
+                target_branch_name: project
+                    .map(|project| project.git_flow_settings.base_branch.clone()),
+                worktree_key: to_branch_worktree_key(project_id, &branch_name),
+                repo_path: project.map(|project| project.path.clone()),
+            }
         })
         .collect()
 }
@@ -1297,6 +1323,12 @@ fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
                             "worktreeKey".to_string(),
                             Value::String(target.worktree_key.clone()),
                         );
+                        if let Some(target_branch_name) = target.target_branch_name.as_ref() {
+                            value.insert(
+                                "targetBranchName".to_string(),
+                                Value::String(target_branch_name.clone()),
+                            );
+                        }
                         if let Some(repo_path) = target.repo_path.as_ref() {
                             value.insert("repoPath".to_string(), Value::String(repo_path.clone()));
                         }
@@ -1782,6 +1814,7 @@ fn normalize_project_git_flow_settings(
 
     ProjectGitFlowSettingsDto {
         base_branch: normalize_base_branch(Some(input.base_branch.as_str())),
+        main_branch: normalize_base_branch(Some(input.main_branch.as_str())),
         plan_branch_template: normalize_branch_template(
             Some(input.plan_branch_template.as_str()),
             defaults.plan_branch_template.as_str(),
@@ -1789,6 +1822,10 @@ fn normalize_project_git_flow_settings(
         feature_branch_template: normalize_branch_template(
             Some(input.feature_branch_template.as_str()),
             defaults.feature_branch_template.as_str(),
+        ),
+        standalone_feature_branch_template: normalize_branch_template(
+            Some(input.standalone_feature_branch_template.as_str()),
+            defaults.standalone_feature_branch_template.as_str(),
         ),
         release_branch_template: normalize_branch_template(
             Some(input.release_branch_template.as_str()),
@@ -1813,6 +1850,21 @@ fn normalize_branch_template(value: Option<&str>, fallback: &str) -> String {
         .map(|branch| branch.trim_start_matches("refs/heads/").to_string())
         .map(|branch| branch.trim_matches('/').to_string())
         .unwrap_or_else(|| fallback.to_string())
+}
+
+fn render_standalone_feature_branch_name(
+    settings: Option<&ProjectGitFlowSettingsDto>,
+    feature_slug: &str,
+) -> String {
+    let normalized_settings = normalize_project_git_flow_settings(settings);
+    let rendered = replace_template_tokens(
+        &normalized_settings.standalone_feature_branch_template,
+        &[("featureSlug", feature_slug)],
+    );
+    normalize_branch_template(
+        Some(rendered.as_str()),
+        &format!("feature/{}", feature_slug),
+    )
 }
 
 fn normalize_group_name(group_name: Option<&str>, fallback_name: &str) -> String {
@@ -2108,8 +2160,10 @@ mod tests {
             path: path.to_string(),
             git_flow_settings: ProjectGitFlowSettingsDto {
                 base_branch: "develop".to_string(),
+                main_branch: "main".to_string(),
                 plan_branch_template: "plan/{planSlug}".to_string(),
                 feature_branch_template: "feature/{planSlug}/{featureSlug}".to_string(),
+                standalone_feature_branch_template: "feature/{featureSlug}".to_string(),
                 release_branch_template: "release/{releaseSlug}".to_string(),
                 hotfix_branch_template: "hotfix/{hotfixSlug}".to_string(),
                 bugfix_branch_template: "bugfix/{bugfixSlug}".to_string(),
@@ -2124,6 +2178,39 @@ mod tests {
                 dependencies: Vec::new(),
             },
         }
+    }
+
+    #[test]
+    fn manual_feature_targets_use_project_standalone_templates() {
+        let mut web = make_project("project-web", "apps/web");
+        web.git_flow_settings.base_branch = "main".to_string();
+        web.git_flow_settings.standalone_feature_branch_template =
+            "feature/{featureSlug}".to_string();
+
+        let mut api = make_project("project-api", "apps/api");
+        api.git_flow_settings.base_branch = "develop".to_string();
+        api.git_flow_settings.standalone_feature_branch_template = "work/{featureSlug}".to_string();
+
+        let project_groups = vec![ProjectGroupDto {
+            id: "group-main".to_string(),
+            name: "Main".to_string(),
+            is_open: true,
+            projects: vec![web, api],
+        }];
+
+        let targets = build_manual_feature_execution_targets(
+            &["project-web".to_string(), "project-api".to_string()],
+            "quick-export",
+            &project_groups,
+        );
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].project_id, "project-web");
+        assert_eq!(targets[0].branch_name, "feature/quick-export");
+        assert_eq!(targets[0].target_branch_name.as_deref(), Some("main"));
+        assert_eq!(targets[1].project_id, "project-api");
+        assert_eq!(targets[1].branch_name, "work/quick-export");
+        assert_eq!(targets[1].target_branch_name.as_deref(), Some("develop"));
     }
 
     #[test]

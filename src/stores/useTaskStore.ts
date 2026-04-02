@@ -181,11 +181,11 @@ const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promi
     return false;
   }
 
-  const branchName = normalizeBranchName(task.branch_name);
   const executionTargets = getExecutionTargetsWithRepoPaths(task);
   for (const target of executionTargets) {
     try {
       const branches = await tauriIpc.gitBranchList(target.repoPath);
+      const branchName = normalizeBranchName(target.branchName);
       if ((branches.remote || []).some((branch) => branch.name === `origin/${branchName}`)) {
         return true;
       }
@@ -200,13 +200,18 @@ const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promi
 const resolveStandaloneStartRef = async (
   task: CatalogedImplementTask,
   repoPath: string,
-  preferredBaseBranch?: string | null
+  preferredBaseBranch?: string | null,
+  preferredBranchName?: string | null
 ): Promise<string | null> => {
   if (!isManualStandaloneTask(task) || task.draft) {
     return null;
   }
 
-  const branchName = task.branch_name ? normalizeBranchName(task.branch_name) : '';
+  const branchName = preferredBranchName
+    ? normalizeBranchName(preferredBranchName)
+    : task.branch_name
+      ? normalizeBranchName(task.branch_name)
+      : '';
   if (tauriIpc.isTauriAvailable() && branchName) {
     try {
       const branches = await tauriIpc.gitBranchList(repoPath);
@@ -229,7 +234,7 @@ const resolveTaskStartRef = async (
   if (task.task_source === 'architect') {
     return target.planBranchName || null;
   }
-  return resolveStandaloneStartRef(task, repoPath, target.targetBranchName);
+  return resolveStandaloneStartRef(task, repoPath, target.targetBranchName, target.branchName);
 };
 
 const inspectTargetWorktreePath = async (

@@ -24,8 +24,10 @@ export type GitFlowBranchType = 'plan' | 'feature' | 'release' | 'hotfix' | 'bug
 
 export interface ProjectGitFlowSettings {
   baseBranch: string;
+  mainBranch: string;
   planBranchTemplate: string;
   featureBranchTemplate: string;
+  standaloneFeatureBranchTemplate: string;
   releaseBranchTemplate: string;
   hotfixBranchTemplate: string;
   bugfixBranchTemplate: string;
