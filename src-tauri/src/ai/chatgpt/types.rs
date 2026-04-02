@@ -225,9 +225,12 @@ pub(super) enum ResponsesContentItem {
 #[derive(Clone)]
 pub(super) struct BrowserAuthServerState {
     pub(super) expected_state: String,
-    pub(super) result_sender: Arc<Mutex<Option<oneshot::Sender<Result<String, AuthFlowError>>>>>,
+    pub(super) result_sender: BrowserAuthResultSender,
     pub(super) shutdown_sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
+
+type BrowserAuthResult = Result<String, AuthFlowError>;
+type BrowserAuthResultSender = Arc<Mutex<Option<oneshot::Sender<BrowserAuthResult>>>>;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct BrowserAuthCallbackQuery {

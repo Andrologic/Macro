@@ -55,7 +55,7 @@ impl Default for AIConfig {
 }
 
 fn resolve_workspace_path_for_cwd(workspace_path: PathBuf, cwd: &Path) -> PathBuf {
-    if workspace_path != PathBuf::from(".") {
+    if workspace_path != Path::new(".") {
         return workspace_path;
     }
 
