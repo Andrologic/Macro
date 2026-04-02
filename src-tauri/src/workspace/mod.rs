@@ -21,8 +21,8 @@ fn count_projects(groups: &[ProjectGroupDto]) -> usize {
 }
 
 pub async fn get_project_registry_diagnostics(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
 ) -> Result<ProjectRegistryDiagnosticsDto> {
     let raw_state = load_raw_state(metadata_root).await?.unwrap_or_default();
     let (sanitized_state, repair_report) =
@@ -40,8 +40,8 @@ pub async fn get_project_registry_diagnostics(
 }
 
 pub async fn get_bootstrap(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
 ) -> Result<WorkspaceBootstrapDto> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
     Ok(WorkspaceBootstrapDto {
@@ -53,16 +53,16 @@ pub async fn get_bootstrap(
 }
 
 pub async fn list_projects(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
 ) -> Result<Vec<ProjectGroupDto>> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
     Ok(state.project_groups)
 }
 
 pub async fn list_tasks(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
 ) -> Result<WorkspaceTaskCatalogDto> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
     let manual_tasks = state
@@ -140,8 +140,8 @@ pub async fn list_tasks(
 }
 
 pub async fn get_metadata(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
 ) -> Result<WorkspaceMetadataDto> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
     let metadata_path = workspace_state_path(metadata_root);
@@ -158,9 +158,10 @@ pub async fn get_metadata(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_manual_feature_draft(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     task_id: &str,
     conversation_id: &str,
     project_ids: &[String],
@@ -249,8 +250,8 @@ pub async fn create_manual_feature_draft(
 }
 
 pub async fn finalize_manual_feature(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     task_id: &str,
     conversation_id: Option<&str>,
     title: &str,
@@ -328,8 +329,8 @@ pub async fn finalize_manual_feature(
 }
 
 pub async fn delete_manual_feature_draft(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     task_id: &str,
 ) -> Result<()> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -355,8 +356,8 @@ pub async fn delete_manual_feature_draft(
 }
 
 pub async fn rename_manual_feature(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     task_id: &str,
     title: &str,
 ) -> Result<ManualFeatureDto> {
@@ -399,8 +400,8 @@ pub async fn rename_manual_feature(
 }
 
 pub async fn archive_manual_feature(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     task_id: &str,
     reason: Option<&str>,
     merged_at: Option<&str>,
@@ -451,8 +452,8 @@ pub async fn archive_manual_feature(
 }
 
 pub async fn restore_manual_feature(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     task_id: &str,
 ) -> Result<ManualFeatureDto> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -497,8 +498,8 @@ pub async fn restore_manual_feature(
 }
 
 pub async fn delete_manual_feature(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     task_id: &str,
 ) -> Result<()> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -525,8 +526,8 @@ pub async fn delete_manual_feature(
 }
 
 pub async fn update_standalone_task_status(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     task_id: &str,
     status: &str,
 ) -> Result<()> {
@@ -602,8 +603,8 @@ pub async fn update_standalone_task_status(
 }
 
 pub async fn create_project(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     request: CreateProjectRequest,
 ) -> Result<ProjectDto> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -667,8 +668,8 @@ pub async fn create_project(
 }
 
 pub async fn import_git_repo(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     request: ImportGitRepoRequest,
 ) -> Result<ProjectDto> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -737,8 +738,8 @@ pub async fn import_git_repo(
 }
 
 pub async fn rename_project_group(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     group_id: &str,
     name: &str,
 ) -> Result<ProjectGroupDto> {
@@ -788,8 +789,8 @@ pub async fn rename_project_group(
 }
 
 pub async fn rename_project(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     project_id: &str,
     name: &str,
 ) -> Result<ProjectDto> {
@@ -845,8 +846,8 @@ pub async fn rename_project(
 }
 
 pub async fn update_project_git_flow(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     project_id: &str,
     git_flow_settings: &ProjectGitFlowSettingsDto,
 ) -> Result<ProjectDto> {
@@ -900,8 +901,8 @@ pub async fn update_project_git_flow(
 }
 
 pub async fn archive_project_group(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     group_id: &str,
 ) -> Result<ProjectGroupDto> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -936,8 +937,8 @@ pub async fn archive_project_group(
 }
 
 pub async fn archive_project(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     project_id: &str,
 ) -> Result<ProjectDto> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -971,8 +972,8 @@ pub async fn archive_project(
 }
 
 pub async fn remove_project_group(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     group_id: &str,
 ) -> Result<Vec<ProjectGroupDto>> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -1024,8 +1025,8 @@ pub async fn remove_project_group(
 }
 
 pub async fn close_project(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     project_id: &str,
 ) -> Result<Vec<ProjectGroupDto>> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -1082,8 +1083,8 @@ pub async fn close_project(
 }
 
 pub async fn remove_project(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     project_id: &str,
 ) -> Result<Vec<ProjectGroupDto>> {
     close_project(workspace_path, metadata_root, project_id).await
@@ -1353,8 +1354,8 @@ fn legacy_workspace_state_path(metadata_root: &Path) -> PathBuf {
 }
 
 async fn load_or_create_state(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
 ) -> Result<WorkspaceState> {
     if let Some(state) = load_state(workspace_path, metadata_root).await? {
         return Ok(state);
@@ -1366,8 +1367,8 @@ async fn load_or_create_state(
 }
 
 async fn load_or_default_state(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
 ) -> Result<WorkspaceState> {
     if let Some(state) = load_state(workspace_path, metadata_root).await? {
         return Ok(state);
@@ -1376,10 +1377,7 @@ async fn load_or_default_state(
     Ok(WorkspaceState::default())
 }
 
-async fn load_state(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
-) -> Result<Option<WorkspaceState>> {
+async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Option<WorkspaceState>> {
     let Some(state) = load_raw_state(metadata_root).await? else {
         return Ok(None);
     };
@@ -1409,7 +1407,7 @@ async fn load_state(
     Ok(Some(sanitized_state))
 }
 
-async fn load_raw_state(metadata_root: &PathBuf) -> Result<Option<WorkspaceState>> {
+async fn load_raw_state(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
     let primary_path = workspace_state_path(metadata_root);
     let legacy_path = legacy_workspace_state_path(metadata_root);
     let path = if primary_path.exists() {
@@ -1434,7 +1432,7 @@ async fn load_raw_state(metadata_root: &PathBuf) -> Result<Option<WorkspaceState
 }
 
 fn sanitize_workspace_state(
-    workspace_path: &PathBuf,
+    workspace_path: &Path,
     mut state: WorkspaceState,
 ) -> (WorkspaceState, ProjectRegistryRepairReportDto) {
     let mut repair_report = ProjectRegistryRepairReportDto::default();
@@ -1710,8 +1708,8 @@ fn sanitize_manual_features(
 }
 
 async fn persist_sanitized_state(
-    workspace_path: &PathBuf,
-    metadata_root: &PathBuf,
+    workspace_path: &Path,
+    metadata_root: &Path,
     state: WorkspaceState,
     operation: &str,
 ) -> Result<(WorkspaceState, ProjectRegistryRepairReportDto)> {
@@ -1741,7 +1739,7 @@ async fn persist_sanitized_state(
     Ok((sanitized_state, repair_report))
 }
 
-async fn persist_state(workspace_path: &PathBuf, state: &WorkspaceState) -> Result<()> {
+async fn persist_state(workspace_path: &Path, state: &WorkspaceState) -> Result<()> {
     fs::create_dir_all(workspace_path)
         .await
         .map_err(|error| BackendError::Filesystem {
@@ -1766,7 +1764,7 @@ fn build_project(
     name: &str,
     description: &str,
     path: Option<&str>,
-    workspace_path: &PathBuf,
+    workspace_path: &Path,
     git_flow_settings: Option<&ProjectGitFlowSettingsDto>,
 ) -> ProjectDto {
     let now = Utc::now().to_rfc3339();
@@ -1936,7 +1934,7 @@ fn ensure_unique_project_name_in_group(
     Ok(())
 }
 
-fn normalized_path_key(path: &PathBuf) -> String {
+fn normalized_path_key(path: &Path) -> String {
     let normalized = path.to_string_lossy().replace('\\', "/");
     #[cfg(windows)]
     {
@@ -1950,8 +1948,8 @@ fn normalized_path_key(path: &PathBuf) -> String {
 
 fn ensure_unique_project_path(
     groups: &[ProjectGroupDto],
-    workspace_path: &PathBuf,
-    project_path: &PathBuf,
+    workspace_path: &Path,
+    project_path: &Path,
 ) -> Result<()> {
     let next_project_path_key = normalized_path_key(project_path);
     let duplicate = groups
@@ -2024,7 +2022,7 @@ fn ensure_plan_has_project(state: &mut WorkspaceState, project_id: &str) {
     }
 }
 
-fn resolve_project_path(workspace_path: &PathBuf, project_path: &str) -> PathBuf {
+fn resolve_project_path(workspace_path: &Path, project_path: &str) -> PathBuf {
     let candidate = PathBuf::from(project_path);
     if candidate.is_absolute() {
         candidate
@@ -2067,8 +2065,7 @@ fn get_project_path_basename(project_path: &str) -> Option<String> {
 
     trimmed
         .split('/')
-        .filter(|segment| !segment.is_empty())
-        .last()
+        .rfind(|segment| !segment.is_empty())
         .map(str::to_string)
 }
 
