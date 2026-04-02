@@ -146,13 +146,23 @@ pub struct ProjectGroupDto {
 pub struct ProjectGitFlowSettingsDto {
     #[serde(default = "default_project_git_base_branch", rename = "baseBranch")]
     pub base_branch: String,
-    #[serde(default = "default_project_git_plan_branch_template", rename = "planBranchTemplate")]
+    #[serde(default = "default_project_git_main_branch", rename = "mainBranch")]
+    pub main_branch: String,
+    #[serde(
+        default = "default_project_git_plan_branch_template",
+        rename = "planBranchTemplate"
+    )]
     pub plan_branch_template: String,
     #[serde(
         default = "default_project_git_feature_branch_template",
         rename = "featureBranchTemplate"
     )]
     pub feature_branch_template: String,
+    #[serde(
+        default = "default_project_git_standalone_feature_branch_template",
+        rename = "standaloneFeatureBranchTemplate"
+    )]
+    pub standalone_feature_branch_template: String,
     #[serde(
         default = "default_project_git_release_branch_template",
         rename = "releaseBranchTemplate"
@@ -174,8 +184,11 @@ impl Default for ProjectGitFlowSettingsDto {
     fn default() -> Self {
         Self {
             base_branch: default_project_git_base_branch(),
+            main_branch: default_project_git_main_branch(),
             plan_branch_template: default_project_git_plan_branch_template(),
             feature_branch_template: default_project_git_feature_branch_template(),
+            standalone_feature_branch_template:
+                default_project_git_standalone_feature_branch_template(),
             release_branch_template: default_project_git_release_branch_template(),
             hotfix_branch_template: default_project_git_hotfix_branch_template(),
             bugfix_branch_template: default_project_git_bugfix_branch_template(),
@@ -187,12 +200,20 @@ fn default_project_git_base_branch() -> String {
     "develop".to_string()
 }
 
+fn default_project_git_main_branch() -> String {
+    "main".to_string()
+}
+
 fn default_project_git_plan_branch_template() -> String {
     "plan/{planSlug}".to_string()
 }
 
 fn default_project_git_feature_branch_template() -> String {
     "feature/{planSlug}/{featureSlug}".to_string()
+}
+
+fn default_project_git_standalone_feature_branch_template() -> String {
+    "feature/{featureSlug}".to_string()
 }
 
 fn default_project_git_release_branch_template() -> String {

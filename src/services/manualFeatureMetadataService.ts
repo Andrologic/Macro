@@ -98,6 +98,7 @@ const buildMetadataJson = (
       executionTargets: (task.execution_targets || []).map((target) => ({
         projectId: target.projectId,
         branchName: target.branchName,
+        targetBranchName: target.targetBranchName ?? null,
         worktreeKey: target.worktreeKey,
         repoPath: target.repoPath ?? null,
       })),

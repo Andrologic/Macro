@@ -476,6 +476,7 @@ export interface WorkspaceMetadataDto {
 export interface WorkspaceManualFeatureExecutionTargetDto {
   projectId: string;
   branchName: string;
+  targetBranchName?: string | null;
   worktreeKey: string;
   repoPath?: string | null;
 }
