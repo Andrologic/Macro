@@ -69,8 +69,17 @@ export const services = {
     projectId: string,
     taskId: string,
     branchName: string,
-    fromRef?: string | null
-  ) => callProviderMethod('gitWorktreeCreate', projectId, taskId, branchName, fromRef),
+    fromRef?: string | null,
+    preferredCommitBranch?: string | null
+  ) =>
+    callProviderMethod(
+      'gitWorktreeCreate',
+      projectId,
+      taskId,
+      branchName,
+      fromRef,
+      preferredCommitBranch
+    ),
   gitWorktreeRemove: (projectId: string, taskId: string) =>
     callProviderMethod('gitWorktreeRemove', projectId, taskId),
   getFileContent: (path: string) => callProviderMethod('getFileContent', path),
@@ -81,6 +90,10 @@ export const services = {
     callProviderMethod('sendChat', request),
   createProject: (data: Parameters<ServiceProvider['createProject']>[0]) =>
     callProviderMethod('createProject', data),
+  detectProjectGitFlow: (data: Parameters<ServiceProvider['detectProjectGitFlow']>[0]) =>
+    callProviderMethod('detectProjectGitFlow', data),
+  prepareProjectGit: (data: Parameters<ServiceProvider['prepareProjectGit']>[0]) =>
+    callProviderMethod('prepareProjectGit', data),
   importGitRepo: (data: Parameters<ServiceProvider['importGitRepo']>[0]) =>
     callProviderMethod('importGitRepo', data),
   renameProjectGroup: (data: Parameters<ServiceProvider['renameProjectGroup']>[0]) =>
@@ -89,6 +102,8 @@ export const services = {
     callProviderMethod('renameProject', data),
   updateProjectGitFlow: (data: Parameters<ServiceProvider['updateProjectGitFlow']>[0]) =>
     callProviderMethod('updateProjectGitFlow', data),
+  updateProjectAccess: (data: Parameters<ServiceProvider['updateProjectAccess']>[0]) =>
+    callProviderMethod('updateProjectAccess', data),
   archiveProjectGroup: (data: Parameters<ServiceProvider['archiveProjectGroup']>[0]) =>
     callProviderMethod('archiveProjectGroup', data),
   archiveProject: (data: Parameters<ServiceProvider['archiveProject']>[0]) =>

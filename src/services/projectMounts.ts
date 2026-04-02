@@ -6,6 +6,7 @@ export interface ProjectMount {
   mountName: string;
   displayName: string;
   workspacePath: string | null;
+  isReadOnly: boolean;
 }
 
 const stripTrailingSeparators = (value: string): string =>
@@ -91,6 +92,7 @@ export const buildProjectMounts = (params: {
           mountName: project.mountName,
           displayName: project.name,
           workspacePath: params.workspacePathsByProjectId?.[project.id] || project.path || null,
+          isReadOnly: Boolean(project.isReadOnly),
         }))
     );
 };

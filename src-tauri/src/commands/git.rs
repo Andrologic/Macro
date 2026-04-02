@@ -2276,6 +2276,7 @@ pub async fn git_worktree_create(
     task_id: String,
     branch_name: String,
     from_ref: Option<String>,
+    preferred_commit_branch: Option<String>,
 ) -> Result<GitWorktreeEnsureDto> {
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
@@ -2287,8 +2288,13 @@ pub async fn git_worktree_create(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        let ensured =
-            git_state.ensure_task_worktree(&repo, &task_id, &branch_name, from_ref.as_deref())?;
+        let ensured = git_state.ensure_task_worktree(
+            &repo,
+            &task_id,
+            &branch_name,
+            from_ref.as_deref(),
+            preferred_commit_branch.as_deref(),
+        )?;
         Ok(GitWorktreeEnsureDto {
             task_id: ensured.task_id,
             worktree_path: ensured.worktree_path.to_string_lossy().into_owned(),

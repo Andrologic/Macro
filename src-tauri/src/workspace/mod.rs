@@ -1,12 +1,15 @@
 pub mod metadata;
 
 use crate::core::error::{BackendError, Result};
+use crate::git::detect_preferred_git_flow_branches;
 use chrono::Utc;
+use git2::{IndexAddOption, Repository, RepositoryInitOptions, Signature};
 use metadata::{
     CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, PlanDto, ProjectDto,
-    ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto, ProjectRegistryDiagnosticsDto,
-    ProjectRegistryRepairReportDto, WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceState,
-    WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
+    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto,
+    ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto, WorkspaceBootstrapDto,
+    WorkspaceMetadataDto, WorkspaceState, WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto,
+    WorkspaceTaskPlanSummaryDto,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -15,9 +18,349 @@ use tokio::fs;
 
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
 const LEGACY_WORKSPACE_META_DIR: &str = ".macro";
+const AUTO_DETECTED_MAIN_BRANCH_NAMES: &[&str] = &["main", "master"];
+const AUTO_DETECTED_BASE_BRANCH_NAMES: &[&str] = &["develop", "dev", "main", "master"];
+const PROJECT_GIT_SETUP_READY: &str = "ready";
+const PROJECT_GIT_SETUP_NOT_GIT: &str = "not_git";
+const PROJECT_GIT_SETUP_UNBORN: &str = "unborn";
+const PROJECT_GIT_DETECTION_READY: &str = "ready";
+const PROJECT_GIT_DETECTION_NOT_GIT: &str = "not_git";
+const PROJECT_GIT_DETECTION_UNBORN: &str = "unborn";
+const PROJECT_GIT_DETECTION_SINGLE_MAIN_ONLY: &str = "single_main_only";
+const PROJECT_GIT_DETECTION_NEEDS_BRANCH_CONFIRMATION: &str = "needs_branch_confirmation";
+const READ_ONLY_REASON_MANUAL: &str = "manual";
+const READ_ONLY_REASON_MISSING_GIT: &str = "missing_git";
+const READ_ONLY_REASON_MISSING_INITIAL_COMMIT: &str = "missing_initial_commit";
+const READ_ONLY_REASON_MANUAL_AND_MISSING_GIT: &str = "manual_and_missing_git";
+const DEVELOP_PROMPT_MAIN_BRANCHES: &[&str] = &["main", "master", "trunk"];
 
 fn count_projects(groups: &[ProjectGroupDto]) -> usize {
     groups.iter().map(|group| group.projects.len()).sum()
+}
+
+fn is_auto_detected_branch_family(value: &str, candidates: &[&str]) -> bool {
+    let normalized = normalize_base_branch(Some(value));
+    candidates.iter().any(|candidate| normalized == *candidate)
+}
+
+fn should_auto_update_project_main_branch(value: &str) -> bool {
+    is_auto_detected_branch_family(value, AUTO_DETECTED_MAIN_BRANCH_NAMES)
+}
+
+fn should_auto_update_project_base_branch(value: &str) -> bool {
+    is_auto_detected_branch_family(value, AUTO_DETECTED_BASE_BRANCH_NAMES)
+}
+
+fn repo_has_initial_commit(repo: &Repository) -> bool {
+    repo.is_empty().map(|is_empty| !is_empty).unwrap_or(false)
+}
+
+fn detection_setup_state(
+    detection: &crate::git::GitFlowBranchDetection,
+    has_initial_commit: bool,
+) -> &'static str {
+    if !has_initial_commit {
+        return PROJECT_GIT_DETECTION_UNBORN;
+    }
+    if detection.requires_confirmation {
+        return PROJECT_GIT_DETECTION_NEEDS_BRANCH_CONFIRMATION;
+    }
+
+    let suggested_main_branch = detection
+        .main_branch
+        .as_deref()
+        .map(|value| normalize_base_branch(Some(value)));
+    let suggested_base_branch = detection
+        .base_branch
+        .as_deref()
+        .map(|value| normalize_base_branch(Some(value)));
+    let viable_branch_count = detection
+        .branch_candidates
+        .iter()
+        .filter(|branch_name| {
+            let normalized = branch_name.trim().to_lowercase();
+            !normalized.is_empty()
+                && normalized != crate::git::MACRO_BRANCH_NAME.to_lowercase()
+                && !normalized.starts_with("feature/")
+                && !normalized.starts_with("feature-")
+                && !normalized.starts_with("feat/")
+                && !normalized.starts_with("feat-")
+                && !normalized.starts_with("fix/")
+                && !normalized.starts_with("fix-")
+                && !normalized.starts_with("bugfix/")
+                && !normalized.starts_with("bugfix-")
+                && !normalized.starts_with("hotfix/")
+                && !normalized.starts_with("hotfix-")
+                && !normalized.starts_with("release/")
+                && !normalized.starts_with("release-")
+                && !normalized.starts_with("task/")
+                && !normalized.starts_with("task-")
+                && !normalized.starts_with("work/")
+                && !normalized.starts_with("work-")
+        })
+        .count();
+
+    if viable_branch_count <= 1 {
+        if let (Some(main_branch), Some(base_branch)) = (
+            suggested_main_branch.as_deref(),
+            suggested_base_branch.as_deref(),
+        ) {
+            if main_branch == base_branch
+                && DEVELOP_PROMPT_MAIN_BRANCHES
+                    .iter()
+                    .any(|candidate| main_branch == *candidate)
+            {
+                return PROJECT_GIT_DETECTION_SINGLE_MAIN_ONLY;
+            }
+        }
+    }
+
+    PROJECT_GIT_DETECTION_READY
+}
+
+fn derive_git_setup_state(detection: &ProjectGitFlowDetectionDto) -> &'static str {
+    if !detection.repo_detected {
+        PROJECT_GIT_SETUP_NOT_GIT
+    } else if !detection.has_initial_commit {
+        PROJECT_GIT_SETUP_UNBORN
+    } else {
+        PROJECT_GIT_SETUP_READY
+    }
+}
+
+fn derive_project_read_only_reason(user_read_only: bool, git_setup_state: &str) -> Option<String> {
+    match (user_read_only, git_setup_state) {
+        (false, PROJECT_GIT_SETUP_READY) => None,
+        (true, PROJECT_GIT_SETUP_READY) => Some(READ_ONLY_REASON_MANUAL.to_string()),
+        (false, PROJECT_GIT_SETUP_NOT_GIT) => Some(READ_ONLY_REASON_MISSING_GIT.to_string()),
+        (true, PROJECT_GIT_SETUP_NOT_GIT) => {
+            Some(READ_ONLY_REASON_MANUAL_AND_MISSING_GIT.to_string())
+        }
+        (_, PROJECT_GIT_SETUP_UNBORN) => Some(READ_ONLY_REASON_MISSING_INITIAL_COMMIT.to_string()),
+        _ => None,
+    }
+}
+
+fn project_is_read_only(project: &ProjectDto) -> bool {
+    project.user_read_only || project.git_setup_state != PROJECT_GIT_SETUP_READY
+}
+
+fn normalize_project_access(mut project: ProjectDto, git_setup_state: &str) -> ProjectDto {
+    project.git_setup_state = git_setup_state.to_string();
+    project.is_read_only = project_is_read_only(&ProjectDto {
+        git_setup_state: git_setup_state.to_string(),
+        ..project.clone()
+    });
+    project.read_only_reason =
+        derive_project_read_only_reason(project.user_read_only, git_setup_state);
+    project
+}
+
+fn detect_project_git_flow_internal(
+    workspace_path: &Path,
+    project_path: Option<&str>,
+) -> ProjectGitFlowDetectionDto {
+    let Some(project_path) = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return ProjectGitFlowDetectionDto {
+            repo_detected: false,
+            branches: Vec::new(),
+            current_branch: None,
+            suggested_main_branch: None,
+            suggested_base_branch: None,
+            suggested_commit_branch: None,
+            requires_confirmation: false,
+            setup_state: PROJECT_GIT_DETECTION_NOT_GIT.to_string(),
+            has_initial_commit: false,
+        };
+    };
+
+    let mut probe_path = resolve_project_path(workspace_path, project_path);
+    while !probe_path.exists() && probe_path.pop() {}
+
+    let repo = match Repository::discover(&probe_path).or_else(|_| Repository::open(&probe_path)) {
+        Ok(repo) => repo,
+        Err(_) => {
+            return ProjectGitFlowDetectionDto {
+                repo_detected: false,
+                branches: Vec::new(),
+                current_branch: None,
+                suggested_main_branch: None,
+                suggested_base_branch: None,
+                suggested_commit_branch: None,
+                requires_confirmation: false,
+                setup_state: PROJECT_GIT_DETECTION_NOT_GIT.to_string(),
+                has_initial_commit: false,
+            }
+        }
+    };
+    let has_initial_commit = repo_has_initial_commit(&repo);
+    if !has_initial_commit {
+        return ProjectGitFlowDetectionDto {
+            repo_detected: true,
+            branches: Vec::new(),
+            current_branch: None,
+            suggested_main_branch: None,
+            suggested_base_branch: None,
+            suggested_commit_branch: None,
+            requires_confirmation: false,
+            setup_state: PROJECT_GIT_DETECTION_UNBORN.to_string(),
+            has_initial_commit: false,
+        };
+    }
+    let detected = detect_preferred_git_flow_branches(&repo);
+    let setup_state = detection_setup_state(&detected, has_initial_commit).to_string();
+
+    ProjectGitFlowDetectionDto {
+        repo_detected: true,
+        branches: detected.branch_candidates,
+        current_branch: detected.current_branch,
+        suggested_main_branch: detected.main_branch,
+        suggested_base_branch: detected.base_branch,
+        suggested_commit_branch: detected.commit_branch,
+        requires_confirmation: detected.requires_confirmation,
+        setup_state,
+        has_initial_commit,
+    }
+}
+
+pub fn detect_project_git_flow(
+    workspace_path: &Path,
+    project_path: Option<&str>,
+) -> ProjectGitFlowDetectionDto {
+    detect_project_git_flow_internal(workspace_path, project_path)
+}
+
+fn resolve_repo_workdir(repo: &Repository, fallback: &Path) -> PathBuf {
+    repo.workdir()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| fallback.to_path_buf())
+}
+
+fn create_initial_commit(repo: &Repository) -> Result<()> {
+    if repo_has_initial_commit(repo) {
+        return Ok(());
+    }
+
+    let repo_root = resolve_repo_workdir(repo, repo.path());
+    let mut index = repo.index().map_err(|e| BackendError::Git {
+        message: format!("Failed to open repository index: {}", e),
+    })?;
+    index
+        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+        .map_err(|e| BackendError::Git {
+            message: format!(
+                "Failed to stage initial repository contents at {}: {}",
+                repo_root.display(),
+                e
+            ),
+        })?;
+    index.write().map_err(|e| BackendError::Git {
+        message: format!("Failed to write repository index: {}", e),
+    })?;
+    let tree_id = index.write_tree().map_err(|e| BackendError::Git {
+        message: format!("Failed to write initial tree: {}", e),
+    })?;
+    let tree = repo.find_tree(tree_id).map_err(|e| BackendError::Git {
+        message: format!("Failed to load initial tree: {}", e),
+    })?;
+    let signature = repo
+        .signature()
+        .or_else(|_| Signature::now("Macro", "macro@local"))
+        .map_err(|e| BackendError::Git {
+            message: format!("Failed to create initial commit signature: {}", e),
+        })?;
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "chore(git): initialize repository",
+        &tree,
+        &[],
+    )
+    .map_err(|e| BackendError::Git {
+        message: format!("Failed to create initial repository commit: {}", e),
+    })?;
+    Ok(())
+}
+
+pub async fn prepare_project_git(
+    workspace_path: &Path,
+    project_path: &str,
+) -> Result<ProjectGitFlowDetectionDto> {
+    let resolved_project_path = resolve_project_path(workspace_path, project_path);
+    fs::create_dir_all(&resolved_project_path)
+        .await
+        .map_err(|error| BackendError::Filesystem {
+            message: format!(
+                "Failed to create project directory {}: {}",
+                resolved_project_path.display(),
+                error
+            ),
+        })?;
+
+    let repo = match Repository::discover(&resolved_project_path)
+        .or_else(|_| Repository::open(&resolved_project_path))
+    {
+        Ok(repo) => repo,
+        Err(_) => {
+            let mut opts = RepositoryInitOptions::new();
+            opts.initial_head("main");
+            Repository::init_opts(&resolved_project_path, &opts).map_err(|e| BackendError::Git {
+                message: format!(
+                    "Failed to initialize git repository at {}: {}",
+                    resolved_project_path.display(),
+                    e
+                ),
+            })?
+        }
+    };
+
+    if !repo_has_initial_commit(&repo) {
+        create_initial_commit(&repo)?;
+    }
+
+    Ok(detect_project_git_flow_internal(
+        workspace_path,
+        Some(project_path),
+    ))
+}
+
+fn auto_detect_project_git_flow_settings(
+    workspace_path: &Path,
+    project_path: &str,
+    settings: Option<&ProjectGitFlowSettingsDto>,
+) -> ProjectGitFlowSettingsDto {
+    let mut normalized = normalize_project_git_flow_settings(settings);
+    let detected = detect_project_git_flow_internal(workspace_path, Some(project_path));
+    if !detected.repo_detected || !detected.has_initial_commit || detected.requires_confirmation {
+        return normalized;
+    }
+
+    if should_auto_update_project_main_branch(&normalized.main_branch) {
+        if let Some(main_branch) = detected
+            .suggested_main_branch
+            .clone()
+            .or_else(|| detected.suggested_commit_branch.clone())
+        {
+            normalized.main_branch = main_branch;
+        }
+    }
+
+    if should_auto_update_project_base_branch(&normalized.base_branch) {
+        if let Some(base_branch) = detected
+            .suggested_base_branch
+            .clone()
+            .or_else(|| detected.suggested_main_branch.clone())
+            .or_else(|| detected.suggested_commit_branch.clone())
+        {
+            normalized.base_branch = base_branch;
+        }
+    }
+
+    normalized
 }
 
 pub async fn get_project_registry_diagnostics(
@@ -165,13 +508,17 @@ pub async fn create_manual_feature_draft(
     task_id: &str,
     conversation_id: &str,
     project_ids: &[String],
+    context_project_ids: &[String],
     base_branch: Option<&str>,
     title: Option<&str>,
     description: Option<&str>,
 ) -> Result<ManualFeatureDto> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
-    let valid_project_ids = collect_valid_project_ids(&state.project_groups);
-    let normalized_project_ids = sanitize_project_id_list(project_ids, &valid_project_ids);
+    let actionable_project_ids = collect_actionable_project_ids(&state.project_groups);
+    let read_only_project_ids = collect_read_only_project_ids(&state.project_groups);
+    let normalized_project_ids = sanitize_project_id_list(project_ids, &actionable_project_ids);
+    let normalized_context_project_ids =
+        sanitize_project_id_list(context_project_ids, &read_only_project_ids);
     if normalized_project_ids.is_empty() {
         return Err(BackendError::Validation(
             "Manual feature draft requires at least one valid project".to_string(),
@@ -225,6 +572,7 @@ pub async fn create_manual_feature_draft(
         merged_at: None,
         base_branch: normalize_base_branch(base_branch),
         project_ids: normalized_project_ids,
+        context_project_ids: normalized_context_project_ids,
         execution_targets: Vec::new(),
         created_at: now.clone(),
         updated_at: now,
@@ -649,7 +997,7 @@ pub async fn create_project(
         request.group_name.as_deref(),
         project.clone(),
     )?;
-    ensure_plan_has_project(&mut state, &project.id);
+    ensure_plan_has_project(&mut state, &project);
 
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "create_project").await?;
@@ -719,7 +1067,7 @@ pub async fn import_git_repo(
         request.group_name.as_deref(),
         project.clone(),
     )?;
-    ensure_plan_has_project(&mut state, &project.id);
+    ensure_plan_has_project(&mut state, &project);
 
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "import_git_repo").await?;
@@ -898,6 +1246,46 @@ pub async fn update_project_git_flow(
         repair_applied = repair_report.has_repairs()
     );
     Ok(updated_project)
+}
+
+pub async fn update_project_access(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    project_id: &str,
+    user_read_only: bool,
+) -> Result<ProjectDto> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let mut updated_project: Option<ProjectDto> = None;
+
+    for group in state.project_groups.iter_mut() {
+        if let Some(project) = group
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        {
+            project.user_read_only = user_read_only;
+            updated_project = Some(project.clone());
+            break;
+        }
+    }
+
+    updated_project
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "update_project_access",
+    )
+    .await?;
+    sanitized_state
+        .project_groups
+        .iter()
+        .flat_map(|group| group.projects.iter())
+        .find(|project| project.id == project_id)
+        .cloned()
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))
 }
 
 pub async fn archive_project_group(
@@ -1104,6 +1492,24 @@ fn collect_valid_project_ids(groups: &[ProjectGroupDto]) -> HashSet<String> {
         .collect()
 }
 
+fn collect_actionable_project_ids(groups: &[ProjectGroupDto]) -> HashSet<String> {
+    groups
+        .iter()
+        .flat_map(|group| group.projects.iter())
+        .filter(|project| !project_is_read_only(project))
+        .map(|project| project.id.clone())
+        .collect()
+}
+
+fn collect_read_only_project_ids(groups: &[ProjectGroupDto]) -> HashSet<String> {
+    groups
+        .iter()
+        .flat_map(|group| group.projects.iter())
+        .filter(|project| project_is_read_only(project))
+        .map(|project| project.id.clone())
+        .collect()
+}
+
 fn sanitize_project_id_list(
     project_ids: &[String],
     valid_project_ids: &HashSet<String>,
@@ -1116,6 +1522,27 @@ fn sanitize_project_id_list(
         .filter(|project_id| valid_project_ids.contains(project_id))
         .filter(|project_id| seen.insert(project_id.clone()))
         .collect()
+}
+
+fn sanitize_json_project_id_list(
+    value: Option<&Value>,
+    valid_project_ids: &HashSet<String>,
+) -> Vec<Value> {
+    value
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            let mut seen = HashSet::new();
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(|project_id| project_id.trim().to_string())
+                .filter(|project_id| !project_id.is_empty())
+                .filter(|project_id| valid_project_ids.contains(project_id))
+                .filter(|project_id| seen.insert(project_id.clone()))
+                .map(Value::String)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 fn normalize_base_branch(value: Option<&str>) -> String {
@@ -1244,6 +1671,17 @@ fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
         Value::Array(
             feature
                 .project_ids
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    task.insert(
+        "context_project_ids".to_string(),
+        Value::Array(
+            feature
+                .context_project_ids
                 .iter()
                 .cloned()
                 .map(Value::String)
@@ -1399,7 +1837,8 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
             manual_features_removed = repair_report.manual_features_removed,
             manual_feature_targets_removed = repair_report.manual_feature_targets_removed,
             plan_nodes_removed = repair_report.plan_nodes_removed,
-            predicted_branches_removed = repair_report.predicted_branches_removed
+            predicted_branches_removed = repair_report.predicted_branches_removed,
+            git_flow_settings_auto_updated = repair_report.git_flow_settings_auto_updated
         );
         persist_state(metadata_root, &sanitized_state).await?;
     }
@@ -1437,7 +1876,6 @@ fn sanitize_workspace_state(
 ) -> (WorkspaceState, ProjectRegistryRepairReportDto) {
     let mut repair_report = ProjectRegistryRepairReportDto::default();
     let mut seen_paths = HashSet::new();
-    let mut valid_project_ids = HashSet::new();
     let mut sanitized_groups = Vec::with_capacity(state.project_groups.len());
 
     for group in state.project_groups {
@@ -1469,13 +1907,23 @@ fn sanitize_workspace_state(
             }
 
             seen_paths.insert(normalized_key);
-            valid_project_ids.insert(project.id.clone());
-            sanitized_projects.push(ProjectDto {
-                git_flow_settings: normalize_project_git_flow_settings(Some(
-                    &project.git_flow_settings,
-                )),
-                ..project
-            });
+            let git_flow_settings = auto_detect_project_git_flow_settings(
+                workspace_path,
+                &project.path,
+                Some(&project.git_flow_settings),
+            );
+            let git_detection =
+                detect_project_git_flow_internal(workspace_path, Some(project.path.as_str()));
+            if git_flow_settings != project.git_flow_settings {
+                repair_report.git_flow_settings_auto_updated += 1;
+            }
+            sanitized_projects.push(normalize_project_access(
+                ProjectDto {
+                    git_flow_settings,
+                    ..project
+                },
+                derive_git_setup_state(&git_detection),
+            ));
         }
 
         if sanitized_projects.is_empty() {
@@ -1505,19 +1953,33 @@ fn sanitize_workspace_state(
     });
 
     state.project_groups = sanitized_groups;
+    let _valid_project_ids = collect_valid_project_ids(&state.project_groups);
+    let actionable_project_ids = collect_actionable_project_ids(&state.project_groups);
+    let read_only_project_ids = collect_read_only_project_ids(&state.project_groups);
 
     if let Some(plan) = state.current_plan.as_mut() {
+        let original_project_ids = plan.project_ids.clone();
         let initial_project_ids = plan.project_ids.len();
         plan.project_ids
-            .retain(|project_id| valid_project_ids.contains(project_id));
+            .retain(|project_id| actionable_project_ids.contains(project_id));
         let mut unique_project_ids = HashSet::new();
         plan.project_ids
             .retain(|project_id| unique_project_ids.insert(project_id.clone()));
+        let mut context_project_ids =
+            sanitize_project_id_list(&plan.context_project_ids, &read_only_project_ids);
+        for project_id in original_project_ids {
+            if read_only_project_ids.contains(&project_id)
+                && !context_project_ids.iter().any(|value| value == &project_id)
+            {
+                context_project_ids.push(project_id);
+            }
+        }
+        plan.context_project_ids = context_project_ids;
         repair_report.current_plan_project_ids_removed =
             initial_project_ids.saturating_sub(plan.project_ids.len());
 
         let (sanitized_tasks, removed_tasks, removed_targets) =
-            sanitize_plan_tasks(&plan.tasks, &valid_project_ids);
+            sanitize_plan_tasks(&plan.tasks, &actionable_project_ids, &read_only_project_ids);
         if removed_tasks > 0 || removed_targets > 0 || sanitized_tasks.len() != plan.tasks.len() {
             plan.tasks = sanitized_tasks;
         }
@@ -1533,8 +1995,11 @@ fn sanitize_workspace_state(
     }
 
     let initial_manual_feature_count = state.manual_features.len();
-    let (sanitized_manual_features, removed_manual_feature_targets) =
-        sanitize_manual_features(&state.manual_features, &valid_project_ids);
+    let (sanitized_manual_features, removed_manual_feature_targets) = sanitize_manual_features(
+        &state.manual_features,
+        &actionable_project_ids,
+        &read_only_project_ids,
+    );
     state.manual_features = sanitized_manual_features;
     repair_report.manual_features_removed =
         initial_manual_feature_count.saturating_sub(state.manual_features.len());
@@ -1544,7 +2009,7 @@ fn sanitize_workspace_state(
     state.plan_nodes.retain(|node| {
         node.project_id
             .as_ref()
-            .map(|project_id| valid_project_ids.contains(project_id))
+            .map(|project_id| actionable_project_ids.contains(project_id))
             .unwrap_or(true)
     });
     repair_report.plan_nodes_removed =
@@ -1553,7 +2018,7 @@ fn sanitize_workspace_state(
     let initial_predicted_branch_count = state.predicted_branches.len();
     state
         .predicted_branches
-        .retain(|branch| valid_project_ids.contains(&branch.project_id));
+        .retain(|branch| actionable_project_ids.contains(&branch.project_id));
     repair_report.predicted_branches_removed =
         initial_predicted_branch_count.saturating_sub(state.predicted_branches.len());
 
@@ -1562,7 +2027,8 @@ fn sanitize_workspace_state(
 
 fn sanitize_plan_tasks(
     tasks: &[Value],
-    valid_project_ids: &HashSet<String>,
+    actionable_project_ids: &HashSet<String>,
+    read_only_project_ids: &HashSet<String>,
 ) -> (Vec<Value>, usize, usize) {
     let mut removed_tasks = 0usize;
     let mut removed_targets = 0usize;
@@ -1575,24 +2041,62 @@ fn sanitize_plan_tasks(
         };
 
         let mut next_task = serde_json::Map::from_iter(task_object.clone().into_iter());
-        let project_ids = next_task
+        let original_project_ids = task_object
             .get("project_ids")
             .and_then(|value| value.as_array())
             .map(|items| {
                 items
                     .iter()
                     .filter_map(|item| item.as_str())
-                    .filter(|project_id| valid_project_ids.contains(*project_id))
-                    .map(|project_id| Value::String(project_id.to_string()))
+                    .map(str::to_string)
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let mut context_project_ids = sanitize_json_project_id_list(
+            next_task.get("context_project_ids"),
+            read_only_project_ids,
+        );
+        let project_ids =
+            sanitize_json_project_id_list(next_task.get("project_ids"), actionable_project_ids);
+        let project_id_strings = project_ids
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
 
         if next_task.contains_key("project_ids") {
             if project_ids.is_empty() {
                 next_task.remove("project_ids");
             } else {
                 next_task.insert("project_ids".to_string(), Value::Array(project_ids.clone()));
+            }
+        }
+
+        let mut removed_from_primary_projects = original_project_ids
+            .into_iter()
+            .filter(|project_id| read_only_project_ids.contains(project_id))
+            .collect::<Vec<_>>();
+        if let Some(project_id) = next_task.get("project_id").and_then(|value| value.as_str()) {
+            if read_only_project_ids.contains(project_id) {
+                removed_from_primary_projects.push(project_id.to_string());
+            }
+        }
+        for project_id in removed_from_primary_projects {
+            if !context_project_ids
+                .iter()
+                .any(|value| value.as_str() == Some(project_id.as_str()))
+            {
+                context_project_ids.push(Value::String(project_id));
+            }
+        }
+        if next_task.contains_key("context_project_ids") || !context_project_ids.is_empty() {
+            if context_project_ids.is_empty() {
+                next_task.remove("context_project_ids");
+            } else {
+                next_task.insert(
+                    "context_project_ids".to_string(),
+                    Value::Array(context_project_ids.clone()),
+                );
             }
         }
 
@@ -1607,7 +2111,7 @@ fn sanitize_plan_tasks(
                         target
                             .get("projectId")
                             .and_then(|value| value.as_str())
-                            .map(|project_id| valid_project_ids.contains(project_id))
+                            .map(|project_id| actionable_project_ids.contains(project_id))
                             .unwrap_or(true)
                     })
                     .cloned()
@@ -1644,20 +2148,31 @@ fn sanitize_plan_tasks(
         let is_primary_project_valid = next_task
             .get("project_id")
             .and_then(|value| value.as_str())
-            .map(|project_id| valid_project_ids.contains(project_id))
+            .map(|project_id| actionable_project_ids.contains(project_id))
             .unwrap_or(true);
 
         if !is_primary_project_valid {
             if let Some(next_project_id) = fallback_project_id.clone() {
                 next_task.insert("project_id".to_string(), Value::String(next_project_id));
             } else {
-                removed_tasks += 1;
-                continue;
+                next_task.remove("project_id");
             }
         } else if !next_task.contains_key("project_id") {
             if let Some(next_project_id) = fallback_project_id {
                 next_task.insert("project_id".to_string(), Value::String(next_project_id));
             }
+        }
+
+        let has_actionable_project = next_task
+            .get("project_id")
+            .and_then(|value| value.as_str())
+            .map(|project_id| actionable_project_ids.contains(project_id))
+            .unwrap_or(false)
+            || !project_id_strings.is_empty()
+            || !execution_targets.is_empty();
+        if !has_actionable_project {
+            removed_tasks += 1;
+            continue;
         }
 
         sanitized_tasks.push(Value::Object(next_task));
@@ -1668,18 +2183,28 @@ fn sanitize_plan_tasks(
 
 fn sanitize_manual_features(
     features: &[ManualFeatureDto],
-    valid_project_ids: &HashSet<String>,
+    actionable_project_ids: &HashSet<String>,
+    read_only_project_ids: &HashSet<String>,
 ) -> (Vec<ManualFeatureDto>, usize) {
     let mut removed_targets = 0usize;
     let mut sanitized_features = Vec::with_capacity(features.len());
 
     for feature in features {
-        let project_ids = sanitize_project_id_list(&feature.project_ids, valid_project_ids);
+        let project_ids = sanitize_project_id_list(&feature.project_ids, actionable_project_ids);
+        let mut context_project_ids =
+            sanitize_project_id_list(&feature.context_project_ids, read_only_project_ids);
+        for project_id in &feature.project_ids {
+            if read_only_project_ids.contains(project_id)
+                && !context_project_ids.iter().any(|value| value == project_id)
+            {
+                context_project_ids.push(project_id.clone());
+            }
+        }
         let initial_target_len = feature.execution_targets.len();
         let execution_targets = feature
             .execution_targets
             .iter()
-            .filter(|target| valid_project_ids.contains(&target.project_id))
+            .filter(|target| actionable_project_ids.contains(&target.project_id))
             .cloned()
             .collect::<Vec<_>>();
         removed_targets += initial_target_len.saturating_sub(execution_targets.len());
@@ -1693,12 +2218,13 @@ fn sanitize_manual_features(
                 .collect::<Vec<_>>()
         };
 
-        if fallback_project_ids.is_empty() {
+        if fallback_project_ids.is_empty() && context_project_ids.is_empty() {
             continue;
         }
 
         sanitized_features.push(ManualFeatureDto {
             project_ids: fallback_project_ids,
+            context_project_ids,
             execution_targets,
             ..feature.clone()
         });
@@ -1731,7 +2257,8 @@ async fn persist_sanitized_state(
             manual_features_removed = repair_report.manual_features_removed,
             manual_feature_targets_removed = repair_report.manual_feature_targets_removed,
             plan_nodes_removed = repair_report.plan_nodes_removed,
-            predicted_branches_removed = repair_report.predicted_branches_removed
+            predicted_branches_removed = repair_report.predicted_branches_removed,
+            git_flow_settings_auto_updated = repair_report.git_flow_settings_auto_updated
         );
     }
 
@@ -1785,23 +2312,34 @@ fn build_project(
     } else {
         project_name.to_string()
     };
+    let git_detection =
+        detect_project_git_flow_internal(workspace_path, Some(project_path.as_str()));
+    let detected_git_flow_settings =
+        auto_detect_project_git_flow_settings(workspace_path, &project_path, git_flow_settings);
 
-    ProjectDto {
-        id: id.clone(),
-        name: normalized_name,
-        mount_name: derive_project_mount_name(&project_path, name, &id),
-        path: project_path,
-        created_at: now,
-        status: "active".to_string(),
-        git_flow_settings: normalize_project_git_flow_settings(git_flow_settings),
-        metadata: ProjectMetadataDto {
-            description: description.to_string(),
-            tags: Vec::new(),
-            team_members: Vec::new(),
-            api_contracts: Vec::new(),
-            dependencies: Vec::new(),
+    normalize_project_access(
+        ProjectDto {
+            id: id.clone(),
+            name: normalized_name,
+            mount_name: derive_project_mount_name(&project_path, name, &id),
+            path: project_path,
+            created_at: now,
+            status: "active".to_string(),
+            git_flow_settings: detected_git_flow_settings,
+            user_read_only: false,
+            git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
+            is_read_only: false,
+            read_only_reason: None,
+            metadata: ProjectMetadataDto {
+                description: description.to_string(),
+                tags: Vec::new(),
+                team_members: Vec::new(),
+                api_contracts: Vec::new(),
+                dependencies: Vec::new(),
+            },
         },
-    }
+        derive_git_setup_state(&git_detection),
+    )
 }
 
 fn normalize_project_git_flow_settings(
@@ -1998,8 +2536,11 @@ fn insert_project_into_group(
     Ok(())
 }
 
-fn ensure_plan_has_project(state: &mut WorkspaceState, project_id: &str) {
+fn ensure_plan_has_project(state: &mut WorkspaceState, project: &ProjectDto) {
     if state.current_plan.is_none() {
+        if project_is_read_only(project) {
+            return;
+        }
         let now = Utc::now().to_rfc3339();
         state.current_plan = Some(PlanDto {
             id: "plan-main".to_string(),
@@ -2007,7 +2548,8 @@ fn ensure_plan_has_project(state: &mut WorkspaceState, project_id: &str) {
             created_at: now.clone(),
             updated_at: now,
             status: "Draft".to_string(),
-            project_ids: vec![project_id.to_string()],
+            project_ids: vec![project.id.to_string()],
+            context_project_ids: Vec::new(),
             tasks: Vec::new(),
             predicted_git_trees: HashMap::new(),
         });
@@ -2015,8 +2557,13 @@ fn ensure_plan_has_project(state: &mut WorkspaceState, project_id: &str) {
     }
 
     if let Some(plan) = state.current_plan.as_mut() {
-        if !plan.project_ids.iter().any(|id| id == project_id) {
-            plan.project_ids.push(project_id.to_string());
+        let target_collection = if project_is_read_only(project) {
+            &mut plan.context_project_ids
+        } else {
+            &mut plan.project_ids
+        };
+        if !target_collection.iter().any(|id| id == &project.id) {
+            target_collection.push(project.id.to_string());
         }
         plan.updated_at = Utc::now().to_rfc3339();
     }
@@ -2147,7 +2694,10 @@ fn get_git_flow_target_branch(plan: &PlanDto) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git2::{Repository, RepositoryInitOptions};
     use serde_json::json;
+    use std::fs as stdfs;
+    use tempfile::TempDir;
 
     fn make_project(id: &str, path: &str) -> ProjectDto {
         ProjectDto {
@@ -2167,6 +2717,10 @@ mod tests {
             },
             created_at: "2026-03-14T00:00:00.000Z".to_string(),
             status: "active".to_string(),
+            user_read_only: false,
+            git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
+            is_read_only: false,
+            read_only_reason: None,
             metadata: ProjectMetadataDto {
                 description: String::new(),
                 tags: Vec::new(),
@@ -2175,6 +2729,40 @@ mod tests {
                 dependencies: Vec::new(),
             },
         }
+    }
+
+    fn init_git_repo(path: &Path, initial_head: &str, extra_branches: &[&str]) -> Repository {
+        stdfs::create_dir_all(path).expect("create repo dir");
+        let mut opts = RepositoryInitOptions::new();
+        opts.initial_head(initial_head);
+        let repo = Repository::init_opts(path, &opts).expect("init repo");
+        let file_path = path.join("README.md");
+        stdfs::write(&file_path, "hello").expect("write file");
+
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add readme");
+        let tree_id = index.write_tree().expect("write tree");
+        {
+            let tree = repo.find_tree(tree_id).expect("tree");
+            let sig = git2::Signature::now("Tester", "tester@example.com").expect("sig");
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .expect("commit");
+        }
+
+        {
+            let head_commit_id = repo
+                .head()
+                .and_then(|head| head.peel_to_commit())
+                .map(|commit| commit.id())
+                .expect("head commit");
+            let head_commit = repo.find_commit(head_commit_id).expect("find head commit");
+            for branch_name in extra_branches {
+                repo.branch(branch_name, &head_commit, false)
+                    .expect("create branch");
+            }
+        }
+
+        repo
     }
 
     #[test]
@@ -2212,7 +2800,10 @@ mod tests {
 
     #[test]
     fn sanitize_workspace_state_removes_duplicate_paths_and_dead_references() {
-        let workspace_path = PathBuf::from("C:/workspace");
+        let temp_dir = TempDir::new().expect("temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+        init_git_repo(&workspace_path.join("apps/web"), "main", &[]);
+        init_git_repo(&workspace_path.join("apps/api"), "main", &[]);
         let state = WorkspaceState {
             version: 1,
             project_groups: vec![
@@ -2249,6 +2840,7 @@ mod tests {
                     "project-web-dup".to_string(),
                     "session-project-1".to_string(),
                 ],
+                context_project_ids: Vec::new(),
                 tasks: vec![
                     json!({
                         "id": "task-web",
@@ -2371,5 +2963,186 @@ mod tests {
         assert_eq!(report.mount_names_assigned, 1);
         assert_eq!(sanitized.project_groups[0].projects[0].mount_name, "app");
         assert_eq!(sanitized.project_groups[0].projects[1].mount_name, "app-2");
+    }
+
+    #[test]
+    fn build_project_auto_detects_master_and_dev_branches() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("legacy-repo");
+        let _repo = init_git_repo(&repo_path, "master", &["dev"]);
+
+        let project = build_project(
+            "Legacy Repo",
+            "",
+            Some(repo_path.to_string_lossy().as_ref()),
+            temp.path(),
+            Some(&ProjectGitFlowSettingsDto::default()),
+        );
+
+        assert_eq!(project.git_flow_settings.main_branch, "master");
+        assert_eq!(project.git_flow_settings.base_branch, "dev");
+    }
+
+    #[test]
+    fn build_project_auto_detects_trunk_and_integration_branches() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("custom-repo");
+        let _repo = init_git_repo(&repo_path, "trunk", &["integration"]);
+
+        let project = build_project(
+            "Custom Repo",
+            "",
+            Some(repo_path.to_string_lossy().as_ref()),
+            temp.path(),
+            Some(&ProjectGitFlowSettingsDto::default()),
+        );
+
+        assert_eq!(project.git_flow_settings.main_branch, "trunk");
+        assert_eq!(project.git_flow_settings.base_branch, "integration");
+    }
+
+    #[test]
+    fn build_project_keeps_defaults_for_rare_branch_conventions_until_confirmed() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("rare-repo");
+        let _repo = init_git_repo(&repo_path, "stable", &["integration-ready"]);
+
+        let project = build_project(
+            "Rare Repo",
+            "",
+            Some(repo_path.to_string_lossy().as_ref()),
+            temp.path(),
+            Some(&ProjectGitFlowSettingsDto::default()),
+        );
+
+        assert_eq!(project.git_flow_settings.main_branch, "main");
+        assert_eq!(project.git_flow_settings.base_branch, "develop");
+    }
+
+    #[test]
+    fn sanitize_workspace_state_auto_detects_legacy_git_flow_branches() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("legacy-repo");
+        let _repo = init_git_repo(&repo_path, "master", &["dev"]);
+        let project_path = repo_path.to_string_lossy().to_string();
+
+        let state = WorkspaceState {
+            version: 2,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-legacy", &project_path)],
+            }],
+            ..WorkspaceState::default()
+        };
+
+        let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
+        let project = &sanitized_state.project_groups[0].projects[0];
+
+        assert_eq!(project.git_flow_settings.main_branch, "master");
+        assert_eq!(project.git_flow_settings.base_branch, "dev");
+        assert_eq!(repair_report.git_flow_settings_auto_updated, 1);
+    }
+
+    #[test]
+    fn sanitize_workspace_state_auto_detects_custom_git_flow_branches() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("custom-repo");
+        let _repo = init_git_repo(&repo_path, "trunk", &["integration"]);
+        let project_path = repo_path.to_string_lossy().to_string();
+
+        let state = WorkspaceState {
+            version: 2,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-custom-detected", &project_path)],
+            }],
+            ..WorkspaceState::default()
+        };
+
+        let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
+        let project = &sanitized_state.project_groups[0].projects[0];
+
+        assert_eq!(project.git_flow_settings.main_branch, "trunk");
+        assert_eq!(project.git_flow_settings.base_branch, "integration");
+        assert_eq!(repair_report.git_flow_settings_auto_updated, 1);
+    }
+
+    #[test]
+    fn sanitize_workspace_state_skips_rare_git_flow_conventions_without_confirmation() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("rare-repo");
+        let _repo = init_git_repo(&repo_path, "stable", &["integration-ready"]);
+        let project_path = repo_path.to_string_lossy().to_string();
+
+        let state = WorkspaceState {
+            version: 2,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-rare-detected", &project_path)],
+            }],
+            ..WorkspaceState::default()
+        };
+
+        let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
+        let project = &sanitized_state.project_groups[0].projects[0];
+
+        assert_eq!(project.git_flow_settings.main_branch, "main");
+        assert_eq!(project.git_flow_settings.base_branch, "develop");
+        assert_eq!(repair_report.git_flow_settings_auto_updated, 0);
+    }
+
+    #[test]
+    fn sanitize_workspace_state_preserves_non_standard_git_flow_overrides() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("legacy-repo");
+        let _repo = init_git_repo(&repo_path, "master", &["dev"]);
+        let project_path = repo_path.to_string_lossy().to_string();
+
+        let mut project = make_project("project-custom", &project_path);
+        project.git_flow_settings.main_branch = "trunk".to_string();
+        project.git_flow_settings.base_branch = "release".to_string();
+
+        let state = WorkspaceState {
+            version: 2,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![project],
+            }],
+            ..WorkspaceState::default()
+        };
+
+        let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
+        let project = &sanitized_state.project_groups[0].projects[0];
+
+        assert_eq!(project.git_flow_settings.main_branch, "trunk");
+        assert_eq!(project.git_flow_settings.base_branch, "release");
+        assert_eq!(repair_report.git_flow_settings_auto_updated, 0);
+    }
+
+    #[test]
+    fn detect_project_git_flow_reports_confirmation_for_rare_conventions() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("rare-repo");
+        let _repo = init_git_repo(&repo_path, "stable", &["integration-ready"]);
+
+        let detection =
+            detect_project_git_flow(temp.path(), Some(repo_path.to_string_lossy().as_ref()));
+
+        assert!(detection.repo_detected);
+        assert!(detection.requires_confirmation);
+        assert_eq!(detection.suggested_main_branch.as_deref(), Some("stable"));
+        assert_eq!(detection.suggested_base_branch.as_deref(), Some("stable"));
+        assert!(detection.branches.contains(&"stable".to_string()));
+        assert!(detection
+            .branches
+            .contains(&"integration-ready".to_string()));
     }
 }

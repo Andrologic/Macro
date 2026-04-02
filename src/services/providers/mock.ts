@@ -29,7 +29,7 @@ import type {
   FileContentDto,
 } from '../contracts/dtos';
 import type { ServiceProvider } from '../contracts/serviceProvider';
-import type { Project, ProjectGroup } from '../../types';
+import type { Project, ProjectGitFlowDetection, ProjectGroup } from '../../types';
 import { getDefaultProjectGitFlowSettings } from '../architectGitNaming';
 import { delay, maybeFail } from '../utils';
 
@@ -57,6 +57,29 @@ const simulate = async <T>(value: T): Promise<T> => {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
   return value;
+};
+
+const withProjectAccessDefaults = (project: Project): Project => {
+  const userReadOnly = project.userReadOnly ?? false;
+  const gitSetupState = project.gitSetupState ?? 'ready';
+  const isReadOnly = project.isReadOnly ?? (userReadOnly || gitSetupState !== 'ready');
+  const readOnlyReason =
+    project.readOnlyReason ??
+    (userReadOnly
+      ? 'manual'
+      : gitSetupState === 'not_git'
+        ? 'missing_git'
+        : gitSetupState === 'unborn'
+          ? 'missing_initial_commit'
+          : null);
+
+  return {
+    ...project,
+    userReadOnly,
+    gitSetupState,
+    isReadOnly,
+    readOnlyReason,
+  };
 };
 
 export const getAppBootstrap = async (): Promise<AppBootstrapDto> => {
@@ -100,7 +123,8 @@ export const gitWorktreeCreate = async (
   _projectId: string,
   _taskId: string,
   _branchName: string,
-  _fromRef?: string | null
+  _fromRef?: string | null,
+  _preferredCommitBranch?: string | null
 ): Promise<{
   taskId: string;
   worktreePath: string;
@@ -241,6 +265,37 @@ export const sendChat = async (
   };
 };
 
+export const detectProjectGitFlow = async (_data: {
+  path?: string;
+}): Promise<ProjectGitFlowDetection> => {
+  return simulate({
+    repoDetected: false,
+    branches: [],
+    currentBranch: null,
+    suggestedMainBranch: null,
+    suggestedBaseBranch: null,
+    suggestedCommitBranch: null,
+    requiresConfirmation: false,
+    setupState: 'not_git',
+    hasInitialCommit: false,
+  });
+};
+
+export const prepareProjectGit = async (_data: {
+  path: string;
+}): Promise<ProjectGitFlowDetection> =>
+  simulate({
+    repoDetected: true,
+    branches: ['main'],
+    currentBranch: 'main',
+    suggestedMainBranch: 'main',
+    suggestedBaseBranch: 'main',
+    suggestedCommitBranch: 'main',
+    requiresConfirmation: false,
+    setupState: 'single_main_only',
+    hasInitialCommit: true,
+  });
+
 export const createProject = async (data: {
   name: string;
   description: string;
@@ -252,7 +307,7 @@ export const createProject = async (data: {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
 
-  const newProject: Project = {
+  const newProject: Project = withProjectAccessDefaults({
     id: `project_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     name: data.name,
     mountName: (data.path || data.name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'project',
@@ -267,7 +322,7 @@ export const createProject = async (data: {
       api_contracts: [],
       dependencies: [],
     },
-  };
+  });
 
   return simulate({ project: newProject });
 };
@@ -284,7 +339,7 @@ export const importGitRepo = async (data: {
   await delay(DEFAULT_LATENCY_MS);
   maybeFail(ERROR_RATE);
 
-  const newProject: Project = {
+  const newProject: Project = withProjectAccessDefaults({
     id: `project_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     name: data.projectName,
     mountName: (data.path || data.projectName).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'project',
@@ -299,7 +354,7 @@ export const importGitRepo = async (data: {
       api_contracts: [],
       dependencies: [],
     },
-  };
+  });
 
   return simulate({ project: newProject });
 };
@@ -336,8 +391,8 @@ export const renameProject = async (data: {
     .find((project) => project.id === data.projectId);
 
   const project: Project = existingProject
-    ? { ...existingProject, name: data.name }
-    : {
+    ? withProjectAccessDefaults({ ...existingProject, name: data.name })
+    : withProjectAccessDefaults({
       id: data.projectId,
       name: data.name,
       mountName: data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'project',
@@ -352,7 +407,7 @@ export const renameProject = async (data: {
         api_contracts: [],
         dependencies: [],
       },
-    };
+    });
 
   return simulate({ project });
 };
@@ -369,8 +424,8 @@ export const updateProjectGitFlow = async (data: {
     .find((project) => project.id === data.projectId);
 
   const project: Project = existingProject
-    ? { ...existingProject, gitFlowSettings: data.gitFlowSettings }
-    : {
+    ? withProjectAccessDefaults({ ...existingProject, gitFlowSettings: data.gitFlowSettings })
+    : withProjectAccessDefaults({
         id: data.projectId,
         name: 'Project',
         mountName: 'project',
@@ -385,7 +440,58 @@ export const updateProjectGitFlow = async (data: {
           api_contracts: [],
           dependencies: [],
         },
-      };
+      });
+
+  return simulate({ project });
+};
+
+export const updateProjectAccess = async (data: {
+  projectId: string;
+  userReadOnly: boolean;
+}): Promise<ProjectDto> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+
+  const existingProject = mockProjects
+    .flatMap((group) => group.projects)
+    .find((project) => project.id === data.projectId);
+
+  const project: Project = withProjectAccessDefaults(
+    existingProject
+      ? {
+          ...existingProject,
+          userReadOnly: data.userReadOnly,
+          isReadOnly: data.userReadOnly || existingProject.gitSetupState !== 'ready',
+          readOnlyReason:
+            data.userReadOnly
+              ? 'manual'
+              : existingProject.gitSetupState === 'not_git'
+                ? 'missing_git'
+                : existingProject.gitSetupState === 'unborn'
+                  ? 'missing_initial_commit'
+                  : null,
+        }
+      : {
+          id: data.projectId,
+          name: 'Project',
+          mountName: 'project',
+          path: '.',
+          created_at: new Date().toISOString(),
+          status: 'active',
+          gitFlowSettings: getDefaultProjectGitFlowSettings(),
+          userReadOnly: data.userReadOnly,
+          gitSetupState: 'ready',
+          isReadOnly: data.userReadOnly,
+          readOnlyReason: data.userReadOnly ? 'manual' : null,
+          metadata: {
+            description: '',
+            tags: [],
+            team_members: [],
+            api_contracts: [],
+            dependencies: [],
+          },
+        }
+  );
 
   return simulate({ project });
 };
@@ -588,11 +694,14 @@ export const provider: ServiceProvider = {
   listProviders,
   listModels,
   sendChat,
+  detectProjectGitFlow,
+  prepareProjectGit,
   createProject,
   importGitRepo,
   renameProjectGroup,
   renameProject,
   updateProjectGitFlow,
+  updateProjectAccess,
   archiveProjectGroup,
   archiveProject,
   removeProjectGroup,
