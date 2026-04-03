@@ -15,6 +15,12 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 
+#[derive(Debug, Default, Clone)]
+struct StreamingCompletionAccumulator {
+    output_text: String,
+    tool_calls: Vec<AiToolCall>,
+}
+
 pub async fn cancel_stream(ai_state: &AiState, request_id: &str) -> Result<(), String> {
     let mut tasks = ai_state.stream_tasks.lock().await;
     if let Some(handle) = tasks.remove(request_id) {
@@ -88,6 +94,7 @@ async fn stream_chat_inner(
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut saw_completed = false;
+    let mut completion_accumulator = StreamingCompletionAccumulator::default();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| format!("Failed to read ChatGPT stream: {}", error))?;
@@ -100,14 +107,24 @@ async fn stream_chat_inner(
         while let Some(split_index) = buffer.find("\n\n") {
             let event = buffer[..split_index].to_string();
             buffer = buffer[split_index + 2..].to_string();
-            if process_sse_event(&app_handle, &request.request_id, &event)? {
+            if process_sse_event(
+                &app_handle,
+                &request.request_id,
+                &event,
+                &mut completion_accumulator,
+            )? {
                 saw_completed = true;
             }
         }
     }
 
     if !buffer.trim().is_empty() {
-        let completed = process_sse_event(&app_handle, &request.request_id, &buffer)?;
+        let completed = process_sse_event(
+            &app_handle,
+            &request.request_id,
+            &buffer,
+            &mut completion_accumulator,
+        )?;
         saw_completed |= completed;
     }
 
@@ -117,8 +134,8 @@ async fn stream_chat_inner(
                 "ai:done",
                 AiStreamDoneEvent {
                     request_id: request.request_id,
-                    output_text: String::new(),
-                    tool_calls: Vec::new(),
+                    output_text: completion_accumulator.output_text,
+                    tool_calls: completion_accumulator.tool_calls,
                     tool_traces: None,
                     hidden_context: None,
                 },
@@ -163,6 +180,7 @@ fn process_sse_event(
     app_handle: &AppHandle,
     request_id: &str,
     raw_event: &str,
+    completion_accumulator: &mut StreamingCompletionAccumulator,
 ) -> Result<bool, String> {
     let mut payload = String::new();
     for line in raw_event.lines() {
@@ -201,9 +219,39 @@ fn process_sse_event(
             }
             Ok(false)
         }
+        "response.output_text.done" => {
+            if let Some(text) = value.get("text").and_then(Value::as_str) {
+                merge_output_text(&mut completion_accumulator.output_text, text);
+            }
+            Ok(false)
+        }
+        "response.output_item.done" => {
+            if let Some(item) = value.get("item") {
+                merge_output_text(
+                    &mut completion_accumulator.output_text,
+                    &extract_output_text_from_output_item(item),
+                );
+                if let Some(tool_call) = extract_function_call_from_output_item(item)? {
+                    upsert_tool_call(&mut completion_accumulator.tool_calls, tool_call);
+                }
+            }
+            Ok(false)
+        }
+        "response.function_call_arguments.done" => {
+            if let Some(tool_call) = extract_function_call_from_arguments_done(&value)? {
+                upsert_tool_call(&mut completion_accumulator.tool_calls, tool_call);
+            }
+            Ok(false)
+        }
         "response.completed" => {
-            let output_text = extract_completed_output_text(&value);
-            let tool_calls = extract_completed_tool_calls(&value)?;
+            let output_text = select_best_output_text(
+                extract_completed_output_text(&value),
+                &completion_accumulator.output_text,
+            );
+            let tool_calls = merge_tool_calls(
+                extract_completed_tool_calls(&value)?,
+                &completion_accumulator.tool_calls,
+            );
             app_handle
                 .emit(
                     "ai:done",
@@ -361,6 +409,17 @@ fn extract_completed_output_text(payload: &Value) -> String {
         .join("")
 }
 
+pub(super) fn extract_output_text_from_output_item(item: &Value) -> String {
+    item.get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|content| content.get("type").and_then(Value::as_str) == Some("output_text"))
+        .filter_map(|content| content.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
 fn extract_completed_tool_calls(payload: &Value) -> Result<Vec<AiToolCall>, String> {
     let Some(items) = extract_completed_items(payload) else {
         return Ok(Vec::new());
@@ -396,6 +455,128 @@ fn extract_completed_tool_calls(payload: &Value) -> Result<Vec<AiToolCall>, Stri
     }
 
     Ok(tool_calls)
+}
+
+pub(super) fn extract_function_call_from_output_item(
+    item: &Value,
+) -> Result<Option<AiToolCall>, String> {
+    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+        return Ok(None);
+    }
+
+    let call_id = item
+        .get("call_id")
+        .or_else(|| item.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Function call item is missing call_id.".to_string())?;
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Function call item is missing name.".to_string())?;
+    let arguments = item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .unwrap_or("{}");
+
+    Ok(Some(AiToolCall {
+        id: call_id.to_string(),
+        kind: "function".to_string(),
+        function: AiToolCallFunction {
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        },
+    }))
+}
+
+fn extract_function_call_from_arguments_done(value: &Value) -> Result<Option<AiToolCall>, String> {
+    let name = match value.get("name").and_then(Value::as_str) {
+        Some(name) if !name.trim().is_empty() => name,
+        _ => return Ok(None),
+    };
+    let call_id = value
+        .get("call_id")
+        .or_else(|| value.get("item_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Function call arguments event is missing call_id.".to_string())?;
+    let arguments = value
+        .get("arguments")
+        .and_then(Value::as_str)
+        .unwrap_or("{}");
+
+    Ok(Some(AiToolCall {
+        id: call_id.to_string(),
+        kind: "function".to_string(),
+        function: AiToolCallFunction {
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        },
+    }))
+}
+
+fn merge_output_text(current: &mut String, candidate: &str) {
+    let trimmed_candidate = candidate.trim();
+    if trimmed_candidate.is_empty() {
+        return;
+    }
+
+    if current.trim().is_empty() {
+        *current = trimmed_candidate.to_string();
+        return;
+    }
+
+    let trimmed_current = current.trim().to_string();
+    if trimmed_current == trimmed_candidate {
+        return;
+    }
+
+    if trimmed_candidate.len() > trimmed_current.len()
+        && trimmed_candidate.contains(&trimmed_current)
+    {
+        *current = trimmed_candidate.to_string();
+        return;
+    }
+
+    if !trimmed_current.contains(trimmed_candidate) {
+        current.push_str(trimmed_candidate);
+    }
+}
+
+fn select_best_output_text(primary: String, fallback: &str) -> String {
+    let trimmed_primary = primary.trim();
+    let trimmed_fallback = fallback.trim();
+
+    if trimmed_primary.is_empty() {
+        return trimmed_fallback.to_string();
+    }
+
+    if trimmed_fallback.len() > trimmed_primary.len() && trimmed_fallback.contains(trimmed_primary)
+    {
+        return trimmed_fallback.to_string();
+    }
+
+    trimmed_primary.to_string()
+}
+
+fn upsert_tool_call(tool_calls: &mut Vec<AiToolCall>, tool_call: AiToolCall) {
+    if let Some(existing) = tool_calls
+        .iter_mut()
+        .find(|existing| existing.id == tool_call.id)
+    {
+        *existing = tool_call;
+        return;
+    }
+
+    tool_calls.push(tool_call);
+}
+
+fn merge_tool_calls(primary: Vec<AiToolCall>, fallback: &[AiToolCall]) -> Vec<AiToolCall> {
+    let mut merged = primary;
+    for tool_call in fallback {
+        if merged.iter().all(|existing| existing.id != tool_call.id) {
+            merged.push(tool_call.clone());
+        }
+    }
+    merged
 }
 
 fn build_response_content_items(
