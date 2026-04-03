@@ -90,8 +90,6 @@ export const services = {
     callProviderMethod('sendChat', request),
   createProject: (data: Parameters<ServiceProvider['createProject']>[0]) =>
     callProviderMethod('createProject', data),
-  detectProjectGitFlow: (data: Parameters<ServiceProvider['detectProjectGitFlow']>[0]) =>
-    callProviderMethod('detectProjectGitFlow', data),
   previewProjectGitSetup: (data: Parameters<ServiceProvider['previewProjectGitSetup']>[0]) =>
     callProviderMethod('previewProjectGitSetup', data),
   importGitRepo: (data: Parameters<ServiceProvider['importGitRepo']>[0]) =>

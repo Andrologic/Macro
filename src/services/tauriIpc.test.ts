@@ -67,9 +67,6 @@ describe('tauriIpc executeWorkspaceTool', () => {
   it('uses camelCase payload keys for workspace project mutations', async () => {
     const tauriIpc = await loadTauriIpc();
 
-    await tauriIpc.workspaceDetectProjectGitFlow({
-      path: 'C:/dev/web',
-    });
     await tauriIpc.workspaceCreateProject({
       name: 'Web',
       description: '',
@@ -94,12 +91,6 @@ describe('tauriIpc executeWorkspaceTool', () => {
     await tauriIpc.workspaceCloseProject({ projectId: 'project-1' });
 
     expect(invokeCalls).toEqual([
-      {
-        command: 'workspace_detect_project_git_flow',
-        payload: {
-          path: 'C:/dev/web',
-        },
-      },
       {
         command: 'workspace_create_project',
         payload: {

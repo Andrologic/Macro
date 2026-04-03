@@ -1272,14 +1272,6 @@ export async function workspaceGetActiveRoot(): Promise<string> {
   return invoke<string>('workspace_get_active_root');
 }
 
-export async function workspaceDetectProjectGitFlow(params: {
-  path?: string;
-}): Promise<ProjectGitFlowDetection> {
-  return invoke<ProjectGitFlowDetection>('workspace_detect_project_git_flow', {
-    path: params.path ?? null,
-  });
-}
-
 export async function workspacePreviewProjectGitSetup(params: {
   path?: string;
 }): Promise<ProjectGitFlowDetection> {

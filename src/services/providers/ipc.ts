@@ -266,14 +266,6 @@ export const sendChat = async (
   request: ChatCompletionRequestDto
 ): Promise<ChatCompletionResponseDto> => sendChatFallback(request);
 
-export const detectProjectGitFlow = async (data: {
-  path?: string;
-}): Promise<ProjectGitFlowDetection> => {
-  return tauriIpc.workspaceDetectProjectGitFlow({
-    path: data.path,
-  });
-};
-
 export const previewProjectGitSetup = async (data: {
   path?: string;
 }): Promise<ProjectGitFlowDetection> => {
@@ -553,7 +545,6 @@ export const provider: ServiceProvider = {
   listProviders,
   listModels,
   sendChat,
-  detectProjectGitFlow,
   previewProjectGitSetup,
   createProject,
   createProjectWithGitSetup,
