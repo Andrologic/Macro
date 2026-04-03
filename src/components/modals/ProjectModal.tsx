@@ -15,13 +15,16 @@ import {
 import { cn } from '../../utils/cn';
 import { ProjectGitFlowConfirmationModal } from './ProjectGitFlowConfirmationModal';
 import {
-  buildProjectSetupPromptDetails,
+  buildProjectSetupPrompts,
   getProjectSetupAction,
   hasProjectSetupRisks,
-  shouldPromptToCreateDevelop,
   type ProjectSetupPromptDetails,
 } from './projectGitSetup';
-import type { ProjectGitSetupRiskFlag } from '../../types';
+import type {
+  ProjectGitFlowDetection,
+  ProjectGitSetupAction,
+  ProjectGitSetupRiskFlag,
+} from '../../types';
 
 type ProjectModalMode = 'new_group' | 'existing_group';
 
@@ -44,7 +47,10 @@ interface PendingGitFlowConfirmation {
 
 interface PendingProjectSetupPrompt {
   createPayload: PendingProjectCreation;
-  details: ProjectSetupPromptDetails;
+  detection: ProjectGitFlowDetection;
+  prompts: ProjectSetupPromptDetails[];
+  promptIndex: number;
+  acceptedActions: ProjectGitSetupAction[];
 }
 
 const normalizeProjectPath = (value: string): string =>
@@ -63,6 +69,7 @@ export const ProjectModal: React.FC = () => {
     closeProjectModal,
     projectGroups,
     createProject,
+    createProjectWithGitSetup,
   } = useAppStore();
 
   const [modalMode, setModalMode] = useState<ProjectModalMode>('new_group');
@@ -132,6 +139,8 @@ export const ProjectModal: React.FC = () => {
           })
         )[0] ?? null
     : null;
+  const activeProjectSetupPrompt =
+    pendingProjectSetupPrompt?.prompts[pendingProjectSetupPrompt.promptIndex] ?? null;
 
   const persistProject = async (payload: PendingProjectCreation) => {
     await createProject(payload);
@@ -151,7 +160,7 @@ export const ProjectModal: React.FC = () => {
   const continueProjectCreation = async (
     payload: PendingProjectCreation,
     projectPath?: string,
-    detectionOverride?: Awaited<ReturnType<typeof services.previewProjectGitSetup>>
+    detectionOverride?: ProjectGitFlowDetection
   ) => {
     if (!projectPath?.trim()) {
       await persistProject(payload);
@@ -164,22 +173,6 @@ export const ProjectModal: React.FC = () => {
         path: projectPath,
       });
     const setupState = detection.setupState || (detection.repoDetected ? 'ready' : 'not_git');
-
-    if (!detection.repoDetected || setupState === 'not_git') {
-      setPendingProjectSetupPrompt({
-        createPayload: payload,
-        details: buildProjectSetupPromptDetails('init_git', projectPath, detection),
-      });
-      return;
-    }
-
-    if (setupState === 'unborn') {
-      setPendingProjectSetupPrompt({
-        createPayload: payload,
-        details: buildProjectSetupPromptDetails('initial_commit', projectPath, detection),
-      });
-      return;
-    }
 
     if (detection.repoDetected && (detection.requiresConfirmation || setupState === 'needs_branch_confirmation')) {
       const branches = Array.from(
@@ -207,15 +200,14 @@ export const ProjectModal: React.FC = () => {
       return;
     }
 
-    if (
-      shouldPromptToCreateDevelop(
-        setupState,
-        detection.suggestedMainBranch ?? detection.suggestedCommitBranch ?? detection.currentBranch
-      )
-    ) {
+    const prompts = buildProjectSetupPrompts(projectPath, detection);
+    if (prompts.length > 0) {
       setPendingProjectSetupPrompt({
         createPayload: payload,
-        details: buildProjectSetupPromptDetails('create_develop', projectPath, detection),
+        detection,
+        prompts,
+        promptIndex: 0,
+        acceptedActions: [],
       });
       return;
     }
@@ -273,25 +265,50 @@ export const ProjectModal: React.FC = () => {
   };
 
   const handleConfirmProjectSetupPrompt = async () => {
-    if (!pendingProjectSetupPrompt || isSubmitting) {
+    if (!pendingProjectSetupPrompt || !activeProjectSetupPrompt || isSubmitting) {
       return;
     }
 
     setError('');
     setIsSubmitting(true);
     try {
-      const { details } = pendingProjectSetupPrompt;
-      const detection = await services.applyProjectGitSetup({
-        path: details.projectPath,
-        action: getProjectSetupAction(details.kind),
-        expectedRepoRootPath: details.resolvedRepoRootPath ?? null,
-      });
+      const nextAcceptedActions = [
+        ...pendingProjectSetupPrompt.acceptedActions,
+        getProjectSetupAction(activeProjectSetupPrompt.kind),
+      ];
+
+      if (pendingProjectSetupPrompt.promptIndex < pendingProjectSetupPrompt.prompts.length - 1) {
+        setPendingProjectSetupPrompt((prev) =>
+          prev
+            ? {
+                ...prev,
+                acceptedActions: nextAcceptedActions,
+                promptIndex: prev.promptIndex + 1,
+              }
+            : prev
+        );
+        return;
+      }
+
+      const finalPayload = pendingProjectSetupPrompt.createPayload;
+      const finalPath = activeProjectSetupPrompt.projectPath;
+      const detection = pendingProjectSetupPrompt.detection;
       setPendingProjectSetupPrompt(null);
-      await continueProjectCreation(
-        pendingProjectSetupPrompt.createPayload,
-        details.projectPath,
-        detection
-      );
+
+      if (!finalPath.trim()) {
+        await persistProject(finalPayload);
+        return;
+      }
+
+      await createProjectWithGitSetup({
+        ...finalPayload,
+        path: finalPath,
+        gitSetupActions: nextAcceptedActions,
+        expectedRepoRootPath: detection.resolvedRepoRootPath ?? null,
+        expectedSetupState: detection.setupState,
+        expectedRecommendedActionSequence: detection.recommendedActionSequence,
+      });
+      closeProjectModal();
     } catch (submitError: unknown) {
       setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
     } finally {
@@ -300,7 +317,7 @@ export const ProjectModal: React.FC = () => {
   };
 
   const handleDeclineProjectSetupPrompt = async () => {
-    if (!pendingProjectSetupPrompt || isSubmitting) {
+    if (!pendingProjectSetupPrompt || !activeProjectSetupPrompt || isSubmitting) {
       return;
     }
 
@@ -308,16 +325,39 @@ export const ProjectModal: React.FC = () => {
     setIsSubmitting(true);
     try {
       const payload =
-        pendingProjectSetupPrompt.details.kind === 'create_develop'
+        activeProjectSetupPrompt.kind === 'create_develop'
           ? {
               ...pendingProjectSetupPrompt.createPayload,
               gitFlowSettings: resolveProjectGitFlowSettings({
-                mainBranch: pendingProjectSetupPrompt.details.mainBranch || 'main',
-                baseBranch: pendingProjectSetupPrompt.details.mainBranch || 'main',
+                mainBranch: activeProjectSetupPrompt.mainBranch || 'main',
+                baseBranch: activeProjectSetupPrompt.mainBranch || 'main',
               }),
             }
           : pendingProjectSetupPrompt.createPayload;
+      const acceptedActions =
+        activeProjectSetupPrompt.kind === 'create_develop'
+          ? pendingProjectSetupPrompt.acceptedActions
+          : [];
+      const finalPath = activeProjectSetupPrompt.projectPath;
+      const detection = pendingProjectSetupPrompt.detection;
       setPendingProjectSetupPrompt(null);
+
+      if (
+        activeProjectSetupPrompt.kind === 'create_develop'
+        && finalPath.trim()
+      ) {
+        await createProjectWithGitSetup({
+          ...payload,
+          path: finalPath,
+          gitSetupActions: acceptedActions,
+          expectedRepoRootPath: detection.resolvedRepoRootPath ?? null,
+          expectedSetupState: detection.setupState,
+          expectedRecommendedActionSequence: detection.recommendedActionSequence,
+        });
+        closeProjectModal();
+        return;
+      }
+
       await persistProject(payload);
     } catch (submitError: unknown) {
       setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
@@ -630,23 +670,23 @@ export const ProjectModal: React.FC = () => {
         />
       )}
 
-      {pendingProjectSetupPrompt && (
+      {activeProjectSetupPrompt && (
         <ConfirmPromptModal
           isOpen
           title={
-            pendingProjectSetupPrompt.details.kind === 'init_git'
+            activeProjectSetupPrompt.kind === 'init_git'
               ? t('project.initGitTitle', 'Initialize Git?')
-              : pendingProjectSetupPrompt.details.kind === 'initial_commit'
+              : activeProjectSetupPrompt.kind === 'initial_commit'
                 ? t('project.initialCommitTitle', 'Create the initial commit?')
                 : t('project.createDevelopTitle', 'Create develop?')
           }
           description={
-            pendingProjectSetupPrompt.details.kind === 'init_git'
+            activeProjectSetupPrompt.kind === 'init_git'
               ? t(
                   'project.initGitDescription',
                   'This folder is not a Git repository yet. Initialize Git now to enable worktrees and editable workflows. If you skip this step, the subproject will be added as read-only.'
                 )
-              : pendingProjectSetupPrompt.details.kind === 'initial_commit'
+              : activeProjectSetupPrompt.kind === 'initial_commit'
                 ? t(
                     'project.initialCommitDescription',
                     'This repository has no initial commit yet. Create it now to enable branches, worktrees, and editable workflows. If you skip this step, the subproject will be added as read-only.'
@@ -655,22 +695,22 @@ export const ProjectModal: React.FC = () => {
                     'project.createDevelopDescription',
                     'This repository only has a main branch. Create develop from {{mainBranch}} now? If you skip this step, future features will merge directly into {{mainBranch}}.',
                     {
-                      mainBranch: pendingProjectSetupPrompt.details.mainBranch || 'main',
-                      branchName: pendingProjectSetupPrompt.details.mainBranch || 'main',
+                      mainBranch: activeProjectSetupPrompt.mainBranch || 'main',
+                      branchName: activeProjectSetupPrompt.mainBranch || 'main',
                     }
                   )
           }
           confirmLabel={
-            pendingProjectSetupPrompt.details.kind === 'create_develop'
+            activeProjectSetupPrompt.kind === 'create_develop'
               ? t('project.createDevelopConfirm', 'Create develop')
-              : pendingProjectSetupPrompt.details.kind === 'initial_commit'
+              : activeProjectSetupPrompt.kind === 'initial_commit'
                 ? t('project.createInitialCommitConfirm', 'Create commit')
                 : t('project.initGitConfirm', 'Initialize Git')
           }
           cancelLabel={
-            pendingProjectSetupPrompt.details.kind === 'create_develop'
+            activeProjectSetupPrompt.kind === 'create_develop'
               ? t('project.createDevelopDecline', 'Keep {{branchName}} only', {
-                  branchName: pendingProjectSetupPrompt.details.mainBranch || 'main',
+                  branchName: activeProjectSetupPrompt.mainBranch || 'main',
                 })
               : t('project.keepReadOnly', 'Keep read-only')
           }
@@ -683,18 +723,18 @@ export const ProjectModal: React.FC = () => {
           }}
         >
           <div className="space-y-3">
-            {pendingProjectSetupPrompt.details.resolvedRepoRootPath && (
+            {activeProjectSetupPrompt.resolvedRepoRootPath && (
               <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
                   {t('project.gitSetupRepoRootLabel', 'Git repository root')}
                 </div>
                 <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
-                  {pendingProjectSetupPrompt.details.resolvedRepoRootPath}
+                  {activeProjectSetupPrompt.resolvedRepoRootPath}
                 </div>
               </div>
             )}
 
-            {pendingProjectSetupPrompt.details.kind === 'initial_commit' && (
+            {activeProjectSetupPrompt.kind === 'initial_commit' && (
               <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-xs font-semibold text-foreground">
@@ -702,12 +742,12 @@ export const ProjectModal: React.FC = () => {
                   </div>
                   <div className="text-[11px] text-muted-foreground">
                     {t('project.initialCommitPreviewCount', '{{count}} file(s)', {
-                      count: pendingProjectSetupPrompt.details.initialCommitPreviewCount,
+                      count: activeProjectSetupPrompt.initialCommitPreviewCount,
                     })}
                   </div>
                 </div>
 
-                {hasProjectSetupRisks(pendingProjectSetupPrompt.details.initialCommitRiskFlags) && (
+                {hasProjectSetupRisks(activeProjectSetupPrompt.initialCommitRiskFlags) && (
                   <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-200">
                     <div className="font-medium text-amber-100">
                       {t(
@@ -716,17 +756,17 @@ export const ProjectModal: React.FC = () => {
                       )}
                     </div>
                     <ul className="mt-1.5 space-y-1 text-[11px]">
-                      {pendingProjectSetupPrompt.details.initialCommitRiskFlags.map((riskFlag) => (
+                      {activeProjectSetupPrompt.initialCommitRiskFlags.map((riskFlag) => (
                         <li key={riskFlag}>{getRiskFlagLabel(riskFlag)}</li>
                       ))}
                     </ul>
                   </div>
                 )}
 
-                {pendingProjectSetupPrompt.details.initialCommitPreviewPaths.length > 0 ? (
+                {activeProjectSetupPrompt.initialCommitPreviewPaths.length > 0 ? (
                   <div className="max-h-44 overflow-y-auto rounded-md border border-border/50 bg-background/70 px-2.5 py-2">
                     <ul className="space-y-1 font-mono text-[11px] text-muted-foreground">
-                      {pendingProjectSetupPrompt.details.initialCommitPreviewPaths.map((path) => (
+                      {activeProjectSetupPrompt.initialCommitPreviewPaths.map((path) => (
                         <li key={path} className="break-all">
                           {path}
                         </li>

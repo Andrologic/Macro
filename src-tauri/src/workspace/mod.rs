@@ -16,6 +16,8 @@ use metadata::{
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -40,6 +42,9 @@ const GIT_RESOLUTION_NONE: &str = "none";
 const GIT_RESOLUTION_SELECTED_FOLDER: &str = "selected_folder";
 const GIT_RESOLUTION_PARENT_REPO: &str = "parent_repo";
 const GIT_RESOLUTION_NEW_LOCAL_REPO: &str = "new_local_repo";
+const GIT_SETUP_ACTION_INITIALIZE_REPO: &str = "initialize_repo";
+const GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT: &str = "create_initial_commit";
+const GIT_SETUP_ACTION_CREATE_DEVELOP: &str = "create_develop";
 const INITIAL_COMMIT_PREVIEW_LIMIT: usize = 20;
 const ACCESS_BLOCK_DIRTY_WORKTREE: &str = "dirty_worktree";
 const ACCESS_BLOCK_LIVE_TERMINAL: &str = "live_terminal";
@@ -59,6 +64,21 @@ struct InitialCommitPreview {
     paths: Vec<String>,
     total_count: usize,
     risk_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum GitSetupRollbackStep {
+    RemoveGitDir {
+        git_dir_path: PathBuf,
+    },
+    RemoveBranch {
+        repo_root_path: PathBuf,
+        branch_name: String,
+    },
+    ResetInitialCommit {
+        repo_root_path: PathBuf,
+        head_reference_name: String,
+    },
 }
 
 fn count_projects(groups: &[ProjectGroupDto]) -> usize {
@@ -149,6 +169,64 @@ fn collect_initial_commit_risk_flags(path: &str, flags: &mut HashSet<String>) {
     }
 }
 
+fn collect_initial_commit_preview_for_path(path: &Path) -> InitialCommitPreview {
+    if !path.exists() {
+        return InitialCommitPreview::default();
+    }
+
+    let mut unique_paths = HashSet::new();
+    let mut preview_paths = Vec::new();
+    let mut risk_flags = HashSet::new();
+    let mut walkdir = walkdir::WalkDir::new(path).into_iter();
+
+    while let Some(entry_result) = walkdir.next() {
+        let Ok(entry) = entry_result else {
+            continue;
+        };
+
+        if entry.depth() == 0 {
+            continue;
+        }
+
+        let Ok(relative_path) = entry.path().strip_prefix(path) else {
+            continue;
+        };
+
+        if relative_path
+            .components()
+            .any(|component| component.as_os_str() == OsStr::new(".git"))
+        {
+            if entry.file_type().is_dir() {
+                walkdir.skip_current_dir();
+            }
+            continue;
+        }
+
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let normalized_relative_path = relative_path.to_string_lossy().replace('\\', "/");
+        if !unique_paths.insert(normalized_relative_path.clone()) {
+            continue;
+        }
+
+        collect_initial_commit_risk_flags(&normalized_relative_path, &mut risk_flags);
+        if preview_paths.len() < INITIAL_COMMIT_PREVIEW_LIMIT {
+            preview_paths.push(normalized_relative_path);
+        }
+    }
+
+    let mut risk_flags = risk_flags.into_iter().collect::<Vec<_>>();
+    risk_flags.sort();
+
+    InitialCommitPreview {
+        total_count: unique_paths.len(),
+        paths: preview_paths,
+        risk_flags,
+    }
+}
+
 fn collect_initial_commit_preview(repo: &Repository) -> Result<InitialCommitPreview> {
     if repo_has_initial_commit(repo) {
         return Ok(InitialCommitPreview::default());
@@ -204,6 +282,15 @@ fn collect_initial_commit_preview(repo: &Repository) -> Result<InitialCommitPrev
     })
 }
 
+fn resolve_unborn_head_branch(repo: &Repository) -> Option<String> {
+    repo.find_reference("HEAD")
+        .ok()
+        .and_then(|reference| reference.symbolic_target().map(str::to_string))
+        .and_then(|target| target.rsplit('/').next().map(str::to_string))
+        .map(|branch| branch.trim().to_string())
+        .filter(|branch| !branch.is_empty())
+}
+
 fn is_auto_detected_branch_family(value: &str, candidates: &[&str]) -> bool {
     let normalized = normalize_base_branch(Some(value));
     candidates.iter().any(|candidate| normalized == *candidate)
@@ -219,6 +306,50 @@ fn should_auto_update_project_base_branch(value: &str) -> bool {
 
 fn repo_has_initial_commit(repo: &Repository) -> bool {
     repo.is_empty().map(|is_empty| !is_empty).unwrap_or(false)
+}
+
+fn should_offer_develop_for_branch(branch: Option<&str>) -> bool {
+    let normalized = normalize_base_branch(branch);
+    DEVELOP_PROMPT_MAIN_BRANCHES
+        .iter()
+        .any(|candidate| normalized == *candidate)
+}
+
+fn recommended_git_setup_actions(detection: &ProjectGitFlowDetectionDto) -> Vec<String> {
+    if detection.setup_state == PROJECT_GIT_DETECTION_NOT_GIT {
+        return vec![
+            GIT_SETUP_ACTION_INITIALIZE_REPO.to_string(),
+            GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT.to_string(),
+            GIT_SETUP_ACTION_CREATE_DEVELOP.to_string(),
+        ];
+    }
+
+    if detection.setup_state == PROJECT_GIT_DETECTION_UNBORN {
+        let mut actions = vec![GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT.to_string()];
+        let main_branch = detection
+            .suggested_main_branch
+            .as_deref()
+            .or(detection.suggested_commit_branch.as_deref())
+            .or(detection.current_branch.as_deref());
+        if should_offer_develop_for_branch(main_branch) {
+            actions.push(GIT_SETUP_ACTION_CREATE_DEVELOP.to_string());
+        }
+        return actions;
+    }
+
+    if detection.setup_state == PROJECT_GIT_DETECTION_SINGLE_MAIN_ONLY
+        && should_offer_develop_for_branch(
+            detection
+                .suggested_main_branch
+                .as_deref()
+                .or(detection.suggested_commit_branch.as_deref())
+                .or(detection.current_branch.as_deref()),
+        )
+    {
+        return vec![GIT_SETUP_ACTION_CREATE_DEVELOP.to_string()];
+    }
+
+    Vec::new()
 }
 
 fn detection_setup_state(
@@ -338,6 +469,7 @@ fn empty_git_flow_detection() -> ProjectGitFlowDetectionDto {
         initial_commit_preview_paths: Vec::new(),
         initial_commit_preview_count: 0,
         initial_commit_risk_flags: Vec::new(),
+        recommended_action_sequence: Vec::new(),
     }
 }
 
@@ -347,30 +479,73 @@ fn build_project_git_flow_detection(
     has_initial_commit: bool,
     initial_commit_preview: InitialCommitPreview,
 ) -> ProjectGitFlowDetectionDto {
-    let detection = detection.unwrap_or_else(|| crate::git::GitFlowBranchDetection {
-        branch_candidates: Vec::new(),
-        current_branch: None,
-        main_branch: None,
-        base_branch: None,
-        commit_branch: None,
-        requires_confirmation: false,
-    });
+    let (
+        branches,
+        current_branch,
+        suggested_main_branch,
+        suggested_base_branch,
+        suggested_commit_branch,
+        requires_confirmation,
+    ) = match detection {
+        Some(detection) => (
+            detection.branch_candidates,
+            detection.current_branch,
+            detection.main_branch,
+            detection.base_branch,
+            detection.commit_branch,
+            detection.requires_confirmation,
+        ),
+        None if probe.repo.is_some() => {
+            let unborn_branch = probe
+                .repo
+                .as_ref()
+                .and_then(resolve_unborn_head_branch)
+                .unwrap_or_else(|| "main".to_string());
+            (
+                vec![unborn_branch.clone()],
+                Some(unborn_branch.clone()),
+                Some(unborn_branch.clone()),
+                Some(unborn_branch.clone()),
+                Some(unborn_branch),
+                false,
+            )
+        }
+        None => (
+            Vec::new(),
+            None,
+            Some("main".to_string()),
+            Some("main".to_string()),
+            Some("main".to_string()),
+            false,
+        ),
+    };
     let setup_state = if probe.repo.is_none() {
         PROJECT_GIT_DETECTION_NOT_GIT.to_string()
     } else if !has_initial_commit {
         PROJECT_GIT_DETECTION_UNBORN.to_string()
     } else {
-        detection_setup_state(&detection, has_initial_commit).to_string()
+        detection_setup_state(
+            &crate::git::GitFlowBranchDetection {
+                branch_candidates: branches.clone(),
+                current_branch: current_branch.clone(),
+                main_branch: suggested_main_branch.clone(),
+                base_branch: suggested_base_branch.clone(),
+                commit_branch: suggested_commit_branch.clone(),
+                requires_confirmation,
+            },
+            has_initial_commit,
+        )
+        .to_string()
     };
 
-    ProjectGitFlowDetectionDto {
+    let mut detection = ProjectGitFlowDetectionDto {
         repo_detected: probe.repo.is_some(),
-        branches: detection.branch_candidates,
-        current_branch: detection.current_branch,
-        suggested_main_branch: detection.main_branch,
-        suggested_base_branch: detection.base_branch,
-        suggested_commit_branch: detection.commit_branch,
-        requires_confirmation: detection.requires_confirmation,
+        branches,
+        current_branch,
+        suggested_main_branch,
+        suggested_base_branch,
+        suggested_commit_branch,
+        requires_confirmation,
         setup_state,
         has_initial_commit,
         resolved_repo_root_path: probe
@@ -388,7 +563,10 @@ fn build_project_git_flow_detection(
         initial_commit_preview_paths: initial_commit_preview.paths,
         initial_commit_preview_count: initial_commit_preview.total_count,
         initial_commit_risk_flags: initial_commit_preview.risk_flags,
-    }
+        recommended_action_sequence: Vec::new(),
+    };
+    detection.recommended_action_sequence = recommended_git_setup_actions(&detection);
+    detection
 }
 
 fn detect_project_git_flow_internal(
@@ -400,12 +578,8 @@ fn detect_project_git_flow_internal(
     };
 
     let Some(repo) = probe.repo.as_ref() else {
-        return build_project_git_flow_detection(
-            &probe,
-            None,
-            false,
-            InitialCommitPreview::default(),
-        );
+        let preview = collect_initial_commit_preview_for_path(&probe.requested_path);
+        return build_project_git_flow_detection(&probe, None, false, preview);
     };
 
     let has_initial_commit = repo_has_initial_commit(repo);
@@ -436,12 +610,17 @@ fn resolve_repo_workdir(repo: &Repository, fallback: &Path) -> PathBuf {
         .unwrap_or_else(|| fallback.to_path_buf())
 }
 
-fn create_initial_commit(repo: &Repository) -> Result<()> {
+fn create_initial_commit(repo: &Repository) -> Result<Option<String>> {
     if repo_has_initial_commit(repo) {
-        return Ok(());
+        return Ok(None);
     }
 
     let repo_root = resolve_repo_workdir(repo, repo.path());
+    let head_reference_name = repo
+        .find_reference("HEAD")
+        .ok()
+        .and_then(|reference| reference.symbolic_target().map(str::to_string))
+        .unwrap_or_else(|| "refs/heads/main".to_string());
     let mut index = repo.index().map_err(|e| BackendError::Git {
         message: format!("Failed to open repository index: {}", e),
     })?;
@@ -480,10 +659,10 @@ fn create_initial_commit(repo: &Repository) -> Result<()> {
     .map_err(|e| BackendError::Git {
         message: format!("Failed to create initial repository commit: {}", e),
     })?;
-    Ok(())
+    Ok(Some(head_reference_name))
 }
 
-fn create_develop_branch(repo: &Repository, from_ref: &str) -> Result<()> {
+fn create_develop_branch(repo: &Repository, from_ref: &str) -> Result<bool> {
     if repo
         .find_branch("develop", BranchType::Local)
         .map(|_| true)
@@ -498,7 +677,7 @@ fn create_develop_branch(repo: &Repository, from_ref: &str) -> Result<()> {
             message: format!("Failed to inspect develop branch: {}", error),
         })?
     {
-        return Ok(());
+        return Ok(false);
     }
 
     let target = repo
@@ -511,7 +690,7 @@ fn create_develop_branch(repo: &Repository, from_ref: &str) -> Result<()> {
         .map_err(|error| BackendError::Git {
             message: format!("Failed to create develop branch: {}", error),
         })?;
-    Ok(())
+    Ok(true)
 }
 
 pub fn preview_project_git_setup(
@@ -521,32 +700,45 @@ pub fn preview_project_git_setup(
     detect_project_git_flow_internal(workspace_path, project_path)
 }
 
-pub async fn apply_project_git_setup(
+fn normalize_git_setup_actions(actions: &[String]) -> Vec<String> {
+    actions
+        .iter()
+        .map(|action| action.trim().to_string())
+        .filter(|action| !action.is_empty())
+        .collect()
+}
+
+fn git_setup_actions_are_prefix(requested: &[String], recommended: &[String]) -> bool {
+    requested.len() <= recommended.len()
+        && requested
+            .iter()
+            .zip(recommended.iter())
+            .all(|(requested_action, recommended_action)| requested_action == recommended_action)
+}
+
+fn validate_project_git_setup_commit(
     workspace_path: &Path,
     project_path: &str,
-    action: &str,
+    requested_actions: &[String],
     expected_repo_root_path: Option<&str>,
+    expected_setup_state: &str,
+    expected_recommended_action_sequence: &[String],
 ) -> Result<ProjectGitFlowDetectionDto> {
-    let resolved_project_path = resolve_project_path(workspace_path, project_path);
-    fs::create_dir_all(&resolved_project_path)
-        .await
-        .map_err(|error| BackendError::Filesystem {
-            message: format!(
-                "Failed to create project directory {}: {}",
-                resolved_project_path.display(),
-                error
-            ),
-        })?;
+    let detection = detect_project_git_flow_internal(workspace_path, Some(project_path));
+    let normalized_requested_actions = normalize_git_setup_actions(requested_actions);
+    let normalized_expected_recommended_actions =
+        normalize_git_setup_actions(expected_recommended_action_sequence);
+    let normalized_actual_recommended_actions =
+        normalize_git_setup_actions(&detection.recommended_action_sequence);
 
-    let existing_probe = resolve_project_git_probe(workspace_path, Some(project_path))
-        .ok_or_else(|| BackendError::Validation("Project path is required".to_string()))?;
     if let Some(expected_repo_root_path) = expected_repo_root_path {
         let expected_path_key = normalized_path_key(Path::new(expected_repo_root_path));
-        let actual_path_key = existing_probe
+        let actual_repo_root = detection
             .resolved_repo_root_path
-            .as_ref()
-            .map(|path| normalized_path_key(path))
-            .unwrap_or_else(|| normalized_path_key(&resolved_project_path));
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| resolve_project_path(workspace_path, project_path));
+        let actual_path_key = normalized_path_key(&actual_repo_root);
         if expected_path_key != actual_path_key {
             return Err(BackendError::Validation(
                 "Project Git setup target changed. Refresh and try again.".to_string(),
@@ -554,74 +746,351 @@ pub async fn apply_project_git_setup(
         }
     }
 
-    let repo = match action {
-        "initialize_repo" => match existing_probe.repo {
-            Some(repo) => repo,
-            None => {
-                let mut opts = RepositoryInitOptions::new();
-                opts.initial_head("main");
-                Repository::init_opts(&resolved_project_path, &opts).map_err(|error| {
-                    BackendError::Git {
+    if detection.setup_state != expected_setup_state.trim() {
+        return Err(BackendError::Validation(
+            "Project Git setup state changed. Refresh and try again.".to_string(),
+        ));
+    }
+
+    if normalized_expected_recommended_actions != normalized_actual_recommended_actions {
+        return Err(BackendError::Validation(
+            "Project Git setup recommendations changed. Refresh and try again.".to_string(),
+        ));
+    }
+
+    if !git_setup_actions_are_prefix(
+        &normalized_requested_actions,
+        &normalized_actual_recommended_actions,
+    ) {
+        return Err(BackendError::Validation(
+            "Selected Git setup actions are no longer valid. Refresh and try again.".to_string(),
+        ));
+    }
+
+    Ok(detection)
+}
+
+fn rollback_git_setup_step(step: &GitSetupRollbackStep) -> Result<()> {
+    match step {
+        GitSetupRollbackStep::RemoveGitDir { git_dir_path } => {
+            if git_dir_path.exists() {
+                std::fs::remove_dir_all(git_dir_path).map_err(|error| {
+                    BackendError::Filesystem {
                         message: format!(
-                            "Failed to initialize git repository at {}: {}",
-                            resolved_project_path.display(),
+                            "Failed to remove Git metadata directory {} during rollback: {}",
+                            git_dir_path.display(),
                             error
                         ),
                     }
-                })?
+                })?;
             }
-        },
-        "create_initial_commit" | "create_develop" => existing_probe.repo.ok_or_else(|| {
-            BackendError::Validation(
-                "Git must be initialized before applying this setup step.".to_string(),
-            )
-        })?,
+        }
+        GitSetupRollbackStep::RemoveBranch {
+            repo_root_path,
+            branch_name,
+        } => {
+            let repo = Repository::open(repo_root_path).map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to reopen repository {} during rollback: {}",
+                    repo_root_path.display(),
+                    error
+                ),
+            })?;
+            let branch_result = repo.find_branch(branch_name, BranchType::Local);
+            if let Ok(mut branch) = branch_result {
+                branch.delete().map_err(|error| BackendError::Git {
+                    message: format!(
+                        "Failed to delete branch '{}' during rollback: {}",
+                        branch_name, error
+                    ),
+                })?;
+            }
+        }
+        GitSetupRollbackStep::ResetInitialCommit {
+            repo_root_path,
+            head_reference_name,
+        } => {
+            let repo = Repository::open(repo_root_path).map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to reopen repository {} during rollback: {}",
+                    repo_root_path.display(),
+                    error
+                ),
+            })?;
+            if let Ok(mut reference) = repo.find_reference(head_reference_name) {
+                reference.delete().map_err(|error| BackendError::Git {
+                    message: format!(
+                        "Failed to delete initial branch ref '{}' during rollback: {}",
+                        head_reference_name, error
+                    ),
+                })?;
+            }
+            repo.reference_symbolic("HEAD", head_reference_name, true, "rollback initial commit")
+                .map_err(|error| BackendError::Git {
+                    message: format!(
+                        "Failed to restore unborn HEAD '{}' during rollback: {}",
+                        head_reference_name, error
+                    ),
+                })?;
+            let mut index = repo.index().map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to reopen repository index during rollback: {}",
+                    error
+                ),
+            })?;
+            index.clear().map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to clear repository index during rollback: {}",
+                    error
+                ),
+            })?;
+            index.write().map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to persist repository index during rollback: {}",
+                    error
+                ),
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn rollback_git_setup_steps(rollback_steps: &[GitSetupRollbackStep]) -> Result<()> {
+    for step in rollback_steps.iter().rev() {
+        rollback_git_setup_step(step)?;
+    }
+
+    Ok(())
+}
+
+fn apply_git_setup_action(
+    workspace_path: &Path,
+    project_path: &str,
+    detection: &ProjectGitFlowDetectionDto,
+    action: &str,
+    rollback_steps: &mut Vec<GitSetupRollbackStep>,
+) -> Result<()> {
+    let resolved_project_path = resolve_project_path(workspace_path, project_path);
+    let existing_probe = resolve_project_git_probe(workspace_path, Some(project_path))
+        .ok_or_else(|| BackendError::Validation("Project path is required".to_string()))?;
+
+    match action {
+        GIT_SETUP_ACTION_INITIALIZE_REPO => {
+            if existing_probe.repo.is_none() {
+                let mut opts = RepositoryInitOptions::new();
+                opts.initial_head("main");
+                let repo =
+                    Repository::init_opts(&resolved_project_path, &opts).map_err(|error| {
+                        BackendError::Git {
+                            message: format!(
+                                "Failed to initialize git repository at {}: {}",
+                                resolved_project_path.display(),
+                                error
+                            ),
+                        }
+                    })?;
+                rollback_steps.push(GitSetupRollbackStep::RemoveGitDir {
+                    git_dir_path: repo.path().to_path_buf(),
+                });
+            }
+        }
+        GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT => {
+            let repo = existing_probe.repo.ok_or_else(|| {
+                BackendError::Validation(
+                    "Git must be initialized before creating the initial commit.".to_string(),
+                )
+            })?;
+            if let Some(head_reference_name) = create_initial_commit(&repo)? {
+                rollback_steps.push(GitSetupRollbackStep::ResetInitialCommit {
+                    repo_root_path: resolve_repo_workdir(&repo, repo.path()),
+                    head_reference_name,
+                });
+            }
+        }
+        GIT_SETUP_ACTION_CREATE_DEVELOP => {
+            let repo = existing_probe.repo.ok_or_else(|| {
+                BackendError::Validation(
+                    "Git must be initialized before creating the develop branch.".to_string(),
+                )
+            })?;
+            let source_branch = detection
+                .suggested_main_branch
+                .clone()
+                .or_else(|| detection.suggested_commit_branch.clone())
+                .or_else(|| detection.current_branch.clone())
+                .unwrap_or_else(|| "main".to_string());
+            if create_develop_branch(&repo, &source_branch)? {
+                rollback_steps.push(GitSetupRollbackStep::RemoveBranch {
+                    repo_root_path: resolve_repo_workdir(&repo, repo.path()),
+                    branch_name: "develop".to_string(),
+                });
+            }
+        }
         _ => {
             return Err(BackendError::Validation(format!(
                 "Unsupported project Git setup action: {}",
                 action
-            )))
+            )));
         }
-    };
-
-    match action {
-        "initialize_repo" => {}
-        "create_initial_commit" => create_initial_commit(&repo)?,
-        "create_develop" => {
-            let detection = detect_project_git_flow_internal(workspace_path, Some(project_path));
-            let source_branch = detection
-                .suggested_main_branch
-                .or(detection.suggested_commit_branch)
-                .or(detection.current_branch)
-                .unwrap_or_else(|| "main".to_string());
-            create_develop_branch(&repo, &source_branch)?;
-        }
-        _ => {}
     }
 
-    Ok(detect_project_git_flow_internal(
-        workspace_path,
-        Some(project_path),
-    ))
+    Ok(())
 }
 
-pub async fn prepare_project_git(
+async fn execute_project_git_setup_commit<T, F, Fut>(
     workspace_path: &Path,
     project_path: &str,
-) -> Result<ProjectGitFlowDetectionDto> {
-    let detection =
-        apply_project_git_setup(workspace_path, project_path, "initialize_repo", None).await?;
-    if detection.setup_state == PROJECT_GIT_DETECTION_UNBORN {
-        return apply_project_git_setup(
-            workspace_path,
-            project_path,
-            "create_initial_commit",
-            detection.resolved_repo_root_path.as_deref(),
-        )
-        .await;
+    git_setup_actions: &[String],
+    expected_repo_root_path: Option<&str>,
+    expected_setup_state: &str,
+    expected_recommended_action_sequence: &[String],
+    persist_operation: F,
+) -> Result<(T, ProjectGitFlowDetectionDto)>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let normalized_actions = normalize_git_setup_actions(git_setup_actions);
+    tracing::info!(
+        action = "git_setup_commit_started",
+        project_path = %project_path,
+        requested_actions = ?normalized_actions,
+        expected_setup_state = %expected_setup_state.trim(),
+        expected_repo_root_path = ?expected_repo_root_path
+    );
+
+    let detection = validate_project_git_setup_commit(
+        workspace_path,
+        project_path,
+        &normalized_actions,
+        expected_repo_root_path,
+        expected_setup_state,
+        expected_recommended_action_sequence,
+    )?;
+
+    if !normalized_actions.is_empty() {
+        let resolved_project_path = resolve_project_path(workspace_path, project_path);
+        fs::create_dir_all(&resolved_project_path)
+            .await
+            .map_err(|error| BackendError::Filesystem {
+                message: format!(
+                    "Failed to create project directory {}: {}",
+                    resolved_project_path.display(),
+                    error
+                ),
+            })?;
     }
 
-    Ok(detection)
+    let mut rollback_steps = Vec::new();
+    for action in normalized_actions.iter() {
+        apply_git_setup_action(
+            workspace_path,
+            project_path,
+            &detection,
+            action,
+            &mut rollback_steps,
+        )?;
+    }
+
+    match persist_operation().await {
+        Ok(result) => {
+            let next_detection =
+                detect_project_git_flow_internal(workspace_path, Some(project_path));
+            tracing::info!(
+                action = "git_setup_commit_succeeded",
+                project_path = %project_path,
+                requested_actions = ?normalized_actions,
+                resulting_setup_state = %next_detection.setup_state
+            );
+            Ok((result, next_detection))
+        }
+        Err(error) => match rollback_git_setup_steps(&rollback_steps) {
+            Ok(()) => {
+                tracing::warn!(
+                    action = "git_setup_commit_rolled_back",
+                    project_path = %project_path,
+                    requested_actions = ?normalized_actions,
+                    rollback_step_count = rollback_steps.len()
+                );
+                Err(error)
+            }
+            Err(rollback_error) => {
+                tracing::error!(
+                    action = "git_setup_commit_partial_rollback_failure",
+                    project_path = %project_path,
+                    requested_actions = ?normalized_actions,
+                    rollback_step_count = rollback_steps.len(),
+                    error = %error,
+                    rollback_error = %rollback_error
+                );
+                Err(BackendError::Internal {
+                        message: format!(
+                            "Project Git setup failed and rollback was only partially applied: {}; rollback error: {}",
+                            error, rollback_error
+                        ),
+                    })
+            }
+        },
+    }
+}
+
+pub async fn create_project_with_git_setup(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: CreateProjectRequest,
+    git_setup_actions: &[String],
+    expected_repo_root_path: Option<&str>,
+    expected_setup_state: &str,
+    expected_recommended_action_sequence: &[String],
+) -> Result<metadata::ProjectGitSetupCommitResultDto> {
+    let project_path = request.path.clone().ok_or_else(|| {
+        BackendError::Validation(
+            "Project path is required when committing project Git setup.".to_string(),
+        )
+    })?;
+    let (project, detection) = execute_project_git_setup_commit(
+        workspace_path,
+        &project_path,
+        git_setup_actions,
+        expected_repo_root_path,
+        expected_setup_state,
+        expected_recommended_action_sequence,
+        || create_project(workspace_path, metadata_root, request),
+    )
+    .await?;
+
+    Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
+}
+
+pub async fn update_project_git_flow_with_setup(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    project_id: &str,
+    git_flow_settings: &ProjectGitFlowSettingsDto,
+    git_setup_actions: &[String],
+    expected_repo_root_path: Option<&str>,
+    expected_setup_state: &str,
+    expected_recommended_action_sequence: &[String],
+) -> Result<metadata::ProjectGitSetupCommitResultDto> {
+    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    let project = find_project_by_id(&state.project_groups, project_id)
+        .cloned()
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+    let project_path = project.path.clone();
+
+    let (project, detection) = execute_project_git_setup_commit(
+        workspace_path,
+        &project_path,
+        git_setup_actions,
+        expected_repo_root_path,
+        expected_setup_state,
+        expected_recommended_action_sequence,
+        || update_project_git_flow(workspace_path, metadata_root, project_id, git_flow_settings),
+    )
+    .await?;
+
+    Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
 }
 
 pub async fn refresh_project_registry_state(
@@ -3880,5 +4349,122 @@ mod tests {
         assert!(detection
             .branches
             .contains(&"integration-ready".to_string()));
+    }
+
+    #[test]
+    fn preview_project_git_setup_recommends_atomic_actions_for_non_git_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        stdfs::write(project_path.join("README.md"), "hello").expect("write file");
+
+        let detection =
+            preview_project_git_setup(temp.path(), Some(project_path.to_string_lossy().as_ref()));
+
+        assert!(!detection.repo_detected);
+        assert_eq!(detection.setup_state, PROJECT_GIT_DETECTION_NOT_GIT);
+        assert_eq!(detection.suggested_main_branch.as_deref(), Some("main"));
+        assert_eq!(
+            detection.recommended_action_sequence,
+            vec![
+                GIT_SETUP_ACTION_INITIALIZE_REPO.to_string(),
+                GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT.to_string(),
+                GIT_SETUP_ACTION_CREATE_DEVELOP.to_string(),
+            ]
+        );
+        assert_eq!(detection.initial_commit_preview_count, 1);
+        assert_eq!(
+            detection.initial_commit_preview_paths,
+            vec!["README.md".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_project_git_setup_commit_rolls_back_new_repo_on_failure() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        stdfs::write(project_path.join("README.md"), "hello").expect("write file");
+        let detection =
+            preview_project_git_setup(temp.path(), Some(project_path.to_string_lossy().as_ref()));
+
+        let result = execute_project_git_setup_commit(
+            temp.path(),
+            project_path.to_string_lossy().as_ref(),
+            &vec![
+                GIT_SETUP_ACTION_INITIALIZE_REPO.to_string(),
+                GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT.to_string(),
+            ],
+            detection.resolved_repo_root_path.as_deref(),
+            &detection.setup_state,
+            &detection.recommended_action_sequence,
+            || async {
+                Err::<(), BackendError>(BackendError::Validation(
+                    "persist failed on purpose".to_string(),
+                ))
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(!project_path.join(".git").exists());
+        let next_detection =
+            preview_project_git_setup(temp.path(), Some(project_path.to_string_lossy().as_ref()));
+        assert_eq!(next_detection.setup_state, PROJECT_GIT_DETECTION_NOT_GIT);
+    }
+
+    #[tokio::test]
+    async fn execute_project_git_setup_commit_rolls_back_develop_branch_on_failure() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_path = temp.path().join("repo");
+        let repo = init_git_repo(&project_path, "main", &[]);
+        let detection =
+            preview_project_git_setup(temp.path(), Some(project_path.to_string_lossy().as_ref()));
+
+        let result = execute_project_git_setup_commit(
+            temp.path(),
+            project_path.to_string_lossy().as_ref(),
+            &vec![GIT_SETUP_ACTION_CREATE_DEVELOP.to_string()],
+            detection.resolved_repo_root_path.as_deref(),
+            &detection.setup_state,
+            &detection.recommended_action_sequence,
+            || async {
+                Err::<(), BackendError>(BackendError::Validation(
+                    "persist failed on purpose".to_string(),
+                ))
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(repo.find_branch("develop", BranchType::Local).is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_project_git_setup_commit_rejects_stale_preview() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        let detection =
+            preview_project_git_setup(temp.path(), Some(project_path.to_string_lossy().as_ref()));
+
+        let mut opts = RepositoryInitOptions::new();
+        opts.initial_head("main");
+        Repository::init_opts(&project_path, &opts).expect("init repo");
+
+        let result = execute_project_git_setup_commit::<(), _, _>(
+            temp.path(),
+            project_path.to_string_lossy().as_ref(),
+            &[],
+            detection.resolved_repo_root_path.as_deref(),
+            &detection.setup_state,
+            &detection.recommended_action_sequence,
+            || async { Ok(()) },
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(BackendError::Validation(message)) if message.contains("Refresh and try again"))
+        );
     }
 }
