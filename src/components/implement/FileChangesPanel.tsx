@@ -14,7 +14,7 @@ import {
 } from '../../services/implementMultiRepoSummary';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
 
 interface FileChangesPanelProps {
@@ -24,6 +24,7 @@ interface FileChangesPanelProps {
 type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
 
 const CHANGE_PANEL_POLL_INTERVAL_MS = 1500;
+const CHANGE_PANEL_HIDDEN_POLL_INTERVAL_MS = 8000;
 
 const STATUS_COLORS = {
   added: 'text-primary',
@@ -299,27 +300,61 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
     let disposed = false;
     let refreshInFlight = false;
+    let timeoutId: number | null = null;
 
-    const refreshChanges = async () => {
+    const refreshChanges = async (silent: boolean = true) => {
       if (disposed || refreshInFlight || isCommitting) {
         return;
       }
 
       refreshInFlight = true;
       try {
-        await loadCurrentChanges({ silent: true });
+        await loadCurrentChanges({ silent });
       } finally {
         refreshInFlight = false;
       }
     };
 
-    const intervalId = window.setInterval(() => {
-      void refreshChanges();
-    }, CHANGE_PANEL_POLL_INTERVAL_MS);
+    const scheduleRefresh = (delayMs: number) => {
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+
+      timeoutId = window.setTimeout(() => {
+        if (disposed) {
+          return;
+        }
+
+        if (document.visibilityState === 'visible') {
+          void refreshChanges();
+          scheduleRefresh(CHANGE_PANEL_POLL_INTERVAL_MS);
+          return;
+        }
+
+        scheduleRefresh(CHANGE_PANEL_HIDDEN_POLL_INTERVAL_MS);
+      }, delayMs);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshChanges();
+      }
+      scheduleRefresh(
+        document.visibilityState === 'visible'
+          ? CHANGE_PANEL_POLL_INTERVAL_MS
+          : CHANGE_PANEL_HIDDEN_POLL_INTERVAL_MS
+      );
+    };
+
+    scheduleRefresh(CHANGE_PANEL_POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       disposed = true;
-      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
     };
   }, [isCommitting, loadCurrentChanges, selectedGroupId, selectedTaskId]);
 

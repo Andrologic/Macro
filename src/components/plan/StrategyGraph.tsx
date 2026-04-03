@@ -7,7 +7,7 @@ import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/archit
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { getScopedProjectIds } from '../../services/globalProjects';
 import { normalizeNodeProjectIds } from '../../services/implementTaskDerivation';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import type { PlanNode, PlanNodeStatus } from '../../types';

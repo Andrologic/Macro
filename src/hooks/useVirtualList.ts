@@ -11,6 +11,8 @@ import { useVirtualizer, VirtualizerOptions } from "@tanstack/react-virtual";
 export interface UseVirtualListOptions<T> {
   /** Items to virtualize */
   items: T[];
+  /** Optional external scroll container ref */
+  parentRef?: React.RefObject<HTMLDivElement | null>;
   /** Estimated height of each item in pixels */
   estimateSize: number;
   /** Number of items to render outside of visible area */
@@ -23,7 +25,7 @@ export interface UseVirtualListOptions<T> {
 
 export interface UseVirtualListResult<T> {
   /** Ref to attach to the scrollable container */
-  parentRef: React.RefObject<HTMLDivElement>;
+  parentRef: React.RefObject<HTMLDivElement | null>;
   /** Virtual items to render */
   virtualItems: Array<{
     index: number;
@@ -47,12 +49,14 @@ export interface UseVirtualListResult<T> {
  */
 export function useVirtualList<T>({
   items,
+  parentRef: externalParentRef,
   estimateSize,
   overscan = 5,
   dynamicHeight = false,
   gap = 0,
 }: UseVirtualListOptions<T>): UseVirtualListResult<T> {
-  const parentRef = useRef<HTMLDivElement>(null);
+  const internalParentRef = useRef<HTMLDivElement>(null);
+  const parentRef = externalParentRef ?? internalParentRef;
 
   const virtualizerOptions: Partial<VirtualizerOptions<HTMLDivElement, Element>> = {
     count: items.length,
@@ -93,7 +97,7 @@ export function useVirtualList<T>({
   );
 
   return {
-    parentRef: parentRef as React.RefObject<HTMLDivElement>,
+    parentRef,
     virtualItems,
     totalSize: virtualizer.getTotalSize(),
     scrollToIndex,
@@ -111,6 +115,7 @@ export function useVirtualMessages<T>(
 ) {
   const result = useVirtualList({
     items: messages,
+    parentRef: options.parentRef,
     estimateSize: options.estimateSize ?? 100,
     overscan: options.overscan ?? 5,
     dynamicHeight: options.dynamicHeight ?? true,

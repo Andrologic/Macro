@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import { loadPreference, PREF_KEYS, savePreference } from '../../services/preferences';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import { formatDate } from '../../i18n/format';
 import type { Conversation } from '../../types';
@@ -21,6 +22,7 @@ import {
   toggleAllConversationIds,
   toggleConversationIdInSet,
 } from './conversationArchiveState';
+import { useVirtualList } from '../../hooks/useVirtualList';
 
 interface ConversationArchiveProps {
   className?: string;
@@ -39,6 +41,20 @@ interface ConversationItemProps {
   onArchiveToggle: () => void;
   onDeleteComplete: (conversationId: string) => void;
 }
+
+type ArchiveListRow =
+  | {
+      kind: 'section';
+      id: string;
+      title: string;
+      icon: 'pin' | 'clock';
+    }
+  | {
+      kind: 'conversation';
+      id: string;
+      conversation: Conversation;
+      isPinned: boolean;
+    };
 
 const readArchivedConversationPreferenceCache = (): {
   ids: string[];
@@ -331,8 +347,14 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     selectConversation,
     createConversation,
     deleteChatConversations,
-  } = useChatStore();
-  const { clearConversationCitationsBulk } = useCitationsStore();
+  } = useChatStore(useShallow((state) => ({
+    conversations: state.conversations,
+    selectedConversationId: state.selectedConversationId,
+    selectConversation: state.selectConversation,
+    createConversation: state.createConversation,
+    deleteChatConversations: state.deleteChatConversations,
+  })));
+  const clearConversationCitationsBulk = useCitationsStore((state) => state.clearConversationCitationsBulk);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
@@ -425,6 +447,59 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     () => filteredConversations.map((conversation) => conversation.id),
     [filteredConversations]
   );
+  const archiveRows = useMemo<ArchiveListRow[]>(() => {
+    const rows: ArchiveListRow[] = [];
+
+    if (pinnedConversations.length > 0) {
+      rows.push({
+        kind: 'section',
+        id: 'section:pinned',
+        title: t('chat.pinned', 'Pinned'),
+        icon: 'pin',
+      });
+      rows.push(
+        ...pinnedConversations.map((conversation) => ({
+          kind: 'conversation' as const,
+          id: `conversation:${conversation.id}`,
+          conversation,
+          isPinned: true,
+        }))
+      );
+    }
+
+    if (regularConversations.length > 0) {
+      if (pinnedConversations.length > 0) {
+        rows.push({
+          kind: 'section',
+          id: 'section:recent',
+          title: t('chat.recent', 'Recent'),
+          icon: 'clock',
+        });
+      }
+      rows.push(
+        ...regularConversations.map((conversation) => ({
+          kind: 'conversation' as const,
+          id: `conversation:${conversation.id}`,
+          conversation,
+          isPinned: false,
+        }))
+      );
+    }
+
+    return rows;
+  }, [pinnedConversations, regularConversations, t]);
+  const {
+    parentRef: archiveListRef,
+    virtualItems: archiveVirtualItems,
+    totalSize: archiveListTotalSize,
+    measureElement: measureArchiveRow,
+  } = useVirtualList({
+    items: archiveRows,
+    estimateSize: 88,
+    overscan: 8,
+    dynamicHeight: true,
+    gap: 8,
+  });
 
   useEffect(() => {
     if (!isMultiSelectMode) {
@@ -713,66 +788,54 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           />
         </div>
 
-        <div className="flex-1 overflow-y-auto p-2">
-          {pinnedConversations.length > 0 && (
-            <div className="mb-4">
-              <div className="flex items-center gap-2 px-2 mb-2">
-                <Icon name="pin" size={12} className="text-primary" />
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  {t('chat.pinned', 'Pinned')}
-                </span>
+        <div ref={archiveListRef} className="flex-1 overflow-y-auto">
+          {archiveRows.length > 0 ? (
+            <div className="p-2">
+              <div className="relative" style={{ height: archiveListTotalSize }}>
+                {archiveVirtualItems.map((virtualRow) => {
+                  const row = virtualRow.item;
+                  return (
+                    <div
+                      key={row.id}
+                      ref={measureArchiveRow}
+                      data-index={virtualRow.index}
+                      className="absolute left-0 top-0 w-full"
+                      style={{ transform: `translateY(${virtualRow.start}px)` }}
+                    >
+                      {row.kind === 'section' ? (
+                        <div className="flex items-center gap-2 px-2 mb-1">
+                          <Icon
+                            name={row.icon}
+                            size={12}
+                            className={row.icon === 'pin' ? 'text-primary' : 'text-muted-foreground'}
+                          />
+                          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                            {row.title}
+                          </span>
+                        </div>
+                      ) : (
+                        <ConversationItem
+                          conversation={row.conversation}
+                          isCurrentConversation={selectedConversationId === row.conversation.id}
+                          isChecked={selectedIds.has(row.conversation.id)}
+                          isPinned={row.isPinned}
+                          isMultiSelectMode={isMultiSelectMode}
+                          isArchivedView={showArchived}
+                          onActivate={() =>
+                            isMultiSelectMode
+                              ? toggleSelection(row.conversation.id)
+                              : selectConversation(row.conversation.id)
+                          }
+                          onToggleSelection={() => toggleSelection(row.conversation.id)}
+                          onPin={() => togglePin(row.conversation.id)}
+                          onArchiveToggle={() => applyConversationArchiveState([row.conversation.id], !showArchived)}
+                          onDeleteComplete={handleConversationDeleted}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              <div className="space-y-1">
-                {pinnedConversations.map((conversation) => (
-                  <ConversationItem
-                    key={conversation.id}
-                    conversation={conversation}
-                    isCurrentConversation={selectedConversationId === conversation.id}
-                    isChecked={selectedIds.has(conversation.id)}
-                    isPinned
-                    isMultiSelectMode={isMultiSelectMode}
-                    isArchivedView={showArchived}
-                    onActivate={() =>
-                      isMultiSelectMode ? toggleSelection(conversation.id) : selectConversation(conversation.id)
-                    }
-                    onToggleSelection={() => toggleSelection(conversation.id)}
-                    onPin={() => togglePin(conversation.id)}
-                    onArchiveToggle={() => applyConversationArchiveState([conversation.id], !showArchived)}
-                    onDeleteComplete={handleConversationDeleted}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {regularConversations.length > 0 ? (
-            <div className="space-y-1">
-              {pinnedConversations.length > 0 && (
-                <div className="flex items-center gap-2 px-2 mb-2">
-                  <Icon name="clock" size={12} className="text-muted-foreground" />
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    {t('chat.recent', 'Recent')}
-                  </span>
-                </div>
-              )}
-              {regularConversations.map((conversation) => (
-                <ConversationItem
-                  key={conversation.id}
-                  conversation={conversation}
-                  isCurrentConversation={selectedConversationId === conversation.id}
-                  isChecked={selectedIds.has(conversation.id)}
-                  isPinned={false}
-                  isMultiSelectMode={isMultiSelectMode}
-                  isArchivedView={showArchived}
-                  onActivate={() =>
-                    isMultiSelectMode ? toggleSelection(conversation.id) : selectConversation(conversation.id)
-                  }
-                  onToggleSelection={() => toggleSelection(conversation.id)}
-                  onPin={() => togglePin(conversation.id)}
-                  onArchiveToggle={() => applyConversationArchiveState([conversation.id], !showArchived)}
-                  onDeleteComplete={handleConversationDeleted}
-                />
-              ))}
             </div>
           ) : searchQuery.trim() ? (
             <div className="flex flex-col items-center justify-center h-48 text-center px-4">

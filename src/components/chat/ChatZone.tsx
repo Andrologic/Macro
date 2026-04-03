@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import type { MessageImageAttachment } from '../../stores/useChatStore';
@@ -15,13 +16,28 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
-import { PlanSelector } from '../architect/PlanSelector';
-import { ComposerEditor, type ComposerEditorHandle } from './composer/ComposerEditor';
 import { getFocusedProjectForGroup, getGlobalProjectById } from '../../services/globalProjects';
+import { useVirtualMessages } from '../../hooks/useVirtualList';
+import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
 }
+
+const LazyPlanSelector = lazy(async () => {
+  const module = await import('../architect/PlanSelector');
+  return { default: module.PlanSelector };
+});
+
+const PlanSelectorFallback: React.FC = () => (
+  <div className="h-8 w-28 rounded-md border border-border/60 bg-card/60 animate-pulse" aria-hidden="true" />
+);
+
+const ComposerFallbackStatus: React.FC = () => (
+  <div className="sr-only" aria-live="polite">
+    Loading composer
+  </div>
+);
 
 /**
  * ChatZone - Main chat interface used across all modes
@@ -95,7 +111,21 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     activeArchitectPlanId,
     planNodes,
     predictedBranches,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    mode: state.mode,
+    agentType: state.agentType,
+    setAgentType: state.setAgentType,
+    pendingAutoLaunchPlanId: state.pendingAutoLaunchPlanId,
+    pendingAutoLaunchTaskId: state.pendingAutoLaunchTaskId,
+    clearPendingAutoLaunch: state.clearPendingAutoLaunch,
+    selectedGroupId: state.selectedGroupId,
+    selectedProjectId: state.selectedProjectId,
+    selectedTaskId: state.selectedTaskId,
+    projectGroups: state.projectGroups,
+    activeArchitectPlanId: state.activeArchitectPlanId,
+    planNodes: state.planNodes,
+    predictedBranches: state.predictedBranches,
+  })));
   const {
     conversations,
     messages,
@@ -115,13 +145,37 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getMessageImages,
     setMessageImages,
     composerContextRefs,
-  } = useChatStore();
+  } = useChatStore(useShallow((state) => ({
+    conversations: state.conversations,
+    messages: state.messages,
+    selectedConversationId: state.selectedConversationId,
+    createConversation: state.createConversation,
+    ensureConversationForCurrentMode: state.ensureConversationForCurrentMode,
+    hydrationStatus: state.hydrationStatus,
+    restoreStatus: state.restoreStatus,
+    isLoading: state.isLoading,
+    isStreaming: state.isStreaming,
+    sendState: state.sendState,
+    lastError: state.lastError,
+    stopStreaming: state.stopStreaming,
+    sendMessage: state.sendMessage,
+    clearLastError: state.clearLastError,
+    editMessage: state.editMessage,
+    getMessageImages: state.getMessageImages,
+    setMessageImages: state.setMessageImages,
+    composerContextRefs: state.composerContextRefs,
+  })));
 
-  const { selectedProviderId, selectedModelId } = useProviderStore();
-  const { needs } = useNeedsStore();
+  const { selectedProviderId, selectedModelId } = useProviderStore(useShallow((state) => ({
+    selectedProviderId: state.selectedProviderId,
+    selectedModelId: state.selectedModelId,
+  })));
+  const needs = useNeedsStore((state) => state.needs);
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
-  const tasks = useTaskStore((state) => state.tasks);
-  const startTask = useTaskStore((state) => state.startTask);
+  const { tasks, startTask } = useTaskStore(useShallow((state) => ({
+    tasks: state.tasks,
+    startTask: state.startTask,
+  })));
 
   const [inputValue, setInputValue] = useState('');
   const [kickoffNotes, setKickoffNotes] = useState('');
@@ -309,6 +363,39 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isStreaming,
     [currentMessages],
   );
+  const {
+    virtualItems: virtualMessageItems,
+    totalSize: virtualMessageTotalSize,
+    measureElement: measureMessageElement,
+    scrollToIndex: scrollToMessageIndex,
+  } = useVirtualMessages(currentMessages, {
+    parentRef: scrollContainerRef,
+    estimateSize: 220,
+    overscan: isStreaming ? 10 : 6,
+    dynamicHeight: true,
+    gap: 24,
+  });
+  const messageIndexById = useMemo(
+    () => new Map(currentMessages.map((message, index) => [message.id, index])),
+    [currentMessages]
+  );
+  const renderedMessageItems = useMemo(
+    () =>
+      virtualMessageItems.length > 0
+        ? virtualMessageItems
+        : currentMessages.map((message, index) => ({
+            index,
+            key: message.id,
+            size: 220,
+            start: index * 244,
+            item: message,
+          })),
+    [currentMessages, virtualMessageItems]
+  );
+  const renderedMessageTotalSize =
+    virtualMessageItems.length > 0
+      ? virtualMessageTotalSize
+      : Math.max(0, currentMessages.length * 244 - 24);
 
   const previousConversationIdRef = useRef<string | null>(null);
   const pendingConversationJumpRef = useRef<string | null>(null);
@@ -330,6 +417,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const jumpToBottom = () => {
       const container = scrollContainerRef.current;
       if (!container) return;
+      if (currentMessages.length > 0) {
+        scrollToMessageIndex(currentMessages.length - 1, { align: 'end' });
+      }
       container.scrollTo({ top: container.scrollHeight, behavior: 'auto' });
     };
 
@@ -340,7 +430,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         pendingConversationJumpRef.current = null;
       });
     });
-  }, [selectedConversationId, currentMessages.length, scrollContainerRef]);
+  }, [currentMessages.length, scrollContainerRef, scrollToMessageIndex, selectedConversationId]);
 
   const ensureConversation = useCallback(async (): Promise<string | null> => {
     if (selectedConversationId) return selectedConversationId;
@@ -748,10 +838,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       const messageId = customEvent.detail?.messageId;
       if (!messageId) return;
 
-      const target = document.getElementById(`chat-message-${messageId}`);
-      if (!target) return;
+      const targetIndex = messageIndexById.get(messageId);
+      if (typeof targetIndex === 'number') {
+        scrollToMessageIndex(targetIndex, { align: 'center' });
+      }
 
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      requestAnimationFrame(() => {
+        const target = document.getElementById(`chat-message-${messageId}`);
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
       setHighlightedMessageId(messageId);
       window.setTimeout(() => {
         setHighlightedMessageId((current) => (current === messageId ? null : current));
@@ -762,7 +859,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     return () => {
       window.removeEventListener('macro:focus-message', handleFocusMessage as EventListener);
     };
-  }, []);
+  }, [messageIndexById, scrollToMessageIndex]);
 
   return (
     <main className="h-full flex bg-background">
@@ -785,7 +882,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           </div>
 
           <div className="flex items-center gap-2">
-            {mode === 'Architect' && <PlanSelector />}
+            {mode === 'Architect' && (
+              <Suspense fallback={<PlanSelectorFallback />}>
+                <LazyPlanSelector />
+              </Suspense>
+            )}
             {mode === 'Debug' && (
               <button
                 onClick={() => void handleDebugRefresh()}
@@ -816,8 +917,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               </div>
             </div>
           ) : selectedConversationId && currentMessages.length > 0 ? (
-            <div className="max-w-4xl mx-auto space-y-6">
-              {currentMessages.map((message) => {
+            <div className="max-w-4xl mx-auto relative" style={{ height: renderedMessageTotalSize }}>
+              {renderedMessageItems.map((virtualMessage) => {
+                const message = virtualMessage.item;
+                const messageIndex = virtualMessage.index;
                 const isEditing = editingMessageId === message.id;
                 const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
                 const visibleImages = isEditing ? editingImages : messageImages;
@@ -825,11 +928,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 return (
                   <div
                     key={message.id}
+                    ref={measureMessageElement}
+                    data-index={messageIndex}
                     id={`chat-message-${message.id}`}
                     className={cn(
-                      'relative rounded-lg transition-colors duration-500',
+                      'absolute left-0 top-0 w-full rounded-lg transition-colors duration-500',
                       highlightedMessageId === message.id && 'bg-primary/10 ring-1 ring-primary/40'
                     )}
+                    style={{ transform: `translateY(${virtualMessage.start}px)` }}
                   >
                     <div
                       className={cn(
@@ -920,7 +1026,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                                 toolTraces={mode === 'Debug' ? undefined : message.tool_traces}
                                 isStreaming={
                                   isStreaming &&
-                                  message === currentMessages[currentMessages.length - 1]
+                                  messageIndex === currentMessages.length - 1
                                 }
                               />
                             ) : (
@@ -947,7 +1053,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                               </div>
                             )}
                             {/* Streaming indicator */}
-                            {isStreaming && message.role === 'assistant' && message === currentMessages[currentMessages.length - 1] && (
+                            {isStreaming && message.role === 'assistant' && messageIndex === currentMessages.length - 1 && (
                               <span className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1" />
                             )}
                           </div>
@@ -1242,37 +1348,39 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               className="flex items-center gap-2 bg-card/80 border border-border rounded-xl px-2 py-1.5"
               onPasteCapture={handleComposerPaste}
             >
-              <ComposerEditor
-                ref={composerEditorRef}
-                editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
-                placeholder={
-                  isConversationPending
-                    ? t('chat.loadingConversation', 'Restoring conversation...')
-                    : isImplementTaskSelectionMissing
-                    ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
-                    : isImplementComposerLocked
-                    ? t('implement.startExecutionFirst', 'Start execution to begin the task conversation')
-                    : !selectedProviderId || !selectedModelId
-                    ? t('chat.selectProvider')
-                    : t('chat.typeMessage')
-                }
-                onTextChange={(text) => {
-                  if (lastError) {
-                    clearLastError();
+              <Suspense fallback={<ComposerFallbackStatus />}>
+                <LazyComposerEditor
+                  ref={composerEditorRef}
+                  editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
+                  placeholder={
+                    isConversationPending
+                      ? t('chat.loadingConversation', 'Restoring conversation...')
+                      : isImplementTaskSelectionMissing
+                      ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
+                      : isImplementComposerLocked
+                      ? t('implement.startExecutionFirst', 'Start execution to begin the task conversation')
+                      : !selectedProviderId || !selectedModelId
+                      ? t('chat.selectProvider')
+                      : t('chat.typeMessage')
                   }
-                  setInputValue(text);
-                  if (promptHistoryIndex !== null) {
-                    setPromptHistoryIndex(null);
+                  onTextChange={(text) => {
+                    if (lastError) {
+                      clearLastError();
+                    }
+                    setInputValue(text);
+                    if (promptHistoryIndex !== null) {
+                      setPromptHistoryIndex(null);
+                    }
+                  }}
+                  onSend={handleSend}
+                  onPromptHistory={
+                    promptHistoryNavigationMode === 'contextual_arrows'
+                      ? navigatePromptHistory
+                      : undefined
                   }
-                }}
-                onSend={handleSend}
-                onPromptHistory={
-                  promptHistoryNavigationMode === 'contextual_arrows'
-                    ? navigatePromptHistory
-                    : undefined
-                }
-              />
-              {isStreaming ? (
+                />
+              </Suspense>
+            {isStreaming ? (
                 <button
                   onClick={stopStreaming}
                   className="rounded-lg bg-red-500 hover:bg-red-600 text-white px-3 h-9 flex items-center gap-2"

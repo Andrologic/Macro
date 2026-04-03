@@ -15,7 +15,7 @@ import { useAuthStore } from '../../../stores/useAuthStore';
 import { useAppStore } from '../../../stores/useAppStore';
 import { Select } from '../../ui/Select';
 import { Switch } from '../../ui/Switch';
-import { toast } from '../../ui/Toaster';
+import { toast } from '../../ui/toastService';
 
 export const NotificationsView: React.FC = () => {
   const { t } = useTranslation();

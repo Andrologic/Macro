@@ -27,7 +27,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { PlanFormModal } from './PlanFormModal';
 import { PlanReviewModal } from '../plan/PlanReviewModal';
