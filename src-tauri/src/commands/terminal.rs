@@ -220,13 +220,26 @@ async fn resolve_metadata_root(
     workspace_path: PathBuf,
     git_state: GitState,
 ) -> CommandResult<PathBuf> {
-    tokio::task::spawn_blocking(move || {
-        git_state
-            .resolve_macro_metadata_root(&workspace_path)
-            .map_err(|error| command_error(error.to_string()))
-    })
-    .await
-    .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?
+    let workspace_path_for_fallback = workspace_path.clone();
+    let resolved =
+        tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&workspace_path))
+            .await
+            .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?;
+
+    match resolved {
+        Ok(metadata_root) => Ok(metadata_root),
+        Err(crate::core::error::BackendError::GitRepositoryNotFound { message }) => {
+            let fallback = workspace_path_for_fallback.join(".macro");
+            tracing::warn!(
+                action = "terminal_metadata_root_fallback",
+                workspace_path = %workspace_path_for_fallback.display(),
+                fallback_path = %fallback.display(),
+                reason = %message
+            );
+            Ok(fallback)
+        }
+        Err(error) => Err(command_error(error.to_string())),
+    }
 }
 
 fn resolve_project_path(workspace_path: &Path, project_path: &str) -> PathBuf {

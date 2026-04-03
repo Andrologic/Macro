@@ -55,9 +55,26 @@ async fn resolve_workspace_for_path(
         return Ok(base_workspace);
     }
 
-    tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&base_workspace))
-        .await
-        .map_err(to_join_error)?
+    let base_workspace_for_fallback = base_workspace.clone();
+    let resolved =
+        tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&base_workspace))
+            .await
+            .map_err(to_join_error);
+    match resolved {
+        Ok(Ok(metadata_root)) => Ok(metadata_root),
+        Ok(Err(BackendError::GitRepositoryNotFound { message })) => {
+            let fallback = base_workspace_for_fallback.join(".macro");
+            tracing::warn!(
+                action = "workspace_fs_metadata_root_fallback",
+                workspace_path = %base_workspace_for_fallback.display(),
+                fallback_path = %fallback.display(),
+                reason = %message
+            );
+            Ok(fallback)
+        }
+        Ok(Err(error)) => Err(error),
+        Err(error) => Err(error),
+    }
 }
 
 pub fn map_macro_virtual_path(path: &str) -> String {

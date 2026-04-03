@@ -55,18 +55,22 @@ impl Default for AIConfig {
 }
 
 fn resolve_workspace_path_for_cwd(workspace_path: PathBuf, cwd: &Path) -> PathBuf {
-    if workspace_path != Path::new(".") {
+    if workspace_path.is_absolute() {
         return workspace_path;
     }
 
     let cwd_name = cwd.file_name().and_then(|name| name.to_str());
-    if cwd_name != Some("src-tauri") {
-        return workspace_path;
-    }
+    let base = if workspace_path == Path::new(".") && cwd_name == Some("src-tauri") {
+        cwd.parent().unwrap_or(cwd)
+    } else {
+        cwd
+    };
 
-    cwd.parent()
-        .map(|parent| parent.to_path_buf())
-        .unwrap_or(workspace_path)
+    if workspace_path == Path::new(".") {
+        base.to_path_buf()
+    } else {
+        base.join(workspace_path)
+    }
 }
 
 fn normalize_workspace_path(workspace_path: PathBuf) -> PathBuf {
