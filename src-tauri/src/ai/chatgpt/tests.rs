@@ -4,7 +4,10 @@ use super::session::{
     build_provider_auth_metadata, build_token_claims, decode_jwt_payload,
     resolve_token_expiry_rfc3339,
 };
-use super::stream::build_responses_request;
+use super::stream::{
+    build_responses_request, extract_function_call_from_output_item,
+    extract_output_text_from_output_item,
+};
 use super::types::{
     auth_flow_error_from_persist, AiChatMessage, AiChatMessageContent, AiChatRequest,
     ModelsCacheEntry, PersistChatGptSessionError, PkceCodes, CHATGPT_CALLBACK_PORT,
@@ -205,6 +208,47 @@ fn build_responses_request_flattens_tools_and_maps_tool_outputs() {
     assert_eq!(serialized_input[0]["type"], "function_call");
     assert_eq!(serialized_input[1]["type"], "function_call_output");
     assert_eq!(serialized_input[1]["call_id"], "call_1");
+}
+
+#[test]
+fn extract_output_text_from_output_item_reads_completed_message_items() {
+    let item = json!({
+        "id": "msg_123",
+        "status": "completed",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "output_text",
+                "text": "Point sur les deux projets."
+            }
+        ]
+    });
+
+    assert_eq!(
+        extract_output_text_from_output_item(&item),
+        "Point sur les deux projets."
+    );
+}
+
+#[test]
+fn extract_function_call_from_output_item_reads_completed_function_calls() {
+    let item = json!({
+        "id": "fc_123",
+        "call_id": "call_123",
+        "status": "completed",
+        "type": "function_call",
+        "name": "list",
+        "arguments": "{\"path\":\".\"}"
+    });
+
+    let tool_call = extract_function_call_from_output_item(&item)
+        .expect("tool call parse")
+        .expect("function call");
+
+    assert_eq!(tool_call.id, "call_123");
+    assert_eq!(tool_call.function.name, "list");
+    assert_eq!(tool_call.function.arguments, "{\"path\":\".\"}");
 }
 
 #[test]
