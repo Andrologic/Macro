@@ -16,7 +16,7 @@ import { toServiceError } from '../../services/contracts/errors';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import type { Project, ProjectGroup } from '../../types';
 

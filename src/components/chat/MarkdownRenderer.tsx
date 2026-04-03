@@ -1,65 +1,10 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
-import { MermaidRenderer } from './MermaidRenderer';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import ReactMarkdown from 'react-markdown';
-import type { Components } from 'react-markdown';
-import rehypeKatex from 'rehype-katex';
-import 'katex/dist/katex.min.css';
 import type { ToolTrace } from '../../types';
 
-// =============================================================================
-// HIGHLIGHT.JS - SYNTAX HIGHLIGHTING
-// =============================================================================
-
-import hljs from 'highlight.js/lib/core';
-
-// Import common languages
-import typescript from 'highlight.js/lib/languages/typescript';
-import javascript from 'highlight.js/lib/languages/javascript';
-import rust from 'highlight.js/lib/languages/rust';
-import python from 'highlight.js/lib/languages/python';
-import bash from 'highlight.js/lib/languages/bash';
-import json from 'highlight.js/lib/languages/json';
-import xml from 'highlight.js/lib/languages/xml';
-import css from 'highlight.js/lib/languages/css';
-import markdown from 'highlight.js/lib/languages/markdown';
-import yaml from 'highlight.js/lib/languages/yaml';
-import sql from 'highlight.js/lib/languages/sql';
-
-// Register languages
-hljs.registerLanguage('typescript', typescript);
-hljs.registerLanguage('javascript', javascript);
-hljs.registerLanguage('rust', rust);
-hljs.registerLanguage('python', python);
-hljs.registerLanguage('bash', bash);
-hljs.registerLanguage('json', json);
-hljs.registerLanguage('xml', xml);
-hljs.registerLanguage('html', xml);
-hljs.registerLanguage('css', css);
-hljs.registerLanguage('markdown', markdown);
-hljs.registerLanguage('yaml', yaml);
-hljs.registerLanguage('sql', sql);
-
-// Language alias mapping
-const LANGUAGE_ALIASES: Record<string, string> = {
-  'ts': 'typescript',
-  'js': 'javascript',
-  'jsx': 'javascript',
-  'tsx': 'typescript',
-  'py': 'python',
-  'sh': 'bash',
-  'shell': 'bash',
-  'zsh': 'bash',
-  'yml': 'yaml',
-  'md': 'markdown',
-  'htm': 'xml',
-  'psql': 'sql',
-  'mysql': 'sql',
-};
+const MarkdownRichContent = lazy(() => import('./MarkdownRichContent'));
 
 interface MarkdownRendererProps {
   content: string;
@@ -73,16 +18,11 @@ type RenderSegment =
   | { type: 'thinking'; content: string }
   | { type: 'tool'; toolName: string; detail?: string; status: 'running' | 'done' };
 
-const omitMarkdownDomProps = <T extends { node?: unknown; ref?: unknown }>(
-  props: T
-): Omit<T, 'node' | 'ref'> => {
-  const { node: _node, ref: _ref, ...domProps } = props;
-  return domProps;
-};
-
-// =============================================================================
-// THINKING BLOCK COMPONENT
-// =============================================================================
+const PlainMarkdownFallback: React.FC<{ content: string }> = ({ content }) => (
+  <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+    {content}
+  </div>
+);
 
 const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: React.ReactNode }> = ({
   content,
@@ -94,7 +34,6 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
 
   return (
     <div className="my-3 rounded-lg border border-primary/20 bg-primary/5 overflow-hidden">
-      {/* Header - always visible */}
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-primary/10 transition-colors"
@@ -114,7 +53,6 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
         )}
       </button>
 
-      {/* Content - collapsible */}
       {isOpen && (
         <div className="px-3 pb-3 pt-1 border-t border-primary/10">
           <div className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">
@@ -152,106 +90,6 @@ const ToolCallBlock: React.FC<{ toolName: string; detail?: string; status: 'runn
       </div>
     </div>
   );
-};
-
-// =============================================================================
-// CODE BLOCK COMPONENT WITH SYNTAX HIGHLIGHTING
-// =============================================================================
-
-interface CodeBlockProps {
-  content: string;
-  language?: string;
-  blockKey: number;
-}
-
-const CodeBlock: React.FC<CodeBlockProps> = ({ content, language = 'text', blockKey }) => {
-  const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-
-  const normalizedLang = useMemo(() => {
-    const lang = language.toLowerCase().trim();
-    return LANGUAGE_ALIASES[lang] || lang || 'text';
-  }, [language]);
-
-  const highlighted = useMemo(() => {
-    if (normalizedLang === 'text' || !hljs.getLanguage(normalizedLang)) {
-      // Try auto-detection for unknown languages
-      try {
-        const result = hljs.highlightAuto(content);
-        return result.value;
-      } catch {
-        return escapeHtml(content);
-      }
-    }
-    try {
-      const result = hljs.highlight(content, { language: normalizedLang });
-      return result.value;
-    } catch {
-      return escapeHtml(content);
-    }
-  }, [content, normalizedLang]);
-
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }, [content]);
-
-  const displayLang = language && language !== 'text' ? language : 'plaintext';
-
-  return (
-    <div key={blockKey} className="relative group my-3">
-      {/* Header */}
-      <div className="flex items-center justify-between bg-muted/80 px-3 py-1.5 rounded-t-lg border border-b-0 border-border">
-        <span className="text-xs text-muted-foreground font-mono capitalize">
-          {displayLang}
-        </span>
-        <button
-          onClick={handleCopy}
-          className={cn(
-            "flex items-center gap-1.5 text-xs transition-all duration-200",
-            copied
-              ? "text-green-500"
-              : "text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100"
-          )}
-        >
-          <Icon name={copied ? 'check' : 'copy'} size={12} />
-          {copied ? t('chat.copied', 'Copied') : t('chat.copyCode', 'Copy code')}
-        </button>
-      </div>
-
-      {/* Code Content */}
-      <pre className="bg-[#1e1e1e] p-3 rounded-b-lg border border-border overflow-x-auto">
-        <code
-          className="text-sm font-mono whitespace-pre hljs-code"
-          dangerouslySetInnerHTML={{ __html: highlighted }}
-        />
-      </pre>
-    </div>
-  );
-};
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
-// =============================================================================
-// MARKDOWN PIPELINE (REMARK/REHYPE)
-// =============================================================================
-
-let blockKeySeed = 0;
-
-const getTextFromChildren = (children: React.ReactNode): string => {
-  if (children === null || children === undefined) return '';
-  if (typeof children === 'string' || typeof children === 'number') return String(children);
-  if (Array.isArray(children)) return children.map(getTextFromChildren).join('');
-  if (React.isValidElement(children)) return getTextFromChildren((children.props as any).children);
-  return '';
 };
 
 const splitThinkBlocks = (content: string): Array<{ type: 'text' | 'thinking'; content: string }> => {
@@ -425,11 +263,9 @@ const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[]
 };
 
 const normalizeToolCallMarkup = (content: string): string => {
-  // 1. Handle the old format: <tool_call> toolName <arg_value>...
   let normalized = content.replace(
     /<tool_call>\s*([a-zA-Z0-9_-]+)\s*([\s\S]*?)<\/tool_call>/gi,
     (_full, toolName: string, body: string) => {
-      // If it looks like JSON, skip it for the next regex
       if (body.trim().startsWith('{')) return _full;
 
       const argValueMatch = body.match(/<arg_value>\s*([\s\S]*?)\s*<\/arg_value>/i);
@@ -438,30 +274,24 @@ const normalizeToolCallMarkup = (content: string): string => {
     }
   );
 
-  // 2. Handle the standard JSON format used by local models: <tool_call> {"name": "...", "arguments": {...}} </tool_call>
   normalized = normalized.replace(
     /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/gi,
     (_full, jsonBody: string) => {
       try {
         const parsed = JSON.parse(jsonBody);
         if (parsed.name) {
-          // You could stringify specific arguments you want to display, or just show the tool name
           const detail = parsed.arguments?.title || parsed.arguments?.query || parsed.arguments?.path || '';
           return detail ? `\n[TOOL] ${parsed.name} ("${detail}")\n` : `\n[TOOL] ${parsed.name}\n`;
         }
-      } catch (e) {
-        // Ignore JSON parse errors and just hide it or show a generic fallback
+      } catch {
+        // Ignore malformed local model output.
       }
-      return `\n[TOOL] unknown\n`;
+      return '\n[TOOL] unknown\n';
     }
   );
 
   return normalized;
 };
-
-// =============================================================================
-// MAIN MARKDOWN RENDERER
-// =============================================================================
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   content,
@@ -500,192 +330,15 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     return expanded;
   }, [content, isStreaming, structuredToolTraces]);
 
-  const components = useMemo<Components>(() => ({
-    a: ({ href, children, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <a
-          {...domProps}
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-primary hover:underline"
-        >
-          {children}
-        </a>
-      );
-    },
-    h1: ({ className: headingClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <h1 {...domProps} className={cn('text-xl font-bold mt-4 mb-2', headingClassName)} />
-      );
-    },
-    h2: ({ className: headingClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <h2 {...domProps} className={cn('text-lg font-semibold mt-4 mb-2', headingClassName)} />
-      );
-    },
-    h3: ({ className: headingClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <h3 {...domProps} className={cn('text-base font-semibold mt-3 mb-2', headingClassName)} />
-      );
-    },
-    h4: ({ className: headingClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <h4 {...domProps} className={cn('text-sm font-semibold mt-3 mb-2', headingClassName)} />
-      );
-    },
-    h5: ({ className: headingClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <h5 {...domProps} className={cn('text-sm font-medium mt-3 mb-2', headingClassName)} />
-      );
-    },
-    h6: ({ className: headingClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <h6 {...domProps} className={cn('text-xs font-medium mt-3 mb-2', headingClassName)} />
-      );
-    },
-    blockquote: ({ className: blockquoteClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <blockquote
-          {...domProps}
-          className={cn('border-l-2 border-primary/50 pl-3 my-2 text-muted-foreground italic', blockquoteClassName)}
-        />
-      );
-    },
-    code: ({ className, children, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      const blockKeyRef = useRef(++blockKeySeed);
-      const languageMatch = /language-([^\s]+)/i.exec(className || '');
-      const language = languageMatch?.[1] || '';
-      const codeText = getTextFromChildren(children).replace(/\n$/, '');
-
-      if (language.toLowerCase() === 'mermaid' || language.toLowerCase() === 'mmd') {
-        return <MermaidRenderer code={codeText} blockKey={blockKeyRef.current} />;
-      }
-
-      if (language.toLowerCase() === 'thinking') {
-        return <ThinkingBlock content={codeText} blockKey={blockKeyRef.current} />;
-      }
-
-      // In react-markdown v9+, 'inline' prop is no longer passed.
-      // We detect blocks by checking if there's a language or if the code contains newlines.
-      const isBlock = !!language || codeText.includes('\n');
-
-      if (isBlock) {
-        return (
-          <CodeBlock
-            content={codeText}
-            language={language || 'text'}
-            blockKey={blockKeyRef.current}
-          />
-        );
-      }
-
-      return (
-        <code
-          {...domProps}
-          className={cn(
-            'px-1.5 py-0.5 mx-0.5 bg-muted border border-border/50 rounded-md text-[0.875em] font-mono text-primary font-medium',
-            className
-          )}
-        >
-          {children}
-        </code>
-      );
-    },
-    pre: (props) => <>{props.children}</>,
-    ul: ({ className: listClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <ul {...domProps} className={cn('list-disc list-inside my-2 space-y-1', listClassName)} />
-      );
-    },
-    ol: ({ className: listClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <ol {...domProps} className={cn('list-decimal list-inside my-2 space-y-1', listClassName)} />
-      );
-    },
-    li: ({ className: itemClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <li {...domProps} className={cn('text-foreground', itemClassName)} />
-      );
-    },
-    table: ({ className: tableClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <table {...domProps} className={cn('w-full text-sm border border-border rounded-lg overflow-hidden', tableClassName)} />
-      );
-    },
-    thead: ({ className: sectionClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <thead {...domProps} className={cn('bg-muted/40', sectionClassName)} />
-      );
-    },
-    tbody: ({ className: sectionClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <tbody {...domProps} className={cn('divide-y divide-border', sectionClassName)} />
-      );
-    },
-    tr: ({ className: rowClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <tr {...domProps} className={cn('divide-x divide-border', rowClassName)} />
-      );
-    },
-    th: ({ className: cellClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <th {...domProps} className={cn('text-left font-semibold px-3 py-2', cellClassName)} />
-      );
-    },
-    td: ({ className: cellClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      return (
-        <td {...domProps} className={cn('px-3 py-2 align-top', cellClassName)} />
-      );
-    },
-    input: ({ type, className: inputClassName, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      if (type === 'checkbox') {
-        return (
-          <input
-            {...domProps}
-            type="checkbox"
-            disabled
-            className={cn('mr-2 align-middle accent-primary', inputClassName)}
-          />
-        );
-      }
-      return <input {...domProps} type={type} className={inputClassName} />;
-    },
-  }), []);
-
   return (
     <div className={cn('markdown-content', className)}>
       {segments.map((segment, index) => {
         if (segment.type === 'thinking') {
           return (
             <ThinkingBlock key={`thinking-${index}`} content={segment.content} blockKey={index}>
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex]}
-                skipHtml
-                components={components}
-              >
-                {segment.content}
-              </ReactMarkdown>
+              <Suspense fallback={<PlainMarkdownFallback content={segment.content} />}>
+                <MarkdownRichContent content={segment.content} />
+              </Suspense>
             </ThinkingBlock>
           );
         }
@@ -702,18 +355,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         }
 
         return (
-          <ReactMarkdown
-            key={`text-${index}`}
-            remarkPlugins={[remarkGfm, remarkMath]}
-            rehypePlugins={[rehypeKatex]}
-            skipHtml
-            components={components}
-          >
-            {segment.content}
-          </ReactMarkdown>
+          <Suspense key={`text-${index}`} fallback={<PlainMarkdownFallback content={segment.content} />}>
+            <MarkdownRichContent content={segment.content} />
+          </Suspense>
         );
       })}
     </div>
   );
 };
 
+export default MarkdownRenderer;

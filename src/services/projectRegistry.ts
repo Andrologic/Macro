@@ -1,6 +1,6 @@
 import type { Project, ProjectGroup } from '../types';
+import i18n from '../i18n';
 import { DEFAULT_LANGUAGE, resolveSupportedLanguage } from '../i18n/languages';
-import { resources } from '../i18n/resources';
 import { getFocusedProjectIdForGroup, getProjectGroupByProjectId } from './globalProjects';
 import { assignMountNamesToProjectGroups } from './projectMounts';
 
@@ -53,10 +53,12 @@ const resolveRegistrySummaryLanguage = () => {
 
 const getRegistryTranslation = (key: string): string | null => {
   const language = resolveRegistrySummaryLanguage();
-  const translation = resources[language]?.translation?.projects as
-    | Record<string, string>
-    | undefined;
-  return translation?.[key] ?? null;
+  const value = i18n.getFixedT(language)(`projects.${key}`, { defaultValue: '' });
+  if (!value || value === `projects.${key}`) {
+    return null;
+  }
+
+  return value;
 };
 
 const interpolate = (template: string, values: Record<string, string | number>): string =>

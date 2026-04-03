@@ -10,7 +10,7 @@ import { Button } from '../../../ui/Button';
 import { Input } from '../../../ui/Input';
 import { Switch } from '../../../ui/Switch';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
-import { toast } from '../../../ui/Toaster';
+import { toast } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
 import type { ProviderConfig } from '../../../../types';
 

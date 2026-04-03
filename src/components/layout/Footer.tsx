@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useShallow } from 'zustand/react/shallow';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 import { useAppStore } from '../../stores/useAppStore';
 import { hasUnreadNotifications, useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
 import { toServiceError } from '../../services/contracts/errors';
@@ -214,16 +215,29 @@ export const Footer: React.FC = () => {
     [t]
   );
   const isTauriRuntime = tauriIpc.isTauriAvailable();
-  const selectedGroupId = useAppStore((state) => state.selectedGroupId);
-  const selectedProjectId = useAppStore((state) => state.selectedProjectId);
-  const projectGroups = useAppStore((state) => state.projectGroups);
-  const switchProjectContext = useAppStore((state) => state.switchProjectContext);
-  const metadataSyncState = useAppStore((state) => state.metadataSyncState);
-  const metadataSyncError = useAppStore((state) => state.metadataSyncError);
-  const metadataSyncReason = useAppStore((state) => state.metadataSyncReason);
-  const metadataSyncNextAction = useAppStore((state) => state.metadataSyncNextAction);
-  const metadataConflictFiles = useAppStore((state) => state.metadataConflictFiles);
-  const metadataSyncRepositories = useAppStore((state) => state.metadataSyncRepositories);
+  const {
+    selectedGroupId,
+    selectedProjectId,
+    projectGroups,
+    switchProjectContext,
+    metadataSyncState,
+    metadataSyncError,
+    metadataSyncReason,
+    metadataSyncNextAction,
+    metadataConflictFiles,
+    metadataSyncRepositories,
+  } = useAppStore(useShallow((state) => ({
+    selectedGroupId: state.selectedGroupId,
+    selectedProjectId: state.selectedProjectId,
+    projectGroups: state.projectGroups,
+    switchProjectContext: state.switchProjectContext,
+    metadataSyncState: state.metadataSyncState,
+    metadataSyncError: state.metadataSyncError,
+    metadataSyncReason: state.metadataSyncReason,
+    metadataSyncNextAction: state.metadataSyncNextAction,
+    metadataConflictFiles: state.metadataConflictFiles,
+    metadataSyncRepositories: state.metadataSyncRepositories,
+  })));
   const notificationItems = useNotificationCenterStore((state) => state.items);
   const isNotificationCenterOpen = useNotificationCenterStore((state) => state.isCenterOpen);
   const setNotificationCenterOpen = useNotificationCenterStore((state) => state.setCenterOpen);
@@ -238,6 +252,7 @@ export const Footer: React.FC = () => {
 
   const lastConflictToastAtRef = useRef(0);
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
+  const refreshFooterStatusRef = useRef<Promise<void> | null>(null);
   const notificationCenterButtonRef = useRef<HTMLButtonElement>(null);
   const footerRef = useRef<HTMLElement>(null);
   const footerContentRef = useRef<HTMLDivElement>(null);
@@ -353,6 +368,11 @@ export const Footer: React.FC = () => {
 
   const refreshFooterStatus = useCallback(
     async (options?: { ensureMacro?: boolean; showBusy?: boolean }) => {
+      if (refreshFooterStatusRef.current) {
+        return refreshFooterStatusRef.current;
+      }
+
+      const run = (async () => {
       if (options?.showBusy) {
         setIsRefreshing(true);
       }
@@ -367,6 +387,14 @@ export const Footer: React.FC = () => {
           setIsRefreshing(false);
         }
       }
+      })().finally(() => {
+        if (refreshFooterStatusRef.current === run) {
+          refreshFooterStatusRef.current = null;
+        }
+      });
+
+      refreshFooterStatusRef.current = run;
+      return run;
     },
     [refreshCodeStatus, refreshMacroStatus]
   );
@@ -380,12 +408,43 @@ export const Footer: React.FC = () => {
       return;
     }
 
-    const intervalId = window.setInterval(() => {
-      void refreshFooterStatus();
-    }, 20000);
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
+
+    const scheduleRefresh = (delayMs: number) => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+
+      timeoutId = setTimeout(() => {
+        if (disposed) {
+          return;
+        }
+
+        if (document.visibilityState === 'visible') {
+          void refreshFooterStatus();
+        }
+
+        scheduleRefresh(20000);
+      }, delayMs);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshFooterStatus();
+      }
+      scheduleRefresh(20000);
+    };
+
+    scheduleRefresh(20000);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      window.clearInterval(intervalId);
+      disposed = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [isTauriRuntime, refreshFooterStatus]);
 

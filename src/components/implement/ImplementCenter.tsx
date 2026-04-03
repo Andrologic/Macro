@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import ChatZone from '../chat/ChatZone';
 import { PanelResizer } from '../layout/PanelResizer';
 import { Icon } from '../ui/Icon';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import { useTerminalStore } from '../../stores/useTerminalStore';
 import { useAppStore } from '../../stores/useAppStore';

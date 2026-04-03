@@ -21,7 +21,7 @@ import { useTaskStore } from '../../stores/useTaskStore';
 import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { CodeViewer } from '../ui/CodeViewer';
 import { Icon } from '../ui/Icon';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 
 interface PlanReviewModalProps {

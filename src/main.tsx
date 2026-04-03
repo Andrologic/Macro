@@ -3,8 +3,8 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ThemeProvider } from "./components/theme/ThemeProvider";
 import { usePerformanceMonitor } from "./hooks/usePerformanceMonitor";
+import { initializeI18n } from "./i18n";
 import { isDevelopmentBuild } from "./utils/devLogger";
-import "./i18n"; // Initialize i18n before React renders
 import "./index.css";
 import "./styles/highlight.css";
 import "xterm/css/xterm.css";
@@ -72,10 +72,20 @@ if (typeof performance !== 'undefined' && performance.mark) {
 
 installBenignTauriReloadWarningFilter();
 
-ReactDOM.createRoot(rootElement).render(
-  <React.StrictMode>
-    <ThemeProvider>
-      {appTree}
-    </ThemeProvider>
-  </React.StrictMode>,
-);
+const renderApp = (): void => {
+  ReactDOM.createRoot(rootElement).render(
+    <React.StrictMode>
+      <ThemeProvider>
+        {appTree}
+      </ThemeProvider>
+    </React.StrictMode>,
+  );
+};
+
+void initializeI18n()
+  .catch((error) => {
+    console.error("Failed to initialize i18n:", error);
+  })
+  .finally(() => {
+    renderApp();
+  });

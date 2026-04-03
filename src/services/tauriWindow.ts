@@ -95,3 +95,13 @@ export async function windowStartDragging(): Promise<void> {
   const window = await getCurrentTauriWindow();
   await window.startDragging();
 }
+
+export async function windowOnResized(listener: () => void): Promise<() => void> {
+  const window = await getCurrentTauriWindow();
+  return window.onResized(() => listener());
+}
+
+export async function windowOnMoved(listener: () => void): Promise<() => void> {
+  const window = await getCurrentTauriWindow();
+  return window.onMoved(() => listener());
+}
