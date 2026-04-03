@@ -389,7 +389,6 @@ pub fn run() {
             commands::workspace::workspace_get_metadata,
             commands::workspace::workspace_get_project_registry_diagnostics,
             commands::workspace::workspace_get_active_root,
-            commands::workspace::workspace_detect_project_git_flow,
             commands::workspace::workspace_preview_project_git_setup,
             commands::workspace::workspace_set_active_root,
             commands::workspace::workspace_create_project,

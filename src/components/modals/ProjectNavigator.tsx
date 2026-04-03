@@ -239,7 +239,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       await removeProjectGroup(group.id);
       setMenuState(null);
       setRemoveTarget(null);
-      toast.success(t('projects.groupRemoved', 'Projet global retire de Macro'));
+      toast.success(t('projects.groupRemoved', 'Global project removed from Macro'));
     } catch (error) {
       const message = toServiceError(error).message || t('common.error', 'An error occurred');
       toast.error(message);
@@ -272,7 +272,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       await removeProject(project.id);
       setMenuState(null);
       setRemoveTarget(null);
-      toast.success(t('projects.projectRemoved', 'Sous-projet retire de Macro'));
+      toast.success(t('projects.projectRemoved', 'Subproject removed from Macro'));
     } catch (error) {
       const message = toServiceError(error).message || t('common.error', 'An error occurred');
       toast.error(message);
@@ -620,11 +620,11 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
           removeTarget?.type === 'group'
             ? t(
                 'projects.removeGroupPrompt',
-                'Retire ce projet global et ses sous-projets de Macro sans supprimer les fichiers locaux.'
+                'Remove this global project and its subprojects from Macro without deleting local files.'
               )
             : t(
                 'projects.removeProjectPrompt',
-                'Retire ce sous-projet de Macro sans supprimer les fichiers locaux.'
+                'Remove this subproject from Macro without deleting local files.'
               )
         }
         confirmLabel={t('projects.removeFromMacro', 'Retirer de Macro')}

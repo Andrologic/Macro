@@ -64,9 +64,6 @@ export interface ServiceProvider {
     path?: string;
     gitFlowSettings?: ProjectGitFlowSettings;
   }) => Promise<ProjectDto>;
-  detectProjectGitFlow: (data: {
-    path?: string;
-  }) => Promise<ProjectGitFlowDetection>;
   previewProjectGitSetup: (data: {
     path?: string;
   }) => Promise<ProjectGitFlowDetection>;
