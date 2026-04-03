@@ -84,13 +84,31 @@ fn backend_error_response(error: BackendError) -> axum::response::Response {
         .into_response()
 }
 
+fn resolve_metadata_root_for_workspace(state: &HeadlessState) -> Result<PathBuf, BackendError> {
+    match state
+        .git_state
+        .resolve_macro_metadata_root(&state.workspace_path)
+    {
+        Ok(path) => Ok(path),
+        Err(BackendError::GitRepositoryNotFound { message }) => {
+            let fallback = state.workspace_path.join(".macro");
+            tracing::warn!(
+                action = "headless_metadata_root_fallback",
+                workspace_path = %state.workspace_path.display(),
+                fallback_path = %fallback.display(),
+                reason = %message
+            );
+            Ok(fallback)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 async fn resolve_project_repo_path(
     state: &HeadlessState,
     project_id: &str,
 ) -> Result<String, BackendError> {
-    let metadata_root = state
-        .git_state
-        .resolve_macro_metadata_root(&state.workspace_path)?;
+    let metadata_root = resolve_metadata_root_for_workspace(state)?;
     let groups = workspace::list_projects(&state.workspace_path, &metadata_root).await?;
 
     let project = groups
@@ -202,10 +220,7 @@ async fn workspace_bootstrap(
         return unauthorized_response().into_response();
     }
 
-    let metadata_root = match state
-        .git_state
-        .resolve_macro_metadata_root(&state.workspace_path)
-    {
+    let metadata_root = match resolve_metadata_root_for_workspace(&state) {
         Ok(path) => path,
         Err(error) => return backend_error_response(error),
     };
@@ -232,10 +247,7 @@ async fn workspace_tasks(
         return unauthorized_response().into_response();
     }
 
-    let metadata_root = match state
-        .git_state
-        .resolve_macro_metadata_root(&state.workspace_path)
-    {
+    let metadata_root = match resolve_metadata_root_for_workspace(&state) {
         Ok(path) => path,
         Err(error) => return backend_error_response(error),
     };
