@@ -1,18 +1,20 @@
 import type { SupportedLanguage } from "./languages";
-import de from "./locales/de.json";
 import en from "./locales/en.json";
-import es from "./locales/es.json";
-import fr from "./locales/fr.json";
-import ja from "./locales/ja.json";
-import ko from "./locales/ko.json";
 
 export type TranslationSchema = typeof en;
 
-export const resources = {
+export const baseResources = {
   en: { translation: en },
-  fr: { translation: fr satisfies TranslationSchema },
-  es: { translation: es satisfies TranslationSchema },
-  de: { translation: de satisfies TranslationSchema },
-  ja: { translation: ja satisfies TranslationSchema },
-  ko: { translation: ko satisfies TranslationSchema },
-} satisfies Record<SupportedLanguage, { translation: TranslationSchema }>;
+} satisfies Pick<Record<SupportedLanguage, { translation: TranslationSchema }>, "en">;
+
+const translationLoaders: Record<SupportedLanguage, () => Promise<TranslationSchema>> = {
+  en: async () => en,
+  fr: async () => (await import("./locales/fr.json")).default satisfies TranslationSchema,
+  es: async () => (await import("./locales/es.json")).default satisfies TranslationSchema,
+  de: async () => (await import("./locales/de.json")).default satisfies TranslationSchema,
+  ja: async () => (await import("./locales/ja.json")).default satisfies TranslationSchema,
+  ko: async () => (await import("./locales/ko.json")).default satisfies TranslationSchema,
+};
+
+export const loadTranslation = (language: SupportedLanguage): Promise<TranslationSchema> =>
+  translationLoaders[language]();

@@ -10,24 +10,16 @@ interface MermaidRendererProps {
   blockKey: number;
 }
 
-// Global initialization counter for unique IDs
 let renderCount = 0;
+const mermaidCache = new Map<string, string>();
 
-// Cleanup function to remove error SVGs that Mermaid injects into the body
-const cleanupErrorSvgs = () => {
-  if (typeof document === 'undefined') return;
-  // Remove mermaid error SVGs from body
-  document.querySelectorAll('svg[id^="mermaid-"][role="graphics-document document"]').forEach((el) => {
-    const svg = el as SVGSVGElement;
-    // Check if it's an error SVG (contains error-text class)
-    if (svg.innerHTML.includes('error-text') || svg.innerHTML.includes('Syntax error')) {
-      el.remove();
-    }
-  });
-  // Also remove any orphaned mermaid divs in body
-  document.querySelectorAll('div[id^="dmermaid-"]').forEach((el) => {
-    el.remove();
-  });
+const cleanupRenderArtifacts = (diagramId: string): void => {
+  if (typeof document === 'undefined') {
+    return;
+  }
+
+  document.getElementById(diagramId)?.remove();
+  document.getElementById(`d${diagramId}`)?.remove();
 };
 
 export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey }) => {
@@ -40,55 +32,79 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
   const [showCode, setShowCode] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isVisible, setIsVisible] = useState(false);
   
   const containerRef = useRef<HTMLDivElement>(null);
-
-  // Clean the mermaid code (remove code fences if present)
   const cleanCode = code.replace(/^```(?:mermaid|mmd)?\n?/, '').replace(/```$/, '').trim();
+  const cacheKey = `${isDark ? 'dark' : 'light'}:${cleanCode}`;
+  const diagramIdRef = useRef(`mermaid-${blockKey}-${renderCount++}`);
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      setIsVisible(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setIsVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '240px 0px' }
+    );
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
+
+    if (!isVisible && !isExpanded) {
+      return;
+    }
+
+    const cachedSvg = mermaidCache.get(cacheKey);
+    if (cachedSvg) {
+      setSvg(cachedSvg);
+      setError(null);
+      setIsLoading(false);
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
 
     const renderDiagram = async () => {
-      // Clean up any previous error SVGs in body
-      cleanupErrorSvgs();
-
       try {
-        // Initialize mermaid with the correct theme
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: 'loose',
           theme: isDark ? 'dark' : 'default',
           fontFamily: '"Inter", system-ui, sans-serif',
-          suppressErrorRendering: true, // Prevent automatic error SVG injection
+          suppressErrorRendering: true,
         });
 
-        // First validate the syntax with parse
         const isValid = await mermaid.parse(cleanCode, { suppressErrors: true });
-        
         if (!isValid) {
           throw new Error('Invalid Mermaid syntax');
         }
 
-        // Generate unique ID
-        const id = `mermaid-${blockKey}-${renderCount++}`;
-        
-        // Render the diagram
-        const { svg: renderedSvg } = await mermaid.render(id, cleanCode);
-        
-        // Clean up any error SVGs that might have been injected
-        cleanupErrorSvgs();
-        
+        const diagramId = diagramIdRef.current;
+        cleanupRenderArtifacts(diagramId);
+        const { svg: renderedSvg } = await mermaid.render(diagramId, cleanCode);
+        cleanupRenderArtifacts(diagramId);
+
         if (isMounted) {
+          mermaidCache.set(cacheKey, renderedSvg);
           setSvg(renderedSvg);
           setError(null);
         }
       } catch (err) {
-        // Clean up error SVGs from body
-        cleanupErrorSvgs();
-        
+        cleanupRenderArtifacts(diagramIdRef.current);
         if (isMounted) {
           const message = err instanceof Error ? err.message : 'Unknown error';
           setError(message);
@@ -101,21 +117,14 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
       }
     };
 
-    // Small delay to ensure theme is applied
-    const timeoutId = setTimeout(renderDiagram, 50);
+    const timeoutId = setTimeout(renderDiagram, 16);
     
     return () => {
       isMounted = false;
       clearTimeout(timeoutId);
-      // Cleanup on unmount
-      cleanupErrorSvgs();
+      cleanupRenderArtifacts(diagramIdRef.current);
     };
-  }, [cleanCode, isDark, blockKey]);
-
-  // Cleanup on mount and when component changes
-  useEffect(() => {
-    cleanupErrorSvgs();
-  }, []);
+  }, [cacheKey, cleanCode, isDark, isExpanded, isVisible]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(code);
@@ -153,7 +162,6 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
 
     return (
       <div 
-        ref={containerRef}
         className="flex items-center justify-center p-4 min-h-[200px]"
         dangerouslySetInnerHTML={{ __html: svg }}
       />
@@ -214,7 +222,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
   };
 
   return (
-    <div className="my-3 rounded-lg border border-border bg-card/40 overflow-hidden">
+    <div ref={containerRef} className="my-3 rounded-lg border border-border bg-card/40 overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-muted/30">
         <div className="flex items-center gap-2">
@@ -261,3 +269,5 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     </div>
   );
 };
+
+export default MermaidRenderer;

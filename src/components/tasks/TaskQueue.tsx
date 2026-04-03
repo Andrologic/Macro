@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import {
@@ -33,14 +34,30 @@ import { Icon, IconName } from '../ui/Icon';
 import { Select } from '../ui/Select';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { TaskProjectCommandsModal } from './TaskProjectCommandsModal';
 import type { TaskStatus } from '../../types';
+import { useVirtualList } from '../../hooks/useVirtualList';
 
 interface TaskQueueProps {
   className?: string;
 }
+
+type TaskListRow =
+  | {
+      kind: 'section';
+      id: string;
+      title: string;
+      count: number;
+      tone?: 'draft' | 'default' | 'success';
+    }
+  | {
+      kind: 'task';
+      id: string;
+      task: ImplementTask;
+      multiRepoPresentation: MultiRepoTaskPresentation | null;
+    };
 
 const ALL_PLANS_FILTER = '__all__';
 const STANDALONE_FILTER = '__standalone__';
@@ -378,32 +395,70 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     openProjectGitFlowModal,
     setSelectedProject,
     setSelectedTask,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    selectedGroupId: state.selectedGroupId,
+    selectedProjectId: state.selectedProjectId,
+    selectedTaskId: state.selectedTaskId,
+    projectGroups: state.projectGroups,
+    openProjectGitFlowModal: state.openProjectGitFlowModal,
+    setSelectedProject: state.setSelectedProject,
+    setSelectedTask: state.setSelectedTask,
+  })));
   const getProjectById = useAppStore((state) => state.getProjectById);
-  const createConversation = useChatStore((state) => state.createConversation);
-  const conversations = useChatStore((state) => state.conversations);
-  const isStreaming = useChatStore((state) => state.isStreaming);
-  const selectedConversationId = useChatStore((state) => state.selectedConversationId);
-  const selectConversation = useChatStore((state) => state.selectConversation);
-  const tasks = useTaskStore((state) => state.tasks);
-  const planSummaries = useTaskStore((state) => state.planSummaries);
-  const hasStandaloneTasks = useTaskStore((state) => state.hasStandaloneTasks);
-  const publishedStandaloneTasks = useTaskStore((state) => state.publishedStandaloneTasks);
-  const finalizingPlanId = useTaskStore((state) => state.finalizingPlanId);
-  const activateTask = useTaskStore((state) => state.activateTask);
-  const createManualFeatureDraft = useTaskStore((state) => state.createManualFeatureDraft);
-  const renameTask = useTaskStore((state) => state.renameTask);
-  const archiveTask = useTaskStore((state) => state.archiveTask);
-  const restoreTask = useTaskStore((state) => state.restoreTask);
-  const deleteTask = useTaskStore((state) => state.deleteTask);
-  const reopenTask = useTaskStore((state) => state.reopenTask);
-  const taskCommandRuns = useTaskStore((state) => state.taskCommandRuns);
-  const runTaskCommands = useTaskStore((state) => state.runTaskCommands);
-  const cancelTaskCommands = useTaskStore((state) => state.cancelTaskCommands);
-  const missingBaseBranchIssue = useTaskStore((state) => state.missingBaseBranchIssue);
-  const clearMissingBaseBranchIssue = useTaskStore((state) => state.clearMissingBaseBranchIssue);
-  const createMissingBaseBranch = useTaskStore((state) => state.createMissingBaseBranch);
-  const taskError = useTaskStore((state) => state.lastError);
+  const {
+    createConversation,
+    conversations,
+    isStreaming,
+    selectedConversationId,
+    selectConversation,
+  } = useChatStore(useShallow((state) => ({
+    createConversation: state.createConversation,
+    conversations: state.conversations,
+    isStreaming: state.isStreaming,
+    selectedConversationId: state.selectedConversationId,
+    selectConversation: state.selectConversation,
+  })));
+  const {
+    tasks,
+    planSummaries,
+    hasStandaloneTasks,
+    publishedStandaloneTasks,
+    finalizingPlanId,
+    activateTask,
+    createManualFeatureDraft,
+    renameTask,
+    archiveTask,
+    restoreTask,
+    deleteTask,
+    reopenTask,
+    taskCommandRuns,
+    runTaskCommands,
+    cancelTaskCommands,
+    missingBaseBranchIssue,
+    clearMissingBaseBranchIssue,
+    createMissingBaseBranch,
+    taskError,
+  } = useTaskStore(useShallow((state) => ({
+    tasks: state.tasks,
+    planSummaries: state.planSummaries,
+    hasStandaloneTasks: state.hasStandaloneTasks,
+    publishedStandaloneTasks: state.publishedStandaloneTasks,
+    finalizingPlanId: state.finalizingPlanId,
+    activateTask: state.activateTask,
+    createManualFeatureDraft: state.createManualFeatureDraft,
+    renameTask: state.renameTask,
+    archiveTask: state.archiveTask,
+    restoreTask: state.restoreTask,
+    deleteTask: state.deleteTask,
+    reopenTask: state.reopenTask,
+    taskCommandRuns: state.taskCommandRuns,
+    runTaskCommands: state.runTaskCommands,
+    cancelTaskCommands: state.cancelTaskCommands,
+    missingBaseBranchIssue: state.missingBaseBranchIssue,
+    clearMissingBaseBranchIssue: state.clearMissingBaseBranchIssue,
+    createMissingBaseBranch: state.createMissingBaseBranch,
+    taskError: state.lastError,
+  })));
   const reviewCurrentTaskId = useFileChangesStore((state) => state.currentTaskId);
   const liveReviewSummary = useFileChangesStore((state) => state.reviewSummary);
   const lastErrorToastRef = useRef<string | null>(null);
@@ -1067,6 +1122,133 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       .filter((task) => Boolean(task.archived_at))
       .sort((a, b) => a.sequence_index - b.sequence_index);
   }, [filteredTasks, showArchived]);
+  const multiRepoPresentationByTaskId = useMemo(() => {
+    const map = new Map<string, MultiRepoTaskPresentation | null>();
+    visibleTasks.forEach((task) => {
+      map.set(
+        task.id,
+        buildMultiRepoPresentation(
+          task,
+          reviewCurrentTaskId === task.id ? liveReviewSummary : null
+        )
+      );
+    });
+    return map;
+  }, [liveReviewSummary, reviewCurrentTaskId, visibleTasks]);
+  const taskListRows = useMemo<TaskListRow[]>(() => {
+    const rows: TaskListRow[] = [];
+
+    if (draftTasks.length > 0) {
+      rows.push({
+        kind: 'section',
+        id: 'section:drafts',
+        title: t('implement.manualFeatureDrafts', 'Draft features'),
+        count: draftTasks.length,
+        tone: 'draft',
+      });
+      draftTasks.forEach((task) => {
+        rows.push({
+          kind: 'task',
+          id: `task:${task.id}`,
+          task,
+          multiRepoPresentation: null,
+        });
+      });
+    }
+
+    rows.push({
+      kind: 'section',
+      id: 'section:ready',
+      title: t('implement.readyTasks', 'Ready tasks'),
+      count: readyTasks.length,
+      tone: 'default',
+    });
+    readyTasks.forEach((task) => {
+      rows.push({
+        kind: 'task',
+        id: `task:${task.id}`,
+        task,
+        multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
+      });
+    });
+
+    if (blockedTasks.length > 0) {
+      rows.push({
+        kind: 'section',
+        id: 'section:blocked',
+        title: t('implement.blockedTasks', 'Blocked tasks'),
+        count: blockedTasks.length,
+        tone: 'default',
+      });
+      blockedTasks.forEach((task) => {
+        rows.push({
+          kind: 'task',
+          id: `task:${task.id}`,
+          task,
+          multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
+        });
+      });
+    }
+
+    if (completedTasks.length > 0) {
+      rows.push({
+        kind: 'section',
+        id: 'section:completed',
+        title: t('implement.completedTasks', 'Completed tasks'),
+        count: completedTasks.length,
+        tone: 'success',
+      });
+      completedTasks.forEach((task) => {
+        rows.push({
+          kind: 'task',
+          id: `task:${task.id}`,
+          task,
+          multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
+        });
+      });
+    }
+
+    if (showArchived && archivedTasks.length > 0) {
+      rows.push({
+        kind: 'section',
+        id: 'section:archived',
+        title: t('common.archive', 'Archive'),
+        count: archivedTasks.length,
+        tone: 'default',
+      });
+      archivedTasks.forEach((task) => {
+        rows.push({
+          kind: 'task',
+          id: `task:${task.id}`,
+          task,
+          multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
+        });
+      });
+    }
+
+    return rows;
+  }, [
+    archivedTasks,
+    blockedTasks,
+    completedTasks,
+    draftTasks,
+    multiRepoPresentationByTaskId,
+    readyTasks,
+    showArchived,
+    t,
+  ]);
+  const {
+    parentRef: taskListRef,
+    virtualItems: virtualTaskRows,
+    totalSize: taskListTotalSize,
+    measureElement: measureTaskRow,
+  } = useVirtualList({
+    items: taskListRows,
+    estimateSize: 112,
+    overscan: 8,
+    dynamicHeight: true,
+    gap: 8,
+  });
 
   const progressTasks = useMemo(
     () => filteredTasks.filter((task) => !task.draft && !task.archived_at),
@@ -1278,9 +1460,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2 space-y-3">
+      <div ref={taskListRef} className="flex-1 overflow-y-auto">
         {visibleTasks.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-48 text-center">
+          <div className="flex h-full flex-col items-center justify-center px-2 text-center">
             <Icon name="check-circle" size={32} className="text-muted-foreground/50 mb-3" />
             <p className="text-sm text-muted-foreground">
               {planFilter === ALL_PLANS_FILTER
@@ -1291,195 +1473,56 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         )}
 
         {visibleTasks.length > 0 && (
-          <>
-            {draftTasks.length > 0 && (
-              <section className="space-y-1">
-                <div className="px-1 pb-1 flex items-center justify-between">
-                  <h2 className="text-xs font-semibold uppercase tracking-wide text-sky-400">
-                    {t('implement.manualFeatureDrafts', 'Draft features')}
-                  </h2>
-                  <span className="text-xs text-muted-foreground">{draftTasks.length}</span>
-                </div>
-
-                {draftTasks.map((task) => (
-                <MemoizedTaskItem
-                  key={task.id}
-                  task={task}
-                  isSelected={selectedTaskId === task.id}
-                  planLabel={getTaskPlanLabel(task)}
-                  multiRepoPresentation={null}
-                  isAssistantRunning={streamingTaskId === task.id}
-                  taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
-                  canRunTaskCommands={canRunTaskCommandsForTask(task)}
-                  runTaskCommandsTitle={getRunTaskCommandsTitle(task)}
-                  onSelect={() => void activateTask(task.id)}
-                  onRunTaskCommands={() => void handleRunTaskCommands(task)}
-                  onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
-                  actions={buildTaskActions(task)}
-                  onAction={(action) => void handleTaskAction(task, action)}
-                />
-                ))}
-              </section>
-            )}
-
-            <section className="space-y-1">
-              <div className="px-1 pb-1 flex items-center justify-between">
-                <h2 className="text-xs font-semibold uppercase tracking-wide text-foreground/80">
-                  {t('implement.readyTasks', 'Ready tasks')}
-                </h2>
-                <span className="text-xs text-muted-foreground">{readyTasks.length}</span>
-              </div>
-
-              {readyTasks.length === 0 && (
-                <div className="px-2 py-3 text-xs text-muted-foreground rounded border border-dashed border-border">
-                  {t('implement.noReadyTasks', 'No task is currently runnable.')}
-                </div>
-              )}
-
-              {readyTasks.map((task) => (
-                <MemoizedTaskItem
-                  key={task.id}
-                  task={task}
-                  isSelected={selectedTaskId === task.id}
-                  planLabel={getTaskPlanLabel(task)}
-                  multiRepoPresentation={buildMultiRepoPresentation(
-                    task,
-                    reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
-                      ? liveReviewSummary
-                      : null
-                  )}
-                  isAssistantRunning={streamingTaskId === task.id}
-                  taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
-                  canRunTaskCommands={canRunTaskCommandsForTask(task)}
-                  runTaskCommandsTitle={getRunTaskCommandsTitle(task)}
-                  onSelect={() => void activateTask(task.id)}
-                  onRunTaskCommands={() => void handleRunTaskCommands(task)}
-                  onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
-                  actions={buildTaskActions(task)}
-                  onAction={(action) => void handleTaskAction(task, action)}
-                />
-              ))}
-            </section>
-
-            <section className="space-y-1 pt-1 border-t border-border/60">
-              <div className="px-1 pb-1 flex items-center justify-between">
-                <h2 className="text-xs font-semibold uppercase tracking-wide text-orange-400">
-                  {t('implement.blockedTasks', 'Blocked tasks')}
-                </h2>
-                <span className="text-xs text-muted-foreground">{blockedTasks.length}</span>
-              </div>
-
-              {blockedTasks.length === 0 && (
-                <div className="px-2 py-3 text-xs text-muted-foreground rounded border border-dashed border-border">
-                  {t('implement.noBlockedTasks', 'No dependency-blocked task.')}
-                </div>
-              )}
-
-              {blockedTasks.map((task) => (
-                <MemoizedTaskItem
-                  key={task.id}
-                  task={task}
-                  isSelected={selectedTaskId === task.id}
-                  planLabel={getTaskPlanLabel(task)}
-                  multiRepoPresentation={buildMultiRepoPresentation(
-                    task,
-                    reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
-                      ? liveReviewSummary
-                      : null
-                  )}
-                  isAssistantRunning={streamingTaskId === task.id}
-                  taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
-                  canRunTaskCommands={canRunTaskCommandsForTask(task)}
-                  runTaskCommandsTitle={getRunTaskCommandsTitle(task)}
-                  onSelect={() => void activateTask(task.id)}
-                  onRunTaskCommands={() => void handleRunTaskCommands(task)}
-                  onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
-                  actions={buildTaskActions(task)}
-                  onAction={(action) => void handleTaskAction(task, action)}
-                />
-              ))}
-            </section>
-
-            <section className="space-y-1 pt-1 border-t border-border/60">
-              <div className="px-1 pb-1 flex items-center justify-between">
-                <h2 className="text-xs font-semibold uppercase tracking-wide text-emerald-500">
-                  {t('implement.completedTasks', 'Completed tasks')}
-                </h2>
-                <span className="text-xs text-muted-foreground">{completedTasks.length}</span>
-              </div>
-
-              {completedTasks.length === 0 && (
-                <div className="px-2 py-3 text-xs text-muted-foreground rounded border border-dashed border-border">
-                  {t('implement.noCompletedTasks', 'No completed task in the active queue.')}
-                </div>
-              )}
-
-              {completedTasks.map((task) => (
-                <MemoizedTaskItem
-                  key={task.id}
-                  task={task}
-                  isSelected={selectedTaskId === task.id}
-                  planLabel={getTaskPlanLabel(task)}
-                  multiRepoPresentation={buildMultiRepoPresentation(
-                    task,
-                    reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
-                      ? liveReviewSummary
-                      : null
-                  )}
-                  isAssistantRunning={streamingTaskId === task.id}
-                  taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
-                  canRunTaskCommands={canRunTaskCommandsForTask(task)}
-                  runTaskCommandsTitle={getRunTaskCommandsTitle(task)}
-                  onSelect={() => void activateTask(task.id)}
-                  onRunTaskCommands={() => void handleRunTaskCommands(task)}
-                  onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
-                  actions={buildTaskActions(task)}
-                  onAction={(action) => void handleTaskAction(task, action)}
-                />
-              ))}
-            </section>
-
-            {showArchived && (
-              <section className="space-y-1 pt-1 border-t border-border/60">
-                <div className="px-1 pb-1 flex items-center justify-between">
-                  <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    {t('implement.archivedTasks', 'Archived tasks')}
-                  </h2>
-                  <span className="text-xs text-muted-foreground">{archivedTasks.length}</span>
-                </div>
-
-                {archivedTasks.length === 0 && (
-                  <div className="px-2 py-3 text-xs text-muted-foreground rounded border border-dashed border-border">
-                    {t('implement.noArchivedTasks', 'No archived task for this filter.')}
-                  </div>
-                )}
-
-                {archivedTasks.map((task) => (
-                  <MemoizedTaskItem
-                    key={task.id}
-                    task={task}
-                    isSelected={selectedTaskId === task.id}
-                    planLabel={getTaskPlanLabel(task)}
-                    multiRepoPresentation={buildMultiRepoPresentation(
-                      task,
-                      reviewCurrentTaskId === task.id && liveReviewSummary.repositoryCount > 0
-                        ? liveReviewSummary
-                        : null
+          <div className="p-2">
+            <div className="relative" style={{ height: taskListTotalSize }}>
+              {virtualTaskRows.map((virtualRow) => {
+                const row = virtualRow.item;
+                return (
+                  <div
+                    key={row.id}
+                    ref={measureTaskRow}
+                    data-index={virtualRow.index}
+                    className="absolute left-0 top-0 w-full"
+                    style={{ transform: `translateY(${virtualRow.start}px)` }}
+                  >
+                    {row.kind === 'section' ? (
+                      <div className="px-1 pb-1 flex items-center justify-between">
+                        <h2
+                          className={cn(
+                            'text-xs font-semibold uppercase tracking-wide',
+                            row.tone === 'draft'
+                              ? 'text-sky-400'
+                              : row.tone === 'success'
+                                ? 'text-emerald-500'
+                                : 'text-foreground/80'
+                          )}
+                        >
+                          {row.title}
+                        </h2>
+                        <span className="text-xs text-muted-foreground">{row.count}</span>
+                      </div>
+                    ) : (
+                      <MemoizedTaskItem
+                        task={row.task}
+                        isSelected={selectedTaskId === row.task.id}
+                        planLabel={getTaskPlanLabel(row.task)}
+                        multiRepoPresentation={row.multiRepoPresentation}
+                        isAssistantRunning={streamingTaskId === row.task.id}
+                        taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
+                        canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
+                        runTaskCommandsTitle={getRunTaskCommandsTitle(row.task)}
+                        onSelect={() => void activateTask(row.task.id)}
+                        onRunTaskCommands={() => void handleRunTaskCommands(row.task)}
+                        onCancelTaskCommands={() => void cancelTaskCommands(row.task.id)}
+                        actions={buildTaskActions(row.task)}
+                        onAction={(action) => void handleTaskAction(row.task, action)}
+                      />
                     )}
-                    isAssistantRunning={streamingTaskId === task.id}
-                    taskCommandRunStatus={taskCommandRuns[task.id]?.status ?? null}
-                    canRunTaskCommands={canRunTaskCommandsForTask(task)}
-                    runTaskCommandsTitle={getRunTaskCommandsTitle(task)}
-                    onSelect={() => void activateTask(task.id)}
-                    onRunTaskCommands={() => void handleRunTaskCommands(task)}
-                    onCancelTaskCommands={() => void cancelTaskCommands(task.id)}
-                    actions={buildTaskActions(task)}
-                    onAction={(action) => void handleTaskAction(task, action)}
-                  />
-                ))}
-              </section>
-            )}
-          </>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
       </div>
 

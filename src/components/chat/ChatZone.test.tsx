@@ -204,8 +204,9 @@ mock.module('../architect/PlanSelector', () => ({
   PlanSelector: () => null,
 }));
 
-mock.module('./composer/ComposerEditor', () => ({
-  ComposerEditor: React.forwardRef((_props: Record<string, unknown>, ref: React.ForwardedRef<{
+mock.module('./composer/LazyComposerEditor', () => ({
+  __esModule: true,
+  default: React.forwardRef((_props: Record<string, unknown>, ref: React.ForwardedRef<{
     getTextContent: () => string;
     clear: () => void;
     setText: (_value: string) => void;

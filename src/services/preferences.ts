@@ -122,6 +122,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
 // Store instance (singleton)
 let storeInstance: Store | null = null;
 let initPromise: Promise<Store> | null = null;
+const debouncedSaveTimers = new Map<PrefKey, ReturnType<typeof setTimeout>>();
 
 /**
  * Check if running in Tauri environment
@@ -166,6 +167,26 @@ export async function savePreference<T>(key: PrefKey, value: T): Promise<void> {
   } catch (error) {
     console.error(`Failed to save preference ${key}:`, error);
   }
+}
+
+export function savePreferenceDebounced<T>(
+  key: PrefKey,
+  value: T,
+  delayMs: number = 180
+): void {
+  localStorage.setItem(`macro_${key}`, JSON.stringify(value));
+
+  const existingTimer = debouncedSaveTimers.get(key);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(() => {
+    debouncedSaveTimers.delete(key);
+    void savePreference(key, value);
+  }, delayMs);
+
+  debouncedSaveTimers.set(key, timer);
 }
 
 /**
