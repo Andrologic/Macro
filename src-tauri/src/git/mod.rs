@@ -704,7 +704,14 @@ impl GitState {
 
     /// Open a repository and cache its handle.
     pub fn open_repo(&self, path: &Path) -> Result<Arc<Mutex<Repository>>> {
-        let canonical = path.to_path_buf();
+        let candidate = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        };
+        let canonical = std::fs::canonicalize(&candidate).unwrap_or(candidate);
         let mut repos = self
             .inner
             .repos

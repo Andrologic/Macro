@@ -127,18 +127,39 @@ async fn resolve_workspace_for_tool_path(
     path: Option<&str>,
     workspace_scope: Option<&str>,
 ) -> CommandResult<PathBuf> {
+    async fn resolve_metadata_workspace(
+        workspace: &Path,
+        git_state: &GitState,
+    ) -> CommandResult<PathBuf> {
+        let workspace_for_task = workspace.to_path_buf();
+        let workspace_for_fallback = workspace.to_path_buf();
+        let git_state_for_task = git_state.clone();
+        let resolved = tokio::task::spawn_blocking(move || {
+            git_state_for_task.resolve_macro_metadata_root(&workspace_for_task)
+        })
+        .await
+        .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?;
+
+        match resolved {
+            Ok(metadata_root) => Ok(metadata_root),
+            Err(crate::core::error::BackendError::GitRepositoryNotFound { message }) => {
+                let fallback = workspace_for_fallback.join(".macro");
+                tracing::warn!(
+                    action = "workspace_tool_metadata_root_fallback",
+                    workspace_path = %workspace_for_fallback.display(),
+                    fallback_path = %fallback.display(),
+                    reason = %message
+                );
+                Ok(fallback)
+            }
+            Err(error) => Err(command_error(error.to_string())),
+        }
+    }
+
     let metadata_scope = matches!(workspace_scope.map(str::trim), Some("metadata"));
     let Some(path) = path else {
         if metadata_scope {
-            let workspace_for_task = workspace.to_path_buf();
-            let git_state_for_task = git_state.clone();
-            return tokio::task::spawn_blocking(move || {
-                git_state_for_task
-                    .resolve_macro_metadata_root(&workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))
-            })
-            .await
-            .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?;
+            return resolve_metadata_workspace(workspace, git_state).await;
         }
         return Ok(workspace.to_path_buf());
     };
@@ -147,15 +168,7 @@ async fn resolve_workspace_for_tool_path(
         return Ok(workspace.to_path_buf());
     }
 
-    let workspace_for_task = workspace.to_path_buf();
-    let git_state_for_task = git_state.clone();
-    tokio::task::spawn_blocking(move || {
-        git_state_for_task
-            .resolve_macro_metadata_root(&workspace_for_task)
-            .map_err(|error| command_error(error.to_string()))
-    })
-    .await
-    .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?
+    resolve_metadata_workspace(workspace, git_state).await
 }
 
 fn resolve_requested_workspace(
@@ -1512,7 +1525,8 @@ pub async fn db_update_provider_settings(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_requested_workspace;
+    use super::{resolve_requested_workspace, resolve_workspace_for_tool_path};
+    use crate::git::GitState;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1537,6 +1551,22 @@ mod tests {
             resolved,
             project_dir.canonicalize().expect("canonical project dir")
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_workspace_for_tool_path_falls_back_to_dot_macro_when_workspace_is_not_git() {
+        let workspace = TempDir::new().expect("workspace");
+
+        let resolved = resolve_workspace_for_tool_path(
+            workspace.path(),
+            &GitState::new(),
+            None,
+            Some("metadata"),
+        )
+        .await
+        .expect("resolve metadata workspace");
+
+        assert_eq!(resolved, workspace.path().join(".macro"));
     }
 }
 

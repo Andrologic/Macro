@@ -20,6 +20,13 @@ mod tests {
     fn test_workspace_resolution_keeps_custom_path() {
         let cwd = PathBuf::from("/tmp/project/src-tauri");
         let resolved = test_resolve_workspace_path_for_cwd(PathBuf::from("docs"), &cwd);
-        assert_eq!(resolved, PathBuf::from("docs"));
+        assert_eq!(resolved, PathBuf::from("/tmp/project/src-tauri/docs"));
+    }
+
+    #[test]
+    fn test_workspace_resolution_from_non_src_tauri_cwd_is_absolute() {
+        let cwd = PathBuf::from("/tmp/project");
+        let resolved = test_resolve_workspace_path_for_cwd(PathBuf::from("."), &cwd);
+        assert_eq!(resolved, PathBuf::from("/tmp/project"));
     }
 }
