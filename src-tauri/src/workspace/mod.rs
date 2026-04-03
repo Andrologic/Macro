@@ -85,6 +85,18 @@ fn count_projects(groups: &[ProjectGroupDto]) -> usize {
     groups.iter().map(|group| group.projects.len()).sum()
 }
 
+fn absolutize_path(path: &Path) -> PathBuf {
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+
+    std::fs::canonicalize(&candidate).unwrap_or(candidate)
+}
+
 fn normalize_repo_resolution(
     requested_path: &Path,
     repo_root_path: Option<&Path>,
@@ -605,9 +617,11 @@ pub fn detect_project_git_flow(
 }
 
 fn resolve_repo_workdir(repo: &Repository, fallback: &Path) -> PathBuf {
-    repo.workdir()
+    let workdir = repo
+        .workdir()
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| fallback.to_path_buf())
+        .unwrap_or_else(|| fallback.to_path_buf());
+    absolutize_path(&workdir)
 }
 
 fn create_initial_commit(repo: &Repository) -> Result<Option<String>> {
@@ -3678,7 +3692,7 @@ fn ensure_unique_project_name_in_group(
 }
 
 fn normalized_path_key(path: &Path) -> String {
-    let normalized = path.to_string_lossy().replace('\\', "/");
+    let normalized = absolutize_path(path).to_string_lossy().replace('\\', "/");
     #[cfg(windows)]
     {
         normalized.trim_end_matches('/').to_lowercase()
@@ -3775,11 +3789,12 @@ fn ensure_plan_has_project(state: &mut WorkspaceState, project: &ProjectDto) {
 }
 
 fn resolve_project_path(workspace_path: &Path, project_path: &str) -> PathBuf {
-    let candidate = PathBuf::from(project_path);
+    let normalized_project_path = project_path.replace('\\', "/");
+    let candidate = PathBuf::from(normalized_project_path);
     if candidate.is_absolute() {
-        candidate
+        absolutize_path(&candidate)
     } else {
-        workspace_path.join(candidate)
+        absolutize_path(&workspace_path.join(candidate))
     }
 }
 
