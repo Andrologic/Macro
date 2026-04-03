@@ -1,7 +1,6 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
-import { toast } from "../components/ui/Toaster";
 import { PREF_KEYS, savePreference } from "../services/preferences";
 import {
   DEFAULT_LANGUAGE,
@@ -54,6 +53,7 @@ export async function changeLanguage(lang: SupportedLanguage): Promise<void> {
 
   try {
     const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
+    const { toast } = await import("../components/ui/Toaster");
     toast.success(i18n.t("toast.languageChanged", { language: languageName }));
   } catch {
     // Toast not available.

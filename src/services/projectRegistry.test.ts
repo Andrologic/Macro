@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   formatProjectRegistryRepairSummary,
   normalizeProjectRegistry,
@@ -24,6 +24,17 @@ const makeProject = (id: string, path: string, name = id) => ({
 });
 
 describe('projectRegistry', () => {
+  let previousLanguage = 'en';
+
+  beforeEach(() => {
+    previousLanguage = document.documentElement.lang || 'en';
+    document.documentElement.lang = 'fr';
+  });
+
+  afterEach(() => {
+    document.documentElement.lang = previousLanguage;
+  });
+
   it('deduplicates project paths and drops synthetic session entries', () => {
     const result = normalizeProjectRegistry({
       projectGroups: [

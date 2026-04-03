@@ -145,18 +145,6 @@ pub async fn workspace_get_active_root(workspace_root: State<'_, WorkspaceRoot>)
 }
 
 #[tauri::command]
-pub async fn workspace_detect_project_git_flow(
-    workspace_root: State<'_, WorkspaceMetadataRoot>,
-    path: Option<String>,
-) -> Result<ProjectGitFlowDetectionDto> {
-    let workspace_path = workspace_root.inner().0.read().await.clone();
-    Ok(workspace::preview_project_git_setup(
-        &workspace_path,
-        path.as_deref(),
-    ))
-}
-
-#[tauri::command]
 pub async fn workspace_preview_project_git_setup(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     path: Option<String>,

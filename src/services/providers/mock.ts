@@ -270,7 +270,7 @@ export const sendChat = async (
   };
 };
 
-export const detectProjectGitFlow = async (_data: {
+const buildMockProjectGitFlowDetection = async (_data: {
   path?: string;
 }): Promise<ProjectGitFlowDetection> => {
   return simulate({
@@ -296,7 +296,7 @@ export const previewProjectGitSetup = async (data: {
   path?: string;
 }): Promise<ProjectGitFlowDetection> => {
   return simulate({
-    ...(await detectProjectGitFlow(data)),
+    ...(await buildMockProjectGitFlowDetection(data)),
     resolvedRepoRootPath: data.path ?? null,
     initialCommitPreviewPaths: ['README.md'],
     initialCommitPreviewCount: 1,
@@ -810,7 +810,6 @@ export const provider: ServiceProvider = {
   listProviders,
   listModels,
   sendChat,
-  detectProjectGitFlow,
   previewProjectGitSetup,
   createProject,
   createProjectWithGitSetup,
