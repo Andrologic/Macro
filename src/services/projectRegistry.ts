@@ -325,20 +325,20 @@ export const formatProjectRegistryRepairSummary = (
   const parts: string[] = [];
   if (report.duplicatePathsRemoved > 0) {
     parts.push(
-      `${report.duplicatePathsRemoved} doublon${report.duplicatePathsRemoved > 1 ? 's' : ''} retire${report.duplicatePathsRemoved > 1 ? 's' : ''}`
+      `${report.duplicatePathsRemoved} doublon${report.duplicatePathsRemoved > 1 ? 's' : ''} retiré${report.duplicatePathsRemoved > 1 ? 's' : ''}`
     );
   }
   if (report.emptyGroupsRemoved > 0) {
     parts.push(
-      `${report.emptyGroupsRemoved} groupe${report.emptyGroupsRemoved > 1 ? 's' : ''} vide${report.emptyGroupsRemoved > 1 ? 's' : ''} retire${report.emptyGroupsRemoved > 1 ? 's' : ''}`
+      `${report.emptyGroupsRemoved} groupe${report.emptyGroupsRemoved > 1 ? 's' : ''} vide${report.emptyGroupsRemoved > 1 ? 's' : ''} retiré${report.emptyGroupsRemoved > 1 ? 's' : ''}`
     );
   }
   if (report.removedSyntheticGroups > 0 || report.removedSyntheticProjects > 0) {
-    parts.push('anciennes references de session nettoyees');
+    parts.push('anciennes références de session nettoyées');
   }
   if (report.deadSelectedGroupId || report.deadSelectedProjectId) {
-    parts.push('selection invalide reparee');
+    parts.push('sélection invalide réparée');
   }
 
-  return parts.length > 0 ? `Macro a repare le registre projet: ${parts.join(', ')}.` : null;
+  return parts.length > 0 ? `Macro a réparé le registre projet : ${parts.join(', ')}.` : null;
 };

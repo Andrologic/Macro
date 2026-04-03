@@ -63,7 +63,7 @@ describe('projectRegistry', () => {
     expect(result.report.duplicatePathsRemoved).toBe(1);
     expect(result.report.removedSyntheticGroups).toBe(1);
     expect(result.report.removedSyntheticProjects).toBe(0);
-    expect(formatProjectRegistryRepairSummary(result.report)).toContain('Macro a repare');
+    expect(formatProjectRegistryRepairSummary(result.report)).toContain('Macro a réparé');
   });
 
   it('reconciles remembered projects against the canonical registry', () => {
