@@ -6,9 +6,9 @@ use crate::git::GitState;
 use crate::workspace;
 use crate::workspace::metadata::{
     CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, ProjectAccessChangePreviewDto,
-    ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
-    ProjectRegistryDiagnosticsDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
-    WorkspaceTaskCatalogDto,
+    ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto,
+    ProjectGitSetupCommitResultDto, ProjectGroupDto, ProjectRegistryDiagnosticsDto,
+    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
@@ -152,42 +152,6 @@ pub async fn workspace_preview_project_git_setup(
 }
 
 #[tauri::command]
-pub async fn workspace_apply_project_git_setup(
-    workspace_root: State<'_, WorkspaceMetadataRoot>,
-    git_state: State<'_, GitState>,
-    path: String,
-    action: String,
-    expected_repo_root_path: Option<String>,
-) -> Result<ProjectGitFlowDetectionDto> {
-    let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    let detection = workspace::apply_project_git_setup(
-        &workspace_path,
-        &path,
-        &action,
-        expected_repo_root_path.as_deref(),
-    )
-    .await?;
-    workspace::refresh_project_registry_state(&workspace_path, &metadata_root).await?;
-    Ok(detection)
-}
-
-#[tauri::command]
-pub async fn workspace_prepare_project_git(
-    workspace_root: State<'_, WorkspaceMetadataRoot>,
-    git_state: State<'_, GitState>,
-    path: String,
-) -> Result<ProjectGitFlowDetectionDto> {
-    let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    let detection = workspace::prepare_project_git(&workspace_path, &path).await?;
-    workspace::refresh_project_registry_state(&workspace_path, &metadata_root).await?;
-    Ok(detection)
-}
-
-#[tauri::command]
 pub async fn workspace_preview_project_access_change(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
@@ -275,6 +239,46 @@ pub async fn workspace_create_project(
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
+pub async fn workspace_create_project_with_git_setup(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    name: String,
+    description: String,
+    group_id: Option<String>,
+    group_name: Option<String>,
+    path: String,
+    git_flow_settings: Option<ProjectGitFlowSettingsDto>,
+    git_setup_actions: Vec<String>,
+    expected_repo_root_path: Option<String>,
+    expected_setup_state: String,
+    expected_recommended_action_sequence: Vec<String>,
+) -> Result<ProjectGitSetupCommitResultDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let request = CreateProjectRequest {
+        name,
+        description,
+        group_id,
+        group_name,
+        path: Some(path),
+        git_flow_settings,
+    };
+
+    workspace::create_project_with_git_setup(
+        &workspace_path,
+        &metadata_root,
+        request,
+        &git_setup_actions,
+        expected_repo_root_path.as_deref(),
+        &expected_setup_state,
+        &expected_recommended_action_sequence,
+    )
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn workspace_import_git_repo(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
@@ -343,6 +347,34 @@ pub async fn workspace_update_project_git_flow(
         &metadata_root,
         &project_id,
         &git_flow_settings,
+    )
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn workspace_update_project_git_flow_with_setup(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_id: String,
+    git_flow_settings: ProjectGitFlowSettingsDto,
+    git_setup_actions: Vec<String>,
+    expected_repo_root_path: Option<String>,
+    expected_setup_state: String,
+    expected_recommended_action_sequence: Vec<String>,
+) -> Result<ProjectGitSetupCommitResultDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::update_project_git_flow_with_setup(
+        &workspace_path,
+        &metadata_root,
+        &project_id,
+        &git_flow_settings,
+        &git_setup_actions,
+        expected_repo_root_path.as_deref(),
+        &expected_setup_state,
+        &expected_recommended_action_sequence,
     )
     .await
 }

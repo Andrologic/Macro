@@ -50,6 +50,18 @@ export const buildProjectSetupPromptDetails = (
   initialCommitRiskFlags: detection.initialCommitRiskFlags,
 });
 
+export const getProjectSetupPromptKind = (
+  action: ProjectGitSetupAction
+): ProjectSetupPromptKind => {
+  if (action === 'initialize_repo') {
+    return 'init_git';
+  }
+  if (action === 'create_initial_commit') {
+    return 'initial_commit';
+  }
+  return 'create_develop';
+};
+
 export const getProjectSetupAction = (kind: ProjectSetupPromptKind): ProjectGitSetupAction => {
   if (kind === 'init_git') {
     return 'initialize_repo';
@@ -59,6 +71,14 @@ export const getProjectSetupAction = (kind: ProjectSetupPromptKind): ProjectGitS
   }
   return 'create_develop';
 };
+
+export const buildProjectSetupPrompts = (
+  projectPath: string,
+  detection: ProjectGitFlowDetection
+): ProjectSetupPromptDetails[] =>
+  detection.recommendedActionSequence.map((action) =>
+    buildProjectSetupPromptDetails(getProjectSetupPromptKind(action), projectPath, detection)
+  );
 
 export const hasProjectSetupRisks = (riskFlags: ProjectGitSetupRiskFlag[]): boolean =>
   riskFlags.length > 0;

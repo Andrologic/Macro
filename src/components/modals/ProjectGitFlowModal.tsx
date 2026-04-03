@@ -14,19 +14,27 @@ import {
 } from '../../services/architectGitNaming';
 import type {
   ProjectAccessChangePreview,
+  ProjectGitFlowDetection,
   ProjectGitFlowSettings,
+  ProjectGitSetupAction,
   ProjectGitSetupRiskFlag,
 } from '../../types';
 import { cn } from '../../utils/cn';
 import { devLogger } from '../../utils/devLogger';
 import { toast } from '../ui/Toaster';
 import {
-  buildProjectSetupPromptDetails,
+  buildProjectSetupPrompts,
   getProjectSetupAction,
   hasProjectSetupRisks,
-  shouldPromptToCreateDevelop,
   type ProjectSetupPromptDetails,
 } from './projectGitSetup';
+
+interface ProjectSetupFlowState {
+  detection: ProjectGitFlowDetection;
+  prompts: ProjectSetupPromptDetails[];
+  promptIndex: number;
+  acceptedActions: ProjectGitSetupAction[];
+}
 
 const buildTemplatePreview = (settings: ProjectGitFlowSettings) => ({
   mainBranch: settings.mainBranch,
@@ -68,8 +76,8 @@ export const ProjectGitFlowModal: React.FC = () => {
   const projectId = useAppStore((state) => state.projectGitFlowModalProjectId);
   const getProjectById = useAppStore((state) => state.getProjectById);
   const updateProjectGitFlow = useAppStore((state) => state.updateProjectGitFlow);
+  const updateProjectGitFlowWithSetup = useAppStore((state) => state.updateProjectGitFlowWithSetup);
   const updateProjectAccess = useAppStore((state) => state.updateProjectAccess);
-  const refreshProjectRegistry = useAppStore((state) => state.refreshProjectRegistry);
   const closeProjectGitFlowModal = useAppStore((state) => state.closeProjectGitFlowModal);
   const project = projectId ? getProjectById(projectId) : null;
   const [settings, setSettings] = useState<ProjectGitFlowSettings>(() => getDefaultProjectGitFlowSettings());
@@ -77,7 +85,7 @@ export const ProjectGitFlowModal: React.FC = () => {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [isAccessSaving, setIsAccessSaving] = useState(false);
   const [accessPreview, setAccessPreview] = useState<ProjectAccessChangePreview | null>(null);
-  const [projectSetupPrompt, setProjectSetupPrompt] = useState<ProjectSetupPromptDetails | null>(null);
+  const [projectSetupFlow, setProjectSetupFlow] = useState<ProjectSetupFlowState | null>(null);
 
   useEffect(() => {
     if (!project) {
@@ -88,13 +96,14 @@ export const ProjectGitFlowModal: React.FC = () => {
     setSaveSuccess(false);
     setIsAccessSaving(false);
     setAccessPreview(null);
-    setProjectSetupPrompt(null);
+    setProjectSetupFlow(null);
   }, [project]);
 
   const appDefaults = useMemo(() => getDefaultProjectGitFlowSettings(), []);
   const validationErrors = useMemo(() => validateProjectGitFlowSettings(settings), [settings]);
   const previews = useMemo(() => buildTemplatePreview(settings), [settings]);
   const resolvedProjectPath = project?.path ?? '';
+  const projectSetupPrompt = projectSetupFlow?.prompts[projectSetupFlow.promptIndex] ?? null;
 
   const getRiskFlagLabel = (riskFlag: ProjectGitSetupRiskFlag): string => {
     if (riskFlag === 'env_file') {
@@ -140,26 +149,19 @@ export const ProjectGitFlowModal: React.FC = () => {
     return t('common.error', 'An error occurred');
   };
 
-  const continueProjectSetupFlow = (detection: Awaited<ReturnType<typeof services.previewProjectGitSetup>>) => {
-    const setupState = detection.setupState || (detection.repoDetected ? 'ready' : 'not_git');
-    if (!detection.repoDetected || setupState === 'not_git') {
-      setProjectSetupPrompt(buildProjectSetupPromptDetails('init_git', resolvedProjectPath, detection));
+  const continueProjectSetupFlow = (detection: ProjectGitFlowDetection) => {
+    const prompts = buildProjectSetupPrompts(resolvedProjectPath, detection);
+    if (prompts.length === 0) {
+      setProjectSetupFlow(null);
       return;
     }
-    if (setupState === 'unborn') {
-      setProjectSetupPrompt(buildProjectSetupPromptDetails('initial_commit', resolvedProjectPath, detection));
-      return;
-    }
-    if (
-      shouldPromptToCreateDevelop(
-        setupState,
-        detection.suggestedMainBranch ?? detection.suggestedCommitBranch ?? detection.currentBranch
-      )
-    ) {
-      setProjectSetupPrompt(buildProjectSetupPromptDetails('create_develop', resolvedProjectPath, detection));
-      return;
-    }
-    setProjectSetupPrompt(null);
+
+    setProjectSetupFlow({
+      detection,
+      prompts,
+      promptIndex: 0,
+      acceptedActions: [],
+    });
   };
 
   const logProjectAccessEvent = (phase: string, payload: Record<string, unknown>) => {
@@ -353,31 +355,51 @@ export const ProjectGitFlowModal: React.FC = () => {
   };
 
   const handleConfirmProjectSetupPrompt = async () => {
-    if (!projectId || !projectSetupPrompt || isAccessSaving) {
+    if (!projectId || !projectSetupPrompt || !projectSetupFlow || isAccessSaving) {
       return;
     }
 
     setIsAccessSaving(true);
     try {
-      const nextDetection = await services.applyProjectGitSetup({
-        path: projectSetupPrompt.projectPath,
-        action: getProjectSetupAction(projectSetupPrompt.kind),
-        expectedRepoRootPath: projectSetupPrompt.resolvedRepoRootPath ?? null,
-      });
-      await refreshProjectRegistry();
+      const nextAcceptedActions = [
+        ...projectSetupFlow.acceptedActions,
+        getProjectSetupAction(projectSetupPrompt.kind),
+      ];
 
-      if (projectSetupPrompt.kind === 'create_develop') {
-        const updatedSettings = resolveProjectGitFlowSettings({
-          ...settings,
-          mainBranch: projectSetupPrompt.mainBranch || settings.mainBranch || 'main',
-          baseBranch: 'develop',
-        });
-        setSettings(updatedSettings);
-        await updateProjectGitFlow(projectId, updatedSettings);
+      if (projectSetupFlow.promptIndex < projectSetupFlow.prompts.length - 1) {
+        setProjectSetupFlow((prev) =>
+          prev
+            ? {
+                ...prev,
+                acceptedActions: nextAcceptedActions,
+                promptIndex: prev.promptIndex + 1,
+              }
+            : prev
+        );
+        return;
       }
 
-      continueProjectSetupFlow(nextDetection);
-      if (nextDetection.setupState === 'ready') {
+      const updatedSettings =
+        projectSetupPrompt.kind === 'create_develop'
+          ? resolveProjectGitFlowSettings({
+              ...settings,
+              mainBranch: projectSetupPrompt.mainBranch || settings.mainBranch || 'main',
+              baseBranch: 'develop',
+            })
+          : resolveProjectGitFlowSettings(settings);
+      setSettings(updatedSettings);
+      setProjectSetupFlow(null);
+
+      const result = await updateProjectGitFlowWithSetup(
+        projectId,
+        updatedSettings,
+        nextAcceptedActions,
+        projectSetupFlow.detection.resolvedRepoRootPath ?? null,
+        projectSetupFlow.detection.setupState,
+        projectSetupFlow.detection.recommendedActionSequence
+      );
+
+      if (result.detection.setupState === 'ready') {
         toast.success(
           t('projects.projectGitPrepared', 'Git is ready for {{projectName}}.', {
             projectName: project.name,
@@ -385,7 +407,7 @@ export const ProjectGitFlowModal: React.FC = () => {
         );
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
+      const message = toServiceError(error).message || t('common.error', 'An error occurred');
       toast.error(message);
     } finally {
       setIsAccessSaving(false);
@@ -393,7 +415,7 @@ export const ProjectGitFlowModal: React.FC = () => {
   };
 
   const handleDeclineProjectSetupPrompt = async () => {
-    if (!projectId || !projectSetupPrompt || isAccessSaving) {
+    if (!projectId || !projectSetupPrompt || !projectSetupFlow || isAccessSaving) {
       return;
     }
 
@@ -407,11 +429,20 @@ export const ProjectGitFlowModal: React.FC = () => {
           baseBranch: fallbackBranch,
         });
         setSettings(updatedSettings);
-        await updateProjectGitFlow(projectId, updatedSettings);
+        setProjectSetupFlow(null);
+        await updateProjectGitFlowWithSetup(
+          projectId,
+          updatedSettings,
+          projectSetupFlow.acceptedActions,
+          projectSetupFlow.detection.resolvedRepoRootPath ?? null,
+          projectSetupFlow.detection.setupState,
+          projectSetupFlow.detection.recommendedActionSequence
+        );
+      } else {
+        setProjectSetupFlow(null);
       }
-      setProjectSetupPrompt(null);
     } catch (error) {
-      const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
+      const message = toServiceError(error).message || t('common.error', 'An error occurred');
       toast.error(message);
     } finally {
       setIsAccessSaving(false);
