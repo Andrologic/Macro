@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { useTerminalStore } from '../../stores/useTerminalStore';

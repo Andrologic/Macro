@@ -16,6 +16,8 @@ import {
   showMainWindow,
   windowIsMaximized,
   windowMaximize,
+  windowOnMoved,
+  windowOnResized,
   windowOuterPosition,
   windowOuterSize,
   windowScaleFactor,
@@ -246,15 +248,39 @@ export function useWindowRestoration() {
     if (!isTauri()) return;
 
     let intervalId: ReturnType<typeof setInterval> | null = null;
+    let unlistenResize: (() => void) | null = null;
+    let unlistenMove: (() => void) | null = null;
+    let cancelled = false;
 
-    intervalId = setInterval(() => {
-      debouncedSave();
-    }, 1000);
+    const registerWindowListeners = async () => {
+      try {
+        [unlistenResize, unlistenMove] = await Promise.all([
+          windowOnResized(() => debouncedSave()),
+          windowOnMoved(() => debouncedSave()),
+        ]);
+        return;
+      } catch (error) {
+        if (!cancelled) {
+          devLogger.log(`Window listener registration failed, falling back to polling: ${String(error)}`);
+        }
+      }
+
+      intervalId = setInterval(() => {
+        if (document.visibilityState === 'visible') {
+          debouncedSave();
+        }
+      }, 4000);
+    };
+
+    void registerWindowListeners();
 
     return () => {
+      cancelled = true;
       if (saveTimeout) {
         clearTimeout(saveTimeout);
       }
+      unlistenResize?.();
+      unlistenMove?.();
       if (intervalId) {
         clearInterval(intervalId);
       }

@@ -21,7 +21,7 @@ import type {
 } from '../../types';
 import { cn } from '../../utils/cn';
 import { devLogger } from '../../utils/devLogger';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 import {
   buildProjectSetupPrompts,
   getProjectSetupAction,

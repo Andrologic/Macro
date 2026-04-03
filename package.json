@@ -12,6 +12,7 @@
     "build:copilot-bridge": "node ./dev/build-copilot-bridge.mjs",
     "build": "NODE_ENV=production bunx tsc && NODE_ENV=production bunx vite build",
     "build:analyze": "NODE_ENV=production bunx vite build --mode analyze",
+    "bundle:check": "node ./dev/check-bundle-size.mjs",
     "preview": "bunx vite preview",
     "tauri": "bunx tauri",
     "tauri:dev": "bunx tauri dev",
@@ -31,7 +32,7 @@
     "version:sync": "bun dev/version/sync.mjs",
     "version:check": "bun dev/version/check.mjs",
     "version:bump": "bun dev/version/bump.mjs",
-    "ci": "bun install --frozen-lockfile && bun run version:check && bun run typecheck && bun run lint && bun run i18n:audit && cargo check --manifest-path src-tauri/Cargo.toml && bun run build"
+    "ci": "bun install --frozen-lockfile && bun run version:check && bun run typecheck && bun run lint && bun run i18n:audit && cargo check --manifest-path src-tauri/Cargo.toml && bun run build && bun run bundle:check"
   },
   "dependencies": {
     "@github/copilot-sdk": "^0.2.0",

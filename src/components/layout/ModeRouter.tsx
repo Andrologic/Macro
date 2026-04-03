@@ -164,6 +164,7 @@ export const preloadModeComponents = (mode: AppMode): void => {
     case 'Architect':
       import('../architect/NeedsPanel');
       import('../plan/StrategyGraph');
+      import('../chat/ChatZone');
       break;
     case 'Implement':
       import('../tasks/TaskQueue');
@@ -173,15 +174,14 @@ export const preloadModeComponents = (mode: AppMode): void => {
     case 'Chat':
       import('../chat/ConversationArchive');
       import('../chat/ContextToolbox');
+      import('../chat/ChatZone');
       break;
     case 'Debug':
       import('../debug/DebugWorkspaceExplorer');
       import('../debug/DebugInspector');
+      import('../chat/ChatZone');
       break;
   }
-  
-  // Always preload ChatZone as it's shared
-  import('../chat/ChatZone');
 };
 
 /**

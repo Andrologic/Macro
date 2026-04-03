@@ -11,7 +11,7 @@ import {
   AccordionTrigger,
   AccordionContent,
 } from '../../../ui/Accordion';
-import { toast } from '../../../ui/Toaster';
+import { toast } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
 
 const getErrorMessage = (error: unknown, fallback: string): string => {

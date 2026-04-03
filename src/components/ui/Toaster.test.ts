@@ -107,7 +107,7 @@ mock.module('../../stores/useAppStore', () => ({
   useAppStore,
 }));
 
-const { toast, __testables } = await import('./Toaster');
+const { toast, __testables } = await import('./toastService');
 const { useAuthStore } = await import('../../stores/useAuthStore');
 const { useNotificationCenterStore } = await import('../../stores/useNotificationCenterStore');
 

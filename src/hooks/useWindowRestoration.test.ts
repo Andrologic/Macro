@@ -53,6 +53,8 @@ const registerWindowRestorationMocks = () => {
     windowSetSize: (...args: unknown[]) => windowSetSizeMock(...args),
     windowSetTheme: (...args: unknown[]) => windowSetThemeMock(...args),
     windowSetTrafficLightPosition: async () => undefined,
+    windowOnMoved: async () => () => undefined,
+    windowOnResized: async () => () => undefined,
   }));
 
   mock.module('../utils/desktopPlatform', () => ({

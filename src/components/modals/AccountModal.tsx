@@ -4,7 +4,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
-import { toast } from '../ui/Toaster';
+import { toast } from '../ui/toastService';
 
 export const AccountModal: React.FC = () => {
   const { t, i18n } = useTranslation();

@@ -108,91 +108,69 @@ export default defineConfig(({ command }) => {
           // Manual chunks for optimal code splitting
           manualChunks: {
             // State management
-            "state-vendor": ["zustand", "jotai"],
+            'state-vendor': ['zustand', 'jotai'],
 
-            // UI Components - heavy dependencies
-            "ui-vendor": [
-              "@xyflow/react",
-              "@dnd-kit/core",
-              "@dnd-kit/sortable",
-              "@dnd-kit/utilities",
-            ],
+            // Graph and drag dependencies used by isolated features
+            'graph-vendor': ['@xyflow/react'],
+            'dnd-vendor': ['@dnd-kit/core', '@dnd-kit/sortable', '@dnd-kit/utilities'],
 
-            // Code editor - largest chunk, loaded on demand
-            "editor-vendor": [
-              "@codemirror/view",
-              "@codemirror/state",
-              "codemirror",
-              "@codemirror/lang-javascript",
-              "@codemirror/lang-rust",
-              "@codemirror/theme-one-dark",
-              "@codemirror/autocomplete",
-              "@codemirror/commands",
-              "@codemirror/lint",
-            ],
-
-            // Rich text composer
-            "lexical-vendor": [
-              "lexical",
-              "@lexical/react/LexicalComposer",
-              "@lexical/react/LexicalPlainTextPlugin",
-              "@lexical/react/LexicalContentEditable",
-              "@lexical/react/LexicalHistoryPlugin",
-              "@lexical/react/LexicalOnChangePlugin",
-              "@lexical/react/LexicalComposerContext",
-              "@lexical/clipboard",
-              "@lexical/selection",
-              "@lexical/utils",
+            // Code editor - loaded on demand
+            'editor-vendor': [
+              '@codemirror/view',
+              '@codemirror/state',
+              'codemirror',
+              '@codemirror/lang-javascript',
+              '@codemirror/lang-rust',
+              '@codemirror/theme-one-dark',
+              '@codemirror/autocomplete',
+              '@codemirror/commands',
+              '@codemirror/lint',
             ],
 
             // Markdown, syntax highlighting, and diagram rendering
-            "markdown-vendor": [
-              "react-markdown",
-              "remark-gfm",
-              "remark-math",
-              "rehype-katex",
-              "katex",
-              "highlight.js",
-              "mermaid",
+            'markdown-vendor': [
+              'react-markdown',
+              'remark-gfm',
+              'remark-math',
+              'rehype-katex',
+              'katex',
+              'highlight.js',
             ],
+
+            // Mermaid runtime
+            'diagram-vendor': ['mermaid'],
 
             // Terminal runtime
-            "terminal-vendor": [
-              "xterm",
-              "xterm-addon-fit",
-            ],
+            'terminal-vendor': ['xterm', 'xterm-addon-fit'],
 
             // Desktop runtime and plugins
-            "desktop-vendor": [
-              "@tauri-apps/api/app",
-              "@tauri-apps/api/core",
-              "@tauri-apps/api/event",
-              "@tauri-apps/api/image",
-              "@tauri-apps/api/path",
-              "@tauri-apps/api/window",
-              "@tauri-apps/plugin-dialog",
-              "@tauri-apps/plugin-http",
-              "@tauri-apps/plugin-notification",
-              "@tauri-apps/plugin-opener",
-              "@tauri-apps/plugin-store",
+            'desktop-vendor': [
+              '@tauri-apps/api/app',
+              '@tauri-apps/api/core',
+              '@tauri-apps/api/event',
+              '@tauri-apps/api/image',
+              '@tauri-apps/api/path',
+              '@tauri-apps/api/window',
+              '@tauri-apps/plugin-dialog',
+              '@tauri-apps/plugin-http',
+              '@tauri-apps/plugin-notification',
+              '@tauri-apps/plugin-opener',
+              '@tauri-apps/plugin-store',
             ],
 
             // Notifications UI
-            "notifications-vendor": [
-              "sonner",
-            ],
+            'notifications-vendor': ['sonner'],
 
             // Utilities
-            "utils-vendor": [
-              "i18next",
-              "react-i18next",
-              "i18next-browser-languagedetector",
-              "lucide-react",
-              "class-variance-authority",
-              "clsx",
-              "tailwind-merge",
+            'utils-vendor': [
+              'i18next',
+              'react-i18next',
+              'i18next-browser-languagedetector',
+              'lucide-react',
+              'class-variance-authority',
+              'clsx',
+              'tailwind-merge',
             ],
-
           },
 
           // Chunk naming strategy

@@ -42,6 +42,7 @@ import { taskMatchesProjectId } from '../services/implementTaskCatalog';
 import {
   loadPreference,
   savePreference,
+  savePreferenceDebounced,
   PREF_KEYS,
 } from '../services/preferences';
 import {
@@ -2601,15 +2602,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setLeftPanelWidth: (width) => {
     const clampedWidth = Math.max(200, Math.min(600, width));
     set({ leftPanelWidth: clampedWidth });
-    // Persist asynchronously (fire and forget)
-    void savePreference(PREF_KEYS.LEFT_PANEL_WIDTH, clampedWidth);
+    savePreferenceDebounced(PREF_KEYS.LEFT_PANEL_WIDTH, clampedWidth);
   },
 
   setRightPanelWidth: (width) => {
     const clampedWidth = Math.max(200, Math.min(600, width));
     set({ rightPanelWidth: clampedWidth });
-    // Persist asynchronously (fire and forget)
-    void savePreference(PREF_KEYS.RIGHT_PANEL_WIDTH, clampedWidth);
+    savePreferenceDebounced(PREF_KEYS.RIGHT_PANEL_WIDTH, clampedWidth);
   },
 
   setLeftPanelOpen: (open) => {

@@ -1,18 +1,16 @@
-import React, { useEffect, useRef, Suspense, lazy, useSyncExternalStore } from 'react';
+import React, { useEffect, useRef, Suspense, lazy, useState } from 'react';
 import { Header } from './components/layout/Header';
-import { Footer } from './components/layout/Footer';
 import { Toaster } from './components/ui/Toaster';
 import { useWindowRestoration } from './hooks/useWindowRestoration';
 import { useUiZoom } from './hooks/useUiZoom';
 import { PanelResizer } from './components/layout/PanelResizer';
 import { ModeRouter } from './components/layout/ModeRouter';
-import { appBootstrap } from './services/appBootstrap';
-import { initializeDesktopNotifications } from './services/desktopNotifications';
 import { useAppStore } from './stores/useAppStore';
 import { Skeleton } from './components/shared/Skeleton';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
 import { getPlatformChromeState } from './utils/desktopPlatform';
 import { getTitleBarLayout } from './components/layout/titleBarLayout';
+import { useShallow } from 'zustand/react/shallow';
 
 // =============================================================================
 // LAZY LOADED MODALS - Code Splitting for Non-Critical UI
@@ -25,6 +23,31 @@ const AccountModal = lazy(() => import('./components/modals/AccountModal'));
 const ProjectModal = lazy(() => import('./components/modals/ProjectModal'));
 const ProjectGitFlowModal = lazy(() => import('./components/modals/ProjectGitFlowModal'));
 const CodeFileViewerModal = lazy(() => import('./components/modals/CodeFileViewerModal'));
+const Footer = lazy(() =>
+  import('./components/layout/Footer').then((module) => ({ default: module.Footer }))
+);
+
+interface AppBootstrapSnapshot {
+  critical: boolean;
+  high: boolean;
+  normal: boolean;
+  low: boolean;
+  ready: boolean;
+  errors: Record<string, string>;
+}
+
+const INITIAL_BOOTSTRAP_SNAPSHOT: AppBootstrapSnapshot = {
+  critical: false,
+  high: false,
+  normal: false,
+  low: false,
+  ready: false,
+  errors: {},
+};
+
+const FooterSkeleton: React.FC = () => (
+  <div className="h-8 shrink-0 border-t border-border bg-background/70" aria-hidden="true" />
+);
 
 // =============================================================================
 // INITIALIZATION PRIORITY CONFIGURATION
@@ -51,24 +74,30 @@ const App: React.FC = () => {
   useUiZoom();
 
   useGlobalShortcuts();
-  const initStatus = useSyncExternalStore(
-    appBootstrap.subscribe,
-    appBootstrap.getSnapshot,
-    appBootstrap.getSnapshot
-  );
 
-  // ==========================================================================
-  // PANEL STATE FROM STORE (persisted)
-  // ==========================================================================
-  
-  const isLeftOpen = useAppStore((state) => state.isLeftPanelOpen);
-  const isRightOpen = useAppStore((state) => state.isRightPanelOpen);
-  const setLeftOpen = useAppStore((state) => state.setLeftPanelOpen);
-  const setRightOpen = useAppStore((state) => state.setRightPanelOpen);
-  const leftPanelWidth = useAppStore((state) => state.leftPanelWidth);
-  const rightPanelWidth = useAppStore((state) => state.rightPanelWidth);
-  const setLeftPanelWidth = useAppStore((state) => state.setLeftPanelWidth);
-  const setRightPanelWidth = useAppStore((state) => state.setRightPanelWidth);
+  const [initStatus, setInitStatus] = useState<AppBootstrapSnapshot>(INITIAL_BOOTSTRAP_SNAPSHOT);
+
+  const [
+    isLeftOpen,
+    isRightOpen,
+    setLeftOpen,
+    setRightOpen,
+    leftPanelWidth,
+    rightPanelWidth,
+    setLeftPanelWidth,
+    setRightPanelWidth,
+  ] = useAppStore(
+    useShallow((state) => [
+      state.isLeftPanelOpen,
+      state.isRightPanelOpen,
+      state.setLeftPanelOpen,
+      state.setRightPanelOpen,
+      state.leftPanelWidth,
+      state.rightPanelWidth,
+      state.setLeftPanelWidth,
+      state.setRightPanelWidth,
+    ])
+  );
   
   // Ref to track panels that were auto-collapsed during resize
   const autoCollapseRef = useRef<{ left: boolean; right: boolean }>({ left: false, right: false });
@@ -157,10 +186,36 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+
     void (async () => {
-      await appBootstrap.ensureStarted();
-      await initializeDesktopNotifications();
+      try {
+        const { appBootstrap } = await import('./services/appBootstrap');
+
+        if (cancelled) {
+          return;
+        }
+
+        setInitStatus(appBootstrap.getSnapshot());
+        unsubscribe = appBootstrap.subscribe(() => {
+          if (!cancelled) {
+            setInitStatus(appBootstrap.getSnapshot());
+          }
+        });
+
+        await appBootstrap.ensureStarted();
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to initialize app bootstrap:', error);
+        }
+      }
     })();
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }, []);
 
   // ==========================================================================
@@ -231,7 +286,9 @@ const App: React.FC = () => {
         )}
       </div>
 
-      <Footer />
+      <Suspense fallback={<FooterSkeleton />}>
+        <Footer />
+      </Suspense>
 
       {/* Modals - Lazy Loaded with Suspense */}
       <Suspense fallback={null}>
