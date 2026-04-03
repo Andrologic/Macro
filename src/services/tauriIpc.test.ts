@@ -170,16 +170,43 @@ describe('tauriIpc executeWorkspaceTool', () => {
     ]);
   });
 
-  it('uses camelCase payload keys for workspace git setup and access previews', async () => {
+  it('uses camelCase payload keys for atomic workspace git setup and access previews', async () => {
     const tauriIpc = await loadTauriIpc();
 
     await tauriIpc.workspacePreviewProjectGitSetup({
       path: 'C:/dev/web',
     });
-    await tauriIpc.workspaceApplyProjectGitSetup({
+    await tauriIpc.workspaceCreateProjectWithGitSetup({
+      name: 'Web',
+      description: '',
+      groupId: 'group-1',
+      groupName: 'Suite',
       path: 'C:/dev/web',
-      action: 'create_initial_commit',
-      expectedRepoRootPath: 'C:/dev',
+      gitSetupActions: ['initialize_repo', 'create_initial_commit'],
+      expectedRepoRootPath: 'C:/dev/web',
+      expectedSetupState: 'not_git',
+      expectedRecommendedActionSequence: [
+        'initialize_repo',
+        'create_initial_commit',
+        'create_develop',
+      ],
+    });
+    await tauriIpc.workspaceUpdateProjectGitFlowWithSetup({
+      projectId: 'project-1',
+      gitFlowSettings: {
+        mainBranch: 'main',
+        baseBranch: 'develop',
+        planBranchTemplate: 'plan/{planSlug}',
+        featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+        standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
+        releaseBranchTemplate: 'release/{releaseSlug}',
+        hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+        bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
+      },
+      gitSetupActions: ['create_develop'],
+      expectedRepoRootPath: 'C:/dev/web',
+      expectedSetupState: 'single_main_only',
+      expectedRecommendedActionSequence: ['create_develop'],
     });
     await tauriIpc.workspacePreviewProjectAccessChange({
       projectId: 'project-1',
@@ -199,11 +226,42 @@ describe('tauriIpc executeWorkspaceTool', () => {
         },
       },
       {
-        command: 'workspace_apply_project_git_setup',
+        command: 'workspace_create_project_with_git_setup',
         payload: {
+          name: 'Web',
+          description: '',
+          groupId: 'group-1',
+          groupName: 'Suite',
           path: 'C:/dev/web',
-          action: 'create_initial_commit',
-          expectedRepoRootPath: 'C:/dev',
+          gitFlowSettings: null,
+          gitSetupActions: ['initialize_repo', 'create_initial_commit'],
+          expectedRepoRootPath: 'C:/dev/web',
+          expectedSetupState: 'not_git',
+          expectedRecommendedActionSequence: [
+            'initialize_repo',
+            'create_initial_commit',
+            'create_develop',
+          ],
+        },
+      },
+      {
+        command: 'workspace_update_project_git_flow_with_setup',
+        payload: {
+          projectId: 'project-1',
+          gitFlowSettings: {
+            mainBranch: 'main',
+            baseBranch: 'develop',
+            planBranchTemplate: 'plan/{planSlug}',
+            featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+            standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
+            releaseBranchTemplate: 'release/{releaseSlug}',
+            hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+            bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
+          },
+          gitSetupActions: ['create_develop'],
+          expectedRepoRootPath: 'C:/dev/web',
+          expectedSetupState: 'single_main_only',
+          expectedRecommendedActionSequence: ['create_develop'],
         },
       },
       {

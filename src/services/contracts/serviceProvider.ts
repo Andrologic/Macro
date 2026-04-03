@@ -19,6 +19,7 @@ import type {
   ProjectGitFlowDetection,
   ProjectGitFlowSettings,
   ProjectGitSetupAction,
+  ProjectGitSetupCommitResult,
   ProjectGroup,
 } from '../../types';
 
@@ -69,14 +70,18 @@ export interface ServiceProvider {
   previewProjectGitSetup: (data: {
     path?: string;
   }) => Promise<ProjectGitFlowDetection>;
-  applyProjectGitSetup: (data: {
+  createProjectWithGitSetup: (data: {
+    name: string;
+    description: string;
+    groupId: string | null;
+    groupName?: string | null;
     path: string;
-    action: ProjectGitSetupAction;
+    gitFlowSettings?: ProjectGitFlowSettings;
+    gitSetupActions: ProjectGitSetupAction[];
     expectedRepoRootPath?: string | null;
-  }) => Promise<ProjectGitFlowDetection>;
-  prepareProjectGit: (data: {
-    path: string;
-  }) => Promise<ProjectGitFlowDetection>;
+    expectedSetupState: ProjectGitFlowDetection['setupState'];
+    expectedRecommendedActionSequence: ProjectGitSetupAction[];
+  }) => Promise<ProjectGitSetupCommitResult>;
   importGitRepo: (data: {
     gitUrl: string;
     projectName: string;
@@ -98,6 +103,14 @@ export interface ServiceProvider {
     projectId: string;
     gitFlowSettings: ProjectGitFlowSettings;
   }) => Promise<ProjectDto>;
+  updateProjectGitFlowWithSetup: (data: {
+    projectId: string;
+    gitFlowSettings: ProjectGitFlowSettings;
+    gitSetupActions: ProjectGitSetupAction[];
+    expectedRepoRootPath?: string | null;
+    expectedSetupState: ProjectGitFlowDetection['setupState'];
+    expectedRecommendedActionSequence: ProjectGitSetupAction[];
+  }) => Promise<ProjectGitSetupCommitResult>;
   updateProjectAccess: (data: {
     projectId: string;
     userReadOnly: boolean;

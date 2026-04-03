@@ -94,18 +94,20 @@ export const services = {
     callProviderMethod('detectProjectGitFlow', data),
   previewProjectGitSetup: (data: Parameters<ServiceProvider['previewProjectGitSetup']>[0]) =>
     callProviderMethod('previewProjectGitSetup', data),
-  applyProjectGitSetup: (data: Parameters<ServiceProvider['applyProjectGitSetup']>[0]) =>
-    callProviderMethod('applyProjectGitSetup', data),
-  prepareProjectGit: (data: Parameters<ServiceProvider['prepareProjectGit']>[0]) =>
-    callProviderMethod('prepareProjectGit', data),
   importGitRepo: (data: Parameters<ServiceProvider['importGitRepo']>[0]) =>
     callProviderMethod('importGitRepo', data),
+  createProjectWithGitSetup: (
+    data: Parameters<ServiceProvider['createProjectWithGitSetup']>[0]
+  ) => callProviderMethod('createProjectWithGitSetup', data),
   renameProjectGroup: (data: Parameters<ServiceProvider['renameProjectGroup']>[0]) =>
     callProviderMethod('renameProjectGroup', data),
   renameProject: (data: Parameters<ServiceProvider['renameProject']>[0]) =>
     callProviderMethod('renameProject', data),
   updateProjectGitFlow: (data: Parameters<ServiceProvider['updateProjectGitFlow']>[0]) =>
     callProviderMethod('updateProjectGitFlow', data),
+  updateProjectGitFlowWithSetup: (
+    data: Parameters<ServiceProvider['updateProjectGitFlowWithSetup']>[0]
+  ) => callProviderMethod('updateProjectGitFlowWithSetup', data),
   updateProjectAccess: (data: Parameters<ServiceProvider['updateProjectAccess']>[0]) =>
     callProviderMethod('updateProjectAccess', data),
   previewProjectAccessChange: (data: Parameters<ServiceProvider['previewProjectAccessChange']>[0]) =>

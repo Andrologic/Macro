@@ -29,7 +29,12 @@ import type {
   FileContentDto,
 } from '../contracts/dtos';
 import type { ServiceProvider } from '../contracts/serviceProvider';
-import type { Project, ProjectGitFlowDetection, ProjectGroup } from '../../types';
+import type {
+  Project,
+  ProjectGitFlowDetection,
+  ProjectGitSetupCommitResult,
+  ProjectGroup,
+} from '../../types';
 import { getDefaultProjectGitFlowSettings } from '../architectGitNaming';
 import { delay, maybeFail } from '../utils';
 
@@ -272,9 +277,9 @@ export const detectProjectGitFlow = async (_data: {
     repoDetected: false,
     branches: [],
     currentBranch: null,
-    suggestedMainBranch: null,
-    suggestedBaseBranch: null,
-    suggestedCommitBranch: null,
+    suggestedMainBranch: 'main',
+    suggestedBaseBranch: 'main',
+    suggestedCommitBranch: 'main',
     requiresConfirmation: false,
     setupState: 'not_git',
     hasInitialCommit: false,
@@ -283,96 +288,20 @@ export const detectProjectGitFlow = async (_data: {
     initialCommitPreviewPaths: [],
     initialCommitPreviewCount: 0,
     initialCommitRiskFlags: [],
+    recommendedActionSequence: ['initialize_repo', 'create_initial_commit', 'create_develop'],
   });
 };
 
 export const previewProjectGitSetup = async (data: {
   path?: string;
 }): Promise<ProjectGitFlowDetection> => {
-  return detectProjectGitFlow(data);
-};
-
-export const applyProjectGitSetup = async (data: {
-  path: string;
-  action: 'initialize_repo' | 'create_initial_commit' | 'create_develop';
-  expectedRepoRootPath?: string | null;
-}): Promise<ProjectGitFlowDetection> => {
-  const repoPath = data.expectedRepoRootPath ?? data.path;
-  if (data.action === 'initialize_repo') {
-    return simulate({
-      repoDetected: true,
-      branches: ['main'],
-      currentBranch: 'main',
-      suggestedMainBranch: 'main',
-      suggestedBaseBranch: 'main',
-      suggestedCommitBranch: 'main',
-      requiresConfirmation: false,
-      setupState: 'unborn',
-      hasInitialCommit: false,
-      resolvedRepoRootPath: repoPath,
-      repoResolution: 'new_local_repo',
-      initialCommitPreviewPaths: ['README.md'],
-      initialCommitPreviewCount: 1,
-      initialCommitRiskFlags: [],
-    });
-  }
-
-  if (data.action === 'create_initial_commit') {
-    return simulate({
-      repoDetected: true,
-      branches: ['main'],
-      currentBranch: 'main',
-      suggestedMainBranch: 'main',
-      suggestedBaseBranch: 'main',
-      suggestedCommitBranch: 'main',
-      requiresConfirmation: false,
-      setupState: 'single_main_only',
-      hasInitialCommit: true,
-      resolvedRepoRootPath: repoPath,
-      repoResolution: 'selected_folder',
-      initialCommitPreviewPaths: ['README.md'],
-      initialCommitPreviewCount: 1,
-      initialCommitRiskFlags: [],
-    });
-  }
-
   return simulate({
-    repoDetected: true,
-    branches: ['main', 'develop'],
-    currentBranch: 'main',
-    suggestedMainBranch: 'main',
-    suggestedBaseBranch: 'develop',
-    suggestedCommitBranch: 'develop',
-    requiresConfirmation: false,
-    setupState: 'ready',
-    hasInitialCommit: true,
-    resolvedRepoRootPath: repoPath,
-    repoResolution: 'selected_folder',
-    initialCommitPreviewPaths: [],
-    initialCommitPreviewCount: 0,
-    initialCommitRiskFlags: [],
+    ...(await detectProjectGitFlow(data)),
+    resolvedRepoRootPath: data.path ?? null,
+    initialCommitPreviewPaths: ['README.md'],
+    initialCommitPreviewCount: 1,
   });
 };
-
-export const prepareProjectGit = async (_data: {
-  path: string;
-}): Promise<ProjectGitFlowDetection> =>
-  simulate({
-    repoDetected: true,
-    branches: ['main'],
-    currentBranch: 'main',
-    suggestedMainBranch: 'main',
-    suggestedBaseBranch: 'main',
-    suggestedCommitBranch: 'main',
-    requiresConfirmation: false,
-    setupState: 'single_main_only',
-    hasInitialCommit: true,
-    resolvedRepoRootPath: _data.path,
-    repoResolution: 'selected_folder',
-    initialCommitPreviewPaths: [],
-    initialCommitPreviewCount: 0,
-    initialCommitRiskFlags: [],
-  });
 
 export const createProject = async (data: {
   name: string;
@@ -403,6 +332,48 @@ export const createProject = async (data: {
   });
 
   return simulate({ project: newProject });
+};
+
+export const createProjectWithGitSetup = async (data: {
+  name: string;
+  description: string;
+  groupId: string | null;
+  groupName?: string | null;
+  path: string;
+  gitFlowSettings?: Project['gitFlowSettings'];
+  gitSetupActions: ProjectGitFlowDetection['recommendedActionSequence'];
+  expectedRepoRootPath?: string | null;
+  expectedSetupState: ProjectGitFlowDetection['setupState'];
+  expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
+}): Promise<ProjectGitSetupCommitResult> => {
+  const project = await createProject(data);
+  const hasRepo = data.gitSetupActions.includes('initialize_repo')
+    || data.gitSetupActions.includes('create_initial_commit')
+    || data.gitSetupActions.includes('create_develop');
+  const hasInitialCommit = data.gitSetupActions.includes('create_initial_commit')
+    || data.gitSetupActions.includes('create_develop');
+  const hasDevelop = data.gitSetupActions.includes('create_develop');
+
+  return simulate({
+    project: project.project,
+    detection: {
+      repoDetected: hasRepo,
+      branches: hasDevelop ? ['main', 'develop'] : hasRepo ? ['main'] : [],
+      currentBranch: hasRepo ? 'main' : null,
+      suggestedMainBranch: 'main',
+      suggestedBaseBranch: hasDevelop ? 'develop' : 'main',
+      suggestedCommitBranch: hasDevelop ? 'develop' : 'main',
+      requiresConfirmation: false,
+      setupState: hasDevelop ? 'ready' : hasInitialCommit ? 'single_main_only' : hasRepo ? 'unborn' : 'not_git',
+      hasInitialCommit,
+      resolvedRepoRootPath: data.expectedRepoRootPath ?? data.path,
+      repoResolution: hasRepo ? 'selected_folder' : 'none',
+      initialCommitPreviewPaths: [],
+      initialCommitPreviewCount: 0,
+      initialCommitRiskFlags: [],
+      recommendedActionSequence: [],
+    },
+  });
 };
 
 export const importGitRepo = async (data: {
@@ -521,6 +492,51 @@ export const updateProjectGitFlow = async (data: {
       });
 
   return simulate({ project });
+};
+
+export const updateProjectGitFlowWithSetup = async (data: {
+  projectId: string;
+  gitFlowSettings: Project['gitFlowSettings'];
+  gitSetupActions: ProjectGitFlowDetection['recommendedActionSequence'];
+  expectedRepoRootPath?: string | null;
+  expectedSetupState: ProjectGitFlowDetection['setupState'];
+  expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
+}): Promise<ProjectGitSetupCommitResult> => {
+  const project = await updateProjectGitFlow({
+    projectId: data.projectId,
+    gitFlowSettings: data.gitFlowSettings,
+  });
+  const hasRepo = data.gitSetupActions.includes('initialize_repo')
+    || data.gitSetupActions.includes('create_initial_commit')
+    || data.gitSetupActions.includes('create_develop')
+    || data.expectedSetupState !== 'not_git';
+  const hasInitialCommit = data.gitSetupActions.includes('create_initial_commit')
+    || data.gitSetupActions.includes('create_develop')
+    || data.expectedSetupState === 'ready'
+    || data.expectedSetupState === 'single_main_only';
+  const hasDevelop = data.gitSetupActions.includes('create_develop')
+    || data.gitFlowSettings?.baseBranch === 'develop';
+
+  return simulate({
+    project: project.project,
+    detection: {
+      repoDetected: hasRepo,
+      branches: hasDevelop ? ['main', 'develop'] : hasRepo ? ['main'] : [],
+      currentBranch: hasRepo ? 'main' : null,
+      suggestedMainBranch: 'main',
+      suggestedBaseBranch: hasDevelop ? 'develop' : 'main',
+      suggestedCommitBranch: hasDevelop ? 'develop' : 'main',
+      requiresConfirmation: false,
+      setupState: hasDevelop ? 'ready' : hasInitialCommit ? 'single_main_only' : hasRepo ? 'unborn' : 'not_git',
+      hasInitialCommit,
+      resolvedRepoRootPath: data.expectedRepoRootPath ?? null,
+      repoResolution: hasRepo ? 'selected_folder' : 'none',
+      initialCommitPreviewPaths: [],
+      initialCommitPreviewCount: 0,
+      initialCommitRiskFlags: [],
+      recommendedActionSequence: [],
+    },
+  });
 };
 
 export const updateProjectAccess = async (data: {
@@ -796,13 +812,13 @@ export const provider: ServiceProvider = {
   sendChat,
   detectProjectGitFlow,
   previewProjectGitSetup,
-  applyProjectGitSetup,
-  prepareProjectGit,
   createProject,
+  createProjectWithGitSetup,
   importGitRepo,
   renameProjectGroup,
   renameProject,
   updateProjectGitFlow,
+  updateProjectGitFlowWithSetup,
   updateProjectAccess,
   previewProjectAccessChange,
   archiveProjectGroup,
