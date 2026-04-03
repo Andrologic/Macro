@@ -1,4 +1,6 @@
 import type { Project, ProjectGroup } from '../types';
+import { DEFAULT_LANGUAGE, resolveSupportedLanguage } from '../i18n/languages';
+import { resources } from '../i18n/resources';
 import { getFocusedProjectIdForGroup, getProjectGroupByProjectId } from './globalProjects';
 import { assignMountNamesToProjectGroups } from './projectMounts';
 
@@ -40,6 +42,25 @@ const isSyntheticProjectId = (value: string | null | undefined): boolean =>
 
 export const countProjectsInRegistry = (groups: ProjectGroup[]): number =>
   groups.reduce((total, group) => total + group.projects.length, 0);
+
+const resolveRegistrySummaryLanguage = () => {
+  if (typeof document !== 'undefined') {
+    return resolveSupportedLanguage(document.documentElement.lang, DEFAULT_LANGUAGE);
+  }
+
+  return DEFAULT_LANGUAGE;
+};
+
+const getRegistryTranslation = (key: string): string | null => {
+  const language = resolveRegistrySummaryLanguage();
+  const translation = resources[language]?.translation?.projects as
+    | Record<string, string>
+    | undefined;
+  return translation?.[key] ?? null;
+};
+
+const interpolate = (template: string, values: Record<string, string | number>): string =>
+  template.replace(/\{\{(\w+)\}\}/g, (_match, key) => String(values[key] ?? ''));
 
 export const normalizeProjectRegistry = (params: {
   projectGroups: ProjectGroup[];
@@ -324,21 +345,52 @@ export const formatProjectRegistryRepairSummary = (
 
   const parts: string[] = [];
   if (report.duplicatePathsRemoved > 0) {
+    const key =
+      report.duplicatePathsRemoved === 1
+        ? 'registryRepairDuplicates_one'
+        : 'registryRepairDuplicates_other';
     parts.push(
-      `${report.duplicatePathsRemoved} doublon${report.duplicatePathsRemoved > 1 ? 's' : ''} retiré${report.duplicatePathsRemoved > 1 ? 's' : ''}`
+      interpolate(
+        getRegistryTranslation(key) ||
+          (report.duplicatePathsRemoved === 1
+            ? '{{count}} duplicate removed'
+            : '{{count}} duplicates removed'),
+        { count: report.duplicatePathsRemoved }
+      )
     );
   }
   if (report.emptyGroupsRemoved > 0) {
+    const key =
+      report.emptyGroupsRemoved === 1
+        ? 'registryRepairEmptyGroups_one'
+        : 'registryRepairEmptyGroups_other';
     parts.push(
-      `${report.emptyGroupsRemoved} groupe${report.emptyGroupsRemoved > 1 ? 's' : ''} vide${report.emptyGroupsRemoved > 1 ? 's' : ''} retiré${report.emptyGroupsRemoved > 1 ? 's' : ''}`
+      interpolate(
+        getRegistryTranslation(key) ||
+          (report.emptyGroupsRemoved === 1
+            ? '{{count}} empty group removed'
+            : '{{count}} empty groups removed'),
+        { count: report.emptyGroupsRemoved }
+      )
     );
   }
   if (report.removedSyntheticGroups > 0 || report.removedSyntheticProjects > 0) {
-    parts.push('anciennes références de session nettoyées');
+    parts.push(
+      getRegistryTranslation('registryRepairSynthetic') ||
+        'Legacy session references cleaned up'
+    );
   }
   if (report.deadSelectedGroupId || report.deadSelectedProjectId) {
-    parts.push('sélection invalide réparée');
+    parts.push(
+      getRegistryTranslation('registryRepairSelection') || 'Invalid selection repaired'
+    );
   }
 
-  return parts.length > 0 ? `Macro a réparé le registre projet : ${parts.join(', ')}.` : null;
+  return parts.length > 0
+    ? interpolate(
+        getRegistryTranslation('registryRepairSummary') ||
+          'Macro repaired the project registry: {{details}}.',
+        { details: parts.join(', ') }
+      )
+    : null;
 };

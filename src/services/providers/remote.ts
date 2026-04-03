@@ -332,7 +332,6 @@ export const provider: ServiceProvider = {
   listProviders,
   listModels,
   sendChat,
-  detectProjectGitFlow,
   previewProjectGitSetup,
   createProject,
   createProjectWithGitSetup,
