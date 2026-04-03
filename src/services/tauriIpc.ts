@@ -17,6 +17,7 @@ import type {
   ProjectGitFlowDetection,
   ProjectGitFlowSettings,
   ProjectGitSetupAction,
+  ProjectGitSetupCommitResult,
   AppMode,
   ProjectMount,
   ToolTrace,
@@ -1287,23 +1288,47 @@ export async function workspacePreviewProjectGitSetup(params: {
   });
 }
 
-export async function workspaceApplyProjectGitSetup(params: {
+export async function workspaceCreateProjectWithGitSetup(params: {
+  name: string;
+  description: string;
+  groupId?: string | null;
+  groupName?: string | null;
   path: string;
-  action: ProjectGitSetupAction;
+  gitFlowSettings?: ProjectGitFlowSettings | null;
+  gitSetupActions: ProjectGitSetupAction[];
   expectedRepoRootPath?: string | null;
-}): Promise<ProjectGitFlowDetection> {
-  return invoke<ProjectGitFlowDetection>('workspace_apply_project_git_setup', {
+  expectedSetupState: ProjectGitFlowDetection['setupState'];
+  expectedRecommendedActionSequence: ProjectGitSetupAction[];
+}): Promise<ProjectGitSetupCommitResult> {
+  return invoke<ProjectGitSetupCommitResult>('workspace_create_project_with_git_setup', {
+    name: params.name,
+    description: params.description,
+    groupId: params.groupId ?? null,
+    groupName: params.groupName ?? null,
     path: params.path,
-    action: params.action,
+    gitFlowSettings: params.gitFlowSettings ?? null,
+    gitSetupActions: params.gitSetupActions,
     expectedRepoRootPath: params.expectedRepoRootPath ?? null,
+    expectedSetupState: params.expectedSetupState,
+    expectedRecommendedActionSequence: params.expectedRecommendedActionSequence,
   });
 }
 
-export async function workspacePrepareProjectGit(params: {
-  path: string;
-}): Promise<ProjectGitFlowDetection> {
-  return invoke<ProjectGitFlowDetection>('workspace_prepare_project_git', {
-    path: params.path,
+export async function workspaceUpdateProjectGitFlowWithSetup(params: {
+  projectId: string;
+  gitFlowSettings: ProjectGitFlowSettings;
+  gitSetupActions: ProjectGitSetupAction[];
+  expectedRepoRootPath?: string | null;
+  expectedSetupState: ProjectGitFlowDetection['setupState'];
+  expectedRecommendedActionSequence: ProjectGitSetupAction[];
+}): Promise<ProjectGitSetupCommitResult> {
+  return invoke<ProjectGitSetupCommitResult>('workspace_update_project_git_flow_with_setup', {
+    projectId: params.projectId,
+    gitFlowSettings: params.gitFlowSettings,
+    gitSetupActions: params.gitSetupActions,
+    expectedRepoRootPath: params.expectedRepoRootPath ?? null,
+    expectedSetupState: params.expectedSetupState,
+    expectedRecommendedActionSequence: params.expectedRecommendedActionSequence,
   });
 }
 

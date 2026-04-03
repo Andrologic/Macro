@@ -217,6 +217,14 @@ pub struct ProjectGitFlowDetectionDto {
     pub initial_commit_preview_count: usize,
     #[serde(default, rename = "initialCommitRiskFlags")]
     pub initial_commit_risk_flags: Vec<String>,
+    #[serde(default, rename = "recommendedActionSequence")]
+    pub recommended_action_sequence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectGitSetupCommitResultDto {
+    pub project: ProjectDto,
+    pub detection: ProjectGitFlowDetectionDto,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

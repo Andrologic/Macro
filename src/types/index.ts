@@ -67,6 +67,12 @@ export interface ProjectGitFlowDetection {
   initialCommitPreviewPaths: string[];
   initialCommitPreviewCount: number;
   initialCommitRiskFlags: ProjectGitSetupRiskFlag[];
+  recommendedActionSequence: ProjectGitSetupAction[];
+}
+
+export interface ProjectGitSetupCommitResult {
+  project: Project;
+  detection: ProjectGitFlowDetection;
 }
 
 export interface ProjectAccessMigrationItem {

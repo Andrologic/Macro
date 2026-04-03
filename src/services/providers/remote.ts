@@ -14,7 +14,12 @@ import type {
   TaskCatalogDto,
   ToolSettingsDto,
 } from '../contracts/dtos';
-import type { Project, ProjectGitFlowDetection, ProjectGroup } from '../../types';
+import type {
+  Project,
+  ProjectGitFlowDetection,
+  ProjectGitSetupCommitResult,
+  ProjectGroup,
+} from '../../types';
 import type { ServiceProvider } from '../contracts/serviceProvider';
 import { resolveRemoteConfig, type RemoteConfig } from './remoteConfig';
 
@@ -222,16 +227,6 @@ export const previewProjectGitSetup = async (_data: {
   path?: string;
 }): Promise<ProjectGitFlowDetection> => notReady();
 
-export const applyProjectGitSetup = async (_data: {
-  path: string;
-  action: 'initialize_repo' | 'create_initial_commit' | 'create_develop';
-  expectedRepoRootPath?: string | null;
-}): Promise<ProjectGitFlowDetection> => notReady();
-
-export const prepareProjectGit = async (_data: {
-  path: string;
-}): Promise<ProjectGitFlowDetection> => notReady();
-
 export const createProject = async (_data: {
   name: string;
   description: string;
@@ -240,6 +235,19 @@ export const createProject = async (_data: {
   path?: string;
   gitFlowSettings?: Project['gitFlowSettings'];
 }): Promise<ProjectDto> => notReady();
+
+export const createProjectWithGitSetup = async (_data: {
+  name: string;
+  description: string;
+  groupId: string | null;
+  groupName?: string | null;
+  path: string;
+  gitFlowSettings?: Project['gitFlowSettings'];
+  gitSetupActions: ProjectGitFlowDetection['recommendedActionSequence'];
+  expectedRepoRootPath?: string | null;
+  expectedSetupState: ProjectGitFlowDetection['setupState'];
+  expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
+}): Promise<ProjectGitSetupCommitResult> => notReady();
 
 export const importGitRepo = async (_data: {
   gitUrl: string;
@@ -265,6 +273,15 @@ export const updateProjectGitFlow = async (_data: {
   projectId: string;
   gitFlowSettings: Project['gitFlowSettings'];
 }): Promise<ProjectDto> => notReady();
+
+export const updateProjectGitFlowWithSetup = async (_data: {
+  projectId: string;
+  gitFlowSettings: Project['gitFlowSettings'];
+  gitSetupActions: ProjectGitFlowDetection['recommendedActionSequence'];
+  expectedRepoRootPath?: string | null;
+  expectedSetupState: ProjectGitFlowDetection['setupState'];
+  expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
+}): Promise<ProjectGitSetupCommitResult> => notReady();
 
 export const updateProjectAccess = async (_data: {
   projectId: string;
@@ -317,13 +334,13 @@ export const provider: ServiceProvider = {
   sendChat,
   detectProjectGitFlow,
   previewProjectGitSetup,
-  applyProjectGitSetup,
-  prepareProjectGit,
   createProject,
+  createProjectWithGitSetup,
   importGitRepo,
   renameProjectGroup,
   renameProject,
   updateProjectGitFlow,
+  updateProjectGitFlowWithSetup,
   updateProjectAccess,
   previewProjectAccessChange,
   archiveProjectGroup,

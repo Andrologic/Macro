@@ -22,6 +22,7 @@ import type {
   Conversation,
   Project,
   ProjectGitFlowDetection,
+  ProjectGitSetupCommitResult,
   ProjectGroup,
   Task,
   ToolTrace,
@@ -281,26 +282,6 @@ export const previewProjectGitSetup = async (data: {
   });
 };
 
-export const applyProjectGitSetup = async (data: {
-  path: string;
-  action: 'initialize_repo' | 'create_initial_commit' | 'create_develop';
-  expectedRepoRootPath?: string | null;
-}): Promise<ProjectGitFlowDetection> => {
-  return tauriIpc.workspaceApplyProjectGitSetup({
-    path: data.path,
-    action: data.action,
-    expectedRepoRootPath: data.expectedRepoRootPath ?? null,
-  });
-};
-
-export const prepareProjectGit = async (data: {
-  path: string;
-}): Promise<ProjectGitFlowDetection> => {
-  return tauriIpc.workspacePrepareProjectGit({
-    path: data.path,
-  });
-};
-
 export const createProject = async (data: {
   name: string;
   description: string;
@@ -319,6 +300,32 @@ export const createProject = async (data: {
   });
 
   return { project };
+};
+
+export const createProjectWithGitSetup = async (data: {
+  name: string;
+  description: string;
+  groupId: string | null;
+  groupName?: string | null;
+  path: string;
+  gitFlowSettings?: Project['gitFlowSettings'];
+  gitSetupActions: ProjectGitFlowDetection['recommendedActionSequence'];
+  expectedRepoRootPath?: string | null;
+  expectedSetupState: ProjectGitFlowDetection['setupState'];
+  expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
+}): Promise<ProjectGitSetupCommitResult> => {
+  return tauriIpc.workspaceCreateProjectWithGitSetup({
+    name: data.name,
+    description: data.description,
+    groupId: data.groupId,
+    groupName: data.groupName,
+    path: data.path,
+    gitFlowSettings: data.gitFlowSettings,
+    gitSetupActions: data.gitSetupActions,
+    expectedRepoRootPath: data.expectedRepoRootPath ?? null,
+    expectedSetupState: data.expectedSetupState,
+    expectedRecommendedActionSequence: data.expectedRecommendedActionSequence,
+  });
 };
 
 export const importGitRepo = async (data: {
@@ -377,6 +384,24 @@ export const updateProjectGitFlow = async (data: {
   });
 
   return { project };
+};
+
+export const updateProjectGitFlowWithSetup = async (data: {
+  projectId: string;
+  gitFlowSettings: NonNullable<Project['gitFlowSettings']>;
+  gitSetupActions: ProjectGitFlowDetection['recommendedActionSequence'];
+  expectedRepoRootPath?: string | null;
+  expectedSetupState: ProjectGitFlowDetection['setupState'];
+  expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
+}): Promise<ProjectGitSetupCommitResult> => {
+  return tauriIpc.workspaceUpdateProjectGitFlowWithSetup({
+    projectId: data.projectId,
+    gitFlowSettings: data.gitFlowSettings,
+    gitSetupActions: data.gitSetupActions,
+    expectedRepoRootPath: data.expectedRepoRootPath ?? null,
+    expectedSetupState: data.expectedSetupState,
+    expectedRecommendedActionSequence: data.expectedRecommendedActionSequence,
+  });
 };
 
 export const updateProjectAccess = async (data: {
@@ -530,13 +555,13 @@ export const provider: ServiceProvider = {
   sendChat,
   detectProjectGitFlow,
   previewProjectGitSetup,
-  applyProjectGitSetup,
-  prepareProjectGit,
   createProject,
+  createProjectWithGitSetup,
   importGitRepo,
   renameProjectGroup,
   renameProject,
   updateProjectGitFlow,
+  updateProjectGitFlowWithSetup,
   updateProjectAccess,
   previewProjectAccessChange,
   archiveProjectGroup,
