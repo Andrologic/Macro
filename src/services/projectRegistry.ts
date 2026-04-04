@@ -1,7 +1,7 @@
 import type { Project, ProjectGroup } from '../types';
 import i18n from '../i18n';
 import { DEFAULT_LANGUAGE, resolveSupportedLanguage } from '../i18n/languages';
-import { getFocusedProjectIdForGroup, getProjectGroupByProjectId } from './globalProjects';
+import { getProjectGroupByProjectId, resolveExplicitProjectIdForGroup } from './globalProjects';
 import { assignMountNamesToProjectGroups } from './projectMounts';
 
 export interface RememberedProjectRecord {
@@ -191,7 +191,7 @@ export const normalizeProjectRegistry = (params: {
   }
 
   if (selectedGroupId) {
-    selectedProjectId = getFocusedProjectIdForGroup(
+    selectedProjectId = resolveExplicitProjectIdForGroup(
       normalizedProjectGroups,
       selectedGroupId,
       selectedProjectId ?? requestedSelectedProjectId ?? null
