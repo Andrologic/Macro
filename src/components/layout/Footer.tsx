@@ -125,6 +125,12 @@ export const Footer: React.FC = () => {
     () => (selectedProjectId ? focusProjects.filter((project) => project.id === selectedProjectId) : focusProjects),
     [focusProjects, selectedProjectId]
   );
+  const selectedProjectLabel = useMemo(
+    () => (selectedProjectId
+      ? focusProjects.find((project) => project.id === selectedProjectId)?.name ?? ''
+      : t('footer.scope.allProjects', 'Tout le projet')),
+    [focusProjects, selectedProjectId, t]
+  );
   const scopedMacroSyncService = useMemo(
     () => createMacroSyncService({
       tauriIpc,
@@ -314,7 +320,7 @@ export const Footer: React.FC = () => {
     <>
       <footer className="h-8 overflow-hidden border-t border-border bg-card px-3 text-[11px] text-muted-foreground">
         <div className="flex h-full min-w-0 items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+          <div className="flex min-w-0 items-center overflow-hidden">
             <span className="flex min-w-0 max-w-[12rem] items-center gap-1.5" title={selectedGlobalProject?.name || undefined}>
               <Icon name="layers" size={12} className="shrink-0 text-primary" />
               <span className="truncate text-foreground">{selectedGlobalProject?.name || t('project.noGroup', 'No global project')}</span>
@@ -322,25 +328,35 @@ export const Footer: React.FC = () => {
             <Button
               size="sm"
               variant="ghost"
-              className="h-6 w-6 shrink-0 px-0 text-[11px]"
+              className="ml-2 h-6 w-6 shrink-0 px-0 text-[11px]"
               disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
               onClick={() => void handleSyncAction('fetch')}
             >
               <Icon name="refresh-cw" size={12} className={cn((syncAction === 'fetch' || isRefreshing) && 'animate-spin')} />
             </Button>
             {(focusProjects.length > 0 || codeStatus.branch || totalAhead > 0 || totalBehind > 0) && (
-              <div className="flex min-w-0 items-center gap-2 overflow-hidden border-l border-border/70 pl-2">
+              <div className="flex min-w-0 items-center overflow-hidden">
+                <span aria-hidden="true" className="mx-2 h-4 w-px shrink-0 bg-border/70" />
+                <div className="flex min-w-0 items-center gap-2 overflow-hidden">
                 {focusProjects.length > 0 && (
-                  <select
-                    className="h-6 w-36 shrink-0 rounded border border-border bg-card px-2 text-[11px] text-foreground"
-                    value={selectedProjectId ?? ALL_PROJECTS_OPTION}
-                    onChange={(event) => void switchProjectContext(event.target.value === ALL_PROJECTS_OPTION ? null : event.target.value)}
-                  >
-                    <option value={ALL_PROJECTS_OPTION}>{t('footer.scope.allProjects', 'Tout le projet')}</option>
-                    {focusProjects.map((project) => (
-                      <option key={project.id} value={project.id}>{project.name}</option>
-                    ))}
-                  </select>
+                  <div className="ml-1 grid shrink-0">
+                    <span
+                      aria-hidden="true"
+                      className="invisible col-start-1 row-start-1 h-6 whitespace-pre rounded border border-transparent px-2 pr-6 text-[11px]"
+                    >
+                      {selectedProjectLabel}
+                    </span>
+                    <select
+                      className="col-start-1 row-start-1 h-6 min-w-0 rounded border border-border bg-card px-2 pr-6 text-[11px] text-foreground"
+                      value={selectedProjectId ?? ALL_PROJECTS_OPTION}
+                      onChange={(event) => void switchProjectContext(event.target.value === ALL_PROJECTS_OPTION ? null : event.target.value)}
+                    >
+                      <option value={ALL_PROJECTS_OPTION}>{t('footer.scope.allProjects', 'Tout le projet')}</option>
+                      {focusProjects.map((project) => (
+                        <option key={project.id} value={project.id}>{project.name}</option>
+                      ))}
+                    </select>
+                  </div>
                 )}
                 {selectedProjectId && codeStatus.branch && (
                   <span className="flex min-w-0 max-w-[10rem] items-center gap-1.5" title={codeStatus.branch}>
@@ -374,6 +390,7 @@ export const Footer: React.FC = () => {
                   <Icon name="arrow-up" size={12} className={cn(syncAction === 'push' && 'animate-bounce')} />
                   <span>{totalAhead}</span>
                 </Button>
+                </div>
               </div>
             )}
           </div>
