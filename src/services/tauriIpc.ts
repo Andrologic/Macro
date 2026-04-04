@@ -29,6 +29,7 @@ export interface DbConversation {
   id: string;
   title: string;
   description: string | null;
+  scope_mode: AppMode;
   task_id: string | null;
   group_id: string | null;
   project_id: string | null;
@@ -68,6 +69,7 @@ export interface DbProviderConfig {
   provider_type: string;
   base_url: string;
   api_key: string | null;
+  has_stored_api_key: boolean;
   is_enabled: boolean;
   is_local: boolean;
   auth_status: string | null;
@@ -600,12 +602,14 @@ export async function getConversation(id: string): Promise<DbConversation | null
 
 export async function createConversation(params?: {
   title?: string;
+  scopeMode?: AppMode;
   taskId?: string | null;
   groupId?: string | null;
   projectId?: string | null;
 }): Promise<DbConversation> {
   return invoke<DbConversation>('db_create_conversation', {
     title: params?.title,
+    scopeMode: params?.scopeMode ?? 'Chat',
     taskId: params?.taskId ?? null,
     groupId: params?.groupId ?? null,
     projectId: params?.projectId ?? null,
@@ -837,6 +841,10 @@ export async function listProviderConfigs(): Promise<DbProviderConfig[]> {
 
 export async function getProviderConfig(id: string): Promise<DbProviderConfig | null> {
   return invoke<DbProviderConfig | null>('db_get_provider_config', { id });
+}
+
+export async function revealProviderApiKey(id: string): Promise<string | null> {
+  return invoke<string | null>('db_reveal_provider_api_key', { id });
 }
 
 export async function updateProviderConfig(params: {

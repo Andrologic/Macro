@@ -14,6 +14,21 @@ async function getCurrentTauriWindow() {
   return getCurrentWindow();
 }
 
+const backgroundColorPermissionFailures = new Set<string>();
+
+const isBackgroundColorPermissionError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('window.set_background_color not allowed');
+};
+
+const logBackgroundColorPermissionOnce = (message: string) => {
+  if (backgroundColorPermissionFailures.has(message)) {
+    return;
+  }
+  backgroundColorPermissionFailures.add(message);
+  console.warn('[tauriWindow] Background color update skipped:', message);
+};
+
 export { isTauriEnvironment };
 
 export async function showMainWindow(): Promise<void> {
@@ -77,7 +92,15 @@ export async function windowSetTrafficLightPosition(
 
 export async function windowSetBackgroundColor(color: string): Promise<void> {
   const window = await getCurrentTauriWindow();
-  await window.setBackgroundColor(color);
+  try {
+    await window.setBackgroundColor(color);
+  } catch (error) {
+    if (isBackgroundColorPermissionError(error)) {
+      logBackgroundColorPermissionOnce(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function windowSetMacosAppIconTheme(

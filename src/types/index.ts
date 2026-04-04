@@ -14,6 +14,7 @@ export type MessageRole = 'user' | 'assistant';
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement' | 'Chat' | 'Debug';
+export type ConversationScopeMode = AppMode;
 export type AgentType = 'build' | 'plan';
 export type ImplementExecutionMode = 'semi_auto' | 'full_auto';
 
@@ -390,6 +391,7 @@ export interface Conversation {
   id: string;
   title: string;
   description?: string;
+  scope_mode: ConversationScopeMode;
   task_id: string | null;
   group_id?: string | null;
   project_id: string | null;
@@ -457,7 +459,9 @@ export interface ProviderConfig {
   name: string;
   providerType: string;
   baseUrl: string;
+  hasStoredApiKey: boolean;
   apiKey?: string;
+  apiKeyLoaded?: boolean;
   isEnabled: boolean;
   isLocal: boolean;
   nativeToolCalling?: boolean;

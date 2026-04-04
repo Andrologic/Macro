@@ -83,6 +83,8 @@ const providerState = {
       providerType: 'openai',
       isEnabled: true,
       isLocal: true,
+      hasStoredApiKey: false,
+      apiKeyLoaded: true,
       apiKey: '',
     },
   ],
@@ -93,6 +95,7 @@ const providerState = {
   selectedModelId: 'model-1' as string | null,
   loadProviderModels: mock(async (providerId: string) => providerState.modelsByProvider[providerId] ?? []),
   scanModelsForProvider: mock(async (providerId: string) => providerState.modelsByProvider[providerId] ?? []),
+  resolveProviderApiKey: mock(async () => undefined),
   selectedSupportsNativeToolCalling: () => false,
   selectModel: mock((modelId: string) => {
     providerState.selectedModelId = modelId;
@@ -182,6 +185,7 @@ let chatSnapshotConversations: Array<{
   id: string;
   title: string;
   description: string | null;
+  scope_mode: AppMode;
   task_id: string | null;
   group_id: string | null;
   project_id: string | null;
@@ -292,6 +296,20 @@ const registerUseChatStoreMocks = () => {
 
   mock.module('./useProviderStore', () => ({
     useProviderStore: useProviderStoreMock,
+    providerHasCredentials: (provider: {
+      isEnabled?: boolean;
+      isLocal?: boolean;
+      apiKey?: string;
+      hasStoredApiKey?: boolean;
+      providerType?: string;
+      authStatus?: string;
+    }) =>
+      !!provider.isEnabled &&
+      (!!provider.isLocal ||
+        !!provider.apiKey ||
+        !!provider.hasStoredApiKey ||
+        provider.authStatus === 'connected' ||
+        provider.authStatus === 'authenticated'),
   }));
 
   mock.module('./useCitationsStore', () => ({
@@ -432,6 +450,7 @@ const createConversation = (id: string, projectId = 'project-1'): Conversation =
   id,
   title: `Conversation ${id}`,
   description: '',
+  scope_mode: projectId ? 'Architect' : 'Chat',
   task_id: null,
   group_id: 'group-1',
   project_id: projectId,
@@ -926,6 +945,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         id: 'project-architect-conversation',
         title: 'Architect - Macro',
         description: '',
+        scope_mode: 'Architect',
         task_id: null,
         group_id: 'group-1',
         project_id: 'project-1',
@@ -937,6 +957,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         id: 'plan-conv',
         title: 'Checkout refresh',
         description: '',
+        scope_mode: 'Architect',
         task_id: null,
         group_id: 'group-1',
         project_id: 'project-1',
@@ -1038,12 +1059,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('implement-latest'),
+          scope_mode: 'Implement',
           task_id: 'task-1',
           title: 'Task - Implement checkout',
           updated_at: '2026-03-19T00:05:00.000Z',
         },
         {
           ...createConversation('implement-older'),
+          scope_mode: 'Implement',
           task_id: 'task-1',
           title: 'Task - Implement checkout',
           updated_at: '2026-03-19T00:01:00.000Z',
@@ -1154,6 +1177,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         conversations: [
           {
             ...createConversation('implement-conv'),
+            scope_mode: 'Implement',
             task_id: 'task-1',
             title: 'Task - Implement checkout',
           },
@@ -1200,6 +1224,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
           task_id: 'manual-task-1',
           title: 'New feature',
         },
@@ -1254,6 +1279,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
           task_id: 'manual-task-1',
         },
       ],
@@ -1309,6 +1335,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
           task_id: 'manual-task-1',
           title: 'New feature',
         },
@@ -1387,6 +1414,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
           task_id: 'manual-task-1',
           title: 'Quick export',
         },
@@ -1464,6 +1492,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
           task_id: 'manual-task-1',
           title: 'Quick export',
         },
@@ -1539,6 +1568,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
           task_id: 'manual-task-1',
           title: 'Quick export',
         },
@@ -1589,6 +1619,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
           task_id: 'task-1',
           title: 'Task - Implement checkout',
         },
@@ -1645,6 +1676,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
           task_id: 'task-1',
           title: 'Task - Implement checkout',
         },
@@ -1686,6 +1718,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
           task_id: 'task-1',
           title: 'Task - Implement checkout',
         },
@@ -1743,6 +1776,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
           task_id: 'task-1',
           title: 'Task - Implement checkout',
         },
@@ -1810,6 +1844,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           id: 'chat-1',
           title: 'Chat 1',
           description: '',
+          scope_mode: 'Chat',
           task_id: null,
           group_id: null,
           project_id: null,
@@ -1822,6 +1857,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           id: 'chat-2',
           title: 'Chat 2',
           description: '',
+          scope_mode: 'Chat',
           task_id: null,
           group_id: null,
           project_id: null,
@@ -1834,6 +1870,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           id: 'chat-3',
           title: 'Chat 3',
           description: '',
+          scope_mode: 'Chat',
           task_id: null,
           group_id: null,
           project_id: null,
@@ -1934,6 +1971,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           id: 'chat-1',
           title: 'Chat 1',
           description: '',
+          scope_mode: 'Chat',
           task_id: null,
           group_id: null,
           project_id: null,
@@ -1946,6 +1984,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           id: 'chat-2',
           title: 'Chat 2',
           description: '',
+          scope_mode: 'Chat',
           task_id: null,
           group_id: null,
           project_id: null,
@@ -2030,5 +2069,57 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       useChatStore.getState().deleteChatConversations(['architect-conv'])
     ).rejects.toThrow('La suppression groupée est réservée aux conversations Chat.');
     expect(deleteConversationsMock).not.toHaveBeenCalled();
+  });
+
+  it('updates only the targeted message object when appending streamed content', async () => {
+    const { useChatStore } = await loadChatStore();
+
+    useChatStore.setState({
+      conversations: [createConversation('conv-1')],
+      messages: [],
+      messagesByConversationId: {},
+      messageIndexById: {},
+      selectedConversationId: 'conv-1',
+      selectedConversationIdsByMode: { Chat: 'conv-1' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    useChatStore.getState().addMessage({
+      id: 'm-user',
+      task_id: '',
+      conversation_id: 'conv-1',
+      role: 'user',
+      content: 'bonjour',
+      timestamp: '2026-03-19T00:01:00.000Z',
+    });
+    useChatStore.getState().addMessage({
+      id: 'm-assistant',
+      task_id: '',
+      conversation_id: 'conv-1',
+      role: 'assistant',
+      content: 'rep',
+      timestamp: '2026-03-19T00:02:00.000Z',
+      tool_traces: [],
+    });
+
+    const beforeMessages = useChatStore.getState().messages;
+
+    useChatStore.getState().appendToMessage('m-assistant', 'onse');
+
+    const afterMessages = useChatStore.getState().messages;
+    expect(afterMessages[0]).toBe(beforeMessages[0]);
+    expect(afterMessages[1]).not.toBe(beforeMessages[1]);
+    expect(afterMessages[1]?.content).toBe('reponse');
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages('conv-1')
+        .map((message: { id: string }) => message.id)
+    ).toEqual(['m-user', 'm-assistant']);
   });
 });

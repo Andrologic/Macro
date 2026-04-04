@@ -73,6 +73,9 @@ const getFirstEnabledModelId = (models: AIModel[]): string | null => {
   return enabled?.id ?? null;
 };
 
+const hasLoadedApiKey = (provider: Pick<ProviderConfig, 'providerType' | 'apiKey'>): boolean =>
+  !isLinkedProviderType(provider.providerType) && !!provider.apiKey?.trim();
+
 const getFirstUsableProvider = (providerConfigs: ProviderConfig[]): ProviderConfig | null => {
   return providerConfigs.find((provider) => providerHasCredentials(provider)) ?? null;
 };
@@ -138,10 +141,21 @@ export const providerHasAuthSession = (
 };
 
 export const providerHasCredentials = (
+  provider: Pick<
+    ProviderConfig,
+    'isEnabled' | 'isLocal' | 'apiKey' | 'hasStoredApiKey' | 'providerType' | 'authStatus'
+  >
+): boolean => {
+  const hasApiKey =
+    !isLinkedProviderType(provider.providerType) &&
+    (provider.hasStoredApiKey || !!provider.apiKey?.trim());
+  return provider.isEnabled && (provider.isLocal || hasApiKey || providerHasAuthSession(provider));
+};
+
+const providerHasRuntimeCredentials = (
   provider: Pick<ProviderConfig, 'isEnabled' | 'isLocal' | 'apiKey' | 'providerType' | 'authStatus'>
 ): boolean => {
-  const hasApiKey = !isLinkedProviderType(provider.providerType) && !!provider.apiKey?.trim();
-  return provider.isEnabled && (provider.isLocal || hasApiKey || providerHasAuthSession(provider));
+  return provider.isEnabled && (provider.isLocal || hasLoadedApiKey(provider) || providerHasAuthSession(provider));
 };
 
 const mergeLocalProviderConfig = async (
@@ -165,7 +179,28 @@ const mergeLocalProviderConfig = async (
     return applyNativeToolCallingToProviderConfig({
       ...provider,
       apiKey: hasExistingApiKey ? provider.apiKey : localApiKey || provider.apiKey,
+      apiKeyLoaded: provider.apiKeyLoaded || !!(hasExistingApiKey ? provider.apiKey : localApiKey),
       baseUrl: localBaseUrl || provider.baseUrl,
+    });
+  });
+};
+
+const mergeRuntimeProviderConfigState = (
+  nextConfigs: ProviderConfig[],
+  currentConfigs: ProviderConfig[]
+): ProviderConfig[] => {
+  const currentById = new Map(currentConfigs.map((config) => [config.id, config]));
+  return nextConfigs.map((config) => {
+    const current = currentById.get(config.id);
+    if (!current) {
+      return config;
+    }
+
+    return applyNativeToolCallingToProviderConfig({
+      ...config,
+      hasStoredApiKey: config.hasStoredApiKey || current.hasStoredApiKey,
+      apiKey: current.apiKeyLoaded ? current.apiKey : config.apiKey,
+      apiKeyLoaded: current.apiKeyLoaded || config.apiKeyLoaded || !!config.apiKey,
     });
   });
 };
@@ -176,7 +211,9 @@ const normalizeDbProviderConfig = (config: tauriIpc.DbProviderConfig): ProviderC
     name: config.name,
     providerType: config.provider_type,
     baseUrl: config.base_url,
-    apiKey: config.api_key || undefined,
+    apiKey: undefined,
+    hasStoredApiKey: config.has_stored_api_key,
+    apiKeyLoaded: false,
     isEnabled: config.is_enabled,
     isLocal: config.is_local,
     authStatus:
@@ -351,8 +388,11 @@ interface ProviderStore {
   cycleModel: () => void;
   
   // Provider Config CRUD
+  resolveProviderApiKey: (providerId: string, options?: { forceRefresh?: boolean }) => Promise<string | undefined>;
   updateProviderConfig: (id: string, updates: Partial<ProviderConfig>) => Promise<void>;
-  createProviderConfig: (config: Omit<ProviderConfig, 'id'>) => Promise<void>;
+  createProviderConfig: (
+    config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded'>
+  ) => Promise<void>;
   deleteProviderConfig: (id: string) => Promise<void>;
   startChatGptAuth: (providerId?: string) => Promise<void>;
   cancelChatGptAuth: (providerId: string) => Promise<void>;
@@ -416,7 +456,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       await loadProviderModels(provider.id);
       const models = get().modelsByProvider[provider.id] || [];
 
-      const hasCredentials = providerHasCredentials(provider);
+      const hasCredentials = providerHasRuntimeCredentials(provider);
       const shouldCheckConnectivity =
         provider.isEnabled && (provider.providerType === 'copilot' || hasCredentials);
 
@@ -482,14 +522,58 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
+  resolveProviderApiKey: async (providerId: string, options?: { forceRefresh?: boolean }) => {
+    const config = get().providerConfigs.find((provider) => provider.id === providerId);
+    if (!config) {
+      throw new Error('Provider not found');
+    }
+
+    if (isLinkedProviderType(config.providerType) || config.isLocal) {
+      return undefined;
+    }
+
+    if (!options?.forceRefresh && config.apiKeyLoaded) {
+      return config.apiKey?.trim() ? config.apiKey : undefined;
+    }
+
+    if (!tauriIpc.isTauriAvailable()) {
+      return config.apiKey?.trim() ? config.apiKey : undefined;
+    }
+
+    try {
+      const apiKey = (await tauriIpc.revealProviderApiKey(providerId)) || undefined;
+      set((state) => ({
+        providerConfigs: state.providerConfigs.map((provider) =>
+          provider.id === providerId
+            ? applyNativeToolCallingToProviderConfig({
+                ...provider,
+                apiKey,
+                hasStoredApiKey: !!apiKey,
+                apiKeyLoaded: true,
+              })
+            : provider
+        ),
+      }));
+      return apiKey?.trim() ? apiKey : undefined;
+    } catch (error) {
+      const message = getErrorMessage(error, 'Failed to access the stored API key.');
+      set({ lastError: message });
+      throw new Error(message);
+    }
+  },
+
   loadProviderConfigs: async () => {
     set({ isLoading: true, lastError: null });
     
     try {
       if (tauriIpc.isTauriAvailable()) {
+        const currentProviderConfigs = get().providerConfigs;
         const configs = await tauriIpc.listProviderConfigs();
         const normalizedConfigs: ProviderConfig[] = configs.map(normalizeDbProviderConfig);
-        const providerConfigs = await mergeLocalProviderConfig(normalizedConfigs);
+        const providerConfigs = mergeRuntimeProviderConfigState(
+          await mergeLocalProviderConfig(normalizedConfigs),
+          currentProviderConfigs
+        );
         const currentSelectedProviderId = get().selectedProviderId;
         const currentSelectedModelId = get().selectedModelId;
         const currentSelectedProvider = providerConfigs.find(
@@ -535,14 +619,14 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       } else {
         // Fallback mock providers for development without Tauri
         const mockConfigs = [
-          { id: 'openai', name: 'OpenAI', providerType: 'openai', baseUrl: 'https://api.openai.com/v1', isEnabled: true, isLocal: false },
-          { id: 'chatgpt', name: 'ChatGPT', providerType: 'chatgpt', baseUrl: 'https://chatgpt.com/backend-api', isEnabled: true, isLocal: false, authStatus: 'unauthenticated' },
-          { id: 'copilot', name: 'GitHub Copilot', providerType: 'copilot', baseUrl: 'copilot://cli', isEnabled: true, isLocal: false, authStatus: 'login_required' },
-          { id: 'zai', name: 'z.ai', providerType: 'openai', baseUrl: 'https://api.z.ai/api/coding/paas/v4', isEnabled: true, isLocal: false },
-          { id: 'anthropic', name: 'Anthropic', providerType: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', isEnabled: true, isLocal: false },
-          { id: 'openrouter', name: 'OpenRouter', providerType: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', isEnabled: true, isLocal: false },
-          { id: 'ollama', name: 'Ollama', providerType: 'ollama', baseUrl: 'http://localhost:11434/v1', isEnabled: true, isLocal: true },
-          { id: 'lmstudio', name: 'LM Studio', providerType: 'lmstudio', baseUrl: 'http://localhost:1234/v1', isEnabled: true, isLocal: true },
+          { id: 'openai', name: 'OpenAI', providerType: 'openai', baseUrl: 'https://api.openai.com/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
+          { id: 'chatgpt', name: 'ChatGPT', providerType: 'chatgpt', baseUrl: 'https://chatgpt.com/backend-api', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false, authStatus: 'unauthenticated' },
+          { id: 'copilot', name: 'GitHub Copilot', providerType: 'copilot', baseUrl: 'copilot://cli', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false, authStatus: 'login_required' },
+          { id: 'zai', name: 'z.ai', providerType: 'openai', baseUrl: 'https://api.z.ai/api/coding/paas/v4', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
+          { id: 'anthropic', name: 'Anthropic', providerType: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
+          { id: 'openrouter', name: 'OpenRouter', providerType: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
+          { id: 'ollama', name: 'Ollama', providerType: 'ollama', baseUrl: 'http://localhost:11434/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: true },
+          { id: 'lmstudio', name: 'LM Studio', providerType: 'lmstudio', baseUrl: 'http://localhost:1234/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: true },
         ] satisfies ProviderConfig[];
         const providerConfigs = await mergeLocalProviderConfig(
           mockConfigs.map(applyNativeToolCallingToProviderConfig)
@@ -634,7 +718,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   scanModelsForProvider: async (providerId: string) => {
-    const { providerConfigs, modelsByProvider } = get();
+    const { providerConfigs, modelsByProvider, resolveProviderApiKey } = get();
     const config = providerConfigs.find((c) => c.id === providerId);
 
     if (!config) {
@@ -706,7 +790,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
 
     const requiresApiKey = !config.isLocal;
-    if (requiresApiKey && (!config.apiKey || config.apiKey.trim() === '')) {
+    const apiKey = requiresApiKey ? await resolveProviderApiKey(providerId) : undefined;
+    if (requiresApiKey && !apiKey) {
       return modelsByProvider[providerId] || [];
     }
 
@@ -718,7 +803,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     try {
       const result = await fetchModelsFromProvider({
         baseUrl: config.baseUrl,
-        apiKey: config.apiKey,
+        apiKey,
         providerId: config.providerType,
       });
 
@@ -1010,7 +1095,20 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       // Update local state
       set((state) => ({
         providerConfigs: state.providerConfigs.map((c) =>
-          c.id === id ? applyNativeToolCallingToProviderConfig({ ...c, ...persistedUpdates }) : c
+          c.id === id
+            ? applyNativeToolCallingToProviderConfig({
+                ...c,
+                ...persistedUpdates,
+                hasStoredApiKey:
+                  persistedUpdates.apiKey === undefined
+                    ? c.hasStoredApiKey
+                    : persistedUpdates.apiKey.trim() !== '',
+                apiKey:
+                  persistedUpdates.apiKey === undefined ? c.apiKey : persistedUpdates.apiKey || undefined,
+                apiKeyLoaded:
+                  persistedUpdates.apiKey === undefined ? c.apiKeyLoaded : true,
+              })
+            : c
         ),
         providers: state.providers.map((p) =>
           p.id === id
@@ -1032,7 +1130,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const shouldScan = nextConfig
         ? isLinkedProviderType(nextConfig.providerType)
           ? providerHasAuthSession(nextConfig)
-          : (!!persistedUpdates.apiKey && persistedUpdates.apiKey.trim() !== '') || nextConfig.isLocal === true
+          : providerHasRuntimeCredentials(nextConfig)
         : false;
       if (shouldScan) {
         await get().loadProviderModels(id);
@@ -1048,7 +1146,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
-  createProviderConfig: async (config: Omit<ProviderConfig, 'id'>) => {
+  createProviderConfig: async (config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded'>) => {
     try {
       if (tauriIpc.isTauriAvailable()) {
         const created = await tauriIpc.createProviderConfig({
@@ -1064,7 +1162,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           name: created.name,
           providerType: created.provider_type,
           baseUrl: created.base_url,
-          apiKey: created.api_key || undefined,
+          apiKey: config.apiKey?.trim() ? config.apiKey : undefined,
+          hasStoredApiKey: created.has_stored_api_key,
+          apiKeyLoaded: !!config.apiKey?.trim(),
           isEnabled: created.is_enabled,
           isLocal: created.is_local,
         });
@@ -1094,7 +1194,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       } else {
         // Mock creation for development
         const id = `provider_${Date.now()}`;
-        const newConfig: ProviderConfig = applyNativeToolCallingToProviderConfig({ id, ...config });
+        const newConfig: ProviderConfig = applyNativeToolCallingToProviderConfig({
+          id,
+          ...config,
+          hasStoredApiKey: !!config.apiKey?.trim(),
+          apiKeyLoaded: !!config.apiKey?.trim(),
+        });
         const newProvider: AIProvider = applyNativeToolCallingToProvider(
           {
             id,
@@ -1610,7 +1715,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   testConnection: async (providerId: string) => {
-    const { providerConfigs } = get();
+    const { providerConfigs, resolveProviderApiKey } = get();
     const config = providerConfigs.find((c) => c.id === providerId);
     
     if (!config) {
@@ -1727,9 +1832,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return { success, message };
     }
 
+    const apiKey = config.isLocal ? undefined : await resolveProviderApiKey(providerId);
     const result = await testProviderConnection(
       config.baseUrl,
-      config.apiKey,
+      apiKey,
       config.providerType
     );
 

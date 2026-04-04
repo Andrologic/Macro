@@ -160,7 +160,7 @@ export interface MarkdownRichContentProps {
   content: string;
 }
 
-export const MarkdownRichContent: React.FC<MarkdownRichContentProps> = ({ content }) => {
+const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }) => {
   const components = useMemo<Components>(() => ({
     a: ({ href, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
@@ -315,5 +315,10 @@ export const MarkdownRichContent: React.FC<MarkdownRichContentProps> = ({ conten
     </ReactMarkdown>
   );
 };
+
+export const MarkdownRichContent = React.memo(
+  MarkdownRichContentBase,
+  (prev, next) => prev.content === next.content
+);
 
 export default MarkdownRichContent;

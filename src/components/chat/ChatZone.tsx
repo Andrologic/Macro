@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import type { MessageImageAttachment } from '../../stores/useChatStore';
+import type { ChatMessage } from '../../types';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
@@ -18,6 +19,7 @@ import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
 import { getFocusedProjectForGroup, getGlobalProjectById } from '../../services/globalProjects';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
+import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
 
 interface ChatZoneProps {
@@ -37,6 +39,294 @@ const ComposerFallbackStatus: React.FC = () => (
   <div className="sr-only" aria-live="polite">
     Loading composer
   </div>
+);
+
+const EMPTY_RENDER_MESSAGES: ChatMessage[] = [];
+
+interface RenderedMessageItem {
+  index: number;
+  key: React.Key;
+  size: number;
+  start: number;
+  item: ChatMessage;
+}
+
+interface ChatMessageRowProps {
+  virtualMessage: RenderedMessageItem;
+  measureElement: (el: HTMLElement | null) => void;
+  currentMessagesLength: number;
+  isStreaming: boolean;
+  showToolTraces: boolean;
+  isEditing: boolean;
+  editingValue: string;
+  editingImages: MessageImageAttachment[];
+  messageImages: MessageImageAttachment[];
+  isCopied: boolean;
+  isHighlighted: boolean;
+  onEditingValueChange: (value: string) => void;
+  onEditingPaste: (event: React.ClipboardEvent<HTMLElement>) => Promise<void>;
+  onRemoveEditingImage: (imageId: string) => void;
+  onImageMouseDown: (event: React.MouseEvent<HTMLElement>) => void;
+  onOpenImagePreview: (
+    event: React.MouseEvent<HTMLElement>,
+    image: MessageImageAttachment
+  ) => void;
+  onEditCancel: () => void;
+  onEditSave: () => void;
+  onCopy: (content: string, messageId: string) => Promise<void>;
+  onEditStart: (messageId: string, content: string) => void;
+  onRegenerate: (messageId: string, content: string) => Promise<void>;
+  onChoiceClick: (choiceText: string, taskId?: string) => Promise<void>;
+}
+
+const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
+  virtualMessage,
+  measureElement,
+  currentMessagesLength,
+  isStreaming,
+  showToolTraces,
+  isEditing,
+  editingValue,
+  editingImages,
+  messageImages,
+  isCopied,
+  isHighlighted,
+  onEditingValueChange,
+  onEditingPaste,
+  onRemoveEditingImage,
+  onImageMouseDown,
+  onOpenImagePreview,
+  onEditCancel,
+  onEditSave,
+  onCopy,
+  onEditStart,
+  onRegenerate,
+  onChoiceClick,
+}) => {
+  const { t } = useTranslation();
+  const message = virtualMessage.item;
+  const messageIndex = virtualMessage.index;
+  const visibleImages = isEditing ? editingImages : messageImages;
+
+  return (
+    <div
+      ref={measureElement}
+      data-index={messageIndex}
+      id={`chat-message-${message.id}`}
+      className={cn(
+        'absolute left-0 top-0 w-full rounded-lg transition-colors duration-500',
+        isHighlighted && 'bg-primary/10 ring-1 ring-primary/40'
+      )}
+      style={{ transform: `translateY(${virtualMessage.start}px)` }}
+    >
+      <div
+        className={cn(
+          'relative transition-all duration-200',
+          message.role === 'user'
+            ? isEditing
+              ? 'ml-auto mr-0 max-w-3xl'
+              : 'ml-auto mr-0 max-w-lg'
+            : 'mr-auto ml-0 max-w-none'
+        )}
+      >
+        <div
+          className={cn(
+            'relative rounded-lg group',
+            message.role === 'user'
+              ? 'bg-muted/80 border border-border/50'
+              : 'bg-transparent border-0',
+            isEditing
+              ? 'p-2'
+              : message.role === 'assistant'
+                ? 'p-2 pb-6'
+                : 'p-2 pb-9'
+          )}
+        >
+          {isEditing ? (
+            <div className="space-y-2">
+              {visibleImages.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {visibleImages.map((image) => (
+                    <div key={image.id} className="relative w-16 h-16 rounded-md border border-border overflow-hidden bg-muted/40">
+                      <button
+                        type="button"
+                        onMouseDown={onImageMouseDown}
+                        onClick={(event) => onOpenImagePreview(event, image)}
+                        className="w-full h-full cursor-zoom-in"
+                        title={t('chat.openImage', 'Open image')}
+                      >
+                        <img src={image.dataUrl} alt={t('chat.attachedImage', 'Attached image')} className="w-full h-full object-cover" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onRemoveEditingImage(image.id)}
+                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/90 border border-border flex items-center justify-center hover:bg-accent transition-colors"
+                        title={t('chat.removeImage', 'Remove image')}
+                      >
+                        <Icon name="x" size={11} className="text-muted-foreground" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <textarea
+                value={editingValue}
+                onChange={(event) => onEditingValueChange(event.target.value)}
+                onPasteCapture={(event) => {
+                  void onEditingPaste(event);
+                }}
+                placeholder={t('common.editMessage') || 'Edit your message...'}
+                className="w-full min-h-[120px] max-h-[400px] resize-y bg-background border-2 border-border rounded-lg p-3 text-sm text-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/10 transition-all leading-relaxed"
+                autoFocus
+              />
+              <div className="flex items-center gap-2 justify-end">
+                <button
+                  onClick={onEditCancel}
+                  className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  onClick={onEditSave}
+                  className="px-3 py-1.5 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium"
+                >
+                  {t('chat.saveRegenerate')}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm leading-relaxed text-foreground">
+              {message.role === 'assistant' ? (
+                <MarkdownRenderer
+                  content={message.content}
+                  toolTraces={showToolTraces ? message.tool_traces : undefined}
+                  isStreaming={isStreaming && messageIndex === currentMessagesLength - 1}
+                />
+              ) : (
+                message.content.split('\n').map((line, i) => (
+                  <p key={i} className="mb-2 last:mb-0 break-words">
+                    {line}
+                  </p>
+                ))
+              )}
+              {message.role === 'user' && messageImages.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {messageImages.map((image) => (
+                    <button
+                      key={image.id}
+                      type="button"
+                      onMouseDown={onImageMouseDown}
+                      onClick={(event) => onOpenImagePreview(event, image)}
+                      className="relative w-14 h-14 rounded-md border border-border overflow-hidden bg-muted/30 hover:opacity-90 transition-opacity"
+                      title={t('chat.openImage', 'Open image')}
+                    >
+                      <img src={image.dataUrl} alt={t('chat.attachedImage', 'Attached image')} className="w-full h-full object-cover" />
+                    </button>
+                  ))}
+                </div>
+              )}
+              {isStreaming && message.role === 'assistant' && messageIndex === currentMessagesLength - 1 && (
+                <span className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1" />
+              )}
+            </div>
+          )}
+
+          {message.role === 'user' && !isEditing && (
+            <div className="absolute bottom-2 right-2 flex items-center gap-1">
+              <button
+                onClick={() => void onCopy(message.content, message.id)}
+                className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                title={t('common.copy') || 'Copy'}
+              >
+                <Icon
+                  name="copy"
+                  size={12}
+                  className={cn(
+                    'transition-colors',
+                    isCopied ? 'text-green-500' : 'text-muted-foreground hover:text-foreground'
+                  )}
+                />
+              </button>
+              <button
+                onClick={() => onEditStart(message.id, message.content)}
+                className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                title={t('common.edit')}
+              >
+                <Icon
+                  name="edit"
+                  size={12}
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                />
+              </button>
+              <button
+                onClick={() => void onRegenerate(message.id, message.content)}
+                className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                title={t('common.regenerate') || 'Regenerate'}
+              >
+                <Icon
+                  name="refresh-cw"
+                  size={12}
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                />
+              </button>
+            </div>
+          )}
+
+          {message.role === 'assistant' && !isEditing && (
+            <div className="absolute bottom-1 right-2 flex items-center gap-1">
+              <button
+                onClick={() => void onCopy(message.content, message.id)}
+                className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                title={t('common.copy') || 'Copy raw'}
+              >
+                <Icon
+                  name="copy"
+                  size={12}
+                  className={cn(
+                    'transition-colors',
+                    isCopied ? 'text-green-500' : 'text-muted-foreground hover:text-foreground'
+                  )}
+                />
+              </button>
+            </div>
+          )}
+
+          {message.choices && (
+            <div className="mt-4 space-y-2">
+              {message.choices.map((choice) => (
+                <button
+                  key={choice.id}
+                  type="button"
+                  onClick={() => void onChoiceClick(choice.text, message.task_id ?? undefined)}
+                  className="w-full text-left px-4 py-3 rounded-lg bg-card/50 border border-border hover:border-primary/50 hover:bg-card transition-all duration-200"
+                >
+                  <span className="text-sm text-muted-foreground font-mono">
+                    {choice.text}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const MemoizedChatMessageRow = React.memo(
+  ChatMessageRowBase,
+  (prev, next) =>
+    prev.virtualMessage.item === next.virtualMessage.item &&
+    prev.virtualMessage.start === next.virtualMessage.start &&
+    prev.isEditing === next.isEditing &&
+    prev.editingValue === next.editingValue &&
+    prev.editingImages === next.editingImages &&
+    prev.messageImages === next.messageImages &&
+    prev.isCopied === next.isCopied &&
+    prev.isHighlighted === next.isHighlighted &&
+    prev.isStreaming === next.isStreaming &&
+    prev.showToolTraces === next.showToolTraces &&
+    prev.currentMessagesLength === next.currentMessagesLength
 );
 
 /**
@@ -130,6 +420,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     conversations,
     messages,
     selectedConversationId,
+    messagesByConversationId,
     createConversation,
     ensureConversationForCurrentMode,
     hydrationStatus,
@@ -149,6 +440,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     conversations: state.conversations,
     messages: state.messages,
     selectedConversationId: state.selectedConversationId,
+    messagesByConversationId: state.messagesByConversationId ?? {},
     createConversation: state.createConversation,
     ensureConversationForCurrentMode: state.ensureConversationForCurrentMode,
     hydrationStatus: state.hydrationStatus,
@@ -165,6 +457,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setMessageImages: state.setMessageImages,
     composerContextRefs: state.composerContextRefs,
   })));
+  const { mark: markPerformance } = usePerformanceMonitor();
 
   const { selectedProviderId, selectedModelId } = useProviderStore(useShallow((state) => ({
     selectedProviderId: state.selectedProviderId,
@@ -192,15 +485,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState('');
-
-  // Filter messages by selected conversation
   const currentMessages = useMemo(
     () =>
       selectedConversationId
-        ? messages.filter((message) => message.conversation_id === selectedConversationId)
-        : [],
-    [messages, selectedConversationId]
+        ? messagesByConversationId[selectedConversationId] ??
+          messages.filter((message) => message.conversation_id === selectedConversationId)
+        : EMPTY_RENDER_MESSAGES,
+    [messages, messagesByConversationId, selectedConversationId]
   );
+
   const isConversationPending =
     hydrationStatus === 'idle' ||
     hydrationStatus === 'hydrating' ||
@@ -215,6 +508,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       .map((message) => message.content.trim())
       .filter((content) => content.length > 0);
   }, [currentMessages]);
+
+  const streamingMessageContentLength =
+    currentMessages[currentMessages.length - 1]?.content.length ?? 0;
+
+  useEffect(() => {
+    if (!isStreaming) return;
+    markPerformance('chat-stream-visible-update');
+  }, [isStreaming, markPerformance, streamingMessageContentLength]);
 
   // Get current conversation details
   const currentConversation = selectedConversationId
@@ -920,229 +1221,35 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             <div className="max-w-4xl mx-auto relative" style={{ height: renderedMessageTotalSize }}>
               {renderedMessageItems.map((virtualMessage) => {
                 const message = virtualMessage.item;
-                const messageIndex = virtualMessage.index;
                 const isEditing = editingMessageId === message.id;
                 const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
-                const visibleImages = isEditing ? editingImages : messageImages;
 
                 return (
-                  <div
+                  <MemoizedChatMessageRow
                     key={message.id}
-                    ref={measureMessageElement}
-                    data-index={messageIndex}
-                    id={`chat-message-${message.id}`}
-                    className={cn(
-                      'absolute left-0 top-0 w-full rounded-lg transition-colors duration-500',
-                      highlightedMessageId === message.id && 'bg-primary/10 ring-1 ring-primary/40'
-                    )}
-                    style={{ transform: `translateY(${virtualMessage.start}px)` }}
-                  >
-                    <div
-                      className={cn(
-                        'relative transition-all duration-200',
-                        message.role === 'user'
-                          ? isEditing
-                            ? 'ml-auto mr-0 max-w-3xl'
-                            : 'ml-auto mr-0 max-w-lg'
-                          : 'mr-auto ml-0 max-w-none'
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          'relative rounded-lg group',
-                          message.role === 'user'
-                            ? 'bg-muted/80 border border-border/50'
-                            : 'bg-transparent border-0',
-                          isEditing
-                            ? 'p-2'
-                            : message.role === 'assistant'
-                              ? 'p-2 pb-6'
-                              : 'p-2 pb-9'
-                        )}
-                      >
-                        {/* Content */}
-                        {isEditing ? (
-                          <div className="space-y-2">
-                            {visibleImages.length > 0 && (
-                              <div className="flex flex-wrap gap-2">
-                                {visibleImages.map((image) => (
-                                  <div key={image.id} className="relative w-16 h-16 rounded-md border border-border overflow-hidden bg-muted/40">
-                                    <button
-                                      type="button"
-                                      onMouseDown={preventImageMouseDown}
-                                      onClick={(event) => openImagePreview(event, image)}
-                                      className="w-full h-full cursor-zoom-in"
-                                      title={t('chat.openImage', 'Open image')}
-                                    >
-                                      <img src={image.dataUrl} alt={t('chat.attachedImage', 'Attached image')} className="w-full h-full object-cover" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => removeEditingImage(image.id)}
-                                      className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/90 border border-border flex items-center justify-center hover:bg-accent transition-colors"
-                                      title={t('chat.removeImage', 'Remove image')}
-                                    >
-                                      <Icon name="x" size={11} className="text-muted-foreground" />
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            <textarea
-                              value={editingValue}
-                              onChange={(event) => setEditingValue(event.target.value)}
-                              onPasteCapture={handleEditingPaste}
-                              placeholder={t('common.editMessage') || 'Edit your message...'}
-                              className="w-full min-h-[120px] max-h-[400px] resize-y bg-background border-2 border-border rounded-lg p-3 text-sm text-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/10 transition-all leading-relaxed"
-                              autoFocus
-                            />
-                            <div className="flex items-center gap-2 justify-end">
-                              <button
-                                onClick={handleEditCancel}
-                                className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-                              >
-                                {t('common.cancel')}
-                              </button>
-                              <button
-                                onClick={handleEditSave}
-                                className="px-3 py-1.5 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium"
-                              >
-                                {t('chat.saveRegenerate')}
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div
-                            className={cn(
-                              'text-sm leading-relaxed',
-                              message.role === 'user'
-                                ? 'text-foreground'
-                                : 'text-foreground'
-                            )}
-                          >
-                            {message.role === 'assistant' ? (
-                              <MarkdownRenderer
-                                content={message.content}
-                                toolTraces={mode === 'Debug' ? undefined : message.tool_traces}
-                                isStreaming={
-                                  isStreaming &&
-                                  messageIndex === currentMessages.length - 1
-                                }
-                              />
-                            ) : (
-                              message.content.split('\n').map((line, i) => (
-                                <p key={i} className="mb-2 last:mb-0 break-words">
-                                  {line}
-                                </p>
-                              ))
-                            )}
-                            {message.role === 'user' && messageImages.length > 0 && (
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                {messageImages.map((image) => (
-                                  <button
-                                    key={image.id}
-                                    type="button"
-                                    onMouseDown={preventImageMouseDown}
-                                    onClick={(event) => openImagePreview(event, image)}
-                                    className="relative w-14 h-14 rounded-md border border-border overflow-hidden bg-muted/30 hover:opacity-90 transition-opacity"
-                                    title={t('chat.openImage', 'Open image')}
-                                  >
-                                    <img src={image.dataUrl} alt={t('chat.attachedImage', 'Attached image')} className="w-full h-full object-cover" />
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                            {/* Streaming indicator */}
-                            {isStreaming && message.role === 'assistant' && messageIndex === currentMessages.length - 1 && (
-                              <span className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1" />
-                            )}
-                          </div>
-                        )}
-
-                        {message.role === 'user' && !isEditing && (
-                          <div className="absolute bottom-2 right-2 flex items-center gap-1">
-                            <button
-                              onClick={() => handleCopy(message.content, message.id)}
-                              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
-                              title={t('common.copy') || 'Copy'}
-                            >
-                              <Icon
-                                name="copy"
-                                size={12}
-                                className={cn(
-                                  'transition-colors',
-                                  copiedMessageId === message.id
-                                    ? 'text-green-500'
-                                    : 'text-muted-foreground hover:text-foreground'
-                                )}
-                              />
-                            </button>
-                            <button
-                              onClick={() => handleEditStart(message.id, message.content)}
-                              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
-                              title={t('common.edit')}
-                            >
-                              <Icon
-                                name="edit"
-                                size={12}
-                                className="text-muted-foreground hover:text-foreground transition-colors"
-                              />
-                            </button>
-                            <button
-                              onClick={() => handleRegenerate(message.id, message.content)}
-                              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
-                              title={t('common.regenerate') || 'Regenerate'}
-                            >
-                              <Icon
-                                name="refresh-cw"
-                                size={12}
-                                className="text-muted-foreground hover:text-foreground transition-colors"
-                              />
-                            </button>
-                          </div>
-                        )}
-
-                        {message.role === 'assistant' && !isEditing && (
-                          <div className="absolute bottom-1 right-2 flex items-center gap-1">
-                            <button
-                              onClick={() => handleCopy(message.content, message.id)}
-                              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
-                              title={t('common.copy') || 'Copy raw'}
-                            >
-                              <Icon
-                                name="copy"
-                                size={12}
-                                className={cn(
-                                  'transition-colors',
-                                  copiedMessageId === message.id
-                                    ? 'text-green-500'
-                                    : 'text-muted-foreground hover:text-foreground'
-                                )}
-                              />
-                            </button>
-                          </div>
-                        )}
-
-                        {/* Choices */}
-                        {message.choices && (
-                          <div className="mt-4 space-y-2">
-                            {message.choices.map((choice) => (
-                              <button
-                                key={choice.id}
-                                type="button"
-                                onClick={() => void handleChoiceClick(choice.text, message.task_id)}
-                                className="w-full text-left px-4 py-3 rounded-lg bg-card/50 border border-border hover:border-primary/50 hover:bg-card transition-all duration-200"
-                              >
-                                <span className="text-sm text-muted-foreground font-mono">
-                                  {choice.text}
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+                    virtualMessage={virtualMessage}
+                    measureElement={measureMessageElement}
+                    currentMessagesLength={currentMessages.length}
+                    isStreaming={isStreaming}
+                    showToolTraces={mode !== 'Debug'}
+                    isEditing={isEditing}
+                    editingValue={editingValue}
+                    editingImages={editingImages}
+                    messageImages={messageImages}
+                    isCopied={copiedMessageId === message.id}
+                    isHighlighted={highlightedMessageId === message.id}
+                    onEditingValueChange={setEditingValue}
+                    onEditingPaste={handleEditingPaste}
+                    onRemoveEditingImage={removeEditingImage}
+                    onImageMouseDown={preventImageMouseDown}
+                    onOpenImagePreview={openImagePreview}
+                    onEditCancel={handleEditCancel}
+                    onEditSave={handleEditSave}
+                    onCopy={handleCopy}
+                    onEditStart={handleEditStart}
+                    onRegenerate={handleRegenerate}
+                    onChoiceClick={handleChoiceClick}
+                  />
                 );
               })}
             </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
@@ -635,7 +635,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const standalonePlanLabel = t('implement.planFilterStandalone', 'No plan / standalone');
 
-  const buildMultiRepoPresentation = (
+  const buildMultiRepoPresentation = useCallback((
     task: ImplementTask,
     reviewSummary: ReviewTaskSummary | null
   ): MultiRepoTaskPresentation | null => {
@@ -733,7 +733,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       progressLabel,
       nextActionLabel,
     };
-  };
+  }, [getProjectById, t]);
 
   const scopedProjectIds = useMemo(
     () => getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
@@ -1134,7 +1134,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       );
     });
     return map;
-  }, [liveReviewSummary, reviewCurrentTaskId, visibleTasks]);
+  }, [buildMultiRepoPresentation, liveReviewSummary, reviewCurrentTaskId, visibleTasks]);
   const taskListRows = useMemo<TaskListRow[]>(() => {
     const rows: TaskListRow[] = [];
 

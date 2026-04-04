@@ -73,6 +73,7 @@ const toConversationDto = (conversation: tauriIpc.DbConversation): Conversation 
   id: conversation.id,
   title: conversation.title,
   description: conversation.description ?? undefined,
+  scope_mode: conversation.scope_mode,
   task_id: conversation.task_id,
   group_id: conversation.group_id,
   project_id: conversation.project_id,
