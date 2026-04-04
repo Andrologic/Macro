@@ -3,7 +3,7 @@ import type { MetadataSyncRepositoryStatus } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
-import { getScopedProjectIds } from './globalProjects';
+import { getProjectGroupByProjectId, getScopedProjectIds } from './globalProjects';
 import {
   getArchitectPlan,
   getArchitectPlanProjectIds,
@@ -136,6 +136,27 @@ const dedupeTargets = (targets: MetadataSyncTarget[]): MetadataSyncTarget[] =>
     ).values()
   );
 
+const resolveProjectPath = (
+  appState: MacroSyncAppState,
+  projectId: string | null | undefined
+): string | null => {
+  if (!projectId) {
+    return null;
+  }
+
+  const fromLookup = appState.getProjectById(projectId)?.path;
+  if (typeof fromLookup === 'string' && fromLookup.trim().length > 0) {
+    return fromLookup;
+  }
+
+  return (
+    appState.projectGroups
+      .flatMap((group) => group.projects)
+      .find((project) => project.id === projectId)
+      ?.path ?? null
+  );
+};
+
 const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<MetadataSyncTarget[]> => {
   const scopedProjectIds = getScopedProjectIds(
     appState.projectGroups,
@@ -144,10 +165,19 @@ const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<Met
   );
   const scopedTargets = scopedProjectIds
     .map((projectId) => ({
-      repoPath: appState.getProjectById(projectId)?.path || '',
+      repoPath: resolveProjectPath(appState, projectId) || '',
       projectId,
     }))
-    .filter((target) => target.repoPath.trim().length > 0);
+    .filter((target) => target.repoPath.trim().length > 0)
+    .sort((left, right) => {
+      if (left.projectId === appState.selectedProjectId) {
+        return -1;
+      }
+      if (right.projectId === appState.selectedProjectId) {
+        return 1;
+      }
+      return 0;
+    });
   const scopedProjectIdSet = new Set(scopedTargets.map((target) => target.projectId));
   const scopedRepoPathSet = new Set(
     scopedTargets
@@ -169,7 +199,7 @@ const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<Met
           }));
         const projectTargets = getArchitectPlanProjectIds(plan)
           .map((projectId) => ({
-            repoPath: appState.getProjectById(projectId)?.path || '',
+            repoPath: resolveProjectPath(appState, projectId) || '',
             projectId,
           }))
           .filter((target) => target.repoPath.trim().length > 0);
@@ -196,8 +226,30 @@ const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<Met
     return dedupeTargets(scopedTargets);
   }
 
+  const selectedProjectGroup = getProjectGroupByProjectId(
+    appState.projectGroups,
+    appState.selectedProjectId
+  );
+  if (selectedProjectGroup) {
+    const orderedProjects = [
+      ...selectedProjectGroup.projects.filter((project) => project.id === appState.selectedProjectId),
+      ...selectedProjectGroup.projects.filter((project) => project.id !== appState.selectedProjectId),
+    ];
+
+    const groupTargets = orderedProjects
+      .map((project) => ({
+        repoPath: resolveProjectPath(appState, project.id) || '',
+        projectId: project.id,
+      }))
+      .filter((target) => target.repoPath.trim().length > 0);
+
+    if (groupTargets.length > 0) {
+      return dedupeTargets(groupTargets);
+    }
+  }
+
   const selectedProjectPath = appState.selectedProjectId
-    ? appState.getProjectById(appState.selectedProjectId)?.path
+    ? resolveProjectPath(appState, appState.selectedProjectId)
     : null;
   return selectedProjectPath
     ? [{ repoPath: selectedProjectPath, projectId: appState.selectedProjectId }]
@@ -713,6 +765,7 @@ export const createMacroSyncService = (
 
       try {
         const appState = dependencies.getAppState();
+        const metadataAutoPush = Boolean(appState.metadataAutoPush);
         if (appState.activeArchitectPlanId && appState.activePlanContext?.targetBranch) {
           try {
             await syncArchitectPlanChatFromConversation({
@@ -734,8 +787,41 @@ export const createMacroSyncService = (
             );
           }
         }
+
+        const commitEntries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }> = [];
+        for (const target of targets) {
+          try {
+            commitEntries.push({
+              target,
+              result: await dependencies.tauriIpc.macroBranchCommitIfDirty({
+                message: 'chore(metadata): sync architect chat',
+                workspacePath: target.repoPath,
+              }),
+            });
+          } catch (error) {
+            commitEntries.push({
+              target,
+              result: toFailedMacroResult(dependencies.toServiceError(error).message),
+            });
+          }
+        }
+
+        const commitAggregate = createAggregateMacroResult(commitEntries);
+        const commitRepositories = commitEntries.map(({ target, result }) =>
+          toRepositoryStatus(target, result)
+        );
+
+        if (
+          !metadataAutoPush ||
+          !commitEntries.some(({ result }) => result.committed) ||
+          commitEntries.some(({ result }) => shouldBlockMacroAction(result, 'push'))
+        ) {
+          return applyMacroSyncResult(commitAggregate, commitRepositories);
+        }
+
+        setMacroSyncPending(targets);
         return await runAcrossTargets(targets, (target) =>
-          dependencies.tauriIpc.macroBranchStatus({
+          dependencies.tauriIpc.macroBranchPush({
             workspacePath: target.repoPath,
           })
         );

@@ -1,25 +1,31 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
+let importCounter = 0;
+
 const tauriFetchMock = mock(
   async (_input: string, _init?: RequestInit) => new Response()
 );
 let pageLifecycleController = new AbortController();
 let pageShuttingDown = false;
 
-mock.module('@tauri-apps/plugin-http', () => ({
-  fetch: tauriFetchMock,
-}));
+const loadProviderApi = async () => {
+  mock.module('@tauri-apps/plugin-http', () => ({
+    fetch: tauriFetchMock,
+  }));
 
-mock.module('../utils/pageLifecycle', () => ({
-  getPageLifecycleSignal: () => pageLifecycleController.signal,
-  isPageShuttingDown: () => pageShuttingDown,
-}));
+  mock.module('../utils/pageLifecycle', () => ({
+    getPageLifecycleSignal: () => pageLifecycleController.signal,
+    isPageShuttingDown: () => pageShuttingDown,
+  }));
 
-const { fetchModelsFromProvider } = await import('./providerApi');
+  importCounter += 1;
+  return import(`./providerApi.ts?provider-api-test=${importCounter}`);
+};
 
 describe('providerApi fetchModelsFromProvider', () => {
   beforeEach(() => {
-    tauriFetchMock.mockReset();
+    mock.restore();
+    tauriFetchMock.mockClear();
     pageLifecycleController = new AbortController();
     pageShuttingDown = false;
   });
@@ -38,6 +44,7 @@ describe('providerApi fetchModelsFromProvider', () => {
       }
     ));
 
+    const { fetchModelsFromProvider } = await loadProviderApi();
     const result = await fetchModelsFromProvider({
       baseUrl: 'https://example.com/v1',
       providerId: 'custom',
@@ -71,6 +78,7 @@ describe('providerApi fetchModelsFromProvider', () => {
         })
     );
 
+    const { fetchModelsFromProvider } = await loadProviderApi();
     const result = await fetchModelsFromProvider({
       baseUrl: 'https://example.com/v1',
       providerId: 'custom',
@@ -95,6 +103,7 @@ describe('providerApi fetchModelsFromProvider', () => {
         })
     );
 
+    const { fetchModelsFromProvider } = await loadProviderApi();
     setTimeout(() => {
       pageShuttingDown = true;
       pageLifecycleController.abort('hmr-dispose');

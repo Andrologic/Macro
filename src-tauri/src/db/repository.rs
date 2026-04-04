@@ -1,5 +1,5 @@
 use super::models::*;
-use super::{ensure_git_tracking_tables, DbResult};
+use super::DbResult;
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use std::collections::HashSet;
@@ -267,7 +267,6 @@ pub async fn upsert_git_repository(
     pool: &SqlitePool,
     input: CreateGitRepositoryInput,
 ) -> DbResult<GitRepositoryRecord> {
-    ensure_git_tracking_tables(pool).await?;
     let now = chrono::Utc::now().to_rfc3339();
     let new_id = uuid::Uuid::new_v4().to_string();
 
@@ -318,7 +317,6 @@ pub async fn upsert_git_worktree(
     pool: &SqlitePool,
     input: CreateGitWorktreeInput,
 ) -> DbResult<GitWorktreeRecord> {
-    ensure_git_tracking_tables(pool).await?;
     let now = chrono::Utc::now().to_rfc3339();
     let new_id = uuid::Uuid::new_v4().to_string();
 
@@ -391,7 +389,6 @@ pub async fn list_git_worktrees_by_project(
     pool: &SqlitePool,
     project_id: &str,
 ) -> DbResult<Vec<GitWorktreeRecord>> {
-    ensure_git_tracking_tables(pool).await?;
     let rows = sqlx::query(
         r#"
         SELECT id, repo_id, project_id, task_id, worktree_name, path, branch, head_commit,
@@ -431,7 +428,6 @@ pub async fn update_git_worktree_project_access(
     is_active: bool,
     is_prunable: bool,
 ) -> DbResult<()> {
-    ensure_git_tracking_tables(pool).await?;
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         r#"
