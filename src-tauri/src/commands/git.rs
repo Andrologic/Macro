@@ -30,6 +30,10 @@ pub struct GitStatusDto {
     pub conflicted_files: Vec<String>,
     pub merge_in_progress: bool,
     pub is_clean: bool,
+    pub has_origin: bool,
+    pub has_upstream: bool,
+    pub ahead: u32,
+    pub behind: u32,
 }
 
 #[derive(Serialize)]
@@ -1152,6 +1156,26 @@ pub(crate) struct DiffRequestOptions {
 pub(crate) fn build_git_status(repo: &Repository) -> Result<GitStatusDto> {
     let branch = get_branch_name(repo)?.unwrap_or_else(|| "DETACHED".to_string());
     let head_commit = get_head_commit(repo)?.map(|c| commit_to_dto(&c));
+    let has_origin = repo.find_remote(DEFAULT_REMOTE_NAME).is_ok();
+    let mut has_upstream = false;
+    let mut ahead = 0u32;
+    let mut behind = 0u32;
+
+    if branch != "DETACHED" {
+        if let Ok(local_branch) = repo.find_branch(&branch, BranchType::Local) {
+            if let Ok(upstream) = local_branch.upstream() {
+                has_upstream = true;
+                if let (Some(local_oid), Some(upstream_oid)) =
+                    (local_branch.get().target(), upstream.get().target())
+                {
+                    let (ahead_count, behind_count) =
+                        repo.graph_ahead_behind(local_oid, upstream_oid)?;
+                    ahead = ahead_count as u32;
+                    behind = behind_count as u32;
+                }
+            }
+        }
+    }
 
     let statuses = repo.statuses(Some(&mut get_status_options()))?;
     let mut staged = Vec::new();
@@ -1226,6 +1250,10 @@ pub(crate) fn build_git_status(repo: &Repository) -> Result<GitStatusDto> {
         conflicted_files,
         merge_in_progress,
         is_clean: statuses.is_empty(),
+        has_origin,
+        has_upstream,
+        ahead,
+        behind,
     })
 }
 
@@ -2346,6 +2374,59 @@ pub async fn git_worktree_remove(
             removed_path: removed.removed_path,
             pruned_registration: removed.pruned_registration,
             already_absent: removed.already_absent,
+        })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Fetch updates for current branch (or provided branch) from remote.
+pub async fn git_fetch(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    remote: Option<String>,
+    branch: Option<String>,
+) -> Result<GitSyncDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        let remote_name = remote
+            .unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
+            .trim()
+            .to_string();
+        validate_remote_name(&remote_name)?;
+        let branch_name = resolve_target_branch(&repo, branch)?;
+        let root = repo_root(&repo)?;
+        drop(repo);
+
+        let mut args = vec!["fetch".to_string(), remote_name.clone()];
+        if !branch_name.trim().is_empty() {
+            args.push(branch_name.clone());
+        }
+        let output = run_git_command(&root, &args)?;
+        if !output.success {
+            let details = command_output_text(&output);
+            let message = if details.is_empty() {
+                format!("git fetch failed (exit code: {:?})", output.code)
+            } else {
+                details
+            };
+            return Err(BackendError::Git { message });
+        }
+
+        Ok(GitSyncDto {
+            branch: branch_name,
+            remote: remote_name,
+            output: command_output_text(&output),
         })
     })
     .await
