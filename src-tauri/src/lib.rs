@@ -482,6 +482,8 @@ pub fn run() {
             commands::db_register_manual_model,
             commands::db_get_provider_settings,
             commands::db_update_provider_settings,
+            commands::db_get_setting,
+            commands::db_set_setting,
             commands::db_get_app_setting,
             commands::db_set_app_setting,
             commands::db_get_project_context_state,

@@ -1484,6 +1484,52 @@ pub async fn db_update_provider_settings(
         .map_err(Into::into)
 }
 
+#[tauri::command]
+pub async fn db_get_setting(
+    pool: State<'_, DbPool>,
+    key: String,
+) -> CommandResult<Option<String>> {
+    let pool = get_pool(&pool).await?;
+
+    let result = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT value
+        FROM settings
+        WHERE key = ?
+        "#,
+    )
+    .bind(&key)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|error| command_error(error.to_string()))?;
+
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn db_set_setting(
+    pool: State<'_, DbPool>,
+    key: String,
+    value: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO settings (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(&key)
+    .bind(&value)
+    .execute(&pool)
+    .await
+    .map_err(|error| command_error(error.to_string()))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{resolve_requested_workspace, resolve_workspace_for_tool_path};
