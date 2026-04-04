@@ -1,9 +1,14 @@
+#[cfg(target_os = "macos")]
 use std::fs;
+#[cfg(target_os = "macos")]
 use std::path::PathBuf;
+#[cfg(target_os = "macos")]
 use std::sync::OnceLock;
+#[cfg(target_os = "macos")]
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+#[cfg(target_os = "macos")]
 static FILE_LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
 #[cfg(target_os = "macos")]
