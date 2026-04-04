@@ -258,6 +258,8 @@ export const mockPlanBlocks: PlanBlock[] = [
 export const mockArchitectConversation: Conversation = {
   id: 'conv-architect-1',
   title: 'E-Commerce Platform Architecture',
+  description: '',
+  scope_mode: 'Architect',
   task_id: null,
   project_id: 'proj-1',
   last_message: 'I\'ve created the dependency graph for your e-commerce platform...',
@@ -359,6 +361,8 @@ export const mockChatConversations: Conversation[] = [
   {
     id: 'conv-chat-1',
     title: 'General Programming Questions',
+    description: '',
+    scope_mode: 'Chat',
     task_id: null,
     project_id: null,
     last_message: 'How do I optimize React performance?',
@@ -369,6 +373,8 @@ export const mockChatConversations: Conversation[] = [
   {
     id: 'conv-chat-2',
     title: 'Learning Rust',
+    description: '',
+    scope_mode: 'Chat',
     task_id: null,
     project_id: null,
     last_message: 'What are the best practices for error handling in Rust?',
@@ -379,6 +385,8 @@ export const mockChatConversations: Conversation[] = [
   {
     id: 'conv-chat-3',
     title: 'Career Advice',
+    description: '',
+    scope_mode: 'Chat',
     task_id: null,
     project_id: null,
     last_message: 'Should I focus on backend or full-stack development?',

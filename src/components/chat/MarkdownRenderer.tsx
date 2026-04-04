@@ -293,7 +293,7 @@ const normalizeToolCallMarkup = (content: string): string => {
   return normalized;
 };
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
+const MarkdownRendererBase: React.FC<MarkdownRendererProps> = ({
   content,
   className,
   isStreaming = false,
@@ -363,5 +363,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     </div>
   );
 };
+
+export const MarkdownRenderer = React.memo(
+  MarkdownRendererBase,
+  (prev, next) =>
+    prev.content === next.content &&
+    prev.className === next.className &&
+    prev.isStreaming === next.isStreaming &&
+    prev.toolTraces === next.toolTraces
+);
 
 export default MarkdownRenderer;
