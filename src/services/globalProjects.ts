@@ -43,7 +43,7 @@ export const getPrimarySubProjectForGroup = (
   return getSubProjectsForGroup(groups, groupId)[0] ?? null;
 };
 
-export const getFocusedProjectIdForGroup = (
+export const resolveExplicitProjectIdForGroup = (
   groups: ProjectGroup[],
   groupId: string | null | undefined,
   selectedProjectId?: string | null,
@@ -64,7 +64,26 @@ export const getFocusedProjectIdForGroup = (
     return focusedProjectId;
   }
 
-  return subProjects[0]?.id ?? null;
+  return null;
+};
+
+export const getFocusedProjectIdForGroup = (
+  groups: ProjectGroup[],
+  groupId: string | null | undefined,
+  selectedProjectId?: string | null,
+  localContext?: Pick<LocalProjectContextState, 'focusProjectId'> | null
+): string | null => {
+  const explicitProjectId = resolveExplicitProjectIdForGroup(
+    groups,
+    groupId,
+    selectedProjectId,
+    localContext
+  );
+  if (explicitProjectId) {
+    return explicitProjectId;
+  }
+
+  return getSubProjectsForGroup(groups, groupId)[0]?.id ?? null;
 };
 
 export const getFocusedProjectForGroup = (
