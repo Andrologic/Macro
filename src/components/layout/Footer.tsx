@@ -795,6 +795,8 @@ export const Footer: React.FC = () => {
   );
 
   const controlsDisabled = !isTauriRuntime;
+  const showProjectSelector = adaptiveLayout.showProjectSelector && focusProjects.length > 1;
+  const showScopedProjectContext = showProjectSelector || adaptiveLayout.showCodeState || Boolean(codeStatus.branch);
 
   useLayoutEffect(() => {
     setAdaptiveLayoutIndex(0);
@@ -854,219 +856,240 @@ export const Footer: React.FC = () => {
 
   return (
     <>
-      <footer ref={footerRef} className="h-8 overflow-hidden border-t border-border bg-card px-2 text-[11px] text-muted-foreground sm:px-3">
-        <div ref={footerContentRef} className="flex h-full w-full min-w-0 items-center gap-2 overflow-hidden">
-          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+      <footer ref={footerRef} className="h-8 overflow-hidden border-t border-border bg-card pr-2 pl-4 text-[11px] text-muted-foreground sm:pr-3 sm:pl-4">
+        <div
+          ref={footerContentRef}
+          className="grid h-full w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-3 overflow-hidden"
+        >
+          <div className="flex min-w-0 items-center overflow-hidden">
             {adaptiveLayout.showProjectName && (
-              <span className="flex min-w-0 flex-[0_1_12rem] items-center gap-1 max-w-[15rem]" title={selectedGlobalProject?.name || undefined}>
+              <span className="flex min-w-0 max-w-[11rem] items-center gap-1.5" title={selectedGlobalProject?.name || undefined}>
                 <Icon name="layers" size={12} className="text-primary shrink-0" />
                 <span className="truncate text-foreground">
                   {selectedGlobalProject?.name || t('project.noGroup', 'No global project')}
                 </span>
               </span>
             )}
-            <span className="flex min-w-0 flex-[0_1_10rem] items-center gap-1 max-w-[15rem]" title={codeStatus.branch}>
-              <Icon name="git-branch" size={12} className="text-blue-400 shrink-0" />
-              <span className="truncate">{codeStatus.branch}</span>
-            </span>
-            {adaptiveLayout.showCodeState && (
-              <span className={`min-w-0 truncate ${codeStateClass}`}>{codeStateLabel}</span>
-            )}
-            {adaptiveLayout.showProjectSelector && focusProjects.length > 1 && (
-              <select
-                className="h-6 w-32 max-w-[10rem] rounded border border-border bg-card px-2 text-[11px] text-foreground"
-                value={focusedProject?.id ?? ''}
-                onChange={(event) => void switchProjectContext(event.target.value || null)}
+
+            {showScopedProjectContext && (
+              <div
+                className={cn(
+                  'flex min-w-0 items-center gap-2 overflow-hidden',
+                  adaptiveLayout.showProjectName && 'ml-2 border-l border-border/70 pl-2.5'
+                )}
               >
-                {focusProjects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
+                {showProjectSelector && (
+                  <select
+                    className="h-6 w-32 shrink-0 rounded border border-border bg-card px-2 text-[11px] text-foreground"
+                    value={focusedProject?.id ?? ''}
+                    onChange={(event) => void switchProjectContext(event.target.value || null)}
+                  >
+                    {focusProjects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                <span className="flex min-w-0 max-w-[10rem] items-center gap-1.5" title={codeStatus.branch}>
+                  <Icon name="git-branch" size={12} className="text-blue-400 shrink-0" />
+                  <span className="truncate">{codeStatus.branch}</span>
+                </span>
+
+                {adaptiveLayout.showCodeState && (
+                  <span className={`shrink-0 whitespace-nowrap ${codeStateClass}`}>{codeStateLabel}</span>
+                )}
+              </div>
             )}
           </div>
 
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 px-2 text-[11px]"
-              title={t('footer.sync.refreshTitle', 'Refresh code and @macro sync status')}
-              disabled={controlsDisabled || isRefreshing || !!codeAction || !!macroAction}
-              onClick={() => void refreshFooterStatus({ showBusy: true })}
-            >
-              <Icon
-                name="refresh-cw"
-                size={12}
-                className={isRefreshing ? 'animate-spin' : ''}
-              />
-            </Button>
-
-            {adaptiveLayout.codeActionMode !== 'hidden' && (
+          <div className="flex shrink-0 items-center justify-center gap-1 px-1">
+            <div className="flex shrink-0 items-center gap-0.5">
               <Button
                 size="sm"
                 variant="ghost"
-                className={cn(
-                  'h-6 text-[11px]',
-                  adaptiveLayout.codeActionMode === 'icon' ? 'w-6 px-0' : 'px-2'
-                )}
-                title={codeAction === 'pull'
-                  ? t('footer.sync.pulling', 'Pulling...')
-                  : t('footer.sync.pull', 'Pull')}
-                disabled={controlsDisabled || !repoPath || !!codeAction}
-                onClick={() => void handleCodePull()}
-              >
-                {adaptiveLayout.codeActionMode === 'icon' ? (
-                  <Icon
-                    name="download"
-                    size={12}
-                    className={codeAction === 'pull' ? 'animate-pulse' : ''}
-                  />
-                ) : (
-                  codeAction === 'pull'
-                    ? t('footer.sync.pulling', 'Pulling...')
-                    : t('footer.sync.pull', 'Pull')
-                )}
-              </Button>
-            )}
-
-            {adaptiveLayout.codeActionMode !== 'hidden' && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className={cn(
-                  'h-6 text-[11px]',
-                  adaptiveLayout.codeActionMode === 'icon' ? 'w-6 px-0' : 'px-2'
-                )}
-                title={codeAction === 'push'
-                  ? t('footer.sync.pushing', 'Pushing...')
-                  : t('footer.sync.push', 'Push')}
-                disabled={controlsDisabled || !repoPath || !!codeAction}
-                onClick={() => void handleCodePush()}
-              >
-                {adaptiveLayout.codeActionMode === 'icon' ? (
-                  <Icon
-                    name="upload"
-                    size={12}
-                    className={codeAction === 'push' ? 'animate-pulse' : ''}
-                  />
-                ) : (
-                  codeAction === 'push'
-                    ? t('footer.sync.pushing', 'Pushing...')
-                    : t('footer.sync.push', 'Push')
-                )}
-              </Button>
-            )}
-          </div>
-
-          <div className="ml-auto flex min-w-0 items-center gap-1">
-            {adaptiveLayout.showMetadataLabel && (
-              <span className={`flex min-w-0 flex-[0_1_11rem] items-center gap-1 max-w-[14rem] ${metadataLabelClass}`} title={macroTooltip || undefined}>
-                <Icon name="folder-git-2" size={12} className="shrink-0" />
-                <span className="truncate">{metadataLabel}</span>
-              </span>
-            )}
-            {adaptiveLayout.showMacroHint && macroHint && (
-              <span className="min-w-0 flex-[0_1_12rem] truncate text-muted-foreground/80 max-w-[14rem]" title={macroTooltip || undefined}>
-                {macroHint}
-              </span>
-            )}
-
-            {adaptiveLayout.macroActionMode !== 'hidden' && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className={cn(
-                  'h-6 text-[11px]',
-                  adaptiveLayout.macroActionMode === 'icon' ? 'w-6 px-0' : 'px-2'
-                )}
-                title={macroAction === 'commit'
-                  ? t('footer.sync.macroCommitting', '@macro committing...')
-                  : t('footer.sync.macroCommit', '@macro commit')}
-                disabled={controlsDisabled || !!macroAction}
-                onClick={() => void handleMacroCommit()}
-              >
-                {adaptiveLayout.macroActionMode === 'icon' ? (
-                  <Icon
-                    name="git-commit"
-                    size={12}
-                    className={macroAction === 'commit' ? 'animate-pulse' : ''}
-                  />
-                ) : (
-                  macroAction === 'commit'
-                    ? t('footer.sync.macroCommitting', '@macro committing...')
-                    : t('footer.sync.macroCommit', '@macro commit')
-                )}
-              </Button>
-            )}
-
-            {adaptiveLayout.macroActionMode !== 'hidden' && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className={cn(
-                  'h-6 text-[11px]',
-                  adaptiveLayout.macroActionMode === 'icon' ? 'w-6 px-0' : 'px-2'
-                )}
-                title={macroAction === 'pull'
-                  ? t('footer.sync.macroPulling', '@macro pulling...')
-                  : t('footer.sync.macroPull', '@macro pull')}
-                disabled={controlsDisabled || !!macroAction}
-                onClick={() => void handleMacroPull()}
-              >
-                {adaptiveLayout.macroActionMode === 'icon' ? (
-                  <Icon
-                    name="download"
-                    size={12}
-                    className={macroAction === 'pull' ? 'animate-pulse' : ''}
-                  />
-                ) : (
-                  macroAction === 'pull'
-                    ? t('footer.sync.macroPulling', '@macro pulling...')
-                    : t('footer.sync.macroPull', '@macro pull')
-                )}
-              </Button>
-            )}
-
-            {adaptiveLayout.macroActionMode !== 'hidden' && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className={cn(
-                  'h-6 text-[11px]',
-                  adaptiveLayout.macroActionMode === 'icon' ? 'w-6 px-0' : 'px-2'
-                )}
-                title={macroAction === 'push'
-                  ? t('footer.sync.macroPushing', '@macro pushing...')
-                  : t('footer.sync.macroPush', '@macro push')}
-                disabled={controlsDisabled || !!macroAction}
-                onClick={() => void handleMacroPush()}
-              >
-                {adaptiveLayout.macroActionMode === 'icon' ? (
-                  <Icon
-                    name="upload"
-                    size={12}
-                    className={macroAction === 'push' ? 'animate-pulse' : ''}
-                  />
-                ) : (
-                  macroAction === 'push'
-                    ? t('footer.sync.macroPushing', '@macro pushing...')
-                    : t('footer.sync.macroPush', '@macro push')
-                )}
-              </Button>
-            )}
-
-            {metadataSyncState === 'conflict' && (
-              <Button
-                size="sm"
-                variant="error"
                 className="h-6 px-2 text-[11px]"
-                onClick={() => setShowConflictModal(true)}
+                title={t('footer.sync.refreshTitle', 'Refresh code and @macro sync status')}
+                disabled={controlsDisabled || isRefreshing || !!codeAction || !!macroAction}
+                onClick={() => void refreshFooterStatus({ showBusy: true })}
               >
-                {t('footer.sync.resolve', 'Resolve')}
+                <Icon
+                  name="refresh-cw"
+                  size={12}
+                  className={isRefreshing ? 'animate-spin' : ''}
+                />
               </Button>
+            </div>
+
+            {adaptiveLayout.codeActionMode !== 'hidden' && (
+              <div className="flex shrink-0 items-center gap-0.5">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className={cn(
+                    'h-6 text-[11px]',
+                    adaptiveLayout.codeActionMode === 'icon' ? 'w-6 px-0' : 'px-2'
+                  )}
+                  title={codeAction === 'pull'
+                    ? t('footer.sync.pulling', 'Pulling...')
+                    : t('footer.sync.pull', 'Pull')}
+                  disabled={controlsDisabled || !repoPath || !!codeAction}
+                  onClick={() => void handleCodePull()}
+                >
+                  {adaptiveLayout.codeActionMode === 'icon' ? (
+                    <Icon
+                      name="download"
+                      size={12}
+                      className={codeAction === 'pull' ? 'animate-pulse' : ''}
+                    />
+                  ) : (
+                    codeAction === 'pull'
+                      ? t('footer.sync.pulling', 'Pulling...')
+                      : t('footer.sync.pull', 'Pull')
+                  )}
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className={cn(
+                    'h-6 text-[11px]',
+                    adaptiveLayout.codeActionMode === 'icon' ? 'w-6 px-0' : 'px-2'
+                  )}
+                  title={codeAction === 'push'
+                    ? t('footer.sync.pushing', 'Pushing...')
+                    : t('footer.sync.push', 'Push')}
+                  disabled={controlsDisabled || !repoPath || !!codeAction}
+                  onClick={() => void handleCodePush()}
+                >
+                  {adaptiveLayout.codeActionMode === 'icon' ? (
+                    <Icon
+                      name="upload"
+                      size={12}
+                      className={codeAction === 'push' ? 'animate-pulse' : ''}
+                    />
+                  ) : (
+                    codeAction === 'push'
+                      ? t('footer.sync.pushing', 'Pushing...')
+                      : t('footer.sync.push', 'Push')
+                  )}
+                </Button>
+              </div>
             )}
+          </div>
+
+          <div className="flex min-w-0 items-center justify-end gap-1.5 overflow-hidden">
+            <div className="flex min-w-0 items-center justify-end gap-1 overflow-hidden">
+              {adaptiveLayout.showMetadataLabel && (
+                <span className={`flex min-w-0 flex-[0_1_11rem] items-center gap-1 max-w-[14rem] ${metadataLabelClass}`} title={macroTooltip || undefined}>
+                  <Icon name="folder-git-2" size={12} className="shrink-0" />
+                  <span className="truncate">{metadataLabel}</span>
+                </span>
+              )}
+              {adaptiveLayout.showMacroHint && macroHint && (
+                <span className="min-w-0 flex-[0_1_12rem] truncate text-muted-foreground/80 max-w-[14rem]" title={macroTooltip || undefined}>
+                  {macroHint}
+                </span>
+              )}
+            </div>
+
+            <div className="flex shrink-0 items-center gap-0.5">
+              {adaptiveLayout.macroActionMode !== 'hidden' && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className={cn(
+                    'h-6 text-[11px]',
+                    adaptiveLayout.macroActionMode === 'icon' ? 'w-6 px-0' : 'px-2'
+                  )}
+                  title={macroAction === 'commit'
+                    ? t('footer.sync.macroCommitting', '@macro committing...')
+                    : t('footer.sync.macroCommit', '@macro commit')}
+                  disabled={controlsDisabled || !!macroAction}
+                  onClick={() => void handleMacroCommit()}
+                >
+                  {adaptiveLayout.macroActionMode === 'icon' ? (
+                    <Icon
+                      name="git-commit"
+                      size={12}
+                      className={macroAction === 'commit' ? 'animate-pulse' : ''}
+                    />
+                  ) : (
+                    macroAction === 'commit'
+                      ? t('footer.sync.macroCommitting', '@macro committing...')
+                      : t('footer.sync.macroCommit', '@macro commit')
+                  )}
+                </Button>
+              )}
+
+              {adaptiveLayout.macroActionMode !== 'hidden' && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className={cn(
+                    'h-6 text-[11px]',
+                    adaptiveLayout.macroActionMode === 'icon' ? 'w-6 px-0' : 'px-2'
+                  )}
+                  title={macroAction === 'pull'
+                    ? t('footer.sync.macroPulling', '@macro pulling...')
+                    : t('footer.sync.macroPull', '@macro pull')}
+                  disabled={controlsDisabled || !!macroAction}
+                  onClick={() => void handleMacroPull()}
+                >
+                  {adaptiveLayout.macroActionMode === 'icon' ? (
+                    <Icon
+                      name="download"
+                      size={12}
+                      className={macroAction === 'pull' ? 'animate-pulse' : ''}
+                    />
+                  ) : (
+                    macroAction === 'pull'
+                      ? t('footer.sync.macroPulling', '@macro pulling...')
+                      : t('footer.sync.macroPull', '@macro pull')
+                  )}
+                </Button>
+              )}
+
+              {adaptiveLayout.macroActionMode !== 'hidden' && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className={cn(
+                    'h-6 text-[11px]',
+                    adaptiveLayout.macroActionMode === 'icon' ? 'w-6 px-0' : 'px-2'
+                  )}
+                  title={macroAction === 'push'
+                    ? t('footer.sync.macroPushing', '@macro pushing...')
+                    : t('footer.sync.macroPush', '@macro push')}
+                  disabled={controlsDisabled || !!macroAction}
+                  onClick={() => void handleMacroPush()}
+                >
+                  {adaptiveLayout.macroActionMode === 'icon' ? (
+                    <Icon
+                      name="upload"
+                      size={12}
+                      className={macroAction === 'push' ? 'animate-pulse' : ''}
+                    />
+                  ) : (
+                    macroAction === 'push'
+                      ? t('footer.sync.macroPushing', '@macro pushing...')
+                      : t('footer.sync.macroPush', '@macro push')
+                  )}
+                </Button>
+              )}
+
+              {metadataSyncState === 'conflict' && (
+                <Button
+                  size="sm"
+                  variant="error"
+                  className="h-6 px-2 text-[11px]"
+                  onClick={() => setShowConflictModal(true)}
+                >
+                  {t('footer.sync.resolve', 'Resolve')}
+                </Button>
+              )}
+            </div>
 
             <Button
               ref={notificationCenterButtonRef}
