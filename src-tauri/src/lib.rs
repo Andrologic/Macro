@@ -234,7 +234,12 @@ async fn set_macos_app_icon_theme(
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, spec);
+        let MacosAppIconThemeSpec {
+            background_color,
+            logo_start_color,
+            logo_end_color,
+        } = spec;
+        let _ = (window, background_color, logo_start_color, logo_end_color);
         Ok(())
     }
 }
