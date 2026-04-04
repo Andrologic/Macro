@@ -24,6 +24,7 @@ import {
 } from '../services/architectGitFlowService';
 import { shouldSyncTargetBranchBeforeFinish } from '../services/architectGitNaming';
 import {
+  commitArchitectPlanMetadata,
   getArchitectPlan,
   getArchitectPlanTargetBranchesByProjectId,
   getGitFlowBaseBranch,
@@ -39,6 +40,7 @@ import {
 } from '../services/implementTaskCatalog';
 import { getScopedProjectIds } from '../services/globalProjects';
 import {
+  commitManualFeatureMetadata,
   removeManualFeatureMetadata,
   syncManualFeatureMetadataFromTask,
 } from '../services/manualFeatureMetadataService';
@@ -832,6 +834,44 @@ const syncManualFeatureTaskMetadata = async (
   }
 };
 
+const commitManualFeatureTaskMetadata = async (
+  task: CatalogedImplementTask | undefined,
+  message: string,
+  setError?: (message: string | null) => void
+): Promise<void> => {
+  if (!task || !isManualStandaloneTask(task)) {
+    return;
+  }
+
+  try {
+    await commitManualFeatureMetadata(task, message);
+  } catch (error) {
+    const normalized = toServiceError(error);
+    setError?.(normalized.message);
+  }
+};
+
+const commitArchitectPlanMetadataForTask = async (
+  task: CatalogedImplementTask,
+  message: string,
+  setError?: (message: string | null) => void
+): Promise<void> => {
+  if (task.task_source !== 'architect' || !task.plan_id || !task.plan_target_branch) {
+    return;
+  }
+
+  try {
+    await commitArchitectPlanMetadata({
+      branchName: resolveTargetBranch(task.plan_target_branch),
+      planId: task.plan_id,
+      commitMessage: message,
+    });
+  } catch (error) {
+    const normalized = toServiceError(error);
+    setError?.(normalized.message);
+  }
+};
+
 const syncIntegrationBranchIfConfigured = async (
   repoPath: string,
   branchName: string
@@ -1288,6 +1328,13 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
         set({ lastError: message });
       });
+      await commitManualFeatureTaskMetadata(
+        get().getTaskById(taskId) ?? task,
+        `chore(metadata): archive manual feature ${taskId}`,
+        (message) => {
+          set({ lastError: message });
+        }
+      );
     } catch (error) {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
@@ -1956,6 +2003,13 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
           set({ lastError: message });
         });
+        await commitManualFeatureTaskMetadata(
+          get().getTaskById(taskId) ?? task,
+          `chore(metadata): complete manual feature ${taskId}`,
+          (message) => {
+            set({ lastError: message });
+          }
+        );
         if (useAppStore.getState().selectedTaskId === taskId) {
           useAppStore.getState().setSelectedTask(null);
         }
@@ -1979,6 +2033,14 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           const normalized = toServiceError(error);
           set({ lastError: normalized.message });
         }
+
+        await commitArchitectPlanMetadataForTask(
+          task,
+          `chore(metadata): complete architect task ${task.id}`,
+          (message) => {
+            set({ lastError: message });
+          }
+        );
       }
     } catch (error) {
       const normalized = toServiceError(error);
@@ -2018,6 +2080,15 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         ),
       });
       await get().refreshFromPlan();
+      try {
+        await commitArchitectPlanMetadata({
+          branchName: resolveTargetBranch(summary.targetBranch),
+          planId,
+          commitMessage: `chore(metadata): finalize architect plan ${planId}`,
+        });
+      } catch (error) {
+        set({ lastError: toServiceError(error).message });
+      }
       set(buildPlanFinalizationSuccessState());
     } catch (error) {
       set(buildPlanFinalizationFailureState(error));

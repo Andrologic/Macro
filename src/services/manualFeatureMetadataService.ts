@@ -163,6 +163,28 @@ const commitMetadataTargets = async (workspacePaths: string[], message: string):
   );
 };
 
+export const commitManualFeatureMetadata = async (
+  task: Pick<
+    CatalogedImplementTask,
+    'id' | 'base_branch' | 'project_id' | 'project_ids' | 'execution_targets' | 'standalone_kind'
+  >,
+  message?: string
+): Promise<void> => {
+  if (!tauriIpc.isTauriAvailable() || task.standalone_kind !== 'manual_feature') {
+    return;
+  }
+
+  const workspacePaths = resolveMetadataWorkspacePaths(task);
+  if (workspacePaths.length === 0) {
+    return;
+  }
+
+  await commitMetadataTargets(
+    workspacePaths,
+    message?.trim().length ? message.trim() : `chore(metadata): sync manual feature ${task.id}`
+  );
+};
+
 export const syncManualFeatureMetadataFromTask = async (
   task: Pick<
     CatalogedImplementTask,
@@ -223,11 +245,6 @@ export const syncManualFeatureMetadataFromTask = async (
       });
     })
   );
-
-  await commitMetadataTargets(
-    workspacePaths,
-    `chore(metadata): sync manual feature ${task.id}`
-  );
 };
 
 export const removeManualFeatureMetadata = async (
@@ -255,10 +272,5 @@ export const removeManualFeatureMetadata = async (
         workspacePath,
       })
     )
-  );
-
-  await commitMetadataTargets(
-    workspacePaths,
-    `chore(metadata): remove manual feature ${task.id}`
   );
 };

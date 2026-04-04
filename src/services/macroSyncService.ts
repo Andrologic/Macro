@@ -3,7 +3,7 @@ import type { MetadataSyncRepositoryStatus } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
-import { getFocusedProjectForGroup, getSubProjectsForGroup } from './globalProjects';
+import { getScopedProjectIds } from './globalProjects';
 import {
   getArchitectPlan,
   getArchitectPlanProjectIds,
@@ -137,6 +137,24 @@ const dedupeTargets = (targets: MetadataSyncTarget[]): MetadataSyncTarget[] =>
   );
 
 const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<MetadataSyncTarget[]> => {
+  const scopedProjectIds = getScopedProjectIds(
+    appState.projectGroups,
+    appState.selectedGroupId,
+    appState.selectedProjectId
+  );
+  const scopedTargets = scopedProjectIds
+    .map((projectId) => ({
+      repoPath: appState.getProjectById(projectId)?.path || '',
+      projectId,
+    }))
+    .filter((target) => target.repoPath.trim().length > 0);
+  const scopedProjectIdSet = new Set(scopedTargets.map((target) => target.projectId));
+  const scopedRepoPathSet = new Set(
+    scopedTargets
+      .map((target) => normalizeRepoPath(target.repoPath))
+      .filter((value): value is string => Boolean(value))
+  );
+
   const activePlanId = appState.activeArchitectPlanId;
   if (activePlanId) {
     try {
@@ -155,7 +173,16 @@ const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<Met
             projectId,
           }))
           .filter((target) => target.repoPath.trim().length > 0);
-        const targets = dedupeTargets([...replicaTargets, ...projectTargets]);
+        const targets = dedupeTargets([...replicaTargets, ...projectTargets]).filter((target) => {
+          if (scopedTargets.length === 0) {
+            return true;
+          }
+          const normalizedRepoPath = normalizeRepoPath(target.repoPath);
+          return (
+            (target.projectId !== null && scopedProjectIdSet.has(target.projectId)) ||
+            (normalizedRepoPath !== null && scopedRepoPathSet.has(normalizedRepoPath))
+          );
+        });
         if (targets.length > 0) {
           return targets;
         }
@@ -165,23 +192,8 @@ const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<Met
     }
   }
 
-  const scopedProjects = appState.selectedGroupId
-    ? getSubProjectsForGroup(appState.projectGroups, appState.selectedGroupId)
-    : [];
-  const focusedProject = getFocusedProjectForGroup(
-    appState.projectGroups,
-    appState.selectedGroupId,
-    appState.selectedProjectId
-  );
-
-  const groupTargets = [
-    ...(focusedProject ? [{ repoPath: focusedProject.path, projectId: focusedProject.id }] : []),
-    ...scopedProjects
-      .filter((project) => project.id !== focusedProject?.id)
-      .map((project) => ({ repoPath: project.path, projectId: project.id })),
-  ].filter((target) => target.repoPath.trim().length > 0);
-  if (groupTargets.length > 0) {
-    return dedupeTargets(groupTargets);
+  if (scopedTargets.length > 0) {
+    return dedupeTargets(scopedTargets);
   }
 
   const selectedProjectPath = appState.selectedProjectId
@@ -511,21 +523,20 @@ export const createMacroSyncService = (
     targets: MetadataSyncTarget[],
     operation: (target: MetadataSyncTarget) => Promise<MacroSyncResult>
   ): Promise<MacroSyncResult> => {
-    const entries = await Promise.all(
-      targets.map(async (target) => {
-        try {
-          return {
-            target,
-            result: await operation(target),
-          };
-        } catch (error) {
-          return {
-            target,
-            result: toFailedMacroResult(dependencies.toServiceError(error).message),
-          };
-        }
-      })
-    );
+    const entries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }> = [];
+    for (const target of targets) {
+      try {
+        entries.push({
+          target,
+          result: await operation(target),
+        });
+      } catch (error) {
+        entries.push({
+          target,
+          result: toFailedMacroResult(dependencies.toServiceError(error).message),
+        });
+      }
+    }
 
     return applyMacroSyncResult(
       createAggregateMacroResult(entries),
@@ -540,23 +551,22 @@ export const createMacroSyncService = (
     blocked: boolean;
     entries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }>;
   }> => {
-    const entries = await Promise.all(
-      targets.map(async (target) => {
-        try {
-          return {
-            target,
-            result: await dependencies.tauriIpc.macroBranchEnsure({
-              workspacePath: target.repoPath,
-            }),
-          };
-        } catch (error) {
-          return {
-            target,
-            result: toFailedMacroResult(dependencies.toServiceError(error).message),
-          };
-        }
-      })
-    );
+    const entries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }> = [];
+    for (const target of targets) {
+      try {
+        entries.push({
+          target,
+          result: await dependencies.tauriIpc.macroBranchEnsure({
+            workspacePath: target.repoPath,
+          }),
+        });
+      } catch (error) {
+        entries.push({
+          target,
+          result: toFailedMacroResult(dependencies.toServiceError(error).message),
+        });
+      }
+    }
 
     return {
       blocked: entries.some(({ result }) => shouldBlockMacroAction(result, action)),
@@ -724,69 +734,10 @@ export const createMacroSyncService = (
             );
           }
         }
-
-        const preflight = await ensureTargetsForAction(targets, 'commit');
-        if (preflight.blocked) {
-          return applyMacroSyncResult(
-            createAggregateMacroResult(preflight.entries),
-            preflight.entries.map(({ target, result }) => toRepositoryStatus(target, result))
-          );
-        }
-
-        setMacroSyncPending(targets);
-        const commitMessage = `chore(metadata): sync ${params.trigger} stream for ${params.conversationId}`;
-        const commitResults = await Promise.all(
-          targets.map(async (target) => {
-            try {
-              const commit = await dependencies.tauriIpc.macroBranchCommitIfDirty({
-                message: commitMessage,
-                workspacePath: target.repoPath,
-              });
-              return { target, result: commit };
-            } catch (error) {
-              return {
-                target,
-                result: toFailedMacroResult(dependencies.toServiceError(error).message),
-              };
-            }
+        return await runAcrossTargets(targets, (target) =>
+          dependencies.tauriIpc.macroBranchStatus({
+            workspacePath: target.repoPath,
           })
-        );
-
-        if (dependencies.getAppState().metadataAutoPush) {
-          if (commitResults.some(({ result }) => shouldBlockMacroAction(result, 'push'))) {
-            return applyMacroSyncResult(
-              createAggregateMacroResult(commitResults),
-              commitResults.map(({ target, result }) => toRepositoryStatus(target, result))
-            );
-          }
-
-          const pushedEntries = await Promise.all(
-            commitResults.map(async ({ target }) => {
-              try {
-                return {
-                  target,
-                  result: await dependencies.tauriIpc.macroBranchPush({
-                    workspacePath: target.repoPath,
-                  }),
-                };
-              } catch (error) {
-                return {
-                  target,
-                  result: toFailedMacroResult(dependencies.toServiceError(error).message),
-                };
-              }
-            })
-          );
-
-          return applyMacroSyncResult(
-            createAggregateMacroResult(pushedEntries),
-            pushedEntries.map(({ target, result }) => toRepositoryStatus(target, result))
-          );
-        }
-
-        return applyMacroSyncResult(
-          createAggregateMacroResult(commitResults),
-          commitResults.map(({ target, result }) => toRepositoryStatus(target, result))
         );
       } catch (error) {
         return applyMacroSyncFailure(error, targets);
