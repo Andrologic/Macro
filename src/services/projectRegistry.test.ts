@@ -70,11 +70,32 @@ describe('projectRegistry', () => {
       'project-api',
     ]);
     expect(result.selectedGroupId).toBe('group-main');
-    expect(result.selectedProjectId).toBe('project-web');
+    expect(result.selectedProjectId).toBeNull();
     expect(result.report.duplicatePathsRemoved).toBe(1);
     expect(result.report.removedSyntheticGroups).toBe(1);
     expect(result.report.removedSyntheticProjects).toBe(0);
     expect(formatProjectRegistryRepairSummary(result.report)).toContain('Macro a réparé');
+  });
+
+  it('keeps all subprojects selected when only the group is restored', () => {
+    const result = normalizeProjectRegistry({
+      projectGroups: [
+        {
+          id: 'group-main',
+          name: 'Main',
+          isOpen: true,
+          projects: [
+            makeProject('project-web', 'C:/dev/app/web', 'Web'),
+            makeProject('project-api', 'C:/dev/app/api', 'API'),
+          ],
+        },
+      ],
+      selectedGroupId: 'group-main',
+      selectedProjectId: null,
+    });
+
+    expect(result.selectedGroupId).toBe('group-main');
+    expect(result.selectedProjectId).toBeNull();
   });
 
   it('reconciles remembered projects against the canonical registry', () => {

@@ -57,6 +57,7 @@ import {
   getGlobalProjectById,
   getFocusedProjectIdForGroup,
   getProjectGroupByProjectId,
+  resolveExplicitProjectIdForGroup,
   getScopedActionableProjectIds,
   getScopedProjectIds,
   getScopedReadOnlyProjectIds,
@@ -450,7 +451,7 @@ const restoreProjectContext = async (
     });
   }
 
-  const nextFocusProjectId = getFocusedProjectIdForGroup(
+  const nextFocusProjectId = resolveExplicitProjectIdForGroup(
     appState.projectGroups,
     groupId,
     preferredFocusProjectId ?? null,
@@ -852,9 +853,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       return;
     }
-    const nextFocusProjectId = groupId
-      ? getFocusedProjectIdForGroup(state.projectGroups, groupId, null)
-      : null;
+    const nextFocusProjectId = null;
     set({
       selectedGroupId: groupId,
       selectedProjectId: nextFocusProjectId,
@@ -2711,11 +2710,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         );
 
         if (groupForPath) {
-          const projectForPath = groupForPath.projects.find(
-            (project) => normalizePath(project.path) === normalizedLastPath
-          );
           resolvedGroupId = groupForPath.id;
-          resolvedProjectId = projectForPath?.id ?? null;
         } else {
           void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
         }
@@ -2736,12 +2731,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
             resolvedProjectGroups,
             recentProjectMatch?.id ?? null
           );
-          const projectForRecent = groupForRecent?.projects.find(
-            (project) => normalizePath(project.path) === normalizePath(firstValidRecent.path)
-          );
-
           resolvedGroupId = groupForRecent?.id ?? null;
-          resolvedProjectId = projectForRecent?.id ?? null;
         }
       }
 
@@ -2750,7 +2740,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
 
       if (resolvedGroupId) {
-        resolvedProjectId = getFocusedProjectIdForGroup(
+        resolvedProjectId = resolveExplicitProjectIdForGroup(
           resolvedProjectGroups,
           resolvedGroupId,
           resolvedProjectId
