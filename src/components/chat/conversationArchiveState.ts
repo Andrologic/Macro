@@ -32,7 +32,7 @@ export const areConversationIdSetsEqual = (
 
 export const getChatOnlyConversations = (conversations: Conversation[]): Conversation[] =>
   [...conversations]
-    .filter((conversation) => !conversation.project_id && !conversation.task_id)
+    .filter((conversation) => conversation.scope_mode === 'Chat')
     .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
 
 export const getArchiveViewConversations = (

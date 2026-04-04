@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { AppMode, ChatMessage, ContextRefKind, ContextReference, Conversation, PlanNode, PlanNodeStatus, PlanNodeType, PredictedBranch, ToolTrace } from '../types';
 import { toServiceError } from '../services/contracts/errors';
-import { useProviderStore } from './useProviderStore';
+import { providerHasCredentials, useProviderStore } from './useProviderStore';
 import { useCitationsStore } from './useCitationsStore';
 import { streamChat, cancelStream, sendChatNonStreaming, type StreamCompletionResult, type StreamMessage } from '../services/streamingChat';
 import { getStreamingWebSearchConfig } from '../services/webSearchSettings';
@@ -61,6 +61,8 @@ const METADATA_MAX_DESCRIPTION_LENGTH = 180;
 const MANUAL_FEATURE_MAX_SLUG_LENGTH = 64;
 const MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT = 4;
 const metadataGenerationInFlight = new Set<string>();
+const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
+const EMPTY_MESSAGE_IMAGES: MessageImageAttachment[] = [];
 
 const createTokenBatcher = (appendChunk: (chunk: string) => void) => {
   let buffer = '';
@@ -373,6 +375,8 @@ interface ArchitectTranscriptState {
 
 interface ChatStore {
   messages: ChatMessage[];
+  messagesByConversationId: Record<string, ChatMessage[]>;
+  messageIndexById: Record<string, number>;
   conversations: Conversation[];
   selectedConversationId: string | null;
   selectedConversationIdsByMode: Partial<Record<AppMode, string | null>>;
@@ -457,6 +461,7 @@ const mapDbConversationToConversation = (conversation: tauriIpc.DbConversation):
   id: conversation.id,
   title: conversation.title,
   description: conversation.description || '',
+  scope_mode: conversation.scope_mode,
   task_id: conversation.task_id,
   group_id: conversation.group_id,
   project_id: conversation.project_id,
@@ -515,6 +520,54 @@ const toComparableChatMessage = (message: ChatMessage): TranscriptComparableMess
   content: message.content,
   createdAt: message.timestamp,
 });
+
+const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessage[] =>
+  [...messages].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+const indexMessagesByConversation = (
+  messages: ChatMessage[]
+): Record<string, ChatMessage[]> => {
+  const grouped: Record<string, ChatMessage[]> = {};
+
+  for (const message of messages) {
+    const existing = grouped[message.conversation_id];
+    if (existing) {
+      existing.push(message);
+    } else {
+      grouped[message.conversation_id] = [message];
+    }
+  }
+
+  Object.keys(grouped).forEach((conversationId) => {
+    grouped[conversationId] = sortMessagesChronologically(grouped[conversationId]!);
+  });
+
+  return grouped;
+};
+
+const indexMessagesById = (messages: ChatMessage[]): Record<string, number> =>
+  Object.fromEntries(messages.map((message, index) => [message.id, index]));
+
+const buildMessageState = (messages: ChatMessage[]) => ({
+  messages,
+  messagesByConversationId: indexMessagesByConversation(messages),
+  messageIndexById: indexMessagesById(messages),
+});
+
+const getConversationMessagesFromState = (
+  state: Pick<ChatStore, 'messages' | 'messagesByConversationId'>,
+  conversationId: string
+): ChatMessage[] => {
+  const indexedMessages = state.messagesByConversationId[conversationId];
+  if (indexedMessages) {
+    return indexedMessages;
+  }
+
+  const fallbackMessages = state.messages.filter((msg) => msg.conversation_id === conversationId);
+  return fallbackMessages.length > 0
+    ? sortMessagesChronologically(fallbackMessages)
+    : EMPTY_CHAT_MESSAGES;
+};
 
 const getStrictTranscriptFingerprint = (message: TranscriptComparableMessage): string => {
   const trimmedId = message.id.trim();
@@ -619,6 +672,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const hasProviderCredentials = (providerId: string): boolean => {
     const provider = useProviderStore.getState().providerConfigs.find((candidate) => candidate.id === providerId);
     if (!provider || !provider.isEnabled) return false;
+    return providerHasCredentials(provider);
+  };
+
+  const hasProviderRuntimeCredentials = (providerId: string): boolean => {
+    const provider = useProviderStore.getState().providerConfigs.find((candidate) => candidate.id === providerId);
+    if (!provider || !provider.isEnabled) return false;
     return provider.isLocal || !!provider.apiKey?.trim() || providerHasAuthSession(provider);
   };
 
@@ -673,7 +732,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!provider || !provider.isEnabled) {
       return false;
     }
-    if (!provider.isLocal && !provider.apiKey?.trim() && !providerHasAuthSession(provider)) {
+    if (!providerHasCredentials(provider)) {
       return false;
     }
 
@@ -687,7 +746,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       (model) => model.id === selection.modelId && model.isEnabled !== false
     );
 
-    if (!modelExists) {
+    if (!modelExists && hasProviderRuntimeCredentials(selection.providerId)) {
       loadedModels = await providerStore.scanModelsForProvider(selection.providerId);
       modelExists = loadedModels.some(
         (model) => model.id === selection.modelId && model.isEnabled !== false
@@ -705,7 +764,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const applyFallbackSelection = async (): Promise<boolean> => {
     const providerStore = useProviderStore.getState();
     const candidateProviders = providerStore.providerConfigs.filter(
-      (provider) => provider.isEnabled && (provider.isLocal || !!provider.apiKey?.trim() || providerHasAuthSession(provider))
+      (provider) => providerHasCredentials(provider)
     );
 
     for (const provider of candidateProviders) {
@@ -714,6 +773,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const firstEnabledModel = models.find((model) => model.isEnabled !== false);
       if (firstEnabledModel) {
         useProviderStore.getState().selectModel(firstEnabledModel.id);
+        return true;
+      }
+      if (!hasProviderRuntimeCredentials(provider.id)) {
+        continue;
+      }
+      const scannedModels = await providerStore.scanModelsForProvider(provider.id);
+      const firstEnabledScannedModel = scannedModels.find((model) => model.isEnabled !== false);
+      if (firstEnabledScannedModel) {
+        useProviderStore.getState().selectModel(firstEnabledScannedModel.id);
         return true;
       }
     }
@@ -1878,9 +1946,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const getOrderedConversationMessages = (conversationId: string) => {
     const state = get();
-    return state.messages
-      .filter((msg) => msg.conversation_id === conversationId)
-      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    return getConversationMessagesFromState(state, conversationId);
   };
 
   const prepareMessagesForRequest = async (
@@ -2123,9 +2189,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messages: ChatMessage[],
     updatedAt?: string
   ) => {
-    const conversationMessages = messages.filter(
-      (message) => message.conversation_id === conversationId
-    );
+    const conversationMessages = indexMessagesByConversation(messages)[conversationId] ?? [];
     const lastMessage = conversationMessages[conversationMessages.length - 1];
     return {
       message_count: conversationMessages.length,
@@ -2145,6 +2209,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
     )?.id ?? null;
   };
 
+  const getConversationScopeMode = (conversation: Conversation): AppMode => {
+    if (
+      conversation.scope_mode === 'Architect' ||
+      conversation.scope_mode === 'Implement' ||
+      conversation.scope_mode === 'Chat' ||
+      conversation.scope_mode === 'Debug'
+    ) {
+      return conversation.scope_mode;
+    }
+
+    if (conversation.task_id) {
+      return 'Implement';
+    }
+
+    if (conversation.group_id || conversation.project_id) {
+      return 'Architect';
+    }
+
+    return 'Chat';
+  };
+
   const isConversationAllowedForMode = (
     conversation: Conversation,
     mode: AppMode,
@@ -2152,8 +2237,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     selectedProjectId: string | null,
     selectedTaskId: string | null
   ): boolean => {
+    if (getConversationScopeMode(conversation) !== mode) {
+      return false;
+    }
+
     if (mode === 'Chat' || mode === 'Debug') {
-      return !conversation.group_id && !conversation.project_id && !conversation.task_id;
+      return true;
     }
 
     if (mode === 'Architect') {
@@ -2203,7 +2292,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversations: Conversation[] = get().conversations
   ): Conversation | null =>
     conversations
-      .filter((conversation) => conversation.task_id === taskId)
+      .filter(
+        (conversation) =>
+          getConversationScopeMode(conversation) === 'Implement' &&
+          conversation.task_id === taskId
+      )
       .sort((a, b) =>
         new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
       )[0] ?? null;
@@ -2212,6 +2305,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ChatStore,
     | 'conversations'
     | 'messages'
+    | 'messagesByConversationId'
+    | 'messageIndexById'
     | 'messageImagesByMessageId'
     | 'selectedConversationId'
     | 'selectedConversationIdsByMode'
@@ -2222,6 +2317,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return {
       conversations: state.conversations,
       messages: state.messages,
+      messagesByConversationId: state.messagesByConversationId,
+      messageIndexById: state.messageIndexById,
       messageImagesByMessageId: state.messageImagesByMessageId,
       selectedConversationId: state.selectedConversationId,
       selectedConversationIdsByMode: state.selectedConversationIdsByMode,
@@ -2276,7 +2373,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     return {
       conversations: nextConversations,
-      messages: nextMessages,
+      ...buildMessageState(nextMessages),
       messageImagesByMessageId: nextImages,
       selectedConversationId: nextSelectedConversationId,
       selectedConversationIdsByMode: nextByMode,
@@ -3161,6 +3258,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       try {
         const dbConversation = await tauriIpc.createConversation({
           title: resolvedTitle,
+          scopeMode: mode,
           taskId: resolvedTaskId,
           groupId: resolvedGroupId,
           projectId: resolvedProjectId,
@@ -3172,6 +3270,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           id: `conv-${Date.now()}`,
           title: resolvedTitle,
           description: '',
+          scope_mode: mode,
           task_id: resolvedTaskId,
           group_id: resolvedGroupId,
           project_id: resolvedProjectId,
@@ -3186,6 +3285,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         id: `conv-${Date.now()}`,
         title: resolvedTitle,
         description: '',
+        scope_mode: mode,
         task_id: resolvedTaskId,
         group_id: resolvedGroupId,
         project_id: resolvedProjectId,
@@ -3249,7 +3349,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     );
 
     set({
-      messages: mergedMessages,
+      ...buildMessageState(mergedMessages),
       conversations: state.conversations.map((conversation) =>
         conversation.id === conversationId
           ? { ...conversation, ...conversationMeta }
@@ -3332,7 +3432,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       : null;
     const transcript = await getArchitectPlanChatMessages(targetBranch, plan.id).catch(() => []);
 
-    let conversation = existingConversation && !sharedConversation
+    let conversation = existingConversation && !sharedConversation &&
+      getConversationScopeMode(existingConversation) === 'Architect'
       ? existingConversation
       : null;
     let createdConversation = false;
@@ -3458,7 +3559,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     set({
       conversations,
-      messages,
+      ...buildMessageState(messages),
       messageImagesByMessageId: prunedImages,
       selectedConversationId: null,
       selectedConversationIdsByMode: {},
@@ -3645,6 +3746,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   return {
     messages: [],
+    messagesByConversationId: {},
+    messageIndexById: {},
     conversations: [],
     selectedConversationId: null,
     selectedConversationIdsByMode: {},
@@ -3673,8 +3776,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
             : conv
         );
+        const nextMessages = [...state.messages, message];
+        const nextConversationMessages = sortMessagesChronologically([
+          ...getConversationMessagesFromState(state, message.conversation_id),
+          message,
+        ]);
+
         return {
-          messages: [...state.messages, message],
+          messages: nextMessages,
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            [message.conversation_id]: nextConversationMessages,
+          },
+          messageIndexById: {
+            ...state.messageIndexById,
+            [message.id]: nextMessages.length - 1,
+          },
           conversations,
         };
       }),
@@ -3687,7 +3804,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     updateMessageContent: (messageId, content) =>
       set((state) => {
-        const updatedMessage = state.messages.find((message) => message.id === messageId);
+        const targetIndex = state.messageIndexById[messageId];
+        const updatedMessage =
+          typeof targetIndex === 'number' ? state.messages[targetIndex] : undefined;
         const parsedContent =
           updatedMessage?.role === 'assistant'
             ? parseMessageQuickReplies(content)
@@ -3697,7 +3816,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 allowFreeResponse: undefined,
                 requiresUserReply: false,
               };
-        const updatedMessages = state.messages.map((message) =>
+        if (!updatedMessage || typeof targetIndex !== 'number') {
+          return state;
+        }
+
+        const updatedMessages = [...state.messages];
+        updatedMessages[targetIndex] = {
+          ...updatedMessage,
+          content: parsedContent.content,
+          choices: parsedContent.choices,
+          allow_free_response: parsedContent.allowFreeResponse,
+        };
+
+        const updatedConversationMessages = getConversationMessagesFromState(
+          state,
+          updatedMessage.conversation_id
+        ).map((message) =>
           message.id === messageId
             ? {
               ...message,
@@ -3708,14 +3842,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             : message
         );
 
-        if (!updatedMessage) {
-          return { messages: updatedMessages };
-        }
-
-        const conversationMeta = recalcConversation(
-          updatedMessage.conversation_id,
-          updatedMessages
-        );
+        const conversationMeta = {
+          message_count: updatedConversationMessages.length,
+          last_message: updatedConversationMessages[updatedConversationMessages.length - 1]?.content ?? '',
+          updated_at: new Date().toISOString(),
+        };
 
         const conversations = state.conversations.map((conv) =>
           conv.id === updatedMessage.conversation_id
@@ -3723,17 +3854,42 @@ export const useChatStore = create<ChatStore>((set, get) => {
             : conv
         );
 
-        return { messages: updatedMessages, conversations };
+        return {
+          messages: updatedMessages,
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            [updatedMessage.conversation_id]: updatedConversationMessages,
+          },
+          messageIndexById: state.messageIndexById,
+          conversations,
+        };
       }),
 
     updateMessageFields: (messageId, patch) =>
-      set((state) => ({
-        messages: state.messages.map((message) =>
-          message.id === messageId
-            ? { ...message, ...patch }
-            : message
-        ),
-      })),
+      set((state) => {
+        const targetIndex = state.messageIndexById[messageId];
+        if (typeof targetIndex !== 'number') {
+          return state;
+        }
+
+        const updatedMessages = [...state.messages];
+        updatedMessages[targetIndex] = {
+          ...updatedMessages[targetIndex]!,
+          ...patch,
+        };
+
+        return {
+          messages: updatedMessages,
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            [updatedMessages[targetIndex]!.conversation_id]: getConversationMessagesFromState(
+              state,
+              updatedMessages[targetIndex]!.conversation_id
+            ).map((message) => (message.id === messageId ? updatedMessages[targetIndex]! : message)),
+          },
+          messageIndexById: state.messageIndexById,
+        };
+      }),
 
     updateLastMessage: (content) =>
       set((state) => {
@@ -3745,7 +3901,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
             content,
           };
         }
-        return { messages: updatedMessages };
+        const updatedLastMessage = updatedMessages[updatedMessages.length - 1];
+        if (!updatedLastMessage) {
+          return state;
+        }
+
+        return {
+          messages: updatedMessages,
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            [updatedLastMessage.conversation_id]: getConversationMessagesFromState(
+              state,
+              updatedLastMessage.conversation_id
+            ).map((message) =>
+              message.id === updatedLastMessage.id ? updatedLastMessage : message
+            ),
+          },
+          messageIndexById: state.messageIndexById,
+        };
       }),
 
     appendToLastMessage: (token) =>
@@ -3758,20 +3931,59 @@ export const useChatStore = create<ChatStore>((set, get) => {
             content: updatedMessages[lastIndex].content + token,
           };
         }
-        return { messages: updatedMessages };
+        const updatedLastMessage = updatedMessages[updatedMessages.length - 1];
+        if (!updatedLastMessage) {
+          return state;
+        }
+
+        return {
+          messages: updatedMessages,
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            [updatedLastMessage.conversation_id]: getConversationMessagesFromState(
+              state,
+              updatedLastMessage.conversation_id
+            ).map((message) =>
+              message.id === updatedLastMessage.id ? updatedLastMessage : message
+            ),
+          },
+          messageIndexById: state.messageIndexById,
+        };
       }),
 
     appendToMessage: (messageId, tokenChunk) =>
       set((state) => {
-        const updatedMessages = state.messages.map((message) =>
-          message.id === messageId
-            ? { ...message, content: message.content + tokenChunk }
-            : message
-        );
-        return { messages: updatedMessages };
+        const targetIndex = state.messageIndexById[messageId];
+        if (typeof targetIndex !== 'number') {
+          return state;
+        }
+
+        const updatedMessages = [...state.messages];
+        const targetMessage = updatedMessages[targetIndex];
+        if (!targetMessage) {
+          return state;
+        }
+
+        updatedMessages[targetIndex] = {
+          ...targetMessage,
+          content: targetMessage.content + tokenChunk,
+        };
+        return {
+          messages: updatedMessages,
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            [targetMessage.conversation_id]: getConversationMessagesFromState(
+              state,
+              targetMessage.conversation_id
+            ).map((message) =>
+              message.id === messageId ? updatedMessages[targetIndex]! : message
+            ),
+          },
+          messageIndexById: state.messageIndexById,
+        };
       }),
 
-    clearMessages: () => set({ messages: [] }),
+    clearMessages: () => set(buildMessageState([])),
 
     setMessageImages: (messageId, images) =>
       set((state) => {
@@ -3787,7 +3999,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     getMessageImages: (messageId) => {
       const state = get();
-      return state.messageImagesByMessageId[messageId] || [];
+      return state.messageImagesByMessageId[messageId] || EMPTY_MESSAGE_IMAGES;
     },
 
     addComposerContextRef: (ref) =>
@@ -3944,13 +4156,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? useTaskStore.getState().getTaskById(conversation.task_id)
         : undefined;
 
-      if (conversation.task_id) {
+      const conversationScopeMode = getConversationScopeMode(conversation);
+
+      if (conversationScopeMode === 'Implement') {
         if (confirmation?.mode !== 'implement') {
           throw new Error(
             'Suppression bloquée: une conversation Implement nécessite une confirmation explicite.'
           );
         }
-      } else if (conversation.group_id || conversation.project_id) {
+      } else if (conversationScopeMode === 'Architect') {
         const appState = useAppStore.getState();
         const projectName =
           (conversation.group_id
@@ -4004,7 +4218,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (!conversation) {
           throw new Error('Conversation introuvable.');
         }
-        if (conversation.task_id || conversation.group_id || conversation.project_id) {
+        if (getConversationScopeMode(conversation) !== 'Chat') {
           throw new Error('La suppression groupée est réservée aux conversations Chat.');
         }
       });
@@ -4063,6 +4277,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (!providerConfig) {
           throw buildSendError('Provider configuration not found.');
         }
+        const resolvedApiKey =
+          providerConfig.isLocal || providerHasAuthSession(providerConfig)
+            ? providerConfig.apiKey
+            : await providerState.resolveProviderApiKey(selectedProviderId);
+        const providerConfigForUse = {
+          ...providerConfig,
+          apiKey: resolvedApiKey,
+          apiKeyLoaded: providerConfig.apiKeyLoaded || resolvedApiKey !== undefined,
+        };
 
         const conversationTaskId =
           get().conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null;
@@ -4095,9 +4318,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
               taskId: resolvedTaskId,
               firstUserContent: content,
               providerId: selectedProviderId,
-              providerType: providerConfig.providerType,
-              baseUrl: providerConfig.baseUrl,
-              apiKey: providerConfig.apiKey,
+              providerType: providerConfigForUse.providerType,
+              baseUrl: providerConfigForUse.baseUrl,
+              apiKey: providerConfigForUse.apiKey,
               modelId: selectedModelId,
             });
           }
@@ -4135,9 +4358,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             conversationId,
             firstUserContent: content,
             providerId: selectedProviderId,
-            providerType: providerConfig.providerType,
-            baseUrl: providerConfig.baseUrl,
-            apiKey: providerConfig.apiKey,
+            providerType: providerConfigForUse.providerType,
+            baseUrl: providerConfigForUse.baseUrl,
+            apiKey: providerConfigForUse.apiKey,
             modelId: selectedModelId,
             architectPlan,
           });
@@ -4169,7 +4392,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             resolvedTaskId,
             selectedProviderId,
             selectedModelId,
-            providerConfig,
+            providerConfig: providerConfigForUse,
             messagesForRequest: streamLaunch.messagesForRequest,
             executionContext: streamLaunch.executionContext,
             fileToolContext: streamLaunch.fileToolContext,
@@ -4226,6 +4449,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         set({ lastError: 'Provider configuration not found.' });
         return;
       }
+      const resolvedApiKey =
+        providerConfig.isLocal || providerHasAuthSession(providerConfig)
+          ? providerConfig.apiKey
+          : await useProviderStore.getState().resolveProviderApiKey(selectedProviderId);
+      const providerConfigForUse = {
+        ...providerConfig,
+        apiKey: resolvedApiKey,
+        apiKeyLoaded: providerConfig.apiKeyLoaded || resolvedApiKey !== undefined,
+      };
 
       const state = get();
       const target = state.messages.find((message) => message.id === messageId);
@@ -4290,7 +4522,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         saveMessageImagesToStorage(nextImages);
 
         return {
-          messages: trimmedMessages,
+          ...buildMessageState(trimmedMessages),
           conversations,
           messageImagesByMessageId: nextImages,
           lastError: null,
@@ -4332,7 +4564,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           resolvedTaskId: target.task_id ?? '',
           selectedProviderId,
           selectedModelId,
-          providerConfig,
+          providerConfig: providerConfigForUse,
           messagesForRequest: streamLaunch.messagesForRequest,
           executionContext: streamLaunch.executionContext,
           fileToolContext: streamLaunch.fileToolContext,
@@ -4378,7 +4610,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const messageImagesByMessageId = loadMessageImagesFromStorage();
         set({
           conversations: [],
-          messages: [],
+          ...buildMessageState([]),
           messageImagesByMessageId,
           selectedConversationId: null,
           selectedConversationIdsByMode: {},

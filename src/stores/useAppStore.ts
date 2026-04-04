@@ -316,7 +316,7 @@ const persistCurrentProjectContext = async (
   const architectConversations = sortByUpdatedAtDesc(
     chatStore.conversations.filter(
       (conversation) =>
-        !conversation.task_id &&
+        conversation.scope_mode === 'Architect' &&
         (
           conversation.group_id === groupId ||
           (conversation.project_id ? scopedProjectIds.has(conversation.project_id) : false)
@@ -329,7 +329,7 @@ const persistCurrentProjectContext = async (
 
   const selectedArchitectConversation =
     selectedConversation &&
-      !selectedConversation.task_id &&
+      selectedConversation.scope_mode === 'Architect' &&
       (
         selectedConversation.group_id === groupId ||
         (selectedConversation.project_id ? scopedProjectIds.has(selectedConversation.project_id) : false)
@@ -341,17 +341,23 @@ const persistCurrentProjectContext = async (
   const taskIdSet = new Set(tasksForProject.map((task) => task.id));
   const implementByTask = lastTaskId
     ? sortByUpdatedAtDesc(
-      chatStore.conversations.filter((conversation) => conversation.task_id === lastTaskId)
+      chatStore.conversations.filter(
+        (conversation) =>
+          conversation.scope_mode === 'Implement' && conversation.task_id === lastTaskId
+      )
     )
     : [];
   const implementByProject = sortByUpdatedAtDesc(
     chatStore.conversations.filter(
-      (conversation) => Boolean(conversation.task_id && taskIdSet.has(conversation.task_id))
+      (conversation) =>
+        conversation.scope_mode === 'Implement' &&
+        Boolean(conversation.task_id && taskIdSet.has(conversation.task_id))
     )
   );
 
   const selectedImplementConversation =
     selectedConversation &&
+      selectedConversation.scope_mode === 'Implement' &&
       selectedConversation.task_id &&
       taskIdSet.has(selectedConversation.task_id)
       ? selectedConversation.id

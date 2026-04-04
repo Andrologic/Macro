@@ -5,6 +5,7 @@ pub struct Conversation {
     pub id: String,
     pub title: String,
     pub description: Option<String>,
+    pub scope_mode: String,
     pub task_id: Option<String>,
     pub group_id: Option<String>,
     pub project_id: Option<String>,
@@ -40,6 +41,7 @@ pub struct ProviderConfig {
     pub provider_type: String,
     pub base_url: String,
     pub api_key: Option<String>,
+    pub has_stored_api_key: bool,
     pub is_enabled: bool,
     pub is_local: bool,
     pub auth_status: Option<String>,
@@ -133,6 +135,7 @@ pub struct SessionContextStateRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateConversationInput {
     pub title: Option<String>,
+    pub scope_mode: String,
     pub task_id: Option<String>,
     pub group_id: Option<String>,
     pub project_id: Option<String>,

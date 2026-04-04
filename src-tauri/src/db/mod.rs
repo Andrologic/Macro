@@ -142,6 +142,7 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
             description TEXT,
+            scope_mode TEXT NOT NULL DEFAULT 'Chat',
             task_id TEXT,
             group_id TEXT,
             project_id TEXT,
@@ -162,6 +163,9 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     let has_description = conversation_columns
         .iter()
         .any(|row| row.get::<String, _>("name") == "description");
+    let has_scope_mode = conversation_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "scope_mode");
     let has_task_id = conversation_columns
         .iter()
         .any(|row| row.get::<String, _>("name") == "task_id");
@@ -191,6 +195,24 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
             .execute(pool)
             .await?;
     }
+    let scope_mode_was_added = !has_scope_mode;
+    if scope_mode_was_added {
+        sqlx::query("ALTER TABLE conversations ADD COLUMN scope_mode TEXT NOT NULL DEFAULT 'Chat'")
+            .execute(pool)
+            .await?;
+    }
+
+    // The scope backfill depends on task/group/project columns existing first.
+    backfill_conversation_scope_mode(pool, scope_mode_was_added).await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_conversations_scope_mode
+        ON conversations(scope_mode, updated_at DESC);
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         r#"
@@ -276,6 +298,7 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
             provider_type TEXT NOT NULL,
             base_url TEXT NOT NULL,
             api_key TEXT,
+            has_stored_api_key INTEGER NOT NULL DEFAULT 0,
             is_enabled INTEGER DEFAULT 1,
             is_local INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
@@ -292,6 +315,9 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     let has_auth_status = provider_columns
         .iter()
         .any(|row| row.get::<String, _>("name") == "auth_status");
+    let has_stored_api_key = provider_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "has_stored_api_key");
     let has_auth_source = provider_columns
         .iter()
         .any(|row| row.get::<String, _>("name") == "auth_source");
@@ -308,6 +334,13 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
         sqlx::query("ALTER TABLE provider_configs ADD COLUMN auth_status TEXT")
             .execute(pool)
             .await?;
+    }
+    if !has_stored_api_key {
+        sqlx::query(
+            "ALTER TABLE provider_configs ADD COLUMN has_stored_api_key INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(pool)
+        .await?;
     }
     if !has_auth_source {
         sqlx::query("ALTER TABLE provider_configs ADD COLUMN auth_source TEXT")
@@ -518,6 +551,38 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
     Ok(())
 }
 
+async fn backfill_conversation_scope_mode(
+    pool: &SqlitePool,
+    force_reclassify_all_rows: bool,
+) -> DbResult<()> {
+    let query = if force_reclassify_all_rows {
+        r#"
+        UPDATE conversations
+        SET scope_mode = CASE
+            WHEN task_id IS NOT NULL AND TRIM(task_id) <> '' THEN 'Implement'
+            WHEN (group_id IS NOT NULL AND TRIM(group_id) <> '') OR (project_id IS NOT NULL AND TRIM(project_id) <> '') THEN 'Architect'
+            ELSE 'Chat'
+        END
+        "#
+    } else {
+        r#"
+        UPDATE conversations
+        SET scope_mode = CASE
+            WHEN task_id IS NOT NULL AND TRIM(task_id) <> '' THEN 'Implement'
+            WHEN (group_id IS NOT NULL AND TRIM(group_id) <> '') OR (project_id IS NOT NULL AND TRIM(project_id) <> '') THEN 'Architect'
+            ELSE 'Chat'
+        END
+        WHERE scope_mode IS NULL
+           OR TRIM(scope_mode) = ''
+           OR scope_mode NOT IN ('Chat', 'Architect', 'Implement', 'Debug')
+        "#
+    };
+
+    sqlx::query(query).execute(pool).await?;
+
+    Ok(())
+}
+
 async fn insert_default_providers(pool: &SqlitePool) -> DbResult<()> {
     let default_providers = vec![
         (
@@ -607,6 +672,131 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
+    async fn create_legacy_conversations_table(
+        pool: &sqlx::SqlitePool,
+        extra_columns: &[&str],
+    ) {
+        let mut columns = vec![
+            "id TEXT PRIMARY KEY".to_string(),
+            "title TEXT NOT NULL".to_string(),
+            "created_at TEXT NOT NULL".to_string(),
+            "updated_at TEXT NOT NULL".to_string(),
+            "last_message TEXT".to_string(),
+            "message_count INTEGER DEFAULT 0".to_string(),
+            "is_pinned INTEGER DEFAULT 0".to_string(),
+        ];
+        columns.extend(extra_columns.iter().map(|column| (*column).to_string()));
+
+        let statement = format!(
+            "CREATE TABLE conversations (\n    {}\n)",
+            columns.join(",\n    ")
+        );
+
+        sqlx::query(&statement)
+            .execute(pool)
+            .await
+            .expect("create legacy conversations");
+    }
+
+    async fn seed_legacy_conversation(
+        pool: &sqlx::SqlitePool,
+        columns: &[&str],
+        values_sql: &str,
+    ) {
+        let mut insert_columns = vec![
+            "id",
+            "title",
+            "created_at",
+            "updated_at",
+            "message_count",
+            "is_pinned",
+        ];
+        insert_columns.extend(columns.iter().copied());
+
+        let statement = format!(
+            "INSERT INTO conversations ({}) VALUES {}",
+            insert_columns.join(", "),
+            values_sql
+        );
+
+        sqlx::query(&statement)
+            .execute(pool)
+            .await
+            .expect("seed legacy conversations");
+    }
+
+    async fn assert_conversation_scopes_and_indexes(
+        pool: &sqlx::SqlitePool,
+        expected_scopes: &[(&str, &str)],
+    ) {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, scope_mode
+            FROM conversations
+            ORDER BY id ASC
+            "#,
+        )
+        .fetch_all(pool)
+        .await
+        .expect("scope rows");
+
+        let scopes = rows
+            .into_iter()
+            .map(|row| (row.get::<String, _>("id"), row.get::<String, _>("scope_mode")))
+            .collect::<Vec<_>>();
+
+        let expected = expected_scopes
+            .iter()
+            .map(|(id, scope)| ((*id).to_string(), (*scope).to_string()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(scopes, expected);
+
+        let scope_mode_exists = sqlx::query(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM pragma_table_info('conversations')
+            WHERE name = 'scope_mode'
+            "#,
+        )
+        .fetch_one(pool)
+        .await
+        .expect("scope_mode pragma")
+        .get::<i64, _>("count");
+        assert_eq!(scope_mode_exists, 1);
+
+        let index_names = sqlx::query(
+            r#"
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name IN (
+                'idx_conversations_scope_mode',
+                'idx_conversations_project_scope',
+                'idx_conversations_group_scope',
+                'idx_conversations_task_scope'
+              )
+            ORDER BY name ASC
+            "#,
+        )
+        .fetch_all(pool)
+        .await
+        .expect("index lookup")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            index_names,
+            vec![
+                "idx_conversations_group_scope".to_string(),
+                "idx_conversations_project_scope".to_string(),
+                "idx_conversations_scope_mode".to_string(),
+                "idx_conversations_task_scope".to_string(),
+            ]
+        );
+    }
+
     #[test]
     fn app_db_path_is_rooted_in_app_data_dir() {
         let app_dir = Path::new("/tmp/macro-app-data");
@@ -635,5 +825,217 @@ mod tests {
         .collect::<Vec<_>>();
 
         assert_eq!(table_names, vec!["git_repositories", "git_worktrees"]);
+    }
+
+    #[tokio::test]
+    async fn create_pool_backfills_conversation_scope_mode() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .expect("legacy pool");
+
+        create_legacy_conversations_table(
+            &pool,
+            &["description TEXT", "task_id TEXT", "group_id TEXT", "project_id TEXT"],
+        )
+        .await;
+        seed_legacy_conversation(
+            &pool,
+            &["description", "task_id", "group_id", "project_id"],
+            r#"(
+                'chat-conv', 'Chat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, NULL, NULL, NULL, NULL
+            ), (
+                'architect-conv', 'Architect', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, NULL, NULL, 'group-1', NULL
+            ), (
+                'implement-conv', 'Implement', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, NULL, 'task-1', NULL, 'project-1'
+            )"#,
+        )
+        .await;
+
+        drop(pool);
+
+        let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
+        assert_conversation_scopes_and_indexes(
+            &migrated_pool,
+            &[
+                ("architect-conv", "Architect"),
+                ("chat-conv", "Chat"),
+                ("implement-conv", "Implement"),
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_backfills_scope_mode_when_task_id_column_is_missing() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .expect("legacy pool");
+
+        create_legacy_conversations_table(&pool, &["group_id TEXT", "project_id TEXT"]).await;
+        seed_legacy_conversation(
+            &pool,
+            &["group_id", "project_id"],
+            r#"(
+                'architect-conv', 'Architect', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, 'group-1', NULL
+            ), (
+                'chat-conv', 'Chat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, NULL, NULL
+            )"#,
+        )
+        .await;
+
+        drop(pool);
+
+        let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
+        assert_conversation_scopes_and_indexes(
+            &migrated_pool,
+            &[("architect-conv", "Architect"), ("chat-conv", "Chat")],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_backfills_scope_mode_when_group_id_column_is_missing() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .expect("legacy pool");
+
+        create_legacy_conversations_table(&pool, &["task_id TEXT", "project_id TEXT"]).await;
+        seed_legacy_conversation(
+            &pool,
+            &["task_id", "project_id"],
+            r#"(
+                'implement-conv', 'Implement', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, 'task-1', 'project-1'
+            ), (
+                'architect-conv', 'Architect', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, NULL, 'project-1'
+            )"#,
+        )
+        .await;
+
+        drop(pool);
+
+        let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
+        assert_conversation_scopes_and_indexes(
+            &migrated_pool,
+            &[("architect-conv", "Architect"), ("implement-conv", "Implement")],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_backfills_scope_mode_when_project_id_column_is_missing() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .expect("legacy pool");
+
+        create_legacy_conversations_table(&pool, &["task_id TEXT", "group_id TEXT"]).await;
+        seed_legacy_conversation(
+            &pool,
+            &["task_id", "group_id"],
+            r#"(
+                'implement-conv', 'Implement', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, 'task-1', NULL
+            ), (
+                'architect-conv', 'Architect', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, NULL, 'group-1'
+            )"#,
+        )
+        .await;
+
+        drop(pool);
+
+        let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
+        assert_conversation_scopes_and_indexes(
+            &migrated_pool,
+            &[("architect-conv", "Architect"), ("implement-conv", "Implement")],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_backfills_scope_mode_for_minimal_legacy_conversations_table() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .expect("legacy pool");
+
+        create_legacy_conversations_table(&pool, &[]).await;
+        seed_legacy_conversation(
+            &pool,
+            &[],
+            r#"(
+                'chat-conv', 'Chat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0
+            )"#,
+        )
+        .await;
+
+        drop(pool);
+
+        let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
+        assert_conversation_scopes_and_indexes(&migrated_pool, &[("chat-conv", "Chat")]).await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_normalizes_invalid_existing_scope_mode_values() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .expect("legacy pool");
+
+        create_legacy_conversations_table(
+            &pool,
+            &["scope_mode TEXT", "task_id TEXT", "group_id TEXT", "project_id TEXT"],
+        )
+        .await;
+        seed_legacy_conversation(
+            &pool,
+            &["scope_mode", "task_id", "group_id", "project_id"],
+            r#"(
+                'blank-scope', 'Blank', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, '', NULL, NULL, NULL
+            ), (
+                'invalid-scope', 'Invalid', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, 'Weird', NULL, 'group-1', NULL
+            ), (
+                'debug-scope', 'Debug', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, 'Debug', NULL, NULL, NULL
+            )"#,
+        )
+        .await;
+
+        drop(pool);
+
+        let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
+        assert_conversation_scopes_and_indexes(
+            &migrated_pool,
+            &[
+                ("blank-scope", "Chat"),
+                ("debug-scope", "Debug"),
+                ("invalid-scope", "Architect"),
+            ],
+        )
+        .await;
     }
 }

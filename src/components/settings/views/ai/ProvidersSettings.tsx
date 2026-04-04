@@ -19,6 +19,9 @@ interface EditingProvider {
   name: string;
   baseUrl: string;
   apiKey: string;
+  hasStoredApiKey: boolean;
+  apiKeyLoaded: boolean;
+  apiKeyTouched: boolean;
   isEnabled: boolean;
   isLocal: boolean;
   providerType: string;
@@ -82,6 +85,7 @@ export const ProvidersSettings: React.FC = () => {
     authErrorsByProvider,
     disconnectProviderAuth,
     testConnection,
+    resolveProviderApiKey,
   } = useProviderStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -94,6 +98,8 @@ export const ProvidersSettings: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [refreshingCopilotProviderIds, setRefreshingCopilotProviderIds] = useState<string[]>([]);
+  const [revealingProviderId, setRevealingProviderId] = useState<string | null>(null);
+  const apiKeyInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const filteredProviders = useMemo(() => {
     const query = searchQuery.toLowerCase();
@@ -355,7 +361,7 @@ export const ProvidersSettings: React.FC = () => {
       };
     }
 
-    if (!provider.apiKey) {
+    if (!provider.hasStoredApiKey && !provider.apiKey) {
       return {
         label: t('providers.status.noKey', 'No key'),
         dot: 'bg-orange-500',
@@ -391,6 +397,9 @@ export const ProvidersSettings: React.FC = () => {
       name: config.name,
       baseUrl: config.baseUrl,
       apiKey: config.apiKey || '',
+      hasStoredApiKey: config.hasStoredApiKey,
+      apiKeyLoaded: config.apiKeyLoaded === true,
+      apiKeyTouched: false,
       isEnabled: config.isEnabled,
       isLocal: config.isLocal,
       providerType: config.providerType,
@@ -405,6 +414,9 @@ export const ProvidersSettings: React.FC = () => {
       name: '',
       baseUrl: '',
       apiKey: '',
+      hasStoredApiKey: false,
+      apiKeyLoaded: true,
+      apiKeyTouched: false,
       isEnabled: true,
       isLocal: false,
       providerType: 'openai',
@@ -429,10 +441,14 @@ export const ProvidersSettings: React.FC = () => {
         });
         toast.success(t('providers.created', 'Provider created'));
       } else {
+        const apiKeyUpdate =
+          editingProvider.apiKeyTouched
+            ? editingProvider.apiKey
+            : undefined;
         await updateProviderConfig(editingProvider.id, {
           name: editingProvider.name,
           baseUrl: editingProvider.baseUrl,
-          apiKey: editingProvider.apiKey,
+          apiKey: apiKeyUpdate,
           isEnabled: editingProvider.isEnabled,
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
@@ -459,6 +475,10 @@ export const ProvidersSettings: React.FC = () => {
         toast.error(t('providers.testSaveFirst', 'Please save the provider before testing.'));
         return;
       }
+      if (editingProvider.apiKeyTouched) {
+        toast.error(t('providers.testSaveFirst', 'Please save the provider before testing.'));
+        return;
+      }
       const response = await testConnection(editingProvider.id);
       setTestResult({
         id: editingProvider.id,
@@ -482,6 +502,60 @@ export const ProvidersSettings: React.FC = () => {
     setEditingProvider(null);
     setIsDeleteConfirmOpen(false);
     toast.success(t('providers.deleted', 'Provider deleted'));
+  };
+
+  const handleRevealApiKey = async () => {
+    if (!editingProvider || isCreating) return;
+
+    setRevealingProviderId(editingProvider.id);
+    try {
+      const revealedApiKey = await resolveProviderApiKey(editingProvider.id);
+      setEditingProvider((current) =>
+        current && current.id === editingProvider.id
+          ? {
+              ...current,
+              apiKey: revealedApiKey || '',
+              hasStoredApiKey: !!revealedApiKey,
+              apiKeyLoaded: true,
+              apiKeyTouched: false,
+            }
+          : current
+      );
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Failed to reveal the stored API key.'));
+    } finally {
+      setRevealingProviderId(null);
+    }
+  };
+
+  const handleReplaceApiKey = () => {
+    setEditingProvider((current) =>
+      current
+        ? {
+            ...current,
+            apiKey: '',
+            apiKeyLoaded: true,
+            apiKeyTouched: false,
+          }
+        : current
+    );
+    queueMicrotask(() => {
+      apiKeyInputRef.current?.focus();
+    });
+  };
+
+  const handleClearStoredApiKey = () => {
+    setEditingProvider((current) =>
+      current
+        ? {
+            ...current,
+            apiKey: '',
+            hasStoredApiKey: false,
+            apiKeyLoaded: true,
+            apiKeyTouched: true,
+          }
+        : current
+    );
   };
 
   if (editingProvider) {
@@ -579,14 +653,56 @@ export const ProvidersSettings: React.FC = () => {
                 <label className="text-sm font-medium">
                   {t('providers.form.apiKeyLabel', 'API Key')}
                 </label>
-                <Input
-                  type="password"
-                  value={editingProvider.apiKey}
-                  onChange={(event) =>
-                    setEditingProvider({ ...editingProvider, apiKey: event.target.value })
-                  }
-                  placeholder={t('providers.form.apiKeyPlaceholder', 'sk-...')}
-                />
+                <div className="space-y-2">
+                  <Input
+                    ref={apiKeyInputRef}
+                    type="password"
+                    value={editingProvider.apiKey}
+                    onChange={(event) =>
+                      setEditingProvider({
+                        ...editingProvider,
+                        apiKey: event.target.value,
+                        apiKeyLoaded: true,
+                        apiKeyTouched: true,
+                      })
+                    }
+                    placeholder={
+                      !isCreating &&
+                      editingProvider.hasStoredApiKey &&
+                      !editingProvider.apiKeyLoaded &&
+                      !editingProvider.apiKeyTouched
+                        ? t('providers.form.apiKeyStoredPlaceholder', 'Stored in Keychain')
+                        : t('providers.form.apiKeyPlaceholder', 'sk-...')
+                    }
+                  />
+                  {!isCreating &&
+                    editingProvider.hasStoredApiKey &&
+                    !editingProvider.apiKeyTouched &&
+                    !editingProvider.apiKeyLoaded && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        <span>{t('providers.form.apiKeyStoredHint', 'This key is stored in the system keychain.')}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => void handleRevealApiKey()}
+                          isLoading={revealingProviderId === editingProvider.id}
+                        >
+                          {t('providers.form.revealApiKey', 'Reveal')}
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={handleReplaceApiKey}>
+                          {t('providers.form.replaceApiKey', 'Replace')}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          onClick={handleClearStoredApiKey}
+                        >
+                          {t('providers.form.clearApiKey', 'Clear stored key')}
+                        </Button>
+                      </div>
+                    )}
+                </div>
               </div>
             </>
           )}

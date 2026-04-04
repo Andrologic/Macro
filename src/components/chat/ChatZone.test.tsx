@@ -8,6 +8,7 @@ type AppMode = 'Chat' | 'Architect' | 'Implement' | 'Debug';
 type MockConversation = {
   id: string;
   title: string;
+  scope_mode: AppMode;
   task_id: string | null;
   project_id: string | null;
   group_id: string | null;
@@ -156,6 +157,19 @@ mock.module('../../stores/useNeedsStore', () => ({
 
 mock.module('../../stores/useProviderStore', () => ({
   useProviderStore,
+  providerHasCredentials: (provider: {
+    isEnabled?: boolean;
+    isLocal?: boolean;
+    apiKey?: string;
+    hasStoredApiKey?: boolean;
+    authStatus?: string;
+  }) =>
+    !!provider.isEnabled &&
+    (!!provider.isLocal ||
+      !!provider.apiKey ||
+      !!provider.hasStoredApiKey ||
+      provider.authStatus === 'connected' ||
+      provider.authStatus === 'authenticated'),
 }));
 
 mock.module('../../stores/useShortcutsStore', () => ({
@@ -170,6 +184,12 @@ mock.module('../../hooks/useScrollMagnet', () => ({
   useScrollMagnet: () => ({
     scrollContainerRef,
     separatorState: 'hidden',
+  }),
+}));
+
+mock.module('../../hooks/usePerformanceMonitor', () => ({
+  usePerformanceMonitor: () => ({
+    mark: () => undefined,
   }),
 }));
 
@@ -230,6 +250,7 @@ const { default: ChatZone } = await import('./ChatZone');
 const buildConversation = (): MockConversation => ({
   id: 'conv-1',
   title: 'New Conversation',
+  scope_mode: 'Chat',
   task_id: null,
   project_id: null,
   group_id: null,

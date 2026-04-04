@@ -16,6 +16,13 @@ const createConversation = (overrides: Partial<Conversation>): Conversation => (
   id: overrides.id || 'conversation-1',
   title: overrides.title || 'Conversation',
   description: overrides.description || '',
+  scope_mode:
+    overrides.scope_mode ??
+    (overrides.task_id
+      ? 'Implement'
+      : overrides.group_id || overrides.project_id
+        ? 'Architect'
+        : 'Chat'),
   task_id: overrides.task_id ?? null,
   group_id: overrides.group_id ?? null,
   project_id: overrides.project_id ?? null,
@@ -42,10 +49,13 @@ describe('conversationArchiveState', () => {
       }),
       createConversation({
         id: 'architect',
+        scope_mode: 'Architect',
+        group_id: 'group-1',
         project_id: 'project-1',
       }),
       createConversation({
         id: 'implement',
+        scope_mode: 'Implement',
         task_id: 'task-1',
       }),
       createConversation({

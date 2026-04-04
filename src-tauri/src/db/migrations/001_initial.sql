@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY NOT NULL,
     title TEXT NOT NULL,
     description TEXT,
+    scope_mode TEXT NOT NULL DEFAULT 'Chat',
     task_id TEXT,
     group_id TEXT,
     project_id TEXT,

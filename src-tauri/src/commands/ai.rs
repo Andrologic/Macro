@@ -1,4 +1,4 @@
-use super::{CommandError, CommandResult, DbPool};
+use super::{get_pool, CommandError, CommandResult, DbPool};
 use crate::ai::AiState;
 use crate::ai::{
     chatgpt::{self, AiChatRequest},
@@ -6,13 +6,6 @@ use crate::ai::{
 };
 use crate::db::repository;
 use tauri::{AppHandle, State};
-
-async fn get_pool(pool: &State<'_, DbPool>) -> CommandResult<sqlx::SqlitePool> {
-    let pool_guard = pool.lock().await;
-    pool_guard.as_ref().cloned().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })
-}
 
 async fn get_provider_type(
     pool: &sqlx::SqlitePool,

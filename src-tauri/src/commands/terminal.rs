@@ -209,11 +209,7 @@ fn stored_tab_to_dto(record: &TerminalTabRecord, has_live_session: bool) -> Term
 }
 
 async fn load_db_pool(pool: &State<'_, DbPool>) -> CommandResult<sqlx::SqlitePool> {
-    let guard = pool.lock().await;
-    guard
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| command_error("Database not initialized"))
+    crate::commands::get_pool(pool).await
 }
 
 async fn resolve_metadata_root(
