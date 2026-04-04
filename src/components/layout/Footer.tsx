@@ -332,7 +332,14 @@ export const Footer: React.FC = () => {
               disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
               onClick={() => void handleSyncAction('fetch')}
             >
-              <Icon name="refresh-cw" size={12} className={cn((syncAction === 'fetch' || isRefreshing) && 'animate-spin')} />
+              <Icon
+                name="refresh-cw"
+                size={12}
+                className={cn(
+                  'block translate-x-[0.25px] -translate-y-[0.5px]',
+                  (syncAction === 'fetch' || isRefreshing) && 'animate-spin'
+                )}
+              />
             </Button>
             {(focusProjects.length > 0 || codeStatus.branch || totalAhead > 0 || totalBehind > 0) && (
               <div className="flex min-w-0 items-center overflow-hidden">
