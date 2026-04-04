@@ -1636,6 +1636,17 @@ export async function updateProviderSettings(params: {
 
 // ============ Local App State ============
 
+export async function dbGetSetting(key: string): Promise<string | null> {
+  return invoke<string | null>('db_get_setting', { key });
+}
+
+export async function dbSetSetting(params: { key: string; value: string }): Promise<void> {
+  return invoke('db_set_setting', {
+    key: params.key,
+    value: params.value,
+  });
+}
+
 export async function dbGetAppSetting(key: string): Promise<DbAppSetting | null> {
   return invoke<DbAppSetting | null>('db_get_app_setting', { key });
 }

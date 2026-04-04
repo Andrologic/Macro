@@ -45,20 +45,53 @@ export const countProjectsInRegistry = (groups: ProjectGroup[]): number =>
 
 const resolveRegistrySummaryLanguage = () => {
   if (typeof document !== 'undefined') {
-    return resolveSupportedLanguage(document.documentElement.lang, DEFAULT_LANGUAGE);
+    const documentLanguage =
+      document.documentElement.lang ||
+      document.documentElement.getAttribute('lang') ||
+      i18n.resolvedLanguage ||
+      i18n.language;
+    return resolveSupportedLanguage(documentLanguage, DEFAULT_LANGUAGE);
   }
 
-  return DEFAULT_LANGUAGE;
+  return resolveSupportedLanguage(i18n.resolvedLanguage || i18n.language, DEFAULT_LANGUAGE);
 };
 
 const getRegistryTranslation = (key: string): string | null => {
   const language = resolveRegistrySummaryLanguage();
-  const value = i18n.getFixedT(language)(`projects.${key}`, { defaultValue: '' });
-  if (!value || value === `projects.${key}`) {
+  if (!i18n.hasResourceBundle(language, 'translation')) {
     return null;
   }
 
-  return value;
+  const value = i18n.getResource(language, 'translation', `projects.${key}`);
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+};
+
+const getRegistryFallbackCopy = (key: string): string => {
+  const language = resolveRegistrySummaryLanguage();
+  const isFrench = language === 'fr';
+
+  switch (key) {
+    case 'registryRepairDuplicates_one':
+      return isFrench ? '{{count}} doublon supprimé' : '{{count}} duplicate removed';
+    case 'registryRepairDuplicates_other':
+      return isFrench ? '{{count}} doublons supprimés' : '{{count}} duplicates removed';
+    case 'registryRepairEmptyGroups_one':
+      return isFrench ? '{{count}} groupe vide supprimé' : '{{count}} empty group removed';
+    case 'registryRepairEmptyGroups_other':
+      return isFrench ? '{{count}} groupes vides supprimés' : '{{count}} empty groups removed';
+    case 'registryRepairSynthetic':
+      return isFrench
+        ? 'Références de session héritées nettoyées'
+        : 'Legacy session references cleaned up';
+    case 'registryRepairSelection':
+      return isFrench ? 'Sélection invalide réparée' : 'Invalid selection repaired';
+    case 'registryRepairSummary':
+      return isFrench
+        ? 'Macro a réparé le registre des projets : {{details}}.'
+        : 'Macro repaired the project registry: {{details}}.';
+    default:
+      return '';
+  }
 };
 
 const interpolate = (template: string, values: Record<string, string | number>): string =>
@@ -353,10 +386,7 @@ export const formatProjectRegistryRepairSummary = (
         : 'registryRepairDuplicates_other';
     parts.push(
       interpolate(
-        getRegistryTranslation(key) ||
-          (report.duplicatePathsRemoved === 1
-            ? '{{count}} duplicate removed'
-            : '{{count}} duplicates removed'),
+        getRegistryTranslation(key) || getRegistryFallbackCopy(key),
         { count: report.duplicatePathsRemoved }
       )
     );
@@ -368,10 +398,7 @@ export const formatProjectRegistryRepairSummary = (
         : 'registryRepairEmptyGroups_other';
     parts.push(
       interpolate(
-        getRegistryTranslation(key) ||
-          (report.emptyGroupsRemoved === 1
-            ? '{{count}} empty group removed'
-            : '{{count}} empty groups removed'),
+        getRegistryTranslation(key) || getRegistryFallbackCopy(key),
         { count: report.emptyGroupsRemoved }
       )
     );
@@ -379,19 +406,20 @@ export const formatProjectRegistryRepairSummary = (
   if (report.removedSyntheticGroups > 0 || report.removedSyntheticProjects > 0) {
     parts.push(
       getRegistryTranslation('registryRepairSynthetic') ||
-        'Legacy session references cleaned up'
+        getRegistryFallbackCopy('registryRepairSynthetic')
     );
   }
   if (report.deadSelectedGroupId || report.deadSelectedProjectId) {
     parts.push(
-      getRegistryTranslation('registryRepairSelection') || 'Invalid selection repaired'
+      getRegistryTranslation('registryRepairSelection') ||
+        getRegistryFallbackCopy('registryRepairSelection')
     );
   }
 
   return parts.length > 0
     ? interpolate(
         getRegistryTranslation('registryRepairSummary') ||
-          'Macro repaired the project registry: {{details}}.',
+          getRegistryFallbackCopy('registryRepairSummary'),
         { details: parts.join(', ') }
       )
     : null;
