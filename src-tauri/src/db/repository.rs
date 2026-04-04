@@ -9,7 +9,7 @@ use std::collections::HashSet;
 pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, title, description, task_id, group_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
+        SELECT id, title, description, scope_mode, task_id, group_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
         ORDER BY is_pinned DESC, updated_at DESC
         "#,
@@ -23,6 +23,7 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
             id: row.get("id"),
             title: row.get("title"),
             description: row.get("description"),
+            scope_mode: row.get("scope_mode"),
             task_id: row.get("task_id"),
             group_id: row.get("group_id"),
             project_id: row.get("project_id"),
@@ -40,7 +41,7 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
 pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Conversation>> {
     let row = sqlx::query(
         r#"
-        SELECT id, title, description, task_id, group_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
+        SELECT id, title, description, scope_mode, task_id, group_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
         WHERE id = ?
         "#,
@@ -53,6 +54,7 @@ pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Co
         id: row.get("id"),
         title: row.get("title"),
         description: row.get("description"),
+        scope_mode: row.get("scope_mode"),
         task_id: row.get("task_id"),
         group_id: row.get("group_id"),
         project_id: row.get("project_id"),
@@ -76,12 +78,13 @@ pub async fn create_conversation(
 
     sqlx::query(
         r#"
-        INSERT INTO conversations (id, title, description, task_id, group_id, project_id, created_at, updated_at, message_count, is_pinned)
-        VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, 0)
+        INSERT INTO conversations (id, title, description, scope_mode, task_id, group_id, project_id, created_at, updated_at, message_count, is_pinned)
+        VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0)
         "#,
     )
     .bind(&id)
     .bind(&title)
+    .bind(&input.scope_mode)
     .bind(&input.task_id)
     .bind(&input.group_id)
     .bind(&input.project_id)
@@ -94,6 +97,7 @@ pub async fn create_conversation(
         id,
         title,
         description: None,
+        scope_mode: input.scope_mode,
         task_id: input.task_id,
         group_id: input.group_id,
         project_id: input.project_id,
@@ -675,7 +679,7 @@ pub async fn delete_messages_after(
 pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderConfig>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, name, provider_type, base_url, is_enabled, is_local,
+        SELECT id, name, provider_type, base_url, has_stored_api_key, is_enabled, is_local,
                auth_status, auth_source, plan_type, account_label, token_expires_at,
                created_at, updated_at
         FROM provider_configs
@@ -693,6 +697,7 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
             provider_type: row.get("provider_type"),
             base_url: row.get("base_url"),
             api_key: None,
+            has_stored_api_key: row.get::<i32, _>("has_stored_api_key") != 0,
             is_enabled: row.get::<i32, _>("is_enabled") != 0,
             is_local: row.get::<i32, _>("is_local") != 0,
             auth_status: row.get("auth_status"),
@@ -711,7 +716,7 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
 pub async fn get_provider_config(pool: &SqlitePool, id: &str) -> DbResult<Option<ProviderConfig>> {
     let row = sqlx::query(
         r#"
-        SELECT id, name, provider_type, base_url, is_enabled, is_local,
+        SELECT id, name, provider_type, base_url, has_stored_api_key, is_enabled, is_local,
                auth_status, auth_source, plan_type, account_label, token_expires_at,
                created_at, updated_at
         FROM provider_configs
@@ -728,6 +733,7 @@ pub async fn get_provider_config(pool: &SqlitePool, id: &str) -> DbResult<Option
         provider_type: row.get("provider_type"),
         base_url: row.get("base_url"),
         api_key: None,
+        has_stored_api_key: row.get::<i32, _>("has_stored_api_key") != 0,
         is_enabled: row.get::<i32, _>("is_enabled") != 0,
         is_local: row.get::<i32, _>("is_local") != 0,
         auth_status: row.get("auth_status"),
@@ -792,22 +798,24 @@ pub async fn create_provider_config(
     name: &str,
     provider_type: &str,
     base_url: &str,
-    _api_key: Option<&str>,
+    api_key: Option<&str>,
     is_local: bool,
 ) -> DbResult<ProviderConfig> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
+    let has_stored_api_key = api_key.is_some_and(|value| !value.trim().is_empty());
 
     sqlx::query(
         r#"
-        INSERT INTO provider_configs (id, name, provider_type, base_url, api_key, is_enabled, is_local, created_at, updated_at)
-        VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?)
+        INSERT INTO provider_configs (id, name, provider_type, base_url, api_key, has_stored_api_key, is_enabled, is_local, created_at, updated_at)
+        VALUES (?, ?, ?, ?, NULL, ?, 1, ?, ?, ?)
         "#,
     )
     .bind(&id)
     .bind(name)
     .bind(provider_type)
     .bind(base_url)
+    .bind(has_stored_api_key as i32)
     .bind(is_local as i32)
     .bind(&now)
     .bind(&now)
@@ -820,6 +828,7 @@ pub async fn create_provider_config(
         provider_type: provider_type.to_string(),
         base_url: base_url.to_string(),
         api_key: None,
+        has_stored_api_key,
         is_enabled: true,
         is_local,
         auth_status: None,
@@ -830,6 +839,29 @@ pub async fn create_provider_config(
         created_at: now.clone(),
         updated_at: now,
     })
+}
+
+pub async fn set_provider_has_stored_api_key(
+    pool: &SqlitePool,
+    provider_id: &str,
+    has_stored_api_key: bool,
+) -> DbResult<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        UPDATE provider_configs
+        SET has_stored_api_key = ?, updated_at = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(has_stored_api_key as i32)
+    .bind(&now)
+    .bind(provider_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 pub async fn update_provider_auth_metadata(

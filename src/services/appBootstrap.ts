@@ -1,7 +1,6 @@
 import { preloadModeComponents } from '../components/layout/ModeRouter';
 import type { AppMode } from '../types';
 import { isPageShuttingDown } from '../utils/pageLifecycle';
-import { useAIStore } from '../stores/useAIStore';
 import { useAppStore } from '../stores/useAppStore';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useChatStore } from '../stores/useChatStore';
@@ -28,7 +27,6 @@ interface AppBootstrapDependencies {
   initializeChat: () => Promise<void>;
   initializeTasks: () => Promise<void>;
   initializeTerminal: () => Promise<void>;
-  initializeAI: () => Promise<void>;
   initializeTools: () => Promise<void>;
   initializeProviders: () => Promise<void>;
   initializeShortcuts: () => Promise<void>;
@@ -159,7 +157,6 @@ export const createAppBootstrapController = (
         dependencies.scheduleLowPriority(() => {
           void (async () => {
             await Promise.all([
-              initWithTracking('AI Store', dependencies.initializeAI, 'low'),
               initWithTracking('Tools Store', dependencies.initializeTools, 'low'),
               initWithTracking('Provider Store', dependencies.initializeProviders, 'low'),
             ]);
@@ -208,7 +205,6 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   initializeChat: useChatStore.getState().initialize,
   initializeTasks: useTaskStore.getState().initialize,
   initializeTerminal: useTerminalStore.getState().initialize,
-  initializeAI: useAIStore.getState().initialize,
   initializeTools: useToolsStore.getState().loadSettings,
   initializeProviders: useProviderStore.getState().initialize,
   initializeShortcuts: useShortcutsStore.getState().initialize,

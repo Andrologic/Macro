@@ -585,6 +585,8 @@ export const mockConversations: Conversation[] = [
   {
     id: 'conv-1',
     title: 'Create login page component',
+    description: '',
+    scope_mode: 'Implement',
     task_id: 'task-1',
     project_id: 'proj-1',
     last_message: 'Approved.',
@@ -595,6 +597,8 @@ export const mockConversations: Conversation[] = [
   {
     id: 'conv-2',
     title: 'Create registration page component',
+    description: '',
+    scope_mode: 'Implement',
     task_id: 'task-2',
     project_id: 'proj-1',
     last_message: 'Should I apply this change?',
@@ -605,6 +609,8 @@ export const mockConversations: Conversation[] = [
   {
     id: 'conv-3',
     title: 'Implement auth context',
+    description: '',
+    scope_mode: 'Implement',
     task_id: 'task-3',
     project_id: 'proj-1',
     last_message: 'Approved. This looks good.',
@@ -615,6 +621,8 @@ export const mockConversations: Conversation[] = [
   {
     id: 'conv-4',
     title: 'Create auth API endpoints',
+    description: '',
+    scope_mode: 'Implement',
     task_id: 'task-4',
     project_id: 'proj-2',
     last_message: 'Starting backend implementation...',
@@ -625,6 +633,8 @@ export const mockConversations: Conversation[] = [
   {
     id: 'conv-5',
     title: 'Implement JWT token generation',
+    description: '',
+    scope_mode: 'Implement',
     task_id: 'task-5',
     project_id: 'proj-2',
     last_message: 'Should I apply this change?',
@@ -635,6 +645,8 @@ export const mockConversations: Conversation[] = [
   {
     id: 'conv-free-1',
     title: 'Code review: Refactor user service',
+    description: '',
+    scope_mode: 'Architect',
     task_id: null,
     project_id: 'proj-1',
     last_message: 'I think we should split it into smaller functions.',
@@ -645,6 +657,8 @@ export const mockConversations: Conversation[] = [
   {
     id: 'conv-free-2',
     title: 'Database optimization discussion',
+    description: '',
+    scope_mode: 'Architect',
     task_id: null,
     project_id: 'proj-2',
     last_message: 'Let me check the query performance metrics first.',
@@ -655,6 +669,8 @@ export const mockConversations: Conversation[] = [
   {
     id: 'conv-free-3',
     title: 'Deployment strategy planning',
+    description: '',
+    scope_mode: 'Chat',
     task_id: null,
     project_id: null,
     last_message: 'We should use blue-green deployment.',

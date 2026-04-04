@@ -8,7 +8,6 @@ describe('appBootstrap', () => {
   let initializeTasks: ReturnType<typeof mock>;
   let initializeTerminal: ReturnType<typeof mock>;
   let initializeChat: ReturnType<typeof mock>;
-  let initializeAI: ReturnType<typeof mock>;
   let initializeTools: ReturnType<typeof mock>;
   let initializeProviders: ReturnType<typeof mock>;
   let initializeShortcuts: ReturnType<typeof mock>;
@@ -29,9 +28,6 @@ describe('appBootstrap', () => {
     });
     initializeChat = mock(async () => {
       callOrder.push('chat');
-    });
-    initializeAI = mock(async () => {
-      callOrder.push('ai');
     });
     initializeTools = mock(async () => {
       callOrder.push('tools');
@@ -56,7 +52,6 @@ describe('appBootstrap', () => {
       initializeChat,
       initializeTasks,
       initializeTerminal,
-      initializeAI,
       initializeTools,
       initializeProviders,
       initializeShortcuts,
@@ -100,7 +95,6 @@ describe('appBootstrap', () => {
     lowPriorityRuns[0]();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(initializeAI.mock.calls.length).toBe(1);
     expect(initializeTools.mock.calls.length).toBe(1);
     expect(initializeProviders.mock.calls.length).toBe(1);
     expect(controller.getSnapshot().low).toBe(true);

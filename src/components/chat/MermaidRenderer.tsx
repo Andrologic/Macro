@@ -25,7 +25,7 @@ const cleanupRenderArtifacts = (diagramId: string): void => {
 export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey }) => {
   const { t } = useTranslation();
   const { isDark } = useTheme();
-  
+
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -33,7 +33,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isVisible, setIsVisible] = useState(false);
-  
+
   const containerRef = useRef<HTMLDivElement>(null);
   const cleanCode = code.replace(/^```(?:mermaid|mmd)?\n?/, '').replace(/```$/, '').trim();
   const cacheKey = `${isDark ? 'dark' : 'light'}:${cleanCode}`;
@@ -62,6 +62,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
 
   useEffect(() => {
     let isMounted = true;
+    const diagramId = diagramIdRef.current;
 
     if (!isVisible && !isExpanded) {
       return;
@@ -93,7 +94,6 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
           throw new Error('Invalid Mermaid syntax');
         }
 
-        const diagramId = diagramIdRef.current;
         cleanupRenderArtifacts(diagramId);
         const { svg: renderedSvg } = await mermaid.render(diagramId, cleanCode);
         cleanupRenderArtifacts(diagramId);
@@ -104,7 +104,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
           setError(null);
         }
       } catch (err) {
-        cleanupRenderArtifacts(diagramIdRef.current);
+        cleanupRenderArtifacts(diagramId);
         if (isMounted) {
           const message = err instanceof Error ? err.message : 'Unknown error';
           setError(message);
@@ -118,11 +118,11 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     };
 
     const timeoutId = setTimeout(renderDiagram, 16);
-    
+
     return () => {
       isMounted = false;
       clearTimeout(timeoutId);
-      cleanupRenderArtifacts(diagramIdRef.current);
+      cleanupRenderArtifacts(diagramId);
     };
   }, [cacheKey, cleanCode, isDark, isExpanded, isVisible]);
 

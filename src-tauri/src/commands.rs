@@ -27,8 +27,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
 
 pub type DbPool = Arc<Mutex<Option<SqlitePool>>>;
+const DB_INIT_WAIT_RETRIES: usize = 100;
+const DB_INIT_WAIT_DELAY_MS: u64 = 50;
 
 #[derive(Debug, Serialize)]
 pub struct CommandError {
@@ -51,9 +54,21 @@ pub(crate) fn command_error(message: impl Into<String>) -> CommandError {
     }
 }
 
-async fn get_pool(pool: &State<'_, DbPool>) -> CommandResult<SqlitePool> {
-    let pool_guard = pool.lock().await;
-    pool_guard.as_ref().cloned().ok_or_else(|| CommandError {
+pub(crate) async fn get_pool(pool: &State<'_, DbPool>) -> CommandResult<SqlitePool> {
+    for attempt in 0..DB_INIT_WAIT_RETRIES {
+        {
+            let pool_guard = pool.lock().await;
+            if let Some(pool) = pool_guard.as_ref() {
+                return Ok(pool.clone());
+            }
+        }
+
+        if attempt + 1 < DB_INIT_WAIT_RETRIES {
+            sleep(Duration::from_millis(DB_INIT_WAIT_DELAY_MS)).await;
+        }
+    }
+
+    Err(CommandError {
         message: "Database not initialized".to_string(),
     })
 }
@@ -1019,24 +1034,18 @@ pub async fn tool_execute_workspace(
 
 #[tauri::command]
 pub async fn db_list_conversations(pool: State<'_, DbPool>) -> CommandResult<Vec<Conversation>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::list_conversations(pool)
+    repository::list_conversations(&pool)
         .await
         .map_err(Into::into)
 }
 
 #[tauri::command]
 pub async fn db_get_chat_snapshot(pool: State<'_, DbPool>) -> CommandResult<ChatSnapshot> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::get_chat_snapshot(pool)
+    repository::get_chat_snapshot(&pool)
         .await
         .map_err(Into::into)
 }
@@ -1046,12 +1055,9 @@ pub async fn db_get_conversation(
     pool: State<'_, DbPool>,
     id: String,
 ) -> CommandResult<Option<Conversation>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::get_conversation(pool, &id)
+    repository::get_conversation(&pool, &id)
         .await
         .map_err(Into::into)
 }
@@ -1060,19 +1066,18 @@ pub async fn db_get_conversation(
 pub async fn db_create_conversation(
     pool: State<'_, DbPool>,
     title: Option<String>,
+    scope_mode: String,
     task_id: Option<String>,
     group_id: Option<String>,
     project_id: Option<String>,
 ) -> CommandResult<Conversation> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
     repository::create_conversation(
-        pool,
+        &pool,
         CreateConversationInput {
             title,
+            scope_mode,
             task_id,
             group_id,
             project_id,
@@ -1088,12 +1093,9 @@ pub async fn db_rename_conversation(
     id: String,
     title: String,
 ) -> CommandResult<()> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::rename_conversation(pool, &id, &title)
+    repository::rename_conversation(&pool, &id, &title)
         .await
         .map_err(Into::into)
 }
@@ -1105,12 +1107,9 @@ pub async fn db_update_conversation_details(
     title: Option<String>,
     description: Option<String>,
 ) -> CommandResult<()> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::update_conversation_details(pool, &id, title.as_deref(), description.as_deref())
+    repository::update_conversation_details(&pool, &id, title.as_deref(), description.as_deref())
         .await
         .map_err(Into::into)
 }
@@ -1144,12 +1143,9 @@ pub async fn db_toggle_pin_conversation(
     pool: State<'_, DbPool>,
     id: String,
 ) -> CommandResult<bool> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::toggle_pin_conversation(pool, &id)
+    repository::toggle_pin_conversation(&pool, &id)
         .await
         .map_err(Into::into)
 }
@@ -1161,12 +1157,9 @@ pub async fn db_list_messages(
     pool: State<'_, DbPool>,
     conversation_id: String,
 ) -> CommandResult<Vec<Message>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::list_messages(pool, &conversation_id)
+    repository::list_messages(&pool, &conversation_id)
         .await
         .map_err(Into::into)
 }
@@ -1181,13 +1174,10 @@ pub async fn db_create_message(
     tool_traces_json: Option<String>,
     hidden_context: Option<String>,
 ) -> CommandResult<Message> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
     repository::create_message(
-        pool,
+        &pool,
         CreateMessageInput {
             conversation_id,
             role,
@@ -1207,12 +1197,9 @@ pub async fn db_import_messages(
     conversation_id: String,
     messages: Vec<ImportMessageInput>,
 ) -> CommandResult<Vec<Message>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::import_messages(pool, &conversation_id, messages)
+    repository::import_messages(&pool, &conversation_id, messages)
         .await
         .map_err(Into::into)
 }
@@ -1226,13 +1213,10 @@ pub async fn db_update_message(
     tool_traces_json: Option<String>,
     hidden_context: Option<String>,
 ) -> CommandResult<()> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
     repository::update_message_content(
-        pool,
+        &pool,
         &id,
         &content,
         token_count,
@@ -1249,12 +1233,9 @@ pub async fn db_delete_messages_after(
     conversation_id: String,
     after_message_id: String,
 ) -> CommandResult<()> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::delete_messages_after(pool, &conversation_id, &after_message_id)
+    repository::delete_messages_after(&pool, &conversation_id, &after_message_id)
         .await
         .map_err(CommandError::from)
 }
@@ -1265,23 +1246,11 @@ pub async fn db_delete_messages_after(
 pub async fn db_list_provider_configs(
     pool: State<'_, DbPool>,
 ) -> CommandResult<Vec<ProviderConfig>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    let mut configs = repository::list_provider_configs(pool)
+    repository::list_provider_configs(&pool)
         .await
-        .map_err(CommandError::from)?;
-
-    for config in configs.iter_mut() {
-        match secrets::get_api_key(&config.id) {
-            Ok(api_key) => config.api_key = api_key,
-            Err(e) => eprintln!("Failed to read key for {}: {}", config.id, e),
-        }
-    }
-
-    Ok(configs)
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
@@ -1289,23 +1258,38 @@ pub async fn db_get_provider_config(
     pool: State<'_, DbPool>,
     id: String,
 ) -> CommandResult<Option<ProviderConfig>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    let mut config = repository::get_provider_config(pool, &id)
+    repository::get_provider_config(&pool, &id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_reveal_provider_api_key(
+    pool: State<'_, DbPool>,
+    id: String,
+) -> CommandResult<Option<String>> {
+    let pool = get_pool(&pool).await?;
+    let config = repository::get_provider_config(&pool, &id)
         .await
         .map_err(CommandError::from)?;
 
-    if let Some(ref mut cfg) = config {
-        match secrets::get_api_key(&cfg.id) {
-            Ok(api_key) => cfg.api_key = api_key,
-            Err(e) => eprintln!("Failed to read key for {}: {}", cfg.id, e),
-        }
+    if config.is_none() {
+        return Err(CommandError {
+            message: format!("Provider {} not found", id),
+        });
     }
 
-    Ok(config)
+    let api_key = secrets::get_api_key(&id).map_err(|error| CommandError {
+        message: format!("Failed to access the keychain for {}: {}", id, error),
+    })?;
+
+    repository::set_provider_has_stored_api_key(&pool, &id, api_key.is_some())
+        .await
+        .map_err(CommandError::from)?;
+
+    Ok(api_key)
 }
 
 #[tauri::command]
@@ -1317,16 +1301,13 @@ pub async fn db_update_provider_config(
     api_key: Option<String>,
     is_enabled: Option<bool>,
 ) -> CommandResult<()> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
     let provider_id = id.clone();
     let api_key_for_store = api_key.clone();
 
     repository::update_provider_config(
-        pool,
+        &pool,
         UpdateProviderConfigInput {
             id,
             name,
@@ -1341,10 +1322,16 @@ pub async fn db_update_provider_config(
     if let Some(key) = api_key_for_store {
         if key.trim().is_empty() {
             secrets::delete_api_key(&provider_id).ok();
+            repository::set_provider_has_stored_api_key(&pool, &provider_id, false)
+                .await
+                .map_err(CommandError::from)?;
         } else {
             secrets::set_api_key(&provider_id, &key).map_err(|e| CommandError {
                 message: e.to_string(),
             })?;
+            repository::set_provider_has_stored_api_key(&pool, &provider_id, true)
+                .await
+                .map_err(CommandError::from)?;
         }
     }
 
@@ -1360,13 +1347,10 @@ pub async fn db_create_provider_config(
     api_key: Option<String>,
     is_local: bool,
 ) -> CommandResult<ProviderConfig> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
     let created = repository::create_provider_config(
-        pool,
+        &pool,
         &name,
         &provider_type,
         &base_url,
@@ -1389,12 +1373,10 @@ pub async fn db_create_provider_config(
 
 #[tauri::command]
 pub async fn db_delete_provider_config(pool: State<'_, DbPool>, id: String) -> CommandResult<()> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::delete_provider_config(pool, &id)
+    secrets::delete_api_key(&id).ok();
+    repository::delete_provider_config(&pool, &id)
         .await
         .map_err(Into::into)
 }
@@ -1406,12 +1388,9 @@ pub async fn db_list_provider_models(
     pool: State<'_, DbPool>,
     provider_id: String,
 ) -> CommandResult<Vec<AiModel>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::list_models_by_provider(pool, &provider_id)
+    repository::list_models_by_provider(&pool, &provider_id)
         .await
         .map_err(Into::into)
 }
@@ -1422,16 +1401,13 @@ pub async fn db_upsert_provider_models(
     provider_id: String,
     models: Vec<ProviderModelInput>,
 ) -> CommandResult<Vec<AiModel>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::upsert_provider_models(pool, &provider_id, &models)
+    repository::upsert_provider_models(&pool, &provider_id, &models)
         .await
         .map_err(CommandError::from)?;
 
-    repository::list_models_by_provider(pool, &provider_id)
+    repository::list_models_by_provider(&pool, &provider_id)
         .await
         .map_err(Into::into)
 }
@@ -1443,16 +1419,13 @@ pub async fn db_register_manual_model(
     model_id: String,
     name: String,
 ) -> CommandResult<Vec<AiModel>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::register_manual_model(pool, &provider_id, &model_id, &name)
+    repository::register_manual_model(&pool, &provider_id, &model_id, &name)
         .await
         .map_err(CommandError::from)?;
 
-    repository::list_models_by_provider(pool, &provider_id)
+    repository::list_models_by_provider(&pool, &provider_id)
         .await
         .map_err(Into::into)
 }
@@ -1464,12 +1437,9 @@ pub async fn db_set_provider_model_enabled(
     model_id: String,
     enabled: bool,
 ) -> CommandResult<()> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::set_model_enabled(pool, &provider_id, &model_id, enabled)
+    repository::set_model_enabled(&pool, &provider_id, &model_id, enabled)
         .await
         .map_err(Into::into)
 }
@@ -1480,12 +1450,9 @@ pub async fn db_set_all_provider_models_enabled(
     provider_id: String,
     enabled: bool,
 ) -> CommandResult<()> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::set_all_models_enabled(pool, &provider_id, enabled)
+    repository::set_all_models_enabled(&pool, &provider_id, enabled)
         .await
         .map_err(Into::into)
 }
@@ -1497,12 +1464,9 @@ pub async fn db_get_provider_settings(
     pool: State<'_, DbPool>,
     provider_id: String,
 ) -> CommandResult<ProviderSettings> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::get_provider_settings(pool, &provider_id)
+    repository::get_provider_settings(&pool, &provider_id)
         .await
         .map_err(Into::into)
 }
@@ -1513,12 +1477,9 @@ pub async fn db_update_provider_settings(
     provider_id: String,
     filter_free_models: bool,
 ) -> CommandResult<()> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::update_provider_settings(pool, &provider_id, filter_free_models)
+    repository::update_provider_settings(&pool, &provider_id, filter_free_models)
         .await
         .map_err(Into::into)
 }
@@ -1577,12 +1538,9 @@ pub async fn db_get_app_setting(
     pool: State<'_, DbPool>,
     key: String,
 ) -> CommandResult<Option<AppSettingRecord>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::get_app_setting(pool, &key)
+    repository::get_app_setting(&pool, &key)
         .await
         .map_err(Into::into)
 }
@@ -1593,12 +1551,9 @@ pub async fn db_set_app_setting(
     key: String,
     value_json: String,
 ) -> CommandResult<AppSettingRecord> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::set_app_setting(pool, &key, &value_json)
+    repository::set_app_setting(&pool, &key, &value_json)
         .await
         .map_err(Into::into)
 }
@@ -1608,12 +1563,9 @@ pub async fn db_get_project_context_state(
     pool: State<'_, DbPool>,
     project_id: String,
 ) -> CommandResult<Option<ProjectContextStateRecord>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::get_project_context_state(pool, &project_id)
+    repository::get_project_context_state(&pool, &project_id)
         .await
         .map_err(Into::into)
 }
@@ -1623,12 +1575,9 @@ pub async fn db_upsert_project_context_state(
     pool: State<'_, DbPool>,
     input: UpsertProjectContextStateInput,
 ) -> CommandResult<ProjectContextStateRecord> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::upsert_project_context_state(pool, input)
+    repository::upsert_project_context_state(&pool, input)
         .await
         .map_err(Into::into)
 }
@@ -1638,12 +1587,9 @@ pub async fn db_delete_project_context_state(
     pool: State<'_, DbPool>,
     project_id: String,
 ) -> CommandResult<()> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::delete_project_context_state(pool, &project_id)
+    repository::delete_project_context_state(&pool, &project_id)
         .await
         .map_err(Into::into)
 }
@@ -1652,12 +1598,9 @@ pub async fn db_delete_project_context_state(
 pub async fn db_get_session_context_state(
     pool: State<'_, DbPool>,
 ) -> CommandResult<Option<SessionContextStateRecord>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::get_session_context_state(pool)
+    repository::get_session_context_state(&pool)
         .await
         .map_err(Into::into)
 }
@@ -1667,12 +1610,9 @@ pub async fn db_upsert_session_context_state(
     pool: State<'_, DbPool>,
     input: UpsertSessionContextStateInput,
 ) -> CommandResult<SessionContextStateRecord> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::upsert_session_context_state(pool, input)
+    repository::upsert_session_context_state(&pool, input)
         .await
         .map_err(Into::into)
 }
@@ -1682,12 +1622,9 @@ pub async fn db_reconcile_project_registry(
     pool: State<'_, DbPool>,
     input: ReconcileProjectRegistryInput,
 ) -> CommandResult<ProjectRegistryDbRepairReport> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::reconcile_project_registry(pool, input)
+    repository::reconcile_project_registry(&pool, input)
         .await
         .map_err(Into::into)
 }
@@ -1699,12 +1636,9 @@ pub async fn db_upsert_git_repository(
     pool: State<'_, DbPool>,
     input: CreateGitRepositoryInput,
 ) -> CommandResult<GitRepositoryRecord> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::upsert_git_repository(pool, input)
+    repository::upsert_git_repository(&pool, input)
         .await
         .map_err(Into::into)
 }
@@ -1714,12 +1648,9 @@ pub async fn db_upsert_git_worktree(
     pool: State<'_, DbPool>,
     input: CreateGitWorktreeInput,
 ) -> CommandResult<GitWorktreeRecord> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::upsert_git_worktree(pool, input)
+    repository::upsert_git_worktree(&pool, input)
         .await
         .map_err(Into::into)
 }
@@ -1729,12 +1660,9 @@ pub async fn db_list_git_worktrees(
     pool: State<'_, DbPool>,
     project_id: String,
 ) -> CommandResult<Vec<GitWorktreeRecord>> {
-    let pool_guard = pool.lock().await;
-    let pool = pool_guard.as_ref().ok_or_else(|| CommandError {
-        message: "Database not initialized".to_string(),
-    })?;
+    let pool = get_pool(&pool).await?;
 
-    repository::list_git_worktrees_by_project(pool, &project_id)
+    repository::list_git_worktrees_by_project(&pool, &project_id)
         .await
         .map_err(Into::into)
 }

@@ -368,6 +368,7 @@ pub fn run() {
             commands::db_delete_messages_after,
             commands::db_list_provider_configs,
             commands::db_get_provider_config,
+            commands::db_reveal_provider_api_key,
             commands::db_update_provider_config,
             commands::db_create_provider_config,
             commands::db_delete_provider_config,
