@@ -42,7 +42,7 @@ export const GeneralView: React.FC = () => {
                             >
                                 {SUPPORTED_LANGUAGE_METADATA.map((language) => (
                                     <option key={language.code} value={language.code}>
-                                        {language.flag} {language.nativeName}
+                                        {language.nativeName}
                                     </option>
                                 ))}
                             </Select>
