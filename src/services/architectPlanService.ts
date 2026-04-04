@@ -2331,8 +2331,15 @@ const assertPlanReplicaSetWritable = (
 
 const commitMetadataScopes = async (
   scopes: ArchitectMetadataScope[],
-  commitMessage: string
+  commitMessage: string,
+  options?: {
+    commit?: boolean;
+  }
 ): Promise<void> => {
+  if (!options?.commit) {
+    return;
+  }
+
   if (
     !tauriIpc.isTauriAvailable() ||
     typeof tauriIpc.macroBranchCommitIfDirty !== 'function'
@@ -2450,6 +2457,32 @@ const ensurePlanScopes = async (
   }
 
   throw new Error('Unable to resolve a repository scope for this plan.');
+};
+
+export const commitArchitectPlanMetadata = async (input: {
+  branchName: string;
+  planId: string;
+  commitMessage: string;
+}): Promise<void> => {
+  const normalizedBranch = normalizeBranchName(input.branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const replicaSet = await loadPlanReplicaSet(normalizedBranch, input.planId, {
+    allowDivergence: true,
+    registrySnapshot,
+  });
+  if (!replicaSet) {
+    throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
+  }
+
+  await commitMetadataScopes(
+    dedupeScopes([
+      ...replicaSet.expectedScopes,
+      ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
+    ]),
+    input.commitMessage,
+    { commit: true }
+  );
 };
 
 export const listArchitectPlans = async (branchName: string, includeDeleted = false, includeArchived = false): Promise<{
