@@ -96,6 +96,10 @@ export interface GitStatusDto {
   conflictedFiles: string[];
   mergeInProgress: boolean;
   is_clean: boolean;
+  has_origin: boolean;
+  has_upstream: boolean;
+  ahead: number;
+  behind: number;
 }
 
 export interface GitBranchDto {
@@ -1190,6 +1194,18 @@ export async function gitPush(params: {
   branch?: string;
 }): Promise<GitSyncDto> {
   return invoke<GitSyncDto>('git_push', {
+    repoPath: params.repoPath,
+    remote: params.remote ?? null,
+    branch: params.branch ?? null,
+  });
+}
+
+export async function gitFetch(params: {
+  repoPath: string;
+  remote?: string;
+  branch?: string;
+}): Promise<GitSyncDto> {
+  return invoke<GitSyncDto>('git_fetch', {
     repoPath: params.repoPath,
     remote: params.remote ?? null,
     branch: params.branch ?? null,

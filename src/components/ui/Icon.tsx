@@ -39,6 +39,7 @@ import {
   PanelRightOpen,
   FileCode,
   FileText,
+  ArrowDown,
   ArrowUp,
   ArrowUpRight,
   ArrowDownRight,
@@ -137,6 +138,7 @@ export type IconName =
   | 'file-code'
   | 'file-text'
   | 'palette'
+  | 'arrow-down'
   | 'arrow-up'
   | 'moon'
   | 'sun'
@@ -240,6 +242,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'file-code': FileCode,
   'file-text': FileText,
   'palette': Palette,
+  'arrow-down': ArrowDown,
   'arrow-up': ArrowUp,
   'moon': Moon,
   'sun': Sun,
