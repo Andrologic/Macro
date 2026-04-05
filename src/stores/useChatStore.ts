@@ -33,10 +33,19 @@ import {
 } from '../services/architectPlanService';
 import {
   getArchitectPlanConversationTitle,
-  getArchitectPlanDisplayName,
   isDefaultNewPlanFamilyLabel,
   isCanonicalArchitectPlan,
 } from '../services/architectPlanPresentation';
+import {
+  buildArchitectPlanToolFollowUpInstruction,
+  formatArchitectNeedAddToolResult,
+  formatArchitectPlanGetToolResult,
+  formatArchitectPlanListToolResult,
+  formatArchitectPlanUpdateToolResult,
+  formatArchitectStrategyGenerateToolResult,
+  formatArchitectStrategyGetToolResult,
+  formatArchitectStrategyUpdateToolResult,
+} from '../services/architectChat';
 import { normalizeArchitectToolId } from '../services/architectToolNames';
 import { renderGitFlowBranchName, renderStandaloneFeatureBranchName } from '../services/architectGitNaming';
 import {
@@ -409,7 +418,12 @@ interface ChatStore {
   updateMessageContent: (messageId: string, content: string) => void;
   updateMessageFields: (
     messageId: string,
-    patch: Partial<Pick<ChatMessage, 'tool_traces' | 'hidden_context'>>
+    patch: Partial<
+      Pick<
+        ChatMessage,
+        'tool_traces' | 'hidden_context' | 'provider_input_items' | 'provider_turn_state'
+      >
+    >
   ) => void;
   updateLastMessage: (content: string) => void;
   appendToLastMessage: (token: string) => void;
@@ -485,6 +499,57 @@ const mapDbConversationToConversation = (conversation: tauriIpc.DbConversation):
   is_unread: false,
 });
 
+const parseDbToolTraces = (raw: string | null): ToolTrace[] | undefined => {
+  if (!raw) return undefined;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    const traces = parsed.filter(
+      (trace): trace is ToolTrace =>
+        !!trace &&
+        typeof trace === 'object' &&
+        typeof (trace as ToolTrace).tool_call_id === 'string' &&
+        typeof (trace as ToolTrace).tool_name === 'string' &&
+        ((trace as ToolTrace).status === 'running' || (trace as ToolTrace).status === 'done')
+    );
+    return traces.length > 0 ? traces : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const parseDbProviderTurnState = (
+  raw: string | null
+): ChatMessage['provider_turn_state'] | undefined => {
+  if (!raw) return undefined;
+
+  try {
+    const parsed = JSON.parse(raw) as ChatMessage['provider_turn_state'] | null;
+    if (!parsed || parsed.provider !== 'chatgpt' || !Array.isArray(parsed.output_items)) {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return undefined;
+  }
+};
+
+const parseDbProviderInputItems = (
+  raw: string | null
+): ChatMessage['provider_input_items'] | undefined => {
+  if (!raw) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const mapDbMessageToChatMessage = (
   message: tauriIpc.DbMessage,
   conversationById: Map<string, Conversation>
@@ -501,6 +566,10 @@ const mapDbMessageToChatMessage = (
       timestamp: message.created_at,
       choices: parsed.choices,
       allow_free_response: parsed.allowFreeResponse,
+      tool_traces: parseDbToolTraces(message.tool_traces_json),
+      hidden_context: message.hidden_context ?? undefined,
+      provider_input_items: parseDbProviderInputItems(message.provider_input_items_json),
+      provider_turn_state: parseDbProviderTurnState(message.provider_turn_state_json),
     };
   }
 
@@ -511,6 +580,10 @@ const mapDbMessageToChatMessage = (
     role: message.role as 'user' | 'assistant',
     content: message.content,
     timestamp: message.created_at,
+    tool_traces: parseDbToolTraces(message.tool_traces_json),
+    hidden_context: message.hidden_context ?? undefined,
+    provider_input_items: parseDbProviderInputItems(message.provider_input_items_json),
+    provider_turn_state: parseDbProviderTurnState(message.provider_turn_state_json),
   };
 };
 
@@ -1760,7 +1833,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const planNeeds = useNeedsStore.getState().getNeedsForPlan(activePlanId);
       await saveArchitectPlanNeeds(targetBranch, activePlanId, planNeeds);
 
-      return `Successfully added need: "${title}" (ID: ${id}).`;
+      return formatArchitectNeedAddToolResult({
+        planId: activePlanId,
+        needId: id,
+        title,
+        category,
+        priority,
+        tags,
+        totalNeeds: planNeeds.length,
+      });
     }
 
     if (normalizedToolName === 'plan_create') {
@@ -1773,26 +1854,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const includeArchived = args.include_archived === true || includeDeleted;
       const plansIndex = await listArchitectPlans(targetBranch, includeDeleted, includeArchived);
 
-      return JSON.stringify(
-        {
-          target_branch: targetBranch,
-          active_plan_id: plansIndex.activePlanId,
-          plans: plansIndex.plans.map((plan) => ({
-            id: plan.id,
-            slug: plan.slug,
-            title: plan.title,
-            label: plan.label ?? null,
-            display_name: getArchitectPlanDisplayName(plan),
-            status: plan.status,
-            description: plan.description,
-            target_branch: plan.targetBranch,
-            node_count: plan.nodeCount,
-            conversation_id: plan.conversationId ?? null,
-          })),
-        },
-        null,
-        2
-      );
+      return formatArchitectPlanListToolResult({
+        targetBranch,
+        activePlanId: plansIndex.activePlanId,
+        plans: plansIndex.plans,
+      });
     }
 
     if (normalizedToolName === 'plan_get') {
@@ -1806,25 +1872,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return `Plan ${planId} is unavailable.`;
       }
 
-      return JSON.stringify(
-        {
-          id: plan.id,
-          slug: plan.slug,
-          title: plan.title,
-          label: plan.label ?? null,
-          display_name: getArchitectPlanDisplayName(plan),
-          is_canonical: isCanonicalArchitectPlan(plan),
-          description: plan.description,
-          status: plan.status,
-          target_branch: plan.targetBranch,
-          conversation_id: plan.conversationId ?? null,
-          project_ids: getArchitectPlanProjectIds(plan),
-          nodes: plan.nodes,
-          predicted_branches: plan.predictedBranches,
-        },
-        null,
-        2
-      );
+      return formatArchitectPlanGetToolResult(plan);
     }
 
     if (normalizedToolName === 'plan_update') {
@@ -1863,20 +1911,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await hydratePlanContext(targetBranch, updatedPlan.id);
       }
 
-      return JSON.stringify(
-        {
-          id: updatedPlan.id,
-          slug: updatedPlan.slug,
-          title: updatedPlan.title,
-          label: updatedPlan.label ?? null,
-          display_name: getArchitectPlanDisplayName(updatedPlan),
-          status: updatedPlan.status,
-          target_branch: updatedPlan.targetBranch,
-          active: resolveActivePlanId() === updatedPlan.id,
-        },
-        null,
-        2
-      );
+      return formatArchitectPlanUpdateToolResult(updatedPlan, resolveActivePlanId());
     }
 
     if (normalizedToolName === 'plan_delete') {
@@ -1937,7 +1972,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       await hydratePlanContext(targetBranch, activePlanId);
 
-      return `Successfully generated strategy with ${strategy.planNodes.length} nodes across ${strategy.predictedBranches.length} branches for active plan ${activePlanId}.`;
+      return formatArchitectStrategyGenerateToolResult({
+        planId: activePlanId,
+        planTitle: strategy.activePlanTitle,
+        planDescription: strategy.activePlanDescription,
+        planNodes: strategy.planNodes,
+        predictedBranches: strategy.predictedBranches,
+        resolvedProjectIds: strategy.resolvedProjectIds,
+        targetBranchesByProjectId: strategy.targetBranchesByProjectId,
+      });
     }
 
     if (normalizedToolName === 'strategy_get') {
@@ -1951,27 +1994,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return `Active plan ${activePlanId} is unavailable.`;
       }
 
-      const branchCount = plan.predictedBranches.length;
-      const nodeCount = plan.nodes.length;
-      const rootCount = plan.nodes.filter((node) => node.dependencies.length === 0).length;
-      const maxDependencyDepth = plan.nodes.reduce((max, node) => Math.max(max, node.dependencies.length), 0);
-
-      return JSON.stringify(
-        {
-          macro_branch: '@macro',
-          plan_id: plan.id,
-          strategy: {
-            node_count: nodeCount,
-            branch_count: branchCount,
-            root_count: rootCount,
-            max_dependencies_per_node: maxDependencyDepth,
-            nodes: plan.nodes,
-            predicted_branches: plan.predictedBranches,
-          },
-        },
-        null,
-        2
-      );
+      return formatArchitectStrategyGetToolResult(plan);
     }
 
     if (normalizedToolName === 'strategy_update') {
@@ -2131,7 +2154,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
 
       await hydratePlanContext(targetBranch, activePlanId);
-      return `Updated strategy for plan ${activePlanId}: ${strategy.planNodes.length} nodes, ${strategy.predictedBranches.length} branches.`;
+      return formatArchitectStrategyUpdateToolResult({
+        planId: activePlanId,
+        planNodes: strategy.planNodes,
+        predictedBranches: strategy.predictedBranches,
+      });
     }
 
     if (normalizedToolName === 'strategy_delete') {
@@ -2276,6 +2303,50 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return getConversationMessagesFromState(state, conversationId);
   };
 
+  const cloneProviderInputItems = (items?: unknown[] | null): unknown[] | undefined => {
+    if (!Array.isArray(items) || items.length === 0) {
+      return undefined;
+    }
+
+    return items.map((item) =>
+      item && typeof item === 'object'
+        ? JSON.parse(JSON.stringify(item))
+        : item
+    );
+  };
+
+  const buildProviderInputItemsFromContent = (
+    role: 'user' | 'assistant',
+    content: StreamMessage['content']
+  ): unknown[] => {
+    const parts = typeof content === 'string'
+      ? [{
+        type: role === 'user' ? 'input_text' : 'output_text',
+        text: content,
+      }]
+      : content.map((part) => {
+        if (part.type === 'image_url') {
+          return {
+            type: 'input_image',
+            image_url: part.image_url.url,
+          };
+        }
+
+        return {
+          type: role === 'user' ? 'input_text' : 'output_text',
+          text: part.text || '',
+        };
+      });
+
+    return [
+      {
+        type: 'message',
+        role,
+        content: parts,
+      },
+    ];
+  };
+
   const prepareMessagesForRequest = async (
     conversationId: string,
     allowedToolIds: string[],
@@ -2310,14 +2381,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const lastUserIndex = orderedMessages.map(m => m.role).lastIndexOf('user');
     const messageImagesByMessageId = get().messageImagesByMessageId;
 
+    const providerInputItemsByMessageId: Record<string, unknown[] | undefined> = {};
+
     const preparedMessages = orderedMessages.map((message, index) => {
       let messageContent = message.content;
       if (message.role === 'assistant') {
-        const sanitizedVisibleContent = sanitizeAssistantContentForModel(messageContent);
-        messageContent = [sanitizedVisibleContent, message.hidden_context || '']
-          .filter((value) => value.trim().length > 0)
-          .join('\n\n')
-          .trim();
+        messageContent = sanitizeAssistantContentForModel(messageContent);
       }
 
       // Inject context into the last user message
@@ -2372,22 +2441,43 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (message.role === 'user' && messageWithImagesId && message.id === messageWithImagesId) {
         const images = messageImagesByMessageId[message.id] || [];
         if (images.length > 0) {
+          const content = [
+            { type: 'text' as const, text: messageContent },
+            ...images.map((image) => ({
+              type: 'image_url' as const,
+              image_url: { url: image.dataUrl },
+            })),
+          ];
+          providerInputItemsByMessageId[message.id] =
+            cloneProviderInputItems(message.provider_input_items) ??
+            buildProviderInputItemsFromContent('user', content);
           return {
             role: 'user' as const,
-            content: [
-              { type: 'text' as const, text: messageContent },
-              ...images.map((image) => ({
-                type: 'image_url' as const,
-                image_url: { url: image.dataUrl },
-              })),
-            ],
+            content,
+            ...(providerInputItemsByMessageId[message.id]
+              ? { provider_input_items: providerInputItemsByMessageId[message.id] }
+              : {}),
           };
         }
       }
 
+      providerInputItemsByMessageId[message.id] =
+        cloneProviderInputItems(message.provider_input_items) ??
+        (
+          message.role === 'user' || message.role === 'assistant'
+            ? buildProviderInputItemsFromContent(message.role, messageContent)
+            : undefined
+        );
+
       return {
         role: message.role as 'user' | 'assistant',
         content: messageContent,
+        ...(providerInputItemsByMessageId[message.id]
+          ? { provider_input_items: providerInputItemsByMessageId[message.id] }
+          : {}),
+        ...(message.provider_turn_state
+          ? { provider_turn_state: message.provider_turn_state }
+          : {}),
       };
     });
 
@@ -2473,6 +2563,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (appMode === 'Architect') {
+      systemInstructions.push(buildArchitectPlanToolFollowUpInstruction());
       systemInstructions.push(
         'In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).'
       );
@@ -2513,6 +2604,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ],
       preparedMessages,
       orderedMessages,
+      providerInputItemsByMessageId,
       citations,
       executionContext,
     };
@@ -3202,8 +3294,43 @@ export const useChatStore = create<ChatStore>((set, get) => {
     get().updateMessageFields(messageId, {
       tool_traces: result.toolTraces,
       hidden_context: result.hiddenContext,
+      provider_input_items: result.providerInputItems,
+      provider_turn_state: result.providerTurnState,
     });
     get().updateMessageContent(messageId, result.visibleContent);
+  };
+
+  const persistProviderInputItemsForMessage = async (
+    messageId: string,
+    providerInputItems: unknown[] | undefined
+  ) => {
+    if (!Array.isArray(providerInputItems) || providerInputItems.length === 0) {
+      return;
+    }
+
+    const message = get().messages.find((candidate) => candidate.id === messageId);
+    if (!message) {
+      return;
+    }
+
+    get().updateMessageFields(messageId, {
+      provider_input_items: providerInputItems,
+    });
+
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+
+    try {
+      await tauriIpc.updateMessage(messageId, message.content, {
+        toolTraces: message.tool_traces,
+        hiddenContext: message.hidden_context,
+        providerInputItems,
+        providerTurnState: message.provider_turn_state,
+      });
+    } catch (error) {
+      console.error('Failed to persist provider input items for message:', error);
+    }
   };
 
   const buildUserMessageForSend = async (params: {
@@ -3290,6 +3417,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       allowedToolIds,
       fileToolContext,
     });
+
+    await persistProviderInputItemsForMessage(
+      params.replyToMessageId,
+      preparedRequest.providerInputItemsByMessageId[params.replyToMessageId]
+    );
 
     return {
       allowedToolIds,
@@ -3401,6 +3533,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     void (async () => {
       try {
         await streamChat({
+          conversationId: params.conversationId,
+          mode: params.modeAtSend,
           providerId: params.selectedProviderId,
           providerType: params.providerConfig.providerType,
           baseUrl: params.providerConfig.baseUrl,
@@ -3525,6 +3659,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .createMessage(conversationId, 'assistant', result.visibleContent, {
         toolTraces: result.toolTraces,
         hiddenContext: result.hiddenContext,
+        providerInputItems: result.providerInputItems,
+        providerTurnState: result.providerTurnState,
       })
       .catch(console.error);
   };

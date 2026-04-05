@@ -434,6 +434,14 @@ export interface ConversationCompactionState {
   updatedAt: string;
 }
 
+export interface ChatGptProviderTurnState {
+  provider: 'chatgpt';
+  response_id?: string;
+  output_items: unknown[];
+}
+
+export type ProviderTurnState = ChatGptProviderTurnState;
+
 export interface ChatMessage {
   id: string;
   task_id: string;
@@ -446,6 +454,8 @@ export interface ChatMessage {
   allow_free_response?: boolean;
   tool_traces?: ToolTrace[];
   hidden_context?: string;
+  provider_input_items?: unknown[];
+  provider_turn_state?: ProviderTurnState;
 }
 
 export interface Conversation {

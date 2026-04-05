@@ -425,6 +425,37 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Stop');
   });
 
+  it('asks for a natural-language recap after Generate Strategy in Architect mode', async () => {
+    appState.mode = 'Architect';
+    appState.activeArchitectPlanId = 'plan-1';
+    appState.planNodes = [];
+    appState.predictedBranches = [];
+    needsState.needs = [{ id: 'need-1', planId: 'plan-1' }];
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Generate Strategy')
+    );
+
+    expect(button).toBeDefined();
+
+    await act(async () => {
+      button?.click();
+    });
+
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('call `strategy_generate`'),
+    });
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('short summary of the strategy'),
+    });
+  });
+
   it('renders provider, model, and reasoning selectors in the toolbar', async () => {
     await act(async () => {
       requireRoot().render(<ChatZone />);

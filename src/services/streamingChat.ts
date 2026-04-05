@@ -9,11 +9,12 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions } from './webSearch';
 import * as tauriIpc from './tauriIpc';
+import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from './architectChat';
 import {
   requireMacroToolRegistryEntry,
   toFunctionToolShape,
 } from '../shared/macroToolRegistry';
-import type { ProjectMount, ReasoningEffort, ToolTrace } from '../types';
+import type { AppMode, ProjectMount, ProviderTurnState, ReasoningEffort, ToolTrace } from '../types';
 import { devLogger } from '../utils/devLogger';
 import { useProviderStore } from '../stores/useProviderStore';
 
@@ -62,6 +63,8 @@ export interface StreamMessage {
   content: StreamMessageContent;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  provider_input_items?: unknown[];
+  provider_turn_state?: ProviderTurnState;
 }
 
 export type StreamMessageContent =
@@ -90,9 +93,13 @@ export interface StreamCompletionResult {
   visibleContent: string;
   toolTraces: ToolTrace[];
   hiddenContext?: string;
+  providerInputItems?: unknown[];
+  providerTurnState?: ProviderTurnState;
 }
 
 export interface StreamingChatOptions {
+  conversationId?: string;
+  mode?: AppMode;
   providerId: string;
   providerType: string;
   baseUrl: string;
@@ -138,10 +145,6 @@ const emptyStreamCompletionResult = (visibleContent = ''): StreamCompletionResul
   visibleContent,
   toolTraces: [],
 });
-
-const CHATGPT_MAX_TOOL_CONTEXT_CHARS_PER_TURN = 12000;
-const CHATGPT_MAX_TOOL_RESULT_CHARS = 3200;
-const CHATGPT_MIN_TOOL_RESULT_CHARS = 400;
 
 const isReasoningUnsupportedError = (message: string): boolean => {
   const normalized = message.toLowerCase();
@@ -456,7 +459,8 @@ const clearTauriListeners = () => {
 interface StreamingTurnResult {
   content: string;
   toolCalls: ToolCall[];
-  responseId?: string;
+  providerInputItems?: unknown[];
+  providerTurnState?: ProviderTurnState;
   reasoningSummary?: string;
   toolTraces?: ToolTrace[];
   hiddenContext?: string;
@@ -464,6 +468,138 @@ interface StreamingTurnResult {
 
 const getValidToolCalls = (toolCalls: ToolCall[]): ToolCall[] =>
   toolCalls.filter((toolCall) => toolCall.id && toolCall.function.name);
+
+const buildChatGptProviderTurnState = (
+  responseId?: string | null,
+  outputItems?: unknown[] | null
+): ProviderTurnState | undefined => {
+  const normalizedOutputItems = Array.isArray(outputItems) ? outputItems : [];
+  const normalizedResponseId = typeof responseId === 'string' ? responseId.trim() : '';
+
+  if (!normalizedResponseId && normalizedOutputItems.length === 0) {
+    return undefined;
+  }
+
+  return {
+    provider: 'chatgpt',
+    ...(normalizedResponseId ? { response_id: normalizedResponseId } : {}),
+    output_items: normalizedOutputItems,
+  };
+};
+
+const cloneProviderInputItems = (items?: unknown[] | null): unknown[] | undefined => {
+  if (!Array.isArray(items) || items.length === 0) {
+    return undefined;
+  }
+
+  return items.map((item) =>
+    item && typeof item === 'object'
+      ? JSON.parse(JSON.stringify(item))
+      : item
+  );
+};
+
+const buildFunctionCallOutputProviderInputItem = (
+  toolCallId: string,
+  output: string
+): unknown => ({
+  type: 'function_call_output',
+  call_id: toolCallId,
+  output,
+});
+
+const extractTextValue = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (value && typeof value === 'object' && 'value' in value) {
+    const nested = (value as { value?: unknown }).value;
+    return typeof nested === 'string' ? nested : '';
+  }
+
+  return '';
+};
+
+const extractVisibleTextFromProviderInputItems = (items?: unknown[] | null): string => {
+  if (!Array.isArray(items) || items.length === 0) {
+    return '';
+  }
+
+  return items
+    .flatMap((item) => {
+      if (!item || typeof item !== 'object') {
+        return [];
+      }
+
+      const typedItem = item as {
+        type?: unknown;
+        role?: unknown;
+        text?: unknown;
+        content?: unknown;
+      };
+
+      if (typedItem.type === 'output_text') {
+        const text = extractTextValue(typedItem.text);
+        return text ? [text] : [];
+      }
+
+      if (typedItem.type !== 'message' || typedItem.role !== 'assistant') {
+        return [];
+      }
+
+      if (!Array.isArray(typedItem.content)) {
+        return [];
+      }
+
+      return typedItem.content.flatMap((part) => {
+        if (!part || typeof part !== 'object') {
+          return [];
+        }
+
+        const typedPart = part as { type?: unknown; text?: unknown; value?: unknown };
+        if (typedPart.type !== 'output_text' && typedPart.type !== 'text') {
+          return [];
+        }
+
+        const text = extractTextValue(
+          typedPart.text !== undefined ? typedPart.text : typedPart.value
+        );
+        return text ? [text] : [];
+      });
+    })
+    .join('');
+};
+
+const buildAssistantProviderInputItemsFromTurn = (
+  content: string,
+  toolCalls: ToolCall[]
+): unknown[] => {
+  const items: unknown[] = [];
+  if (content.trim()) {
+    items.push({
+      type: 'message',
+      role: 'assistant',
+      content: [
+        {
+          type: 'output_text',
+          text: content,
+        },
+      ],
+    });
+  }
+
+  for (const toolCall of toolCalls) {
+    items.push({
+      type: 'function_call',
+      call_id: toolCall.id,
+      name: toolCall.function.name,
+      arguments: toolCall.function.arguments,
+    });
+  }
+
+  return items;
+};
 
 const buildChatGptVisibleTurnContent = (
   content: string,
@@ -481,8 +617,116 @@ const buildChatGptVisibleTurnContent = (
     : `<think>${trimmedSummary}</think>`;
 };
 
+const getMissingChatGptVisibleTurnSuffix = (
+  streamedTurnContent: string,
+  turnContent: string
+): string | null => {
+  const trimmedTurnContent = turnContent.trim();
+  if (!trimmedTurnContent) {
+    return null;
+  }
+
+  const trimmedStreamedContent = streamedTurnContent.trim();
+  if (!trimmedStreamedContent) {
+    return turnContent;
+  }
+
+  if (turnContent === streamedTurnContent) {
+    return null;
+  }
+
+  if (turnContent.startsWith(streamedTurnContent)) {
+    const suffix = turnContent.slice(streamedTurnContent.length);
+    return suffix.length > 0 ? suffix : null;
+  }
+
+  return null;
+};
+
 const isEmptyTerminalChatGptTurn = (content: string, toolCalls: ToolCall[]): boolean =>
   toolCalls.length === 0 && content.trim().length === 0;
+
+const stripThinkingBlocks = (content: string): string =>
+  content.replace(/<think>[\s\S]*?<\/think>/gi, ' ').replace(/\s+/g, ' ').trim();
+
+const hasMeaningfulVisibleAssistantText = (content: string): boolean =>
+  stripThinkingBlocks(content).length > 0;
+
+const summarizeProviderTextPresence = (
+  items?: unknown[]
+): {
+  hasMessageItem: boolean;
+  hasOutputTextItem: boolean;
+  hasTextContentPart: boolean;
+} => {
+  const summary = {
+    hasMessageItem: false,
+    hasOutputTextItem: false,
+    hasTextContentPart: false,
+  };
+
+  if (!Array.isArray(items)) {
+    return summary;
+  }
+
+  for (const item of items) {
+    const typedItem = item as { type?: unknown; content?: unknown };
+    if (typedItem?.type === 'message') {
+      summary.hasMessageItem = true;
+    }
+    if (typedItem?.type === 'output_text') {
+      summary.hasOutputTextItem = true;
+    }
+
+    if (!Array.isArray(typedItem?.content)) {
+      continue;
+    }
+
+    for (const part of typedItem.content as Array<{ type?: unknown }>) {
+      if (part?.type === 'output_text' || part?.type === 'text') {
+        summary.hasTextContentPart = true;
+      }
+    }
+  }
+
+  return summary;
+};
+
+const shouldRetryArchitectPostToolResponse = (params: {
+  mode?: AppMode;
+  usedToolNames: Set<string>;
+  visibleContent: string;
+  retryCount: number;
+}): boolean =>
+  params.mode === 'Architect' &&
+  params.usedToolNames.size > 0 &&
+  params.retryCount < 1 &&
+  !hasMeaningfulVisibleAssistantText(params.visibleContent);
+
+const logArchitectToolOnlyOutcome = (params: {
+  mode?: AppMode;
+  usedToolNames: Set<string>;
+  visibleContent: string;
+  retryCount: number;
+  providerItems?: unknown[];
+  stage: 'retry' | 'final-empty';
+}): void => {
+  if (params.mode !== 'Architect' || params.usedToolNames.size === 0) {
+    return;
+  }
+
+  const providerPresence = summarizeProviderTextPresence(params.providerItems);
+  devLogger.info('Architect turn finished after tools without visible text', {
+    mode: params.mode,
+    stage: params.stage,
+    toolNames: Array.from(params.usedToolNames),
+    visibleTextLength: stripThinkingBlocks(params.visibleContent).length,
+    retryCount: params.retryCount,
+    hasMessageItem: providerPresence.hasMessageItem,
+    hasOutputTextItem: providerPresence.hasOutputTextItem,
+    hasTextContentPart: providerPresence.hasTextContentPart,
+  });
+};
 
 const truncateMiddle = (value: string, maxChars: number): string => {
   if (value.length <= maxChars) {
@@ -504,7 +748,7 @@ const compactToolResultForChatGptModelContext = (
   result: string,
   maxChars: number
 ): string => {
-  const normalizedMaxChars = Math.max(CHATGPT_MIN_TOOL_RESULT_CHARS, maxChars);
+  const normalizedMaxChars = Math.max(400, maxChars);
   if (result.length <= normalizedMaxChars) {
     return result;
   }
@@ -531,14 +775,21 @@ const compactToolResultForChatGptModelContext = (
 
 export const __testables = {
   applyReasoningToChatCompletionsRequest,
+  buildFunctionCallOutputProviderInputItem,
+  buildChatGptProviderTurnState,
   buildToolContextBlock,
   buildChatGptVisibleTurnContent,
+  extractVisibleTextFromProviderInputItems,
   compactToolResultForChatGptModelContext,
   createStreamAccumulator,
   formatToolTraceDetail,
+  getMissingChatGptVisibleTurnSuffix,
+  hasMeaningfulVisibleAssistantText,
   isEmptyTerminalChatGptTurn,
   isReasoningUnsupportedError,
+  shouldRetryArchitectPostToolResponse,
   shouldRetryMissingRequiredTool,
+  summarizeProviderTextPresence,
 };
 
 function shouldRetryMissingRequiredTool(
@@ -621,7 +872,7 @@ const streamNativeTurnViaTauri = async (params: {
   providerType: string;
   modelId: string;
   reasoningEffort?: ReasoningEffort | null;
-  previousResponseId?: string | null;
+  conversationId?: string | null;
   messages: StreamMessage[];
   tools: unknown[];
   allowedToolIds?: string[];
@@ -684,11 +935,22 @@ const streamNativeTurnViaTauri = async (params: {
             if (params.signal) {
               params.signal.removeEventListener('abort', signalHandler);
             }
+            const providerInputItems = event.payload.provider_input_items ?? undefined;
+            const providerTurnState = params.providerType === 'chatgpt'
+              ? buildChatGptProviderTurnState(
+                event.payload.response_id,
+                event.payload.output_items,
+              )
+              : undefined;
+            const derivedOutputText =
+              extractVisibleTextFromProviderInputItems(providerInputItems) ||
+              extractVisibleTextFromProviderInputItems(event.payload.output_items ?? undefined);
             finish(() =>
               resolve({
-                content: event.payload.output_text || fullContent,
+                content: event.payload.output_text || fullContent || derivedOutputText,
                 toolCalls: event.payload.tool_calls || [],
-                responseId: event.payload.response_id ?? undefined,
+                providerInputItems,
+                providerTurnState,
                 reasoningSummary: event.payload.reasoning_summary ?? undefined,
                 toolTraces: event.payload.tool_traces ?? undefined,
                 hiddenContext: event.payload.hidden_context ?? undefined,
@@ -711,12 +973,18 @@ const streamNativeTurnViaTauri = async (params: {
           providerId: params.providerId,
           modelId: params.modelId,
           reasoningEffort: params.reasoningEffort ?? null,
-          previousResponseId: params.previousResponseId ?? null,
+          conversationId: params.conversationId ?? null,
           messages: params.messages.map((message) => ({
             role: message.role,
             content: message.content,
             ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
             ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+            ...(message.provider_input_items
+              ? { provider_input_items: message.provider_input_items }
+              : {}),
+            ...(params.providerType === 'chatgpt' && message.provider_turn_state
+              ? { provider_turn_state: message.provider_turn_state }
+              : {}),
           })),
           tools: params.tools,
           toolChoice: 'auto',
@@ -737,6 +1005,40 @@ const streamNativeTurnViaTauri = async (params: {
     })();
   });
 };
+
+const streamChatGptTurn = async (params: {
+  providerId: string;
+  modelId: string;
+  reasoningEffort?: ReasoningEffort | null;
+  conversationId?: string | null;
+  messages: StreamMessage[];
+  tools: unknown[];
+  allowedToolIds?: string[];
+  workspacePath?: string | null;
+  defaultWorkspacePath?: string | null;
+  projectMounts?: ProjectMount[];
+  virtualRootEnabled?: boolean;
+  focusedProjectId?: string | null;
+  signal?: AbortSignal;
+  onDelta: (delta: string) => void;
+}): Promise<StreamingTurnResult> =>
+  streamNativeTurnViaTauri({
+    providerId: params.providerId,
+    providerType: 'chatgpt',
+    modelId: params.modelId,
+    reasoningEffort: params.reasoningEffort,
+    conversationId: params.conversationId,
+    messages: params.messages,
+    tools: params.tools,
+    allowedToolIds: params.allowedToolIds,
+    workspacePath: params.workspacePath,
+    defaultWorkspacePath: params.defaultWorkspacePath,
+    projectMounts: params.projectMounts,
+    virtualRootEnabled: params.virtualRootEnabled,
+    focusedProjectId: params.focusedProjectId,
+    signal: params.signal,
+    onDelta: params.onDelta,
+  });
 
 const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Promise<void> => {
   const {
@@ -769,11 +1071,15 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
     onToolTracesUpdate,
   });
   let currentMessages: StreamMessage[] = [...messages];
+  const assistantTranscriptItems: unknown[] = [];
+  let latestProviderTurnState: ProviderTurnState | undefined;
   const readEvidenceBySource = new Map<string, string>();
   const MAX_TURNS = 10;
   let turnCount = 0;
   let guidedRetryCount = 0;
+  let architectPostToolRetryCount = 0;
   let enforceGuidedToolRetry = Boolean(options.guidedToolRetry);
+  const architectToolNamesUsed = new Set<string>();
 
   const normalizeSourceKey = (value?: string): string =>
     (value || '')
@@ -801,17 +1107,21 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
   try {
     while (turnCount < MAX_TURNS) {
       if (options.signal?.aborted) {
-        onComplete(streamAccumulator.buildResult());
+        onComplete({
+          ...streamAccumulator.buildResult(),
+          providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
+          providerTurnState: latestProviderTurnState,
+        });
         return;
       }
 
       const shouldBufferTurnOutput = enforceGuidedToolRetry;
       let streamedTurnContent = '';
-      const turnResult = await streamNativeTurnViaTauri({
+      const turnResult = await streamChatGptTurn({
         providerId,
-        providerType: 'chatgpt',
         modelId,
         reasoningEffort: options.reasoningEffort,
+        conversationId: options.conversationId,
         messages: currentMessages,
         tools,
         allowedToolIds: options.allowedToolIds,
@@ -834,13 +1144,18 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         turnResult.reasoningSummary
       );
       const validToolCalls = getValidToolCalls(turnResult.toolCalls);
+      latestProviderTurnState = turnResult.providerTurnState ?? latestProviderTurnState;
+      const turnProviderInputItems =
+        cloneProviderInputItems(turnResult.providerInputItems) ??
+        buildAssistantProviderInputItemsFromTurn(turnContent, validToolCalls);
 
       if (shouldRetryMissingRequiredTool(options.guidedToolRetry, validToolCalls, guidedRetryCount)) {
         guidedRetryCount += 1;
-        currentMessages.push({
+        const retryMessage: StreamMessage = {
           role: 'system',
           content: options.guidedToolRetry?.retrySystemPrompt || '',
-        });
+        };
+        currentMessages.push(retryMessage);
         turnCount += 1;
         continue;
       }
@@ -848,18 +1163,73 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
       enforceGuidedToolRetry = false;
       if (shouldBufferTurnOutput && turnContent) {
         streamAccumulator.appendProviderDelta(turnContent);
+      } else {
+        const missingTurnSuffix = getMissingChatGptVisibleTurnSuffix(
+          streamedTurnContent,
+          turnContent
+        );
+        if (missingTurnSuffix) {
+          streamAccumulator.appendProviderDelta(missingTurnSuffix);
+        }
       }
       streamAccumulator.flushProviderDelta();
 
       if (turnContent.trim().length > 0 || validToolCalls.length > 0) {
+        if (turnProviderInputItems.length > 0) {
+          assistantTranscriptItems.push(...turnProviderInputItems);
+        }
         currentMessages.push({
           role: 'assistant',
           content: turnContent,
           ...(validToolCalls.length > 0 ? { tool_calls: validToolCalls } : {}),
+          ...(turnProviderInputItems.length > 0
+            ? { provider_input_items: turnProviderInputItems }
+            : {}),
+          ...(turnResult.providerTurnState
+            ? { provider_turn_state: turnResult.providerTurnState }
+            : {}),
         });
       }
 
       if (validToolCalls.length === 0) {
+        if (
+          shouldRetryArchitectPostToolResponse({
+            mode: options.mode,
+            usedToolNames: architectToolNamesUsed,
+            visibleContent: turnContent,
+            retryCount: architectPostToolRetryCount,
+          })
+        ) {
+          logArchitectToolOnlyOutcome({
+            mode: options.mode,
+            usedToolNames: architectToolNamesUsed,
+            visibleContent: turnContent,
+            retryCount: architectPostToolRetryCount,
+            providerItems: turnProviderInputItems,
+            stage: 'retry',
+          });
+          architectPostToolRetryCount += 1;
+          currentMessages.push({
+            role: 'system',
+            content: ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT,
+          });
+          turnCount += 1;
+          continue;
+        }
+        if (
+          options.mode === 'Architect' &&
+          architectToolNamesUsed.size > 0 &&
+          !hasMeaningfulVisibleAssistantText(turnContent)
+        ) {
+          logArchitectToolOnlyOutcome({
+            mode: options.mode,
+            usedToolNames: architectToolNamesUsed,
+            visibleContent: turnContent,
+            retryCount: architectPostToolRetryCount,
+            providerItems: turnProviderInputItems,
+            stage: 'final-empty',
+          });
+        }
         if (isEmptyTerminalChatGptTurn(turnContent, validToolCalls)) {
           throw new Error('Reponse ChatGPT vide apres execution des outils.');
         }
@@ -870,6 +1240,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
 
       for (const toolCall of validToolCalls) {
         const toolName = toolCall.function.name;
+        architectToolNamesUsed.add(toolName);
         let toolResult = '';
         let customToolResult: string | undefined;
         let detail: string | undefined;
@@ -1077,26 +1448,23 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
           );
         });
         const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
-        let remainingToolContextBudget = CHATGPT_MAX_TOOL_CONTEXT_CHARS_PER_TURN;
-        const compactedToolMessages = toolResults.map((result) => {
-          const perToolBudget = Math.min(
-            CHATGPT_MAX_TOOL_RESULT_CHARS,
-            Math.max(CHATGPT_MIN_TOOL_RESULT_CHARS, remainingToolContextBudget)
+        const toolMessages = toolResults.map((result) => {
+          const providerInputItem = buildFunctionCallOutputProviderInputItem(
+            result.tool_call_id,
+            result.content
           );
-          const compactContent = compactToolResultForChatGptModelContext(
-            result.tool_name || 'tool',
-            result.content,
-            perToolBudget
+          assistantTranscriptItems.push(
+            cloneProviderInputItems([providerInputItem])?.[0] ?? providerInputItem
           );
-          remainingToolContextBudget = Math.max(0, remainingToolContextBudget - compactContent.length);
           return {
             role: 'tool' as const,
-            content: compactContent,
+            content: result.content,
             tool_call_id: result.tool_call_id,
+            provider_input_items: [providerInputItem],
           };
         });
 
-        currentMessages.push(...compactedToolMessages);
+        currentMessages.push(...toolMessages);
 
         if (hasToolErrors || hasFileReadResults) {
           devLogger.info('ChatGPT follow-up turn proceeding with full transcript after guarded tool results', {
@@ -1110,10 +1478,18 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
       turnCount++;
     }
 
-    onComplete(streamAccumulator.buildResult());
+    onComplete({
+      ...streamAccumulator.buildResult(),
+      providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
+      providerTurnState: latestProviderTurnState,
+    });
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      onComplete(streamAccumulator.buildResult());
+      onComplete({
+        ...streamAccumulator.buildResult(),
+        providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
+        providerTurnState: latestProviderTurnState,
+      });
       return;
     }
 
@@ -1128,6 +1504,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
 const streamChatViaCopilotProvider = async (options: StreamingChatOptions): Promise<void> => {
   try {
     const turn = await streamNativeTurnViaTauri({
+      conversationId: options.conversationId,
       providerId: options.providerId,
       providerType: 'copilot',
       modelId: options.modelId,
@@ -1152,6 +1529,8 @@ const streamChatViaCopilotProvider = async (options: StreamingChatOptions): Prom
       visibleContent: turn.content,
       toolTraces: turn.toolTraces ?? [],
       hiddenContext: turn.hiddenContext,
+      providerInputItems: turn.providerInputItems,
+      providerTurnState: turn.providerTurnState,
     });
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -1252,7 +1631,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   const MAX_TURNS = 10;
   let turnCount = 0;
   let guidedRetryCount = 0;
+  let architectPostToolRetryCount = 0;
   let enforceGuidedToolRetry = Boolean(options.guidedToolRetry);
+  const architectToolNamesUsed = new Set<string>();
 
   const normalizeSourceKey = (value?: string): string =>
     (value || '')
@@ -1479,11 +1860,52 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         });
       }
 
+      if (validToolCalls.length === 0) {
+        if (
+          shouldRetryArchitectPostToolResponse({
+            mode: options.mode,
+            usedToolNames: architectToolNamesUsed,
+            visibleContent: turnContent,
+            retryCount: architectPostToolRetryCount,
+          })
+        ) {
+          logArchitectToolOnlyOutcome({
+            mode: options.mode,
+            usedToolNames: architectToolNamesUsed,
+            visibleContent: turnContent,
+            retryCount: architectPostToolRetryCount,
+            stage: 'retry',
+          });
+          architectPostToolRetryCount += 1;
+          currentMessages.push({
+            role: 'system',
+            content: ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT,
+          });
+          turnCount += 1;
+          continue;
+        }
+
+        if (
+          options.mode === 'Architect' &&
+          architectToolNamesUsed.size > 0 &&
+          !hasMeaningfulVisibleAssistantText(turnContent)
+        ) {
+          logArchitectToolOnlyOutcome({
+            mode: options.mode,
+            usedToolNames: architectToolNamesUsed,
+            visibleContent: turnContent,
+            retryCount: architectPostToolRetryCount,
+            stage: 'final-empty',
+          });
+        }
+      }
+
       if (validToolCalls.length > 0) {
         const toolResults: ToolResult[] = [];
 
         for (const toolCall of validToolCalls) {
           const toolName = toolCall.function.name;
+          architectToolNamesUsed.add(toolName);
           let toolResult = '';
           let customToolResult: string | undefined;
           let detail: string | undefined;
@@ -1823,6 +2245,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
   if (providerType === 'chatgpt' || providerType === 'copilot') {
     try {
       const turn = await streamNativeTurnViaTauri({
+        conversationId: options.conversationId,
         providerId,
         providerType,
         modelId,
@@ -1841,9 +2264,14 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
         },
       });
       onComplete({
-        visibleContent: turn.content,
+        visibleContent:
+          providerType === 'chatgpt'
+            ? buildChatGptVisibleTurnContent(turn.content, turn.reasoningSummary)
+            : turn.content,
         toolTraces: turn.toolTraces ?? [],
         hiddenContext: turn.hiddenContext,
+        providerInputItems: turn.providerInputItems,
+        providerTurnState: turn.providerTurnState,
       });
       return turn.content;
     } catch (error) {

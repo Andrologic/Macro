@@ -8,6 +8,7 @@ use super::stream::{
     build_responses_request, extract_completed_reasoning_summary,
     extract_function_call_from_output_item, extract_output_text_from_output_item,
     extract_reasoning_summary_from_output_item, extract_response_id,
+    normalize_provider_input_items_for_replay,
 };
 use super::types::{
     auth_flow_error_from_persist, AiChatMessage, AiChatMessageContent, AiChatRequest,
@@ -105,25 +106,31 @@ fn build_responses_request_maps_system_and_history() {
         provider_id: "chatgpt".to_string(),
         model_id: "gpt-5".to_string(),
         reasoning_effort: Some("high".to_string()),
-        previous_response_id: Some("resp_123".to_string()),
+        conversation_id: Some("conv_123".to_string()),
         messages: vec![
             AiChatMessage {
                 role: "system".to_string(),
                 content: AiChatMessageContent::Text("Follow instructions".to_string()),
                 tool_calls: Vec::new(),
                 tool_call_id: None,
+                provider_input_items: None,
+                provider_turn_state: None,
             },
             AiChatMessage {
                 role: "user".to_string(),
                 content: AiChatMessageContent::Text("Hello".to_string()),
                 tool_calls: Vec::new(),
                 tool_call_id: None,
+                provider_input_items: None,
+                provider_turn_state: None,
             },
             AiChatMessage {
                 role: "assistant".to_string(),
                 content: AiChatMessageContent::Text("Hi".to_string()),
                 tool_calls: Vec::new(),
                 tool_call_id: None,
+                provider_input_items: None,
+                provider_turn_state: None,
             },
         ],
         tools: Vec::new(),
@@ -140,11 +147,12 @@ fn build_responses_request_maps_system_and_history() {
 
     assert_eq!(request.model, "gpt-5");
     assert_eq!(request.instructions, "Follow instructions");
-    assert_eq!(request.previous_response_id.as_deref(), Some("resp_123"));
     assert_eq!(request.input.len(), 2);
     assert!(request.tools.is_empty());
     assert!(!request.store);
     assert!(request.stream);
+    assert_eq!(request.include, vec!["reasoning.encrypted_content"]);
+    assert_eq!(request.prompt_cache_key.as_deref(), Some("conv_123"));
     assert_eq!(
         request.reasoning,
         Some(json!({ "effort": "high", "summary": "auto" }))
@@ -158,7 +166,7 @@ fn build_responses_request_flattens_tools_and_maps_tool_outputs() {
         provider_id: "chatgpt".to_string(),
         model_id: "gpt-5".to_string(),
         reasoning_effort: None,
-        previous_response_id: None,
+        conversation_id: None,
         messages: vec![
             AiChatMessage {
                 role: "assistant".to_string(),
@@ -172,12 +180,16 @@ fn build_responses_request_flattens_tools_and_maps_tool_outputs() {
                     },
                 }],
                 tool_call_id: None,
+                provider_input_items: None,
+                provider_turn_state: None,
             },
             AiChatMessage {
                 role: "tool".to_string(),
                 content: AiChatMessageContent::Text("FILE: README.md".to_string()),
                 tool_calls: Vec::new(),
                 tool_call_id: Some("call_1".to_string()),
+                provider_input_items: None,
+                provider_turn_state: None,
             },
         ],
         tools: vec![json!({
@@ -221,18 +233,20 @@ fn build_responses_request_flattens_tools_and_maps_tool_outputs() {
 }
 
 #[test]
-fn build_responses_request_omits_previous_response_id_when_absent() {
+fn build_responses_request_is_stateless_without_previous_response_id() {
     let request = build_responses_request(&AiChatRequest {
         request_id: "req-omit-prev".to_string(),
         provider_id: "chatgpt".to_string(),
         model_id: "gpt-5".to_string(),
         reasoning_effort: None,
-        previous_response_id: None,
+        conversation_id: Some("conv_stateless".to_string()),
         messages: vec![AiChatMessage {
             role: "user".to_string(),
             content: AiChatMessageContent::Text("Hello".to_string()),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            provider_input_items: None,
+            provider_turn_state: None,
         }],
         tools: Vec::new(),
         tool_choice: Some("auto".to_string()),
@@ -248,6 +262,201 @@ fn build_responses_request_omits_previous_response_id_when_absent() {
 
     let serialized = serde_json::to_value(&request).expect("serialize request");
     assert!(serialized.get("previous_response_id").is_none());
+    assert_eq!(serialized["prompt_cache_key"], "conv_stateless");
+}
+
+#[test]
+fn build_responses_request_replays_chatgpt_provider_turn_output_items() {
+    let request = build_responses_request(&AiChatRequest {
+        request_id: "req-replay".to_string(),
+        provider_id: "chatgpt".to_string(),
+        model_id: "gpt-5".to_string(),
+        reasoning_effort: None,
+        conversation_id: None,
+        messages: vec![
+            AiChatMessage {
+                role: "assistant".to_string(),
+                content: AiChatMessageContent::Text(
+                    "<think>Resume UI</think>\nVisible only".to_string(),
+                ),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                provider_input_items: None,
+                provider_turn_state: Some(json!({
+                    "provider": "chatgpt",
+                    "response_id": "resp_prev",
+                    "output_items": [
+                        {
+                            "id": "rs_123",
+                            "status": "completed",
+                            "type": "reasoning",
+                            "summary": [
+                                {
+                                    "type": "summary_text",
+                                    "text": "Native reasoning summary."
+                                }
+                            ],
+                            "encrypted_content": "enc_123"
+                        },
+                        {
+                            "id": "fc_123",
+                            "status": "completed",
+                            "type": "function_call",
+                            "call_id": "call_123",
+                            "name": "read",
+                            "arguments": "{\"path\":\"README.md\"}"
+                        }
+                    ]
+                })),
+            },
+            AiChatMessage {
+                role: "tool".to_string(),
+                content: AiChatMessageContent::Text("FILE: README.md".to_string()),
+                tool_calls: Vec::new(),
+                tool_call_id: Some("call_123".to_string()),
+                provider_input_items: None,
+                provider_turn_state: None,
+            },
+        ],
+        tools: Vec::new(),
+        tool_choice: Some("auto".to_string()),
+        parallel_tool_calls: Some(false),
+        workspace_path: None,
+        default_workspace_path: None,
+        project_mounts: Vec::new(),
+        virtual_root_enabled: None,
+        focused_project_id: None,
+        allowed_tool_ids: Vec::new(),
+    })
+    .expect("request");
+
+    assert_eq!(request.input.len(), 3);
+    assert_eq!(request.input[0]["type"], "reasoning");
+    assert!(request.input[0].get("id").is_none());
+    assert!(request.input[0].get("status").is_none());
+    assert_eq!(request.input[0]["encrypted_content"], "enc_123");
+    assert_eq!(request.input[1]["type"], "function_call");
+    assert!(request.input[1].get("id").is_none());
+    assert_eq!(request.input[2]["type"], "function_call_output");
+    assert_eq!(request.input[2]["call_id"], "call_123");
+}
+
+#[test]
+fn build_responses_request_drops_unreplayable_reasoning_items_without_encrypted_content() {
+    let request = build_responses_request(&AiChatRequest {
+        request_id: "req-replay-drop".to_string(),
+        provider_id: "chatgpt".to_string(),
+        model_id: "gpt-5".to_string(),
+        reasoning_effort: None,
+        conversation_id: None,
+        messages: vec![AiChatMessage {
+            role: "assistant".to_string(),
+            content: AiChatMessageContent::Text(String::new()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            provider_input_items: None,
+            provider_turn_state: Some(json!({
+                "provider": "chatgpt",
+                "output_items": [
+                    {
+                        "id": "rs_legacy",
+                        "type": "reasoning",
+                        "summary": [
+                            {
+                                "type": "summary_text",
+                                "text": "Legacy reasoning summary."
+                            }
+                        ]
+                    },
+                    {
+                        "id": "msg_123",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "Visible assistant text."
+                            }
+                        ]
+                    }
+                ]
+            })),
+        }],
+        tools: Vec::new(),
+        tool_choice: Some("auto".to_string()),
+        parallel_tool_calls: Some(false),
+        workspace_path: None,
+        default_workspace_path: None,
+        project_mounts: Vec::new(),
+        virtual_root_enabled: None,
+        focused_project_id: None,
+        allowed_tool_ids: Vec::new(),
+    })
+    .expect("request");
+
+    assert_eq!(request.input.len(), 1);
+    assert_eq!(request.input[0]["type"], "message");
+    assert_eq!(
+        request.input[0]["content"][0]["text"],
+        "Visible assistant text."
+    );
+}
+
+#[test]
+fn normalize_provider_input_items_strips_ids_and_normalizes_message_parts() {
+    let normalized = normalize_provider_input_items_for_replay(&[
+        json!({
+            "id": "msg_123",
+            "status": "completed",
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": "Hello"
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/png;base64,abc"
+                    }
+                }
+            ]
+        }),
+        json!({
+            "id": "fc_out_123",
+            "status": "completed",
+            "type": "function_call_output",
+            "call_id": "call_123",
+            "output": "done"
+        }),
+        json!({
+            "id": "orphan_out_1",
+            "status": "completed",
+            "type": "output_text",
+            "text": "Assistant fallback."
+        }),
+    ])
+    .expect("normalized");
+
+    assert_eq!(normalized.len(), 3);
+    assert_eq!(normalized[0]["type"], "message");
+    assert_eq!(normalized[0]["role"], "user");
+    assert_eq!(normalized[0]["content"][0]["type"], "input_text");
+    assert_eq!(normalized[0]["content"][0]["text"], "Hello");
+    assert_eq!(normalized[0]["content"][1]["type"], "input_image");
+    assert_eq!(
+        normalized[0]["content"][1]["image_url"],
+        "data:image/png;base64,abc"
+    );
+    assert!(normalized[0].get("id").is_none());
+    assert!(normalized[1].get("id").is_none());
+    assert_eq!(normalized[1]["type"], "function_call_output");
+    assert_eq!(normalized[1]["call_id"], "call_123");
+    assert_eq!(normalized[2]["type"], "message");
+    assert_eq!(normalized[2]["role"], "assistant");
+    assert_eq!(normalized[2]["content"][0]["text"], "Assistant fallback.");
 }
 
 #[test]
@@ -268,6 +477,44 @@ fn extract_output_text_from_output_item_reads_completed_message_items() {
     assert_eq!(
         extract_output_text_from_output_item(&item),
         "Point sur les deux projets."
+    );
+}
+
+#[test]
+fn extract_output_text_from_output_item_reads_message_text_parts_with_nested_value() {
+    let item = json!({
+        "id": "msg_456",
+        "status": "completed",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "text",
+                "text": {
+                    "value": "Texte final depuis message.content."
+                }
+            }
+        ]
+    });
+
+    assert_eq!(
+        extract_output_text_from_output_item(&item),
+        "Texte final depuis message.content."
+    );
+}
+
+#[test]
+fn extract_output_text_from_output_item_reads_direct_output_text_items() {
+    let item = json!({
+        "id": "out_123",
+        "status": "completed",
+        "type": "output_text",
+        "text": "Synthese finale."
+    });
+
+    assert_eq!(
+        extract_output_text_from_output_item(&item),
+        "Synthese finale."
     );
 }
 
@@ -327,6 +574,34 @@ fn extract_completed_reasoning_summary_and_response_id_from_completed_payload() 
         Some("Resume de raisonnement.")
     );
     assert_eq!(extract_response_id(&payload).as_deref(), Some("resp_456"));
+}
+
+#[test]
+fn extract_completed_output_text_prefers_output_text_helper_when_present() {
+    let payload = json!({
+        "response": {
+            "id": "resp_789",
+            "output_text": "Texte helper final.",
+            "output": [
+                {
+                    "id": "msg_123",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Texte helper final."
+                        }
+                    ]
+                }
+            ]
+        }
+    });
+
+    assert_eq!(
+        super::stream::extract_completed_output_text(&payload),
+        "Texte helper final."
+    );
 }
 
 #[test]
@@ -535,4 +810,52 @@ fn build_provider_models_filters_hidden_and_prefers_matching_plan() {
     assert_eq!(fallback_models.len(), 2);
     assert_eq!(fallback_models[0].model_id, "visible-plus");
     assert_eq!(fallback_models[1].model_id, "visible-team");
+}
+
+#[test]
+fn build_provider_models_assigns_reasoning_to_cached_chatgpt_gpt5_families() {
+    let entries = vec![
+        ModelsCacheEntry {
+            slug: "gpt-5.4-mini".to_string(),
+            display_name: Some("GPT-5.4-Mini".to_string()),
+            description: None,
+            visibility: Some("list".to_string()),
+            available_in_plans: None,
+        },
+        ModelsCacheEntry {
+            slug: "gpt-5.3-codex".to_string(),
+            display_name: Some("gpt-5.3-codex".to_string()),
+            description: None,
+            visibility: Some("list".to_string()),
+            available_in_plans: None,
+        },
+    ];
+
+    let models = build_provider_models(&entries, None);
+    assert_eq!(
+        models[0].reasoning_efforts.clone().unwrap_or_default(),
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string()
+        ]
+    );
+    assert_eq!(
+        models[0].default_reasoning_effort.as_deref(),
+        Some("medium")
+    );
+    assert_eq!(
+        models[1].reasoning_efforts.clone().unwrap_or_default(),
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string()
+        ]
+    );
+    assert_eq!(
+        models[1].default_reasoning_effort.as_deref(),
+        Some("medium")
+    );
 }

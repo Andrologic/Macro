@@ -2654,6 +2654,8 @@ pub async fn db_create_message(
     token_count: Option<i32>,
     tool_traces_json: Option<String>,
     hidden_context: Option<String>,
+    provider_input_items_json: Option<String>,
+    provider_turn_state_json: Option<String>,
 ) -> CommandResult<Message> {
     let pool = get_pool(&pool).await?;
 
@@ -2666,6 +2668,8 @@ pub async fn db_create_message(
             token_count,
             tool_traces_json,
             hidden_context,
+            provider_input_items_json,
+            provider_turn_state_json,
         },
     )
     .await
@@ -2693,6 +2697,8 @@ pub async fn db_update_message(
     token_count: Option<i32>,
     tool_traces_json: Option<String>,
     hidden_context: Option<String>,
+    provider_input_items_json: Option<String>,
+    provider_turn_state_json: Option<String>,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
 
@@ -2703,6 +2709,8 @@ pub async fn db_update_message(
         token_count,
         tool_traces_json,
         hidden_context,
+        provider_input_items_json,
+        provider_turn_state_json,
     )
     .await
     .map_err(Into::into)
