@@ -394,6 +394,7 @@ const registerUseChatStoreMocks = () => {
     gitBranchList: gitBranchListMock,
     getChatSnapshot: getChatSnapshotMock,
     importMessages: importMessagesMock,
+    updateMessage: mock(async () => undefined),
     updateConversationDetails: updateConversationDetailsMock,
   }));
 
@@ -1446,6 +1447,65 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
       status: 'InProgress',
     });
+  });
+
+  it('passes Architect mode and the post-tool recap instruction into streaming requests', async () => {
+    appState.mode = 'Architect';
+    appState.selectedTaskId = null;
+
+    const { streamChat } = await import('../services/streamingChat');
+    (
+      streamChat as unknown as {
+        mockImplementationOnce: (implementation: (options: {
+          mode?: AppMode;
+          messages: Array<{ role: string; content: string }>;
+          onComplete?: (result: {
+            visibleContent: string;
+            toolTraces: unknown[];
+            hiddenContext?: unknown;
+          }) => void;
+        }) => Promise<void>) => void;
+      }
+    ).mockImplementationOnce(async ({ onComplete }) => {
+      onComplete?.({
+        visibleContent: 'Plan prêt.',
+        toolTraces: [],
+        hiddenContext: undefined,
+      });
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('conv-1')],
+      messages: [],
+      selectedConversationId: 'conv-1',
+      selectedConversationIdsByMode: { Architect: 'conv-1' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'conv-1',
+      content: 'Utilise les outils puis fais-moi un bilan.',
+    });
+
+    const firstCall = (
+      streamChat as unknown as {
+        mock: {
+          calls: Array<Array<{ mode?: AppMode; messages: Array<{ role: string; content: string }> }>>;
+        };
+      }
+    ).mock.calls[0]?.[0];
+
+    expect(firstCall?.mode).toBe('Architect');
+    expect(firstCall?.messages[0]?.role).toBe('system');
+    expect(firstCall?.messages[0]?.content).toContain(
+      'always answer in natural language with a concise recap'
+    );
   });
 
   it('moves an implement task to awaiting response when the assistant reply contains valid quick replies', async () => {

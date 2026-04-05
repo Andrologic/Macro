@@ -342,6 +342,8 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
             token_count INTEGER,
             tool_traces_json TEXT,
             hidden_context TEXT,
+            provider_input_items_json TEXT,
+            provider_turn_state_json TEXT,
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         );
         "#,
@@ -367,6 +369,16 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
     }
     if !columns.contains("hidden_context") {
         sqlx::query("ALTER TABLE messages ADD COLUMN hidden_context TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("provider_input_items_json") {
+        sqlx::query("ALTER TABLE messages ADD COLUMN provider_input_items_json TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("provider_turn_state_json") {
+        sqlx::query("ALTER TABLE messages ADD COLUMN provider_turn_state_json TEXT")
             .execute(pool)
             .await?;
     }

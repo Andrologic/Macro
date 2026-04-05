@@ -112,6 +112,8 @@ const toMessageDto = (message: tauriIpc.DbMessage): ChatMessage => ({
   timestamp: message.created_at,
   tool_traces: parseToolTraces(message.tool_traces_json),
   hidden_context: message.hidden_context ?? undefined,
+  provider_input_items: tauriIpc.parseProviderInputItemsJson(message.provider_input_items_json),
+  provider_turn_state: tauriIpc.parseProviderTurnStateJson(message.provider_turn_state_json),
 });
 
 const toProviderDto = (provider: tauriIpc.DbProviderConfig): AIProvider => ({

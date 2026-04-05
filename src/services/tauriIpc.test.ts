@@ -64,14 +64,14 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
-  it("passes previous_response_id through ai_stream_chat", async () => {
+  it("passes the stable conversation id through ai_stream_chat", async () => {
     const tauriIpc = await loadTauriIpc();
 
     await tauriIpc.aiStreamChat({
       requestId: "req-1",
       providerId: "chatgpt",
       modelId: "gpt-5.4",
-      previousResponseId: "resp_123",
+      conversationId: "conv_123",
       messages: [
         {
           role: "tool",
@@ -90,7 +90,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
             provider_id: "chatgpt",
             model_id: "gpt-5.4",
             reasoning_effort: null,
-            previous_response_id: "resp_123",
+            conversation_id: "conv_123",
             messages: [
               {
                 role: "tool",

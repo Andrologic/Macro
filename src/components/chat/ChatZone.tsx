@@ -19,6 +19,7 @@ import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
 import { getFocusedProjectForGroup, getGlobalProjectById } from '../../services/globalProjects';
+import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
@@ -1023,8 +1024,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const conversationId = await ensureConversation();
     if (!conversationId) return;
     const content = hasExistingStrategy
-      ? 'User requested to regenerate the strategy. Reassess all identified needs for the active plan and call `strategy_generate` with a complete replacement strategy (full nodes and dependencies).'
-      : 'User requested to generate the strategy now. Based on all identified needs for the active plan, call `strategy_generate` with a complete initial strategy (full nodes and dependencies).';
+      ? `User requested to regenerate the strategy. Reassess all identified needs for the active plan and call \`strategy_generate\` with a complete replacement strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`
+      : `User requested to generate the strategy now. Based on all identified needs for the active plan, call \`strategy_generate\` with a complete initial strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`;
 
     try {
       await sendMessage({ conversationId, content });

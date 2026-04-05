@@ -171,6 +171,73 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
+  it('appends missing ChatGPT turn content when the final text only arrives at completion', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(
+      __testables.getMissingChatGptVisibleTurnSuffix('', 'Bilan final apres outils.')
+    ).toBe('Bilan final apres outils.');
+
+    expect(
+      __testables.getMissingChatGptVisibleTurnSuffix('Bilan', 'Bilan final apres outils.')
+    ).toBe(' final apres outils.');
+
+    expect(
+      __testables.getMissingChatGptVisibleTurnSuffix(
+        'Bilan final apres outils.',
+        'Bilan final apres outils.'
+      )
+    ).toBeNull();
+  });
+
+  it('builds provider turn state from ChatGPT native response metadata', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(
+      __testables.buildChatGptProviderTurnState('resp_123', [{ type: 'function_call' }])
+    ).toEqual({
+      provider: 'chatgpt',
+      response_id: 'resp_123',
+      output_items: [{ type: 'function_call' }],
+    });
+
+    expect(__testables.buildChatGptProviderTurnState(undefined, [])).toBeUndefined();
+  });
+
+  it('builds canonical function_call_output items for the stateless transcript', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(
+      __testables.buildFunctionCallOutputProviderInputItem(
+        'call_123',
+        'FILE: README.md\nSOURCE: WORKSPACE_FILE\n\nMacro'
+      )
+    ).toEqual({
+      type: 'function_call_output',
+      call_id: 'call_123',
+      output: 'FILE: README.md\nSOURCE: WORKSPACE_FILE\n\nMacro',
+    });
+  });
+
+  it('extracts visible assistant text from provider transcript items when output_text is absent', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(
+      __testables.extractVisibleTextFromProviderInputItems([
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'text',
+              text: { value: 'Bilan final apres outils.' },
+            },
+          ],
+        },
+      ])
+    ).toBe('Bilan final apres outils.');
+  });
+
   it('flags empty terminal ChatGPT turns only when no tool call remains', async () => {
     const { __testables } = await loadStreamingChat();
     expect(__testables.isEmptyTerminalChatGptTurn('', [])).toBe(true);
@@ -187,6 +254,54 @@ describe('streamingChat tool rendering helpers', () => {
         },
       ])
     ).toBe(false);
+  });
+
+  it('detects when an architect post-tool turn still lacks visible text', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(__testables.hasMeaningfulVisibleAssistantText('<think>Analyse</think>')).toBe(false);
+    expect(
+      __testables.shouldRetryArchitectPostToolResponse({
+        mode: 'Architect',
+        usedToolNames: new Set(['plan_list']),
+        visibleContent: '<think>Analyse</think>',
+        retryCount: 0,
+      })
+    ).toBe(true);
+    expect(
+      __testables.shouldRetryArchitectPostToolResponse({
+        mode: 'Architect',
+        usedToolNames: new Set(['plan_list']),
+        visibleContent: 'Bilan final.',
+        retryCount: 0,
+      })
+    ).toBe(false);
+  });
+
+  it('summarizes provider item text presence for architect diagnostics', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(
+      __testables.summarizeProviderTextPresence([
+        {
+          type: 'message',
+          content: [
+            {
+              type: 'text',
+              text: { value: 'Bilan final.' },
+            },
+          ],
+        },
+        {
+          type: 'output_text',
+          text: 'Bilan final.',
+        },
+      ])
+    ).toEqual({
+      hasMessageItem: true,
+      hasOutputTextItem: true,
+      hasTextContentPart: true,
+    });
   });
 
   it('compacts large file tool outputs before ChatGPT follow-up turns', async () => {
@@ -245,4 +360,5 @@ describe('streamingChat tool rendering helpers', () => {
     expect(__testables.isReasoningUnsupportedError('Unsupported value for reasoning')).toBe(true);
     expect(__testables.isReasoningUnsupportedError('Request failed: 500')).toBe(false);
   });
+
 });
