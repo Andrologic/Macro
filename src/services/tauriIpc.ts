@@ -1612,6 +1612,30 @@ export async function registerManualModel(params: {
   });
 }
 
+export async function updateManualModel(params: {
+  providerId: string;
+  currentModelId: string;
+  nextModelId: string;
+  name: string;
+}): Promise<DbAiModel[]> {
+  return invoke<DbAiModel[]>('db_update_manual_model', {
+    providerId: params.providerId,
+    currentModelId: params.currentModelId,
+    nextModelId: params.nextModelId,
+    name: params.name,
+  });
+}
+
+export async function deleteManualModel(params: {
+  providerId: string;
+  modelId: string;
+}): Promise<DbAiModel[]> {
+  return invoke<DbAiModel[]>('db_delete_manual_model', {
+    providerId: params.providerId,
+    modelId: params.modelId,
+  });
+}
+
 export async function setProviderModelEnabled(params: {
   providerId: string;
   modelId: string;

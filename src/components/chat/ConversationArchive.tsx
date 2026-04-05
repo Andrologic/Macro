@@ -709,30 +709,30 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
 
         <div className="px-3 py-2 border-b border-border">
           {isMultiSelectMode ? (
-            <div className="flex items-center justify-between gap-2 min-w-0">
-              <button
-                onClick={handleToggleSelectAll}
-                type="button"
-                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors min-w-0"
-                disabled={visibleConversationIds.length === 0 || isBulkDeleting}
-              >
-                <Icon name={isAllVisibleSelected ? 'square' : 'check-square'} size={12} />
-                <span className="truncate">{t('common.selectAll', 'Select all')}</span>
-              </button>
+            <div className="overflow-x-auto overflow-y-hidden">
+              <div className="flex min-w-max items-center gap-2 pr-1">
+                <button
+                  onClick={handleToggleSelectAll}
+                  type="button"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  disabled={visibleConversationIds.length === 0 || isBulkDeleting}
+                >
+                  <Icon name={isAllVisibleSelected ? 'square' : 'check-square'} size={12} />
+                  <span className="whitespace-nowrap">{t('common.selectAll', 'Select all')}</span>
+                </button>
 
-              <div className="flex items-center gap-1 shrink-0">
-                <span className="hidden xl:inline text-xs text-muted-foreground">
+                <span className="shrink-0 text-xs text-muted-foreground">
                   {t('chat.selectedCount', '{{count}} selected', { count: selectedIds.size })}
                 </span>
                 <button
                   onClick={handleBulkArchiveAction}
                   type="button"
                   disabled={selectedIds.size === 0 || isBulkDeleting}
-                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                   title={archiveButtonLabel}
                 >
                   <Icon name={archiveButtonIcon} size={12} />
-                  <span className="hidden 2xl:inline">{archiveButtonLabel}</span>
+                  <span className="whitespace-nowrap">{archiveButtonLabel}</span>
                 </button>
                 <button
                   type="button"
@@ -741,19 +741,19 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                     setIsBulkDeleteOpen(true);
                   }}
                   disabled={selectedIds.size === 0 || isBulkDeleting}
-                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-40 disabled:cursor-not-allowed"
                   title={t('common.delete', 'Delete')}
                 >
                   <Icon name="trash" size={12} />
-                  <span className="hidden 2xl:inline">{t('common.delete', 'Delete')}</span>
+                  <span className="whitespace-nowrap">{t('common.delete', 'Delete')}</span>
                 </button>
                 <button
                   type="button"
                   onClick={exitMultiSelectMode}
-                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 >
                   <Icon name="x" size={12} />
-                  <span className="hidden 2xl:inline">{t('common.cancel', 'Cancel')}</span>
+                  <span className="whitespace-nowrap">{t('common.cancel', 'Cancel')}</span>
                 </button>
               </div>
             </div>
