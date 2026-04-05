@@ -15,6 +15,8 @@ pub enum DbError {
     Sqlx(#[from] sqlx::Error),
     #[error("Failed to get app data directory")]
     AppDataDir,
+    #[error("Validation error: {0}")]
+    Validation(String),
     #[error("Migration error: {0}")]
     Migration(String),
 }

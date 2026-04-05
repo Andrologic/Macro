@@ -27,6 +27,11 @@ const computeIsFreeModel = (model: AIModel): boolean => {
   return isFreePricing(model.pricing);
 };
 
+const sortModelsByName = (models: AIModel[]): AIModel[] =>
+  [...models].sort((left, right) =>
+    (left.name || left.id).localeCompare(right.name || right.id, undefined, { sensitivity: 'base' })
+  );
+
 const LINKED_PROVIDER_TYPES = new Set(['chatgpt', 'copilot']);
 const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'copilot', 'openai', 'openrouter']);
 
@@ -380,6 +385,13 @@ interface ProviderStore {
   setProviderModelEnabled: (providerId: string, modelId: string, enabled: boolean) => Promise<void>;
   setAllProviderModelsEnabled: (providerId: string, enabled: boolean) => Promise<void>;
   addManualModel: (providerId: string, modelId: string, name: string) => Promise<void>;
+  updateManualModel: (
+    providerId: string,
+    currentModelId: string,
+    nextModelId: string,
+    name: string
+  ) => Promise<void>;
+  deleteManualModel: (providerId: string, modelId: string) => Promise<void>;
   loadProviderSettings: (providerId: string) => Promise<ProviderSettings | null>;
   updateProviderSettings: (providerId: string, updates: Partial<ProviderSettings>) => Promise<void>;
   selectProvider: (providerId: string) => void;
@@ -963,7 +975,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     set((state) => ({
       modelsByProvider: {
         ...state.modelsByProvider,
-        [providerId]: [
+        [providerId]: sortModelsByName([
           ...(state.modelsByProvider[providerId] || []),
           {
             id: modelId,
@@ -976,9 +988,114 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               get().providerConfigs.find((provider) => provider.id === providerId)?.providerType
             ),
           },
-        ],
+        ]),
       },
     }));
+  },
+
+  updateManualModel: async (
+    providerId: string,
+    currentModelId: string,
+    nextModelId: string,
+    name: string
+  ) => {
+    if (tauriIpc.isTauriAvailable()) {
+      const updated = await tauriIpc.updateManualModel({
+        providerId,
+        currentModelId,
+        nextModelId,
+        name,
+      });
+      const providerType = get().providerConfigs.find((provider) => provider.id === providerId)?.providerType;
+      const normalized = updated.map((model) => normalizeDbModel(model, providerType));
+      set((state) => ({
+        modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+      }));
+    } else {
+      set((state) => {
+        const models = state.modelsByProvider[providerId] || [];
+        const duplicate = models.some(
+          (model) => model.id === nextModelId && model.id !== currentModelId
+        );
+        if (duplicate) {
+          throw new Error(`Model ${nextModelId} already exists for provider ${providerId}.`);
+        }
+
+        const nextModels = sortModelsByName(
+          models.map((model) => {
+            if (model.id !== currentModelId) return model;
+            const updatedModel: AIModel = {
+              ...model,
+              id: nextModelId,
+              name,
+            };
+            return {
+              ...updatedModel,
+              isFree: computeIsFreeModel(updatedModel),
+            };
+          })
+        );
+
+        return {
+          modelsByProvider: {
+            ...state.modelsByProvider,
+            [providerId]: nextModels,
+          },
+        };
+      });
+    }
+
+    const { selectedProviderId, selectedModelId, modelsByProvider } = get();
+    if (selectedProviderId !== providerId) {
+      return;
+    }
+
+    const updatedModels = modelsByProvider[providerId] || [];
+    if (selectedModelId === currentModelId) {
+      set({ selectedModelId: nextModelId });
+      return;
+    }
+
+    const selected = updatedModels.find((model) => model.id === selectedModelId);
+    if (!selected || selected.isEnabled === false) {
+      set({ selectedModelId: getFirstEnabledModelId(updatedModels) });
+    }
+  },
+
+  deleteManualModel: async (providerId: string, modelId: string) => {
+    if (tauriIpc.isTauriAvailable()) {
+      const updated = await tauriIpc.deleteManualModel({ providerId, modelId });
+      const providerType = get().providerConfigs.find((provider) => provider.id === providerId)?.providerType;
+      const normalized = updated.map((model) => normalizeDbModel(model, providerType));
+      set((state) => ({
+        modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+      }));
+    } else {
+      set((state) => ({
+        modelsByProvider: {
+          ...state.modelsByProvider,
+          [providerId]: (state.modelsByProvider[providerId] || []).filter(
+            (model) => model.id !== modelId
+          ),
+        },
+      }));
+    }
+
+    const { selectedProviderId, selectedModelId, modelsByProvider } = get();
+    if (selectedProviderId !== providerId) {
+      return;
+    }
+
+    const updatedModels = modelsByProvider[providerId] || [];
+    if (selectedModelId === modelId) {
+      set({ selectedModelId: getFirstEnabledModelId(updatedModels) });
+      return;
+    }
+
+    const selected = updatedModels.find((model) => model.id === selectedModelId);
+    if (!selected || selected.isEnabled === false) {
+      set({ selectedModelId: getFirstEnabledModelId(updatedModels) });
+    }
   },
 
   loadProviderSettings: async (providerId: string) => {
