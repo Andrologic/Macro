@@ -482,6 +482,8 @@ pub fn run() {
             commands::db_set_provider_model_enabled,
             commands::db_set_all_provider_models_enabled,
             commands::db_register_manual_model,
+            commands::db_update_manual_model,
+            commands::db_delete_manual_model,
             commands::db_get_provider_settings,
             commands::db_update_provider_settings,
             commands::db_get_setting,

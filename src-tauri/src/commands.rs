@@ -2893,6 +2893,48 @@ pub async fn db_register_manual_model(
 }
 
 #[tauri::command]
+pub async fn db_update_manual_model(
+    pool: State<'_, DbPool>,
+    provider_id: String,
+    current_model_id: String,
+    next_model_id: String,
+    name: String,
+) -> CommandResult<Vec<AiModel>> {
+    let pool = get_pool(&pool).await?;
+
+    repository::update_manual_model(
+        &pool,
+        &provider_id,
+        &current_model_id,
+        &next_model_id,
+        &name,
+    )
+    .await
+    .map_err(CommandError::from)?;
+
+    repository::list_models_by_provider(&pool, &provider_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_delete_manual_model(
+    pool: State<'_, DbPool>,
+    provider_id: String,
+    model_id: String,
+) -> CommandResult<Vec<AiModel>> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_manual_model(&pool, &provider_id, &model_id)
+        .await
+        .map_err(CommandError::from)?;
+
+    repository::list_models_by_provider(&pool, &provider_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_set_provider_model_enabled(
     pool: State<'_, DbPool>,
     provider_id: String,

@@ -1,4 +1,5 @@
 use super::models::*;
+use super::DbError;
 use super::DbResult;
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
@@ -1057,6 +1058,127 @@ pub async fn register_manual_model(
     .bind(&now)
     .execute(pool)
     .await?;
+
+    Ok(())
+}
+
+pub async fn update_manual_model(
+    pool: &SqlitePool,
+    provider_id: &str,
+    current_model_id: &str,
+    next_model_id: &str,
+    name: &str,
+) -> DbResult<()> {
+    let current_id = format!("{}::{}", provider_id, current_model_id);
+    let next_id = format!("{}::{}", provider_id, next_model_id);
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let mut tx = pool.begin().await?;
+
+    let existing = sqlx::query(
+        r#"
+        SELECT is_enabled, first_seen_at
+        FROM ai_models
+        WHERE id = ? AND provider_id = ? AND is_manual = 1
+        "#,
+    )
+    .bind(&current_id)
+    .bind(provider_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some(existing) = existing else {
+        return Err(DbError::Validation(format!(
+            "Manual model {current_model_id} not found for provider {provider_id}."
+        )));
+    };
+
+    if current_model_id != next_model_id {
+        let conflict = sqlx::query(
+            r#"
+            SELECT id
+            FROM ai_models
+            WHERE id = ? AND provider_id = ?
+            "#,
+        )
+        .bind(&next_id)
+        .bind(provider_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if conflict.is_some() {
+            return Err(DbError::Validation(format!(
+                "Model {next_model_id} already exists for provider {provider_id}."
+            )));
+        }
+
+        sqlx::query("DELETE FROM ai_models WHERE id = ? AND provider_id = ? AND is_manual = 1")
+            .bind(&current_id)
+            .bind(provider_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO ai_models (
+                id, provider_id, model_id, name, description, owned_by,
+                pricing_prompt, pricing_completion, pricing_request,
+                is_enabled, is_manual, first_seen_at, last_seen_at
+            )
+            VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, 1, ?, ?)
+            "#,
+        )
+        .bind(&next_id)
+        .bind(provider_id)
+        .bind(next_model_id)
+        .bind(name)
+        .bind(existing.get::<i32, _>("is_enabled"))
+        .bind(existing.get::<String, _>("first_seen_at"))
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query(
+            r#"
+            UPDATE ai_models
+            SET name = ?, last_seen_at = ?
+            WHERE id = ? AND provider_id = ? AND is_manual = 1
+            "#,
+        )
+        .bind(name)
+        .bind(&now)
+        .bind(&current_id)
+        .bind(provider_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn delete_manual_model(
+    pool: &SqlitePool,
+    provider_id: &str,
+    model_id: &str,
+) -> DbResult<()> {
+    let id = format!("{}::{}", provider_id, model_id);
+    let result = sqlx::query(
+        r#"
+        DELETE FROM ai_models
+        WHERE id = ? AND provider_id = ? AND is_manual = 1
+        "#,
+    )
+    .bind(&id)
+    .bind(provider_id)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::Validation(format!(
+            "Manual model {model_id} not found for provider {provider_id}."
+        )));
+    }
 
     Ok(())
 }
