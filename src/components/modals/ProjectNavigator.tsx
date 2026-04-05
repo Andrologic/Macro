@@ -19,6 +19,7 @@ import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { toast } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import type { Project, ProjectGroup } from '../../types';
+import { openProjectInExternalApp, type ProjectOpenAction } from '../../services/projectOpeners';
 
 interface ProjectNavigatorProps {
   isOpen: boolean;
@@ -29,6 +30,8 @@ interface ProjectItemProps {
   project: Project;
   onSelect: () => void;
   onMenuOpen: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onOpenExternal: (action: ProjectOpenAction) => void;
+  busyAction: ProjectOpenAction | null;
 }
 
 interface MenuPosition {
@@ -79,7 +82,42 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
   project,
   onSelect,
   onMenuOpen,
+  onOpenExternal,
+  busyAction,
 }) => {
+  const { t } = useTranslation();
+
+  const renderQuickAction = (
+    action: ProjectOpenAction,
+    iconName: 'code' | 'terminal' | 'folder-open',
+    title: string
+  ) => {
+    const isBusy = busyAction === action;
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          if (!isBusy) {
+            onOpenExternal(action);
+          }
+        }}
+        title={title}
+        aria-label={title}
+        className={cn(
+          'p-1 rounded hover:bg-accent transition-colors',
+          isBusy && 'cursor-wait opacity-60'
+        )}
+      >
+        <Icon
+          name={isBusy ? 'loader' : iconName}
+          size={14}
+          className={cn('text-muted-foreground', isBusy && 'animate-spin')}
+        />
+      </button>
+    );
+  };
+
   return (
     <div
       onClick={onSelect}
@@ -116,6 +154,23 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
       </div>
 
       <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          {renderQuickAction(
+            'editor',
+            'code',
+            t('projects.openInEditor', 'Open in code editor')
+          )}
+          {renderQuickAction(
+            'terminal',
+            'terminal',
+            t('projects.openInTerminal', 'Open in terminal')
+          )}
+          {renderQuickAction(
+            'files',
+            'folder-open',
+            t('projects.openInFiles', 'Open in file explorer')
+          )}
+        </div>
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -158,6 +213,9 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     { type: 'group'; group: ProjectGroup } | { type: 'project'; project: Project } | null
   >(null);
   const [isSubmittingConfirm, setIsSubmittingConfirm] = useState(false);
+  const [busyOpenActionByProjectId, setBusyOpenActionByProjectId] = useState<
+    Record<string, ProjectOpenAction | null>
+  >({});
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -263,6 +321,31 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       toast.error(message);
     } finally {
       setIsSubmittingConfirm(false);
+    }
+  };
+
+  const handleOpenExternal = async (
+    project: Project,
+    action: ProjectOpenAction
+  ): Promise<void> => {
+    setBusyOpenActionByProjectId((current) => ({ ...current, [project.id]: action }));
+    try {
+      await openProjectInExternalApp({
+        targetPath: project.path,
+        action,
+      });
+    } catch (error) {
+      const fallbackTitle =
+        action === 'editor'
+          ? t('projects.openInEditorFailed', 'Unable to open this subproject in the configured editor.')
+          : action === 'terminal'
+            ? t('projects.openInTerminalFailed', 'Unable to open this subproject in the configured terminal.')
+            : t('projects.openInFilesFailed', 'Unable to open this subproject in the configured file explorer.');
+      toast.error(fallbackTitle, {
+        description: toServiceError(error).message,
+      });
+    } finally {
+      setBusyOpenActionByProjectId((current) => ({ ...current, [project.id]: null }));
     }
   };
 
@@ -523,6 +606,10 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                               <ProjectItem
                                 project={project}
                                 onSelect={() => handleSelectGroup(group.id)}
+                                onOpenExternal={(action) => {
+                                  void handleOpenExternal(project, action);
+                                }}
+                                busyAction={busyOpenActionByProjectId[project.id] ?? null}
                                 onMenuOpen={(e) => {
                                   e.stopPropagation();
                                   const trigger = e.currentTarget;

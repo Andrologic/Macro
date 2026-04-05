@@ -7,6 +7,7 @@
 
 import { load, Store } from "@tauri-apps/plugin-store";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
+import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
 
 // Preference keys
 export const PREF_KEYS = {
@@ -61,6 +62,9 @@ export const PREF_KEYS = {
   CHAT_ARCHIVED_CONVERSATION_IDS: "chatArchivedConversationIds",
   NATIVE_MACOS_TITLEBAR_BG: "nativeMacosTitlebarBg",
   NATIVE_MACOS_TITLEBAR_THEME: "nativeMacosTitlebarTheme",
+  PROJECT_OPEN_EDITOR_COMMAND: "projectOpenEditorCommand",
+  PROJECT_OPEN_TERMINAL_COMMAND: "projectOpenTerminalCommand",
+  PROJECT_OPEN_FILES_COMMAND: "projectOpenFilesCommand",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -117,6 +121,9 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS]: [],
   [PREF_KEYS.NATIVE_MACOS_TITLEBAR_BG]: "#09090b",
   [PREF_KEYS.NATIVE_MACOS_TITLEBAR_THEME]: "dark",
+  [PREF_KEYS.PROJECT_OPEN_EDITOR_COMMAND]: getDefaultProjectOpenCommand('editor'),
+  [PREF_KEYS.PROJECT_OPEN_TERMINAL_COMMAND]: getDefaultProjectOpenCommand('terminal'),
+  [PREF_KEYS.PROJECT_OPEN_FILES_COMMAND]: getDefaultProjectOpenCommand('files'),
 };
 
 // Store instance (singleton)

@@ -1,11 +1,13 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { changeLanguage, resolveSupportedLanguage } from '../../../i18n';
 import { SUPPORTED_LANGUAGE_METADATA } from '../../../i18n/languages';
 import type { ProjectSwitchPolicy } from '../../../services/localProjectContext';
+import { loadPreference, PREF_DEFAULTS, PREF_KEYS, savePreferenceDebounced } from '../../../services/preferences';
 import { useAppStore } from '../../../stores/useAppStore';
 // @ts-ignore
 import { Select } from '../../ui/Select';
+import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';
 
 export const GeneralView: React.FC = () => {
@@ -17,6 +19,41 @@ export const GeneralView: React.FC = () => {
     const implementExecutionMode = useAppStore((state) => state.implementExecutionMode);
     const setImplementExecutionMode = useAppStore((state) => state.setImplementExecutionMode);
     const selectedLanguage = resolveSupportedLanguage(i18n.resolvedLanguage || i18n.language);
+    const [editorCommand, setEditorCommand] = useState(
+        String(PREF_DEFAULTS[PREF_KEYS.PROJECT_OPEN_EDITOR_COMMAND] || '')
+    );
+    const [terminalCommand, setTerminalCommand] = useState(
+        String(PREF_DEFAULTS[PREF_KEYS.PROJECT_OPEN_TERMINAL_COMMAND] || '')
+    );
+    const [filesCommand, setFilesCommand] = useState(
+        String(PREF_DEFAULTS[PREF_KEYS.PROJECT_OPEN_FILES_COMMAND] || '')
+    );
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadCommands = async () => {
+            const [editor, terminal, files] = await Promise.all([
+                loadPreference<string>(PREF_KEYS.PROJECT_OPEN_EDITOR_COMMAND),
+                loadPreference<string>(PREF_KEYS.PROJECT_OPEN_TERMINAL_COMMAND),
+                loadPreference<string>(PREF_KEYS.PROJECT_OPEN_FILES_COMMAND),
+            ]);
+
+            if (cancelled) {
+                return;
+            }
+
+            setEditorCommand(editor);
+            setTerminalCommand(terminal);
+            setFilesCommand(files);
+        };
+
+        void loadCommands();
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -111,6 +148,64 @@ export const GeneralView: React.FC = () => {
                             checked={implementExecutionMode === 'full_auto'}
                             onCheckedChange={(checked) => setImplementExecutionMode(checked ? 'full_auto' : 'semi_auto')}
                         />
+                    </div>
+                    <div className="h-px bg-border/50" />
+                    <div className="space-y-4">
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium text-foreground">
+                                {t('settings.openSubprojectsWith', 'Open subprojects with')}
+                            </label>
+                            <p className="text-xs text-muted-foreground">
+                                {t(
+                                    'settings.openSubprojectsWithDesc',
+                                    'Configure the external commands used by the project modal quick actions.'
+                                )}
+                            </p>
+                        </div>
+                        <div className="grid grid-cols-1 gap-4">
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-medium text-foreground">
+                                    {t('settings.codeEditorCommand', 'Code editor command')}
+                                </label>
+                                <Input
+                                    value={editorCommand}
+                                    onChange={(event) => {
+                                        const nextValue = event.target.value;
+                                        setEditorCommand(nextValue);
+                                        savePreferenceDebounced(PREF_KEYS.PROJECT_OPEN_EDITOR_COMMAND, nextValue);
+                                    }}
+                                    placeholder={t('settings.codeEditorCommandPlaceholder', 'Example: code -n')}
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-medium text-foreground">
+                                    {t('settings.terminalCommand', 'Terminal command')}
+                                </label>
+                                <Input
+                                    value={terminalCommand}
+                                    onChange={(event) => {
+                                        const nextValue = event.target.value;
+                                        setTerminalCommand(nextValue);
+                                        savePreferenceDebounced(PREF_KEYS.PROJECT_OPEN_TERMINAL_COMMAND, nextValue);
+                                    }}
+                                    placeholder={t('settings.terminalCommandPlaceholder', 'Example: wezterm start --cwd')}
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-medium text-foreground">
+                                    {t('settings.fileExplorerCommand', 'File explorer command')}
+                                </label>
+                                <Input
+                                    value={filesCommand}
+                                    onChange={(event) => {
+                                        const nextValue = event.target.value;
+                                        setFilesCommand(nextValue);
+                                        savePreferenceDebounced(PREF_KEYS.PROJECT_OPEN_FILES_COMMAND, nextValue);
+                                    }}
+                                    placeholder={t('settings.fileExplorerCommandPlaceholder', 'Example: open -a Finder')}
+                                />
+                            </div>
+                        </div>
                     </div>
                 </div>
             </section>

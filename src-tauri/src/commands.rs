@@ -24,6 +24,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
@@ -234,6 +235,201 @@ fn to_macro_virtual_relative(path: &str) -> String {
     } else {
         format!(".macro/{}", normalized.trim_start_matches("./"))
     }
+}
+
+#[derive(Clone, Copy)]
+enum ExternalOpenAction {
+    Editor,
+    Terminal,
+    Files,
+}
+
+impl ExternalOpenAction {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "editor" => Some(Self::Editor),
+            "terminal" => Some(Self::Terminal),
+            "files" => Some(Self::Files),
+            _ => None,
+        }
+    }
+}
+
+struct ExternalLaunchCommand {
+    program: String,
+    args: Vec<String>,
+    current_dir: Option<PathBuf>,
+}
+
+fn target_parent_dir(path: &Path) -> Option<PathBuf> {
+    if path.is_dir() {
+        Some(path.to_path_buf())
+    } else {
+        path.parent().map(Path::to_path_buf)
+    }
+}
+
+fn apply_target_path_to_args(
+    raw_args: Vec<String>,
+    target_path: &Path,
+    action: ExternalOpenAction,
+) -> Vec<String> {
+    let target = target_path.to_string_lossy().to_string();
+    let mut replaced_any = false;
+    let mut args = raw_args
+        .into_iter()
+        .map(|arg| {
+            let replaced = arg
+                .replace("{path}", &target)
+                .replace("{target}", &target)
+                .replace("{cwd}", &target);
+            if replaced != arg {
+                replaced_any = true;
+            }
+            replaced
+        })
+        .collect::<Vec<_>>();
+
+    if !replaced_any {
+        match action {
+            ExternalOpenAction::Editor | ExternalOpenAction::Files | ExternalOpenAction::Terminal => {
+                args.push(target);
+            }
+        }
+    }
+
+    args
+}
+
+fn build_external_open_command(
+    action: ExternalOpenAction,
+    target_path: &Path,
+    command_override: Option<&str>,
+) -> CommandResult<ExternalLaunchCommand> {
+    if let Some(command_override) = command_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let parts = shell_words::split(command_override)
+            .map_err(|error| command_error(format!("Invalid open command: {}", error)))?;
+        let (program, raw_args) = parts
+            .split_first()
+            .ok_or_else(|| command_error("Open command cannot be empty"))?;
+        return Ok(ExternalLaunchCommand {
+            program: program.to_string(),
+            args: apply_target_path_to_args(raw_args.to_vec(), target_path, action),
+            current_dir: target_parent_dir(target_path),
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    let command = match action {
+        ExternalOpenAction::Editor => ExternalLaunchCommand {
+            program: "open".to_string(),
+            args: vec![
+                "-a".to_string(),
+                "Visual Studio Code".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        ExternalOpenAction::Terminal => ExternalLaunchCommand {
+            program: "open".to_string(),
+            args: vec![
+                "-a".to_string(),
+                "Terminal".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        ExternalOpenAction::Files => ExternalLaunchCommand {
+            program: "open".to_string(),
+            args: vec![
+                "-a".to_string(),
+                "Finder".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+    };
+
+    #[cfg(target_os = "windows")]
+    let command = match action {
+        ExternalOpenAction::Editor => ExternalLaunchCommand {
+            program: "code".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        ExternalOpenAction::Terminal => ExternalLaunchCommand {
+            program: "wt".to_string(),
+            args: vec!["-d".to_string(), target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        ExternalOpenAction::Files => ExternalLaunchCommand {
+            program: "explorer".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let command = match action {
+        ExternalOpenAction::Editor => ExternalLaunchCommand {
+            program: "code".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        ExternalOpenAction::Terminal => ExternalLaunchCommand {
+            program: "x-terminal-emulator".to_string(),
+            args: vec![
+                "--working-directory".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        ExternalOpenAction::Files => ExternalLaunchCommand {
+            program: "xdg-open".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+    };
+
+    Ok(command)
+}
+
+#[tauri::command]
+pub async fn open_external_target(
+    target_path: String,
+    action: String,
+    command_override: Option<String>,
+) -> CommandResult<()> {
+    let action = ExternalOpenAction::parse(&action)
+        .ok_or_else(|| command_error(format!("Unsupported open action: {}", action)))?;
+    let resolved_path = PathBuf::from(target_path.trim());
+    let canonical_path = resolved_path
+        .canonicalize()
+        .map_err(|error| command_error(format!("Open target not found: {}", error)))?;
+
+    let launch = build_external_open_command(action, &canonical_path, command_override.as_deref())?;
+
+    tokio::task::spawn_blocking(move || {
+        let mut command = Command::new(&launch.program);
+        command.args(&launch.args);
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
+
+        if let Some(current_dir) = launch.current_dir {
+            command.current_dir(current_dir);
+        }
+
+        command
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| command_error(format!("Failed to launch external app: {}", error)))
+    })
+    .await
+    .map_err(|error| command_error(format!("External launch task failed: {}", error)))?
 }
 
 #[allow(clippy::too_many_arguments)]
