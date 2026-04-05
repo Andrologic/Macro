@@ -24,10 +24,9 @@ interface ToolRenderTrace {
   status: 'running' | 'done';
 }
 
-interface RenderContentState {
-  segments: RenderSegment[];
-  tools: ToolRenderTrace[];
-}
+type RenderBlock =
+  | RenderSegment
+  | { type: 'tool_group'; tools: ToolRenderTrace[] };
 
 const PlainMarkdownFallback: React.FC<{ content: string }> = ({ content }) => (
   <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
@@ -115,6 +114,8 @@ const RunningToolTraceGroup: React.FC<{ tools: ToolRenderTrace[] }> = ({ tools }
   return (
     <div
       data-testid="tool-traces-running"
+      data-group-status="running"
+      data-testid-group="tool-trace-group"
       className="mt-3 mb-3 rounded-lg border border-border bg-card/40 px-3 py-2"
     >
       <div className="mb-2 flex items-center gap-2">
@@ -145,6 +146,8 @@ const CompletedToolTraceGroup: React.FC<{ tools: ToolRenderTrace[] }> = ({ tools
   return (
     <div
       data-testid="tool-traces-completed"
+      data-group-status="done"
+      data-testid-group="tool-trace-group"
       className="mt-3 mb-3 rounded-lg border border-border bg-card/40 px-3 py-1"
     >
       <Accordion type="single" collapsible>
@@ -247,8 +250,8 @@ const splitThinkBlocks = (content: string): Array<{ type: 'text' | 'thinking'; c
 const splitLegacyToolBlocks = (
   content: string,
   isStreaming: boolean
-): { segments: RenderSegment[]; tools: ToolRenderTrace[] } => {
-  const segments: RenderSegment[] = [];
+): RenderBlock[] => {
+  const blocks: RenderBlock[] = [];
   const tools: ToolRenderTrace[] = [];
   const lines = content.split('\n');
   const textBuffer: string[] = [];
@@ -256,11 +259,19 @@ const splitLegacyToolBlocks = (
   const toolDoneRegex = /^\[\s*TOOL_DONE\s*\]\s*([a-zA-Z0-9_-]+)(?:\s*\((.+?)\))?\s*$/i;
   const pendingToolIndexes: number[] = [];
 
+  const flushTools = () => {
+    if (tools.length === 0) return;
+    blocks.push({ type: 'tool_group', tools: tools.map((tool) => ({ ...tool })) });
+    tools.length = 0;
+    pendingToolIndexes.length = 0;
+  };
+
   const flushText = () => {
     if (textBuffer.length === 0) return;
     const text = textBuffer.join('\n');
     if (text.trim()) {
-      segments.push({ type: 'text', content: text });
+      flushTools();
+      blocks.push({ type: 'text', content: text });
     }
     textBuffer.length = 0;
   };
@@ -317,7 +328,8 @@ const splitLegacyToolBlocks = (
   }
 
   flushText();
-  return { segments, tools };
+  flushTools();
+  return blocks;
 };
 
 const normalizeToolCallMarkup = (content: string): string => {
@@ -351,37 +363,80 @@ const normalizeToolCallMarkup = (content: string): string => {
   return normalized;
 };
 
+const buildStructuredToolGroups = (
+  content: string,
+  toolTraces: ToolTrace[]
+): RenderBlock[] => {
+  const blocks: RenderBlock[] = [];
+  let cursor = 0;
+  let toolIndex = 0;
+
+  const pushContentSlice = (slice: string) => {
+    for (const segment of splitThinkBlocks(slice)) {
+      blocks.push(segment);
+    }
+  };
+
+  while (toolIndex < toolTraces.length) {
+    const anchor = Math.max(
+      cursor,
+      Math.min(content.length, toolTraces[toolIndex]?.visible_offset ?? content.length)
+    );
+
+    if (anchor > cursor) {
+      pushContentSlice(content.slice(cursor, anchor));
+      cursor = anchor;
+    }
+
+    const groupTools: ToolRenderTrace[] = [];
+    while (toolIndex < toolTraces.length) {
+      const trace = toolTraces[toolIndex]!;
+      const traceAnchor = Math.max(
+        cursor,
+        Math.min(content.length, trace.visible_offset ?? content.length)
+      );
+      if (traceAnchor !== anchor) break;
+      groupTools.push({
+        toolName: trace.tool_name,
+        detail: trace.detail,
+        status: trace.status,
+      });
+      toolIndex += 1;
+    }
+
+    if (groupTools.length > 0) {
+      blocks.push({ type: 'tool_group', tools: groupTools });
+    }
+  }
+
+  if (cursor < content.length) {
+    pushContentSlice(content.slice(cursor));
+  }
+
+  return blocks;
+};
+
 const buildRenderState = (
   content: string,
   isStreaming: boolean,
   toolTraces?: ToolTrace[] | null
-): RenderContentState => {
+): RenderBlock[] => {
   if (toolTraces && toolTraces.length > 0) {
-    return {
-      segments: splitThinkBlocks(content),
-      tools: toolTraces.map((toolTrace) => ({
-        toolName: toolTrace.tool_name,
-        detail: toolTrace.detail,
-        status: toolTrace.status,
-      })),
-    };
+    return buildStructuredToolGroups(content, toolTraces);
   }
 
   const normalizedContent = normalizeToolCallMarkup(content);
-  const segments: RenderSegment[] = [];
-  const tools: ToolRenderTrace[] = [];
+  const blocks: RenderBlock[] = [];
 
   for (const segment of splitThinkBlocks(normalizedContent)) {
     if (segment.type === 'thinking') {
-      segments.push(segment);
+      blocks.push(segment);
       continue;
     }
-    const legacyData = splitLegacyToolBlocks(segment.content, isStreaming);
-    segments.push(...legacyData.segments);
-    tools.push(...legacyData.tools);
+    blocks.push(...splitLegacyToolBlocks(segment.content, isStreaming));
   }
 
-  return { segments, tools };
+  return blocks;
 };
 
 const MarkdownRendererBase: React.FC<MarkdownRendererProps> = ({
@@ -390,40 +445,46 @@ const MarkdownRendererBase: React.FC<MarkdownRendererProps> = ({
   isStreaming = false,
   toolTraces,
 }) => {
-  const { segments, tools } = useMemo<RenderContentState>(
+  const blocks = useMemo<RenderBlock[]>(
     () => buildRenderState(content, isStreaming, toolTraces),
     [content, isStreaming, toolTraces]
   );
-  const anyRunningTool = tools.some((tool) => tool.status === 'running');
 
   return (
     <div className={cn('markdown-content', className)}>
-      {segments.map((segment, index) => {
-        if (segment.type === 'thinking') {
+      {blocks.map((block, index) => {
+        if (block.type === 'thinking') {
           return (
-            <ThinkingBlock key={`thinking-${index}`} content={segment.content} blockKey={index}>
-              <Suspense fallback={<PlainMarkdownFallback content={segment.content} />}>
-                <MarkdownRichContent content={segment.content} />
+            <ThinkingBlock key={`thinking-${index}`} content={block.content} blockKey={index}>
+              <Suspense fallback={<PlainMarkdownFallback content={block.content} />}>
+                <MarkdownRichContent content={block.content} />
               </Suspense>
             </ThinkingBlock>
           );
         }
 
+        if (block.type === 'tool_group') {
+          const anyRunningTool = block.tools.some((tool) => tool.status === 'running');
+          return anyRunningTool ? (
+            <RunningToolTraceGroup key={`tools-${index}`} tools={block.tools} />
+          ) : (
+            <CompletedToolTraceGroup key={`tools-${index}`} tools={block.tools} />
+          );
+        }
+
         return (
-          <Suspense key={`text-${index}`} fallback={<PlainMarkdownFallback content={segment.content} />}>
-            <MarkdownRichContent content={segment.content} />
+          <Suspense key={`text-${index}`} fallback={<PlainMarkdownFallback content={block.content} />}>
+            <MarkdownRichContent content={block.content} />
           </Suspense>
         );
       })}
-      {tools.length > 0 && (
-        anyRunningTool ? <RunningToolTraceGroup tools={tools} /> : <CompletedToolTraceGroup tools={tools} />
-      )}
     </div>
   );
 };
 
 export const __testables = {
   buildRenderState,
+  buildStructuredToolGroups,
   splitLegacyToolBlocks,
 };
 
