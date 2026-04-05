@@ -56,6 +56,11 @@ const getToolNames = (container: HTMLElement): string[] =>
     (element) => element.getAttribute('data-tool-name') || ''
   );
 
+const getToolGroupContainers = (container: HTMLElement): Element[] =>
+  Array.from(
+    container.querySelectorAll('[data-testid="tool-traces-running"], [data-testid="tool-traces-completed"]')
+  );
+
 describe('MarkdownRenderer tool trace rendering', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
@@ -168,6 +173,58 @@ describe('MarkdownRenderer tool trace rendering', () => {
 
     expect(trigger?.getAttribute('aria-expanded')).toBe('true');
     expect(getToolNames(container!)).toEqual(['read', 'grep']);
+  });
+
+  it('splits structured tool traces into multiple groups when new visible content appears', async () => {
+    const { MarkdownRenderer } = await loadMarkdownRenderer();
+    const content = [
+      '<think>First pass</think>',
+      'Interim note',
+      '<think>Second pass</think>',
+      'Final answer',
+    ].join('\n');
+    const secondGroupOffset = content.indexOf('<think>Second pass</think>');
+
+    await act(async () => {
+      root?.render(
+        <MarkdownRenderer
+          content={content}
+          toolTraces={[
+            { tool_call_id: 'call_1', tool_name: 'read', detail: 'README.md', status: 'done', visible_offset: 0 },
+            { tool_call_id: 'call_2', tool_name: 'grep', detail: 'src', status: 'done', visible_offset: 0 },
+            {
+              tool_call_id: 'call_3',
+              tool_name: 'terminal_run',
+              detail: 'bun test',
+              status: 'done',
+              visible_offset: secondGroupOffset,
+            },
+          ]}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const groups = getToolGroupContainers(container!);
+    expect(groups).toHaveLength(2);
+
+    const triggers = Array.from(
+      container!.querySelectorAll('[data-testid="tool-traces-completed-trigger"]')
+    ) as HTMLButtonElement[];
+    expect(triggers).toHaveLength(2);
+
+    await act(async () => {
+      triggers[0]?.click();
+      triggers[1]?.click();
+      await Promise.resolve();
+    });
+
+    const toolNamesByGroup = groups.map((group) =>
+      Array.from(group.querySelectorAll('[data-testid="tool-trace-item"]')).map(
+        (element) => element.getAttribute('data-tool-name') || ''
+      )
+    );
+    expect(toolNamesByGroup).toEqual([['read', 'grep'], ['terminal_run']]);
   });
 
   it('applies the same grouped rendering to legacy TOOL markers', async () => {
