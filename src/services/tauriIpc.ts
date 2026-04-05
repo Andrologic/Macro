@@ -236,6 +236,8 @@ export interface DbAppSetting {
   updated_at: string;
 }
 
+export type ExternalOpenAction = 'editor' | 'terminal' | 'files';
+
 export interface DbProjectContextState {
   project_id: string;
   group_id: string | null;
@@ -1726,6 +1728,18 @@ export async function dbReconcileProjectRegistry(params: {
       selected_group_id: params.selectedGroupId ?? null,
       selected_project_id: params.selectedProjectId ?? null,
     },
+  });
+}
+
+export async function openExternalTarget(params: {
+  targetPath: string;
+  action: ExternalOpenAction;
+  commandOverride?: string | null;
+}): Promise<void> {
+  return invoke('open_external_target', {
+    targetPath: params.targetPath,
+    action: params.action,
+    commandOverride: params.commandOverride ?? null,
   });
 }
 
