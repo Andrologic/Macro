@@ -1,9 +1,37 @@
 use super::models::*;
 use super::DbError;
 use super::DbResult;
+use serde_json::Value;
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use std::collections::HashSet;
+
+fn parse_reasoning_efforts(raw: Option<String>) -> Option<Vec<String>> {
+    let Some(raw) = raw else {
+        return None;
+    };
+
+    serde_json::from_str::<Vec<Value>>(&raw).ok().and_then(|values| {
+        let efforts = values
+            .into_iter()
+            .filter_map(|value| value.as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+
+        if efforts.is_empty() {
+            None
+        } else {
+            Some(efforts)
+        }
+    })
+}
+
+fn serialize_reasoning_efforts(efforts: Option<&Vec<String>>) -> Option<String> {
+    let Some(efforts) = efforts.filter(|items| !items.is_empty()) else {
+        return None;
+    };
+
+    serde_json::to_string(efforts).ok()
+}
 
 // ============ CONVERSATIONS ============
 
@@ -922,6 +950,7 @@ pub async fn list_models_by_provider(
         r#"
         SELECT id, provider_id, model_id, name, description, owned_by,
                pricing_prompt, pricing_completion, pricing_request,
+               reasoning_efforts_json, default_reasoning_effort,
              is_enabled, is_manual, first_seen_at, last_seen_at
         FROM ai_models
         WHERE provider_id = ?
@@ -944,6 +973,8 @@ pub async fn list_models_by_provider(
             pricing_prompt: row.get("pricing_prompt"),
             pricing_completion: row.get("pricing_completion"),
             pricing_request: row.get("pricing_request"),
+            reasoning_efforts: parse_reasoning_efforts(row.get("reasoning_efforts_json")),
+            default_reasoning_effort: row.get("default_reasoning_effort"),
             is_enabled: row.get::<i32, _>("is_enabled") != 0,
             is_manual: row.get::<i32, _>("is_manual") != 0,
             first_seen_at: row.get("first_seen_at"),
@@ -970,9 +1001,10 @@ pub async fn upsert_provider_models(
             INSERT INTO ai_models (
                 id, provider_id, model_id, name, description, owned_by,
                 pricing_prompt, pricing_completion, pricing_request,
+                reasoning_efforts_json, default_reasoning_effort,
                 is_enabled, is_manual, first_seen_at, last_seen_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
@@ -980,6 +1012,8 @@ pub async fn upsert_provider_models(
                 pricing_prompt = excluded.pricing_prompt,
                 pricing_completion = excluded.pricing_completion,
                 pricing_request = excluded.pricing_request,
+                reasoning_efforts_json = excluded.reasoning_efforts_json,
+                default_reasoning_effort = excluded.default_reasoning_effort,
                 last_seen_at = excluded.last_seen_at
             "#,
         )
@@ -992,6 +1026,8 @@ pub async fn upsert_provider_models(
         .bind(&model.pricing_prompt)
         .bind(&model.pricing_completion)
         .bind(&model.pricing_request)
+        .bind(serialize_reasoning_efforts(model.reasoning_efforts.as_ref()))
+        .bind(&model.default_reasoning_effort)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -1041,9 +1077,10 @@ pub async fn register_manual_model(
         INSERT INTO ai_models (
             id, provider_id, model_id, name, description, owned_by,
             pricing_prompt, pricing_completion, pricing_request,
+            reasoning_efforts_json, default_reasoning_effort,
             is_enabled, is_manual, first_seen_at, last_seen_at
         )
-        VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 1, 1, ?, ?)
+        VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1, 1, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             is_manual = 1,
@@ -1123,9 +1160,10 @@ pub async fn update_manual_model(
             INSERT INTO ai_models (
                 id, provider_id, model_id, name, description, owned_by,
                 pricing_prompt, pricing_completion, pricing_request,
+                reasoning_efforts_json, default_reasoning_effort,
                 is_enabled, is_manual, first_seen_at, last_seen_at
             )
-            VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, 1, ?, ?)
+            VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, 1, ?, ?)
             "#,
         )
         .bind(&next_id)

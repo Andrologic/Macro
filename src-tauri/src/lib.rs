@@ -318,14 +318,19 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match db::init_db(&app_handle).await {
                     Ok(pool) => {
+                        let mut pool_guard = pool_state.lock().await;
+                        *pool_guard = Some(pool.clone());
+                        drop(pool_guard);
+                        tracing::info!("Database initialized successfully");
+
+                        // Run keychain-backed legacy secret migration after the DB is already
+                        // published so a delayed macOS unlock prompt cannot leave the app in a
+                        // transient "Database not initialized" state.
                         if let Err(error) =
                             ai::chatgpt::migrate_provider_secret(&pool, "chatgpt").await
                         {
                             tracing::warn!("Failed to migrate ChatGPT secret: {}", error);
                         }
-                        let mut pool_guard = pool_state.lock().await;
-                        *pool_guard = Some(pool);
-                        tracing::info!("Database initialized successfully");
                     }
                     Err(e) => {
                         tracing::error!("Failed to initialize database: {}", e);
@@ -394,6 +399,7 @@ pub fn run() {
             commands::workspace::workspace_list_tasks,
             commands::workspace::workspace_get_metadata,
             commands::workspace::workspace_get_project_registry_diagnostics,
+            commands::workspace::workspace_recover_missing_metadata,
             commands::workspace::workspace_get_active_root,
             commands::workspace::workspace_preview_project_git_setup,
             commands::workspace::workspace_set_active_root,

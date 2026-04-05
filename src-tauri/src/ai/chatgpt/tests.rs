@@ -5,8 +5,9 @@ use super::session::{
     resolve_token_expiry_rfc3339,
 };
 use super::stream::{
-    build_responses_request, extract_function_call_from_output_item,
-    extract_output_text_from_output_item,
+    build_responses_request, extract_completed_reasoning_summary, extract_function_call_from_output_item,
+    extract_output_text_from_output_item, extract_reasoning_summary_from_output_item,
+    extract_response_id,
 };
 use super::types::{
     auth_flow_error_from_persist, AiChatMessage, AiChatMessageContent, AiChatRequest,
@@ -103,6 +104,8 @@ fn build_responses_request_maps_system_and_history() {
         request_id: "req-1".to_string(),
         provider_id: "chatgpt".to_string(),
         model_id: "gpt-5".to_string(),
+        reasoning_effort: Some("high".to_string()),
+        previous_response_id: Some("resp_123".to_string()),
         messages: vec![
             AiChatMessage {
                 role: "system".to_string(),
@@ -137,10 +140,12 @@ fn build_responses_request_maps_system_and_history() {
 
     assert_eq!(request.model, "gpt-5");
     assert_eq!(request.instructions, "Follow instructions");
+    assert_eq!(request.previous_response_id.as_deref(), Some("resp_123"));
     assert_eq!(request.input.len(), 2);
     assert!(request.tools.is_empty());
     assert!(!request.store);
     assert!(request.stream);
+    assert_eq!(request.reasoning, Some(json!({ "effort": "high", "summary": "auto" })));
 }
 
 #[test]
@@ -149,6 +154,8 @@ fn build_responses_request_flattens_tools_and_maps_tool_outputs() {
         request_id: "req-2".to_string(),
         provider_id: "chatgpt".to_string(),
         model_id: "gpt-5".to_string(),
+        reasoning_effort: None,
+        previous_response_id: None,
         messages: vec![
             AiChatMessage {
                 role: "assistant".to_string(),
@@ -229,6 +236,64 @@ fn extract_output_text_from_output_item_reads_completed_message_items() {
         extract_output_text_from_output_item(&item),
         "Point sur les deux projets."
     );
+}
+
+#[test]
+fn extract_reasoning_summary_from_output_item_reads_summary_text() {
+    let item = json!({
+        "id": "rs_123",
+        "status": "completed",
+        "type": "reasoning",
+        "summary": [
+            {
+                "type": "summary_text",
+                "text": "Le modele a compare les besoins puis choisi un plan."
+            }
+        ]
+    });
+
+    assert_eq!(
+        extract_reasoning_summary_from_output_item(&item),
+        "Le modele a compare les besoins puis choisi un plan."
+    );
+}
+
+#[test]
+fn extract_completed_reasoning_summary_and_response_id_from_completed_payload() {
+    let payload = json!({
+        "response": {
+            "id": "resp_456",
+            "output": [
+                {
+                    "id": "rs_123",
+                    "type": "reasoning",
+                    "summary": [
+                        {
+                            "type": "summary_text",
+                            "text": "Resume de raisonnement."
+                        }
+                    ]
+                },
+                {
+                    "id": "msg_123",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Texte final."
+                        }
+                    ]
+                }
+            ]
+        }
+    });
+
+    assert_eq!(
+        extract_completed_reasoning_summary(&payload).as_deref(),
+        Some("Resume de raisonnement.")
+    );
+    assert_eq!(extract_response_id(&payload).as_deref(), Some("resp_456"));
 }
 
 #[test]

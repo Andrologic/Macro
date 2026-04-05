@@ -53,6 +53,39 @@ pub struct WorkspaceMetadataDto {
     pub project_count: usize,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceMetadataRecoveryHintDto {
+    #[serde(default, rename = "projectId")]
+    pub project_id: String,
+    #[serde(default, rename = "groupId")]
+    pub group_id: Option<String>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceRecoverMissingMetadataRequestDto {
+    #[serde(default, rename = "attemptPull")]
+    pub attempt_pull: bool,
+    #[serde(default)]
+    pub projects: Vec<WorkspaceMetadataRecoveryHintDto>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceMetadataRecoveryReportDto {
+    pub status: String,
+    #[serde(default, rename = "restoredCommit")]
+    pub restored_commit: Option<String>,
+    #[serde(default, rename = "pullAttempted")]
+    pub pull_attempted: bool,
+    #[serde(default, rename = "pullSucceeded")]
+    pub pull_succeeded: bool,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceTaskPlanSummaryDto {
     pub id: String,

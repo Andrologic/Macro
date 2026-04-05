@@ -13,8 +13,9 @@ import {
   requireMacroToolRegistryEntry,
   toFunctionToolShape,
 } from '../shared/macroToolRegistry';
-import type { ProjectMount, ToolTrace } from '../types';
+import type { ProjectMount, ReasoningEffort, ToolTrace } from '../types';
 import { devLogger } from '../utils/devLogger';
+import { useProviderStore } from '../stores/useProviderStore';
 
 // Global references to active streaming resources for cancellation
 let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -96,6 +97,7 @@ export interface StreamingChatOptions {
   baseUrl: string;
   apiKey?: string;
   modelId: string;
+  reasoningEffort?: ReasoningEffort | null;
   messages: StreamMessage[];
   onToken: (token: string) => void;
   onComplete: (result: StreamCompletionResult) => void;
@@ -135,6 +137,51 @@ const emptyStreamCompletionResult = (visibleContent = ''): StreamCompletionResul
   visibleContent,
   toolTraces: [],
 });
+
+const isReasoningUnsupportedError = (message: string): boolean => {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('reasoning_effort') ||
+    normalized.includes('reasoning.effort') ||
+    normalized.includes('unsupported value for reasoning') ||
+    normalized.includes('unsupported parameter: reasoning') ||
+    normalized.includes('unknown parameter: reasoning') ||
+    normalized.includes('unknown parameter: reasoning_effort') ||
+    normalized.includes('does not support reasoning')
+  );
+};
+
+const disableReasoningForSession = (providerId: string, modelId: string) => {
+  try {
+    useProviderStore.getState().markReasoningUnsupportedForModel(providerId, modelId);
+  } catch {
+    // Ignore runtime fallback bookkeeping outside app contexts.
+  }
+};
+
+const applyReasoningToChatCompletionsRequest = (
+  requestBody: Record<string, unknown>,
+  providerType: string,
+  reasoningEffort?: ReasoningEffort | null
+) => {
+  delete requestBody.reasoning_effort;
+  delete requestBody.reasoning;
+  delete requestBody.include_reasoning;
+
+  if (!reasoningEffort) {
+    return;
+  }
+
+  if (providerType === 'openrouter') {
+    requestBody.reasoning = { effort: reasoningEffort };
+    requestBody.include_reasoning = true;
+    return;
+  }
+
+  if (providerType === 'openai' || providerType === 'ollama' || providerType === 'lmstudio') {
+    requestBody.reasoning_effort = reasoningEffort;
+  }
+};
 
 const escapeToolContextAttribute = (value: string): string =>
   value
@@ -318,12 +365,6 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
   };
 };
 
-export const __testables = {
-  buildToolContextBlock,
-  formatToolTraceDetail,
-  shouldRetryMissingRequiredTool,
-};
-
 // Tool definitions for the LLM
 const WEB_SEARCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_search'));
 const WEB_FETCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_fetch'));
@@ -408,12 +449,43 @@ const clearTauriListeners = () => {
 interface StreamingTurnResult {
   content: string;
   toolCalls: ToolCall[];
+  responseId?: string;
+  reasoningSummary?: string;
   toolTraces?: ToolTrace[];
   hiddenContext?: string;
 }
 
 const getValidToolCalls = (toolCalls: ToolCall[]): ToolCall[] =>
   toolCalls.filter((toolCall) => toolCall.id && toolCall.function.name);
+
+const buildChatGptVisibleTurnContent = (
+  content: string,
+  reasoningSummary?: string | null
+): string => {
+  const trimmedContent = content.trim();
+  const trimmedSummary = (reasoningSummary || '').trim();
+
+  if (!trimmedSummary) {
+    return content;
+  }
+
+  return trimmedContent
+    ? `<think>${trimmedSummary}</think>\n${trimmedContent}`
+    : `<think>${trimmedSummary}</think>`;
+};
+
+const isEmptyTerminalChatGptTurn = (content: string, toolCalls: ToolCall[]): boolean =>
+  toolCalls.length === 0 && content.trim().length === 0;
+
+export const __testables = {
+  applyReasoningToChatCompletionsRequest,
+  buildToolContextBlock,
+  buildChatGptVisibleTurnContent,
+  formatToolTraceDetail,
+  isEmptyTerminalChatGptTurn,
+  isReasoningUnsupportedError,
+  shouldRetryMissingRequiredTool,
+};
 
 function shouldRetryMissingRequiredTool(
   policy: StreamingChatOptions['guidedToolRetry'],
@@ -494,6 +566,8 @@ const streamNativeTurnViaTauri = async (params: {
   providerId: string;
   providerType: string;
   modelId: string;
+  reasoningEffort?: ReasoningEffort | null;
+  previousResponseId?: string | null;
   messages: StreamMessage[];
   tools: unknown[];
   allowedToolIds?: string[];
@@ -560,6 +634,8 @@ const streamNativeTurnViaTauri = async (params: {
               resolve({
                 content: event.payload.output_text || fullContent,
                 toolCalls: event.payload.tool_calls || [],
+                responseId: event.payload.response_id ?? undefined,
+                reasoningSummary: event.payload.reasoning_summary ?? undefined,
                 toolTraces: event.payload.tool_traces ?? undefined,
                 hiddenContext: event.payload.hidden_context ?? undefined,
               })
@@ -580,6 +656,8 @@ const streamNativeTurnViaTauri = async (params: {
           requestId,
           providerId: params.providerId,
           modelId: params.modelId,
+          reasoningEffort: params.reasoningEffort ?? null,
+          previousResponseId: params.previousResponseId ?? null,
           messages: params.messages.map((message) => ({
             role: message.role,
             content: message.content,
@@ -637,6 +715,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
     onToolTracesUpdate,
   });
   let currentMessages: StreamMessage[] = [...messages];
+  let previousResponseId: string | null = null;
   const readEvidenceBySource = new Map<string, string>();
   const MAX_TURNS = 10;
   let turnCount = 0;
@@ -679,6 +758,8 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         providerId,
         providerType: 'chatgpt',
         modelId,
+        reasoningEffort: options.reasoningEffort,
+        previousResponseId,
         messages: currentMessages,
         tools,
         allowedToolIds: options.allowedToolIds,
@@ -696,11 +777,16 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         },
       });
 
-      const turnContent = turnResult.content || streamedTurnContent;
+      previousResponseId = turnResult.responseId ?? previousResponseId;
+      const turnContent = buildChatGptVisibleTurnContent(
+        turnResult.content || streamedTurnContent,
+        turnResult.reasoningSummary
+      );
       const validToolCalls = getValidToolCalls(turnResult.toolCalls);
 
       if (shouldRetryMissingRequiredTool(options.guidedToolRetry, validToolCalls, guidedRetryCount)) {
         guidedRetryCount += 1;
+        previousResponseId = null;
         currentMessages.push({
           role: 'system',
           content: options.guidedToolRetry?.retrySystemPrompt || '',
@@ -723,7 +809,14 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         });
       }
 
+      if (validToolCalls.length > 0 && !previousResponseId) {
+        throw new Error('ChatGPT response is missing response_id for tool continuation.');
+      }
+
       if (validToolCalls.length === 0) {
+        if (isEmptyTerminalChatGptTurn(turnContent, validToolCalls)) {
+          throw new Error('Reponse ChatGPT vide apres execution des outils.');
+        }
         break;
       }
 
@@ -938,35 +1031,18 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         });
         const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
 
-        currentMessages.push(
-          ...toolResults.map((result) => ({
-            role: 'tool' as const,
-            content: result.content,
-            tool_call_id: result.tool_call_id,
-          }))
-        );
+        currentMessages = toolResults.map((result) => ({
+          role: 'tool' as const,
+          content: result.content,
+          tool_call_id: result.tool_call_id,
+        }));
 
-        const guardSystemMessages: StreamMessage[] = [];
-        if (hasToolErrors) {
-          guardSystemMessages.push({
-            role: 'system',
-            content:
-              'One or more tool calls failed. Do not fabricate file contents or command outputs. ' +
-              'State the exact failure and ask for a corrected path/context when needed.',
+        if (hasToolErrors || hasFileReadResults) {
+          devLogger.info('ChatGPT follow-up turn proceeding with tool outputs only after guarded tool results', {
+            hasToolErrors,
+            hasFileReadResults,
+            toolResultCount: toolResults.length,
           });
-        }
-        if (hasFileReadResults) {
-          guardSystemMessages.push({
-            role: 'system',
-            content:
-              'For file analysis tasks, use ONLY the exact tool outputs provided in this conversation. ' +
-              'Do not invent code symbols, structs, handlers, routes, or data not present in tool output. ' +
-              'If uncertain, say that the information is not present in the file content you received.',
-          });
-        }
-
-        if (guardSystemMessages.length > 0) {
-          currentMessages.push(...guardSystemMessages);
         }
       }
 
@@ -994,6 +1070,7 @@ const streamChatViaCopilotProvider = async (options: StreamingChatOptions): Prom
       providerId: options.providerId,
       providerType: 'copilot',
       modelId: options.modelId,
+      reasoningEffort: options.reasoningEffort,
       messages: options.messages,
       tools: [],
       allowedToolIds: options.allowedToolIds,
@@ -1036,6 +1113,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     baseUrl,
     apiKey,
     modelId,
+    reasoningEffort,
     messages,
     onToken,
     onComplete,
@@ -1091,6 +1169,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     })),
     stream: true,
   };
+  let currentReasoningEffort = reasoningEffort;
+  let didRetryWithoutReasoning = false;
+  applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
 
   const tools = collectAllowedTools({
     allowedTools,
@@ -1148,6 +1229,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         ...(m.tool_calls && { tool_calls: m.tool_calls }),
         ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
       }));
+      applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
 
       const response = await tauriFetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
@@ -1166,6 +1248,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           if (errorText) {
             errorMessage = errorText;
           }
+        }
+
+        if (
+          currentReasoningEffort &&
+          !didRetryWithoutReasoning &&
+          isReasoningUnsupportedError(errorMessage)
+        ) {
+          didRetryWithoutReasoning = true;
+          currentReasoningEffort = null;
+          disableReasoningForSession(providerId, modelId);
+          continue;
         }
 
         if (turnCount === 0) {
@@ -1660,6 +1753,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     baseUrl,
     apiKey,
     modelId,
+    reasoningEffort,
     messages,
     onComplete,
     onError,
@@ -1671,6 +1765,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
         providerId,
         providerType,
         modelId,
+        reasoningEffort: options.reasoningEffort,
         messages,
         tools: [],
         allowedToolIds: options.allowedToolIds,
@@ -1713,17 +1808,20 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
   }
 
   try {
+    const requestBody: Record<string, unknown> = {
+      model: modelId,
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      })),
+      stream: false,
+    };
+    applyReasoningToChatCompletionsRequest(requestBody, providerType, reasoningEffort);
+
     const response = await tauriFetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        model: modelId,
-        messages: messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-        stream: false,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -1737,6 +1835,10 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
         if (errorText) {
           errorMessage = errorText;
         }
+      }
+
+      if (reasoningEffort && isReasoningUnsupportedError(errorMessage)) {
+        disableReasoningForSession(providerId, modelId);
       }
 
       throw new Error(errorMessage);
@@ -1757,5 +1859,3 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     throw err;
   }
 }
-
-

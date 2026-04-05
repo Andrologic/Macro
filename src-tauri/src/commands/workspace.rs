@@ -8,7 +8,8 @@ use crate::workspace::metadata::{
     CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, ProjectAccessChangePreviewDto,
     ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto,
     ProjectGitSetupCommitResultDto, ProjectGroupDto, ProjectRegistryDiagnosticsDto,
-    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceTaskCatalogDto,
+    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceMetadataRecoveryReportDto,
+    WorkspaceRecoverMissingMetadataRequestDto, WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
@@ -136,6 +137,18 @@ pub async fn workspace_get_project_registry_diagnostics(
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     workspace::get_project_registry_diagnostics(&workspace_path, &metadata_root).await
+}
+
+#[tauri::command]
+pub async fn workspace_recover_missing_metadata(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    request: WorkspaceRecoverMissingMetadataRequestDto,
+) -> Result<WorkspaceMetadataRecoveryReportDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::recover_missing_metadata(&workspace_path, &metadata_root, request).await
 }
 
 #[tauri::command]

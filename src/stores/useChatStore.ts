@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { AppMode, ChatMessage, ContextRefKind, ContextReference, Conversation, PlanNode, PlanNodeStatus, PlanNodeType, PredictedBranch, ToolTrace } from '../types';
+import { AppMode, ChatMessage, ContextRefKind, ContextReference, Conversation, PlanNode, PlanNodeStatus, PlanNodeType, PredictedBranch, ReasoningEffort, ToolTrace } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 import { providerHasCredentials, useProviderStore } from './useProviderStore';
 import { useCitationsStore } from './useCitationsStore';
@@ -227,6 +227,7 @@ type AISelectionModeKey = 'ChatDebug' | 'Architect' | 'Implement';
 interface PersistedAISelection {
   providerId: string | null;
   modelId: string | null;
+  reasoningEffort?: ReasoningEffort | null;
   updatedAt: string;
 }
 
@@ -257,6 +258,7 @@ const normalizePersistedSelection = (value: unknown): PersistedAISelection | nul
   const candidate = value as {
     providerId?: unknown;
     modelId?: unknown;
+    reasoningEffort?: unknown;
     updatedAt?: unknown;
   };
 
@@ -276,6 +278,10 @@ const normalizePersistedSelection = (value: unknown): PersistedAISelection | nul
   return {
     providerId,
     modelId,
+    reasoningEffort:
+      candidate.reasoningEffort === null || typeof candidate.reasoningEffort === 'string'
+        ? (candidate.reasoningEffort as ReasoningEffort | null | undefined) ?? null
+        : null,
     updatedAt:
       typeof candidate.updatedAt === 'string' && candidate.updatedAt.trim().length > 0
         ? candidate.updatedAt
@@ -653,6 +659,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return {
       providerId: providerState.selectedProviderId,
       modelId: providerState.selectedModelId,
+      reasoningEffort: providerState.selectedReasoningEffort,
       updatedAt: new Date().toISOString(),
     };
   };
@@ -739,6 +746,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     useProviderStore.setState({
       selectedProviderId: selection.providerId,
       selectedModelId: selection.modelId,
+      selectedReasoningEffort: selection.reasoningEffort ?? null,
     });
 
     let loadedModels = await providerStore.loadProviderModels(selection.providerId);
@@ -758,6 +766,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     useProviderStore.getState().selectModel(selection.modelId);
+    useProviderStore.getState().selectReasoningEffort(selection.reasoningEffort ?? null);
     return true;
   };
 
@@ -909,7 +918,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const providerChanged = nextState.selectedProviderId !== previousState.selectedProviderId;
       const modelChanged = nextState.selectedModelId !== previousState.selectedModelId;
-      if (!providerChanged && !modelChanged) {
+      const reasoningChanged = nextState.selectedReasoningEffort !== previousState.selectedReasoningEffort;
+      if (!providerChanged && !modelChanged && !reasoningChanged) {
         return;
       }
 
@@ -2540,6 +2550,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     baseUrl: string;
     apiKey?: string;
     modelId: string;
+    reasoningEffort?: ReasoningEffort | null;
     }) => {
     const taskStore = useTaskStore.getState();
     const task = taskStore.getTaskById(params.taskId);
@@ -2613,6 +2624,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         baseUrl: params.baseUrl,
         apiKey: params.apiKey,
         modelId: params.modelId,
+        reasoningEffort: params.reasoningEffort,
         messages: prepareManualFeatureMetadataMessages(
           params.firstUserContent,
           unavailableBranchNames
@@ -2715,6 +2727,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     baseUrl: string;
     apiKey?: string;
     modelId: string;
+    reasoningEffort?: ReasoningEffort | null;
     architectPlan?: {
       planId: string;
       targetBranch: string;
@@ -2728,6 +2741,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       baseUrl,
       apiKey,
       modelId,
+      reasoningEffort,
       architectPlan,
     } = params;
 
@@ -2741,6 +2755,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         baseUrl,
         apiKey,
         modelId,
+        reasoningEffort,
         messages: prepareMetadataMessages(firstUserContent),
         onComplete: () => { },
         onError: () => { },
@@ -2975,6 +2990,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     resolvedTaskId: string;
     selectedProviderId: string;
     selectedModelId: string;
+    selectedReasoningEffort?: ReasoningEffort | null;
     providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>;
     messagesForRequest: StreamMessage[];
     executionContext: {
@@ -3016,6 +3032,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           baseUrl: params.providerConfig.baseUrl,
           apiKey: params.providerConfig.apiKey,
           modelId: params.selectedModelId,
+          reasoningEffort: params.selectedReasoningEffort,
           messages: params.messagesForRequest,
           fileToolContext: params.fileToolContext,
           allowedToolIds: params.allowedToolIds,
@@ -4265,7 +4282,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       try {
         const providerState = useProviderStore.getState();
-        const { selectedProviderId, selectedModelId, providerConfigs } = providerState;
+        const { selectedProviderId, selectedModelId, selectedReasoningEffort, providerConfigs } = providerState;
         const modeAtSend = useAppStore.getState().mode;
         persistSelectionForContext(modeAtSend, conversationId);
 
@@ -4322,6 +4339,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               baseUrl: providerConfigForUse.baseUrl,
               apiKey: providerConfigForUse.apiKey,
               modelId: selectedModelId,
+              reasoningEffort: selectedReasoningEffort,
             });
           }
 
@@ -4362,6 +4380,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             baseUrl: providerConfigForUse.baseUrl,
             apiKey: providerConfigForUse.apiKey,
             modelId: selectedModelId,
+            reasoningEffort: selectedReasoningEffort,
             architectPlan,
           });
         }
@@ -4392,6 +4411,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             resolvedTaskId,
             selectedProviderId,
             selectedModelId,
+            selectedReasoningEffort,
             providerConfig: providerConfigForUse,
             messagesForRequest: streamLaunch.messagesForRequest,
             executionContext: streamLaunch.executionContext,
@@ -4437,7 +4457,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     editMessage: async (messageId, newContent) => {
-      const { selectedProviderId, selectedModelId, providerConfigs } = useProviderStore.getState();
+      const { selectedProviderId, selectedModelId, selectedReasoningEffort, providerConfigs } = useProviderStore.getState();
       const modeAtEdit = useAppStore.getState().mode;
       if (!selectedProviderId || !selectedModelId) {
         set({ lastError: 'Select a provider and model before sending a message.' });
@@ -4564,6 +4584,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           resolvedTaskId: target.task_id ?? '',
           selectedProviderId,
           selectedModelId,
+          selectedReasoningEffort,
           providerConfig: providerConfigForUse,
           messagesForRequest: streamLaunch.messagesForRequest,
           executionContext: streamLaunch.executionContext,
