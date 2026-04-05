@@ -2,6 +2,7 @@ import React, { Suspense, lazy, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/Accordion';
 import type { ToolTrace } from '../../types';
 
 const MarkdownRichContent = lazy(() => import('./MarkdownRichContent'));
@@ -15,8 +16,18 @@ interface MarkdownRendererProps {
 
 type RenderSegment =
   | { type: 'text'; content: string }
-  | { type: 'thinking'; content: string }
-  | { type: 'tool'; toolName: string; detail?: string; status: 'running' | 'done' };
+  | { type: 'thinking'; content: string };
+
+interface ToolRenderTrace {
+  toolName: string;
+  detail?: string;
+  status: 'running' | 'done';
+}
+
+interface RenderContentState {
+  segments: RenderSegment[];
+  tools: ToolRenderTrace[];
+}
 
 const PlainMarkdownFallback: React.FC<{ content: string }> = ({ content }) => (
   <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
@@ -64,14 +75,20 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
   );
 };
 
-const ToolCallBlock: React.FC<{ toolName: string; detail?: string; status: 'running' | 'done' }> = ({
+const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: 'running' | 'done' }> = ({
   toolName,
   detail,
   status,
 }) => {
   const { t } = useTranslation();
+
   return (
-    <div className="my-2 rounded-lg border border-border bg-card/60 px-2.5 py-1.5">
+    <div
+      data-testid="tool-trace-item"
+      data-tool-name={toolName}
+      data-tool-status={status}
+      className="rounded-lg border border-border bg-card/60 px-2.5 py-1.5"
+    >
       <div className="flex items-center gap-2 min-w-0">
         <div className="w-5 h-5 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
           <Icon name="tool" size={11} className="text-primary" />
@@ -88,6 +105,80 @@ const ToolCallBlock: React.FC<{ toolName: string; detail?: string; status: 'runn
           {status}
         </span>
       </div>
+    </div>
+  );
+};
+
+const RunningToolTraceGroup: React.FC<{ tools: ToolRenderTrace[] }> = ({ tools }) => {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      data-testid="tool-traces-running"
+      className="mt-3 mb-3 rounded-lg border border-border bg-card/40 px-3 py-2"
+    >
+      <div className="mb-2 flex items-center gap-2">
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-primary/20 bg-primary/10">
+          <Icon name="tool" size={11} className="text-primary" />
+        </span>
+        <span className="text-xs font-medium text-foreground">
+          {t('chat.runningTools', 'Running tools')}
+        </span>
+      </div>
+      <div data-testid="tool-traces-list" className="space-y-2">
+        {tools.map((tool, index) => (
+          <ToolTraceRow
+            key={`${tool.toolName}-${tool.detail ?? ''}-${index}`}
+            toolName={tool.toolName}
+            detail={tool.detail}
+            status={tool.status}
+          />
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const CompletedToolTraceGroup: React.FC<{ tools: ToolRenderTrace[] }> = ({ tools }) => {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      data-testid="tool-traces-completed"
+      className="mt-3 mb-3 rounded-lg border border-border bg-card/40 px-3 py-1"
+    >
+      <Accordion type="single" collapsible>
+        <AccordionItem value="tool-traces" className="border-b-0">
+          <AccordionTrigger
+            data-testid="tool-traces-completed-trigger"
+            className="py-2 hover:no-underline"
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-primary/20 bg-primary/10">
+                <Icon name="tool" size={11} className="text-primary" />
+              </span>
+              <span className="truncate text-xs font-medium text-foreground">
+                {t('chat.toolsUsedCount', {
+                  count: tools.length,
+                  defaultValue: '{{count}} tools used',
+                })}
+              </span>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent>
+            <div data-testid="tool-traces-list" className="space-y-2 pt-1">
+              {tools.map((tool, index) => (
+                <ToolTraceRow
+                  key={`${tool.toolName}-${tool.detail ?? ''}-${index}`}
+                  toolName={tool.toolName}
+                  detail={tool.detail}
+                  status={tool.status}
+                />
+              ))}
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
     </div>
   );
 };
@@ -153,43 +244,12 @@ const splitThinkBlocks = (content: string): Array<{ type: 'text' | 'thinking'; c
   return blocks;
 };
 
-const splitStructuredToolTraceBlocks = (content: string, toolTraces: ToolTrace[]): RenderSegment[] => {
+const splitLegacyToolBlocks = (
+  content: string,
+  isStreaming: boolean
+): { segments: RenderSegment[]; tools: ToolRenderTrace[] } => {
   const segments: RenderSegment[] = [];
-  const orderedToolTraces = [...toolTraces].sort((left, right) => {
-    const leftOffset = typeof left.visible_offset === 'number' ? left.visible_offset : content.length;
-    const rightOffset = typeof right.visible_offset === 'number' ? right.visible_offset : content.length;
-    if (leftOffset !== rightOffset) return leftOffset - rightOffset;
-    return left.tool_call_id.localeCompare(right.tool_call_id);
-  });
-
-  let cursor = 0;
-  for (const toolTrace of orderedToolTraces) {
-    const requestedOffset =
-      typeof toolTrace.visible_offset === 'number' ? toolTrace.visible_offset : content.length;
-    const clampedOffset = Math.max(cursor, Math.min(content.length, requestedOffset));
-    const textBefore = content.slice(cursor, clampedOffset);
-    if (textBefore) {
-      segments.push({ type: 'text', content: textBefore });
-    }
-    segments.push({
-      type: 'tool',
-      toolName: toolTrace.tool_name,
-      detail: toolTrace.detail,
-      status: toolTrace.status,
-    });
-    cursor = clampedOffset;
-  }
-
-  const remaining = content.slice(cursor);
-  if (remaining) {
-    segments.push({ type: 'text', content: remaining });
-  }
-
-  return segments;
-};
-
-const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[] => {
-  const segments: RenderSegment[] = [];
+  const tools: ToolRenderTrace[] = [];
   const lines = content.split('\n');
   const textBuffer: string[] = [];
   const toolStartRegex = /^(?:\[\s*TOOL\s*\]|🔧\s*\*\*Tool:\*\*)\s*([a-zA-Z0-9_-]+)(?:\s*\((.+?)\))?\s*$/i;
@@ -210,22 +270,20 @@ const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[]
     const startMatch = trimmedLine.match(toolStartRegex);
     if (startMatch) {
       flushText();
-      const nextToolSegment: RenderSegment = {
-        type: 'tool',
+      const nextTool: ToolRenderTrace = {
         toolName: startMatch[1],
         detail: startMatch[2],
         status: isStreaming ? 'running' : 'done',
       };
-      const previous = segments[segments.length - 1];
+      const previous = tools[tools.length - 1];
       const sameAsPrevious =
-        previous?.type === 'tool' &&
-        previous.toolName === nextToolSegment.toolName &&
-        (previous.detail || '').normalize('NFC') === (nextToolSegment.detail || '').normalize('NFC') &&
-        previous.status === nextToolSegment.status;
+        previous?.toolName === nextTool.toolName &&
+        (previous.detail || '').normalize('NFC') === (nextTool.detail || '').normalize('NFC') &&
+        previous.status === nextTool.status;
       if (!sameAsPrevious) {
-        segments.push(nextToolSegment);
-        if (nextToolSegment.status === 'running') {
-          pendingToolIndexes.push(segments.length - 1);
+        tools.push(nextTool);
+        if (nextTool.status === 'running') {
+          pendingToolIndexes.push(tools.length - 1);
         }
       }
       continue;
@@ -236,19 +294,19 @@ const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[]
       flushText();
       const doneToolName = doneMatch[1];
       const doneDetail = doneMatch[2];
-      const pendingIndex = pendingToolIndexes.findIndex((segmentIndex) => {
-        const segment = segments[segmentIndex];
-        if (!segment || segment.type !== 'tool') return false;
-        if (segment.toolName !== doneToolName || segment.status !== 'running') return false;
+      const pendingIndex = pendingToolIndexes.findIndex((toolIndex) => {
+        const tool = tools[toolIndex];
+        if (!tool) return false;
+        if (tool.toolName !== doneToolName || tool.status !== 'running') return false;
         if (!doneDetail) return true;
-        return (segment.detail || '').normalize('NFC') === doneDetail.normalize('NFC');
+        return (tool.detail || '').normalize('NFC') === doneDetail.normalize('NFC');
       });
 
       if (pendingIndex !== -1) {
-        const segmentIndex = pendingToolIndexes[pendingIndex];
-        const segment = segments[segmentIndex];
-        if (segment && segment.type === 'tool') {
-          segment.status = 'done';
+        const toolIndex = pendingToolIndexes[pendingIndex];
+        const tool = tools[toolIndex];
+        if (tool) {
+          tool.status = 'done';
         }
         pendingToolIndexes.splice(pendingIndex, 1);
       }
@@ -259,7 +317,7 @@ const splitToolBlocks = (content: string, isStreaming: boolean): RenderSegment[]
   }
 
   flushText();
-  return segments;
+  return { segments, tools };
 };
 
 const normalizeToolCallMarkup = (content: string): string => {
@@ -293,42 +351,50 @@ const normalizeToolCallMarkup = (content: string): string => {
   return normalized;
 };
 
+const buildRenderState = (
+  content: string,
+  isStreaming: boolean,
+  toolTraces?: ToolTrace[] | null
+): RenderContentState => {
+  if (toolTraces && toolTraces.length > 0) {
+    return {
+      segments: splitThinkBlocks(content),
+      tools: toolTraces.map((toolTrace) => ({
+        toolName: toolTrace.tool_name,
+        detail: toolTrace.detail,
+        status: toolTrace.status,
+      })),
+    };
+  }
+
+  const normalizedContent = normalizeToolCallMarkup(content);
+  const segments: RenderSegment[] = [];
+  const tools: ToolRenderTrace[] = [];
+
+  for (const segment of splitThinkBlocks(normalizedContent)) {
+    if (segment.type === 'thinking') {
+      segments.push(segment);
+      continue;
+    }
+    const legacyData = splitLegacyToolBlocks(segment.content, isStreaming);
+    segments.push(...legacyData.segments);
+    tools.push(...legacyData.tools);
+  }
+
+  return { segments, tools };
+};
+
 const MarkdownRendererBase: React.FC<MarkdownRendererProps> = ({
   content,
   className,
   isStreaming = false,
   toolTraces,
 }) => {
-  const structuredToolTraces = toolTraces && toolTraces.length > 0 ? toolTraces : null;
-  const segments = useMemo<RenderSegment[]>(() => {
-    const expanded: RenderSegment[] = [];
-
-    if (structuredToolTraces) {
-      const anchoredSegments = splitStructuredToolTraceBlocks(content, structuredToolTraces);
-      for (const segment of anchoredSegments) {
-        if (segment.type === 'tool') {
-          expanded.push(segment);
-          continue;
-        }
-        for (const thinkSegment of splitThinkBlocks(segment.content)) {
-          expanded.push(thinkSegment);
-        }
-      }
-      return expanded;
-    }
-
-    const normalizedContent = normalizeToolCallMarkup(content);
-    const thinkSegments = splitThinkBlocks(normalizedContent);
-    for (const segment of thinkSegments) {
-      if (segment.type === 'thinking') {
-        expanded.push(segment);
-        continue;
-      }
-      expanded.push(...splitToolBlocks(segment.content, isStreaming));
-    }
-
-    return expanded;
-  }, [content, isStreaming, structuredToolTraces]);
+  const { segments, tools } = useMemo<RenderContentState>(
+    () => buildRenderState(content, isStreaming, toolTraces),
+    [content, isStreaming, toolTraces]
+  );
+  const anyRunningTool = tools.some((tool) => tool.status === 'running');
 
   return (
     <div className={cn('markdown-content', className)}>
@@ -343,25 +409,22 @@ const MarkdownRendererBase: React.FC<MarkdownRendererProps> = ({
           );
         }
 
-        if (segment.type === 'tool') {
-          return (
-            <ToolCallBlock
-              key={`tool-${index}`}
-              toolName={segment.toolName}
-              detail={segment.detail}
-              status={segment.status}
-            />
-          );
-        }
-
         return (
           <Suspense key={`text-${index}`} fallback={<PlainMarkdownFallback content={segment.content} />}>
             <MarkdownRichContent content={segment.content} />
           </Suspense>
         );
       })}
+      {tools.length > 0 && (
+        anyRunningTool ? <RunningToolTraceGroup tools={tools} /> : <CompletedToolTraceGroup tools={tools} />
+      )}
     </div>
   );
+};
+
+export const __testables = {
+  buildRenderState,
+  splitLegacyToolBlocks,
 };
 
 export const MarkdownRenderer = React.memo(
