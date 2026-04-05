@@ -26,6 +26,8 @@ pub struct Message {
     pub token_count: Option<i32>,
     pub tool_traces_json: Option<String>,
     pub hidden_context: Option<String>,
+    pub provider_input_items_json: Option<String>,
+    pub provider_turn_state_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +170,8 @@ pub struct CreateMessageInput {
     pub token_count: Option<i32>,
     pub tool_traces_json: Option<String>,
     pub hidden_context: Option<String>,
+    pub provider_input_items_json: Option<String>,
+    pub provider_turn_state_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

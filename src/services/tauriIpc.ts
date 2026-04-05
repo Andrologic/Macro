@@ -20,6 +20,7 @@ import type {
   ProjectGitSetupCommitResult,
   AppMode,
   ProjectMount,
+  ProviderTurnState,
   ToolTrace,
 } from "../types";
 
@@ -49,6 +50,8 @@ export interface DbMessage {
   token_count: number | null;
   tool_traces_json: string | null;
   hidden_context: string | null;
+  provider_input_items_json: string | null;
+  provider_turn_state_json: string | null;
 }
 
 export interface DbConversationCompactionState {
@@ -384,6 +387,8 @@ export interface AiChatMessage {
   content: AiChatMessageContent;
   tool_calls?: AiToolCall[];
   tool_call_id?: string;
+  provider_input_items?: unknown[];
+  provider_turn_state?: ProviderTurnState;
 }
 
 export interface AiToolCall {
@@ -405,10 +410,61 @@ export interface AiStreamDoneEvent {
   output_text: string;
   tool_calls: AiToolCall[];
   response_id?: string | null;
+  output_items?: unknown[] | null;
+  provider_input_items?: unknown[] | null;
   reasoning_summary?: string | null;
   tool_traces?: ToolTrace[] | null;
   hidden_context?: string | null;
 }
+
+export const parseProviderInputItemsJson = (
+  raw: string | null,
+): unknown[] | undefined => {
+  if (!raw) return undefined;
+
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+export const parseProviderTurnStateJson = (
+  raw: string | null,
+): ProviderTurnState | undefined => {
+  if (!raw) return undefined;
+
+  try {
+    const parsed = JSON.parse(raw) as ProviderTurnState | null;
+    if (!parsed || parsed.provider !== "chatgpt" || !Array.isArray(parsed.output_items)) {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return undefined;
+  }
+};
+
+export const parseToolTracesJson = (raw: string | null): ToolTrace[] | undefined => {
+  if (!raw) return undefined;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    const traces = parsed.filter(
+      (trace): trace is ToolTrace =>
+        !!trace &&
+        typeof trace === "object" &&
+        typeof (trace as ToolTrace).tool_call_id === "string" &&
+        typeof (trace as ToolTrace).tool_name === "string" &&
+        ((trace as ToolTrace).status === "running" || (trace as ToolTrace).status === "done"),
+    );
+    return traces.length > 0 ? traces : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 export interface AiStreamErrorEvent {
   request_id: string;
@@ -768,6 +824,8 @@ export async function createMessage(
     tokenCount?: number;
     toolTraces?: ToolTrace[];
     hiddenContext?: string;
+    providerInputItems?: unknown[];
+    providerTurnState?: ProviderTurnState;
   },
 ): Promise<DbMessage> {
   return invoke<DbMessage>("db_create_message", {
@@ -779,6 +837,12 @@ export async function createMessage(
       ? JSON.stringify(options.toolTraces)
       : null,
     hiddenContext: options?.hiddenContext ?? null,
+    providerInputItemsJson: options?.providerInputItems
+      ? JSON.stringify(options.providerInputItems)
+      : null,
+    providerTurnStateJson: options?.providerTurnState
+      ? JSON.stringify(options.providerTurnState)
+      : null,
   });
 }
 
@@ -799,6 +863,8 @@ export async function updateMessage(
     tokenCount?: number;
     toolTraces?: ToolTrace[];
     hiddenContext?: string;
+    providerInputItems?: unknown[];
+    providerTurnState?: ProviderTurnState;
   },
 ): Promise<void> {
   return invoke("db_update_message", {
@@ -809,6 +875,12 @@ export async function updateMessage(
       ? JSON.stringify(options.toolTraces)
       : null,
     hiddenContext: options?.hiddenContext ?? null,
+    providerInputItemsJson: options?.providerInputItems
+      ? JSON.stringify(options.providerInputItems)
+      : null,
+    providerTurnStateJson: options?.providerTurnState
+      ? JSON.stringify(options.providerTurnState)
+      : null,
   });
 }
 
@@ -1082,7 +1154,7 @@ export async function aiStreamChat(params: {
   providerId: string;
   modelId: string;
   reasoningEffort?: string | null;
-  previousResponseId?: string | null;
+  conversationId?: string | null;
   messages: AiChatMessage[];
   tools?: unknown[];
   toolChoice?: string;
@@ -1100,7 +1172,7 @@ export async function aiStreamChat(params: {
       provider_id: params.providerId,
       model_id: params.modelId,
       reasoning_effort: params.reasoningEffort ?? null,
-      previous_response_id: params.previousResponseId ?? null,
+      conversation_id: params.conversationId ?? null,
       messages: params.messages,
       tools: params.tools ?? [],
       tool_choice: params.toolChoice ?? "auto",

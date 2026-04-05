@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter};
 struct StreamingCompletionAccumulator {
     output_text: String,
     tool_calls: Vec<AiToolCall>,
+    output_items: Vec<Value>,
     response_id: Option<String>,
     reasoning_summary: String,
 }
@@ -78,13 +79,11 @@ async fn stream_chat_inner(
     let client = reqwest::Client::new();
 
     let mut secret = ensure_fresh_secret(&pool, &request.provider_id).await?;
-    let mut response =
-        send_chatgpt_request(&client, &provider, &request.request_id, &secret, &body).await?;
+    let mut response = send_chatgpt_request(&client, &provider, &request, &secret, &body).await?;
 
     if response.status() == StatusCode::UNAUTHORIZED {
         secret = force_refresh_secret(&pool, &request.provider_id, &secret).await?;
-        response =
-            send_chatgpt_request(&client, &provider, &request.request_id, &secret, &body).await?;
+        response = send_chatgpt_request(&client, &provider, &request, &secret, &body).await?;
     }
 
     if !response.status().is_success() {
@@ -131,6 +130,10 @@ async fn stream_chat_inner(
     }
 
     if !saw_completed {
+        let provider_input_items =
+            optional_output_items(normalize_provider_input_items_for_replay(
+                &completion_accumulator.output_items,
+            )?);
         app_handle
             .emit(
                 "ai:done",
@@ -139,6 +142,8 @@ async fn stream_chat_inner(
                     output_text: completion_accumulator.output_text,
                     tool_calls: completion_accumulator.tool_calls,
                     response_id: completion_accumulator.response_id,
+                    output_items: optional_output_items(completion_accumulator.output_items),
+                    provider_input_items,
                     reasoning_summary: optional_text(completion_accumulator.reasoning_summary),
                     tool_traces: None,
                     hidden_context: None,
@@ -153,7 +158,7 @@ async fn stream_chat_inner(
 async fn send_chatgpt_request(
     client: &reqwest::Client,
     provider: &ProviderConfig,
-    request_id: &str,
+    request: &AiChatRequest,
     secret: &ChatGptSecret,
     body: &ChatGptResponsesRequest,
 ) -> Result<reqwest::Response, String> {
@@ -165,6 +170,12 @@ async fn send_chatgpt_request(
         "{}/codex/responses",
         provider.base_url.trim_end_matches('/')
     );
+    let stable_conversation_id = request
+        .conversation_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(request.request_id.as_str());
 
     client
         .post(&url)
@@ -173,7 +184,9 @@ async fn send_chatgpt_request(
         .header(AUTHORIZATION, format!("Bearer {}", secret.access_token))
         .header("ChatGPT-Account-Id", account_id)
         .header("originator", DEFAULT_ORIGINATOR)
-        .header("session_id", request_id.to_string())
+        .header("conversation_id", stable_conversation_id)
+        .header("session_id", stable_conversation_id)
+        .header("x-client-request-id", request.request_id.to_string())
         .json(body)
         .send()
         .await
@@ -203,6 +216,9 @@ fn process_sse_event(
 
     let value: Value = serde_json::from_str(&payload)
         .map_err(|error| format!("Invalid SSE payload: {}", error))?;
+    if let Some(response_id) = extract_response_id(&value) {
+        completion_accumulator.response_id = Some(response_id);
+    }
     let event_type = value
         .get("type")
         .and_then(Value::as_str)
@@ -229,8 +245,18 @@ fn process_sse_event(
             }
             Ok(false)
         }
+        "response.content_part.done" => {
+            if let Some(part) = value.get("part").or_else(|| value.get("content_part")) {
+                merge_output_text(
+                    &mut completion_accumulator.output_text,
+                    &extract_output_text_from_content_part(part),
+                );
+            }
+            Ok(false)
+        }
         "response.output_item.done" => {
             if let Some(item) = value.get("item") {
+                upsert_output_item(&mut completion_accumulator.output_items, item.clone());
                 merge_output_text(
                     &mut completion_accumulator.output_text,
                     &extract_output_text_from_output_item(item),
@@ -247,6 +273,15 @@ fn process_sse_event(
         }
         "response.function_call_arguments.done" => {
             if let Some(tool_call) = extract_function_call_from_arguments_done(&value)? {
+                upsert_output_item(
+                    &mut completion_accumulator.output_items,
+                    json!({
+                        "type": "function_call",
+                        "call_id": tool_call.id.clone(),
+                        "name": tool_call.function.name.clone(),
+                        "arguments": tool_call.function.arguments.clone(),
+                    }),
+                );
                 upsert_tool_call(&mut completion_accumulator.tool_calls, tool_call);
             }
             Ok(false)
@@ -264,6 +299,15 @@ fn process_sse_event(
                 extract_completed_tool_calls(&value)?,
                 &completion_accumulator.tool_calls,
             );
+            let output_items = select_best_output_items(
+                extract_completed_items(&value).cloned(),
+                &completion_accumulator.output_items,
+            );
+            let provider_input_items = output_items
+                .as_ref()
+                .map(|items| normalize_provider_input_items_for_replay(items))
+                .transpose()?
+                .and_then(optional_output_items);
             let response_id =
                 extract_response_id(&value).or_else(|| completion_accumulator.response_id.clone());
             app_handle
@@ -274,6 +318,8 @@ fn process_sse_event(
                         output_text,
                         tool_calls,
                         response_id,
+                        output_items,
+                        provider_input_items,
                         reasoning_summary,
                         tool_traces: None,
                         hidden_context: None,
@@ -332,44 +378,69 @@ pub(super) fn build_responses_request(
         match message.role.as_str() {
             "system" => instructions.push(content_to_plain_text(&message.content)),
             "assistant" => {
+                if let Some(provider_input_items) = extract_message_provider_input_items(message)? {
+                    input.extend(provider_input_items);
+                    continue;
+                }
+
                 let text = content_to_plain_text(&message.content);
                 if !text.trim().is_empty() {
-                    input.push(ResponsesMessageItem::Message {
-                        role: "assistant".to_string(),
-                        content: build_response_content_items(&message.content, true)?,
-                    });
+                    input.push(serialize_response_input_item(
+                        ResponsesMessageItem::Message {
+                            role: "assistant".to_string(),
+                            content: build_response_content_items(&message.content, true)?,
+                        },
+                    )?);
                 }
                 for tool_call in &message.tool_calls {
                     if tool_call.kind != "function" {
                         continue;
                     }
-                    input.push(ResponsesMessageItem::FunctionCall {
-                        call_id: tool_call.id.clone(),
-                        name: tool_call.function.name.clone(),
-                        arguments: tool_call.function.arguments.clone(),
-                    });
+                    input.push(serialize_response_input_item(
+                        ResponsesMessageItem::FunctionCall {
+                            call_id: tool_call.id.clone(),
+                            name: tool_call.function.name.clone(),
+                            arguments: tool_call.function.arguments.clone(),
+                        },
+                    )?);
                 }
             }
-            "user" => input.push(ResponsesMessageItem::Message {
-                role: "user".to_string(),
-                content: build_response_content_items(&message.content, false)?,
-            }),
+            "user" => {
+                if let Some(provider_input_items) = extract_message_provider_input_items(message)? {
+                    input.extend(provider_input_items);
+                    continue;
+                }
+
+                input.push(serialize_response_input_item(ResponsesMessageItem::Message {
+                    role: "user".to_string(),
+                    content: build_response_content_items(&message.content, false)?,
+                })?);
+            }
             "tool" => {
+                if let Some(provider_input_items) = extract_message_provider_input_items(message)? {
+                    input.extend(provider_input_items);
+                    continue;
+                }
+
                 let call_id = message
                     .tool_call_id
                     .clone()
                     .ok_or_else(|| "Tool message is missing tool_call_id.".to_string())?;
-                input.push(ResponsesMessageItem::FunctionCallOutput {
-                    call_id,
-                    output: content_to_plain_text(&message.content),
-                });
+                input.push(serialize_response_input_item(
+                    ResponsesMessageItem::FunctionCallOutput {
+                        call_id,
+                        output: content_to_plain_text(&message.content),
+                    },
+                )?);
             }
-            _ => input.push(ResponsesMessageItem::Message {
-                role: "user".to_string(),
-                content: vec![ResponsesContentItem::InputText {
-                    text: content_to_plain_text(&message.content),
-                }],
-            }),
+            _ => input.push(serialize_response_input_item(
+                ResponsesMessageItem::Message {
+                    role: "user".to_string(),
+                    content: vec![ResponsesContentItem::InputText {
+                        text: content_to_plain_text(&message.content),
+                    }],
+                },
+            )?),
         }
     }
 
@@ -386,7 +457,6 @@ pub(super) fn build_responses_request(
     Ok(ChatGptResponsesRequest {
         model: request.model_id.clone(),
         instructions: instructions.join("\n\n").trim().to_string(),
-        previous_response_id: request.previous_response_id.clone(),
         input,
         tools,
         tool_choice: request
@@ -395,12 +465,256 @@ pub(super) fn build_responses_request(
             .unwrap_or_else(|| "auto".to_string()),
         parallel_tool_calls: request.parallel_tool_calls.unwrap_or(false),
         reasoning: default_reasoning_config(&request.model_id, request.reasoning_effort.as_deref()),
-        // The ChatGPT/Codex backend currently rejects stored responses on this endpoint.
-        // We still keep `previous_response_id` for multi-turn continuation.
+        prompt_cache_key: request
+            .conversation_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
         store: false,
         stream: true,
-        include: Vec::new(),
+        include: vec!["reasoning.encrypted_content".to_string()],
     })
+}
+
+fn serialize_response_input_item(item: ResponsesMessageItem) -> Result<Value, String> {
+    serde_json::to_value(item)
+        .map_err(|error| format!("Failed to serialize response input item: {}", error))
+}
+
+fn extract_message_provider_input_items(
+    message: &super::types::AiChatMessage,
+) -> Result<Option<Vec<Value>>, String> {
+    if let Some(provider_input_items) = message
+        .provider_input_items
+        .as_ref()
+        .filter(|items| !items.is_empty())
+    {
+        let normalized = normalize_provider_input_items_for_replay(provider_input_items)?;
+        if !normalized.is_empty() {
+            return Ok(Some(normalized));
+        }
+    }
+
+    extract_provider_turn_output_items(message.provider_turn_state.as_ref())
+}
+
+fn extract_provider_turn_output_items(provider_turn_state: Option<&Value>) -> Result<Option<Vec<Value>>, String> {
+    let Some(provider_turn_state) = provider_turn_state else {
+        return Ok(None);
+    };
+
+    if provider_turn_state.get("provider").and_then(Value::as_str) != Some("chatgpt") {
+        return Ok(None);
+    }
+
+    let output_items = provider_turn_state
+        .get("output_items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "ChatGPT provider_turn_state is missing output_items.".to_string())?
+        .clone();
+
+    if output_items.is_empty() {
+        return Ok(None);
+    }
+
+    let normalized = normalize_provider_input_items_for_replay(&output_items)?;
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(normalized))
+}
+
+pub(super) fn normalize_provider_input_items_for_replay(
+    output_items: &[Value],
+) -> Result<Vec<Value>, String> {
+    let mut normalized = Vec::new();
+
+    for item in output_items {
+        if let Some(replay_item) = normalize_provider_input_item_for_replay(item)? {
+            normalized.push(replay_item);
+        }
+    }
+
+    Ok(normalized)
+}
+
+fn normalize_provider_input_item_for_replay(item: &Value) -> Result<Option<Value>, String> {
+    let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
+
+    match kind {
+        "message" => normalize_message_item_for_replay(item),
+        "reasoning" => {
+            let encrypted_content = item
+                .get("encrypted_content")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let Some(encrypted_content) = encrypted_content else {
+                return Ok(None);
+            };
+
+            let summary = item
+                .get("summary")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+
+            Ok(Some(json!({
+                "type": "reasoning",
+                "summary": summary,
+                "encrypted_content": encrypted_content,
+            })))
+        }
+        "function_call" => {
+            let Some(tool_call) = extract_function_call_from_output_item(item)? else {
+                return Ok(None);
+            };
+
+            Ok(Some(json!({
+                "type": "function_call",
+                "call_id": tool_call.id,
+                "name": tool_call.function.name,
+                "arguments": tool_call.function.arguments,
+            })))
+        }
+        "function_call_output" => {
+            let call_id = item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "Function call output item is missing call_id.".to_string())?;
+            let output = item
+                .get("output")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+
+            Ok(Some(json!({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": output,
+            })))
+        }
+        "output_text" => {
+            let text = extract_output_text_from_output_item(item);
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+
+            Ok(Some(json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": trimmed,
+                    }
+                ],
+            })))
+        }
+        _ => {
+            let text = extract_output_text_from_output_item(item);
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+
+            Ok(Some(json!({
+                "type": "message",
+                "role": item.get("role").and_then(Value::as_str).unwrap_or("assistant"),
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": trimmed,
+                    }
+                ],
+            })))
+        }
+    }
+}
+
+fn normalize_message_item_for_replay(item: &Value) -> Result<Option<Value>, String> {
+    let role = item
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("assistant");
+    let mut normalized_content = Vec::new();
+
+    if let Some(parts) = item.get("content").and_then(Value::as_array) {
+        for part in parts {
+            if let Some(normalized_part) = normalize_message_content_part_for_replay(role, part)? {
+                normalized_content.push(normalized_part);
+            }
+        }
+    }
+
+    if normalized_content.is_empty() {
+        let text = extract_output_text_from_output_item(item);
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        normalized_content.push(json!({
+            "type": if role == "user" { "input_text" } else { "output_text" },
+            "text": trimmed,
+        }));
+    }
+
+    Ok(Some(json!({
+        "type": "message",
+        "role": role,
+        "content": normalized_content,
+    })))
+}
+
+fn normalize_message_content_part_for_replay(
+    role: &str,
+    part: &Value,
+) -> Result<Option<Value>, String> {
+    let kind = part.get("type").and_then(Value::as_str).unwrap_or_default();
+
+    match kind {
+        "input_text" | "output_text" | "text" => {
+            let text = part
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if text.is_empty() {
+                return Ok(None);
+            }
+
+            Ok(Some(json!({
+                "type": if role == "user" { "input_text" } else { "output_text" },
+                "text": text,
+            })))
+        }
+        "input_image" | "image_url" => {
+            let image_url = part
+                .get("image_url")
+                .and_then(|value| {
+                    value.as_str().map(str::to_string).or_else(|| {
+                        value
+                            .get("url")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                })
+                .ok_or_else(|| "Message image content is missing image_url.".to_string())?;
+
+            Ok(Some(json!({
+                "type": "input_image",
+                "image_url": image_url,
+            })))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn extract_completed_items(payload: &Value) -> Option<&Vec<Value>> {
@@ -411,21 +725,23 @@ fn extract_completed_items(payload: &Value) -> Option<&Vec<Value>> {
         .or_else(|| payload.get("output").and_then(Value::as_array))
 }
 
-fn extract_completed_output_text(payload: &Value) -> String {
-    extract_completed_items(payload)
+pub(super) fn extract_completed_output_text(payload: &Value) -> String {
+    let direct_output_text = payload
+        .get("response")
+        .and_then(|response| response.get("output_text"))
+        .or_else(|| payload.get("output_text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    let item_output_text = extract_completed_items(payload)
         .into_iter()
         .flatten()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
-        .flat_map(|item| {
-            item.get("content")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-        })
-        .filter(|content| content.get("type").and_then(Value::as_str) == Some("output_text"))
-        .filter_map(|content| content.get("text").and_then(Value::as_str))
+        .map(extract_output_text_from_output_item)
         .collect::<Vec<_>>()
-        .join("")
+        .join("");
+
+    select_best_output_text(direct_output_text, &item_output_text)
 }
 
 pub(super) fn extract_completed_reasoning_summary(payload: &Value) -> Option<String> {
@@ -440,14 +756,38 @@ pub(super) fn extract_completed_reasoning_summary(payload: &Value) -> Option<Str
 }
 
 pub(super) fn extract_output_text_from_output_item(item: &Value) -> String {
+    if item.get("type").and_then(Value::as_str) == Some("output_text") {
+        return extract_json_text_value(item.get("text")).unwrap_or_default();
+    }
+
     item.get("content")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|content| content.get("type").and_then(Value::as_str) == Some("output_text"))
-        .filter_map(|content| content.get("text").and_then(Value::as_str))
+        .map(extract_output_text_from_content_part)
         .collect::<Vec<_>>()
         .join("")
+}
+
+fn extract_json_text_value(value: Option<&Value>) -> Option<String> {
+    value.and_then(|text| {
+        text.as_str().map(str::to_string).or_else(|| {
+            text.get("value")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+    })
+}
+
+fn extract_output_text_from_content_part(part: &Value) -> String {
+    let kind = part.get("type").and_then(Value::as_str).unwrap_or_default();
+    if kind != "output_text" && kind != "text" {
+        return String::new();
+    }
+
+    extract_json_text_value(part.get("text"))
+        .or_else(|| extract_json_text_value(part.get("value")))
+        .unwrap_or_default()
 }
 
 pub(super) fn extract_reasoning_summary_from_output_item(item: &Value) -> String {
@@ -462,7 +802,7 @@ pub(super) fn extract_reasoning_summary_from_output_item(item: &Value) -> String
         .filter(|summary_item| {
             summary_item.get("type").and_then(Value::as_str) == Some("summary_text")
         })
-        .filter_map(|summary_item| summary_item.get("text").and_then(Value::as_str))
+        .filter_map(|summary_item| extract_json_text_value(summary_item.get("text")))
         .collect::<Vec<_>>()
         .join("")
 }
@@ -618,12 +958,54 @@ fn select_best_optional_text(primary: Option<String>, fallback: &str) -> Option<
     optional_text(merged)
 }
 
+fn select_best_output_items(primary: Option<Vec<Value>>, fallback: &[Value]) -> Option<Vec<Value>> {
+    if let Some(primary) = primary.filter(|items| !items.is_empty()) {
+        return Some(primary);
+    }
+
+    optional_output_items(fallback.to_vec())
+}
+
 fn optional_text(value: String) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+fn optional_output_items(value: Vec<Value>) -> Option<Vec<Value>> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn output_item_identity(item: &Value) -> Option<String> {
+    let kind = item.get("type").and_then(Value::as_str).unwrap_or("item");
+
+    item.get("id")
+        .or_else(|| item.get("call_id"))
+        .or_else(|| item.get("item_id"))
+        .and_then(Value::as_str)
+        .map(|identifier| format!("{}:{}", kind, identifier))
+}
+
+fn upsert_output_item(output_items: &mut Vec<Value>, item: Value) {
+    if let Some(identity) = output_item_identity(&item) {
+        if let Some(existing) = output_items
+            .iter_mut()
+            .find(|existing| output_item_identity(existing).as_deref() == Some(identity.as_str()))
+        {
+            *existing = item;
+            return;
+        }
+    }
+
+    if output_items.iter().all(|existing| existing != &item) {
+        output_items.push(item);
     }
 }
 
