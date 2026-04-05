@@ -423,6 +423,7 @@ pub fn run() {
             commands::tool_get_mode_policy,
             commands::tool_validate_execution,
             commands::tool_execute_workspace,
+            commands::list_external_apps,
             commands::open_external_target,
             commands::terminal::terminal_list_tabs,
             commands::terminal::terminal_create_tab,
