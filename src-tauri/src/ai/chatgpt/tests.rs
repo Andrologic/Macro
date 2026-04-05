@@ -218,6 +218,36 @@ fn build_responses_request_flattens_tools_and_maps_tool_outputs() {
 }
 
 #[test]
+fn build_responses_request_omits_previous_response_id_when_absent() {
+    let request = build_responses_request(&AiChatRequest {
+        request_id: "req-omit-prev".to_string(),
+        provider_id: "chatgpt".to_string(),
+        model_id: "gpt-5".to_string(),
+        reasoning_effort: None,
+        previous_response_id: None,
+        messages: vec![AiChatMessage {
+            role: "user".to_string(),
+            content: AiChatMessageContent::Text("Hello".to_string()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }],
+        tools: Vec::new(),
+        tool_choice: Some("auto".to_string()),
+        parallel_tool_calls: Some(false),
+        workspace_path: None,
+        default_workspace_path: None,
+        project_mounts: Vec::new(),
+        virtual_root_enabled: None,
+        focused_project_id: None,
+        allowed_tool_ids: Vec::new(),
+    })
+    .expect("request");
+
+    let serialized = serde_json::to_value(&request).expect("serialize request");
+    assert!(serialized.get("previous_response_id").is_none());
+}
+
+#[test]
 fn extract_output_text_from_output_item_reads_completed_message_items() {
     let item = json!({
         "id": "msg_123",

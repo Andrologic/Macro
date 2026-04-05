@@ -83,6 +83,7 @@ export interface ToolCall {
 export interface ToolResult {
   tool_call_id: string;
   content: string;
+  tool_name?: string;
 }
 
 export interface StreamCompletionResult {
@@ -137,6 +138,10 @@ const emptyStreamCompletionResult = (visibleContent = ''): StreamCompletionResul
   visibleContent,
   toolTraces: [],
 });
+
+const CHATGPT_MAX_TOOL_CONTEXT_CHARS_PER_TURN = 12000;
+const CHATGPT_MAX_TOOL_RESULT_CHARS = 3200;
+const CHATGPT_MIN_TOOL_RESULT_CHARS = 400;
 
 const isReasoningUnsupportedError = (message: string): boolean => {
   const normalized = message.toLowerCase();
@@ -477,10 +482,56 @@ const buildChatGptVisibleTurnContent = (
 const isEmptyTerminalChatGptTurn = (content: string, toolCalls: ToolCall[]): boolean =>
   toolCalls.length === 0 && content.trim().length === 0;
 
+const truncateMiddle = (value: string, maxChars: number): string => {
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  if (maxChars <= 64) {
+    return `${value.slice(0, Math.max(0, maxChars - 16))}...[truncated]`;
+  }
+
+  const marker = '\n\n[... truncated for model context ...]\n\n';
+  const tailChars = Math.min(800, Math.max(160, Math.floor(maxChars * 0.25)));
+  const headChars = Math.max(0, maxChars - marker.length - tailChars);
+  return `${value.slice(0, headChars)}${marker}${value.slice(-tailChars)}`;
+};
+
+const compactToolResultForChatGptModelContext = (
+  toolName: string,
+  result: string,
+  maxChars: number
+): string => {
+  const normalizedMaxChars = Math.max(CHATGPT_MIN_TOOL_RESULT_CHARS, maxChars);
+  if (result.length <= normalizedMaxChars) {
+    return result;
+  }
+
+  const truncationNotice = `\n\n[Tool output truncated for model context. Tool=${toolName}; original_length=${result.length} chars.]`;
+  const contentBudget = Math.max(0, normalizedMaxChars - truncationNotice.length);
+  if (contentBudget === 0) {
+    return `[Tool output truncated for model context. Tool=${toolName}; original_length=${result.length} chars.]`;
+  }
+
+  const fileMatch = result.match(/^(FILE:\s*[^\n]+(?:\n[^\n]+)*)\n\n([\s\S]*)$/m);
+  if (fileMatch) {
+    const header = fileMatch[1];
+    const body = fileMatch[2];
+    const headerBudget = Math.min(header.length, Math.max(80, Math.floor(contentBudget * 0.2)));
+    const safeHeader = header.slice(0, headerBudget);
+    const remainingBudget = Math.max(0, contentBudget - safeHeader.length - 2);
+    const compactBody = truncateMiddle(body, remainingBudget);
+    return `${safeHeader}\n\n${compactBody}${truncationNotice}`;
+  }
+
+  return `${truncateMiddle(result, contentBudget)}${truncationNotice}`;
+};
+
 export const __testables = {
   applyReasoningToChatCompletionsRequest,
   buildToolContextBlock,
   buildChatGptVisibleTurnContent,
+  compactToolResultForChatGptModelContext,
   formatToolTraceDetail,
   isEmptyTerminalChatGptTurn,
   isReasoningUnsupportedError,
@@ -715,7 +766,6 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
     onToolTracesUpdate,
   });
   let currentMessages: StreamMessage[] = [...messages];
-  let previousResponseId: string | null = null;
   const readEvidenceBySource = new Map<string, string>();
   const MAX_TURNS = 10;
   let turnCount = 0;
@@ -759,7 +809,6 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         providerType: 'chatgpt',
         modelId,
         reasoningEffort: options.reasoningEffort,
-        previousResponseId,
         messages: currentMessages,
         tools,
         allowedToolIds: options.allowedToolIds,
@@ -777,7 +826,6 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         },
       });
 
-      previousResponseId = turnResult.responseId ?? previousResponseId;
       const turnContent = buildChatGptVisibleTurnContent(
         turnResult.content || streamedTurnContent,
         turnResult.reasoningSummary
@@ -786,7 +834,6 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
 
       if (shouldRetryMissingRequiredTool(options.guidedToolRetry, validToolCalls, guidedRetryCount)) {
         guidedRetryCount += 1;
-        previousResponseId = null;
         currentMessages.push({
           role: 'system',
           content: options.guidedToolRetry?.retrySystemPrompt || '',
@@ -807,10 +854,6 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
           content: turnContent,
           ...(validToolCalls.length > 0 ? { tool_calls: validToolCalls } : {}),
         });
-      }
-
-      if (validToolCalls.length > 0 && !previousResponseId) {
-        throw new Error('ChatGPT response is missing response_id for tool continuation.');
       }
 
       if (validToolCalls.length === 0) {
@@ -835,7 +878,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
 
           if (!allowedTools.has(toolName)) {
             toolResult = `Tool ${toolName} is disabled for the current mode.`;
-            toolResults.push({ tool_call_id: toolCall.id, content: toolResult });
+            toolResults.push({ tool_call_id: toolCall.id, content: toolResult, tool_name: toolName });
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
             continue;
           }
@@ -851,7 +894,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
             if (!enableWebSearch || (!webSearchOptions?.tavilyApiKey && !webSearchOptions?.braveApiKey)) {
               toolResult = 'Web search is not configured for this provider.';
               onToolResult?.(toolName, toolResult);
-              toolResults.push({ tool_call_id: toolCall.id, content: toolResult });
+              toolResults.push({ tool_call_id: toolCall.id, content: toolResult, tool_name: toolName });
               streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
               continue;
             }
@@ -868,7 +911,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
             if (!enableWebFetch) {
               toolResult = 'Web fetch is disabled for this provider.';
               onToolResult?.(toolName, toolResult);
-              toolResults.push({ tool_call_id: toolCall.id, content: toolResult });
+              toolResults.push({ tool_call_id: toolCall.id, content: toolResult, tool_name: toolName });
               streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
               continue;
             }
@@ -1015,6 +1058,7 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         toolResults.push({
           tool_call_id: toolCall.id,
           content: toolResult,
+          tool_name: toolName,
         });
       }
 
@@ -1030,15 +1074,29 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
           );
         });
         const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
+        let remainingToolContextBudget = CHATGPT_MAX_TOOL_CONTEXT_CHARS_PER_TURN;
+        const compactedToolMessages = toolResults.map((result) => {
+          const perToolBudget = Math.min(
+            CHATGPT_MAX_TOOL_RESULT_CHARS,
+            Math.max(CHATGPT_MIN_TOOL_RESULT_CHARS, remainingToolContextBudget)
+          );
+          const compactContent = compactToolResultForChatGptModelContext(
+            result.tool_name || 'tool',
+            result.content,
+            perToolBudget
+          );
+          remainingToolContextBudget = Math.max(0, remainingToolContextBudget - compactContent.length);
+          return {
+            role: 'tool' as const,
+            content: compactContent,
+            tool_call_id: result.tool_call_id,
+          };
+        });
 
-        currentMessages = toolResults.map((result) => ({
-          role: 'tool' as const,
-          content: result.content,
-          tool_call_id: result.tool_call_id,
-        }));
+        currentMessages.push(...compactedToolMessages);
 
         if (hasToolErrors || hasFileReadResults) {
-          devLogger.info('ChatGPT follow-up turn proceeding with tool outputs only after guarded tool results', {
+          devLogger.info('ChatGPT follow-up turn proceeding with full transcript after guarded tool results', {
             hasToolErrors,
             hasFileReadResults,
             toolResultCount: toolResults.length,
