@@ -189,6 +189,23 @@ describe('streamingChat tool rendering helpers', () => {
     ).toBe(false);
   });
 
+  it('compacts large file tool outputs before ChatGPT follow-up turns', async () => {
+    const { __testables } = await loadStreamingChat();
+    const largeFileResult =
+      'FILE: macro/README.md\nSOURCE: WORKSPACE_FILE\n\n' + 'A'.repeat(7000) + '\n' + 'B'.repeat(2000);
+
+    const compacted = __testables.compactToolResultForChatGptModelContext(
+      'read',
+      largeFileResult,
+      1200
+    );
+
+    expect(compacted).toContain('FILE: macro/README.md');
+    expect(compacted).toContain('Tool=read');
+    expect(compacted).toContain('truncated for model context');
+    expect(compacted.length).toBeLessThanOrEqual(1300);
+  });
+
   it('maps reasoning request parameters by provider type', async () => {
     const { __testables } = await loadStreamingChat();
 
