@@ -3,11 +3,18 @@ import { useTranslation } from 'react-i18next';
 import { changeLanguage, resolveSupportedLanguage } from '../../../i18n';
 import { SUPPORTED_LANGUAGE_METADATA } from '../../../i18n/languages';
 import type { ProjectSwitchPolicy } from '../../../services/localProjectContext';
-import { loadPreference, PREF_DEFAULTS, PREF_KEYS, savePreferenceDebounced } from '../../../services/preferences';
+import {
+    getEmptyProjectOpenSelection,
+    loadProjectOpenSettings,
+    saveProjectOpenAppPreference,
+    type ProjectOpenAction,
+    type ProjectOpenAppCatalog,
+    type ProjectOpenAppOption,
+    type ProjectOpenAppSelection,
+} from '../../../services/projectOpeners';
 import { useAppStore } from '../../../stores/useAppStore';
 // @ts-ignore
 import { Select } from '../../ui/Select';
-import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';
 
 export const GeneralView: React.FC = () => {
@@ -19,41 +26,100 @@ export const GeneralView: React.FC = () => {
     const implementExecutionMode = useAppStore((state) => state.implementExecutionMode);
     const setImplementExecutionMode = useAppStore((state) => state.setImplementExecutionMode);
     const selectedLanguage = resolveSupportedLanguage(i18n.resolvedLanguage || i18n.language);
-    const [editorCommand, setEditorCommand] = useState(
-        String(PREF_DEFAULTS[PREF_KEYS.PROJECT_OPEN_EDITOR_COMMAND] || '')
-    );
-    const [terminalCommand, setTerminalCommand] = useState(
-        String(PREF_DEFAULTS[PREF_KEYS.PROJECT_OPEN_TERMINAL_COMMAND] || '')
-    );
-    const [filesCommand, setFilesCommand] = useState(
-        String(PREF_DEFAULTS[PREF_KEYS.PROJECT_OPEN_FILES_COMMAND] || '')
-    );
+    const [projectOpenApps, setProjectOpenApps] = useState<ProjectOpenAppCatalog>({
+        editor: [],
+        terminal: [],
+        files: [],
+    });
+    const [selectedProjectOpenApps, setSelectedProjectOpenApps] = useState<ProjectOpenAppSelection>({
+        ...getEmptyProjectOpenSelection(),
+    });
+    const [isLoadingProjectOpenApps, setIsLoadingProjectOpenApps] = useState(true);
 
     useEffect(() => {
         let cancelled = false;
 
-        const loadCommands = async () => {
-            const [editor, terminal, files] = await Promise.all([
-                loadPreference<string>(PREF_KEYS.PROJECT_OPEN_EDITOR_COMMAND),
-                loadPreference<string>(PREF_KEYS.PROJECT_OPEN_TERMINAL_COMMAND),
-                loadPreference<string>(PREF_KEYS.PROJECT_OPEN_FILES_COMMAND),
-            ]);
+        const loadApps = async () => {
+            try {
+                const settings = await loadProjectOpenSettings();
+                if (cancelled) {
+                    return;
+                }
 
-            if (cancelled) {
-                return;
+                setProjectOpenApps(settings.appsByAction);
+                setSelectedProjectOpenApps(settings.selectedAppIdsByAction);
+            } finally {
+                if (!cancelled) {
+                    setIsLoadingProjectOpenApps(false);
+                }
             }
-
-            setEditorCommand(editor);
-            setTerminalCommand(terminal);
-            setFilesCommand(files);
         };
 
-        void loadCommands();
+        void loadApps();
 
         return () => {
             cancelled = true;
         };
     }, []);
+
+    const renderProjectOpenOptions = (apps: ProjectOpenAppOption[]) => {
+        const noneOption = apps.find((app) => app.kind === 'none');
+        const builtinOptions = apps.filter((app) => app.kind === 'builtin');
+        const detectedOptions = apps.filter((app) => app.kind === 'detected');
+
+        return (
+            <>
+                {noneOption && (
+                    <option key={noneOption.id} value={noneOption.id}>
+                        {t('settings.projectOpenNone', 'Do nothing')}
+                    </option>
+                )}
+                {detectedOptions.length > 0 && (
+                    <optgroup label={t('settings.projectOpenDetectedGroup', 'Detected apps')}>
+                        {detectedOptions.map((app) => (
+                            <option key={app.id} value={app.id}>
+                                {app.label}
+                            </option>
+                        ))}
+                    </optgroup>
+                )}
+                {builtinOptions.length > 0 && (
+                    <optgroup label={t('settings.projectOpenBuiltinGroup', 'Built-in options')}>
+                        {builtinOptions.map((app) => (
+                            <option key={app.id} value={app.id}>
+                                {app.label}
+                            </option>
+                        ))}
+                    </optgroup>
+                )}
+            </>
+        );
+    };
+
+    const renderProjectOpenSelect = (
+        action: ProjectOpenAction,
+        label: string,
+        description: string
+    ) => (
+        <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground">{label}</label>
+            <Select
+                value={selectedProjectOpenApps[action]}
+                disabled={isLoadingProjectOpenApps}
+                onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
+                    const nextValue = event.target.value;
+                    setSelectedProjectOpenApps((current) => ({
+                        ...current,
+                        [action]: nextValue,
+                    }));
+                    void saveProjectOpenAppPreference(action, nextValue);
+                }}
+            >
+                {renderProjectOpenOptions(projectOpenApps[action])}
+            </Select>
+            <p className="text-[11px] text-muted-foreground">{description}</p>
+        </div>
+    );
 
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -158,53 +224,35 @@ export const GeneralView: React.FC = () => {
                             <p className="text-xs text-muted-foreground">
                                 {t(
                                     'settings.openSubprojectsWithDesc',
-                                    'Configure the external commands used by the project modal quick actions.'
+                                    'Choose which detected app each quick action should use in the project modal.'
                                 )}
                             </p>
                         </div>
                         <div className="grid grid-cols-1 gap-4">
-                            <div className="space-y-1.5">
-                                <label className="text-xs font-medium text-foreground">
-                                    {t('settings.codeEditorCommand', 'Code editor command')}
-                                </label>
-                                <Input
-                                    value={editorCommand}
-                                    onChange={(event) => {
-                                        const nextValue = event.target.value;
-                                        setEditorCommand(nextValue);
-                                        savePreferenceDebounced(PREF_KEYS.PROJECT_OPEN_EDITOR_COMMAND, nextValue);
-                                    }}
-                                    placeholder={t('settings.codeEditorCommandPlaceholder', 'Example: code -n')}
-                                />
-                            </div>
-                            <div className="space-y-1.5">
-                                <label className="text-xs font-medium text-foreground">
-                                    {t('settings.terminalCommand', 'Terminal command')}
-                                </label>
-                                <Input
-                                    value={terminalCommand}
-                                    onChange={(event) => {
-                                        const nextValue = event.target.value;
-                                        setTerminalCommand(nextValue);
-                                        savePreferenceDebounced(PREF_KEYS.PROJECT_OPEN_TERMINAL_COMMAND, nextValue);
-                                    }}
-                                    placeholder={t('settings.terminalCommandPlaceholder', 'Example: wezterm start --cwd')}
-                                />
-                            </div>
-                            <div className="space-y-1.5">
-                                <label className="text-xs font-medium text-foreground">
-                                    {t('settings.fileExplorerCommand', 'File explorer command')}
-                                </label>
-                                <Input
-                                    value={filesCommand}
-                                    onChange={(event) => {
-                                        const nextValue = event.target.value;
-                                        setFilesCommand(nextValue);
-                                        savePreferenceDebounced(PREF_KEYS.PROJECT_OPEN_FILES_COMMAND, nextValue);
-                                    }}
-                                    placeholder={t('settings.fileExplorerCommandPlaceholder', 'Example: open -a Finder')}
-                                />
-                            </div>
+                            {renderProjectOpenSelect(
+                                'editor',
+                                t('settings.codeEditorApp', 'Code editor'),
+                                t(
+                                    'settings.codeEditorAppDesc',
+                                    'Used when clicking the code editor quick action for a subproject.'
+                                )
+                            )}
+                            {renderProjectOpenSelect(
+                                'terminal',
+                                t('settings.terminalApp', 'Terminal'),
+                                t(
+                                    'settings.terminalAppDesc',
+                                    'Used when clicking the terminal quick action for a subproject.'
+                                )
+                            )}
+                            {renderProjectOpenSelect(
+                                'files',
+                                t('settings.fileExplorerApp', 'File explorer'),
+                                t(
+                                    'settings.fileExplorerAppDesc',
+                                    'Used when clicking the file explorer quick action for a subproject.'
+                                )
+                            )}
                         </div>
                     </div>
                 </div>

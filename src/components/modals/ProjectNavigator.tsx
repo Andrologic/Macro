@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -19,7 +19,15 @@ import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { toast } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import type { Project, ProjectGroup } from '../../types';
-import { openProjectInExternalApp, type ProjectOpenAction } from '../../services/projectOpeners';
+import {
+  getEmptyProjectOpenSelection,
+  loadProjectOpenSettings,
+  openProjectInExternalApp,
+  PROJECT_OPEN_ACTIONS,
+  shouldRenderProjectOpenAction,
+  type ProjectOpenAction,
+  type ProjectOpenAppSelection,
+} from '../../services/projectOpeners';
 
 interface ProjectNavigatorProps {
   isOpen: boolean;
@@ -32,6 +40,7 @@ interface ProjectItemProps {
   onMenuOpen: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onOpenExternal: (action: ProjectOpenAction) => void;
   busyAction: ProjectOpenAction | null;
+  visibleActions: ProjectOpenAction[];
 }
 
 interface MenuPosition {
@@ -84,6 +93,7 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
   onMenuOpen,
   onOpenExternal,
   busyAction,
+  visibleActions,
 }) => {
   const { t } = useTranslation();
 
@@ -154,23 +164,28 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
       </div>
 
       <div className="flex items-center gap-2">
-        <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-          {renderQuickAction(
-            'editor',
-            'code',
-            t('projects.openInEditor', 'Open in code editor')
-          )}
-          {renderQuickAction(
-            'terminal',
-            'terminal',
-            t('projects.openInTerminal', 'Open in terminal')
-          )}
-          {renderQuickAction(
-            'files',
-            'folder-open',
-            t('projects.openInFiles', 'Open in file explorer')
-          )}
-        </div>
+        {visibleActions.length > 0 && (
+          <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+            {visibleActions.includes('editor') &&
+              renderQuickAction(
+                'editor',
+                'code',
+                t('projects.openInEditor', 'Open in code editor')
+              )}
+            {visibleActions.includes('terminal') &&
+              renderQuickAction(
+                'terminal',
+                'terminal',
+                t('projects.openInTerminal', 'Open in terminal')
+              )}
+            {visibleActions.includes('files') &&
+              renderQuickAction(
+                'files',
+                'folder-open',
+                t('projects.openInFiles', 'Open in file explorer')
+              )}
+          </div>
+        )}
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -216,6 +231,9 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   const [busyOpenActionByProjectId, setBusyOpenActionByProjectId] = useState<
     Record<string, ProjectOpenAction | null>
   >({});
+  const [projectOpenSelection, setProjectOpenSelection] = useState<ProjectOpenAppSelection>({
+    ...getEmptyProjectOpenSelection(),
+  });
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -257,6 +275,27 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   const handleDragEnd = (_event: DragEndEvent) => {
     setDraggedProject(null);
   };
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadOpenSettings = async () => {
+      const settings = await loadProjectOpenSettings();
+      if (!cancelled) {
+        setProjectOpenSelection(settings.selectedAppIdsByAction);
+      }
+    };
+
+    void loadOpenSettings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
 
   const handleSelectGroup = (groupId: string) => {
     setSelectedGroup(groupId);
@@ -333,6 +372,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       await openProjectInExternalApp({
         targetPath: project.path,
         action,
+        appId: projectOpenSelection[action],
       });
     } catch (error) {
       const fallbackTitle =
@@ -348,6 +388,10 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       setBusyOpenActionByProjectId((current) => ({ ...current, [project.id]: null }));
     }
   };
+
+  const visibleQuickActions = PROJECT_OPEN_ACTIONS.filter(
+    (action) => shouldRenderProjectOpenAction(projectOpenSelection, action)
+  );
 
   const handleRemoveProject = async (project: Project) => {
     try {
@@ -610,6 +654,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                                   void handleOpenExternal(project, action);
                                 }}
                                 busyAction={busyOpenActionByProjectId[project.id] ?? null}
+                                visibleActions={visibleQuickActions}
                                 onMenuOpen={(e) => {
                                   e.stopPropagation();
                                   const trigger = e.currentTarget;
