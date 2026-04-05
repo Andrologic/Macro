@@ -206,6 +206,26 @@ describe('streamingChat tool rendering helpers', () => {
     expect(compacted.length).toBeLessThanOrEqual(1300);
   });
 
+  it('keeps tool traces in insertion order even when tool ids sort differently', async () => {
+    const { __testables } = await loadStreamingChat();
+    const updates: Array<Array<{ tool_call_id: string }>> = [];
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: (toolTraces: Array<{ tool_call_id: string }>) => {
+        updates.push(toolTraces);
+      },
+    });
+
+    accumulator.upsertRunningToolTrace('call_z', 'read', 'README.md');
+    accumulator.upsertRunningToolTrace('call_a', 'grep', 'src');
+
+    expect(updates.at(-1)?.map((trace: { tool_call_id: string }) => trace.tool_call_id)).toEqual(['call_z', 'call_a']);
+    expect(accumulator.buildResult().toolTraces.map((trace: { tool_call_id: string }) => trace.tool_call_id)).toEqual([
+      'call_z',
+      'call_a',
+    ]);
+  });
+
   it('maps reasoning request parameters by provider type', async () => {
     const { __testables } = await loadStreamingChat();
 

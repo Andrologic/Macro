@@ -296,6 +296,8 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
   const hiddenContextBlocks: string[] = [];
 
   const snapshotToolTraces = (): ToolTrace[] =>
+    // Preserve first-seen insertion order; the UI treats the serialized tool_traces
+    // array as the canonical display order for grouped tool rendering.
     toolTraceOrder
       .map((toolCallId) => toolTraces.get(toolCallId))
       .filter((trace): trace is ToolTrace => Boolean(trace))
@@ -532,6 +534,7 @@ export const __testables = {
   buildToolContextBlock,
   buildChatGptVisibleTurnContent,
   compactToolResultForChatGptModelContext,
+  createStreamAccumulator,
   formatToolTraceDetail,
   isEmptyTerminalChatGptTurn,
   isReasoningUnsupportedError,
