@@ -203,6 +203,7 @@ export type ProjectActivity = 'idle' | 'ai-active' | 'completed' | 'error';
 export type AuthStatus = 'authenticated' | 'unauthenticated' | 'loading';
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type Language = 'en' | 'fr';
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
 // Tools & MCP types
 export type ToolStatus = 'enabled' | 'disabled' | 'error' | 'loading';
@@ -439,6 +440,8 @@ export interface AIModel {
   provider_id: string;
   description?: string;
   capabilities?: string[];
+  reasoningEfforts?: ReasoningEffort[];
+  defaultReasoningEffort?: ReasoningEffort | null;
   owned_by?: string;
   pricing?: {
     prompt?: string;

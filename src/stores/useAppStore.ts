@@ -1,7 +1,7 @@
-import { create } from 'zustand';
-import { useChatStore } from './useChatStore';
-import { useNeedsStore } from './useNeedsStore';
-import { useTaskStore } from './useTaskStore';
+import { create } from "zustand";
+import { useChatStore } from "./useChatStore";
+import { useNeedsStore } from "./useNeedsStore";
+import { useTaskStore } from "./useTaskStore";
 import {
   AppMode,
   AgentType,
@@ -15,11 +15,11 @@ import {
   ProjectGitSetupState,
   PlanNode,
   PredictedBranch,
-} from '../types';
-import { services } from '../services';
-import { toServiceError } from '../services/contracts/errors';
-import { devLogger } from '../utils/devLogger';
-import { clampUiZoomLevel } from '../utils/uiZoom';
+} from "../types";
+import { services } from "../services";
+import { toServiceError } from "../services/contracts/errors";
+import { devLogger } from "../utils/devLogger";
+import { clampUiZoomLevel } from "../utils/uiZoom";
 import {
   type ProjectSwitchPolicy,
   getLocalProjectContextState,
@@ -29,22 +29,22 @@ import {
   setProjectSwitchPolicy as persistProjectSwitchPolicy,
   upsertLocalProjectContextState,
   upsertLocalSessionContextState,
-} from '../services/localProjectContext';
-import { getDefaultProjectGitFlowSettings } from '../services/architectGitNaming';
+} from "../services/localProjectContext";
+import { getDefaultProjectGitFlowSettings } from "../services/architectGitNaming";
 import {
   getArchitectPlan,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   planMatchesProjectId,
   resolveTargetBranch,
-} from '../services/architectPlanService';
-import { taskMatchesProjectId } from '../services/implementTaskCatalog';
+} from "../services/architectPlanService";
+import { taskMatchesProjectId } from "../services/implementTaskCatalog";
 import {
   loadPreference,
   savePreference,
   savePreferenceDebounced,
   PREF_KEYS,
-} from '../services/preferences';
+} from "../services/preferences";
 import {
   DEFAULT_NOTIFICATION_CHANNEL_MODES,
   sanitizeNotificationChannelMode,
@@ -52,7 +52,7 @@ import {
   type NotificationCategory,
   type NotificationChannelMode,
   type NotificationChannelModes,
-} from '../services/notificationChannels';
+} from "../services/notificationChannels";
 import {
   getGlobalProjectById,
   getFocusedProjectIdForGroup,
@@ -61,7 +61,7 @@ import {
   getScopedActionableProjectIds,
   getScopedProjectIds,
   getScopedReadOnlyProjectIds,
-} from '../services/globalProjects';
+} from "../services/globalProjects";
 import {
   countProjectsInRegistry,
   formatProjectRegistryRepairSummary,
@@ -69,27 +69,29 @@ import {
   resolveCanonicalProject,
   resolveCanonicalProjectGroup,
   reconcileRememberedProjects,
-} from '../services/projectRegistry';
-import { ensureProjectGroupPlan } from '../services/architectAutoPlan';
-import type { NormalizeProjectRegistryResult } from '../services/projectRegistry';
+} from "../services/projectRegistry";
+import { ensureProjectGroupPlan } from "../services/architectAutoPlan";
+import type { NormalizeProjectRegistryResult } from "../services/projectRegistry";
+import * as tauriIpc from "../services/tauriIpc";
 import type {
   MacroSyncNextAction,
   MacroSyncReason,
-} from '../services/tauriIpc';
+  WorkspaceMetadataRecoveryReportDto,
+} from "../services/tauriIpc";
 
-export type TaskSortOption = 'status' | 'date' | 'title' | 'project';
+export type TaskSortOption = "status" | "date" | "title" | "project";
 export type SettingsTab =
-  | 'general'
-  | 'notifications'
-  | 'appearance'
-  | 'providers'
-  | 'models'
-  | 'tools'
-  | 'shortcuts'
-  | 'prompts'
-  | 'architect';
-export type UiZoomMode = 'auto' | 'override';
-export type MetadataSyncState = 'clean' | 'pending' | 'failed' | 'conflict';
+  | "general"
+  | "notifications"
+  | "appearance"
+  | "providers"
+  | "models"
+  | "tools"
+  | "shortcuts"
+  | "prompts"
+  | "architect";
+export type UiZoomMode = "auto" | "override";
+export type MetadataSyncState = "clean" | "pending" | "failed" | "conflict";
 
 export interface MetadataSyncRepositoryStatus {
   repoPath: string;
@@ -127,10 +129,12 @@ export interface ArchitectPlanContext {
 
 const upsertRememberedProject = (
   projects: RememberedProject[],
-  nextProject: RememberedProject
+  nextProject: RememberedProject,
 ): RememberedProject[] => {
-  const filtered = projects.filter((project) =>
-    project.projectId !== nextProject.projectId && project.path !== nextProject.path
+  const filtered = projects.filter(
+    (project) =>
+      project.projectId !== nextProject.projectId &&
+      project.path !== nextProject.path,
   );
   return [nextProject, ...filtered].slice(0, MAX_REMEMBERED_PROJECTS);
 };
@@ -138,16 +142,18 @@ const upsertRememberedProject = (
 const insertProjectInGroups = (
   groups: ProjectGroup[],
   project: Project,
-  requestedGroupId: string | null
+  requestedGroupId: string | null,
 ): { projectGroups: ProjectGroup[]; targetGroupId: string } => {
   if (requestedGroupId) {
-    const hasRequestedGroup = groups.some((group) => group.id === requestedGroupId);
+    const hasRequestedGroup = groups.some(
+      (group) => group.id === requestedGroupId,
+    );
     if (hasRequestedGroup) {
       return {
         projectGroups: groups.map((group) =>
           group.id === requestedGroupId
             ? { ...group, projects: [...group.projects, project] }
-            : group
+            : group,
         ),
         targetGroupId: requestedGroupId,
       };
@@ -168,19 +174,23 @@ const insertProjectInGroups = (
   };
 };
 
-const normalizePath = (value: string): string => value.replace(/\\/g, '/').replace(/\/$/, '');
+const normalizePath = (value: string): string =>
+  value.replace(/\\/g, "/").replace(/\/$/, "");
 
 const isAppMode = (value: unknown): value is AppMode =>
-  value === 'Architect' || value === 'Implement' || value === 'Chat' || value === 'Debug';
+  value === "Architect" ||
+  value === "Implement" ||
+  value === "Chat" ||
+  value === "Debug";
 
 const isLegacyWorkspaceMockPath = (path?: string): boolean => {
-  const normalized = normalizePath(path || '');
-  return normalized.startsWith('/path/to/');
+  const normalized = normalizePath(path || "");
+  return normalized.startsWith("/path/to/");
 };
 
 const isImplicitWorkspaceRootPath = (path?: string): boolean => {
-  const normalized = (path || '').trim().replace(/\\/g, '/');
-  return normalized === '.' || normalized === './';
+  const normalized = (path || "").trim().replace(/\\/g, "/");
+  return normalized === "." || normalized === "./";
 };
 
 const shouldPersistProjectPath = (path?: string | null): boolean => {
@@ -195,43 +205,54 @@ const persistSessionContext = async (input: {
 }): Promise<void> => {
   await upsertLocalSessionContextState(input);
   void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, input.selectedGroupId);
-  void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, input.selectedProjectId);
+  void savePreference(
+    PREF_KEYS.LAST_SELECTED_PROJECT_ID,
+    input.selectedProjectId,
+  );
   void savePreference(PREF_KEYS.LAST_ACTIVE_MODE, input.mode);
 };
 
-const sortByUpdatedAtDesc = <T extends { updated_at?: string }>(items: T[]): T[] =>
+const sortByUpdatedAtDesc = <T extends { updated_at?: string }>(
+  items: T[],
+): T[] =>
   [...items].sort((left, right) => {
     const leftTime = left.updated_at ? new Date(left.updated_at).getTime() : 0;
-    const rightTime = right.updated_at ? new Date(right.updated_at).getTime() : 0;
+    const rightTime = right.updated_at
+      ? new Date(right.updated_at).getTime()
+      : 0;
     return rightTime - leftTime;
   });
 
 const collectProjectRegistryIds = (groups: ProjectGroup[]) => ({
   validGroupIds: groups.map((group) => group.id),
-  validProjectIds: groups.flatMap((group) => group.projects.map((project) => project.id)),
+  validProjectIds: groups.flatMap((group) =>
+    group.projects.map((project) => project.id),
+  ),
 });
 
 const filterPlanNodesForRegistry = (
   planNodes: PlanNode[],
-  validProjectIds: string[]
+  validProjectIds: string[],
 ): PlanNode[] => {
   const validProjectIdSet = new Set(validProjectIds);
   return planNodes.filter(
-    (node) => !node.projectId || validProjectIdSet.has(node.projectId)
+    (node) => !node.projectId || validProjectIdSet.has(node.projectId),
   );
 };
 
 const filterPredictedBranchesForRegistry = (
   predictedBranches: PredictedBranch[],
-  validProjectIds: string[]
+  validProjectIds: string[],
 ): PredictedBranch[] => {
   const validProjectIdSet = new Set(validProjectIds);
-  return predictedBranches.filter((branch) => validProjectIdSet.has(branch.projectId));
+  return predictedBranches.filter((branch) =>
+    validProjectIdSet.has(branch.projectId),
+  );
 };
 
 const logProjectRegistryAction = (
-  status: 'started' | 'succeeded' | 'failed',
-  payload: Record<string, unknown>
+  status: "started" | "succeeded" | "failed",
+  payload: Record<string, unknown>,
 ): void => {
   const message = {
     event: `project_registry_action_${status}`,
@@ -239,7 +260,7 @@ const logProjectRegistryAction = (
     ...payload,
   };
 
-  if (status === 'failed') {
+  if (status === "failed") {
     console.error(JSON.stringify(message));
     return;
   }
@@ -252,7 +273,9 @@ const reconcileProjectRegistryDependencies = async (params: {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
 }): Promise<void> => {
-  const { validGroupIds, validProjectIds } = collectProjectRegistryIds(params.projectGroups);
+  const { validGroupIds, validProjectIds } = collectProjectRegistryIds(
+    params.projectGroups,
+  );
   await reconcileLocalProjectRegistryState({
     validGroupIds,
     validProjectIds,
@@ -260,12 +283,14 @@ const reconcileProjectRegistryDependencies = async (params: {
     selectedProjectId: params.selectedProjectId,
   });
 
-  useChatStore.getState().reconcileProjectRegistry(validGroupIds, validProjectIds);
+  useChatStore
+    .getState()
+    .reconcileProjectRegistry(validGroupIds, validProjectIds);
 };
 
 const persistCurrentProjectContext = async (
   groupId: string,
-  focusProjectId?: string | null
+  focusProjectId?: string | null,
 ): Promise<void> => {
   const appState = useAppStore.getState();
   const globalProject = getGlobalProjectById(appState.projectGroups, groupId);
@@ -276,7 +301,9 @@ const persistCurrentProjectContext = async (
   const scopedProjectIds = new Set(globalProject.subProjectIds);
 
   const tasksForProject = taskStore.tasks.filter((task) =>
-    globalProject.subProjectIds.some((projectId) => taskMatchesProjectId(task, projectId))
+    globalProject.subProjectIds.some((projectId) =>
+      taskMatchesProjectId(task, projectId),
+    ),
   );
   const selectedTask = appState.selectedTaskId
     ? taskStore.getTaskById(appState.selectedTaskId)
@@ -285,13 +312,16 @@ const persistCurrentProjectContext = async (
   let lastTaskId: string | null = null;
   if (
     selectedTask &&
-    globalProject.subProjectIds.some((projectId) => taskMatchesProjectId(selectedTask, projectId))
+    globalProject.subProjectIds.some((projectId) =>
+      taskMatchesProjectId(selectedTask, projectId),
+    )
   ) {
     lastTaskId = selectedTask.id;
   } else {
-    const preferredTask = tasksForProject.find((task) => task.status === 'InProgress') ||
-      tasksForProject.find((task) => task.status === 'AwaitingResponse') ||
-      tasksForProject.find((task) => task.status === 'Pending') ||
+    const preferredTask =
+      tasksForProject.find((task) => task.status === "InProgress") ||
+      tasksForProject.find((task) => task.status === "AwaitingResponse") ||
+      tasksForProject.find((task) => task.status === "Pending") ||
       tasksForProject[0];
     lastTaskId = preferredTask?.id ?? null;
   }
@@ -300,12 +330,16 @@ const persistCurrentProjectContext = async (
   const activePlanId = appState.activeArchitectPlanId;
   if (activePlanId) {
     try {
-      const targetBranch = resolveTargetBranch(appState.activePlanContext?.targetBranch || getGitFlowBaseBranch());
+      const targetBranch = resolveTargetBranch(
+        appState.activePlanContext?.targetBranch || getGitFlowBaseBranch(),
+      );
       const plan = await getArchitectPlan(targetBranch, activePlanId);
       if (
         plan &&
-        plan.status !== 'deleted' &&
-        globalProject.subProjectIds.some((projectId) => planMatchesProjectId(plan, projectId))
+        plan.status !== "deleted" &&
+        globalProject.subProjectIds.some((projectId) =>
+          planMatchesProjectId(plan, projectId),
+        )
       ) {
         lastPlanId = plan.id;
       }
@@ -317,50 +351,54 @@ const persistCurrentProjectContext = async (
   const architectConversations = sortByUpdatedAtDesc(
     chatStore.conversations.filter(
       (conversation) =>
-        conversation.scope_mode === 'Architect' &&
-        (
-          conversation.group_id === groupId ||
-          (conversation.project_id ? scopedProjectIds.has(conversation.project_id) : false)
-        )
-    )
+        conversation.scope_mode === "Architect" &&
+        (conversation.group_id === groupId ||
+          (conversation.project_id
+            ? scopedProjectIds.has(conversation.project_id)
+            : false)),
+    ),
   );
   const selectedConversation = chatStore.selectedConversationId
-    ? chatStore.conversations.find((conversation) => conversation.id === chatStore.selectedConversationId)
+    ? chatStore.conversations.find(
+        (conversation) => conversation.id === chatStore.selectedConversationId,
+      )
     : null;
 
   const selectedArchitectConversation =
     selectedConversation &&
-      selectedConversation.scope_mode === 'Architect' &&
-      (
-        selectedConversation.group_id === groupId ||
-        (selectedConversation.project_id ? scopedProjectIds.has(selectedConversation.project_id) : false)
-      )
+    selectedConversation.scope_mode === "Architect" &&
+    (selectedConversation.group_id === groupId ||
+      (selectedConversation.project_id
+        ? scopedProjectIds.has(selectedConversation.project_id)
+        : false))
       ? selectedConversation.id
       : null;
-  const architectConversationId = selectedArchitectConversation || architectConversations[0]?.id || null;
+  const architectConversationId =
+    selectedArchitectConversation || architectConversations[0]?.id || null;
 
   const taskIdSet = new Set(tasksForProject.map((task) => task.id));
   const implementByTask = lastTaskId
     ? sortByUpdatedAtDesc(
-      chatStore.conversations.filter(
-        (conversation) =>
-          conversation.scope_mode === 'Implement' && conversation.task_id === lastTaskId
+        chatStore.conversations.filter(
+          (conversation) =>
+            conversation.scope_mode === "Implement" &&
+            conversation.task_id === lastTaskId,
+        ),
       )
-    )
     : [];
   const implementByProject = sortByUpdatedAtDesc(
     chatStore.conversations.filter(
       (conversation) =>
-        conversation.scope_mode === 'Implement' &&
-        Boolean(conversation.task_id && taskIdSet.has(conversation.task_id))
-    )
+        conversation.scope_mode === "Implement" &&
+        Boolean(conversation.task_id && taskIdSet.has(conversation.task_id)),
+    ),
   );
 
   const selectedImplementConversation =
     selectedConversation &&
-      selectedConversation.scope_mode === 'Implement' &&
-      selectedConversation.task_id &&
-      taskIdSet.has(selectedConversation.task_id)
+    selectedConversation.scope_mode === "Implement" &&
+    selectedConversation.task_id &&
+    taskIdSet.has(selectedConversation.task_id)
       ? selectedConversation.id
       : null;
   const implementConversationId =
@@ -382,7 +420,7 @@ const persistCurrentProjectContext = async (
 
 const restoreProjectContext = async (
   groupId: string,
-  preferredFocusProjectId?: string | null
+  preferredFocusProjectId?: string | null,
 ): Promise<void> => {
   const appState = useAppStore.getState();
   const globalProject = getGlobalProjectById(appState.projectGroups, groupId);
@@ -395,7 +433,12 @@ const restoreProjectContext = async (
   const contextTaskId = context?.lastTaskId;
   if (contextTaskId) {
     const task = taskStore.getTaskById(contextTaskId);
-    if (task && globalProject.subProjectIds.some((projectId) => taskMatchesProjectId(task, projectId))) {
+    if (
+      task &&
+      globalProject.subProjectIds.some((projectId) =>
+        taskMatchesProjectId(task, projectId),
+      )
+    ) {
       restoredTaskId = contextTaskId;
     }
   }
@@ -411,12 +454,16 @@ const restoreProjectContext = async (
   const contextPlanId = context?.lastPlanId;
   if (contextPlanId) {
     try {
-      const targetBranch = resolveTargetBranch(appState.activePlanContext?.targetBranch || getGitFlowBaseBranch());
+      const targetBranch = resolveTargetBranch(
+        appState.activePlanContext?.targetBranch || getGitFlowBaseBranch(),
+      );
       const plan = await getArchitectPlan(targetBranch, contextPlanId);
       if (
         plan &&
-        plan.status !== 'deleted' &&
-        globalProject.subProjectIds.some((projectId) => planMatchesProjectId(plan, projectId))
+        plan.status !== "deleted" &&
+        globalProject.subProjectIds.some((projectId) =>
+          planMatchesProjectId(plan, projectId),
+        )
       ) {
         restoredPlanId = plan.id;
         useAppStore.setState({
@@ -455,7 +502,7 @@ const restoreProjectContext = async (
     appState.projectGroups,
     groupId,
     preferredFocusProjectId ?? null,
-    context
+    context,
   );
   if (useAppStore.getState().selectedProjectId !== nextFocusProjectId) {
     useAppStore.setState({ selectedProjectId: nextFocusProjectId });
@@ -473,7 +520,7 @@ const hydrateArchitectPlanInStore = async (input: {
   needs: Awaited<ReturnType<typeof getArchitectPlanNeeds>>;
 }): Promise<void> => {
   const plan = input.plan;
-  if (!plan || plan.status === 'deleted') {
+  if (!plan || plan.status === "deleted") {
     return;
   }
 
@@ -506,17 +553,17 @@ const ensureAutoPlanForSelection = async (input: {
   const scopedProjectIds = getScopedProjectIds(
     appState.projectGroups,
     input.groupId,
-    input.projectId
+    input.projectId,
   );
   const actionableProjectIds = getScopedActionableProjectIds(
     appState.projectGroups,
     input.groupId,
-    input.projectId
+    input.projectId,
   );
   const readOnlyProjectIds = getScopedReadOnlyProjectIds(
     appState.projectGroups,
     input.groupId,
-    input.projectId
+    input.projectId,
   );
   if (scopedProjectIds.length === 0 || actionableProjectIds.length === 0) {
     return;
@@ -544,19 +591,37 @@ const pruneLegacyWorkspaceMocks = (groups: ProjectGroup[]): ProjectGroup[] => {
       projects: group.projects.filter(
         (project) =>
           !isLegacyWorkspaceMockPath(project.path) &&
-          !isImplicitWorkspaceRootPath(project.path)
+          !isImplicitWorkspaceRootPath(project.path),
       ),
     }))
     .filter((group) => group.projects.length > 0);
 };
 
 const pruneLegacyRememberedProjects = (
-  projects: RememberedProject[]
+  projects: RememberedProject[],
 ): RememberedProject[] =>
   projects.filter(
     (project) =>
       !isLegacyWorkspaceMockPath(project.path) &&
-      !isImplicitWorkspaceRootPath(project.path)
+      !isImplicitWorkspaceRootPath(project.path),
+  );
+
+const buildMetadataRecoveryHints = (
+  macroEnabledProjects: RememberedProject[],
+  recentProjects: RememberedProject[],
+): tauriIpc.WorkspaceMetadataRecoveryHintDto[] =>
+  Array.from(
+    new Map(
+      [...macroEnabledProjects, ...recentProjects]
+        .map((project) => ({
+          projectId: project.projectId,
+          groupId: project.groupId ?? null,
+          name: project.name,
+          path: project.path,
+        }))
+        .filter((project) => project.path.trim().length > 0)
+        .map((project) => [normalizePath(project.path), project] as const),
+    ).values(),
   );
 
 interface AppStore {
@@ -600,6 +665,7 @@ interface AppStore {
   recentProjects: RememberedProject[];
   macroEnabledProjects: RememberedProject[];
   projectRegistryRepairSummary: string | null;
+  metadataRecoveryReport: WorkspaceMetadataRecoveryReportDto | null;
   // Architect mode state
   activeArchitectPlanId: string | null;
   activePlanContext: ArchitectPlanContext | null;
@@ -617,19 +683,22 @@ interface AppStore {
   toggleProjectGroup: (groupId: string) => void;
   renameProjectGroup: (groupId: string, name: string) => Promise<void>;
   renameProject: (projectId: string, name: string) => Promise<void>;
-  updateProjectGitFlow: (projectId: string, gitFlowSettings: ProjectGitFlowSettings) => Promise<void>;
+  updateProjectGitFlow: (
+    projectId: string,
+    gitFlowSettings: ProjectGitFlowSettings,
+  ) => Promise<void>;
   updateProjectGitFlowWithSetup: (
     projectId: string,
     gitFlowSettings: ProjectGitFlowSettings,
     gitSetupActions: ProjectGitSetupAction[],
     expectedRepoRootPath: string | null | undefined,
     expectedSetupState: ProjectGitSetupState,
-    expectedRecommendedActionSequence: ProjectGitSetupAction[]
+    expectedRecommendedActionSequence: ProjectGitSetupAction[],
   ) => Promise<ProjectGitSetupCommitResult>;
   updateProjectAccess: (
     projectId: string,
     userReadOnly: boolean,
-    confirmedMigration?: boolean
+    confirmedMigration?: boolean,
   ) => Promise<void>;
   removeProjectGroup: (groupId: string) => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
@@ -642,10 +711,13 @@ interface AppStore {
   setImplementExecutionMode: (mode: ImplementExecutionMode) => void;
   setNotificationChannelMode: (
     category: NotificationCategory,
-    mode: NotificationChannelMode
+    mode: NotificationChannelMode,
   ) => void;
   armPendingAutoLaunch: (planId: string, taskId: string) => void;
-  clearPendingAutoLaunch: (params?: { planId?: string | null; taskId?: string | null }) => void;
+  clearPendingAutoLaunch: (params?: {
+    planId?: string | null;
+    taskId?: string | null;
+  }) => void;
   setMetadataSyncStatus: (params: {
     state: MetadataSyncState;
     error?: string | null;
@@ -676,7 +748,7 @@ interface AppStore {
       expectedRepoRootPath?: string | null;
       expectedSetupState: ProjectGitSetupState;
       expectedRecommendedActionSequence: ProjectGitSetupAction[];
-    }
+    },
   ) => Promise<ProjectGitSetupCommitResult>;
   refreshProjectRegistry: () => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
@@ -706,12 +778,8 @@ const loadProjectRegistrySnapshot = async (params: {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
 }): Promise<ProjectRegistrySnapshot> => {
-  const {
-    projectGroups,
-    plan,
-    planNodes,
-    predictedBranches,
-  } = await services.getAppBootstrap();
+  const { projectGroups, plan, planNodes, predictedBranches } =
+    await services.getAppBootstrap();
 
   return {
     plan,
@@ -734,54 +802,56 @@ const derivePlanNodesFromPlan = (plan: Plan | null): PlanNode[] => {
     id: task.id,
     title: task.title,
     description: task.description,
-    type: 'task',
+    type: "task",
     status:
-      task.status === 'Completed'
-        ? 'completed'
-        : task.status === 'InProgress'
-          ? 'in-progress'
-          : task.status === 'Blocked'
-            ? 'blocked'
-            : 'pending',
+      task.status === "Completed"
+        ? "completed"
+        : task.status === "InProgress"
+          ? "in-progress"
+          : task.status === "Blocked"
+            ? "blocked"
+            : "pending",
     dependencies: task.dependencies,
     projectId: task.project_id,
   }));
 };
 
 export const useAppStore = create<AppStore>((set, get) => ({
-  mode: 'Implement',
-  agentType: 'build',
+  mode: "Implement",
+  agentType: "build",
   currentPlan: null,
   projectGroups: [],
   selectedGroupId: null,
   selectedProjectId: null,
   selectedTaskId: null,
-  taskSortOption: 'date',
+  taskSortOption: "date",
   isLoading: false,
   lastError: null,
   settingsOpen: false,
-  activeSettingsTab: 'general',
+  activeSettingsTab: "general",
   accountOpen: false,
   projectModalOpen: false,
   projectModalGroupId: null,
   projectGitFlowModalProjectId: null,
   activeThemeId:
-    (typeof window !== 'undefined' ? window.localStorage.getItem('theme-id') : null) || 'macro-dark',
+    (typeof window !== "undefined"
+      ? window.localStorage.getItem("theme-id")
+      : null) || "macro-dark",
   leftPanelWidth: 280,
   rightPanelWidth: 320,
   isLeftPanelOpen: true,
   isRightPanelOpen: true,
-  enabledModes: ['Architect', 'Implement', 'Chat', 'Debug'],
-  uiZoomMode: 'auto',
+  enabledModes: ["Architect", "Implement", "Chat", "Debug"],
+  uiZoomMode: "auto",
   uiZoomLevel: 1,
-  projectSwitchPolicy: 'resume_per_project',
+  projectSwitchPolicy: "resume_per_project",
   isProjectSwitching: false,
   metadataAutoPush: false,
-  implementExecutionMode: 'semi_auto',
+  implementExecutionMode: "semi_auto",
   notificationChannelModes: DEFAULT_NOTIFICATION_CHANNEL_MODES,
   pendingAutoLaunchPlanId: null,
   pendingAutoLaunchTaskId: null,
-  metadataSyncState: 'clean',
+  metadataSyncState: "clean",
   metadataSyncError: null,
   metadataSyncReason: null,
   metadataSyncNextAction: null,
@@ -790,6 +860,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   recentProjects: [],
   macroEnabledProjects: [],
   projectRegistryRepairSummary: null,
+  metadataRecoveryReport: null,
   activeArchitectPlanId: null,
   activePlanContext: null,
   planNodes: [],
@@ -798,7 +869,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setMode: (mode) => {
     set({
       mode,
-      ...(mode === 'Implement'
+      ...(mode === "Implement"
         ? {}
         : {
             pendingAutoLaunchPlanId: null,
@@ -818,8 +889,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     void savePreference(PREF_KEYS.AGENT_TYPE, agentType);
   },
   setTheme: (themeId) => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('theme-id', themeId);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("theme-id", themeId);
     }
     set({ activeThemeId: themeId });
   },
@@ -837,7 +908,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         projectGroups: normalized.projectGroups,
         selectedGroupId: normalized.selectedGroupId,
         selectedProjectId: normalized.selectedProjectId,
-        projectRegistryRepairSummary: formatProjectRegistryRepairSummary(normalized.report),
+        projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
+          normalized.report,
+        ),
       };
     }),
 
@@ -876,7 +949,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         mode: state.mode,
       });
 
-      if (groupId && get().projectSwitchPolicy === 'resume_per_project') {
+      if (groupId && get().projectSwitchPolicy === "resume_per_project") {
         await restoreProjectContext(groupId, nextFocusProjectId);
       }
 
@@ -892,7 +965,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   setProjectSwitchPolicy: async (policy) => {
-    const normalized = policy === 'reset_on_switch' ? 'reset_on_switch' : 'resume_per_project';
+    const normalized =
+      policy === "reset_on_switch" ? "reset_on_switch" : "resume_per_project";
     set({ projectSwitchPolicy: normalized });
     await persistProjectSwitchPolicy(normalized);
   },
@@ -903,10 +977,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   setImplementExecutionMode: (mode) => {
-    const normalized: ImplementExecutionMode = mode === 'full_auto' ? 'full_auto' : 'semi_auto';
+    const normalized: ImplementExecutionMode =
+      mode === "full_auto" ? "full_auto" : "semi_auto";
     set({
       implementExecutionMode: normalized,
-      ...(normalized === 'full_auto'
+      ...(normalized === "full_auto"
         ? {}
         : {
             pendingAutoLaunchPlanId: null,
@@ -953,13 +1028,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
     });
   },
 
-  setMetadataSyncStatus: ({ state, error, reason, nextAction, conflictFiles, repositories }) => {
+  setMetadataSyncStatus: ({
+    state,
+    error,
+    reason,
+    nextAction,
+    conflictFiles,
+    repositories,
+  }) => {
     set({
       metadataSyncState: state,
       metadataSyncError: error ?? null,
       metadataSyncReason: reason ?? null,
       metadataSyncNextAction: nextAction ?? null,
-      metadataConflictFiles: state === 'conflict' ? (conflictFiles ?? []) : [],
+      metadataConflictFiles: state === "conflict" ? (conflictFiles ?? []) : [],
       metadataSyncRepositories: repositories ?? [],
     });
   },
@@ -968,13 +1050,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const requestId = ++projectSwitchRequestId;
     const previous = get();
     const nextProjectId =
-      projectId && previous.getProjectById(projectId)
-        ? projectId
-        : null;
+      projectId && previous.getProjectById(projectId) ? projectId : null;
     const nextGroupId = nextProjectId
-      ? previous.projectGroups.find((group) =>
-        group.projects.some((project) => project.id === nextProjectId)
-      )?.id ?? null
+      ? (previous.projectGroups.find((group) =>
+          group.projects.some((project) => project.id === nextProjectId),
+        )?.id ?? null)
       : previous.selectedGroupId;
 
     const hasSelectionChanged =
@@ -996,29 +1076,40 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const isFocusChangeWithinSameGroup =
         Boolean(nextGroupId) && previous.selectedGroupId === nextGroupId;
 
-      if (previous.selectedGroupId && previous.selectedGroupId !== nextGroupId) {
-        await persistCurrentProjectContext(previous.selectedGroupId, previous.selectedProjectId);
+      if (
+        previous.selectedGroupId &&
+        previous.selectedGroupId !== nextGroupId
+      ) {
+        await persistCurrentProjectContext(
+          previous.selectedGroupId,
+          previous.selectedProjectId,
+        );
       }
 
       if (requestId !== projectSwitchRequestId) return;
 
-      const selectedProject = nextProjectId ? previous.getProjectById(nextProjectId) : null;
+      const selectedProject = nextProjectId
+        ? previous.getProjectById(nextProjectId)
+        : null;
       const rememberedProject =
         selectedProject && nextGroupId
           ? {
-            projectId: selectedProject.id,
-            groupId: nextGroupId,
-            name: selectedProject.name,
-            path: selectedProject.path,
-            lastOpenedAt: new Date().toISOString(),
-          }
+              projectId: selectedProject.id,
+              groupId: nextGroupId,
+              name: selectedProject.name,
+              path: selectedProject.path,
+              lastOpenedAt: new Date().toISOString(),
+            }
           : null;
 
       const nextRecentProjects = rememberedProject
         ? upsertRememberedProject(previous.recentProjects, rememberedProject)
         : previous.recentProjects;
       const nextMacroEnabledProjects = rememberedProject
-        ? upsertRememberedProject(previous.macroEnabledProjects, rememberedProject)
+        ? upsertRememberedProject(
+            previous.macroEnabledProjects,
+            rememberedProject,
+          )
         : previous.macroEnabledProjects;
 
       if (isFocusChangeWithinSameGroup) {
@@ -1032,9 +1123,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
         });
 
         void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-        void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
-        if (selectedProject?.path && shouldPersistProjectPath(selectedProject.path)) {
-          void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, selectedProject.path);
+        void savePreference(
+          PREF_KEYS.MACRO_ENABLED_PROJECTS,
+          nextMacroEnabledProjects,
+        );
+        if (
+          selectedProject?.path &&
+          shouldPersistProjectPath(selectedProject.path)
+        ) {
+          void savePreference(
+            PREF_KEYS.LAST_OPEN_PROJECT_PATH,
+            selectedProject.path,
+          );
         } else if (!nextProjectId) {
           void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
         }
@@ -1067,9 +1167,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
 
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
-      if (selectedProject?.path && shouldPersistProjectPath(selectedProject.path)) {
-        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, selectedProject.path);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
+      if (
+        selectedProject?.path &&
+        shouldPersistProjectPath(selectedProject.path)
+      ) {
+        void savePreference(
+          PREF_KEYS.LAST_OPEN_PROJECT_PATH,
+          selectedProject.path,
+        );
       } else {
         void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
       }
@@ -1082,7 +1191,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       if (requestId !== projectSwitchRequestId) return;
 
-      if (nextGroupId && get().projectSwitchPolicy === 'resume_per_project') {
+      if (nextGroupId && get().projectSwitchPolicy === "resume_per_project") {
         await restoreProjectContext(nextGroupId, nextProjectId);
       }
 
@@ -1137,9 +1246,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   toggleProjectGroup: (groupId) =>
     set((state) => ({
       projectGroups: state.projectGroups.map((group) =>
-        group.id === groupId
-          ? { ...group, isOpen: !group.isOpen }
-          : group
+        group.id === groupId ? { ...group, isOpen: !group.isOpen } : group,
       ),
     })),
 
@@ -1151,9 +1258,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const previousState = get();
       const requestedGroup =
-        previousState.projectGroups.find((group) => group.id === groupId) ?? null;
-      logProjectRegistryAction('started', {
-        action: 'rename_group',
+        previousState.projectGroups.find((group) => group.id === groupId) ??
+        null;
+      logProjectRegistryAction("started", {
+        action: "rename_group",
         groupId,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
       });
@@ -1163,61 +1271,67 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const canonicalGroup = resolveCanonicalProjectGroup(
         preflightSnapshot.normalizedRegistry.projectGroups,
-        requestedGroup
+        requestedGroup,
       );
 
       if (!canonicalGroup) {
         const nextRecentProjects = reconcileRememberedProjects(
           preflightSnapshot.normalizedRegistry.projectGroups,
-          previousState.recentProjects
+          previousState.recentProjects,
         );
         const nextMacroEnabledProjects = reconcileRememberedProjects(
           preflightSnapshot.normalizedRegistry.projectGroups,
-          previousState.macroEnabledProjects
+          previousState.macroEnabledProjects,
         );
         const { validProjectIds } = collectProjectRegistryIds(
-          preflightSnapshot.normalizedRegistry.projectGroups
+          preflightSnapshot.normalizedRegistry.projectGroups,
         );
         const missingMessage =
-          'Project group no longer exists in Macro. The registry was refreshed.';
+          "Project group no longer exists in Macro. The registry was refreshed.";
 
         set({
           currentPlan: preflightSnapshot.plan,
           projectGroups: preflightSnapshot.normalizedRegistry.projectGroups,
           selectedGroupId: preflightSnapshot.normalizedRegistry.selectedGroupId,
-          selectedProjectId: preflightSnapshot.normalizedRegistry.selectedProjectId,
+          selectedProjectId:
+            preflightSnapshot.normalizedRegistry.selectedProjectId,
           recentProjects: nextRecentProjects,
           macroEnabledProjects: nextMacroEnabledProjects,
           planNodes: filterPlanNodesForRegistry(
             preflightSnapshot.planNodes.length
               ? preflightSnapshot.planNodes
               : derivePlanNodesFromPlan(preflightSnapshot.plan),
-            validProjectIds
+            validProjectIds,
           ),
           predictedBranches: filterPredictedBranchesForRegistry(
             preflightSnapshot.predictedBranches,
-            validProjectIds
+            validProjectIds,
           ),
           projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-            preflightSnapshot.normalizedRegistry.report
+            preflightSnapshot.normalizedRegistry.report,
           ),
           isLoading: false,
           lastError: missingMessage,
         });
         void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-        void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+        void savePreference(
+          PREF_KEYS.MACRO_ENABLED_PROJECTS,
+          nextMacroEnabledProjects,
+        );
         await persistSessionContext({
           selectedGroupId: preflightSnapshot.normalizedRegistry.selectedGroupId,
-          selectedProjectId: preflightSnapshot.normalizedRegistry.selectedProjectId,
+          selectedProjectId:
+            preflightSnapshot.normalizedRegistry.selectedProjectId,
           mode: previousState.mode,
         });
         await reconcileProjectRegistryDependencies({
           projectGroups: preflightSnapshot.normalizedRegistry.projectGroups,
           selectedGroupId: preflightSnapshot.normalizedRegistry.selectedGroupId,
-          selectedProjectId: preflightSnapshot.normalizedRegistry.selectedProjectId,
+          selectedProjectId:
+            preflightSnapshot.normalizedRegistry.selectedProjectId,
         });
         throw {
-          code: 'PROJECT_GROUP_NOT_FOUND',
+          code: "PROJECT_GROUP_NOT_FOUND",
           message: missingMessage,
           details: {
             requestedGroupId: groupId,
@@ -1237,13 +1351,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.recentProjects
+        previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.macroEnabledProjects
+        previousState.macroEnabledProjects,
       );
-      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry.projectGroups,
+      );
 
       set({
         currentPlan: postMutationSnapshot.plan,
@@ -1256,20 +1372,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
           postMutationSnapshot.planNodes.length
             ? postMutationSnapshot.planNodes
             : derivePlanNodesFromPlan(postMutationSnapshot.plan),
-          validProjectIds
+          validProjectIds,
         ),
         predictedBranches: filterPredictedBranchesForRegistry(
           postMutationSnapshot.predictedBranches,
-          validProjectIds
+          validProjectIds,
         ),
         projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-          normalizedRegistry.report
+          normalizedRegistry.report,
         ),
         isLoading: false,
         lastError: null,
       });
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
       await persistSessionContext({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -1280,8 +1399,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
       });
-      logProjectRegistryAction('succeeded', {
-        action: 'rename_group',
+      logProjectRegistryAction("succeeded", {
+        action: "rename_group",
         groupId: canonicalGroup.id,
         requestedGroupId: groupId,
         canonicalized: canonicalGroup.id !== groupId,
@@ -1291,8 +1410,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
-      logProjectRegistryAction('failed', {
-        action: 'rename_group',
+      logProjectRegistryAction("failed", {
+        action: "rename_group",
         groupId,
         error: normalized.message,
         code: normalized.code,
@@ -1310,8 +1429,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const previousState = get();
       const requestedProject = previousState.getProjectById(projectId) ?? null;
-      logProjectRegistryAction('started', {
-        action: 'rename_project',
+      logProjectRegistryAction("started", {
+        action: "rename_project",
         projectId,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
       });
@@ -1321,61 +1440,67 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const canonicalProject = resolveCanonicalProject(
         preflightSnapshot.normalizedRegistry.projectGroups,
-        requestedProject
+        requestedProject,
       );
 
       if (!canonicalProject) {
         const nextRecentProjects = reconcileRememberedProjects(
           preflightSnapshot.normalizedRegistry.projectGroups,
-          previousState.recentProjects
+          previousState.recentProjects,
         );
         const nextMacroEnabledProjects = reconcileRememberedProjects(
           preflightSnapshot.normalizedRegistry.projectGroups,
-          previousState.macroEnabledProjects
+          previousState.macroEnabledProjects,
         );
         const { validProjectIds } = collectProjectRegistryIds(
-          preflightSnapshot.normalizedRegistry.projectGroups
+          preflightSnapshot.normalizedRegistry.projectGroups,
         );
         const missingMessage =
-          'Subproject no longer exists in Macro. The registry was refreshed.';
+          "Subproject no longer exists in Macro. The registry was refreshed.";
 
         set({
           currentPlan: preflightSnapshot.plan,
           projectGroups: preflightSnapshot.normalizedRegistry.projectGroups,
           selectedGroupId: preflightSnapshot.normalizedRegistry.selectedGroupId,
-          selectedProjectId: preflightSnapshot.normalizedRegistry.selectedProjectId,
+          selectedProjectId:
+            preflightSnapshot.normalizedRegistry.selectedProjectId,
           recentProjects: nextRecentProjects,
           macroEnabledProjects: nextMacroEnabledProjects,
           planNodes: filterPlanNodesForRegistry(
             preflightSnapshot.planNodes.length
               ? preflightSnapshot.planNodes
               : derivePlanNodesFromPlan(preflightSnapshot.plan),
-            validProjectIds
+            validProjectIds,
           ),
           predictedBranches: filterPredictedBranchesForRegistry(
             preflightSnapshot.predictedBranches,
-            validProjectIds
+            validProjectIds,
           ),
           projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-            preflightSnapshot.normalizedRegistry.report
+            preflightSnapshot.normalizedRegistry.report,
           ),
           isLoading: false,
           lastError: missingMessage,
         });
         void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-        void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+        void savePreference(
+          PREF_KEYS.MACRO_ENABLED_PROJECTS,
+          nextMacroEnabledProjects,
+        );
         await persistSessionContext({
           selectedGroupId: preflightSnapshot.normalizedRegistry.selectedGroupId,
-          selectedProjectId: preflightSnapshot.normalizedRegistry.selectedProjectId,
+          selectedProjectId:
+            preflightSnapshot.normalizedRegistry.selectedProjectId,
           mode: previousState.mode,
         });
         await reconcileProjectRegistryDependencies({
           projectGroups: preflightSnapshot.normalizedRegistry.projectGroups,
           selectedGroupId: preflightSnapshot.normalizedRegistry.selectedGroupId,
-          selectedProjectId: preflightSnapshot.normalizedRegistry.selectedProjectId,
+          selectedProjectId:
+            preflightSnapshot.normalizedRegistry.selectedProjectId,
         });
         throw {
-          code: 'PROJECT_NOT_FOUND',
+          code: "PROJECT_NOT_FOUND",
           message: missingMessage,
           details: {
             requestedProjectId: projectId,
@@ -1395,13 +1520,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.recentProjects
+        previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.macroEnabledProjects
+        previousState.macroEnabledProjects,
       );
-      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry.projectGroups,
+      );
 
       set({
         currentPlan: postMutationSnapshot.plan,
@@ -1414,20 +1541,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
           postMutationSnapshot.planNodes.length
             ? postMutationSnapshot.planNodes
             : derivePlanNodesFromPlan(postMutationSnapshot.plan),
-          validProjectIds
+          validProjectIds,
         ),
         predictedBranches: filterPredictedBranchesForRegistry(
           postMutationSnapshot.predictedBranches,
-          validProjectIds
+          validProjectIds,
         ),
         projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-          normalizedRegistry.report
+          normalizedRegistry.report,
         ),
         isLoading: false,
         lastError: null,
       });
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
       await persistSessionContext({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -1438,8 +1568,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
       });
-      logProjectRegistryAction('succeeded', {
-        action: 'rename_project',
+      logProjectRegistryAction("succeeded", {
+        action: "rename_project",
         projectId: canonicalProject.id,
         requestedProjectId: projectId,
         canonicalized: canonicalProject.id !== projectId,
@@ -1449,8 +1579,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
-      logProjectRegistryAction('failed', {
-        action: 'rename_project',
+      logProjectRegistryAction("failed", {
+        action: "rename_project",
         projectId,
         error: normalized.message,
         code: normalized.code,
@@ -1465,8 +1595,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const previousState = get();
       const requestedProject = previousState.getProjectById(projectId) ?? null;
-      logProjectRegistryAction('started', {
-        action: 'update_project_git_flow',
+      logProjectRegistryAction("started", {
+        action: "update_project_git_flow",
         projectId,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
       });
@@ -1476,13 +1606,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const canonicalProject = resolveCanonicalProject(
         preflightSnapshot.normalizedRegistry.projectGroups,
-        requestedProject
+        requestedProject,
       );
 
       if (!canonicalProject) {
         throw {
-          code: 'PROJECT_NOT_FOUND',
-          message: 'Subproject no longer exists in Macro.',
+          code: "PROJECT_NOT_FOUND",
+          message: "Subproject no longer exists in Macro.",
         };
       }
 
@@ -1498,13 +1628,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.recentProjects
+        previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.macroEnabledProjects
+        previousState.macroEnabledProjects,
       );
-      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry.projectGroups,
+      );
 
       set({
         currentPlan: postMutationSnapshot.plan,
@@ -1517,20 +1649,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
           postMutationSnapshot.planNodes.length
             ? postMutationSnapshot.planNodes
             : derivePlanNodesFromPlan(postMutationSnapshot.plan),
-          validProjectIds
+          validProjectIds,
         ),
         predictedBranches: filterPredictedBranchesForRegistry(
           postMutationSnapshot.predictedBranches,
-          validProjectIds
+          validProjectIds,
         ),
         projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-          normalizedRegistry.report
+          normalizedRegistry.report,
         ),
         isLoading: false,
         lastError: null,
       });
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
       await persistSessionContext({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -1541,8 +1676,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
       });
-      logProjectRegistryAction('succeeded', {
-        action: 'update_project_git_flow',
+      logProjectRegistryAction("succeeded", {
+        action: "update_project_git_flow",
         projectId: canonicalProject.id,
         requestedProjectId: projectId,
         canonicalized: canonicalProject.id !== projectId,
@@ -1552,8 +1687,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
-      logProjectRegistryAction('failed', {
-        action: 'update_project_git_flow',
+      logProjectRegistryAction("failed", {
+        action: "update_project_git_flow",
         projectId,
         error: normalized.message,
         code: normalized.code,
@@ -1563,13 +1698,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  updateProjectAccess: async (projectId, userReadOnly, confirmedMigration = false) => {
+  updateProjectAccess: async (
+    projectId,
+    userReadOnly,
+    confirmedMigration = false,
+  ) => {
     set({ isLoading: true, lastError: null });
     try {
       const previousState = get();
       const requestedProject = previousState.getProjectById(projectId) ?? null;
-      logProjectRegistryAction('started', {
-        action: 'update_project_access',
+      logProjectRegistryAction("started", {
+        action: "update_project_access",
         projectId,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
         userReadOnly,
@@ -1591,13 +1730,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const canonicalProject = resolveCanonicalProject(
         preflightSnapshot.normalizedRegistry.projectGroups,
-        requestedProject
+        requestedProject,
       );
 
       if (!canonicalProject) {
         throw {
-          code: 'PROJECT_NOT_FOUND',
-          message: 'Subproject no longer exists in Macro.',
+          code: "PROJECT_NOT_FOUND",
+          message: "Subproject no longer exists in Macro.",
         };
       }
 
@@ -1614,13 +1753,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.recentProjects
+        previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.macroEnabledProjects
+        previousState.macroEnabledProjects,
       );
-      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry.projectGroups,
+      );
 
       set({
         currentPlan: postMutationSnapshot.plan,
@@ -1633,20 +1774,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
           postMutationSnapshot.planNodes.length
             ? postMutationSnapshot.planNodes
             : derivePlanNodesFromPlan(postMutationSnapshot.plan),
-          validProjectIds
+          validProjectIds,
         ),
         predictedBranches: filterPredictedBranchesForRegistry(
           postMutationSnapshot.predictedBranches,
-          validProjectIds
+          validProjectIds,
         ),
         projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-          normalizedRegistry.report
+          normalizedRegistry.report,
         ),
         isLoading: false,
         lastError: null,
       });
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
       await persistSessionContext({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -1657,8 +1801,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
       });
-      logProjectRegistryAction('succeeded', {
-        action: 'update_project_access',
+      logProjectRegistryAction("succeeded", {
+        action: "update_project_access",
         projectId: canonicalProject.id,
         requestedProjectId: projectId,
         canonicalized: canonicalProject.id !== projectId,
@@ -1670,8 +1814,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
-      logProjectRegistryAction('failed', {
-        action: 'update_project_access',
+      logProjectRegistryAction("failed", {
+        action: "update_project_access",
         projectId,
         userReadOnly,
         confirmedMigration,
@@ -1687,9 +1831,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     try {
       const previousState = get();
-      const removedGroup = previousState.projectGroups.find((group) => group.id === groupId) ?? null;
-      logProjectRegistryAction('started', {
-        action: 'remove_group',
+      const removedGroup =
+        previousState.projectGroups.find((group) => group.id === groupId) ??
+        null;
+      logProjectRegistryAction("started", {
+        action: "remove_group",
         groupId,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
       });
@@ -1699,10 +1845,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const canonicalGroup = resolveCanonicalProjectGroup(
         preflightSnapshot.normalizedRegistry.projectGroups,
-        removedGroup
+        removedGroup,
       );
       const removedProjectIds = new Set(
-        (canonicalGroup ?? removedGroup)?.projects.map((project) => project.id) ?? []
+        (canonicalGroup ?? removedGroup)?.projects.map(
+          (project) => project.id,
+        ) ?? [],
       );
       const didRemoveActiveGroup =
         previousState.selectedGroupId === groupId ||
@@ -1712,62 +1860,85 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const normalizedRegistry = preflightSnapshot.normalizedRegistry;
         const nextRecentProjects = reconcileRememberedProjects(
           normalizedRegistry.projectGroups,
-          previousState.recentProjects.filter((project) => !removedProjectIds.has(project.projectId))
+          previousState.recentProjects.filter(
+            (project) => !removedProjectIds.has(project.projectId),
+          ),
         );
         const nextMacroEnabledProjects = reconcileRememberedProjects(
           normalizedRegistry.projectGroups,
           previousState.macroEnabledProjects.filter(
-            (project) => !removedProjectIds.has(project.projectId)
-          )
+            (project) => !removedProjectIds.has(project.projectId),
+          ),
         );
-        const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+        const { validProjectIds } = collectProjectRegistryIds(
+          normalizedRegistry.projectGroups,
+        );
 
         set({
           currentPlan: preflightSnapshot.plan,
           projectGroups: normalizedRegistry.projectGroups,
           selectedGroupId: normalizedRegistry.selectedGroupId,
           selectedProjectId: normalizedRegistry.selectedProjectId,
-          selectedTaskId: didRemoveActiveGroup ? null : previousState.selectedTaskId,
-          activeArchitectPlanId: didRemoveActiveGroup ? null : previousState.activeArchitectPlanId,
-          activePlanContext: didRemoveActiveGroup ? null : previousState.activePlanContext,
+          selectedTaskId: didRemoveActiveGroup
+            ? null
+            : previousState.selectedTaskId,
+          activeArchitectPlanId: didRemoveActiveGroup
+            ? null
+            : previousState.activeArchitectPlanId,
+          activePlanContext: didRemoveActiveGroup
+            ? null
+            : previousState.activePlanContext,
           planNodes: didRemoveActiveGroup
             ? []
             : filterPlanNodesForRegistry(
                 preflightSnapshot.planNodes.length
                   ? preflightSnapshot.planNodes
                   : derivePlanNodesFromPlan(preflightSnapshot.plan),
-                validProjectIds
+                validProjectIds,
               ),
           predictedBranches: didRemoveActiveGroup
             ? []
             : filterPredictedBranchesForRegistry(
                 preflightSnapshot.predictedBranches,
-                validProjectIds
+                validProjectIds,
               ),
           recentProjects: nextRecentProjects,
           macroEnabledProjects: nextMacroEnabledProjects,
           projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-            normalizedRegistry.report
+            normalizedRegistry.report,
           ),
           isLoading: false,
           lastError: null,
         });
 
         const nextFocusedProject = normalizedRegistry.selectedProjectId
-          ? normalizedRegistry.projectGroups
+          ? (normalizedRegistry.projectGroups
               .flatMap((group) => group.projects)
-              .find((project) => project.id === normalizedRegistry.selectedProjectId) ?? null
+              .find(
+                (project) =>
+                  project.id === normalizedRegistry.selectedProjectId,
+              ) ?? null)
           : null;
-        void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, normalizedRegistry.selectedGroupId);
-        void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, normalizedRegistry.selectedProjectId);
+        void savePreference(
+          PREF_KEYS.LAST_SELECTED_GROUP_ID,
+          normalizedRegistry.selectedGroupId,
+        );
+        void savePreference(
+          PREF_KEYS.LAST_SELECTED_PROJECT_ID,
+          normalizedRegistry.selectedProjectId,
+        );
         void savePreference(
           PREF_KEYS.LAST_OPEN_PROJECT_PATH,
-          nextFocusedProject?.path && shouldPersistProjectPath(nextFocusedProject.path)
+          nextFocusedProject?.path &&
+            shouldPersistProjectPath(nextFocusedProject.path)
             ? nextFocusedProject.path
-            : null
+            : null,
         );
         void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-        void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+        void savePreference(
+          PREF_KEYS.MACRO_ENABLED_PROJECTS,
+          nextMacroEnabledProjects,
+        );
         await persistSessionContext({
           selectedGroupId: normalizedRegistry.selectedGroupId,
           selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -1781,15 +1952,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
         if (
           normalizedRegistry.selectedGroupId &&
-          get().projectSwitchPolicy === 'resume_per_project'
+          get().projectSwitchPolicy === "resume_per_project"
         ) {
           await restoreProjectContext(
             normalizedRegistry.selectedGroupId,
-            normalizedRegistry.selectedProjectId
+            normalizedRegistry.selectedProjectId,
           );
         }
-        logProjectRegistryAction('succeeded', {
-          action: 'remove_group',
+        logProjectRegistryAction("succeeded", {
+          action: "remove_group",
           groupId,
           afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
           alreadyRemoved: true,
@@ -1800,68 +1971,96 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       await services.removeProjectGroup({ groupId: canonicalGroup.id });
       const postMutationSnapshot = await loadProjectRegistrySnapshot({
-        selectedGroupId: didRemoveActiveGroup ? null : previousState.selectedGroupId,
-        selectedProjectId: removedProjectIds.has(previousState.selectedProjectId ?? '')
+        selectedGroupId: didRemoveActiveGroup
+          ? null
+          : previousState.selectedGroupId,
+        selectedProjectId: removedProjectIds.has(
+          previousState.selectedProjectId ?? "",
+        )
           ? null
           : previousState.selectedProjectId,
       });
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.recentProjects.filter((project) => !removedProjectIds.has(project.projectId))
+        previousState.recentProjects.filter(
+          (project) => !removedProjectIds.has(project.projectId),
+        ),
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.macroEnabledProjects.filter((project) => !removedProjectIds.has(project.projectId))
+        previousState.macroEnabledProjects.filter(
+          (project) => !removedProjectIds.has(project.projectId),
+        ),
       );
-      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry.projectGroups,
+      );
 
       set({
         currentPlan: postMutationSnapshot.plan,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
-        selectedTaskId: didRemoveActiveGroup ? null : previousState.selectedTaskId,
-        activeArchitectPlanId: didRemoveActiveGroup ? null : previousState.activeArchitectPlanId,
-        activePlanContext: didRemoveActiveGroup ? null : previousState.activePlanContext,
+        selectedTaskId: didRemoveActiveGroup
+          ? null
+          : previousState.selectedTaskId,
+        activeArchitectPlanId: didRemoveActiveGroup
+          ? null
+          : previousState.activeArchitectPlanId,
+        activePlanContext: didRemoveActiveGroup
+          ? null
+          : previousState.activePlanContext,
         planNodes: didRemoveActiveGroup
           ? []
           : filterPlanNodesForRegistry(
               postMutationSnapshot.planNodes.length
                 ? postMutationSnapshot.planNodes
                 : derivePlanNodesFromPlan(postMutationSnapshot.plan),
-              validProjectIds
+              validProjectIds,
             ),
         predictedBranches: didRemoveActiveGroup
           ? []
           : filterPredictedBranchesForRegistry(
               postMutationSnapshot.predictedBranches,
-              validProjectIds
+              validProjectIds,
             ),
         recentProjects: nextRecentProjects,
         macroEnabledProjects: nextMacroEnabledProjects,
         projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-          normalizedRegistry.report
+          normalizedRegistry.report,
         ),
         isLoading: false,
         lastError: null,
       });
 
       const nextFocusedProject = normalizedRegistry.selectedProjectId
-        ? normalizedRegistry.projectGroups
+        ? (normalizedRegistry.projectGroups
             .flatMap((group) => group.projects)
-            .find((project) => project.id === normalizedRegistry.selectedProjectId) ?? null
+            .find(
+              (project) => project.id === normalizedRegistry.selectedProjectId,
+            ) ?? null)
         : null;
-      void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, normalizedRegistry.selectedGroupId);
-      void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, normalizedRegistry.selectedProjectId);
+      void savePreference(
+        PREF_KEYS.LAST_SELECTED_GROUP_ID,
+        normalizedRegistry.selectedGroupId,
+      );
+      void savePreference(
+        PREF_KEYS.LAST_SELECTED_PROJECT_ID,
+        normalizedRegistry.selectedProjectId,
+      );
       void savePreference(
         PREF_KEYS.LAST_OPEN_PROJECT_PATH,
-        nextFocusedProject?.path && shouldPersistProjectPath(nextFocusedProject.path)
+        nextFocusedProject?.path &&
+          shouldPersistProjectPath(nextFocusedProject.path)
           ? nextFocusedProject.path
-          : null
+          : null,
       );
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
       await persistSessionContext({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -1873,14 +2072,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: normalizedRegistry.selectedProjectId,
       });
 
-      if (normalizedRegistry.selectedGroupId && get().projectSwitchPolicy === 'resume_per_project') {
+      if (
+        normalizedRegistry.selectedGroupId &&
+        get().projectSwitchPolicy === "resume_per_project"
+      ) {
         await restoreProjectContext(
           normalizedRegistry.selectedGroupId,
-          normalizedRegistry.selectedProjectId
+          normalizedRegistry.selectedProjectId,
         );
       }
-      logProjectRegistryAction('succeeded', {
-        action: 'remove_group',
+      logProjectRegistryAction("succeeded", {
+        action: "remove_group",
         groupId: canonicalGroup.id,
         requestedGroupId: groupId,
         canonicalized: canonicalGroup.id !== groupId,
@@ -1890,8 +2092,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
-      logProjectRegistryAction('failed', {
-        action: 'remove_group',
+      logProjectRegistryAction("failed", {
+        action: "remove_group",
         groupId,
         error: normalized.message,
         code: normalized.code,
@@ -1906,8 +2108,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const previousState = get();
       const removedProject = previousState.getProjectById(projectId) ?? null;
-      logProjectRegistryAction('started', {
-        action: 'remove_project',
+      logProjectRegistryAction("started", {
+        action: "remove_project",
         projectId,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
       });
@@ -1917,73 +2119,100 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const canonicalProject = resolveCanonicalProject(
         preflightSnapshot.normalizedRegistry.projectGroups,
-        removedProject
+        removedProject,
       );
-      const closedProjectGroupId = getProjectGroupByProjectId(
-        preflightSnapshot.normalizedRegistry.projectGroups,
-        canonicalProject?.id ?? projectId
-      )?.id ?? null;
+      const closedProjectGroupId =
+        getProjectGroupByProjectId(
+          preflightSnapshot.normalizedRegistry.projectGroups,
+          canonicalProject?.id ?? projectId,
+        )?.id ?? null;
       const didRemoveProjectInActiveGroup =
-        Boolean(closedProjectGroupId) && previousState.selectedGroupId === closedProjectGroupId;
+        Boolean(closedProjectGroupId) &&
+        previousState.selectedGroupId === closedProjectGroupId;
 
       if (!canonicalProject) {
         const normalizedRegistry = preflightSnapshot.normalizedRegistry;
         const nextRecentProjects = reconcileRememberedProjects(
           normalizedRegistry.projectGroups,
-          previousState.recentProjects.filter((project) => project.projectId !== projectId)
+          previousState.recentProjects.filter(
+            (project) => project.projectId !== projectId,
+          ),
         );
         const nextMacroEnabledProjects = reconcileRememberedProjects(
           normalizedRegistry.projectGroups,
-          previousState.macroEnabledProjects.filter((project) => project.projectId !== projectId)
+          previousState.macroEnabledProjects.filter(
+            (project) => project.projectId !== projectId,
+          ),
         );
-        const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+        const { validProjectIds } = collectProjectRegistryIds(
+          normalizedRegistry.projectGroups,
+        );
 
         set({
           currentPlan: preflightSnapshot.plan,
           projectGroups: normalizedRegistry.projectGroups,
           selectedGroupId: normalizedRegistry.selectedGroupId,
           selectedProjectId: normalizedRegistry.selectedProjectId,
-          selectedTaskId: didRemoveProjectInActiveGroup ? null : previousState.selectedTaskId,
-          activeArchitectPlanId: didRemoveProjectInActiveGroup ? null : previousState.activeArchitectPlanId,
-          activePlanContext: didRemoveProjectInActiveGroup ? null : previousState.activePlanContext,
+          selectedTaskId: didRemoveProjectInActiveGroup
+            ? null
+            : previousState.selectedTaskId,
+          activeArchitectPlanId: didRemoveProjectInActiveGroup
+            ? null
+            : previousState.activeArchitectPlanId,
+          activePlanContext: didRemoveProjectInActiveGroup
+            ? null
+            : previousState.activePlanContext,
           planNodes: didRemoveProjectInActiveGroup
             ? []
             : filterPlanNodesForRegistry(
                 preflightSnapshot.planNodes.length
                   ? preflightSnapshot.planNodes
                   : derivePlanNodesFromPlan(preflightSnapshot.plan),
-                validProjectIds
+                validProjectIds,
               ),
           predictedBranches: didRemoveProjectInActiveGroup
             ? []
             : filterPredictedBranchesForRegistry(
                 preflightSnapshot.predictedBranches,
-                validProjectIds
+                validProjectIds,
               ),
           recentProjects: nextRecentProjects,
           macroEnabledProjects: nextMacroEnabledProjects,
           projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-            normalizedRegistry.report
+            normalizedRegistry.report,
           ),
           isLoading: false,
           lastError: null,
         });
 
         const nextFocusedProject = normalizedRegistry.selectedProjectId
-          ? normalizedRegistry.projectGroups
+          ? (normalizedRegistry.projectGroups
               .flatMap((group) => group.projects)
-              .find((project) => project.id === normalizedRegistry.selectedProjectId) ?? null
+              .find(
+                (project) =>
+                  project.id === normalizedRegistry.selectedProjectId,
+              ) ?? null)
           : null;
-        void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, normalizedRegistry.selectedGroupId);
-        void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, normalizedRegistry.selectedProjectId);
+        void savePreference(
+          PREF_KEYS.LAST_SELECTED_GROUP_ID,
+          normalizedRegistry.selectedGroupId,
+        );
+        void savePreference(
+          PREF_KEYS.LAST_SELECTED_PROJECT_ID,
+          normalizedRegistry.selectedProjectId,
+        );
         void savePreference(
           PREF_KEYS.LAST_OPEN_PROJECT_PATH,
-          nextFocusedProject?.path && shouldPersistProjectPath(nextFocusedProject.path)
+          nextFocusedProject?.path &&
+            shouldPersistProjectPath(nextFocusedProject.path)
             ? nextFocusedProject.path
-            : null
+            : null,
         );
         void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-        void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+        void savePreference(
+          PREF_KEYS.MACRO_ENABLED_PROJECTS,
+          nextMacroEnabledProjects,
+        );
         await persistSessionContext({
           selectedGroupId: normalizedRegistry.selectedGroupId,
           selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -1997,15 +2226,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
         if (
           normalizedRegistry.selectedGroupId &&
-          get().projectSwitchPolicy === 'resume_per_project'
+          get().projectSwitchPolicy === "resume_per_project"
         ) {
           await restoreProjectContext(
             normalizedRegistry.selectedGroupId,
-            normalizedRegistry.selectedProjectId
+            normalizedRegistry.selectedProjectId,
           );
         }
-        logProjectRegistryAction('succeeded', {
-          action: 'remove_project',
+        logProjectRegistryAction("succeeded", {
+          action: "remove_project",
           projectId,
           afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
           alreadyRemoved: true,
@@ -2017,69 +2246,92 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await services.removeProject({ projectId: canonicalProject.id });
       const postMutationSnapshot = await loadProjectRegistrySnapshot({
         selectedGroupId: previousState.selectedGroupId,
-        selectedProjectId: previousState.selectedProjectId === canonicalProject.id
-          ? null
-          : previousState.selectedProjectId,
+        selectedProjectId:
+          previousState.selectedProjectId === canonicalProject.id
+            ? null
+            : previousState.selectedProjectId,
       });
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.recentProjects.filter((project) => project.projectId !== canonicalProject.id)
+        previousState.recentProjects.filter(
+          (project) => project.projectId !== canonicalProject.id,
+        ),
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
         previousState.macroEnabledProjects.filter(
-          (project) => project.projectId !== canonicalProject.id
-        )
+          (project) => project.projectId !== canonicalProject.id,
+        ),
       );
-      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry.projectGroups,
+      );
 
       set({
         currentPlan: postMutationSnapshot.plan,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
-        selectedTaskId: didRemoveProjectInActiveGroup ? null : previousState.selectedTaskId,
-        activeArchitectPlanId: didRemoveProjectInActiveGroup ? null : previousState.activeArchitectPlanId,
-        activePlanContext: didRemoveProjectInActiveGroup ? null : previousState.activePlanContext,
+        selectedTaskId: didRemoveProjectInActiveGroup
+          ? null
+          : previousState.selectedTaskId,
+        activeArchitectPlanId: didRemoveProjectInActiveGroup
+          ? null
+          : previousState.activeArchitectPlanId,
+        activePlanContext: didRemoveProjectInActiveGroup
+          ? null
+          : previousState.activePlanContext,
         planNodes: didRemoveProjectInActiveGroup
           ? []
           : filterPlanNodesForRegistry(
               postMutationSnapshot.planNodes.length
                 ? postMutationSnapshot.planNodes
                 : derivePlanNodesFromPlan(postMutationSnapshot.plan),
-              validProjectIds
+              validProjectIds,
             ),
         predictedBranches: didRemoveProjectInActiveGroup
           ? []
           : filterPredictedBranchesForRegistry(
               postMutationSnapshot.predictedBranches,
-              validProjectIds
+              validProjectIds,
             ),
         recentProjects: nextRecentProjects,
         macroEnabledProjects: nextMacroEnabledProjects,
         projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-          normalizedRegistry.report
+          normalizedRegistry.report,
         ),
         isLoading: false,
         lastError: null,
       });
 
       const nextFocusedProject = normalizedRegistry.selectedProjectId
-        ? normalizedRegistry.projectGroups
+        ? (normalizedRegistry.projectGroups
             .flatMap((group) => group.projects)
-            .find((project) => project.id === normalizedRegistry.selectedProjectId) ?? null
+            .find(
+              (project) => project.id === normalizedRegistry.selectedProjectId,
+            ) ?? null)
         : null;
-      void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, normalizedRegistry.selectedGroupId);
-      void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, normalizedRegistry.selectedProjectId);
+      void savePreference(
+        PREF_KEYS.LAST_SELECTED_GROUP_ID,
+        normalizedRegistry.selectedGroupId,
+      );
+      void savePreference(
+        PREF_KEYS.LAST_SELECTED_PROJECT_ID,
+        normalizedRegistry.selectedProjectId,
+      );
       void savePreference(
         PREF_KEYS.LAST_OPEN_PROJECT_PATH,
-        nextFocusedProject?.path && shouldPersistProjectPath(nextFocusedProject.path)
+        nextFocusedProject?.path &&
+          shouldPersistProjectPath(nextFocusedProject.path)
           ? nextFocusedProject.path
-          : null
+          : null,
       );
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
       await persistSessionContext({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2091,14 +2343,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: normalizedRegistry.selectedProjectId,
       });
 
-      if (normalizedRegistry.selectedGroupId && get().projectSwitchPolicy === 'resume_per_project') {
+      if (
+        normalizedRegistry.selectedGroupId &&
+        get().projectSwitchPolicy === "resume_per_project"
+      ) {
         await restoreProjectContext(
           normalizedRegistry.selectedGroupId,
-          normalizedRegistry.selectedProjectId
+          normalizedRegistry.selectedProjectId,
         );
       }
-      logProjectRegistryAction('succeeded', {
-        action: 'remove_project',
+      logProjectRegistryAction("succeeded", {
+        action: "remove_project",
         projectId: canonicalProject.id,
         requestedProjectId: projectId,
         canonicalized: canonicalProject.id !== projectId,
@@ -2108,8 +2363,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
-      logProjectRegistryAction('failed', {
-        action: 'remove_project',
+      logProjectRegistryAction("failed", {
+        action: "remove_project",
         projectId,
         error: normalized.message,
         code: normalized.code,
@@ -2125,14 +2380,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     gitSetupActions,
     expectedRepoRootPath,
     expectedSetupState,
-    expectedRecommendedActionSequence
+    expectedRecommendedActionSequence,
   ) => {
     set({ isLoading: true, lastError: null });
     try {
       const previousState = get();
       const requestedProject = previousState.getProjectById(projectId) ?? null;
-      logProjectRegistryAction('started', {
-        action: 'update_project_git_flow_with_setup',
+      logProjectRegistryAction("started", {
+        action: "update_project_git_flow_with_setup",
         projectId,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
       });
@@ -2142,13 +2397,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const canonicalProject = resolveCanonicalProject(
         preflightSnapshot.normalizedRegistry.projectGroups,
-        requestedProject
+        requestedProject,
       );
 
       if (!canonicalProject) {
         throw {
-          code: 'PROJECT_NOT_FOUND',
-          message: 'Subproject no longer exists in Macro.',
+          code: "PROJECT_NOT_FOUND",
+          message: "Subproject no longer exists in Macro.",
         };
       }
 
@@ -2168,13 +2423,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.recentProjects
+        previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.macroEnabledProjects
+        previousState.macroEnabledProjects,
       );
-      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry.projectGroups,
+      );
 
       set({
         currentPlan: postMutationSnapshot.plan,
@@ -2187,20 +2444,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
           postMutationSnapshot.planNodes.length
             ? postMutationSnapshot.planNodes
             : derivePlanNodesFromPlan(postMutationSnapshot.plan),
-          validProjectIds
+          validProjectIds,
         ),
         predictedBranches: filterPredictedBranchesForRegistry(
           postMutationSnapshot.predictedBranches,
-          validProjectIds
+          validProjectIds,
         ),
         projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-          normalizedRegistry.report
+          normalizedRegistry.report,
         ),
         isLoading: false,
         lastError: null,
       });
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
       await persistSessionContext({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2211,8 +2471,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
       });
-      logProjectRegistryAction('succeeded', {
-        action: 'update_project_git_flow_with_setup',
+      logProjectRegistryAction("succeeded", {
+        action: "update_project_git_flow_with_setup",
         projectId: canonicalProject.id,
         requestedProjectId: projectId,
         canonicalized: canonicalProject.id !== projectId,
@@ -2223,8 +2483,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
-      logProjectRegistryAction('failed', {
-        action: 'update_project_git_flow_with_setup',
+      logProjectRegistryAction("failed", {
+        action: "update_project_git_flow_with_setup",
         projectId,
         error: normalized.message,
         code: normalized.code,
@@ -2235,7 +2495,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   // Settings modal
-  openSettings: (tab = 'general') => set({ settingsOpen: true, activeSettingsTab: tab }),
+  openSettings: (tab = "general") =>
+    set({ settingsOpen: true, activeSettingsTab: tab }),
   closeSettings: () => set({ settingsOpen: false }),
   setSettingsTab: (tab) => set({ activeSettingsTab: tab }),
 
@@ -2243,9 +2504,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   closeAccount: () => set({ accountOpen: false }),
 
-  openProjectModal: (groupId = null) => set({ projectModalOpen: true, projectModalGroupId: groupId }),
+  openProjectModal: (groupId = null) =>
+    set({ projectModalOpen: true, projectModalGroupId: groupId }),
 
-  closeProjectModal: () => set({ projectModalOpen: false, projectModalGroupId: null }),
+  closeProjectModal: () =>
+    set({ projectModalOpen: false, projectModalGroupId: null }),
 
   openProjectGitFlowModal: (projectId) =>
     set({ projectGitFlowModalProjectId: projectId }),
@@ -2256,9 +2519,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     try {
       const previousState = get();
-      const gitFlowSettings = data.gitFlowSettings || getDefaultProjectGitFlowSettings();
-      logProjectRegistryAction('started', {
-        action: 'create_project',
+      const gitFlowSettings =
+        data.gitFlowSettings || getDefaultProjectGitFlowSettings();
+      logProjectRegistryAction("started", {
+        action: "create_project",
         groupId: data.groupId,
         path: data.path ?? null,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
@@ -2269,174 +2533,44 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const state = get();
       if (state.selectedGroupId) {
-        await persistCurrentProjectContext(state.selectedGroupId, state.selectedProjectId);
+        await persistCurrentProjectContext(
+          state.selectedGroupId,
+          state.selectedProjectId,
+        );
       }
-      const { projectGroups: syncedGroups, plan, planNodes, predictedBranches } = await services.getAppBootstrap();
-      const syncedGroupForProject = getProjectGroupByProjectId(syncedGroups, newProject.id);
+      const {
+        projectGroups: syncedGroups,
+        plan,
+        planNodes,
+        predictedBranches,
+      } = await services.getAppBootstrap();
+      const syncedGroupForProject = getProjectGroupByProjectId(
+        syncedGroups,
+        newProject.id,
+      );
       const seededRegistry = syncedGroupForProject
         ? syncedGroups
-        : insertProjectInGroups(state.projectGroups, newProject, data.groupId).projectGroups;
+        : insertProjectInGroups(state.projectGroups, newProject, data.groupId)
+            .projectGroups;
       const normalizedRegistry = normalizeProjectRegistry({
         projectGroups: seededRegistry,
-        selectedGroupId: syncedGroupForProject?.id ?? data.groupId ?? state.selectedGroupId,
+        selectedGroupId:
+          syncedGroupForProject?.id ?? data.groupId ?? state.selectedGroupId,
         selectedProjectId: newProject.id,
       });
       const targetGroupId =
-        getProjectGroupByProjectId(normalizedRegistry.projectGroups, newProject.id)?.id ??
-        normalizedRegistry.selectedGroupId;
+        getProjectGroupByProjectId(
+          normalizedRegistry.projectGroups,
+          newProject.id,
+        )?.id ?? normalizedRegistry.selectedGroupId;
       const isCurrentGroup = targetGroupId === state.selectedGroupId;
       const preferredFocusProjectId = targetGroupId
-        ? getFocusedProjectIdForGroup(
+        ? (getFocusedProjectIdForGroup(
             normalizedRegistry.projectGroups,
             targetGroupId,
-            isCurrentGroup ? state.selectedProjectId : newProject.id
-          ) ?? newProject.id
-        : normalizedRegistry.selectedProjectId ?? newProject.id;
-
-      const rememberedProject: RememberedProject | null = targetGroupId
-        ? {
-          projectId: newProject.id,
-          groupId: targetGroupId,
-          name: newProject.name,
-          path: newProject.path,
-          lastOpenedAt: new Date().toISOString(),
-        }
-        : null;
-
-      const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
-        rememberedProject
-          ? upsertRememberedProject(state.recentProjects, rememberedProject)
-          : state.recentProjects
-      );
-      const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
-        rememberedProject
-          ? upsertRememberedProject(state.macroEnabledProjects, rememberedProject)
-          : state.macroEnabledProjects
-      );
-      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
-
-      set({
-        currentPlan: plan,
-        projectGroups: normalizedRegistry.projectGroups,
-        planNodes: filterPlanNodesForRegistry(
-          planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan),
-          validProjectIds
-        ),
-        predictedBranches: filterPredictedBranchesForRegistry(
-          predictedBranches ?? [],
-          validProjectIds
-        ),
-        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
-        selectedProjectId: preferredFocusProjectId,
-        selectedTaskId: isCurrentGroup ? state.selectedTaskId : null,
-        activeArchitectPlanId: isCurrentGroup ? state.activeArchitectPlanId : null,
-        activePlanContext: isCurrentGroup ? state.activePlanContext : null,
-        recentProjects: nextRecentProjects,
-        macroEnabledProjects: nextMacroEnabledProjects,
-        projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-          normalizedRegistry.report
-        ),
-      });
-      void savePreference(
-        PREF_KEYS.LAST_SELECTED_GROUP_ID,
-        targetGroupId ?? normalizedRegistry.selectedGroupId
-      );
-      void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, preferredFocusProjectId);
-      if (shouldPersistProjectPath(newProject.path)) {
-        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, newProject.path);
-      } else {
-        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
-      }
-      void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
-
-      await persistSessionContext({
-        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
-        selectedProjectId: preferredFocusProjectId,
-        mode: state.mode,
-      });
-      await reconcileProjectRegistryDependencies({
-        projectGroups: normalizedRegistry.projectGroups,
-        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
-        selectedProjectId: preferredFocusProjectId,
-      });
-
-      const restoredGroupId = targetGroupId ?? normalizedRegistry.selectedGroupId;
-      if (get().projectSwitchPolicy === 'resume_per_project' && restoredGroupId) {
-        await restoreProjectContext(restoredGroupId, preferredFocusProjectId);
-      }
-
-      await ensureAutoPlanForSelection({
-        groupId: restoredGroupId,
-        projectId: preferredFocusProjectId,
-      });
-
-      logProjectRegistryAction('succeeded', {
-        action: 'create_project',
-        projectId: newProject.id,
-        groupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
-        afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
-        repairApplied: normalizedRegistry.report.repaired,
-      });
-      set({ isLoading: false, lastError: null });
-    } catch (error) {
-      const normalized = toServiceError(error);
-      set({ isLoading: false, lastError: normalized.message });
-      logProjectRegistryAction('failed', {
-        action: 'create_project',
-        groupId: data.groupId,
-        path: data.path ?? null,
-        error: normalized.message,
-      });
-      throw normalized;
-    }
-  },
-
-  createProjectWithGitSetup: async (data) => {
-    set({ isLoading: true, lastError: null });
-    try {
-      const previousState = get();
-      const gitFlowSettings = data.gitFlowSettings || getDefaultProjectGitFlowSettings();
-      logProjectRegistryAction('started', {
-        action: 'create_project_with_git_setup',
-        groupId: data.groupId,
-        path: data.path ?? null,
-        gitSetupActions: data.gitSetupActions,
-        beforeCount: countProjectsInRegistry(previousState.projectGroups),
-      });
-      const result = await services.createProjectWithGitSetup({
-        ...data,
-        gitFlowSettings,
-      });
-      const newProject = result.project;
-      const state = get();
-      if (state.selectedGroupId) {
-        await persistCurrentProjectContext(state.selectedGroupId, state.selectedProjectId);
-      }
-      const { projectGroups: syncedGroups, plan, planNodes, predictedBranches } =
-        await services.getAppBootstrap();
-      const syncedGroupForProject = getProjectGroupByProjectId(syncedGroups, newProject.id);
-      const seededRegistry = syncedGroupForProject
-        ? syncedGroups
-        : insertProjectInGroups(state.projectGroups, newProject, data.groupId).projectGroups;
-      const normalizedRegistry = normalizeProjectRegistry({
-        projectGroups: seededRegistry,
-        selectedGroupId: syncedGroupForProject?.id ?? data.groupId ?? state.selectedGroupId,
-        selectedProjectId: newProject.id,
-      });
-      const targetGroupId =
-        getProjectGroupByProjectId(normalizedRegistry.projectGroups, newProject.id)?.id ??
-        normalizedRegistry.selectedGroupId;
-      const isCurrentGroup = targetGroupId === state.selectedGroupId;
-      const preferredFocusProjectId = targetGroupId
-        ? getFocusedProjectIdForGroup(
-            normalizedRegistry.projectGroups,
-            targetGroupId,
-            isCurrentGroup ? state.selectedProjectId : newProject.id
-          ) ?? newProject.id
-        : normalizedRegistry.selectedProjectId ?? newProject.id;
+            isCurrentGroup ? state.selectedProjectId : newProject.id,
+          ) ?? newProject.id)
+        : (normalizedRegistry.selectedProjectId ?? newProject.id);
 
       const rememberedProject: RememberedProject | null = targetGroupId
         ? {
@@ -2452,50 +2586,63 @@ export const useAppStore = create<AppStore>((set, get) => ({
         normalizedRegistry.projectGroups,
         rememberedProject
           ? upsertRememberedProject(state.recentProjects, rememberedProject)
-          : state.recentProjects
+          : state.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
         rememberedProject
-          ? upsertRememberedProject(state.macroEnabledProjects, rememberedProject)
-          : state.macroEnabledProjects
+          ? upsertRememberedProject(
+              state.macroEnabledProjects,
+              rememberedProject,
+            )
+          : state.macroEnabledProjects,
       );
-      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry.projectGroups,
+      );
 
       set({
         currentPlan: plan,
         projectGroups: normalizedRegistry.projectGroups,
         planNodes: filterPlanNodesForRegistry(
           planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan),
-          validProjectIds
+          validProjectIds,
         ),
         predictedBranches: filterPredictedBranchesForRegistry(
           predictedBranches ?? [],
-          validProjectIds
+          validProjectIds,
         ),
         selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
         selectedProjectId: preferredFocusProjectId,
         selectedTaskId: isCurrentGroup ? state.selectedTaskId : null,
-        activeArchitectPlanId: isCurrentGroup ? state.activeArchitectPlanId : null,
+        activeArchitectPlanId: isCurrentGroup
+          ? state.activeArchitectPlanId
+          : null,
         activePlanContext: isCurrentGroup ? state.activePlanContext : null,
         recentProjects: nextRecentProjects,
         macroEnabledProjects: nextMacroEnabledProjects,
         projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-          normalizedRegistry.report
+          normalizedRegistry.report,
         ),
       });
       void savePreference(
         PREF_KEYS.LAST_SELECTED_GROUP_ID,
-        targetGroupId ?? normalizedRegistry.selectedGroupId
+        targetGroupId ?? normalizedRegistry.selectedGroupId,
       );
-      void savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, preferredFocusProjectId);
+      void savePreference(
+        PREF_KEYS.LAST_SELECTED_PROJECT_ID,
+        preferredFocusProjectId,
+      );
       if (shouldPersistProjectPath(newProject.path)) {
         void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, newProject.path);
       } else {
         void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
       }
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
 
       await persistSessionContext({
         selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
@@ -2508,8 +2655,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: preferredFocusProjectId,
       });
 
-      const restoredGroupId = targetGroupId ?? normalizedRegistry.selectedGroupId;
-      if (get().projectSwitchPolicy === 'resume_per_project' && restoredGroupId) {
+      const restoredGroupId =
+        targetGroupId ?? normalizedRegistry.selectedGroupId;
+      if (
+        get().projectSwitchPolicy === "resume_per_project" &&
+        restoredGroupId
+      ) {
         await restoreProjectContext(restoredGroupId, preferredFocusProjectId);
       }
 
@@ -2518,8 +2669,185 @@ export const useAppStore = create<AppStore>((set, get) => ({
         projectId: preferredFocusProjectId,
       });
 
-      logProjectRegistryAction('succeeded', {
-        action: 'create_project_with_git_setup',
+      logProjectRegistryAction("succeeded", {
+        action: "create_project",
+        projectId: newProject.id,
+        groupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+        afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
+        repairApplied: normalizedRegistry.report.repaired,
+      });
+      set({ isLoading: false, lastError: null });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
+      logProjectRegistryAction("failed", {
+        action: "create_project",
+        groupId: data.groupId,
+        path: data.path ?? null,
+        error: normalized.message,
+      });
+      throw normalized;
+    }
+  },
+
+  createProjectWithGitSetup: async (data) => {
+    set({ isLoading: true, lastError: null });
+    try {
+      const previousState = get();
+      const gitFlowSettings =
+        data.gitFlowSettings || getDefaultProjectGitFlowSettings();
+      logProjectRegistryAction("started", {
+        action: "create_project_with_git_setup",
+        groupId: data.groupId,
+        path: data.path ?? null,
+        gitSetupActions: data.gitSetupActions,
+        beforeCount: countProjectsInRegistry(previousState.projectGroups),
+      });
+      const result = await services.createProjectWithGitSetup({
+        ...data,
+        gitFlowSettings,
+      });
+      const newProject = result.project;
+      const state = get();
+      if (state.selectedGroupId) {
+        await persistCurrentProjectContext(
+          state.selectedGroupId,
+          state.selectedProjectId,
+        );
+      }
+      const {
+        projectGroups: syncedGroups,
+        plan,
+        planNodes,
+        predictedBranches,
+      } = await services.getAppBootstrap();
+      const syncedGroupForProject = getProjectGroupByProjectId(
+        syncedGroups,
+        newProject.id,
+      );
+      const seededRegistry = syncedGroupForProject
+        ? syncedGroups
+        : insertProjectInGroups(state.projectGroups, newProject, data.groupId)
+            .projectGroups;
+      const normalizedRegistry = normalizeProjectRegistry({
+        projectGroups: seededRegistry,
+        selectedGroupId:
+          syncedGroupForProject?.id ?? data.groupId ?? state.selectedGroupId,
+        selectedProjectId: newProject.id,
+      });
+      const targetGroupId =
+        getProjectGroupByProjectId(
+          normalizedRegistry.projectGroups,
+          newProject.id,
+        )?.id ?? normalizedRegistry.selectedGroupId;
+      const isCurrentGroup = targetGroupId === state.selectedGroupId;
+      const preferredFocusProjectId = targetGroupId
+        ? (getFocusedProjectIdForGroup(
+            normalizedRegistry.projectGroups,
+            targetGroupId,
+            isCurrentGroup ? state.selectedProjectId : newProject.id,
+          ) ?? newProject.id)
+        : (normalizedRegistry.selectedProjectId ?? newProject.id);
+
+      const rememberedProject: RememberedProject | null = targetGroupId
+        ? {
+            projectId: newProject.id,
+            groupId: targetGroupId,
+            name: newProject.name,
+            path: newProject.path,
+            lastOpenedAt: new Date().toISOString(),
+          }
+        : null;
+
+      const nextRecentProjects = reconcileRememberedProjects(
+        normalizedRegistry.projectGroups,
+        rememberedProject
+          ? upsertRememberedProject(state.recentProjects, rememberedProject)
+          : state.recentProjects,
+      );
+      const nextMacroEnabledProjects = reconcileRememberedProjects(
+        normalizedRegistry.projectGroups,
+        rememberedProject
+          ? upsertRememberedProject(
+              state.macroEnabledProjects,
+              rememberedProject,
+            )
+          : state.macroEnabledProjects,
+      );
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry.projectGroups,
+      );
+
+      set({
+        currentPlan: plan,
+        projectGroups: normalizedRegistry.projectGroups,
+        planNodes: filterPlanNodesForRegistry(
+          planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan),
+          validProjectIds,
+        ),
+        predictedBranches: filterPredictedBranchesForRegistry(
+          predictedBranches ?? [],
+          validProjectIds,
+        ),
+        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+        selectedProjectId: preferredFocusProjectId,
+        selectedTaskId: isCurrentGroup ? state.selectedTaskId : null,
+        activeArchitectPlanId: isCurrentGroup
+          ? state.activeArchitectPlanId
+          : null,
+        activePlanContext: isCurrentGroup ? state.activePlanContext : null,
+        recentProjects: nextRecentProjects,
+        macroEnabledProjects: nextMacroEnabledProjects,
+        projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
+          normalizedRegistry.report,
+        ),
+      });
+      void savePreference(
+        PREF_KEYS.LAST_SELECTED_GROUP_ID,
+        targetGroupId ?? normalizedRegistry.selectedGroupId,
+      );
+      void savePreference(
+        PREF_KEYS.LAST_SELECTED_PROJECT_ID,
+        preferredFocusProjectId,
+      );
+      if (shouldPersistProjectPath(newProject.path)) {
+        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, newProject.path);
+      } else {
+        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+      }
+      void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
+
+      await persistSessionContext({
+        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+        selectedProjectId: preferredFocusProjectId,
+        mode: state.mode,
+      });
+      await reconcileProjectRegistryDependencies({
+        projectGroups: normalizedRegistry.projectGroups,
+        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+        selectedProjectId: preferredFocusProjectId,
+      });
+
+      const restoredGroupId =
+        targetGroupId ?? normalizedRegistry.selectedGroupId;
+      if (
+        get().projectSwitchPolicy === "resume_per_project" &&
+        restoredGroupId
+      ) {
+        await restoreProjectContext(restoredGroupId, preferredFocusProjectId);
+      }
+
+      await ensureAutoPlanForSelection({
+        groupId: restoredGroupId,
+        projectId: preferredFocusProjectId,
+      });
+
+      logProjectRegistryAction("succeeded", {
+        action: "create_project_with_git_setup",
         projectId: newProject.id,
         groupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
         afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
@@ -2530,8 +2858,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
-      logProjectRegistryAction('failed', {
-        action: 'create_project_with_git_setup',
+      logProjectRegistryAction("failed", {
+        action: "create_project_with_git_setup",
         groupId: data.groupId,
         path: data.path ?? null,
         gitSetupActions: data.gitSetupActions,
@@ -2554,13 +2882,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const normalizedRegistry = snapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.recentProjects
+        previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
         normalizedRegistry.projectGroups,
-        previousState.macroEnabledProjects
+        previousState.macroEnabledProjects,
       );
-      const { validProjectIds } = collectProjectRegistryIds(normalizedRegistry.projectGroups);
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry.projectGroups,
+      );
 
       set({
         currentPlan: snapshot.plan,
@@ -2573,20 +2903,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
           snapshot.planNodes.length
             ? snapshot.planNodes
             : derivePlanNodesFromPlan(snapshot.plan),
-          validProjectIds
+          validProjectIds,
         ),
         predictedBranches: filterPredictedBranchesForRegistry(
           snapshot.predictedBranches,
-          validProjectIds
+          validProjectIds,
         ),
         projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-          normalizedRegistry.report
+          normalizedRegistry.report,
         ),
         isLoading: false,
         lastError: null,
       });
       void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, nextMacroEnabledProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
       await persistSessionContext({
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2638,9 +2971,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
   initialize: async () => {
     set({ isLoading: true, lastError: null });
     try {
-      logProjectRegistryAction('started', { action: 'initialize' });
+      logProjectRegistryAction("started", { action: "initialize" });
       // Load persisted panel preferences
-      const [leftWidth, rightWidth, leftOpen, rightOpen, uiZoomMode, uiZoomLevel, lastSelectedGroupId, lastSelectedProjectId, lastOpenProjectPath, lastActiveMode, lastAgentType, recentProjects, macroEnabledProjects, metadataAutoPush, implementExecutionMode, notificationChannelModes, storedProjectSwitchPolicy, sessionContext] = await Promise.all([
+      const [
+        leftWidth,
+        rightWidth,
+        leftOpen,
+        rightOpen,
+        uiZoomMode,
+        uiZoomLevel,
+        lastSelectedGroupId,
+        lastSelectedProjectId,
+        lastOpenProjectPath,
+        lastActiveMode,
+        lastAgentType,
+        recentProjects,
+        macroEnabledProjects,
+        metadataAutoPush,
+        implementExecutionMode,
+        notificationChannelModes,
+        storedProjectSwitchPolicy,
+        sessionContext,
+      ] = await Promise.all([
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
         loadPreference<boolean>(PREF_KEYS.IS_LEFT_PANEL_OPEN),
@@ -2655,27 +3007,63 @@ export const useAppStore = create<AppStore>((set, get) => ({
         loadPreference<RememberedProject[]>(PREF_KEYS.RECENT_PROJECTS),
         loadPreference<RememberedProject[]>(PREF_KEYS.MACRO_ENABLED_PROJECTS),
         loadPreference<boolean>(PREF_KEYS.METADATA_AUTO_PUSH),
-        loadPreference<ImplementExecutionMode>(PREF_KEYS.IMPLEMENT_EXECUTION_MODE),
-        loadPreference<NotificationChannelModes>(PREF_KEYS.NOTIFICATION_CHANNEL_MODES),
+        loadPreference<ImplementExecutionMode>(
+          PREF_KEYS.IMPLEMENT_EXECUTION_MODE,
+        ),
+        loadPreference<NotificationChannelModes>(
+          PREF_KEYS.NOTIFICATION_CHANNEL_MODES,
+        ),
         getProjectSwitchPolicy(),
         getLocalSessionContextState(),
       ]);
 
-      const normalizedZoomMode: UiZoomMode = uiZoomMode === 'override' ? 'override' : 'auto';
+      const normalizedZoomMode: UiZoomMode =
+        uiZoomMode === "override" ? "override" : "auto";
       const normalizedZoomLevel = clampUiZoomLevel(uiZoomLevel);
       const normalizedImplementExecutionMode: ImplementExecutionMode =
-        implementExecutionMode === 'full_auto' ? 'full_auto' : 'semi_auto';
+        implementExecutionMode === "full_auto" ? "full_auto" : "semi_auto";
 
-      const { plan, projectGroups, planNodes, predictedBranches } = await services.getAppBootstrap();
+      const prunedRecentProjects =
+        pruneLegacyRememberedProjects(recentProjects);
+      const prunedMacroEnabledProjects =
+        pruneLegacyRememberedProjects(macroEnabledProjects);
+      let metadataRecoveryReport: WorkspaceMetadataRecoveryReportDto | null =
+        null;
+      if (tauriIpc.isTauriAvailable()) {
+        try {
+          const recoveryHints = buildMetadataRecoveryHints(
+            prunedMacroEnabledProjects,
+            prunedRecentProjects,
+          );
+          const recoveryResult = await tauriIpc.workspaceRecoverMissingMetadata(
+            {
+              attemptPull: true,
+              projects: recoveryHints,
+            },
+          );
+          metadataRecoveryReport =
+            recoveryResult.status === "none" ? null : recoveryResult;
+        } catch (error) {
+          devLogger.info(
+            `[Init] @macro metadata recovery failed before bootstrap: ${toServiceError(error).message}`,
+          );
+        }
+      }
+
+      const { plan, projectGroups, planNodes, predictedBranches } =
+        await services.getAppBootstrap();
       const prunedProjectGroups = pruneLegacyWorkspaceMocks(projectGroups);
-      const prunedRecentProjects = pruneLegacyRememberedProjects(recentProjects);
-      const prunedMacroEnabledProjects = pruneLegacyRememberedProjects(macroEnabledProjects);
 
-      const sessionSelectedProjectId = sessionContext?.selectedProjectId ?? null;
+      const sessionSelectedProjectId =
+        sessionContext?.selectedProjectId ?? null;
       const sessionSelectedGroupId = sessionContext?.selectedGroupId ?? null;
-      const sessionMode = isAppMode(sessionContext?.mode) ? sessionContext.mode : null;
-      const effectiveLastSelectedProjectId = sessionSelectedProjectId || lastSelectedProjectId;
-      const effectiveLastSelectedGroupId = sessionSelectedGroupId || lastSelectedGroupId;
+      const sessionMode = isAppMode(sessionContext?.mode)
+        ? sessionContext.mode
+        : null;
+      const effectiveLastSelectedProjectId =
+        sessionSelectedProjectId || lastSelectedProjectId;
+      const effectiveLastSelectedGroupId =
+        sessionSelectedGroupId || lastSelectedGroupId;
 
       const normalizedRegistry = normalizeProjectRegistry({
         projectGroups: prunedProjectGroups,
@@ -2688,14 +3076,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       const cleanedRecentProjects = reconcileRememberedProjects(
         resolvedProjectGroups,
-        prunedRecentProjects
+        prunedRecentProjects,
       );
       const cleanedMacroEnabledProjects = reconcileRememberedProjects(
         resolvedProjectGroups,
-        prunedMacroEnabledProjects
+        prunedMacroEnabledProjects,
       );
 
-      const sanitizedLastOpenProjectPath = shouldPersistProjectPath(lastOpenProjectPath)
+      const sanitizedLastOpenProjectPath = shouldPersistProjectPath(
+        lastOpenProjectPath,
+      )
         ? lastOpenProjectPath
         : null;
 
@@ -2706,7 +3096,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (!resolvedProjectId && sanitizedLastOpenProjectPath) {
         const normalizedLastPath = normalizePath(sanitizedLastOpenProjectPath);
         const groupForPath = resolvedProjectGroups.find((group) =>
-          group.projects.some((project) => normalizePath(project.path) === normalizedLastPath)
+          group.projects.some(
+            (project) => normalizePath(project.path) === normalizedLastPath,
+          ),
         );
 
         if (groupForPath) {
@@ -2719,17 +3111,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (!resolvedGroupId) {
         const firstValidRecent = cleanedRecentProjects.find((recent) =>
           resolvedProjectGroups.some((group) =>
-            group.projects.some((project) => normalizePath(project.path) === normalizePath(recent.path))
-          )
+            group.projects.some(
+              (project) =>
+                normalizePath(project.path) === normalizePath(recent.path),
+            ),
+          ),
         );
 
         if (firstValidRecent) {
           const recentProjectMatch = resolvedProjectGroups
             .flatMap((group) => group.projects)
-            .find((project) => normalizePath(project.path) === normalizePath(firstValidRecent.path));
+            .find(
+              (project) =>
+                normalizePath(project.path) ===
+                normalizePath(firstValidRecent.path),
+            );
           const groupForRecent = getProjectGroupByProjectId(
             resolvedProjectGroups,
-            recentProjectMatch?.id ?? null
+            recentProjectMatch?.id ?? null,
           );
           resolvedGroupId = groupForRecent?.id ?? null;
         }
@@ -2743,20 +3142,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
         resolvedProjectId = resolveExplicitProjectIdForGroup(
           resolvedProjectGroups,
           resolvedGroupId,
-          resolvedProjectId
+          resolvedProjectId,
         );
       }
 
       const resolvedMode: AppMode = isAppMode(sessionMode)
         ? sessionMode
-        : ['Architect', 'Implement', 'Chat', 'Debug'].includes(lastActiveMode)
+        : ["Architect", "Implement", "Chat", "Debug"].includes(lastActiveMode)
           ? lastActiveMode
-        : 'Implement';
-      const resolvedAgentType: AgentType = ['build', 'plan'].includes(lastAgentType)
+          : "Implement";
+      const resolvedAgentType: AgentType = ["build", "plan"].includes(
+        lastAgentType,
+      )
         ? lastAgentType
-        : 'build';
+        : "build";
 
-      const { validProjectIds } = collectProjectRegistryIds(resolvedProjectGroups);
+      const { validProjectIds } = collectProjectRegistryIds(
+        resolvedProjectGroups,
+      );
 
       set({
         mode: resolvedMode,
@@ -2765,19 +3168,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
         projectGroups: resolvedProjectGroups,
         planNodes: filterPlanNodesForRegistry(
           planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan),
-          validProjectIds
+          validProjectIds,
         ),
         predictedBranches: filterPredictedBranchesForRegistry(
           predictedBranches ?? [],
-          validProjectIds
+          validProjectIds,
         ),
         selectedGroupId: resolvedGroupId,
         selectedProjectId: resolvedProjectId,
         recentProjects: cleanedRecentProjects,
         macroEnabledProjects: cleanedMacroEnabledProjects,
         projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
-          normalizedRegistry.report
+          normalizedRegistry.report,
         ),
+        metadataRecoveryReport,
         leftPanelWidth: leftWidth,
         rightPanelWidth: rightWidth,
         isLeftPanelOpen: leftOpen,
@@ -2786,24 +3190,30 @@ export const useAppStore = create<AppStore>((set, get) => ({
         uiZoomLevel: normalizedZoomLevel,
         metadataAutoPush,
         implementExecutionMode: normalizedImplementExecutionMode,
-        notificationChannelModes: sanitizeNotificationChannelModes(notificationChannelModes),
+        notificationChannelModes: sanitizeNotificationChannelModes(
+          notificationChannelModes,
+        ),
         projectSwitchPolicy: storedProjectSwitchPolicy,
         isProjectSwitching: false,
         isLoading: false,
       });
 
       void savePreference(PREF_KEYS.RECENT_PROJECTS, cleanedRecentProjects);
-      void savePreference(PREF_KEYS.MACRO_ENABLED_PROJECTS, cleanedMacroEnabledProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        cleanedMacroEnabledProjects,
+      );
       const resolvedFocusedProject = resolvedProjectId
-        ? resolvedProjectGroups
+        ? (resolvedProjectGroups
             .flatMap((group) => group.projects)
-            .find((project) => project.id === resolvedProjectId) ?? null
+            .find((project) => project.id === resolvedProjectId) ?? null)
         : null;
       void savePreference(
         PREF_KEYS.LAST_OPEN_PROJECT_PATH,
-        resolvedFocusedProject?.path && shouldPersistProjectPath(resolvedFocusedProject.path)
+        resolvedFocusedProject?.path &&
+          shouldPersistProjectPath(resolvedFocusedProject.path)
           ? resolvedFocusedProject.path
-          : null
+          : null,
       );
       await persistSessionContext({
         selectedGroupId: resolvedGroupId,
@@ -2815,13 +3225,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedGroupId: resolvedGroupId,
         selectedProjectId: resolvedProjectId,
       });
-      logProjectRegistryAction('succeeded', {
-        action: 'initialize',
+      logProjectRegistryAction("succeeded", {
+        action: "initialize",
         afterCount: countProjectsInRegistry(resolvedProjectGroups),
         repairApplied: normalizedRegistry.report.repaired,
       });
 
-      if ((resolvedGroupId || resolvedProjectId) && storedProjectSwitchPolicy === 'resume_per_project') {
+      if (
+        (resolvedGroupId || resolvedProjectId) &&
+        storedProjectSwitchPolicy === "resume_per_project"
+      ) {
         await restoreProjectContext(resolvedGroupId || resolvedProjectId!);
       }
 
@@ -2832,8 +3245,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
-      logProjectRegistryAction('failed', {
-        action: 'initialize',
+      logProjectRegistryAction("failed", {
+        action: "initialize",
         error: normalized.message,
       });
     }

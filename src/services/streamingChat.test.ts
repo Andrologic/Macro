@@ -1,10 +1,31 @@
-import { describe, expect, it } from 'bun:test';
-import {
-  __testables,
-  CREATE_PLAN_TOOL,
-  GENERATE_PLAN_TOOL,
-  UPDATE_PLAN_TOOL,
-} from './streamingChat';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+
+let streamingChatImportCounter = 0;
+
+const loadStreamingChat = async () => {
+  mock.restore();
+  mock.module('@tauri-apps/api/core', () => ({
+    invoke: mock(async () => undefined),
+  }));
+  mock.module('@tauri-apps/api/event', () => ({
+    listen: mock(async () => () => undefined),
+  }));
+  mock.module('@tauri-apps/plugin-http', () => ({
+    fetch: mock(async () => {
+      throw new Error('HTTP fetch should not be called in streamingChat unit tests.');
+    }),
+  }));
+  mock.module('../stores/useProviderStore', () => ({
+    useProviderStore: {
+      getState: () => ({
+        markReasoningUnsupportedForModel: () => undefined,
+      }),
+    },
+  }));
+
+  streamingChatImportCounter += 1;
+  return import(`./streamingChat.ts?test=${streamingChatImportCounter}`);
+};
 
 const asObjectSchema = (
   schema: unknown
@@ -17,7 +38,12 @@ const asObjectSchema = (
 };
 
 describe('streamingChat Architect tool contracts', () => {
-  it('does not require title for plan_create and exposes label support', () => {
+  beforeEach(() => {
+    mock.restore();
+  });
+
+  it('does not require title for plan_create and exposes label support', async () => {
+    const { CREATE_PLAN_TOOL } = await loadStreamingChat();
     const { properties, required = [] } = asObjectSchema(CREATE_PLAN_TOOL.function.parameters);
 
     expect(required).not.toContain('title');
@@ -25,7 +51,8 @@ describe('streamingChat Architect tool contracts', () => {
     expect(String(CREATE_PLAN_TOOL.function.description)).toContain('generated identifier');
   });
 
-  it('documents plan_title as a label alias for strategy generation', () => {
+  it('documents plan_title as a label alias for strategy generation', async () => {
+    const { GENERATE_PLAN_TOOL } = await loadStreamingChat();
     const planTitleProperty = asObjectSchema(GENERATE_PLAN_TOOL.function.parameters).properties
       .plan_title as { description?: string };
 
@@ -33,7 +60,8 @@ describe('streamingChat Architect tool contracts', () => {
     expect(String(planTitleProperty.description)).toContain('secondary plan label');
   });
 
-  it('documents plan_update title as a legacy alias without changing canonical ids', () => {
+  it('documents plan_update title as a legacy alias without changing canonical ids', async () => {
+    const { UPDATE_PLAN_TOOL } = await loadStreamingChat();
     const properties = asObjectSchema(UPDATE_PLAN_TOOL.function.parameters).properties as Record<
       string,
       { description?: string }
@@ -43,20 +71,30 @@ describe('streamingChat Architect tool contracts', () => {
     expect(String(properties.title.description).toLowerCase()).toContain('legacy alias');
     expect(properties.status).toBeUndefined();
     expect(properties.set_active).toBeUndefined();
-    expect(String(UPDATE_PLAN_TOOL.function.description)).toContain('never rename the canonical id or slug');
+    expect(String(UPDATE_PLAN_TOOL.function.description)).toContain(
+      'never rename the canonical id or slug'
+    );
   });
 });
 
 describe('streamingChat tool rendering helpers', () => {
-  it('formats short tool details for file reads and web search', () => {
+  beforeEach(() => {
+    mock.restore();
+  });
+
+  it('formats short tool details for file reads and web search', async () => {
+    const { __testables } = await loadStreamingChat();
     expect(__testables.formatToolTraceDetail('read', { path: 'src/app.ts' })).toBe('src/app.ts');
-    expect(__testables.formatToolTraceDetail('read_file', { file: 'README.md' })).toBe('README.md');
+    expect(__testables.formatToolTraceDetail('read_file', { file: 'README.md' })).toBe(
+      'README.md'
+    );
     expect(__testables.formatToolTraceDetail('web_search', { query: 'macro desktop app' })).toBe(
       'macro desktop app'
     );
   });
 
-  it('stores raw tool results in hidden tool context blocks', () => {
+  it('stores raw tool results in hidden tool context blocks', async () => {
+    const { __testables } = await loadStreamingChat();
     const block = __testables.buildToolContextBlock(
       'call_123',
       'read',
@@ -71,7 +109,8 @@ describe('streamingChat tool rendering helpers', () => {
     expect(block).toContain('const ok = true;');
   });
 
-  it('retries once when a required native tool was not used', () => {
+  it('retries once when a required native tool was not used', async () => {
+    const { __testables } = await loadStreamingChat();
     expect(
       __testables.shouldRetryMissingRequiredTool(
         {
@@ -116,5 +155,57 @@ describe('streamingChat tool rendering helpers', () => {
         1
       )
     ).toBe(false);
+  });
+
+  it('wraps ChatGPT reasoning summaries into a think block', async () => {
+    const { __testables } = await loadStreamingChat();
+    expect(
+      __testables.buildChatGptVisibleTurnContent(
+        'Voici la reponse finale.',
+        'Le modele a d abord inspecte les fichiers.'
+      )
+    ).toBe('<think>Le modele a d abord inspecte les fichiers.</think>\nVoici la reponse finale.');
+
+    expect(__testables.buildChatGptVisibleTurnContent('', 'Resume bref.')).toBe(
+      '<think>Resume bref.</think>'
+    );
+  });
+
+  it('flags empty terminal ChatGPT turns only when no tool call remains', async () => {
+    const { __testables } = await loadStreamingChat();
+    expect(__testables.isEmptyTerminalChatGptTurn('', [])).toBe(true);
+    expect(__testables.isEmptyTerminalChatGptTurn('<think>Resume</think>', [])).toBe(false);
+    expect(
+      __testables.isEmptyTerminalChatGptTurn('', [
+        {
+          id: 'call_1',
+          type: 'function',
+          function: {
+            name: 'read',
+            arguments: '{"path":"README.md"}',
+          },
+        },
+      ])
+    ).toBe(false);
+  });
+
+  it('maps reasoning request parameters by provider type', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    const openAiBody: Record<string, unknown> = {};
+    __testables.applyReasoningToChatCompletionsRequest(openAiBody, 'openai', 'medium');
+    expect(openAiBody.reasoning_effort).toBe('medium');
+
+    const openRouterBody: Record<string, unknown> = {};
+    __testables.applyReasoningToChatCompletionsRequest(openRouterBody, 'openrouter', 'high');
+    expect(openRouterBody.reasoning).toEqual({ effort: 'high' });
+    expect(openRouterBody.include_reasoning).toBe(true);
+  });
+
+  it('detects unsupported reasoning parameter errors', async () => {
+    const { __testables } = await loadStreamingChat();
+    expect(__testables.isReasoningUnsupportedError('Unknown parameter: reasoning_effort')).toBe(true);
+    expect(__testables.isReasoningUnsupportedError('Unsupported value for reasoning')).toBe(true);
+    expect(__testables.isReasoningUnsupportedError('Request failed: 500')).toBe(false);
   });
 });

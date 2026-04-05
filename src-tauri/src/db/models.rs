@@ -73,6 +73,8 @@ pub struct AiModel {
     pub pricing_prompt: Option<String>,
     pub pricing_completion: Option<String>,
     pub pricing_request: Option<String>,
+    pub reasoning_efforts: Option<Vec<String>>,
+    pub default_reasoning_effort: Option<String>,
     pub is_enabled: bool,
     pub is_manual: bool,
     pub first_seen_at: String,
@@ -226,6 +228,8 @@ pub struct ProviderModelInput {
     pub pricing_prompt: Option<String>,
     pub pricing_completion: Option<String>,
     pub pricing_request: Option<String>,
+    pub reasoning_efforts: Option<Vec<String>>,
+    pub default_reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

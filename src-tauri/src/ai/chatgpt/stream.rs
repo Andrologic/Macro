@@ -11,7 +11,7 @@ use crate::secrets::ChatGptSecret;
 use futures::StreamExt;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 
@@ -19,6 +19,8 @@ use tauri::{AppHandle, Emitter};
 struct StreamingCompletionAccumulator {
     output_text: String,
     tool_calls: Vec<AiToolCall>,
+    response_id: Option<String>,
+    reasoning_summary: String,
 }
 
 pub async fn cancel_stream(ai_state: &AiState, request_id: &str) -> Result<(), String> {
@@ -136,6 +138,8 @@ async fn stream_chat_inner(
                     request_id: request.request_id,
                     output_text: completion_accumulator.output_text,
                     tool_calls: completion_accumulator.tool_calls,
+                    response_id: completion_accumulator.response_id,
+                    reasoning_summary: optional_text(completion_accumulator.reasoning_summary),
                     tool_traces: None,
                     hidden_context: None,
                 },
@@ -231,6 +235,10 @@ fn process_sse_event(
                     &mut completion_accumulator.output_text,
                     &extract_output_text_from_output_item(item),
                 );
+                merge_output_text(
+                    &mut completion_accumulator.reasoning_summary,
+                    &extract_reasoning_summary_from_output_item(item),
+                );
                 if let Some(tool_call) = extract_function_call_from_output_item(item)? {
                     upsert_tool_call(&mut completion_accumulator.tool_calls, tool_call);
                 }
@@ -248,10 +256,16 @@ fn process_sse_event(
                 extract_completed_output_text(&value),
                 &completion_accumulator.output_text,
             );
+            let reasoning_summary = select_best_optional_text(
+                extract_completed_reasoning_summary(&value),
+                &completion_accumulator.reasoning_summary,
+            );
             let tool_calls = merge_tool_calls(
                 extract_completed_tool_calls(&value)?,
                 &completion_accumulator.tool_calls,
             );
+            let response_id =
+                extract_response_id(&value).or_else(|| completion_accumulator.response_id.clone());
             app_handle
                 .emit(
                     "ai:done",
@@ -259,6 +273,8 @@ fn process_sse_event(
                         request_id: request_id.to_string(),
                         output_text,
                         tool_calls,
+                        response_id,
+                        reasoning_summary,
                         tool_traces: None,
                         hidden_context: None,
                     },
@@ -370,6 +386,7 @@ pub(super) fn build_responses_request(
     Ok(ChatGptResponsesRequest {
         model: request.model_id.clone(),
         instructions: instructions.join("\n\n").trim().to_string(),
+        previous_response_id: request.previous_response_id.clone(),
         input,
         tools,
         tool_choice: request
@@ -377,7 +394,9 @@ pub(super) fn build_responses_request(
             .clone()
             .unwrap_or_else(|| "auto".to_string()),
         parallel_tool_calls: request.parallel_tool_calls.unwrap_or(false),
-        reasoning: None,
+        reasoning: default_reasoning_config(&request.model_id, request.reasoning_effort.as_deref()),
+        // The ChatGPT/Codex backend currently rejects stored responses on this endpoint.
+        // We still keep `previous_response_id` for multi-turn continuation.
         store: false,
         stream: true,
         include: Vec::new(),
@@ -409,6 +428,17 @@ fn extract_completed_output_text(payload: &Value) -> String {
         .join("")
 }
 
+pub(super) fn extract_completed_reasoning_summary(payload: &Value) -> Option<String> {
+    optional_text(
+        extract_completed_items(payload)
+            .into_iter()
+            .flatten()
+            .map(extract_reasoning_summary_from_output_item)
+            .collect::<Vec<_>>()
+            .join(""),
+    )
+}
+
 pub(super) fn extract_output_text_from_output_item(item: &Value) -> String {
     item.get("content")
         .and_then(Value::as_array)
@@ -418,6 +448,30 @@ pub(super) fn extract_output_text_from_output_item(item: &Value) -> String {
         .filter_map(|content| content.get("text").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join("")
+}
+
+pub(super) fn extract_reasoning_summary_from_output_item(item: &Value) -> String {
+    if item.get("type").and_then(Value::as_str) != Some("reasoning") {
+        return String::new();
+    }
+
+    item.get("summary")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|summary_item| summary_item.get("type").and_then(Value::as_str) == Some("summary_text"))
+        .filter_map(|summary_item| summary_item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+pub(super) fn extract_response_id(payload: &Value) -> Option<String> {
+    payload
+        .get("response")
+        .and_then(|response| response.get("id"))
+        .or_else(|| payload.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn extract_completed_tool_calls(payload: &Value) -> Result<Vec<AiToolCall>, String> {
@@ -557,6 +611,20 @@ fn select_best_output_text(primary: String, fallback: &str) -> String {
     trimmed_primary.to_string()
 }
 
+fn select_best_optional_text(primary: Option<String>, fallback: &str) -> Option<String> {
+    let merged = select_best_output_text(primary.unwrap_or_default(), fallback);
+    optional_text(merged)
+}
+
+fn optional_text(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn upsert_tool_call(tool_calls: &mut Vec<AiToolCall>, tool_call: AiToolCall) {
     if let Some(existing) = tool_calls
         .iter_mut()
@@ -626,6 +694,23 @@ fn build_response_content_items(
             Ok(items)
         }
     }
+}
+
+fn default_reasoning_config(model_id: &str, selected_effort: Option<&str>) -> Option<Value> {
+    let normalized = model_id.trim().to_ascii_lowercase();
+    if !normalized.starts_with("gpt-5") {
+        return None;
+    }
+
+    let effort = selected_effort
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("medium");
+
+    Some(json!({
+        "effort": effort,
+        "summary": "auto",
+    }))
 }
 
 fn content_to_plain_text(content: &AiChatMessageContent) -> String {

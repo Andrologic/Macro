@@ -13,6 +13,7 @@ import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
+import { ReasoningDropdown } from '../ai/ReasoningDropdown';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
@@ -1358,6 +1359,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 )}
                 <ProviderDropdown />
                 <ModelDropdown />
+                <ReasoningDropdown />
               </div>
               {mode === 'Architect' && (
               <button

@@ -62,6 +62,7 @@ interface BridgeChatMessage {
 
 interface BridgeSendRequest {
   model_id: string;
+  reasoning_effort?: string | null;
   messages: BridgeChatMessage[];
   allowed_tool_ids?: string[];
   workspace_path?: string | null;
@@ -1899,6 +1900,7 @@ const handleModels = async (): Promise<void> => {
       name: model.name || model.id,
       description: modelDescription(model),
       owned_by: 'github-copilot',
+      supported_reasoning_efforts: model.supportedReasoningEfforts || undefined,
     })),
   });
 };
@@ -1936,6 +1938,7 @@ const handleSend = async (): Promise<void> => {
 
     const session = await client.createSession({
       model: request.model_id,
+      ...(request.reasoning_effort ? { reasoningEffort: request.reasoning_effort } : {}),
       workingDirectory:
         normalizePath(request.workspace_path) ||
         normalizePath(request.default_workspace_path) ||

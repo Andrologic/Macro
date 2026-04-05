@@ -24,6 +24,7 @@ import type {
   ProjectGitFlowDetection,
   ProjectGitSetupCommitResult,
   ProjectGroup,
+  ReasoningEffort,
   Task,
   ToolTrace,
 } from '../../types';
@@ -127,6 +128,9 @@ const toModelDto = (model: tauriIpc.DbAiModel): AIModel => ({
   name: model.name,
   provider_id: model.provider_id,
   description: model.description ?? undefined,
+  reasoningEfforts: (model.reasoning_efforts as ReasoningEffort[] | null) ?? undefined,
+  defaultReasoningEffort:
+    (model.default_reasoning_effort as ReasoningEffort | null) ?? undefined,
   owned_by: model.owned_by ?? undefined,
   pricing: {
     prompt: model.pricing_prompt ?? undefined,
