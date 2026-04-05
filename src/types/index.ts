@@ -374,6 +374,66 @@ export interface ToolTrace {
   visible_offset?: number;
 }
 
+export type ContextFootprintThreshold =
+  | 'none'
+  | 'background'
+  | 'blocking'
+  | 'degraded';
+
+export type ContextFootprintReason =
+  | 'below_threshold'
+  | 'total_context_ratio'
+  | 'hidden_context_ratio'
+  | 'tool_turn_count'
+  | 'post_compaction_overflow';
+
+export interface ContextFootprint {
+  totalEstimatedTokens: number;
+  messageTokens: number;
+  hiddenContextTokens: number;
+  systemTokens: number;
+  toolSchemaTokens: number;
+  imagePlaceholderTokens: number;
+  citationTokens: number;
+  modelContextWindowTokens: number;
+  threshold: ContextFootprintThreshold;
+  reason: ContextFootprintReason;
+  totalContextRatio: number;
+  hiddenContextRatio: number;
+  toolTurnCount: number;
+}
+
+export type ToolContextDigestKind =
+  | 'file_read'
+  | 'web_result'
+  | 'git_result'
+  | 'terminal_result'
+  | 'tool_result';
+
+export interface ToolContextDigestEntry {
+  tool_name: string;
+  target: string;
+  kind: ToolContextDigestKind;
+  evidence_excerpt: string;
+  source_message_id: string;
+  hash: string;
+}
+
+export interface ConversationCompactionState {
+  conversationId: string;
+  upToMessageId: string;
+  summaryText: string;
+  toolDigest: ToolContextDigestEntry[];
+  usedSourcePassageIds: string[];
+  interestingSourcePassageIds: string[];
+  estimatedTokensBefore: number;
+  estimatedTokensAfter: number;
+  fingerprint: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ChatMessage {
   id: string;
   task_id: string;
@@ -452,6 +512,7 @@ export interface AIModel {
   isEnabled?: boolean;
   isManual?: boolean;
   nativeToolCalling?: boolean;
+  contextWindowTokens?: number;
   first_seen_at?: string;
   last_seen_at?: string;
   db_id?: string;

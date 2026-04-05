@@ -139,6 +139,7 @@ const toModelDto = (model: tauriIpc.DbAiModel): AIModel => ({
   },
   isEnabled: model.is_enabled,
   isManual: model.is_manual,
+  contextWindowTokens: model.context_window_tokens ?? undefined,
   first_seen_at: model.first_seen_at,
   last_seen_at: model.last_seen_at,
   db_id: model.id,

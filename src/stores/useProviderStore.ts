@@ -28,6 +28,25 @@ const computeIsFreeModel = (model: AIModel): boolean => {
   return isFreePricing(model.pricing);
 };
 
+const inferContextWindowTokens = (
+  model: Pick<
+    Awaited<ReturnType<typeof fetchModelsFromProvider>>['models'][number],
+    'id' | 'context_window' | 'context_window_tokens' | 'max_input_tokens'
+  >,
+): number | null => {
+  const candidates = [
+    model.context_window_tokens,
+    model.context_window,
+    model.max_input_tokens,
+  ];
+  for (const value of candidates) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return Math.trunc(value);
+    }
+  }
+  return null;
+};
+
 const sortModelsByName = (models: AIModel[]): AIModel[] =>
   [...models].sort((left, right) =>
     (left.name || left.id).localeCompare(right.name || right.id, undefined, { sensitivity: 'base' })
@@ -74,6 +93,7 @@ const normalizeDbModel = (model: tauriIpc.DbAiModel, providerType?: string): AIM
     defaultReasoningEffort: reasoningCapability.defaultReasoningEffort,
     isEnabled: model.is_enabled,
     isManual: model.is_manual,
+    contextWindowTokens: model.context_window_tokens ?? undefined,
     first_seen_at: model.first_seen_at,
     last_seen_at: model.last_seen_at,
     db_id: model.id,
@@ -1000,6 +1020,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               pricing_request: model.pricing?.request ?? null,
               reasoning_efforts: reasoningCapability.reasoningEfforts,
               default_reasoning_effort: reasoningCapability.defaultReasoningEffort,
+              context_window_tokens: inferContextWindowTokens(model),
             };
           }),
         });

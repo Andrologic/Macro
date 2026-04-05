@@ -29,6 +29,22 @@ pub struct Message {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationCompactionStateRecord {
+    pub conversation_id: String,
+    pub up_to_message_id: String,
+    pub summary_text: String,
+    pub tool_digest_json: String,
+    pub used_source_passage_ids_json: String,
+    pub interesting_source_passage_ids_json: String,
+    pub estimated_tokens_before: i32,
+    pub estimated_tokens_after: i32,
+    pub fingerprint: String,
+    pub version: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatSnapshot {
     pub conversations: Vec<Conversation>,
     pub messages: Vec<Message>,
@@ -75,6 +91,7 @@ pub struct AiModel {
     pub pricing_request: Option<String>,
     pub reasoning_efforts: Option<Vec<String>>,
     pub default_reasoning_effort: Option<String>,
+    pub context_window_tokens: Option<i32>,
     pub is_enabled: bool,
     pub is_manual: bool,
     pub first_seen_at: String,
@@ -230,6 +247,21 @@ pub struct ProviderModelInput {
     pub pricing_request: Option<String>,
     pub reasoning_efforts: Option<Vec<String>>,
     pub default_reasoning_effort: Option<String>,
+    pub context_window_tokens: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertConversationCompactionStateInput {
+    pub conversation_id: String,
+    pub up_to_message_id: String,
+    pub summary_text: String,
+    pub tool_digest_json: String,
+    pub used_source_passage_ids_json: String,
+    pub interesting_source_passage_ids_json: String,
+    pub estimated_tokens_before: i32,
+    pub estimated_tokens_after: i32,
+    pub fingerprint: String,
+    pub version: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
