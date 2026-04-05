@@ -15,6 +15,8 @@ use crate::core::error::{BackendError, Result};
 use crate::fs::validate_path;
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
 use crate::git::{GitState, TaskWorktreeEnsureStatus, TaskWorktreeStatus, MACRO_BRANCH_NAME};
+use crate::workspace;
+use crate::workspace::metadata::WorkspaceRecoverMissingMetadataRequestDto;
 use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 
 const DEFAULT_LOG_LIMIT: usize = 50;
@@ -2770,14 +2772,34 @@ pub async fn macro_branch_push(
             );
         }
 
-        build_macro_sync_dto(
-            &worktree_repo,
+        let recovery_report = workspace::recover_missing_metadata_sync(
+            &workspace,
             &worktree_path,
-            false,
-            None,
-            Some(details),
-            None,
-        )
+            &WorkspaceRecoverMissingMetadataRequestDto {
+                attempt_pull: false,
+                projects: Vec::new(),
+            },
+        )?;
+        let recovery_message = match recovery_report.status.as_str() {
+            "restored_from_history" => recovery_report
+                .restored_commit
+                .as_ref()
+                .map(|commit| format!("@macro metadata restored from history ({commit})."))
+                .or(Some("@macro metadata restored from history.".to_string())),
+            "reconstructed_from_hints" => {
+                Some("@macro metadata was reconfigured from local project hints.".to_string())
+            }
+            _ => recovery_report.message,
+        };
+        let output = if details.trim().is_empty() {
+            recovery_message
+        } else if let Some(recovery_message) = recovery_message {
+            Some(format!("{}\n{}", details, recovery_message))
+        } else {
+            Some(details)
+        };
+
+        build_macro_sync_dto(&worktree_repo, &worktree_path, false, None, output, None)
     })
     .await
     .map_err(to_join_error)?

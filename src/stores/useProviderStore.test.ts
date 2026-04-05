@@ -166,4 +166,128 @@ describe('useProviderStore secret resolution', () => {
       apiKeyLoaded: true,
     });
   });
+
+  it('falls back to the new model default reasoning effort when the previous effort is invalid', async () => {
+    const providerStore = await loadProviderStore();
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      providers: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          status: 'online',
+          baseUrl: 'https://api.openai.com/v1',
+          isLocal: false,
+          isEnabled: true,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-5.4-pro',
+            name: 'GPT-5.4 Pro',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            reasoningEfforts: ['medium', 'high', 'xhigh'],
+            defaultReasoningEffort: 'medium',
+          },
+          {
+            id: 'gpt-5-pro',
+            name: 'GPT-5 Pro',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            reasoningEfforts: ['high'],
+            defaultReasoningEffort: 'high',
+          },
+        ],
+      },
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'gpt-5.4-pro',
+      selectedReasoningEffort: 'xhigh',
+    });
+
+    providerStore.useProviderStore.getState().selectModel('gpt-5-pro');
+
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBe('gpt-5-pro');
+    expect(providerStore.useProviderStore.getState().selectedReasoningEffort).toBe('high');
+  });
+
+  it('hides reasoning efforts for the session after a model is marked unsupported', async () => {
+    const providerStore = await loadProviderStore();
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      providers: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          status: 'online',
+          baseUrl: 'https://api.openai.com/v1',
+          isLocal: false,
+          isEnabled: true,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-5',
+            name: 'GPT-5',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            reasoningEfforts: ['minimal', 'low', 'medium', 'high'],
+            defaultReasoningEffort: 'medium',
+          },
+        ],
+      },
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'gpt-5',
+      selectedReasoningEffort: 'medium',
+      reasoningUnsupportedModelKeys: {},
+    });
+
+    expect(
+      providerStore.useProviderStore
+        .getState()
+        .getAvailableReasoningEfforts('provider-openai', 'gpt-5')
+    ).toEqual([
+      'minimal',
+      'low',
+      'medium',
+      'high',
+    ]);
+
+    providerStore.useProviderStore
+      .getState()
+      .markReasoningUnsupportedForModel('provider-openai', 'gpt-5');
+
+    expect(providerStore.useProviderStore.getState().selectedReasoningEffort).toBeNull();
+    expect(
+      providerStore.useProviderStore
+        .getState()
+        .getAvailableReasoningEfforts('provider-openai', 'gpt-5')
+    ).toEqual([]);
+  });
 });

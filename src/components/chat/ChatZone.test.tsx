@@ -205,6 +205,10 @@ mock.module('../ai/ModelDropdown', () => ({
   ModelDropdown: () => <div data-testid="model-dropdown" />,
 }));
 
+mock.module('../ai/ReasoningDropdown', () => ({
+  ReasoningDropdown: () => <div data-testid="reasoning-dropdown" />,
+}));
+
 mock.module('./MarkdownRenderer', () => ({
   MarkdownRenderer: ({ content }: { content: string }) => {
     markdownRendererContentMock(content);
@@ -419,5 +423,15 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(markdownRendererContentMock.mock.calls.map(([content]) => content)).toContain('Réponse partielle');
     expect(requireContainer().textContent).toContain('Stop');
+  });
+
+  it('renders provider, model, and reasoning selectors in the toolbar', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().querySelector('[data-testid="provider-dropdown"]')).not.toBeNull();
+    expect(requireContainer().querySelector('[data-testid="model-dropdown"]')).not.toBeNull();
+    expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
   });
 });

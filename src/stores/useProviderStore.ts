@@ -1,12 +1,13 @@
 import { create } from 'zustand';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { ProviderConfig, AIProvider, AIModel, ProviderSettings } from '../types';
+import { ProviderConfig, AIProvider, AIModel, ProviderSettings, ReasoningEffort } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import { fetchModelsFromProvider, testProviderConnection } from '../services/providerApi';
 import { findProviderConfig, loadAIConfigFile } from '../services/aiConfig';
 import { loadPreference, PREF_KEYS } from '../services/preferences';
 import { AppMode } from '../types';
 import { useAppStore } from './useAppStore';
+import { getReasoningCapabilityForModel, getValidReasoningEffort } from '../services/reasoningCatalog';
 
 const isZeroPrice = (value?: string | null): boolean => {
   if (value === null || value === undefined) return false;
@@ -52,6 +53,12 @@ const applyNativeToolCallingToProvider = (provider: AIProvider, providerType?: s
 });
 
 const normalizeDbModel = (model: tauriIpc.DbAiModel, providerType?: string): AIModel => {
+  const reasoningCapability = getReasoningCapabilityForModel({
+    providerType,
+    modelId: model.model_id,
+    supportedReasoningEfforts: model.reasoning_efforts,
+    defaultReasoningEffort: model.default_reasoning_effort,
+  });
   const normalized: AIModel = {
     id: model.model_id,
     name: model.name,
@@ -63,6 +70,8 @@ const normalizeDbModel = (model: tauriIpc.DbAiModel, providerType?: string): AIM
       completion: model.pricing_completion ?? undefined,
       request: model.pricing_request ?? undefined,
     },
+    reasoningEfforts: reasoningCapability.reasoningEfforts,
+    defaultReasoningEffort: reasoningCapability.defaultReasoningEffort,
     isEnabled: model.is_enabled,
     isManual: model.is_manual,
     first_seen_at: model.first_seen_at,
@@ -78,6 +87,42 @@ const getFirstEnabledModelId = (models: AIModel[]): string | null => {
   return enabled?.id ?? null;
 };
 
+const getReasoningUnsupportedKey = (providerId?: string | null, modelId?: string | null): string | null =>
+  providerId && modelId ? `${providerId}::${modelId}` : null;
+
+const getModelReasoningEfforts = (
+  model: AIModel | undefined,
+  params?: { unsupported?: Record<string, boolean>; providerId?: string | null }
+): ReasoningEffort[] => {
+  if (!model) return [];
+  const runtimeKey = getReasoningUnsupportedKey(params?.providerId ?? model.provider_id, model.id);
+  if (runtimeKey && params?.unsupported?.[runtimeKey]) {
+    return [];
+  }
+  return model.reasoningEfforts ?? [];
+};
+
+const resolveSelectedReasoningEffort = (params: {
+  providerId?: string | null;
+  modelId?: string | null;
+  modelsByProvider: Record<string, AIModel[]>;
+  unsupported: Record<string, boolean>;
+  requested?: string | null;
+}): ReasoningEffort | null => {
+  const { providerId, modelId, modelsByProvider, unsupported, requested } = params;
+  if (!providerId || !modelId) return null;
+  const model = (modelsByProvider[providerId] || []).find((entry) => entry.id === modelId);
+  if (!model) return null;
+
+  return getValidReasoningEffort(
+    {
+      reasoningEfforts: getModelReasoningEfforts(model, { unsupported, providerId }),
+      defaultReasoningEffort: model.defaultReasoningEffort ?? null,
+    },
+    requested
+  );
+};
+
 const hasLoadedApiKey = (provider: Pick<ProviderConfig, 'providerType' | 'apiKey'>): boolean =>
   !isLinkedProviderType(provider.providerType) && !!provider.apiKey?.trim();
 
@@ -90,6 +135,7 @@ type AISelectionModeKey = 'ChatDebug' | 'Architect' | 'Implement';
 interface PersistedAISelection {
   providerId: string | null;
   modelId: string | null;
+  reasoningEffort?: ReasoningEffort | null;
   updatedAt: string;
 }
 
@@ -109,10 +155,16 @@ const normalizePersistedSelection = (value: unknown): PersistedAISelection | nul
   const candidate = value as { providerId?: unknown; modelId?: unknown; updatedAt?: unknown };
   if (typeof candidate.providerId !== 'string' || !candidate.providerId.trim()) return null;
   if (typeof candidate.modelId !== 'string' || !candidate.modelId.trim()) return null;
+  const reasoningEffort =
+    candidate &&
+    typeof (candidate as { reasoningEffort?: unknown }).reasoningEffort === 'string'
+      ? ((candidate as { reasoningEffort?: string }).reasoningEffort as ReasoningEffort)
+      : null;
 
   return {
     providerId: candidate.providerId,
     modelId: candidate.modelId,
+    reasoningEffort,
     updatedAt:
       typeof candidate.updatedAt === 'string' && candidate.updatedAt.trim().length > 0
         ? candidate.updatedAt
@@ -366,10 +418,12 @@ interface ProviderStore {
   providerSettingsById: Record<string, ProviderSettings>;
   selectedProviderId: string | null;
   selectedModelId: string | null;
+  selectedReasoningEffort: ReasoningEffort | null;
   isLoading: boolean;
   isLoadingModels: boolean;
   lastError: string | null;
   connectionStatus: Record<string, 'online' | 'offline' | 'checking'>;
+  reasoningUnsupportedModelKeys: Record<string, boolean>;
   authErrorsByProvider: Record<string, ProviderAuthErrorState | undefined>;
   authRequestIdsByProvider: Record<string, string | undefined>;
   copilotStatusByProvider: Record<string, tauriIpc.CopilotStatusDto | undefined>;
@@ -396,6 +450,10 @@ interface ProviderStore {
   updateProviderSettings: (providerId: string, updates: Partial<ProviderSettings>) => Promise<void>;
   selectProvider: (providerId: string) => void;
   selectModel: (modelId: string) => void;
+  selectReasoningEffort: (effort: ReasoningEffort | null) => void;
+  getAvailableReasoningEfforts: (providerId?: string | null, modelId?: string | null) => ReasoningEffort[];
+  selectedSupportsReasoningEffort: () => boolean;
+  markReasoningUnsupportedForModel: (providerId: string, modelId: string) => void;
   cycleProvider: () => void;
   cycleModel: () => void;
   
@@ -425,10 +483,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   providerSettingsById: {},
   selectedProviderId: null,
   selectedModelId: null,
+  selectedReasoningEffort: null,
   isLoading: false,
   isLoadingModels: false,
   lastError: null,
   connectionStatus: {},
+  reasoningUnsupportedModelKeys: {},
   authErrorsByProvider: {},
   authRequestIdsByProvider: {},
   copilotStatusByProvider: {},
@@ -455,6 +515,21 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   selectedSupportsNativeToolCalling: () => {
     const state = get();
     return state.supportsNativeToolCalling(state.selectedProviderId, state.selectedModelId);
+  },
+
+  getAvailableReasoningEfforts: (providerId?: string | null, modelId?: string | null) => {
+    const state = get();
+    if (!providerId || !modelId) return [];
+    const model = (state.modelsByProvider[providerId] || []).find((entry) => entry.id === modelId);
+    return getModelReasoningEfforts(model, {
+      unsupported: state.reasoningUnsupportedModelKeys,
+      providerId,
+    });
+  },
+
+  selectedSupportsReasoningEffort: () => {
+    const state = get();
+    return state.getAvailableReasoningEfforts(state.selectedProviderId, state.selectedModelId).length > 0;
   },
 
   initialize: async () => {
@@ -502,6 +577,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         set({
           selectedProviderId: preferredProvider.id,
           selectedModelId: persistedSelection.modelId,
+          selectedReasoningEffort: persistedSelection.reasoningEffort ?? null,
         });
 
         let preferredModels = get().modelsByProvider[persistedSelection.providerId] || [];
@@ -523,6 +599,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         if (hasPreferredModel) {
           set({ selectedProviderId: preferredProvider.id });
           get().selectModel(persistedSelection.modelId);
+          get().selectReasoningEffort(persistedSelection.reasoningEffort ?? null);
           return;
         }
       }
@@ -602,6 +679,16 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             : nextSelectedProviderId
               ? getFirstEnabledModelId(get().modelsByProvider[nextSelectedProviderId] || [])
               : null;
+        const nextSelectedReasoningEffort = resolveSelectedReasoningEffort({
+          providerId: nextSelectedProviderId,
+          modelId: nextSelectedModelId,
+          modelsByProvider: get().modelsByProvider,
+          unsupported: get().reasoningUnsupportedModelKeys,
+          requested:
+            nextSelectedProviderId === currentSelectedProviderId
+              ? get().selectedReasoningEffort
+              : null,
+        });
         
         const providers: AIProvider[] = providerConfigs.map((c) =>
           applyNativeToolCallingToProvider(
@@ -623,6 +710,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           isLoading: false,
           selectedProviderId: nextSelectedProviderId,
           selectedModelId: nextSelectedModelId,
+          selectedReasoningEffort: nextSelectedReasoningEffort,
         });
 
         for (const provider of providerConfigs) {
@@ -659,6 +747,16 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             : nextSelectedProviderId
               ? getFirstEnabledModelId(get().modelsByProvider[nextSelectedProviderId] || [])
               : null;
+        const nextSelectedReasoningEffort = resolveSelectedReasoningEffort({
+          providerId: nextSelectedProviderId,
+          modelId: nextSelectedModelId,
+          modelsByProvider: get().modelsByProvider,
+          unsupported: get().reasoningUnsupportedModelKeys,
+          requested:
+            nextSelectedProviderId === currentSelectedProviderId
+              ? get().selectedReasoningEffort
+              : null,
+        });
         
         const providers: AIProvider[] = providerConfigs.map((c) =>
           applyNativeToolCallingToProvider(
@@ -680,6 +778,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           isLoading: false,
           selectedProviderId: nextSelectedProviderId,
           selectedModelId: nextSelectedModelId,
+          selectedReasoningEffort: nextSelectedReasoningEffort,
         });
 
         for (const provider of providerConfigs) {
@@ -705,16 +804,39 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       try {
         const models = await tauriIpc.listProviderModels(providerId);
         const normalized = models.map((model) => normalizeDbModel(model, providerType));
+        const selectedReasoningEffort = resolveSelectedReasoningEffort({
+          providerId,
+          modelId: normalized.some((m) => m.id === get().selectedModelId && m.isEnabled !== false)
+            ? get().selectedModelId
+            : getFirstEnabledModelId(normalized),
+          modelsByProvider: {
+            ...get().modelsByProvider,
+            [providerId]: normalized,
+          },
+          unsupported: get().reasoningUnsupportedModelKeys,
+          requested: get().selectedReasoningEffort,
+        });
         set((state) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
           isLoadingModels: false,
+          ...(state.selectedProviderId === providerId ? { selectedReasoningEffort } : {}),
         }));
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId) {
           const selectedExists = normalized.some((m) => m.id === selectedModelId && m.isEnabled !== false);
           if (!selectedExists) {
-            set({ selectedModelId: getFirstEnabledModelId(normalized) });
+            const nextSelectedModelId = getFirstEnabledModelId(normalized);
+            set({
+              selectedModelId: nextSelectedModelId,
+              selectedReasoningEffort: resolveSelectedReasoningEffort({
+                providerId,
+                modelId: nextSelectedModelId,
+                modelsByProvider: { ...get().modelsByProvider, [providerId]: normalized },
+                unsupported: get().reasoningUnsupportedModelKeys,
+                requested: get().selectedReasoningEffort,
+              }),
+            });
           }
         }
 
@@ -759,6 +881,18 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           ? await tauriIpc.aiSyncProviderModels(providerId)
           : [];
         const normalized = updated.map((model) => normalizeDbModel(model, config.providerType));
+        const nextSelectedReasoningEffort = resolveSelectedReasoningEffort({
+          providerId,
+          modelId: normalized.some((m) => m.id === get().selectedModelId && m.isEnabled !== false)
+            ? get().selectedModelId
+            : getFirstEnabledModelId(normalized),
+          modelsByProvider: {
+            ...get().modelsByProvider,
+            [providerId]: normalized,
+          },
+          unsupported: get().reasoningUnsupportedModelKeys,
+          requested: get().selectedReasoningEffort,
+        });
         set((state) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
           connectionStatus: { ...state.connectionStatus, [providerId]: 'online' },
@@ -766,13 +900,24 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             p.id === providerId ? { ...p, status: 'online' } : p
           ),
           isLoadingModels: false,
+          ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
         }));
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId) {
           const selectedExists = normalized.some((m) => m.id === selectedModelId && m.isEnabled !== false);
           if (!selectedExists) {
-            set({ selectedModelId: getFirstEnabledModelId(normalized) });
+            const nextSelectedModelId = getFirstEnabledModelId(normalized);
+            set({
+              selectedModelId: nextSelectedModelId,
+              selectedReasoningEffort: resolveSelectedReasoningEffort({
+                providerId,
+                modelId: nextSelectedModelId,
+                modelsByProvider: { ...get().modelsByProvider, [providerId]: normalized },
+                unsupported: get().reasoningUnsupportedModelKeys,
+                requested: get().selectedReasoningEffort,
+              }),
+            });
           }
         }
 
@@ -838,22 +983,45 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       if (tauriIpc.isTauriAvailable()) {
         const updated = await tauriIpc.upsertProviderModels({
           providerId,
-          models: result.models.map((model) => ({
-            model_id: model.id,
-            name: model.name || model.id,
-            description: model.description ?? null,
-            owned_by: model.owned_by ?? null,
-            pricing_prompt: model.pricing?.prompt ?? null,
-            pricing_completion: model.pricing?.completion ?? null,
-            pricing_request: model.pricing?.request ?? null,
-          })),
+          models: result.models.map((model) => {
+            const reasoningCapability = getReasoningCapabilityForModel({
+              providerType: config.providerType,
+              modelId: model.id,
+              supportedParameters: model.supported_parameters,
+            });
+
+            return {
+              model_id: model.id,
+              name: model.name || model.id,
+              description: model.description ?? null,
+              owned_by: model.owned_by ?? null,
+              pricing_prompt: model.pricing?.prompt ?? null,
+              pricing_completion: model.pricing?.completion ?? null,
+              pricing_request: model.pricing?.request ?? null,
+              reasoning_efforts: reasoningCapability.reasoningEfforts,
+              default_reasoning_effort: reasoningCapability.defaultReasoningEffort,
+            };
+          }),
         });
 
         const normalized = updated.map((model) => normalizeDbModel(model, config.providerType));
+        const nextSelectedReasoningEffort = resolveSelectedReasoningEffort({
+          providerId,
+          modelId: normalized.some((m) => m.id === get().selectedModelId && m.isEnabled !== false)
+            ? get().selectedModelId
+            : getFirstEnabledModelId(normalized),
+          modelsByProvider: {
+            ...get().modelsByProvider,
+            [providerId]: normalized,
+          },
+          unsupported: get().reasoningUnsupportedModelKeys,
+          requested: get().selectedReasoningEffort,
+        });
         set((state) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
           connectionStatus: { ...state.connectionStatus, [providerId]: 'online' },
           isLoadingModels: false,
+          ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
         }));
 
         set((state) => ({
@@ -866,7 +1034,17 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         if (selectedProviderId === providerId) {
           const selectedExists = normalized.some((m) => m.id === selectedModelId && m.isEnabled !== false);
           if (!selectedExists) {
-            set({ selectedModelId: getFirstEnabledModelId(normalized) });
+            const nextSelectedModelId = getFirstEnabledModelId(normalized);
+            set({
+              selectedModelId: nextSelectedModelId,
+              selectedReasoningEffort: resolveSelectedReasoningEffort({
+                providerId,
+                modelId: nextSelectedModelId,
+                modelsByProvider: { ...get().modelsByProvider, [providerId]: normalized },
+                unsupported: get().reasoningUnsupportedModelKeys,
+                requested: get().selectedReasoningEffort,
+              }),
+            });
           }
         }
 
@@ -874,12 +1052,19 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }
 
       const models: AIModel[] = result.models.map((m) => {
+        const reasoningCapability = getReasoningCapabilityForModel({
+          providerType: config.providerType,
+          modelId: m.id,
+          supportedParameters: m.supported_parameters,
+        });
         const normalized = {
           id: m.id,
           name: m.name || m.id,
           provider_id: providerId,
           owned_by: m.owned_by,
           description: m.description,
+          reasoningEfforts: reasoningCapability.reasoningEfforts,
+          defaultReasoningEffort: reasoningCapability.defaultReasoningEffort,
           pricing: {
             prompt: m.pricing?.prompt,
             completion: m.pricing?.completion,
@@ -934,7 +1119,17 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const updatedModels = modelsByProvider[providerId] || [];
       const selected = updatedModels.find((m) => m.id === selectedModelId);
       if (!selected || selected.isEnabled === false) {
-        set({ selectedModelId: getFirstEnabledModelId(updatedModels) });
+        const nextSelectedModelId = getFirstEnabledModelId(updatedModels);
+        set({
+          selectedModelId: nextSelectedModelId,
+          selectedReasoningEffort: resolveSelectedReasoningEffort({
+            providerId,
+            modelId: nextSelectedModelId,
+            modelsByProvider,
+            unsupported: get().reasoningUnsupportedModelKeys,
+            requested: get().selectedReasoningEffort,
+          }),
+        });
       }
     }
   },
@@ -957,7 +1152,17 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     const { selectedProviderId, modelsByProvider } = get();
     if (selectedProviderId === providerId) {
       const updatedModels = modelsByProvider[providerId] || [];
-      set({ selectedModelId: enabled ? getFirstEnabledModelId(updatedModels) : null });
+      const nextSelectedModelId = enabled ? getFirstEnabledModelId(updatedModels) : null;
+      set({
+        selectedModelId: nextSelectedModelId,
+        selectedReasoningEffort: resolveSelectedReasoningEffort({
+          providerId,
+          modelId: nextSelectedModelId,
+          modelsByProvider,
+          unsupported: get().reasoningUnsupportedModelKeys,
+          requested: get().selectedReasoningEffort,
+        }),
+      });
     }
   },
 
@@ -968,6 +1173,20 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const normalized = updated.map((model) => normalizeDbModel(model, providerType));
       set((state) => ({
         modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+        ...(state.selectedProviderId === providerId
+          ? {
+              selectedReasoningEffort: resolveSelectedReasoningEffort({
+                providerId,
+                modelId: state.selectedModelId,
+                modelsByProvider: {
+                  ...state.modelsByProvider,
+                  [providerId]: normalized,
+                },
+                unsupported: state.reasoningUnsupportedModelKeys,
+                requested: state.selectedReasoningEffort,
+              }),
+            }
+          : {}),
       }));
       return;
     }
@@ -983,6 +1202,14 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             provider_id: providerId,
             isEnabled: true,
             isManual: true,
+            reasoningEfforts: getReasoningCapabilityForModel({
+              providerType: get().providerConfigs.find((provider) => provider.id === providerId)?.providerType,
+              modelId,
+            }).reasoningEfforts,
+            defaultReasoningEffort: getReasoningCapabilityForModel({
+              providerType: get().providerConfigs.find((provider) => provider.id === providerId)?.providerType,
+              modelId,
+            }).defaultReasoningEffort,
             isFree: modelId.endsWith(':free'),
             nativeToolCalling: supportsNativeToolCallingForProviderType(
               get().providerConfigs.find((provider) => provider.id === providerId)?.providerType
@@ -1010,6 +1237,20 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const normalized = updated.map((model) => normalizeDbModel(model, providerType));
       set((state) => ({
         modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+        ...(state.selectedProviderId === providerId
+          ? {
+              selectedReasoningEffort: resolveSelectedReasoningEffort({
+                providerId,
+                modelId: state.selectedModelId,
+                modelsByProvider: {
+                  ...state.modelsByProvider,
+                  [providerId]: normalized,
+                },
+                unsupported: state.reasoningUnsupportedModelKeys,
+                requested: state.selectedReasoningEffort,
+              }),
+            }
+          : {}),
       }));
     } else {
       set((state) => {
@@ -1052,13 +1293,32 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
     const updatedModels = modelsByProvider[providerId] || [];
     if (selectedModelId === currentModelId) {
-      set({ selectedModelId: nextModelId });
+      set({
+        selectedModelId: nextModelId,
+        selectedReasoningEffort: resolveSelectedReasoningEffort({
+          providerId,
+          modelId: nextModelId,
+          modelsByProvider,
+          unsupported: get().reasoningUnsupportedModelKeys,
+          requested: get().selectedReasoningEffort,
+        }),
+      });
       return;
     }
 
     const selected = updatedModels.find((model) => model.id === selectedModelId);
     if (!selected || selected.isEnabled === false) {
-      set({ selectedModelId: getFirstEnabledModelId(updatedModels) });
+      const nextSelectedModelId = getFirstEnabledModelId(updatedModels);
+      set({
+        selectedModelId: nextSelectedModelId,
+        selectedReasoningEffort: resolveSelectedReasoningEffort({
+          providerId,
+          modelId: nextSelectedModelId,
+          modelsByProvider,
+          unsupported: get().reasoningUnsupportedModelKeys,
+          requested: get().selectedReasoningEffort,
+        }),
+      });
     }
   },
 
@@ -1069,6 +1329,20 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const normalized = updated.map((model) => normalizeDbModel(model, providerType));
       set((state) => ({
         modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+        ...(state.selectedProviderId === providerId
+          ? {
+              selectedReasoningEffort: resolveSelectedReasoningEffort({
+                providerId,
+                modelId: state.selectedModelId,
+                modelsByProvider: {
+                  ...state.modelsByProvider,
+                  [providerId]: normalized,
+                },
+                unsupported: state.reasoningUnsupportedModelKeys,
+                requested: state.selectedReasoningEffort,
+              }),
+            }
+          : {}),
       }));
     } else {
       set((state) => ({
@@ -1088,13 +1362,33 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
     const updatedModels = modelsByProvider[providerId] || [];
     if (selectedModelId === modelId) {
-      set({ selectedModelId: getFirstEnabledModelId(updatedModels) });
+      const nextSelectedModelId = getFirstEnabledModelId(updatedModels);
+      set({
+        selectedModelId: nextSelectedModelId,
+        selectedReasoningEffort: resolveSelectedReasoningEffort({
+          providerId,
+          modelId: nextSelectedModelId,
+          modelsByProvider,
+          unsupported: get().reasoningUnsupportedModelKeys,
+          requested: get().selectedReasoningEffort,
+        }),
+      });
       return;
     }
 
     const selected = updatedModels.find((model) => model.id === selectedModelId);
     if (!selected || selected.isEnabled === false) {
-      set({ selectedModelId: getFirstEnabledModelId(updatedModels) });
+      const nextSelectedModelId = getFirstEnabledModelId(updatedModels);
+      set({
+        selectedModelId: nextSelectedModelId,
+        selectedReasoningEffort: resolveSelectedReasoningEffort({
+          providerId,
+          modelId: nextSelectedModelId,
+          modelsByProvider,
+          unsupported: get().reasoningUnsupportedModelKeys,
+          requested: get().selectedReasoningEffort,
+        }),
+      });
     }
   },
 
@@ -1152,6 +1446,13 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     set({
       selectedProviderId: providerId,
       selectedModelId: getFirstEnabledModelId(cachedModels),
+      selectedReasoningEffort: resolveSelectedReasoningEffort({
+        providerId,
+        modelId: getFirstEnabledModelId(cachedModels),
+        modelsByProvider,
+        unsupported: get().reasoningUnsupportedModelKeys,
+        requested: null,
+      }),
     });
 
     if (cachedModels.length === 0) {
@@ -1160,7 +1461,45 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   selectModel: (modelId: string) => {
-    set({ selectedModelId: modelId });
+    const state = get();
+    set({
+      selectedModelId: modelId,
+      selectedReasoningEffort: resolveSelectedReasoningEffort({
+        providerId: state.selectedProviderId,
+        modelId,
+        modelsByProvider: state.modelsByProvider,
+        unsupported: state.reasoningUnsupportedModelKeys,
+        requested: state.selectedReasoningEffort,
+      }),
+    });
+  },
+
+  selectReasoningEffort: (effort: ReasoningEffort | null) => {
+    const state = get();
+    set({
+      selectedReasoningEffort: resolveSelectedReasoningEffort({
+        providerId: state.selectedProviderId,
+        modelId: state.selectedModelId,
+        modelsByProvider: state.modelsByProvider,
+        unsupported: state.reasoningUnsupportedModelKeys,
+        requested: effort,
+      }),
+    });
+  },
+
+  markReasoningUnsupportedForModel: (providerId: string, modelId: string) => {
+    const state = get();
+    const runtimeKey = getReasoningUnsupportedKey(providerId, modelId);
+    if (!runtimeKey) return;
+    set({
+      reasoningUnsupportedModelKeys: {
+        ...state.reasoningUnsupportedModelKeys,
+        [runtimeKey]: true,
+      },
+      ...(state.selectedProviderId === providerId && state.selectedModelId === modelId
+        ? { selectedReasoningEffort: null }
+        : {}),
+    });
   },
 
   cycleProvider: () => {
@@ -1184,7 +1523,17 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
     const currentIndex = models.findIndex((m) => m.id === selectedModelId);
     const nextIndex = (currentIndex + 1) % models.length;
-    set({ selectedModelId: models[nextIndex].id });
+    const nextModelId = models[nextIndex].id;
+    set({
+      selectedModelId: nextModelId,
+      selectedReasoningEffort: resolveSelectedReasoningEffort({
+        providerId: selectedProviderId,
+        modelId: nextModelId,
+        modelsByProvider,
+        unsupported: get().reasoningUnsupportedModelKeys,
+        requested: get().selectedReasoningEffort,
+      }),
+    });
   },
 
   updateProviderConfig: async (id: string, updates: Partial<ProviderConfig>) => {

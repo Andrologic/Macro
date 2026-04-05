@@ -1,30 +1,37 @@
-import React, { useEffect, useRef, Suspense, lazy, useState } from 'react';
-import { Header } from './components/layout/Header';
-import { Toaster } from './components/ui/Toaster';
-import { useWindowRestoration } from './hooks/useWindowRestoration';
-import { useUiZoom } from './hooks/useUiZoom';
-import { PanelResizer } from './components/layout/PanelResizer';
-import { ModeRouter } from './components/layout/ModeRouter';
-import { useAppStore } from './stores/useAppStore';
-import { Skeleton } from './components/shared/Skeleton';
-import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
-import { getPlatformChromeState } from './utils/desktopPlatform';
-import { getTitleBarLayout } from './components/layout/titleBarLayout';
-import { useShallow } from 'zustand/react/shallow';
+import React, { useEffect, useRef, Suspense, lazy, useState } from "react";
+import { Header } from "./components/layout/Header";
+import { Toaster } from "./components/ui/Toaster";
+import { useWindowRestoration } from "./hooks/useWindowRestoration";
+import { useUiZoom } from "./hooks/useUiZoom";
+import { PanelResizer } from "./components/layout/PanelResizer";
+import { ModeRouter } from "./components/layout/ModeRouter";
+import { useAppStore } from "./stores/useAppStore";
+import { Skeleton } from "./components/shared/Skeleton";
+import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
+import { getPlatformChromeState } from "./utils/desktopPlatform";
+import { getTitleBarLayout } from "./components/layout/titleBarLayout";
+import { toast } from "./components/ui/toastService";
+import { useShallow } from "zustand/react/shallow";
 
 // =============================================================================
 // LAZY LOADED MODALS - Code Splitting for Non-Critical UI
 // =============================================================================
 // These modals are not needed immediately on startup and can be loaded on-demand
 
-const DiffModal = lazy(() => import('./components/modals/DiffModal'));
-const SettingsModal = lazy(() => import('./components/settings/SettingsModal'));
-const AccountModal = lazy(() => import('./components/modals/AccountModal'));
-const ProjectModal = lazy(() => import('./components/modals/ProjectModal'));
-const ProjectGitFlowModal = lazy(() => import('./components/modals/ProjectGitFlowModal'));
-const CodeFileViewerModal = lazy(() => import('./components/modals/CodeFileViewerModal'));
+const DiffModal = lazy(() => import("./components/modals/DiffModal"));
+const SettingsModal = lazy(() => import("./components/settings/SettingsModal"));
+const AccountModal = lazy(() => import("./components/modals/AccountModal"));
+const ProjectModal = lazy(() => import("./components/modals/ProjectModal"));
+const ProjectGitFlowModal = lazy(
+  () => import("./components/modals/ProjectGitFlowModal"),
+);
+const CodeFileViewerModal = lazy(
+  () => import("./components/modals/CodeFileViewerModal"),
+);
 const Footer = lazy(() =>
-  import('./components/layout/Footer').then((module) => ({ default: module.Footer }))
+  import("./components/layout/Footer").then((module) => ({
+    default: module.Footer,
+  })),
 );
 
 interface AppBootstrapSnapshot {
@@ -46,7 +53,10 @@ const INITIAL_BOOTSTRAP_SNAPSHOT: AppBootstrapSnapshot = {
 };
 
 const FooterSkeleton: React.FC = () => (
-  <div className="h-8 shrink-0 border-t border-border bg-background/70" aria-hidden="true" />
+  <div
+    className="h-8 shrink-0 border-t border-border bg-background/70"
+    aria-hidden="true"
+  />
 );
 
 // =============================================================================
@@ -75,7 +85,9 @@ const App: React.FC = () => {
 
   useGlobalShortcuts();
 
-  const [initStatus, setInitStatus] = useState<AppBootstrapSnapshot>(INITIAL_BOOTSTRAP_SNAPSHOT);
+  const [initStatus, setInitStatus] = useState<AppBootstrapSnapshot>(
+    INITIAL_BOOTSTRAP_SNAPSHOT,
+  );
 
   const [
     isLeftOpen,
@@ -86,6 +98,7 @@ const App: React.FC = () => {
     rightPanelWidth,
     setLeftPanelWidth,
     setRightPanelWidth,
+    metadataRecoveryReport,
   ] = useAppStore(
     useShallow((state) => [
       state.isLeftPanelOpen,
@@ -96,11 +109,15 @@ const App: React.FC = () => {
       state.rightPanelWidth,
       state.setLeftPanelWidth,
       state.setRightPanelWidth,
-    ])
+      state.metadataRecoveryReport,
+    ]),
   );
-  
+
   // Ref to track panels that were auto-collapsed during resize
-  const autoCollapseRef = useRef<{ left: boolean; right: boolean }>({ left: false, right: false });
+  const autoCollapseRef = useRef<{ left: boolean; right: boolean }>({
+    left: false,
+    right: false,
+  });
   const lastWidthRef = useRef(window.innerWidth);
 
   // ==========================================================================
@@ -156,8 +173,8 @@ const App: React.FC = () => {
       }
     };
 
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
   }, [isLeftOpen, isRightOpen, setLeftOpen, setRightOpen]);
 
   // Handle manual toggles: clear/update auto-collapse memory
@@ -191,7 +208,7 @@ const App: React.FC = () => {
 
     void (async () => {
       try {
-        const { appBootstrap } = await import('./services/appBootstrap');
+        const { appBootstrap } = await import("./services/appBootstrap");
 
         if (cancelled) {
           return;
@@ -207,7 +224,7 @@ const App: React.FC = () => {
         await appBootstrap.ensureStarted();
       } catch (error) {
         if (!cancelled) {
-          console.error('Failed to initialize app bootstrap:', error);
+          console.error("Failed to initialize app bootstrap:", error);
         }
       }
     })();
@@ -217,6 +234,57 @@ const App: React.FC = () => {
       unsubscribe?.();
     };
   }, []);
+
+  const lastRecoveryToastKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!metadataRecoveryReport || metadataRecoveryReport.status === "none") {
+      return;
+    }
+
+    const toastKey = [
+      metadataRecoveryReport.status,
+      metadataRecoveryReport.restoredCommit || "",
+      metadataRecoveryReport.message || "",
+    ].join(":");
+    if (lastRecoveryToastKeyRef.current === toastKey) {
+      return;
+    }
+    lastRecoveryToastKeyRef.current = toastKey;
+
+    if (metadataRecoveryReport.status === "restored_from_history") {
+      toast.success(
+        metadataRecoveryReport.restoredCommit
+          ? `Metadata @macro restored from history (${metadataRecoveryReport.restoredCommit})`
+          : "Metadata @macro restored from history",
+        {
+          description:
+            metadataRecoveryReport.message ||
+            "Macro restored the latest valid metadata snapshot before loading the workspace.",
+        },
+      );
+      return;
+    }
+
+    if (metadataRecoveryReport.status === "reconstructed_from_hints") {
+      toast.info("Metadata @macro reconfigured from local projects", {
+        description:
+          metadataRecoveryReport.message ||
+          "Macro rebuilt a minimal metadata state from locally known projects.",
+      });
+      return;
+    }
+
+    if (
+      metadataRecoveryReport.status === "blocked_dirty" ||
+      metadataRecoveryReport.status === "blocked_conflict"
+    ) {
+      toast.warning("Automatic @macro recovery skipped", {
+        description:
+          metadataRecoveryReport.message ||
+          "Macro detected local metadata blockers and did not apply recovery automatically.",
+      });
+    }
+  }, [metadataRecoveryReport]);
 
   // ==========================================================================
   // RENDER
@@ -237,7 +305,10 @@ const App: React.FC = () => {
   return (
     <div
       className="macro-app-shell h-screen w-screen bg-background overflow-hidden"
-      style={{ display: 'grid', gridTemplateRows: `${titleBarLayout.titleBarHeightPx}px 1fr 32px` }}
+      style={{
+        display: "grid",
+        gridTemplateRows: `${titleBarLayout.titleBarHeightPx}px 1fr 32px`,
+      }}
     >
       <Header
         isLeftOpen={isLeftOpen}
@@ -251,8 +322,8 @@ const App: React.FC = () => {
         {/* Left Panel - Mode-specific content */}
         {isLeftOpen && (
           <>
-            <div 
-              className="hidden sm:flex flex-col shrink-0 h-full" 
+            <div
+              className="hidden sm:flex flex-col shrink-0 h-full"
               style={{ width: leftPanelWidth }}
             >
               <ModeRouter panel="left" />
@@ -276,8 +347,8 @@ const App: React.FC = () => {
               onResize={(delta) => setRightPanelWidth(rightPanelWidth - delta)}
               className="hidden sm:flex"
             />
-            <div 
-              className="hidden sm:flex flex-col shrink-0 h-full" 
+            <div
+              className="hidden sm:flex flex-col shrink-0 h-full"
               style={{ width: rightPanelWidth }}
             >
               <ModeRouter panel="right" />

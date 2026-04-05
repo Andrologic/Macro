@@ -2,6 +2,7 @@ use crate::ai::chatgpt::types::{
     AiChatRequest, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent, AiToolTrace,
 };
 use crate::ai::{AiState, AuthTask, DownloadTask};
+use crate::ai::reasoning_catalog::resolve_reasoning_capability;
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderModelInput};
 use crate::db::repository;
 use crate::tool_host::ToolHostConfig;
@@ -58,6 +59,7 @@ struct BridgeModelRecord {
     name: String,
     description: Option<String>,
     owned_by: Option<String>,
+    supported_reasoning_efforts: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -921,14 +923,30 @@ async fn get_status_inner(
 fn models_to_inputs(models: &[BridgeModelRecord]) -> Vec<ProviderModelInput> {
     models
         .iter()
-        .map(|model| ProviderModelInput {
-            model_id: model.model_id.clone(),
-            name: model.name.clone(),
-            description: model.description.clone(),
-            owned_by: model.owned_by.clone(),
-            pricing_prompt: None,
-            pricing_completion: None,
-            pricing_request: None,
+        .map(|model| {
+            let reasoning = resolve_reasoning_capability(
+                Some("copilot"),
+                Some(&model.model_id),
+                None,
+                model.supported_reasoning_efforts.as_deref(),
+                None,
+            );
+
+            ProviderModelInput {
+                model_id: model.model_id.clone(),
+                name: model.name.clone(),
+                description: model.description.clone(),
+                owned_by: model.owned_by.clone(),
+                pricing_prompt: None,
+                pricing_completion: None,
+                pricing_request: None,
+                reasoning_efforts: if reasoning.reasoning_efforts.is_empty() {
+                    None
+                } else {
+                    Some(reasoning.reasoning_efforts)
+                },
+                default_reasoning_effort: reasoning.default_reasoning_effort,
+            }
         })
         .collect()
 }
@@ -1864,6 +1882,8 @@ async fn stream_chat_inner(
                             request_id: request.request_id.clone(),
                             output_text: content,
                             tool_calls: Vec::new(),
+                            response_id: None,
+                            reasoning_summary: None,
                             tool_traces,
                             hidden_context,
                         },
@@ -1910,6 +1930,8 @@ async fn stream_chat_inner(
                 request_id: request.request_id,
                 output_text: String::new(),
                 tool_calls: Vec::new(),
+                response_id: None,
+                reasoning_summary: None,
                 tool_traces: None,
                 hidden_context: None,
             },

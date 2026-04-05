@@ -6,6 +6,7 @@ use super::types::{
 };
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderConfig, ProviderModelInput};
 use crate::db::repository;
+use crate::ai::reasoning_catalog::resolve_reasoning_capability;
 use crate::secrets::{self, ChatGptSecret};
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use sqlx::SqlitePool;
@@ -212,18 +213,34 @@ pub(super) fn build_provider_models(
 
     filtered_entries
         .into_iter()
-        .map(|entry| ProviderModelInput {
-            model_id: entry.slug.clone(),
-            name: entry
-                .display_name
-                .clone()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| entry.slug.clone()),
-            description: entry.description.clone(),
-            owned_by: None,
-            pricing_prompt: None,
-            pricing_completion: None,
-            pricing_request: None,
+        .map(|entry| {
+            let reasoning = resolve_reasoning_capability(
+                Some("chatgpt"),
+                Some(&entry.slug),
+                None,
+                None,
+                None,
+            );
+
+            ProviderModelInput {
+                model_id: entry.slug.clone(),
+                name: entry
+                    .display_name
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| entry.slug.clone()),
+                description: entry.description.clone(),
+                owned_by: None,
+                pricing_prompt: None,
+                pricing_completion: None,
+                pricing_request: None,
+                reasoning_efforts: if reasoning.reasoning_efforts.is_empty() {
+                    None
+                } else {
+                    Some(reasoning.reasoning_efforts)
+                },
+                default_reasoning_effort: reasoning.default_reasoning_effort,
+            }
         })
         .collect()
 }
