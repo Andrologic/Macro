@@ -15,6 +15,9 @@ export interface ProviderModel {
   created?: number;
   owned_by?: string;
   description?: string;
+  context_window?: number;
+  context_window_tokens?: number;
+  max_input_tokens?: number;
   supported_parameters?: string[];
   pricing?: {
     prompt?: string;

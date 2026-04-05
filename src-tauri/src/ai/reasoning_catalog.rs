@@ -52,9 +52,9 @@ fn first_valid_effort(preferred: Option<&str>, efforts: &[String]) -> Option<Str
 fn has_openrouter_reasoning_support(supported_parameters: Option<&[String]>) -> bool {
     supported_parameters
         .map(|parameters| {
-            parameters.iter().any(|parameter| {
-                parameter == "reasoning" || parameter == "reasoning_effort"
-            })
+            parameters
+                .iter()
+                .any(|parameter| parameter == "reasoning" || parameter == "reasoning_effort")
         })
         .unwrap_or(false)
 }
@@ -66,7 +66,10 @@ pub fn resolve_reasoning_capability(
     supported_reasoning_efforts: Option<&[String]>,
     default_reasoning_effort: Option<&str>,
 ) -> ReasoningCapability {
-    let Some(provider_type) = provider_type.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(provider_type) = provider_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return ReasoningCapability {
             reasoning_efforts: Vec::new(),
             default_reasoning_effort: None,

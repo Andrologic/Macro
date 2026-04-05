@@ -459,7 +459,9 @@ pub(super) fn extract_reasoning_summary_from_output_item(item: &Value) -> String
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|summary_item| summary_item.get("type").and_then(Value::as_str) == Some("summary_text"))
+        .filter(|summary_item| {
+            summary_item.get("type").and_then(Value::as_str) == Some("summary_text")
+        })
         .filter_map(|summary_item| summary_item.get("text").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join("")

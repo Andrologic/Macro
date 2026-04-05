@@ -80,8 +80,13 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
 
     if user_tables.is_empty() {
         if !applied_migrations.contains(&MIGRATION_001_VERSION) {
-            apply_migration(pool, MIGRATION_001_VERSION, MIGRATION_001_NAME, MIGRATION_001_SQL)
-                .await?;
+            apply_migration(
+                pool,
+                MIGRATION_001_VERSION,
+                MIGRATION_001_NAME,
+                MIGRATION_001_SQL,
+            )
+            .await?;
         }
     } else if applied_migrations.is_empty() {
         upgrade_legacy_schema_to_baseline(pool).await?;
@@ -146,12 +151,7 @@ async fn list_applied_migrations(pool: &SqlitePool) -> DbResult<HashSet<i64>> {
         .collect())
 }
 
-async fn apply_migration(
-    pool: &SqlitePool,
-    version: i64,
-    name: &str,
-    sql: &str,
-) -> DbResult<()> {
+async fn apply_migration(pool: &SqlitePool, version: i64, name: &str, sql: &str) -> DbResult<()> {
     for statement in sql.split(';') {
         let statement = statement.trim();
         if statement.is_empty() {
@@ -208,6 +208,7 @@ async fn table_exists(pool: &SqlitePool, table: &str) -> DbResult<bool> {
 async fn upgrade_legacy_schema_to_baseline(pool: &SqlitePool) -> DbResult<()> {
     ensure_legacy_conversations(pool).await?;
     ensure_legacy_messages(pool).await?;
+    ensure_conversation_compactions(pool).await?;
     ensure_legacy_settings(pool).await?;
     ensure_legacy_git_tables(pool).await?;
     ensure_legacy_provider_configs(pool).await?;
@@ -396,6 +397,48 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
         r#"
         CREATE INDEX IF NOT EXISTS idx_messages_conversation
         ON messages(conversation_id);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS conversation_compactions (
+            conversation_id TEXT PRIMARY KEY,
+            up_to_message_id TEXT NOT NULL,
+            summary_text TEXT NOT NULL,
+            tool_digest_json TEXT NOT NULL,
+            used_source_passage_ids_json TEXT NOT NULL,
+            interesting_source_passage_ids_json TEXT NOT NULL,
+            estimated_tokens_before INTEGER NOT NULL,
+            estimated_tokens_after INTEGER NOT NULL,
+            fingerprint TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    let columns = table_columns(pool, "conversation_compactions").await?;
+    if !columns.contains("version") {
+        sqlx::query("ALTER TABLE conversation_compactions ADD COLUMN version INTEGER DEFAULT 1")
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_conversation_compactions_updated_at
+        ON conversation_compactions(updated_at DESC);
         "#,
     )
     .execute(pool)
@@ -631,6 +674,7 @@ async fn ensure_legacy_ai_models(pool: &SqlitePool) -> DbResult<()> {
             pricing_request TEXT,
             reasoning_efforts_json TEXT,
             default_reasoning_effort TEXT,
+            context_window_tokens INTEGER,
             is_enabled INTEGER DEFAULT 1,
             is_manual INTEGER DEFAULT 0,
             first_seen_at TEXT NOT NULL,
@@ -665,6 +709,11 @@ async fn ensure_legacy_ai_models(pool: &SqlitePool) -> DbResult<()> {
     }
     if !columns.contains("default_reasoning_effort") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN default_reasoning_effort TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("context_window_tokens") {
+        sqlx::query("ALTER TABLE ai_models ADD COLUMN context_window_tokens INTEGER")
             .execute(pool)
             .await?;
     }
@@ -1018,10 +1067,7 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
-    async fn create_legacy_conversations_table(
-        pool: &sqlx::SqlitePool,
-        extra_columns: &[&str],
-    ) {
+    async fn create_legacy_conversations_table(pool: &sqlx::SqlitePool, extra_columns: &[&str]) {
         let mut columns = vec![
             "id TEXT PRIMARY KEY".to_string(),
             "title TEXT NOT NULL".to_string(),
@@ -1044,11 +1090,7 @@ mod tests {
             .expect("create legacy conversations");
     }
 
-    async fn seed_legacy_conversation(
-        pool: &sqlx::SqlitePool,
-        columns: &[&str],
-        values_sql: &str,
-    ) {
+    async fn seed_legacy_conversation(pool: &sqlx::SqlitePool, columns: &[&str], values_sql: &str) {
         let mut insert_columns = vec![
             "id",
             "title",
@@ -1088,7 +1130,12 @@ mod tests {
 
         let scopes = rows
             .into_iter()
-            .map(|row| (row.get::<String, _>("id"), row.get::<String, _>("scope_mode")))
+            .map(|row| {
+                (
+                    row.get::<String, _>("id"),
+                    row.get::<String, _>("scope_mode"),
+                )
+            })
             .collect::<Vec<_>>();
 
         let expected = expected_scopes
@@ -1262,9 +1309,14 @@ mod tests {
         ensure_schema_migrations_table(&pool)
             .await
             .expect("schema migrations table");
-        apply_migration(&pool, MIGRATION_001_VERSION, MIGRATION_001_NAME, MIGRATION_001_SQL)
-            .await
-            .expect("apply baseline");
+        apply_migration(
+            &pool,
+            MIGRATION_001_VERSION,
+            MIGRATION_001_NAME,
+            MIGRATION_001_SQL,
+        )
+        .await
+        .expect("apply baseline");
 
         sqlx::query("DROP TABLE schema_migrations")
             .execute(&pool)
@@ -1294,9 +1346,14 @@ mod tests {
         ensure_schema_migrations_table(&pool)
             .await
             .expect("schema migrations table");
-        apply_migration(&pool, MIGRATION_001_VERSION, MIGRATION_001_NAME, MIGRATION_001_SQL)
-            .await
-            .expect("apply baseline");
+        apply_migration(
+            &pool,
+            MIGRATION_001_VERSION,
+            MIGRATION_001_NAME,
+            MIGRATION_001_SQL,
+        )
+        .await
+        .expect("apply baseline");
 
         let columns_before = sqlx::query(
             r#"
@@ -1349,7 +1406,12 @@ mod tests {
 
         create_legacy_conversations_table(
             &pool,
-            &["description TEXT", "task_id TEXT", "group_id TEXT", "project_id TEXT"],
+            &[
+                "description TEXT",
+                "task_id TEXT",
+                "group_id TEXT",
+                "project_id TEXT",
+            ],
         )
         .await;
         seed_legacy_conversation(
@@ -1440,7 +1502,10 @@ mod tests {
         let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
         assert_conversation_scopes_and_indexes(
             &migrated_pool,
-            &[("architect-conv", "Architect"), ("implement-conv", "Implement")],
+            &[
+                ("architect-conv", "Architect"),
+                ("implement-conv", "Implement"),
+            ],
         )
         .await;
     }
@@ -1473,7 +1538,10 @@ mod tests {
         let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
         assert_conversation_scopes_and_indexes(
             &migrated_pool,
-            &[("architect-conv", "Architect"), ("implement-conv", "Implement")],
+            &[
+                ("architect-conv", "Architect"),
+                ("implement-conv", "Implement"),
+            ],
         )
         .await;
     }
@@ -1518,7 +1586,12 @@ mod tests {
 
         create_legacy_conversations_table(
             &pool,
-            &["scope_mode TEXT", "task_id TEXT", "group_id TEXT", "project_id TEXT"],
+            &[
+                "scope_mode TEXT",
+                "task_id TEXT",
+                "group_id TEXT",
+                "project_id TEXT",
+            ],
         )
         .await;
         seed_legacy_conversation(

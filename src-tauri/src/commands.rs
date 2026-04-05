@@ -559,7 +559,11 @@ fn build_external_app_catalog() -> ExternalAppCatalogDto {
         "intellij-idea",
         "IntelliJ IDEA",
         ExternalOpenAction::Editor,
-        &["IntelliJ IDEA", "IntelliJ IDEA CE", "IntelliJ IDEA Ultimate"],
+        &[
+            "IntelliJ IDEA",
+            "IntelliJ IDEA CE",
+            "IntelliJ IDEA Ultimate",
+        ],
         "detected",
     );
     push_mac_app(
@@ -1200,7 +1204,9 @@ fn mac_binary_or_app_command(
     target_path: &Path,
 ) -> CommandResult<ExternalLaunchCommand> {
     let program = mac_binary_or_app_executable(binary_names, bundle_names, executable_names)
-        .ok_or_else(|| command_error(format!("App is installed but no launch binary was found.")))?;
+        .ok_or_else(|| {
+            command_error(format!("App is installed but no launch binary was found."))
+        })?;
 
     Ok(ExternalLaunchCommand {
         program,
@@ -1216,9 +1222,10 @@ fn build_external_open_command(
     #[cfg(target_os = "macos")]
     let command = match app_id {
         "vscode" => mac_open_known_app_command(&["Visual Studio Code"], target_path)?,
-        "vscode-insiders" => {
-            mac_open_known_app_command(&["Visual Studio Code - Insiders", "VS Code - Insiders"], target_path)?
-        }
+        "vscode-insiders" => mac_open_known_app_command(
+            &["Visual Studio Code - Insiders", "VS Code - Insiders"],
+            target_path,
+        )?,
         "vscodium" => mac_open_known_app_command(&["VSCodium"], target_path)?,
         "cursor" => mac_open_known_app_command(&["Cursor"], target_path)?,
         "windsurf" => mac_open_known_app_command(&["Windsurf"], target_path)?,
@@ -1230,7 +1237,11 @@ fn build_external_open_command(
         "textmate" => mac_open_known_app_command(&["TextMate"], target_path)?,
         "fleet" => mac_open_known_app_command(&["Fleet"], target_path)?,
         "intellij-idea" => mac_open_known_app_command(
-            &["IntelliJ IDEA", "IntelliJ IDEA CE", "IntelliJ IDEA Ultimate"],
+            &[
+                "IntelliJ IDEA",
+                "IntelliJ IDEA CE",
+                "IntelliJ IDEA Ultimate",
+            ],
             target_path,
         )?,
         "pycharm" => mac_open_known_app_command(
@@ -2878,6 +2889,42 @@ pub async fn db_upsert_provider_models(
         .map_err(CommandError::from)?;
 
     repository::list_models_by_provider(&pool, &provider_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_get_conversation_compaction_state(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<Option<ConversationCompactionStateRecord>> {
+    let pool = get_pool(&pool).await?;
+
+    repository::get_conversation_compaction_state(&pool, &conversation_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_upsert_conversation_compaction_state(
+    pool: State<'_, DbPool>,
+    input: UpsertConversationCompactionStateInput,
+) -> CommandResult<ConversationCompactionStateRecord> {
+    let pool = get_pool(&pool).await?;
+
+    repository::upsert_conversation_compaction_state(&pool, input)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_delete_conversation_compaction_state(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_conversation_compaction_state(&pool, &conversation_id)
         .await
         .map_err(Into::into)
 }

@@ -1,8 +1,9 @@
 import { create } from 'zustand';
-import { AppMode, ChatMessage, ContextRefKind, ContextReference, Conversation, PlanNode, PlanNodeStatus, PlanNodeType, PredictedBranch, ReasoningEffort, ToolTrace } from '../types';
+import { AppMode, ChatMessage, ContextRefKind, ContextReference, Conversation, ConversationCompactionState, PlanNode, PlanNodeStatus, PlanNodeType, PredictedBranch, ReasoningEffort, ToolTrace } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 import { providerHasCredentials, useProviderStore } from './useProviderStore';
 import { useCitationsStore } from './useCitationsStore';
+import type { Citation } from './useCitationsStore';
 import { streamChat, cancelStream, sendChatNonStreaming, type StreamCompletionResult, type StreamMessage } from '../services/streamingChat';
 import { getStreamingWebSearchConfig } from '../services/webSearchSettings';
 import { useToolsStore } from './useToolsStore';
@@ -54,13 +55,20 @@ import {
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from '../services/macroSyncService';
 import { resolveProjectExecutionContext } from '../services/projectExecutionContext';
 import { parseMessageQuickReplies } from '../services/chatQuickReplies';
-import { filterCopilotSupportedToolIds } from '../shared/macroToolRegistry';
+import {
+  buildCompactedMessagesForRequest,
+  invalidateCompactionFromMessage,
+  resolveModelContextWindowTokens,
+  type SummaryGenerationInput,
+} from '../services/contextCompaction';
+import { filterCopilotSupportedToolIds, MACRO_TOOL_REGISTRY } from '../shared/macroToolRegistry';
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
 const MANUAL_FEATURE_MAX_SLUG_LENGTH = 64;
 const MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT = 4;
 const metadataGenerationInFlight = new Set<string>();
+const conversationCompactionStateCache = new Map<string, ConversationCompactionState | null>();
 const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
 const EMPTY_MESSAGE_IMAGES: MessageImageAttachment[] = [];
 
@@ -952,6 +960,315 @@ export const useChatStore = create<ChatStore>((set, get) => {
       })
       .join('\n')
       .trim();
+  };
+
+  const getToolDefinitionsForIds = (toolIds: string[]) => {
+    const allowedIdSet = new Set(toolIds);
+    return MACRO_TOOL_REGISTRY.filter((entry) => allowedIdSet.has(entry.id));
+  };
+
+  const getSelectedModelContextWindowTokens = (
+    providerId: string,
+    modelId: string,
+    providerType: string
+  ): number => {
+    const providerState = useProviderStore.getState();
+    const selectedModel = (providerState.modelsByProvider[providerId] || []).find(
+      (model) => model.id === modelId
+    );
+    return resolveModelContextWindowTokens({
+      providerType,
+      modelContextWindowTokens: selectedModel?.contextWindowTokens,
+    });
+  };
+
+  const mapDbCompactionStateToState = (
+    record: tauriIpc.DbConversationCompactionState
+  ): ConversationCompactionState => ({
+    conversationId: record.conversation_id,
+    upToMessageId: record.up_to_message_id,
+    summaryText: record.summary_text,
+    toolDigest: JSON.parse(record.tool_digest_json || '[]'),
+    usedSourcePassageIds: JSON.parse(record.used_source_passage_ids_json || '[]'),
+    interestingSourcePassageIds: JSON.parse(
+      record.interesting_source_passage_ids_json || '[]'
+    ),
+    estimatedTokensBefore: record.estimated_tokens_before,
+    estimatedTokensAfter: record.estimated_tokens_after,
+    fingerprint: record.fingerprint,
+    version: record.version,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
+  });
+
+  const getConversationCompactionState = async (
+    conversationId: string
+  ): Promise<ConversationCompactionState | null> => {
+    if (conversationCompactionStateCache.has(conversationId)) {
+      return conversationCompactionStateCache.get(conversationId) ?? null;
+    }
+
+    if (!tauriIpc.isTauriAvailable()) {
+      conversationCompactionStateCache.set(conversationId, null);
+      return null;
+    }
+    if (typeof tauriIpc.dbGetConversationCompactionState !== 'function') {
+      conversationCompactionStateCache.set(conversationId, null);
+      return null;
+    }
+
+    try {
+      const record = await tauriIpc.dbGetConversationCompactionState(conversationId);
+      const state = record ? mapDbCompactionStateToState(record) : null;
+      conversationCompactionStateCache.set(conversationId, state);
+      return state;
+    } catch (error) {
+      console.error('Failed to load conversation compaction state:', error);
+      conversationCompactionStateCache.set(conversationId, null);
+      return null;
+    }
+  };
+
+  const persistConversationCompactionState = async (
+    state: ConversationCompactionState | null
+  ): Promise<void> => {
+    if (!state?.conversationId) {
+      return;
+    }
+
+    conversationCompactionStateCache.set(state.conversationId, state);
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+    if (typeof tauriIpc.dbUpsertConversationCompactionState !== 'function') {
+      return;
+    }
+
+    try {
+      await tauriIpc.dbUpsertConversationCompactionState({
+        conversation_id: state.conversationId,
+        up_to_message_id: state.upToMessageId,
+        summary_text: state.summaryText,
+        tool_digest_json: JSON.stringify(state.toolDigest),
+        used_source_passage_ids_json: JSON.stringify(state.usedSourcePassageIds),
+        interesting_source_passage_ids_json: JSON.stringify(
+          state.interestingSourcePassageIds
+        ),
+        estimated_tokens_before: state.estimatedTokensBefore,
+        estimated_tokens_after: state.estimatedTokensAfter,
+        fingerprint: state.fingerprint,
+        version: state.version,
+      });
+    } catch (error) {
+      console.error('Failed to persist conversation compaction state:', error);
+    }
+  };
+
+  const deleteConversationCompactionState = async (conversationId: string): Promise<void> => {
+    conversationCompactionStateCache.delete(conversationId);
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+    if (typeof tauriIpc.dbDeleteConversationCompactionState !== 'function') {
+      return;
+    }
+
+    try {
+      await tauriIpc.dbDeleteConversationCompactionState(conversationId);
+    } catch (error) {
+      console.error('Failed to delete conversation compaction state:', error);
+    }
+  };
+
+  const prepareCompactionSummaryMessages = (input: SummaryGenerationInput): StreamMessage[] => {
+    const compactedTranscript = input.compactableMessages
+      .map((message) => {
+        const content =
+          message.role === 'assistant'
+            ? sanitizeAssistantContentForModel(message.content)
+            : message.content;
+        return `${message.role.toUpperCase()} [${message.id}]\n${content.trim() || '[empty]'}`;
+      })
+      .join('\n\n---\n\n');
+
+    const retainedContext = input.retainedMessages
+      .filter((message) => message.role === 'user' || message.role === 'assistant')
+      .slice(-6)
+      .map((message) => {
+        const content =
+          message.role === 'assistant'
+            ? sanitizeAssistantContentForModel(message.content)
+            : message.content;
+        return `${message.role.toUpperCase()} [${message.id}]\n${content.trim() || '[empty]'}`;
+      })
+      .join('\n\n---\n\n');
+
+    const toolDigest = input.toolDigest
+      .map(
+        (entry) =>
+          `- kind=${entry.kind}; tool=${entry.tool_name}; target=${entry.target}; evidence=${entry.evidence_excerpt}`
+      )
+      .join('\n');
+
+    const usedPassages = input.usedSourcePassages
+      .map(
+        (citation) =>
+          `- ${citation.title}${citation.source ? ` (${citation.source})` : ''}: ${citation.snippet || ''}`
+      )
+      .join('\n');
+
+    const interestingPassages = input.interestingSourcePassages
+      .map(
+        (citation) =>
+          `- ${citation.title}${citation.source ? ` (${citation.source})` : ''}: ${citation.snippet || ''}`
+      )
+      .join('\n');
+
+    return [
+      {
+        role: 'system',
+        content:
+          'Compact older conversation history for a programming agent. Return ONLY valid JSON with keys ' +
+          '"currentObjective", "decisions", "openQuestions", "activeFiles", "summary". ' +
+          'Use short factual strings. "decisions", "openQuestions", and "activeFiles" must be arrays of strings. ' +
+          'Do not mention tool calling policy. Do not invent facts. Prefer stable, implementation-relevant facts.',
+      },
+      {
+        role: 'user',
+        content: [
+          'Older transcript to compact:',
+          compactedTranscript || '[none]',
+          retainedContext ? `Recent retained context:\n${retainedContext}` : '',
+          toolDigest ? `Deterministic tool facts:\n${toolDigest}` : '',
+          usedPassages ? `Used source passages:\n${usedPassages}` : '',
+          interestingPassages ? `Interesting source passages:\n${interestingPassages}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
+      },
+    ];
+  };
+
+  const formatCompactionSummaryFromModelOutput = (raw: string): string => {
+    const parsed = extractJsonObjectFromModelOutput(raw) as {
+      currentObjective?: unknown;
+      decisions?: unknown;
+      openQuestions?: unknown;
+      activeFiles?: unknown;
+      summary?: unknown;
+    };
+
+    const currentObjective =
+      typeof parsed.currentObjective === 'string' ? parsed.currentObjective.trim() : '';
+    const summary = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+    const decisions = Array.isArray(parsed.decisions)
+      ? parsed.decisions.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      : [];
+    const openQuestions = Array.isArray(parsed.openQuestions)
+      ? parsed.openQuestions.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      : [];
+    const activeFiles = Array.isArray(parsed.activeFiles)
+      ? parsed.activeFiles.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      : [];
+
+    return [
+      currentObjective ? `Current objective: ${currentObjective}` : '',
+      decisions.length > 0 ? `Decisions made:\n${decisions.map((item) => `- ${item}`).join('\n')}` : '',
+      openQuestions.length > 0
+        ? `Open questions:\n${openQuestions.map((item) => `- ${item}`).join('\n')}`
+        : '',
+      activeFiles.length > 0 ? `Active files/projects:\n${activeFiles.map((item) => `- ${item}`).join('\n')}` : '',
+      summary ? `Summary:\n${summary}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+  };
+
+  const generateCompactionSummary = async (
+    providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>,
+    providerId: string,
+    modelId: string,
+    reasoningEffort: ReasoningEffort | null | undefined,
+    input: SummaryGenerationInput
+  ): Promise<string | null> => {
+    try {
+      const output = await sendChatNonStreaming({
+        providerId,
+        providerType: providerConfig.providerType,
+        baseUrl: providerConfig.baseUrl,
+        apiKey: providerConfig.apiKey,
+        modelId,
+        reasoningEffort,
+        messages: prepareCompactionSummaryMessages(input),
+        onComplete: () => {},
+        onError: () => {},
+      });
+      const summary = formatCompactionSummaryFromModelOutput(output);
+      return summary || null;
+    } catch (error) {
+      devLogger.info(
+        `Compaction summary generation failed for provider=${providerConfig.providerType}: ${toServiceError(error).message}`
+      );
+      return null;
+    }
+  };
+
+  const compactConversationMessages = async (params: {
+    conversationId: string;
+    providerId: string;
+    modelId: string;
+    reasoningEffort?: ReasoningEffort | null;
+    providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>;
+    allowedToolIds: string[];
+    systemMessage: string;
+    preparedMessages: StreamMessage[];
+    orderedMessages: ChatMessage[];
+    citations: Citation[];
+    mode: 'background' | 'blocking';
+  }) => {
+    const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
+    const currentCompactionState = await getConversationCompactionState(params.conversationId);
+    const modelContextWindowTokens = getSelectedModelContextWindowTokens(
+      params.providerId,
+      params.modelId,
+      params.providerConfig.providerType
+    );
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: params.systemMessage,
+      preparedMessages: params.preparedMessages,
+      orderedMessages: params.orderedMessages,
+      citations: params.citations,
+      toolDefinitions,
+      modelContextWindowTokens,
+      currentCompactionState,
+      mode: params.mode,
+      generateSummary: (input) =>
+        generateCompactionSummary(
+          params.providerConfig,
+          params.providerId,
+          params.modelId,
+          params.reasoningEffort,
+          input
+        ),
+    });
+
+    const hadCompaction = Boolean(currentCompactionState);
+    const hasCompaction = Boolean(result.compactionState);
+    if (hasCompaction) {
+      await persistConversationCompactionState(result.compactionState);
+    } else if (hadCompaction) {
+      await deleteConversationCompactionState(params.conversationId);
+    }
+
+    if (result.degraded) {
+      devLogger.info(
+        `Context compaction degraded conversation=${params.conversationId} ratio=${result.footprintAfter.totalContextRatio.toFixed(3)}`
+      );
+    }
+
+    return result;
   };
 
   const ensureToolsLoaded = async (): Promise<void> => {
@@ -2182,14 +2499,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     }
 
+    const systemMessage =
+      systemInstructions.join(' ') || 'Use context information when it is provided.';
+
     return {
+      systemMessage,
       messages: [
         {
           role: 'system' as const,
-          content: systemInstructions.join(' ') || 'Use context information when it is provided.',
+          content: systemMessage,
         },
         ...preparedMessages,
       ],
+      preparedMessages,
+      orderedMessages,
+      citations,
       executionContext,
     };
   };
@@ -2919,6 +3243,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string;
     replyToMessageId: string;
     userContent: string;
+    providerId: string;
+    modelId: string;
+    reasoningEffort?: ReasoningEffort | null;
+    providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>;
   }) => {
     try {
       await ensureToolsLoaded();
@@ -2933,6 +3261,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       allowedToolIds,
       params.replyToMessageId
     );
+    const compactedRequest = await compactConversationMessages({
+      conversationId: params.conversationId,
+      providerId: params.providerId,
+      modelId: params.modelId,
+      reasoningEffort: params.reasoningEffort,
+      providerConfig: params.providerConfig,
+      allowedToolIds,
+      systemMessage: preparedRequest.systemMessage,
+      preparedMessages: preparedRequest.preparedMessages,
+      orderedMessages: preparedRequest.orderedMessages,
+      citations: preparedRequest.citations,
+      mode: 'blocking',
+    });
     const fileToolContext = useCitationsStore
       .getState()
       .getConversationContextCitations(params.conversationId)
@@ -2953,7 +3294,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return {
       allowedToolIds,
       showToolTraces,
-      messagesForRequest: preparedRequest.messages,
+      messagesForRequest: compactedRequest.messages,
       executionContext: preparedRequest.executionContext,
       fileToolContext,
       enableWebSearch,
@@ -2981,6 +3322,39 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ...(options?.setSendState ? { sendState: 'error' as const } : {}),
     });
     return normalized;
+  };
+
+  const refreshBackgroundCompaction = async (params: {
+    conversationId: string;
+    providerId: string;
+    modelId: string;
+    reasoningEffort?: ReasoningEffort | null;
+    providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>;
+    allowedToolIds: string[];
+  }) => {
+    try {
+      const preparedRequest = await prepareMessagesForRequest(
+        params.conversationId,
+        params.allowedToolIds
+      );
+      await compactConversationMessages({
+        conversationId: params.conversationId,
+        providerId: params.providerId,
+        modelId: params.modelId,
+        reasoningEffort: params.reasoningEffort,
+        providerConfig: params.providerConfig,
+        allowedToolIds: params.allowedToolIds,
+        systemMessage: preparedRequest.systemMessage,
+        preparedMessages: preparedRequest.preparedMessages,
+        orderedMessages: preparedRequest.orderedMessages,
+        citations: preparedRequest.citations,
+        mode: 'background',
+      });
+    } catch (error) {
+      devLogger.info(
+        `Background compaction failed for conversation=${params.conversationId}: ${toServiceError(error).message}`
+      );
+    }
   };
 
   const startAssistantStream = (params: {
@@ -3079,6 +3453,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
 
             persistAssistantStreamResult(params.conversationId, result);
+            void refreshBackgroundCompaction({
+              conversationId: params.conversationId,
+              providerId: params.selectedProviderId,
+              modelId: params.selectedModelId,
+              reasoningEffort: params.selectedReasoningEffort,
+              providerConfig: params.providerConfig,
+              allowedToolIds: params.allowedToolIds,
+            });
             const taskAfterStream = params.resolvedTaskId
               ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
               : undefined;
@@ -3533,6 +3915,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const hydrateChatSnapshot = async (): Promise<void> => {
+    conversationCompactionStateCache.clear();
     let conversations: Conversation[] = [];
     let messages: ChatMessage[] = [];
 
@@ -4000,7 +4383,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         };
       }),
 
-    clearMessages: () => set(buildMessageState([])),
+    clearMessages: () => {
+      conversationCompactionStateCache.clear();
+      set(buildMessageState([]));
+    },
 
     setMessageImages: (messageId, images) =>
       set((state) => {
@@ -4217,6 +4603,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (tauriIpc.isTauriAvailable()) {
         await tauriIpc.deleteConversation(conversationId);
       }
+      conversationCompactionStateCache.delete(conversationId);
       removeConversationSelection(conversationId);
       applyLocalConversationRemoval([conversationId]);
     },
@@ -4248,6 +4635,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           await tauriIpc.deleteConversations(uniqueIds);
         }
         uniqueIds.forEach((conversationId) => {
+          conversationCompactionStateCache.delete(conversationId);
           removeConversationSelection(conversationId);
         });
       } catch (error) {
@@ -4402,6 +4790,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             conversationId,
             replyToMessageId: userMessage.id,
             userContent: content,
+            providerId: selectedProviderId,
+            modelId: selectedModelId,
+            reasoningEffort: selectedReasoningEffort,
+            providerConfig: providerConfigForUse,
           });
 
           startAssistantStream({
@@ -4558,6 +4950,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         .getState()
         .pruneConversationSourceCitations(conversationId, keptConversationMessageIds);
 
+      const currentOrderedMessages = getOrderedConversationMessages(conversationId);
+      const existingCompactionState = await getConversationCompactionState(conversationId);
+      if (
+        invalidateCompactionFromMessage(
+          existingCompactionState,
+          currentOrderedMessages,
+          messageId
+        )
+      ) {
+        await deleteConversationCompactionState(conversationId);
+      }
+
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-assistant`,
         task_id: target.task_id,
@@ -4575,6 +4979,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           conversationId,
           replyToMessageId: messageId,
           userContent: newContent,
+          providerId: selectedProviderId,
+          modelId: selectedModelId,
+          reasoningEffort: selectedReasoningEffort,
+          providerConfig: providerConfigForUse,
         });
 
         startAssistantStream({

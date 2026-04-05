@@ -4,9 +4,9 @@ use super::types::{
     db_error_to_string, extract_response_error, ModelsCacheEntry, RemoteModelsResponse,
     DEFAULT_ORIGINATOR,
 };
+use crate::ai::reasoning_catalog::resolve_reasoning_capability;
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderConfig, ProviderModelInput};
 use crate::db::repository;
-use crate::ai::reasoning_catalog::resolve_reasoning_capability;
 use crate::secrets::{self, ChatGptSecret};
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use sqlx::SqlitePool;
@@ -214,13 +214,8 @@ pub(super) fn build_provider_models(
     filtered_entries
         .into_iter()
         .map(|entry| {
-            let reasoning = resolve_reasoning_capability(
-                Some("chatgpt"),
-                Some(&entry.slug),
-                None,
-                None,
-                None,
-            );
+            let reasoning =
+                resolve_reasoning_capability(Some("chatgpt"), Some(&entry.slug), None, None, None);
 
             ProviderModelInput {
                 model_id: entry.slug.clone(),
@@ -239,6 +234,7 @@ pub(super) fn build_provider_models(
                 } else {
                     Some(reasoning.reasoning_efforts)
                 },
+                context_window_tokens: None,
                 default_reasoning_effort: reasoning.default_reasoning_effort,
             }
         })

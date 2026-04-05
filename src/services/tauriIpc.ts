@@ -51,6 +51,21 @@ export interface DbMessage {
   hidden_context: string | null;
 }
 
+export interface DbConversationCompactionState {
+  conversation_id: string;
+  up_to_message_id: string;
+  summary_text: string;
+  tool_digest_json: string;
+  used_source_passage_ids_json: string;
+  interesting_source_passage_ids_json: string;
+  estimated_tokens_before: number;
+  estimated_tokens_after: number;
+  fingerprint: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DbImportMessageInput {
   id: string;
   role: string;
@@ -212,6 +227,7 @@ export interface DbAiModel {
   pricing_request: string | null;
   reasoning_efforts: string[] | null;
   default_reasoning_effort: string | null;
+  context_window_tokens: number | null;
   is_enabled: boolean;
   is_manual: boolean;
   first_seen_at: string;
@@ -335,6 +351,20 @@ export interface DbProviderModelInput {
   pricing_request?: string | null;
   reasoning_efforts?: string[] | null;
   default_reasoning_effort?: string | null;
+  context_window_tokens?: number | null;
+}
+
+export interface DbUpsertConversationCompactionStateInput {
+  conversation_id: string;
+  up_to_message_id: string;
+  summary_text: string;
+  tool_digest_json: string;
+  used_source_passage_ids_json: string;
+  interesting_source_passage_ids_json: string;
+  estimated_tokens_before: number;
+  estimated_tokens_after: number;
+  fingerprint: string;
+  version: number;
 }
 
 export interface AiChatMessageImageUrl {
@@ -704,6 +734,30 @@ export async function listMessages(
   conversationId: string,
 ): Promise<DbMessage[]> {
   return invoke<DbMessage[]>("db_list_messages", { conversationId });
+}
+
+export async function dbGetConversationCompactionState(
+  conversationId: string,
+): Promise<DbConversationCompactionState | null> {
+  return invoke<DbConversationCompactionState | null>("db_get_conversation_compaction_state", {
+    conversationId,
+  });
+}
+
+export async function dbUpsertConversationCompactionState(
+  input: DbUpsertConversationCompactionStateInput,
+): Promise<DbConversationCompactionState> {
+  return invoke<DbConversationCompactionState>("db_upsert_conversation_compaction_state", {
+    input,
+  });
+}
+
+export async function dbDeleteConversationCompactionState(
+  conversationId: string,
+): Promise<void> {
+  return invoke("db_delete_conversation_compaction_state", {
+    conversationId,
+  });
 }
 
 export async function createMessage(

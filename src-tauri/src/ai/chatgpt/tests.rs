@@ -5,9 +5,9 @@ use super::session::{
     resolve_token_expiry_rfc3339,
 };
 use super::stream::{
-    build_responses_request, extract_completed_reasoning_summary, extract_function_call_from_output_item,
-    extract_output_text_from_output_item, extract_reasoning_summary_from_output_item,
-    extract_response_id,
+    build_responses_request, extract_completed_reasoning_summary,
+    extract_function_call_from_output_item, extract_output_text_from_output_item,
+    extract_reasoning_summary_from_output_item, extract_response_id,
 };
 use super::types::{
     auth_flow_error_from_persist, AiChatMessage, AiChatMessageContent, AiChatRequest,
@@ -145,7 +145,10 @@ fn build_responses_request_maps_system_and_history() {
     assert!(request.tools.is_empty());
     assert!(!request.store);
     assert!(request.stream);
-    assert_eq!(request.reasoning, Some(json!({ "effort": "high", "summary": "auto" })));
+    assert_eq!(
+        request.reasoning,
+        Some(json!({ "effort": "high", "summary": "auto" }))
+    );
 }
 
 #[test]

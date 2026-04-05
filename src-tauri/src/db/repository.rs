@@ -11,18 +11,20 @@ fn parse_reasoning_efforts(raw: Option<String>) -> Option<Vec<String>> {
         return None;
     };
 
-    serde_json::from_str::<Vec<Value>>(&raw).ok().and_then(|values| {
-        let efforts = values
-            .into_iter()
-            .filter_map(|value| value.as_str().map(str::to_string))
-            .collect::<Vec<_>>();
+    serde_json::from_str::<Vec<Value>>(&raw)
+        .ok()
+        .and_then(|values| {
+            let efforts = values
+                .into_iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect::<Vec<_>>();
 
-        if efforts.is_empty() {
-            None
-        } else {
-            Some(efforts)
-        }
-    })
+            if efforts.is_empty() {
+                None
+            } else {
+                Some(efforts)
+            }
+        })
 }
 
 fn serialize_reasoning_efforts(efforts: Option<&Vec<String>>) -> Option<String> {
@@ -950,7 +952,7 @@ pub async fn list_models_by_provider(
         r#"
         SELECT id, provider_id, model_id, name, description, owned_by,
                pricing_prompt, pricing_completion, pricing_request,
-               reasoning_efforts_json, default_reasoning_effort,
+               reasoning_efforts_json, default_reasoning_effort, context_window_tokens,
              is_enabled, is_manual, first_seen_at, last_seen_at
         FROM ai_models
         WHERE provider_id = ?
@@ -975,6 +977,7 @@ pub async fn list_models_by_provider(
             pricing_request: row.get("pricing_request"),
             reasoning_efforts: parse_reasoning_efforts(row.get("reasoning_efforts_json")),
             default_reasoning_effort: row.get("default_reasoning_effort"),
+            context_window_tokens: row.get("context_window_tokens"),
             is_enabled: row.get::<i32, _>("is_enabled") != 0,
             is_manual: row.get::<i32, _>("is_manual") != 0,
             first_seen_at: row.get("first_seen_at"),
@@ -1001,10 +1004,10 @@ pub async fn upsert_provider_models(
             INSERT INTO ai_models (
                 id, provider_id, model_id, name, description, owned_by,
                 pricing_prompt, pricing_completion, pricing_request,
-                reasoning_efforts_json, default_reasoning_effort,
+                reasoning_efforts_json, default_reasoning_effort, context_window_tokens,
                 is_enabled, is_manual, first_seen_at, last_seen_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
@@ -1014,6 +1017,7 @@ pub async fn upsert_provider_models(
                 pricing_request = excluded.pricing_request,
                 reasoning_efforts_json = excluded.reasoning_efforts_json,
                 default_reasoning_effort = excluded.default_reasoning_effort,
+                context_window_tokens = excluded.context_window_tokens,
                 last_seen_at = excluded.last_seen_at
             "#,
         )
@@ -1026,8 +1030,11 @@ pub async fn upsert_provider_models(
         .bind(&model.pricing_prompt)
         .bind(&model.pricing_completion)
         .bind(&model.pricing_request)
-        .bind(serialize_reasoning_efforts(model.reasoning_efforts.as_ref()))
+        .bind(serialize_reasoning_efforts(
+            model.reasoning_efforts.as_ref(),
+        ))
         .bind(&model.default_reasoning_effort)
+        .bind(model.context_window_tokens)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -1077,10 +1084,10 @@ pub async fn register_manual_model(
         INSERT INTO ai_models (
             id, provider_id, model_id, name, description, owned_by,
             pricing_prompt, pricing_completion, pricing_request,
-            reasoning_efforts_json, default_reasoning_effort,
+            reasoning_efforts_json, default_reasoning_effort, context_window_tokens,
             is_enabled, is_manual, first_seen_at, last_seen_at
         )
-        VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1, 1, ?, ?)
+        VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1, 1, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             is_manual = 1,
@@ -1093,6 +1100,106 @@ pub async fn register_manual_model(
     .bind(name)
     .bind(&now)
     .bind(&now)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn get_conversation_compaction_state(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<Option<ConversationCompactionStateRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT conversation_id, up_to_message_id, summary_text, tool_digest_json,
+               used_source_passage_ids_json, interesting_source_passage_ids_json,
+               estimated_tokens_before, estimated_tokens_after, fingerprint,
+               version, created_at, updated_at
+        FROM conversation_compactions
+        WHERE conversation_id = ?
+        "#,
+    )
+    .bind(conversation_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| ConversationCompactionStateRecord {
+        conversation_id: row.get("conversation_id"),
+        up_to_message_id: row.get("up_to_message_id"),
+        summary_text: row.get("summary_text"),
+        tool_digest_json: row.get("tool_digest_json"),
+        used_source_passage_ids_json: row.get("used_source_passage_ids_json"),
+        interesting_source_passage_ids_json: row.get("interesting_source_passage_ids_json"),
+        estimated_tokens_before: row.get("estimated_tokens_before"),
+        estimated_tokens_after: row.get("estimated_tokens_after"),
+        fingerprint: row.get("fingerprint"),
+        version: row.get("version"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+pub async fn upsert_conversation_compaction_state(
+    pool: &SqlitePool,
+    input: UpsertConversationCompactionStateInput,
+) -> DbResult<ConversationCompactionStateRecord> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let conversation_id = input.conversation_id.clone();
+
+    sqlx::query(
+        r#"
+        INSERT INTO conversation_compactions (
+            conversation_id, up_to_message_id, summary_text, tool_digest_json,
+            used_source_passage_ids_json, interesting_source_passage_ids_json,
+            estimated_tokens_before, estimated_tokens_after, fingerprint,
+            version, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET
+            up_to_message_id = excluded.up_to_message_id,
+            summary_text = excluded.summary_text,
+            tool_digest_json = excluded.tool_digest_json,
+            used_source_passage_ids_json = excluded.used_source_passage_ids_json,
+            interesting_source_passage_ids_json = excluded.interesting_source_passage_ids_json,
+            estimated_tokens_before = excluded.estimated_tokens_before,
+            estimated_tokens_after = excluded.estimated_tokens_after,
+            fingerprint = excluded.fingerprint,
+            version = excluded.version,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(&input.conversation_id)
+    .bind(&input.up_to_message_id)
+    .bind(&input.summary_text)
+    .bind(&input.tool_digest_json)
+    .bind(&input.used_source_passage_ids_json)
+    .bind(&input.interesting_source_passage_ids_json)
+    .bind(input.estimated_tokens_before)
+    .bind(input.estimated_tokens_after)
+    .bind(&input.fingerprint)
+    .bind(input.version)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    get_conversation_compaction_state(pool, &conversation_id)
+        .await?
+        .ok_or_else(|| sqlx::Error::RowNotFound.into())
+}
+
+pub async fn delete_conversation_compaction_state(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<()> {
+    sqlx::query(
+        r#"
+        DELETE FROM conversation_compactions
+        WHERE conversation_id = ?
+        "#,
+    )
+    .bind(conversation_id)
     .execute(pool)
     .await?;
 

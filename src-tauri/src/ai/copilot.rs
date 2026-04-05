@@ -1,8 +1,8 @@
 use crate::ai::chatgpt::types::{
     AiChatRequest, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent, AiToolTrace,
 };
-use crate::ai::{AiState, AuthTask, DownloadTask};
 use crate::ai::reasoning_catalog::resolve_reasoning_capability;
+use crate::ai::{AiState, AuthTask, DownloadTask};
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderModelInput};
 use crate::db::repository;
 use crate::tool_host::ToolHostConfig;
@@ -945,6 +945,7 @@ fn models_to_inputs(models: &[BridgeModelRecord]) -> Vec<ProviderModelInput> {
                 } else {
                     Some(reasoning.reasoning_efforts)
                 },
+                context_window_tokens: None,
                 default_reasoning_effort: reasoning.default_reasoning_effort,
             }
         })
