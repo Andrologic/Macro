@@ -15,6 +15,7 @@ export interface ProviderModel {
   created?: number;
   owned_by?: string;
   description?: string;
+  supported_parameters?: string[];
   pricing?: {
     prompt?: string;
     completion?: string;
@@ -129,6 +130,13 @@ export async function fetchModelsFromProvider(
         created: model.created,
         owned_by: model.owned_by,
         description: model.description,
+        ...(Array.isArray(model.supported_parameters)
+          ? {
+              supported_parameters: model.supported_parameters.filter(
+                (entry): entry is string => typeof entry === 'string'
+              ),
+            }
+          : {}),
         pricing: model.pricing,
       }));
 

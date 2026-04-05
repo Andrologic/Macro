@@ -3,8 +3,8 @@
  * Type-safe wrapper around Tauri's invoke function
  */
 
-import { invoke } from '@tauri-apps/api/core';
-import type { TaskCatalogDto } from './contracts/dtos';
+import { invoke } from "@tauri-apps/api/core";
+import type { TaskCatalogDto } from "./contracts/dtos";
 import type {
   PredictedGitTree,
   GitCommit,
@@ -21,7 +21,7 @@ import type {
   AppMode,
   ProjectMount,
   ToolTrace,
-} from '../types';
+} from "../types";
 
 // ============ Types ============
 
@@ -117,13 +117,13 @@ export interface GitBranchesDto {
 }
 
 export type GitWorktreeInspectionStatus =
-  | 'absent'
-  | 'ready'
-  | 'stale_registration'
-  | 'orphan_path'
-  | 'invalid_repo';
+  | "absent"
+  | "ready"
+  | "stale_registration"
+  | "orphan_path"
+  | "invalid_repo";
 
-export type GitWorktreeEnsureStatus = 'created' | 'reused' | 'repaired';
+export type GitWorktreeEnsureStatus = "created" | "reused" | "repaired";
 
 export interface GitWorktreeInspectionDto {
   taskId: string;
@@ -160,27 +160,27 @@ export interface GitMergeCheckDto {
   hasChanges: boolean;
 }
 
-export type MacroSyncState = 'clean' | 'pending' | 'failed' | 'conflict';
+export type MacroSyncState = "clean" | "pending" | "failed" | "conflict";
 export type MacroSyncReason =
-  | 'clean'
-  | 'dirty'
-  | 'ahead'
-  | 'behind'
-  | 'diverged'
-  | 'merge_conflict'
-  | 'missing_origin'
-  | 'missing_upstream'
-  | 'auth_required'
-  | 'network_error'
-  | 'unknown_error';
+  | "clean"
+  | "dirty"
+  | "ahead"
+  | "behind"
+  | "diverged"
+  | "merge_conflict"
+  | "missing_origin"
+  | "missing_upstream"
+  | "auth_required"
+  | "network_error"
+  | "unknown_error";
 export type MacroSyncNextAction =
-  | 'commit'
-  | 'push'
-  | 'pull'
-  | 'resolve_conflict'
-  | 'configure_remote'
-  | 'configure_auth'
-  | 'retry';
+  | "commit"
+  | "push"
+  | "pull"
+  | "resolve_conflict"
+  | "configure_remote"
+  | "configure_auth"
+  | "retry";
 
 export interface MacroBranchSyncDto {
   branch: string;
@@ -210,6 +210,8 @@ export interface DbAiModel {
   pricing_prompt: string | null;
   pricing_completion: string | null;
   pricing_request: string | null;
+  reasoning_efforts: string[] | null;
+  default_reasoning_effort: string | null;
   is_enabled: boolean;
   is_manual: boolean;
   first_seen_at: string;
@@ -236,8 +238,8 @@ export interface DbAppSetting {
   updated_at: string;
 }
 
-export type ExternalOpenAction = 'editor' | 'terminal' | 'files';
-export type ExternalAppKind = 'none' | 'builtin' | 'detected';
+export type ExternalOpenAction = "editor" | "terminal" | "files";
+export type ExternalAppKind = "none" | "builtin" | "detected";
 
 export interface ExternalAppOptionDto {
   id: string;
@@ -303,6 +305,26 @@ export interface ProjectRegistryDiagnosticsDto {
   repairReport: ProjectRegistryRepairReportDto;
 }
 
+export interface WorkspaceMetadataRecoveryHintDto {
+  projectId: string;
+  groupId: string | null;
+  name: string;
+  path: string;
+}
+
+export interface WorkspaceMetadataRecoveryReportDto {
+  status:
+    | "none"
+    | "restored_from_history"
+    | "reconstructed_from_hints"
+    | "blocked_dirty"
+    | "blocked_conflict";
+  restoredCommit?: string | null;
+  pullAttempted: boolean;
+  pullSucceeded: boolean;
+  message?: string | null;
+}
+
 export interface DbProviderModelInput {
   model_id: string;
   name: string;
@@ -311,6 +333,8 @@ export interface DbProviderModelInput {
   pricing_prompt?: string | null;
   pricing_completion?: string | null;
   pricing_request?: string | null;
+  reasoning_efforts?: string[] | null;
+  default_reasoning_effort?: string | null;
 }
 
 export interface AiChatMessageImageUrl {
@@ -334,7 +358,7 @@ export interface AiChatMessage {
 
 export interface AiToolCall {
   id: string;
-  type: 'function';
+  type: "function";
   function: {
     name: string;
     arguments: string;
@@ -350,6 +374,8 @@ export interface AiStreamDoneEvent {
   request_id: string;
   output_text: string;
   tool_calls: AiToolCall[];
+  response_id?: string | null;
+  reasoning_summary?: string | null;
   tool_traces?: ToolTrace[] | null;
   hidden_context?: string | null;
 }
@@ -383,8 +409,13 @@ export interface AiAuthErrorEvent {
 
 export interface CopilotStatusDto {
   ok: boolean;
-  runtime_source: 'managed' | 'system' | 'none';
-  runtime_status: 'ready' | 'missing' | 'downloading' | 'update_required' | 'error';
+  runtime_source: "managed" | "system" | "none";
+  runtime_status:
+    | "ready"
+    | "missing"
+    | "downloading"
+    | "update_required"
+    | "error";
   runtime_version: string | null;
   min_cli_version: string;
   auth_status: string;
@@ -408,7 +439,7 @@ export interface CopilotDownloadCompleteEvent {
   request_id: string;
   provider_id: string;
   runtime_version: string;
-  runtime_source: 'managed' | 'system' | 'none';
+  runtime_source: "managed" | "system" | "none";
 }
 
 export interface CopilotDownloadErrorEvent {
@@ -587,9 +618,11 @@ export interface TerminalOutputEvent {
   updated_at: string;
 }
 
-export type WorkspaceScope = 'default' | 'metadata';
+export type WorkspaceScope = "default" | "metadata";
 
-const normalizeGitStatus = (status: Omit<GitStatusDto, 'conflictedFiles' | 'mergeInProgress'>): GitStatusDto => {
+const normalizeGitStatus = (
+  status: Omit<GitStatusDto, "conflictedFiles" | "mergeInProgress">,
+): GitStatusDto => {
   const conflictedFiles = status.conflicted_files ?? [];
   const mergeInProgress = status.merge_in_progress ?? false;
 
@@ -605,15 +638,17 @@ const normalizeGitStatus = (status: Omit<GitStatusDto, 'conflictedFiles' | 'merg
 // ============ Conversations ============
 
 export async function listConversations(): Promise<DbConversation[]> {
-  return invoke<DbConversation[]>('db_list_conversations');
+  return invoke<DbConversation[]>("db_list_conversations");
 }
 
 export async function getChatSnapshot(): Promise<DbChatSnapshot> {
-  return invoke<DbChatSnapshot>('db_get_chat_snapshot');
+  return invoke<DbChatSnapshot>("db_get_chat_snapshot");
 }
 
-export async function getConversation(id: string): Promise<DbConversation | null> {
-  return invoke<DbConversation | null>('db_get_conversation', { id });
+export async function getConversation(
+  id: string,
+): Promise<DbConversation | null> {
+  return invoke<DbConversation | null>("db_get_conversation", { id });
 }
 
 export async function createConversation(params?: {
@@ -623,17 +658,20 @@ export async function createConversation(params?: {
   groupId?: string | null;
   projectId?: string | null;
 }): Promise<DbConversation> {
-  return invoke<DbConversation>('db_create_conversation', {
+  return invoke<DbConversation>("db_create_conversation", {
     title: params?.title,
-    scopeMode: params?.scopeMode ?? 'Chat',
+    scopeMode: params?.scopeMode ?? "Chat",
     taskId: params?.taskId ?? null,
     groupId: params?.groupId ?? null,
     projectId: params?.projectId ?? null,
   });
 }
 
-export async function renameConversation(id: string, title: string): Promise<void> {
-  return invoke('db_rename_conversation', { id, title });
+export async function renameConversation(
+  id: string,
+  title: string,
+): Promise<void> {
+  return invoke("db_rename_conversation", { id, title });
 }
 
 export async function updateConversationDetails(params: {
@@ -641,7 +679,7 @@ export async function updateConversationDetails(params: {
   title?: string;
   description?: string;
 }): Promise<void> {
-  return invoke('db_update_conversation_details', {
+  return invoke("db_update_conversation_details", {
     id: params.id,
     title: params.title ?? null,
     description: params.description ?? null,
@@ -649,21 +687,23 @@ export async function updateConversationDetails(params: {
 }
 
 export async function deleteConversation(id: string): Promise<void> {
-  return invoke('db_delete_conversation_by_id', { id });
+  return invoke("db_delete_conversation_by_id", { id });
 }
 
 export async function deleteConversations(ids: string[]): Promise<void> {
-  return invoke('db_delete_conversations_by_ids', { ids });
+  return invoke("db_delete_conversations_by_ids", { ids });
 }
 
 export async function togglePinConversation(id: string): Promise<boolean> {
-  return invoke<boolean>('db_toggle_pin_conversation', { id });
+  return invoke<boolean>("db_toggle_pin_conversation", { id });
 }
 
 // ============ Messages ============
 
-export async function listMessages(conversationId: string): Promise<DbMessage[]> {
-  return invoke<DbMessage[]>('db_list_messages', { conversationId });
+export async function listMessages(
+  conversationId: string,
+): Promise<DbMessage[]> {
+  return invoke<DbMessage[]>("db_list_messages", { conversationId });
 }
 
 export async function createMessage(
@@ -674,23 +714,25 @@ export async function createMessage(
     tokenCount?: number;
     toolTraces?: ToolTrace[];
     hiddenContext?: string;
-  }
+  },
 ): Promise<DbMessage> {
-  return invoke<DbMessage>('db_create_message', {
+  return invoke<DbMessage>("db_create_message", {
     conversationId,
     role,
     content,
     tokenCount: options?.tokenCount ?? null,
-    toolTracesJson: options?.toolTraces ? JSON.stringify(options.toolTraces) : null,
+    toolTracesJson: options?.toolTraces
+      ? JSON.stringify(options.toolTraces)
+      : null,
     hiddenContext: options?.hiddenContext ?? null,
   });
 }
 
 export async function importMessages(
   conversationId: string,
-  messages: DbImportMessageInput[]
+  messages: DbImportMessageInput[],
 ): Promise<DbMessage[]> {
-  return invoke<DbMessage[]>('db_import_messages', {
+  return invoke<DbMessage[]>("db_import_messages", {
     conversationId,
     messages,
   });
@@ -703,28 +745,30 @@ export async function updateMessage(
     tokenCount?: number;
     toolTraces?: ToolTrace[];
     hiddenContext?: string;
-  }
+  },
 ): Promise<void> {
-  return invoke('db_update_message', {
+  return invoke("db_update_message", {
     id,
     content,
     tokenCount: options?.tokenCount ?? null,
-    toolTracesJson: options?.toolTraces ? JSON.stringify(options.toolTraces) : null,
+    toolTracesJson: options?.toolTraces
+      ? JSON.stringify(options.toolTraces)
+      : null,
     hiddenContext: options?.hiddenContext ?? null,
   });
 }
 
 export async function deleteMessagesAfter(
   conversationId: string,
-  afterMessageId: string
+  afterMessageId: string,
 ): Promise<void> {
-  return invoke('db_delete_messages_after', { conversationId, afterMessageId });
+  return invoke("db_delete_messages_after", { conversationId, afterMessageId });
 }
 
 // ============ File System ============
 
 export async function fsReadFile(path: string): Promise<FsFileContentDto> {
-  return invoke<FsFileContentDto>('fs_read_file', { path });
+  return invoke<FsFileContentDto>("fs_read_file", { path });
 }
 
 export async function fsReadFileWithOptions(params: {
@@ -733,7 +777,7 @@ export async function fsReadFileWithOptions(params: {
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
 }): Promise<FsFileContentDto> {
-  return invoke<FsFileContentDto>('fs_read_file', {
+  return invoke<FsFileContentDto>("fs_read_file", {
     path: params.path,
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
     workspaceScope: params.workspaceScope ?? null,
@@ -749,7 +793,7 @@ export async function fsWriteFile(params: {
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
 }): Promise<FsWriteResultDto> {
-  return invoke<FsWriteResultDto>('fs_write_file', {
+  return invoke<FsWriteResultDto>("fs_write_file", {
     path: params.path,
     content: params.content,
     createDirs: params.createDirs ?? null,
@@ -768,7 +812,7 @@ export async function fsListDir(params: {
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
 }): Promise<FsDirEntryDto[]> {
-  return invoke<FsDirEntryDto[]>('fs_list_dir', {
+  return invoke<FsDirEntryDto[]>("fs_list_dir", {
     path: params.path,
     recursive: params.recursive ?? null,
     includeHidden: params.includeHidden ?? null,
@@ -779,22 +823,28 @@ export async function fsListDir(params: {
   });
 }
 
-export async function fsStat(path: string, options?: {
-  workspaceScope?: WorkspaceScope;
-  workspacePath?: string | null;
-}): Promise<FsFileStatsDto> {
-  return invoke<FsFileStatsDto>('fs_stat', {
+export async function fsStat(
+  path: string,
+  options?: {
+    workspaceScope?: WorkspaceScope;
+    workspacePath?: string | null;
+  },
+): Promise<FsFileStatsDto> {
+  return invoke<FsFileStatsDto>("fs_stat", {
     path,
     workspaceScope: options?.workspaceScope ?? null,
     workspacePath: options?.workspacePath ?? null,
   });
 }
 
-export async function fsExists(path: string, options?: {
-  workspaceScope?: WorkspaceScope;
-  workspacePath?: string | null;
-}): Promise<boolean> {
-  return invoke<boolean>('fs_exists', {
+export async function fsExists(
+  path: string,
+  options?: {
+    workspaceScope?: WorkspaceScope;
+    workspacePath?: string | null;
+  },
+): Promise<boolean> {
+  return invoke<boolean>("fs_exists", {
     path,
     workspaceScope: options?.workspaceScope ?? null,
     workspacePath: options?.workspacePath ?? null,
@@ -807,7 +857,7 @@ export async function fsDelete(params: {
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
 }): Promise<void> {
-  return invoke('fs_delete', {
+  return invoke("fs_delete", {
     path: params.path,
     recursive: params.recursive ?? null,
     workspaceScope: params.workspaceScope ?? null,
@@ -821,7 +871,7 @@ export async function fsCreateDir(params: {
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
 }): Promise<void> {
-  return invoke('fs_create_dir', {
+  return invoke("fs_create_dir", {
     path: params.path,
     recursive: params.recursive ?? null,
     workspaceScope: params.workspaceScope ?? null,
@@ -833,7 +883,7 @@ export async function fsCopy(params: {
   src: string;
   dest: string;
 }): Promise<number> {
-  return invoke<number>('fs_copy', {
+  return invoke<number>("fs_copy", {
     src: params.src,
     dest: params.dest,
   });
@@ -843,7 +893,7 @@ export async function fsMove(params: {
   src: string;
   dest: string;
 }): Promise<void> {
-  return invoke('fs_move', {
+  return invoke("fs_move", {
     src: params.src,
     dest: params.dest,
   });
@@ -852,15 +902,17 @@ export async function fsMove(params: {
 // ============ Provider Configs ============
 
 export async function listProviderConfigs(): Promise<DbProviderConfig[]> {
-  return invoke<DbProviderConfig[]>('db_list_provider_configs');
+  return invoke<DbProviderConfig[]>("db_list_provider_configs");
 }
 
-export async function getProviderConfig(id: string): Promise<DbProviderConfig | null> {
-  return invoke<DbProviderConfig | null>('db_get_provider_config', { id });
+export async function getProviderConfig(
+  id: string,
+): Promise<DbProviderConfig | null> {
+  return invoke<DbProviderConfig | null>("db_get_provider_config", { id });
 }
 
 export async function revealProviderApiKey(id: string): Promise<string | null> {
-  return invoke<string | null>('db_reveal_provider_api_key', { id });
+  return invoke<string | null>("db_reveal_provider_api_key", { id });
 }
 
 export async function updateProviderConfig(params: {
@@ -870,7 +922,7 @@ export async function updateProviderConfig(params: {
   apiKey?: string;
   isEnabled?: boolean;
 }): Promise<void> {
-  return invoke('db_update_provider_config', {
+  return invoke("db_update_provider_config", {
     id: params.id,
     name: params.name ?? null,
     baseUrl: params.baseUrl ?? null,
@@ -886,7 +938,7 @@ export async function createProviderConfig(params: {
   apiKey?: string;
   isLocal: boolean;
 }): Promise<DbProviderConfig> {
-  return invoke<DbProviderConfig>('db_create_provider_config', {
+  return invoke<DbProviderConfig>("db_create_provider_config", {
     name: params.name,
     providerType: params.providerType,
     baseUrl: params.baseUrl,
@@ -896,25 +948,27 @@ export async function createProviderConfig(params: {
 }
 
 export async function deleteProviderConfig(id: string): Promise<void> {
-  return invoke('db_delete_provider_config', { id });
+  return invoke("db_delete_provider_config", { id });
 }
 
 export async function aiStartChatGptAuth(params: {
   requestId: string;
   providerId?: string;
 }): Promise<void> {
-  return invoke('ai_start_chatgpt_auth', {
+  return invoke("ai_start_chatgpt_auth", {
     requestId: params.requestId,
     providerId: params.providerId ?? null,
   });
 }
 
 export async function aiCancelChatGptAuth(requestId: string): Promise<void> {
-  return invoke('ai_cancel_chatgpt_auth', { requestId });
+  return invoke("ai_cancel_chatgpt_auth", { requestId });
 }
 
-export async function aiGetCopilotStatus(providerId?: string): Promise<CopilotStatusDto> {
-  return invoke<CopilotStatusDto>('ai_get_copilot_status', {
+export async function aiGetCopilotStatus(
+  providerId?: string,
+): Promise<CopilotStatusDto> {
+  return invoke<CopilotStatusDto>("ai_get_copilot_status", {
     providerId: providerId ?? null,
   });
 }
@@ -923,48 +977,58 @@ export async function aiDownloadCopilotRuntime(params: {
   requestId: string;
   providerId?: string;
 }): Promise<void> {
-  return invoke('ai_download_copilot_runtime', {
+  return invoke("ai_download_copilot_runtime", {
     requestId: params.requestId,
     providerId: params.providerId ?? null,
   });
 }
 
-export async function aiCancelCopilotRuntimeDownload(requestId: string): Promise<void> {
-  return invoke('ai_cancel_copilot_runtime_download', { requestId });
+export async function aiCancelCopilotRuntimeDownload(
+  requestId: string,
+): Promise<void> {
+  return invoke("ai_cancel_copilot_runtime_download", { requestId });
 }
 
 export async function aiStartCopilotAuth(params: {
   requestId: string;
   providerId?: string;
 }): Promise<void> {
-  return invoke('ai_start_copilot_auth', {
+  return invoke("ai_start_copilot_auth", {
     requestId: params.requestId,
     providerId: params.providerId ?? null,
   });
 }
 
 export async function aiCancelCopilotAuth(requestId: string): Promise<void> {
-  return invoke('ai_cancel_copilot_auth', { requestId });
+  return invoke("ai_cancel_copilot_auth", { requestId });
 }
 
-export async function aiDisconnectProviderAuth(providerId: string): Promise<DbProviderConfig> {
-  return invoke<DbProviderConfig>('ai_disconnect_provider_auth', {
+export async function aiDisconnectProviderAuth(
+  providerId: string,
+): Promise<DbProviderConfig> {
+  return invoke<DbProviderConfig>("ai_disconnect_provider_auth", {
     providerId,
   });
 }
 
-export async function aiSyncProviderModels(providerId: string): Promise<DbAiModel[]> {
-  return invoke<DbAiModel[]>('ai_sync_provider_models', { providerId });
+export async function aiSyncProviderModels(
+  providerId: string,
+): Promise<DbAiModel[]> {
+  return invoke<DbAiModel[]>("ai_sync_provider_models", { providerId });
 }
 
 export async function aiGetDevProviderOverrides(): Promise<DevProviderOverridesFile | null> {
-  return invoke<DevProviderOverridesFile | null>('ai_get_dev_provider_overrides');
+  return invoke<DevProviderOverridesFile | null>(
+    "ai_get_dev_provider_overrides",
+  );
 }
 
 export async function aiStreamChat(params: {
   requestId: string;
   providerId: string;
   modelId: string;
+  reasoningEffort?: string | null;
+  previousResponseId?: string | null;
   messages: AiChatMessage[];
   tools?: unknown[];
   toolChoice?: string;
@@ -976,14 +1040,16 @@ export async function aiStreamChat(params: {
   focusedProjectId?: string | null;
   allowedToolIds?: string[];
 }): Promise<void> {
-  return invoke('ai_stream_chat', {
+  return invoke("ai_stream_chat", {
     request: {
       request_id: params.requestId,
       provider_id: params.providerId,
       model_id: params.modelId,
+      reasoning_effort: params.reasoningEffort ?? null,
+      previous_response_id: params.previousResponseId ?? null,
       messages: params.messages,
       tools: params.tools ?? [],
-      tool_choice: params.toolChoice ?? 'auto',
+      tool_choice: params.toolChoice ?? "auto",
       parallel_tool_calls: params.parallelToolCalls ?? false,
       workspace_path: params.workspacePath ?? null,
       default_workspace_path: params.defaultWorkspacePath ?? null,
@@ -1001,13 +1067,15 @@ export async function aiStreamChat(params: {
 }
 
 export async function aiCancelStream(requestId: string): Promise<void> {
-  return invoke('ai_cancel_stream', { requestId });
+  return invoke("ai_cancel_stream", { requestId });
 }
 
 // ============ Git ============
 
 export async function gitStatus(repoPath: string): Promise<GitStatusDto> {
-  const status = await invoke<Omit<GitStatusDto, 'conflictedFiles' | 'mergeInProgress'>>('git_status', { repoPath });
+  const status = await invoke<
+    Omit<GitStatusDto, "conflictedFiles" | "mergeInProgress">
+  >("git_status", { repoPath });
   return normalizeGitStatus(status);
 }
 
@@ -1016,7 +1084,7 @@ export async function gitLog(params: {
   limit?: number;
   branch?: string;
 }): Promise<GitCommit[]> {
-  return invoke<GitCommit[]>('git_log', {
+  return invoke<GitCommit[]>("git_log", {
     repoPath: params.repoPath,
     limit: params.limit ?? null,
     branch: params.branch ?? null,
@@ -1024,7 +1092,7 @@ export async function gitLog(params: {
 }
 
 export async function gitBranchList(repoPath: string): Promise<GitBranchesDto> {
-  return invoke<GitBranchesDto>('git_branch_list', { repoPath });
+  return invoke<GitBranchesDto>("git_branch_list", { repoPath });
 }
 
 export async function gitBranchCreate(params: {
@@ -1032,7 +1100,7 @@ export async function gitBranchCreate(params: {
   branchName: string;
   fromRef: string;
 }): Promise<void> {
-  return invoke('git_branch_create', {
+  return invoke("git_branch_create", {
     repoPath: params.repoPath,
     branchName: params.branchName,
     fromRef: params.fromRef,
@@ -1044,7 +1112,7 @@ export async function gitBranchDelete(params: {
   branchName: string;
   force?: boolean;
 }): Promise<void> {
-  return invoke('git_branch_delete', {
+  return invoke("git_branch_delete", {
     repoPath: params.repoPath,
     branchName: params.branchName,
     force: params.force ?? null,
@@ -1056,7 +1124,7 @@ export async function gitBranchDeleteRemote(params: {
   branchName: string;
   remote?: string;
 }): Promise<void> {
-  return invoke('git_branch_delete_remote', {
+  return invoke("git_branch_delete_remote", {
     repoPath: params.repoPath,
     branchName: params.branchName,
     remote: params.remote ?? null,
@@ -1068,7 +1136,7 @@ export async function gitCheckout(params: {
   branchOrCommit: string;
   create: boolean;
 }): Promise<void> {
-  return invoke('git_checkout', {
+  return invoke("git_checkout", {
     repoPath: params.repoPath,
     branchOrCommit: params.branchOrCommit,
     create: params.create,
@@ -1080,7 +1148,7 @@ export async function gitMerge(params: {
   branchName: string;
   intoBranch: string;
 }): Promise<string> {
-  return invoke<string>('git_merge', {
+  return invoke<string>("git_merge", {
     repoPath: params.repoPath,
     branchName: params.branchName,
     intoBranch: params.intoBranch,
@@ -1092,7 +1160,7 @@ export async function gitMergeCheck(params: {
   branchName: string;
   intoBranch: string;
 }): Promise<GitMergeCheckDto> {
-  return invoke<GitMergeCheckDto>('git_merge_check', {
+  return invoke<GitMergeCheckDto>("git_merge_check", {
     repoPath: params.repoPath,
     branchName: params.branchName,
     intoBranch: params.intoBranch,
@@ -1104,7 +1172,7 @@ export async function gitCommit(params: {
   message: string;
   stageAll: boolean;
 }): Promise<string> {
-  return invoke<string>('git_commit', {
+  return invoke<string>("git_commit", {
     repoPath: params.repoPath,
     message: params.message,
     stageAll: params.stageAll,
@@ -1115,16 +1183,16 @@ export async function gitAdd(params: {
   repoPath: string;
   paths: string[];
 }): Promise<void> {
-  return invoke('git_add', { repoPath: params.repoPath, paths: params.paths });
+  return invoke("git_add", { repoPath: params.repoPath, paths: params.paths });
 }
 
 export async function gitReset(params: {
   repoPath: string;
-  mode: 'soft' | 'mixed' | 'hard';
+  mode: "soft" | "mixed" | "hard";
   commit?: string;
   confirm?: boolean;
 }): Promise<void> {
-  return invoke('git_reset', {
+  return invoke("git_reset", {
     repoPath: params.repoPath,
     mode: params.mode,
     commit: params.commit ?? null,
@@ -1136,7 +1204,7 @@ export async function gitStash(params: {
   repoPath: string;
   message?: string;
 }): Promise<string> {
-  return invoke<string>('git_stash', {
+  return invoke<string>("git_stash", {
     repoPath: params.repoPath,
     message: params.message ?? null,
   });
@@ -1150,7 +1218,7 @@ export async function gitDiff(params: {
   ignoreWhitespace?: boolean;
   paths?: string[];
 }): Promise<string> {
-  return invoke<string>('git_diff', {
+  return invoke<string>("git_diff", {
     repoPath: params.repoPath,
     base: params.base ?? null,
     head: params.head ?? null,
@@ -1164,7 +1232,7 @@ export async function gitGetTree(params: {
   repoPath: string;
   branch?: string;
 }): Promise<PredictedGitTree> {
-  return invoke<PredictedGitTree>('git_get_tree', {
+  return invoke<PredictedGitTree>("git_get_tree", {
     repoPath: params.repoPath,
     branch: params.branch ?? null,
   });
@@ -1175,7 +1243,7 @@ export async function gitWorktreeInspect(params: {
   taskId: string;
   branchName?: string | null;
 }): Promise<GitWorktreeInspectionDto> {
-  return invoke<GitWorktreeInspectionDto>('git_worktree_inspect', {
+  return invoke<GitWorktreeInspectionDto>("git_worktree_inspect", {
     repoPath: params.repoPath,
     taskId: params.taskId,
     branchName: params.branchName ?? null,
@@ -1189,7 +1257,7 @@ export async function gitWorktreeCreate(params: {
   fromRef?: string | null;
   preferredCommitBranch?: string | null;
 }): Promise<GitWorktreeEnsureDto> {
-  return invoke<GitWorktreeEnsureDto>('git_worktree_create', {
+  return invoke<GitWorktreeEnsureDto>("git_worktree_create", {
     repoPath: params.repoPath,
     taskId: params.taskId,
     branchName: params.branchName,
@@ -1204,7 +1272,7 @@ export async function gitWorktreeRemove(params: {
   force?: boolean;
   branchName?: string | null;
 }): Promise<GitWorktreeRemoveDto> {
-  return invoke<GitWorktreeRemoveDto>('git_worktree_remove', {
+  return invoke<GitWorktreeRemoveDto>("git_worktree_remove", {
     repoPath: params.repoPath,
     taskId: params.taskId,
     force: params.force ?? null,
@@ -1217,7 +1285,7 @@ export async function gitPush(params: {
   remote?: string;
   branch?: string;
 }): Promise<GitSyncDto> {
-  return invoke<GitSyncDto>('git_push', {
+  return invoke<GitSyncDto>("git_push", {
     repoPath: params.repoPath,
     remote: params.remote ?? null,
     branch: params.branch ?? null,
@@ -1229,7 +1297,7 @@ export async function gitFetch(params: {
   remote?: string;
   branch?: string;
 }): Promise<GitSyncDto> {
-  return invoke<GitSyncDto>('git_fetch', {
+  return invoke<GitSyncDto>("git_fetch", {
     repoPath: params.repoPath,
     remote: params.remote ?? null,
     branch: params.branch ?? null,
@@ -1241,7 +1309,7 @@ export async function gitPull(params: {
   remote?: string;
   branch?: string;
 }): Promise<GitSyncDto> {
-  return invoke<GitSyncDto>('git_pull', {
+  return invoke<GitSyncDto>("git_pull", {
     repoPath: params.repoPath,
     remote: params.remote ?? null,
     branch: params.branch ?? null,
@@ -1251,7 +1319,7 @@ export async function gitPull(params: {
 export async function macroBranchEnsure(params?: {
   workspacePath?: string | null;
 }): Promise<MacroBranchSyncDto> {
-  return invoke<MacroBranchSyncDto>('macro_branch_ensure', {
+  return invoke<MacroBranchSyncDto>("macro_branch_ensure", {
     workspacePath: params?.workspacePath ?? null,
   });
 }
@@ -1259,7 +1327,7 @@ export async function macroBranchEnsure(params?: {
 export async function macroBranchStatus(params?: {
   workspacePath?: string | null;
 }): Promise<MacroBranchSyncDto> {
-  return invoke<MacroBranchSyncDto>('macro_branch_status', {
+  return invoke<MacroBranchSyncDto>("macro_branch_status", {
     workspacePath: params?.workspacePath ?? null,
   });
 }
@@ -1268,7 +1336,7 @@ export async function macroBranchCommitIfDirty(params?: {
   message?: string;
   workspacePath?: string | null;
 }): Promise<MacroBranchSyncDto> {
-  return invoke<MacroBranchSyncDto>('macro_branch_commit_if_dirty', {
+  return invoke<MacroBranchSyncDto>("macro_branch_commit_if_dirty", {
     message: params?.message ?? null,
     workspacePath: params?.workspacePath ?? null,
   });
@@ -1277,7 +1345,7 @@ export async function macroBranchCommitIfDirty(params?: {
 export async function macroBranchPush(params?: {
   workspacePath?: string | null;
 }): Promise<MacroBranchSyncDto> {
-  return invoke<MacroBranchSyncDto>('macro_branch_push', {
+  return invoke<MacroBranchSyncDto>("macro_branch_push", {
     workspacePath: params?.workspacePath ?? null,
   });
 }
@@ -1285,7 +1353,7 @@ export async function macroBranchPush(params?: {
 export async function macroBranchPull(params?: {
   workspacePath?: string | null;
 }): Promise<MacroBranchSyncDto> {
-  return invoke<MacroBranchSyncDto>('macro_branch_pull', {
+  return invoke<MacroBranchSyncDto>("macro_branch_pull", {
     workspacePath: params?.workspacePath ?? null,
   });
 }
@@ -1293,31 +1361,34 @@ export async function macroBranchPull(params?: {
 // ============ Workspace ============
 
 export async function workspaceGetBootstrap(): Promise<WorkspaceBootstrapDto> {
-  return invoke<WorkspaceBootstrapDto>('workspace_get_bootstrap');
+  return invoke<WorkspaceBootstrapDto>("workspace_get_bootstrap");
 }
 
 export async function workspaceListProjects(): Promise<ProjectGroup[]> {
-  return invoke<ProjectGroup[]>('workspace_list_projects');
+  return invoke<ProjectGroup[]>("workspace_list_projects");
 }
 
 export async function workspaceListTasks(): Promise<TaskCatalogDto> {
-  return invoke<TaskCatalogDto>('workspace_list_tasks');
+  return invoke<TaskCatalogDto>("workspace_list_tasks");
 }
 
 export async function workspaceGetMetadata(): Promise<WorkspaceMetadataDto> {
-  return invoke<WorkspaceMetadataDto>('workspace_get_metadata');
+  return invoke<WorkspaceMetadataDto>("workspace_get_metadata");
 }
 
 export async function workspaceGetActiveRoot(): Promise<string> {
-  return invoke<string>('workspace_get_active_root');
+  return invoke<string>("workspace_get_active_root");
 }
 
 export async function workspacePreviewProjectGitSetup(params: {
   path?: string;
 }): Promise<ProjectGitFlowDetection> {
-  return invoke<ProjectGitFlowDetection>('workspace_preview_project_git_setup', {
-    path: params.path ?? null,
-  });
+  return invoke<ProjectGitFlowDetection>(
+    "workspace_preview_project_git_setup",
+    {
+      path: params.path ?? null,
+    },
+  );
 }
 
 export async function workspaceCreateProjectWithGitSetup(params: {
@@ -1329,21 +1400,25 @@ export async function workspaceCreateProjectWithGitSetup(params: {
   gitFlowSettings?: ProjectGitFlowSettings | null;
   gitSetupActions: ProjectGitSetupAction[];
   expectedRepoRootPath?: string | null;
-  expectedSetupState: ProjectGitFlowDetection['setupState'];
+  expectedSetupState: ProjectGitFlowDetection["setupState"];
   expectedRecommendedActionSequence: ProjectGitSetupAction[];
 }): Promise<ProjectGitSetupCommitResult> {
-  return invoke<ProjectGitSetupCommitResult>('workspace_create_project_with_git_setup', {
-    name: params.name,
-    description: params.description,
-    groupId: params.groupId ?? null,
-    groupName: params.groupName ?? null,
-    path: params.path,
-    gitFlowSettings: params.gitFlowSettings ?? null,
-    gitSetupActions: params.gitSetupActions,
-    expectedRepoRootPath: params.expectedRepoRootPath ?? null,
-    expectedSetupState: params.expectedSetupState,
-    expectedRecommendedActionSequence: params.expectedRecommendedActionSequence,
-  });
+  return invoke<ProjectGitSetupCommitResult>(
+    "workspace_create_project_with_git_setup",
+    {
+      name: params.name,
+      description: params.description,
+      groupId: params.groupId ?? null,
+      groupName: params.groupName ?? null,
+      path: params.path,
+      gitFlowSettings: params.gitFlowSettings ?? null,
+      gitSetupActions: params.gitSetupActions,
+      expectedRepoRootPath: params.expectedRepoRootPath ?? null,
+      expectedSetupState: params.expectedSetupState,
+      expectedRecommendedActionSequence:
+        params.expectedRecommendedActionSequence,
+    },
+  );
 }
 
 export async function workspaceUpdateProjectGitFlowWithSetup(params: {
@@ -1351,21 +1426,25 @@ export async function workspaceUpdateProjectGitFlowWithSetup(params: {
   gitFlowSettings: ProjectGitFlowSettings;
   gitSetupActions: ProjectGitSetupAction[];
   expectedRepoRootPath?: string | null;
-  expectedSetupState: ProjectGitFlowDetection['setupState'];
+  expectedSetupState: ProjectGitFlowDetection["setupState"];
   expectedRecommendedActionSequence: ProjectGitSetupAction[];
 }): Promise<ProjectGitSetupCommitResult> {
-  return invoke<ProjectGitSetupCommitResult>('workspace_update_project_git_flow_with_setup', {
-    projectId: params.projectId,
-    gitFlowSettings: params.gitFlowSettings,
-    gitSetupActions: params.gitSetupActions,
-    expectedRepoRootPath: params.expectedRepoRootPath ?? null,
-    expectedSetupState: params.expectedSetupState,
-    expectedRecommendedActionSequence: params.expectedRecommendedActionSequence,
-  });
+  return invoke<ProjectGitSetupCommitResult>(
+    "workspace_update_project_git_flow_with_setup",
+    {
+      projectId: params.projectId,
+      gitFlowSettings: params.gitFlowSettings,
+      gitSetupActions: params.gitSetupActions,
+      expectedRepoRootPath: params.expectedRepoRootPath ?? null,
+      expectedSetupState: params.expectedSetupState,
+      expectedRecommendedActionSequence:
+        params.expectedRecommendedActionSequence,
+    },
+  );
 }
 
 export async function workspaceSetActiveRoot(path: string): Promise<string> {
-  return invoke<string>('workspace_set_active_root', { path });
+  return invoke<string>("workspace_set_active_root", { path });
 }
 
 export async function workspaceCreateProject(params: {
@@ -1376,7 +1455,7 @@ export async function workspaceCreateProject(params: {
   path?: string;
   gitFlowSettings?: ProjectGitFlowSettings | null;
 }): Promise<Project> {
-  return invoke<Project>('workspace_create_project', {
+  return invoke<Project>("workspace_create_project", {
     name: params.name,
     description: params.description,
     groupId: params.groupId ?? null,
@@ -1395,7 +1474,7 @@ export async function workspaceImportGitRepo(params: {
   path?: string;
   gitFlowSettings?: ProjectGitFlowSettings | null;
 }): Promise<Project> {
-  return invoke<Project>('workspace_import_git_repo', {
+  return invoke<Project>("workspace_import_git_repo", {
     gitUrl: params.gitUrl,
     projectName: params.projectName,
     branch: params.branch,
@@ -1410,7 +1489,7 @@ export async function workspaceRenameProjectGroup(params: {
   groupId: string;
   name: string;
 }): Promise<ProjectGroup> {
-  return invoke<ProjectGroup>('workspace_rename_project_group', {
+  return invoke<ProjectGroup>("workspace_rename_project_group", {
     groupId: params.groupId,
     name: params.name,
   });
@@ -1420,7 +1499,7 @@ export async function workspaceRenameProject(params: {
   projectId: string;
   name: string;
 }): Promise<Project> {
-  return invoke<Project>('workspace_rename_project', {
+  return invoke<Project>("workspace_rename_project", {
     projectId: params.projectId,
     name: params.name,
   });
@@ -1430,7 +1509,7 @@ export async function workspaceUpdateProjectGitFlow(params: {
   projectId: string;
   gitFlowSettings: ProjectGitFlowSettings;
 }): Promise<Project> {
-  return invoke<Project>('workspace_update_project_git_flow', {
+  return invoke<Project>("workspace_update_project_git_flow", {
     projectId: params.projectId,
     gitFlowSettings: params.gitFlowSettings,
   });
@@ -1441,7 +1520,7 @@ export async function workspaceUpdateProjectAccess(params: {
   userReadOnly: boolean;
   confirmedMigration?: boolean;
 }): Promise<Project> {
-  return invoke<Project>('workspace_update_project_access', {
+  return invoke<Project>("workspace_update_project_access", {
     projectId: params.projectId,
     userReadOnly: params.userReadOnly,
     confirmedMigration: params.confirmedMigration ?? false,
@@ -1452,16 +1531,19 @@ export async function workspacePreviewProjectAccessChange(params: {
   projectId: string;
   targetReadOnly: boolean;
 }): Promise<ProjectAccessChangePreview> {
-  return invoke<ProjectAccessChangePreview>('workspace_preview_project_access_change', {
-    projectId: params.projectId,
-    targetReadOnly: params.targetReadOnly,
-  });
+  return invoke<ProjectAccessChangePreview>(
+    "workspace_preview_project_access_change",
+    {
+      projectId: params.projectId,
+      targetReadOnly: params.targetReadOnly,
+    },
+  );
 }
 
 export async function workspaceArchiveProjectGroup(params: {
   groupId: string;
 }): Promise<ProjectGroup> {
-  return invoke<ProjectGroup>('workspace_archive_project_group', {
+  return invoke<ProjectGroup>("workspace_archive_project_group", {
     groupId: params.groupId,
   });
 }
@@ -1469,7 +1551,7 @@ export async function workspaceArchiveProjectGroup(params: {
 export async function workspaceArchiveProject(params: {
   projectId: string;
 }): Promise<Project> {
-  return invoke<Project>('workspace_archive_project', {
+  return invoke<Project>("workspace_archive_project", {
     projectId: params.projectId,
   });
 }
@@ -1477,7 +1559,7 @@ export async function workspaceArchiveProject(params: {
 export async function workspaceRemoveProjectGroup(params: {
   groupId: string;
 }): Promise<ProjectGroup[]> {
-  return invoke<ProjectGroup[]>('workspace_remove_project_group', {
+  return invoke<ProjectGroup[]>("workspace_remove_project_group", {
     groupId: params.groupId,
   });
 }
@@ -1485,7 +1567,7 @@ export async function workspaceRemoveProjectGroup(params: {
 export async function workspaceRemoveProject(params: {
   projectId: string;
 }): Promise<ProjectGroup[]> {
-  return invoke<ProjectGroup[]>('workspace_remove_project', {
+  return invoke<ProjectGroup[]>("workspace_remove_project", {
     projectId: params.projectId,
   });
 }
@@ -1493,13 +1575,30 @@ export async function workspaceRemoveProject(params: {
 export async function workspaceCloseProject(params: {
   projectId: string;
 }): Promise<ProjectGroup[]> {
-  return invoke<ProjectGroup[]>('workspace_close_project', {
+  return invoke<ProjectGroup[]>("workspace_close_project", {
     projectId: params.projectId,
   });
 }
 
 export async function workspaceGetProjectRegistryDiagnostics(): Promise<ProjectRegistryDiagnosticsDto> {
-  return invoke<ProjectRegistryDiagnosticsDto>('workspace_get_project_registry_diagnostics');
+  return invoke<ProjectRegistryDiagnosticsDto>(
+    "workspace_get_project_registry_diagnostics",
+  );
+}
+
+export async function workspaceRecoverMissingMetadata(params: {
+  attemptPull: boolean;
+  projects: WorkspaceMetadataRecoveryHintDto[];
+}): Promise<WorkspaceMetadataRecoveryReportDto> {
+  return invoke<WorkspaceMetadataRecoveryReportDto>(
+    "workspace_recover_missing_metadata",
+    {
+      request: {
+        attemptPull: params.attemptPull,
+        projects: params.projects,
+      },
+    },
+  );
 }
 
 export async function workspaceCreateManualFeatureDraft(params: {
@@ -1512,16 +1611,19 @@ export async function workspaceCreateManualFeatureDraft(params: {
   title?: string | null;
   description?: string | null;
 }): Promise<WorkspaceManualFeatureDto> {
-  return invoke<WorkspaceManualFeatureDto>('workspace_create_manual_feature_draft', {
-    taskId: params.taskId,
-    conversationId: params.conversationId,
-    groupId: params.groupId ?? null,
-    projectIds: params.projectIds,
-    contextProjectIds: params.contextProjectIds ?? [],
-    baseBranch: params.baseBranch ?? null,
-    title: params.title ?? null,
-    description: params.description ?? null,
-  });
+  return invoke<WorkspaceManualFeatureDto>(
+    "workspace_create_manual_feature_draft",
+    {
+      taskId: params.taskId,
+      conversationId: params.conversationId,
+      groupId: params.groupId ?? null,
+      projectIds: params.projectIds,
+      contextProjectIds: params.contextProjectIds ?? [],
+      baseBranch: params.baseBranch ?? null,
+      title: params.title ?? null,
+      description: params.description ?? null,
+    },
+  );
 }
 
 export async function workspaceFinalizeManualFeature(params: {
@@ -1531,24 +1633,29 @@ export async function workspaceFinalizeManualFeature(params: {
   description: string;
   featureSlug: string;
 }): Promise<WorkspaceManualFeatureDto> {
-  return invoke<WorkspaceManualFeatureDto>('workspace_finalize_manual_feature', {
-    taskId: params.taskId,
-    conversationId: params.conversationId ?? null,
-    title: params.title,
-    description: params.description,
-    featureSlug: params.featureSlug,
-  });
+  return invoke<WorkspaceManualFeatureDto>(
+    "workspace_finalize_manual_feature",
+    {
+      taskId: params.taskId,
+      conversationId: params.conversationId ?? null,
+      title: params.title,
+      description: params.description,
+      featureSlug: params.featureSlug,
+    },
+  );
 }
 
-export async function workspaceDeleteManualFeatureDraft(taskId: string): Promise<void> {
-  return invoke('workspace_delete_manual_feature_draft', { taskId });
+export async function workspaceDeleteManualFeatureDraft(
+  taskId: string,
+): Promise<void> {
+  return invoke("workspace_delete_manual_feature_draft", { taskId });
 }
 
 export async function workspaceRenameManualFeature(params: {
   taskId: string;
   title: string;
 }): Promise<WorkspaceManualFeatureDto> {
-  return invoke<WorkspaceManualFeatureDto>('workspace_rename_manual_feature', {
+  return invoke<WorkspaceManualFeatureDto>("workspace_rename_manual_feature", {
     taskId: params.taskId,
     title: params.title,
   });
@@ -1559,26 +1666,32 @@ export async function workspaceArchiveManualFeature(params: {
   reason?: string | null;
   mergedAt?: string | null;
 }): Promise<WorkspaceManualFeatureDto> {
-  return invoke<WorkspaceManualFeatureDto>('workspace_archive_manual_feature', {
+  return invoke<WorkspaceManualFeatureDto>("workspace_archive_manual_feature", {
     taskId: params.taskId,
     reason: params.reason ?? null,
     mergedAt: params.mergedAt ?? null,
   });
 }
 
-export async function workspaceRestoreManualFeature(taskId: string): Promise<WorkspaceManualFeatureDto> {
-  return invoke<WorkspaceManualFeatureDto>('workspace_restore_manual_feature', { taskId });
+export async function workspaceRestoreManualFeature(
+  taskId: string,
+): Promise<WorkspaceManualFeatureDto> {
+  return invoke<WorkspaceManualFeatureDto>("workspace_restore_manual_feature", {
+    taskId,
+  });
 }
 
-export async function workspaceDeleteManualFeature(taskId: string): Promise<void> {
-  return invoke('workspace_delete_manual_feature', { taskId });
+export async function workspaceDeleteManualFeature(
+  taskId: string,
+): Promise<void> {
+  return invoke("workspace_delete_manual_feature", { taskId });
 }
 
 export async function workspaceUpdateStandaloneTaskStatus(params: {
   taskId: string;
   status: string;
 }): Promise<void> {
-  return invoke('workspace_update_standalone_task_status', {
+  return invoke("workspace_update_standalone_task_status", {
     taskId: params.taskId,
     status: params.status,
   });
@@ -1586,15 +1699,17 @@ export async function workspaceUpdateStandaloneTaskStatus(params: {
 
 // ============ Provider Models ============
 
-export async function listProviderModels(providerId: string): Promise<DbAiModel[]> {
-  return invoke<DbAiModel[]>('db_list_provider_models', { providerId });
+export async function listProviderModels(
+  providerId: string,
+): Promise<DbAiModel[]> {
+  return invoke<DbAiModel[]>("db_list_provider_models", { providerId });
 }
 
 export async function upsertProviderModels(params: {
   providerId: string;
   models: DbProviderModelInput[];
 }): Promise<DbAiModel[]> {
-  return invoke<DbAiModel[]>('db_upsert_provider_models', {
+  return invoke<DbAiModel[]>("db_upsert_provider_models", {
     providerId: params.providerId,
     models: params.models,
   });
@@ -1605,7 +1720,7 @@ export async function registerManualModel(params: {
   modelId: string;
   name: string;
 }): Promise<DbAiModel[]> {
-  return invoke<DbAiModel[]>('db_register_manual_model', {
+  return invoke<DbAiModel[]>("db_register_manual_model", {
     providerId: params.providerId,
     modelId: params.modelId,
     name: params.name,
@@ -1618,7 +1733,7 @@ export async function updateManualModel(params: {
   nextModelId: string;
   name: string;
 }): Promise<DbAiModel[]> {
-  return invoke<DbAiModel[]>('db_update_manual_model', {
+  return invoke<DbAiModel[]>("db_update_manual_model", {
     providerId: params.providerId,
     currentModelId: params.currentModelId,
     nextModelId: params.nextModelId,
@@ -1630,7 +1745,7 @@ export async function deleteManualModel(params: {
   providerId: string;
   modelId: string;
 }): Promise<DbAiModel[]> {
-  return invoke<DbAiModel[]>('db_delete_manual_model', {
+  return invoke<DbAiModel[]>("db_delete_manual_model", {
     providerId: params.providerId,
     modelId: params.modelId,
   });
@@ -1641,7 +1756,7 @@ export async function setProviderModelEnabled(params: {
   modelId: string;
   enabled: boolean;
 }): Promise<void> {
-  return invoke('db_set_provider_model_enabled', {
+  return invoke("db_set_provider_model_enabled", {
     providerId: params.providerId,
     modelId: params.modelId,
     enabled: params.enabled,
@@ -1652,7 +1767,7 @@ export async function setAllProviderModelsEnabled(params: {
   providerId: string;
   enabled: boolean;
 }): Promise<void> {
-  return invoke('db_set_all_provider_models_enabled', {
+  return invoke("db_set_all_provider_models_enabled", {
     providerId: params.providerId,
     enabled: params.enabled,
   });
@@ -1660,15 +1775,17 @@ export async function setAllProviderModelsEnabled(params: {
 
 // ============ Provider Settings ============
 
-export async function getProviderSettings(providerId: string): Promise<DbProviderSettings> {
-  return invoke<DbProviderSettings>('db_get_provider_settings', { providerId });
+export async function getProviderSettings(
+  providerId: string,
+): Promise<DbProviderSettings> {
+  return invoke<DbProviderSettings>("db_get_provider_settings", { providerId });
 }
 
 export async function updateProviderSettings(params: {
   providerId: string;
   filterFreeModels: boolean;
 }): Promise<void> {
-  return invoke('db_update_provider_settings', {
+  return invoke("db_update_provider_settings", {
     providerId: params.providerId,
     filterFreeModels: params.filterFreeModels,
   });
@@ -1677,32 +1794,39 @@ export async function updateProviderSettings(params: {
 // ============ Local App State ============
 
 export async function dbGetSetting(key: string): Promise<string | null> {
-  return invoke<string | null>('db_get_setting', { key });
+  return invoke<string | null>("db_get_setting", { key });
 }
 
-export async function dbSetSetting(params: { key: string; value: string }): Promise<void> {
-  return invoke('db_set_setting', {
+export async function dbSetSetting(params: {
+  key: string;
+  value: string;
+}): Promise<void> {
+  return invoke("db_set_setting", {
     key: params.key,
     value: params.value,
   });
 }
 
-export async function dbGetAppSetting(key: string): Promise<DbAppSetting | null> {
-  return invoke<DbAppSetting | null>('db_get_app_setting', { key });
+export async function dbGetAppSetting(
+  key: string,
+): Promise<DbAppSetting | null> {
+  return invoke<DbAppSetting | null>("db_get_app_setting", { key });
 }
 
 export async function dbSetAppSetting(params: {
   key: string;
   valueJson: string;
 }): Promise<DbAppSetting> {
-  return invoke<DbAppSetting>('db_set_app_setting', {
+  return invoke<DbAppSetting>("db_set_app_setting", {
     key: params.key,
     value_json: params.valueJson,
   });
 }
 
-export async function dbGetProjectContextState(projectId: string): Promise<DbProjectContextState | null> {
-  return invoke<DbProjectContextState | null>('db_get_project_context_state', {
+export async function dbGetProjectContextState(
+  projectId: string,
+): Promise<DbProjectContextState | null> {
+  return invoke<DbProjectContextState | null>("db_get_project_context_state", {
     project_id: projectId,
   });
 }
@@ -1716,7 +1840,7 @@ export async function dbUpsertProjectContextState(params: {
   architectConversationId?: string | null;
   implementConversationId?: string | null;
 }): Promise<DbProjectContextState> {
-  return invoke<DbProjectContextState>('db_upsert_project_context_state', {
+  return invoke<DbProjectContextState>("db_upsert_project_context_state", {
     input: {
       project_id: params.projectId,
       group_id: params.groupId ?? null,
@@ -1729,14 +1853,16 @@ export async function dbUpsertProjectContextState(params: {
   });
 }
 
-export async function dbDeleteProjectContextState(projectId: string): Promise<void> {
-  return invoke('db_delete_project_context_state', {
+export async function dbDeleteProjectContextState(
+  projectId: string,
+): Promise<void> {
+  return invoke("db_delete_project_context_state", {
     project_id: projectId,
   });
 }
 
 export async function dbGetSessionContextState(): Promise<DbSessionContextState | null> {
-  return invoke<DbSessionContextState | null>('db_get_session_context_state');
+  return invoke<DbSessionContextState | null>("db_get_session_context_state");
 }
 
 export async function dbUpsertSessionContextState(params: {
@@ -1744,7 +1870,7 @@ export async function dbUpsertSessionContextState(params: {
   selectedProjectId?: string | null;
   mode?: AppMode | null;
 }): Promise<DbSessionContextState> {
-  return invoke<DbSessionContextState>('db_upsert_session_context_state', {
+  return invoke<DbSessionContextState>("db_upsert_session_context_state", {
     input: {
       selected_group_id: params.selectedGroupId ?? null,
       selected_project_id: params.selectedProjectId ?? null,
@@ -1759,14 +1885,17 @@ export async function dbReconcileProjectRegistry(params: {
   selectedGroupId?: string | null;
   selectedProjectId?: string | null;
 }): Promise<DbProjectRegistryRepairReport> {
-  return invoke<DbProjectRegistryRepairReport>('db_reconcile_project_registry', {
-    input: {
-      valid_group_ids: params.validGroupIds,
-      valid_project_ids: params.validProjectIds,
-      selected_group_id: params.selectedGroupId ?? null,
-      selected_project_id: params.selectedProjectId ?? null,
+  return invoke<DbProjectRegistryRepairReport>(
+    "db_reconcile_project_registry",
+    {
+      input: {
+        valid_group_ids: params.validGroupIds,
+        valid_project_ids: params.validProjectIds,
+        selected_group_id: params.selectedGroupId ?? null,
+        selected_project_id: params.selectedProjectId ?? null,
+      },
     },
-  });
+  );
 }
 
 export async function openExternalTarget(params: {
@@ -1774,7 +1903,7 @@ export async function openExternalTarget(params: {
   action: ExternalOpenAction;
   appId: string;
 }): Promise<void> {
-  return invoke('open_external_target', {
+  return invoke("open_external_target", {
     targetPath: params.targetPath,
     action: params.action,
     appId: params.appId,
@@ -1782,7 +1911,7 @@ export async function openExternalTarget(params: {
 }
 
 export async function listExternalApps(): Promise<ExternalAppCatalogDto> {
-  return invoke<ExternalAppCatalogDto>('list_external_apps');
+  return invoke<ExternalAppCatalogDto>("list_external_apps");
 }
 
 export async function validateToolExecution(params: {
@@ -1790,15 +1919,17 @@ export async function validateToolExecution(params: {
   toolId: string;
   path?: string;
 }): Promise<ToolValidationResultDto> {
-  return invoke<ToolValidationResultDto>('tool_validate_execution', {
+  return invoke<ToolValidationResultDto>("tool_validate_execution", {
     mode: params.mode,
     toolId: params.toolId,
     path: params.path,
   });
 }
 
-export async function getToolModePolicy(mode: AppMode): Promise<ToolModePolicyDto> {
-  return invoke<ToolModePolicyDto>('tool_get_mode_policy', { mode });
+export async function getToolModePolicy(
+  mode: AppMode,
+): Promise<ToolModePolicyDto> {
+  return invoke<ToolModePolicyDto>("tool_get_mode_policy", { mode });
 }
 
 export async function executeWorkspaceTool(params: {
@@ -1808,7 +1939,7 @@ export async function executeWorkspaceTool(params: {
   workspacePath?: string | null;
   workspaceScope?: WorkspaceScope;
 }): Promise<string> {
-  return invoke<string>('tool_execute_workspace', {
+  return invoke<string>("tool_execute_workspace", {
     mode: params.mode,
     toolId: params.toolId,
     args: params.args,
@@ -1821,7 +1952,7 @@ export async function terminalCreateSession(params: {
   projectId: string;
   cwd?: string | null;
 }): Promise<TerminalSessionDto> {
-  return invoke<TerminalSessionDto>('terminal_create_session', {
+  return invoke<TerminalSessionDto>("terminal_create_session", {
     projectId: params.projectId,
     cwd: params.cwd ?? null,
   });
@@ -1832,34 +1963,38 @@ export async function terminalRun(params: {
   command: string;
   timeoutMs?: number | null;
 }): Promise<TerminalSessionDto> {
-  return invoke<TerminalSessionDto>('terminal_run', {
+  return invoke<TerminalSessionDto>("terminal_run", {
     sessionId: params.sessionId,
     command: params.command,
     timeoutMs: params.timeoutMs ?? null,
   });
 }
 
-export async function terminalRead(sessionId: string): Promise<TerminalSessionDto> {
-  return invoke<TerminalSessionDto>('terminal_read', { sessionId });
+export async function terminalRead(
+  sessionId: string,
+): Promise<TerminalSessionDto> {
+  return invoke<TerminalSessionDto>("terminal_read", { sessionId });
 }
 
-export async function terminalKill(sessionId: string): Promise<TerminalSessionDto> {
-  return invoke<TerminalSessionDto>('terminal_kill', { sessionId });
+export async function terminalKill(
+  sessionId: string,
+): Promise<TerminalSessionDto> {
+  return invoke<TerminalSessionDto>("terminal_kill", { sessionId });
 }
 
 export async function terminalListTabs(): Promise<TerminalTabDto[]> {
-  return invoke<TerminalTabDto[]>('terminal_list_tabs');
+  return invoke<TerminalTabDto[]>("terminal_list_tabs");
 }
 
 export async function terminalCreateTab(params: {
-  kind: 'manual' | 'task';
+  kind: "manual" | "task";
   projectId: string;
   cwd?: string | null;
   title: string;
   taskId?: string | null;
   promptContext?: TerminalPromptContextInput | null;
 }): Promise<TerminalTabDto> {
-  return invoke<TerminalTabDto>('terminal_create_tab', {
+  return invoke<TerminalTabDto>("terminal_create_tab", {
     kind: params.kind,
     projectId: params.projectId,
     cwd: params.cwd ?? null,
@@ -1869,12 +2004,14 @@ export async function terminalCreateTab(params: {
   });
 }
 
-export async function terminalReconnectTab(tabId: string): Promise<TerminalTabDto> {
-  return invoke<TerminalTabDto>('terminal_reconnect_tab', { tabId });
+export async function terminalReconnectTab(
+  tabId: string,
+): Promise<TerminalTabDto> {
+  return invoke<TerminalTabDto>("terminal_reconnect_tab", { tabId });
 }
 
 export async function terminalReadTab(tabId: string): Promise<TerminalTabDto> {
-  return invoke<TerminalTabDto>('terminal_read_tab', { tabId });
+  return invoke<TerminalTabDto>("terminal_read_tab", { tabId });
 }
 
 export async function terminalUpdateTabMetadata(params: {
@@ -1882,7 +2019,7 @@ export async function terminalUpdateTabMetadata(params: {
   title: string;
   promptContext?: TerminalPromptContextInput | null;
 }): Promise<TerminalTabDto> {
-  return invoke<TerminalTabDto>('terminal_update_tab_metadata', {
+  return invoke<TerminalTabDto>("terminal_update_tab_metadata", {
     tabId: params.tabId,
     title: params.title,
     promptContext: params.promptContext ?? null,
@@ -1893,7 +2030,7 @@ export async function terminalWriteInput(params: {
   tabId: string;
   input: string;
 }): Promise<void> {
-  return invoke('terminal_write_input', {
+  return invoke("terminal_write_input", {
     tabId: params.tabId,
     input: params.input,
   });
@@ -1904,7 +2041,7 @@ export async function terminalResize(params: {
   cols: number;
   rows: number;
 }): Promise<void> {
-  return invoke('terminal_resize', {
+  return invoke("terminal_resize", {
     tabId: params.tabId,
     cols: params.cols,
     rows: params.rows,
@@ -1915,22 +2052,24 @@ export async function terminalExecuteCommand(params: {
   tabId: string;
   command: string;
 }): Promise<TerminalTabDto> {
-  return invoke<TerminalTabDto>('terminal_execute_command', {
+  return invoke<TerminalTabDto>("terminal_execute_command", {
     tabId: params.tabId,
     command: params.command,
   });
 }
 
-export async function terminalInterrupt(tabId: string): Promise<TerminalTabDto> {
-  return invoke<TerminalTabDto>('terminal_interrupt', { tabId });
+export async function terminalInterrupt(
+  tabId: string,
+): Promise<TerminalTabDto> {
+  return invoke<TerminalTabDto>("terminal_interrupt", { tabId });
 }
 
 export async function terminalClearTab(tabId: string): Promise<TerminalTabDto> {
-  return invoke<TerminalTabDto>('terminal_clear_tab', { tabId });
+  return invoke<TerminalTabDto>("terminal_clear_tab", { tabId });
 }
 
 export async function terminalCloseTab(tabId: string): Promise<void> {
-  return invoke('terminal_close_tab', { tabId });
+  return invoke("terminal_close_tab", { tabId });
 }
 
 // ============ Utility ============
@@ -1940,8 +2079,8 @@ export async function terminalCloseTab(tabId: string): Promise<void> {
  */
 export function isTauriAvailable(): boolean {
   return (
-    typeof window !== 'undefined' &&
-    ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
+    typeof window !== "undefined" &&
+    ("__TAURI__" in window || "__TAURI_INTERNALS__" in window)
   );
 }
 
@@ -1950,17 +2089,17 @@ export function isTauriAvailable(): boolean {
  */
 export async function safeInvoke<T>(
   fn: () => Promise<T>,
-  fallback: T
+  fallback: T,
 ): Promise<T> {
   if (!isTauriAvailable()) {
-    console.warn('Tauri not available, using fallback');
+    console.warn("Tauri not available, using fallback");
     return fallback;
   }
-  
+
   try {
     return await fn();
   } catch (error) {
-    console.error('Tauri invoke error:', error);
+    console.error("Tauri invoke error:", error);
     throw error;
   }
 }

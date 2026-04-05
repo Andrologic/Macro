@@ -4,25 +4,31 @@ use crate::core::error::{BackendError, Result};
 use crate::db::models::GitWorktreeRecord;
 use crate::git::detect_preferred_git_flow_branches;
 use crate::git::repo::get_status_options;
+use crate::git::MACRO_BRANCH_NAME;
 use chrono::Utc;
-use git2::{BranchType, IndexAddOption, Repository, RepositoryInitOptions, Signature};
+use git2::{
+    BranchType, IndexAddOption, Oid, Repository, RepositoryInitOptions, ResetType, Signature, Sort,
+};
 use metadata::{
     CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, PlanDto,
     ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto, ProjectAccessMigrationSummaryDto,
     ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
     ProjectMetadataDto, ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto,
-    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceState, WorkspaceTaskCatalogDto,
-    WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
+    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceMetadataRecoveryHintDto,
+    WorkspaceMetadataRecoveryReportDto, WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState,
+    WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use tokio::fs;
 
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
 const LEGACY_WORKSPACE_META_DIR: &str = ".macro";
+const DEFAULT_REMOTE_NAME: &str = "origin";
 const AUTO_DETECTED_MAIN_BRANCH_NAMES: &[&str] = &["main", "master"];
 const AUTO_DETECTED_BASE_BRANCH_NAMES: &[&str] = &["develop", "dev", "main", "master"];
 const PROJECT_GIT_SETUP_READY: &str = "ready";
@@ -83,6 +89,10 @@ enum GitSetupRollbackStep {
 
 fn count_projects(groups: &[ProjectGroupDto]) -> usize {
     groups.iter().map(|group| group.projects.len()).sum()
+}
+
+fn short_oid(oid: Oid) -> String {
+    oid.to_string().chars().take(7).collect()
 }
 
 fn absolutize_path(path: &Path) -> PathBuf {
@@ -3010,6 +3020,405 @@ fn legacy_workspace_state_path(metadata_root: &Path) -> PathBuf {
         .join(WORKSPACE_STATE_FILE)
 }
 
+fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
+    let primary_path = workspace_state_path(metadata_root);
+    let legacy_path = legacy_workspace_state_path(metadata_root);
+    let path = if primary_path.exists() {
+        primary_path
+    } else if legacy_path.exists() {
+        legacy_path
+    } else {
+        return Ok(None);
+    };
+
+    let content = std::fs::read_to_string(&path).map_err(|error| BackendError::Filesystem {
+        message: format!("Failed to read workspace state: {}", error),
+    })?;
+
+    let state: WorkspaceState = serde_json::from_str(&content).map_err(|error| {
+        BackendError::Validation(format!("Invalid workspace state format: {}", error))
+    })?;
+
+    Ok(Some(state))
+}
+
+fn persist_state_sync(metadata_root: &Path, state: &WorkspaceState) -> Result<()> {
+    std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
+        message: format!("Failed to create workspace metadata directory: {}", error),
+    })?;
+
+    let serialized =
+        serde_json::to_string_pretty(state).map_err(|error| BackendError::Internal {
+            message: format!("Failed to serialize workspace state: {}", error),
+        })?;
+
+    std::fs::write(workspace_state_path(metadata_root), serialized).map_err(|error| {
+        BackendError::Filesystem {
+            message: format!("Failed to write workspace state: {}", error),
+        }
+    })?;
+
+    Ok(())
+}
+
+fn load_state_sync(workspace_path: &Path, metadata_root: &Path) -> Result<Option<WorkspaceState>> {
+    let Some(state) = load_raw_state_sync(metadata_root)? else {
+        return Ok(None);
+    };
+
+    let (sanitized_state, repair_report) = sanitize_workspace_state(workspace_path, state);
+    if repair_report.has_repairs() {
+        persist_state_sync(metadata_root, &sanitized_state)?;
+    }
+
+    Ok(Some(sanitized_state))
+}
+
+fn metadata_statuses(repo: &Repository) -> Result<(bool, bool)> {
+    let statuses = repo.statuses(Some(&mut get_status_options()))?;
+    let has_conflicts = statuses.iter().any(|entry| entry.status().is_conflicted())
+        || repo.path().join("MERGE_HEAD").exists();
+    let is_dirty = !statuses.is_empty();
+    Ok((is_dirty, has_conflicts))
+}
+
+fn has_macro_upstream(repo: &Repository) -> bool {
+    repo.find_branch(MACRO_BRANCH_NAME, BranchType::Local)
+        .ok()
+        .and_then(|branch| branch.upstream().ok())
+        .is_some()
+}
+
+fn pull_macro_branch_best_effort(
+    repo: &Repository,
+    metadata_root: &Path,
+) -> (bool, bool, Option<String>) {
+    if repo.find_remote(DEFAULT_REMOTE_NAME).is_err() || !has_macro_upstream(repo) {
+        return (false, false, None);
+    }
+
+    let output = Command::new("git")
+        .current_dir(metadata_root)
+        .args([
+            "pull",
+            "--no-rebase",
+            DEFAULT_REMOTE_NAME,
+            MACRO_BRANCH_NAME,
+        ])
+        .output();
+
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let details = if stdout.is_empty() && stderr.is_empty() {
+                None
+            } else if stdout.is_empty() {
+                Some(stderr)
+            } else if stderr.is_empty() {
+                Some(stdout)
+            } else {
+                Some(format!("{}\n{}", stdout, stderr))
+            };
+            (true, output.status.success(), details)
+        }
+        Err(error) => (
+            true,
+            false,
+            Some(format!(
+                "Failed to pull @macro metadata before recovery: {}",
+                error
+            )),
+        ),
+    }
+}
+
+fn try_read_workspace_state_from_tree(
+    repo: &Repository,
+    tree: &git2::Tree<'_>,
+    path: &str,
+) -> Option<WorkspaceState> {
+    let entry = tree.get_path(Path::new(path)).ok()?;
+    let object = entry.to_object(repo).ok()?;
+    let blob = object.as_blob()?;
+    let content = std::str::from_utf8(blob.content()).ok()?;
+    serde_json::from_str::<WorkspaceState>(content).ok()
+}
+
+fn is_workspace_state_exploitable(state: &WorkspaceState) -> bool {
+    !state.project_groups.is_empty()
+        || state.current_plan.is_some()
+        || !state.plan_nodes.is_empty()
+        || !state.predicted_branches.is_empty()
+        || !state.manual_features.is_empty()
+}
+
+fn find_last_valid_metadata_commit(repo: &Repository) -> Result<Option<(Oid, WorkspaceState)>> {
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push_ref(&format!("refs/heads/{}", MACRO_BRANCH_NAME))?;
+    let _ = revwalk.set_sorting(Sort::TIME);
+
+    for oid in revwalk {
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        let tree = commit.tree()?;
+        let state =
+            try_read_workspace_state_from_tree(repo, &tree, WORKSPACE_STATE_FILE).or_else(|| {
+                try_read_workspace_state_from_tree(
+                    repo,
+                    &tree,
+                    &format!("{}/{}", LEGACY_WORKSPACE_META_DIR, WORKSPACE_STATE_FILE),
+                )
+            });
+        if let Some(state) = state.filter(is_workspace_state_exploitable) {
+            return Ok(Some((oid, state)));
+        }
+    }
+
+    Ok(None)
+}
+
+fn project_name_from_hint(hint: &WorkspaceMetadataRecoveryHintDto, resolved_path: &Path) -> String {
+    let trimmed = hint.name.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+
+    resolved_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Recovered project")
+        .to_string()
+}
+
+fn reconstruct_workspace_state_from_hints(
+    workspace_path: &Path,
+    hints: &[WorkspaceMetadataRecoveryHintDto],
+) -> WorkspaceState {
+    #[derive(Clone)]
+    struct RecoveryCandidate {
+        project_id: String,
+        group_id: Option<String>,
+        name: String,
+        path: String,
+        normalized_path: String,
+    }
+
+    let mut seen_paths = HashSet::new();
+    let mut candidates: Vec<RecoveryCandidate> = Vec::new();
+
+    for hint in hints {
+        let raw_path = hint.path.trim();
+        if raw_path.is_empty() {
+            continue;
+        }
+
+        let resolved_path = resolve_project_path(workspace_path, raw_path);
+        if !resolved_path.exists() {
+            continue;
+        }
+
+        let normalized_path = normalized_path_key(&resolved_path);
+        if normalized_path.trim().is_empty() || !seen_paths.insert(normalized_path.clone()) {
+            continue;
+        }
+
+        candidates.push(RecoveryCandidate {
+            project_id: hint.project_id.trim().to_string(),
+            group_id: hint.group_id.as_ref().map(|value| value.trim().to_string()),
+            name: project_name_from_hint(hint, &resolved_path),
+            path: raw_path.to_string(),
+            normalized_path,
+        });
+    }
+
+    if candidates.is_empty() {
+        return WorkspaceState::default();
+    }
+
+    let mut project_id_counts = HashMap::<String, usize>::new();
+    for candidate in &candidates {
+        if !candidate.project_id.is_empty() {
+            *project_id_counts
+                .entry(candidate.project_id.clone())
+                .or_insert(0) += 1;
+        }
+    }
+
+    let mut groups_by_key = HashMap::<String, Vec<RecoveryCandidate>>::new();
+    let mut group_order: Vec<String> = Vec::new();
+    for candidate in candidates {
+        let key = candidate
+            .group_id
+            .as_ref()
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .unwrap_or_else(|| format!("recovered-group-{}", candidate.normalized_path));
+        if !groups_by_key.contains_key(&key) {
+            group_order.push(key.clone());
+        }
+        groups_by_key.entry(key).or_default().push(candidate);
+    }
+
+    let project_groups = group_order
+        .into_iter()
+        .filter_map(|group_key| {
+            let group_candidates = groups_by_key.remove(&group_key)?;
+            let projects = group_candidates
+                .iter()
+                .map(|candidate| {
+                    let mut project = build_project(
+                        candidate.name.as_str(),
+                        "",
+                        Some(candidate.path.as_str()),
+                        workspace_path,
+                        None,
+                    );
+                    if project_id_counts.get(&candidate.project_id).copied() == Some(1) {
+                        project.id = candidate.project_id.clone();
+                    }
+                    project.name = candidate.name.clone();
+                    project
+                })
+                .collect::<Vec<_>>();
+            let group_name = if projects.len() == 1 {
+                projects[0].name.clone()
+            } else {
+                "Recovered project group".to_string()
+            };
+            Some(ProjectGroupDto {
+                id: group_key,
+                name: group_name,
+                is_open: true,
+                projects,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    WorkspaceState {
+        version: WorkspaceState::default().version,
+        project_groups,
+        current_plan: None,
+        plan_nodes: Vec::new(),
+        predicted_branches: Vec::new(),
+        manual_features: Vec::new(),
+    }
+}
+
+fn append_report_message(base: Option<String>, extra: Option<String>) -> Option<String> {
+    match (
+        base.filter(|value| !value.trim().is_empty()),
+        extra.filter(|value| !value.trim().is_empty()),
+    ) {
+        (Some(base), Some(extra)) => Some(format!("{}\n{}", base, extra)),
+        (Some(base), None) => Some(base),
+        (None, Some(extra)) => Some(extra),
+        (None, None) => None,
+    }
+}
+
+pub(crate) fn recover_missing_metadata_sync(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: &WorkspaceRecoverMissingMetadataRequestDto,
+) -> Result<WorkspaceMetadataRecoveryReportDto> {
+    let mut report = WorkspaceMetadataRecoveryReportDto {
+        status: "none".to_string(),
+        restored_commit: None,
+        pull_attempted: false,
+        pull_succeeded: false,
+        message: None,
+    };
+
+    let repo = Repository::open(metadata_root).ok();
+    if let Some(repo) = repo.as_ref() {
+        let (is_dirty, has_conflicts) = metadata_statuses(repo)?;
+        if has_conflicts {
+            report.status = "blocked_conflict".to_string();
+            report.message = Some(
+                "Automatic @macro recovery was skipped because the metadata worktree has unresolved conflicts."
+                    .to_string(),
+            );
+            return Ok(report);
+        }
+        if is_dirty {
+            report.status = "blocked_dirty".to_string();
+            report.message = Some(
+                "Automatic @macro recovery was skipped because the metadata worktree has local changes."
+                    .to_string(),
+            );
+            return Ok(report);
+        }
+
+        if request.attempt_pull {
+            let (attempted, succeeded, pull_message) =
+                pull_macro_branch_best_effort(repo, metadata_root);
+            report.pull_attempted = attempted;
+            report.pull_succeeded = succeeded;
+            report.message = append_report_message(report.message.take(), pull_message);
+        }
+    }
+
+    let metadata_missing = match load_raw_state_sync(metadata_root) {
+        Ok(Some(_)) => false,
+        Ok(None) => true,
+        Err(BackendError::Validation(_)) => true,
+        Err(error) => return Err(error),
+    };
+
+    if !metadata_missing {
+        return Ok(report);
+    }
+
+    if let Some(repo) = repo.as_ref() {
+        if let Some((oid, restored_state)) = find_last_valid_metadata_commit(repo)? {
+            let object = repo.find_object(oid, None)?;
+            repo.reset(&object, ResetType::Hard, None)?;
+            if load_state_sync(workspace_path, metadata_root)?.is_none() {
+                let (sanitized_state, _) = sanitize_workspace_state(workspace_path, restored_state);
+                persist_state_sync(metadata_root, &sanitized_state)?;
+            }
+            report.status = "restored_from_history".to_string();
+            report.restored_commit = Some(short_oid(oid));
+            report.message = append_report_message(
+                report.message.take(),
+                Some(format!(
+                    "@macro metadata was restored from commit {}.",
+                    short_oid(oid)
+                )),
+            );
+            return Ok(report);
+        }
+    }
+
+    let reconstructed = reconstruct_workspace_state_from_hints(workspace_path, &request.projects);
+    if !is_workspace_state_exploitable(&reconstructed) {
+        report.message = append_report_message(
+            report.message.take(),
+            Some("No recoverable @macro history or local project hints were found.".to_string()),
+        );
+        return Ok(report);
+    }
+
+    let (sanitized_state, _) = sanitize_workspace_state(workspace_path, reconstructed);
+    persist_state_sync(metadata_root, &sanitized_state)?;
+    report.status = "reconstructed_from_hints".to_string();
+    report.message = append_report_message(
+        report.message.take(),
+        Some("@macro metadata was reconfigured from local project hints.".to_string()),
+    );
+    Ok(report)
+}
+
+pub async fn recover_missing_metadata(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: WorkspaceRecoverMissingMetadataRequestDto,
+) -> Result<WorkspaceMetadataRecoveryReportDto> {
+    recover_missing_metadata_sync(workspace_path, metadata_root, &request)
+}
+
 async fn load_or_create_state(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -3917,6 +4326,7 @@ mod tests {
     use git2::{Repository, RepositoryInitOptions};
     use serde_json::json;
     use std::fs as stdfs;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn make_project(id: &str, path: &str) -> ProjectDto {
@@ -3983,6 +4393,61 @@ mod tests {
         }
 
         repo
+    }
+
+    fn checkout_branch(repo: &Repository, branch_name: &str) {
+        let reference = format!("refs/heads/{}", branch_name);
+        if repo.find_reference(&reference).is_err() {
+            let head = repo
+                .head()
+                .expect("head")
+                .peel_to_commit()
+                .expect("head commit");
+            repo.branch(branch_name, &head, false)
+                .expect("create branch");
+        }
+
+        let object = repo
+            .revparse_single(&reference)
+            .expect("resolve branch ref");
+        repo.checkout_tree(&object, Some(git2::build::CheckoutBuilder::new().force()))
+            .expect("checkout branch");
+        repo.set_head(&reference).expect("set head");
+    }
+
+    fn commit_all(repo_root: &Path, message: &str) -> Oid {
+        let add_status = Command::new("git")
+            .current_dir(repo_root)
+            .args(["add", "-A", "."])
+            .status()
+            .expect("git add");
+        assert!(add_status.success());
+
+        let commit_output = Command::new("git")
+            .current_dir(repo_root)
+            .args([
+                "-c",
+                "user.name=Tester",
+                "-c",
+                "user.email=tester@example.com",
+                "commit",
+                "-m",
+                message,
+            ])
+            .output()
+            .expect("git commit");
+        assert!(
+            commit_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&commit_output.stderr)
+        );
+
+        Repository::open(repo_root)
+            .expect("open repo")
+            .head()
+            .expect("head")
+            .target()
+            .expect("head oid")
     }
 
     #[test]
@@ -4392,6 +4857,95 @@ mod tests {
             detection.initial_commit_preview_paths,
             vec!["README.md".to_string()]
         );
+    }
+
+    #[test]
+    fn recover_missing_metadata_restores_latest_valid_history_snapshot() {
+        let temp = TempDir::new().expect("temp dir");
+        init_git_repo(temp.path(), "main", &[]);
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        stdfs::write(project_path.join("README.md"), "hello").expect("write project file");
+
+        let repo = Repository::open(temp.path()).expect("open workspace repo");
+        checkout_branch(&repo, MACRO_BRANCH_NAME);
+
+        let valid_state = WorkspaceState {
+            version: 2,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-1".to_string(),
+                name: "Suite".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-web", "apps/web")],
+            }],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(temp.path(), &valid_state).expect("persist valid state");
+        let valid_commit = commit_all(temp.path(), "valid metadata");
+
+        persist_state_sync(temp.path(), &WorkspaceState::default()).expect("persist empty state");
+        let _empty_commit = commit_all(temp.path(), "empty metadata");
+
+        stdfs::remove_file(workspace_state_path(temp.path())).expect("remove workspace state");
+        let _missing_commit = commit_all(temp.path(), "remove metadata");
+
+        let report = recover_missing_metadata_sync(
+            temp.path(),
+            temp.path(),
+            &WorkspaceRecoverMissingMetadataRequestDto {
+                attempt_pull: false,
+                projects: Vec::new(),
+            },
+        )
+        .expect("recover metadata");
+
+        let restored = load_raw_state_sync(temp.path())
+            .expect("read restored state")
+            .expect("restored state");
+        let expected_commit = short_oid(valid_commit);
+
+        assert_eq!(report.status, "restored_from_history");
+        assert_eq!(
+            report.restored_commit.as_deref(),
+            Some(expected_commit.as_str())
+        );
+        assert_eq!(restored.project_groups.len(), 1);
+        assert_eq!(restored.project_groups[0].projects[0].id, "project-web");
+    }
+
+    #[test]
+    fn recover_missing_metadata_reconstructs_minimal_state_from_hints() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let _project_repo = init_git_repo(&temp.path().join("apps/web"), "main", &[]);
+
+        let report = recover_missing_metadata_sync(
+            temp.path(),
+            &metadata_root,
+            &WorkspaceRecoverMissingMetadataRequestDto {
+                attempt_pull: true,
+                projects: vec![WorkspaceMetadataRecoveryHintDto {
+                    project_id: "project-web".to_string(),
+                    group_id: Some("group-1".to_string()),
+                    name: "Web".to_string(),
+                    path: "apps/web".to_string(),
+                }],
+            },
+        )
+        .expect("recover metadata");
+
+        let reconstructed = load_raw_state_sync(&metadata_root)
+            .expect("read reconstructed state")
+            .expect("reconstructed state");
+
+        assert_eq!(report.status, "reconstructed_from_hints");
+        assert_eq!(reconstructed.project_groups.len(), 1);
+        assert_eq!(reconstructed.project_groups[0].id, "group-1");
+        assert_eq!(
+            reconstructed.project_groups[0].projects[0].id,
+            "project-web"
+        );
+        assert_eq!(reconstructed.project_groups[0].projects[0].name, "Web");
     }
 
     #[tokio::test]

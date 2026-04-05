@@ -32,7 +32,7 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
 pub type DbPool = Arc<Mutex<Option<SqlitePool>>>;
-const DB_INIT_WAIT_RETRIES: usize = 100;
+const DB_INIT_WAIT_RETRIES: usize = 300;
 const DB_INIT_WAIT_DELAY_MS: u64 = 50;
 
 #[derive(Debug, Serialize)]
@@ -65,13 +65,21 @@ pub(crate) async fn get_pool(pool: &State<'_, DbPool>) -> CommandResult<SqlitePo
             }
         }
 
+        if attempt == 20 || attempt == 100 || attempt == 200 {
+            tracing::warn!(
+                attempt = attempt + 1,
+                waited_ms = (attempt + 1) as u64 * DB_INIT_WAIT_DELAY_MS,
+                "Database pool is still initializing"
+            );
+        }
+
         if attempt + 1 < DB_INIT_WAIT_RETRIES {
             sleep(Duration::from_millis(DB_INIT_WAIT_DELAY_MS)).await;
         }
     }
 
     Err(CommandError {
-        message: "Database not initialized".to_string(),
+        message: "Database not initialized yet. Please retry in a moment.".to_string(),
     })
 }
 

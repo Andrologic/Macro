@@ -88,6 +88,11 @@ async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
         stamp_migration(pool, MIGRATION_001_VERSION, MIGRATION_001_NAME).await?;
     }
 
+    // Baseline migration stamping is not enough for additive, idempotent schema updates.
+    // Re-run the legacy ensure helpers on every startup so older runtime databases pick up
+    // newly added columns and indexes even when schema_migrations is already populated.
+    upgrade_legacy_schema_to_baseline(pool).await?;
+
     // Insert default providers if they don't exist
     insert_default_providers(pool).await?;
 
@@ -624,6 +629,8 @@ async fn ensure_legacy_ai_models(pool: &SqlitePool) -> DbResult<()> {
             pricing_prompt TEXT,
             pricing_completion TEXT,
             pricing_request TEXT,
+            reasoning_efforts_json TEXT,
+            default_reasoning_effort TEXT,
             is_enabled INTEGER DEFAULT 1,
             is_manual INTEGER DEFAULT 0,
             first_seen_at TEXT NOT NULL,
@@ -648,6 +655,16 @@ async fn ensure_legacy_ai_models(pool: &SqlitePool) -> DbResult<()> {
     }
     if !columns.contains("is_manual") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN is_manual INTEGER DEFAULT 0")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("reasoning_efforts_json") {
+        sqlx::query("ALTER TABLE ai_models ADD COLUMN reasoning_efforts_json TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("default_reasoning_effort") {
+        sqlx::query("ALTER TABLE ai_models ADD COLUMN default_reasoning_effort TEXT")
             .execute(pool)
             .await?;
     }
@@ -1261,6 +1278,62 @@ mod tests {
 
         let reapplied_pool = create_pool(&db_path).await.expect("reapplied pool");
         assert_migration_001_applied(&reapplied_pool).await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_backfills_additive_ai_model_columns_for_already_migrated_db() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .expect("baseline pool");
+
+        ensure_schema_migrations_table(&pool)
+            .await
+            .expect("schema migrations table");
+        apply_migration(&pool, MIGRATION_001_VERSION, MIGRATION_001_NAME, MIGRATION_001_SQL)
+            .await
+            .expect("apply baseline");
+
+        let columns_before = sqlx::query(
+            r#"
+            SELECT name
+            FROM pragma_table_info('ai_models')
+            ORDER BY cid ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("ai_models columns before")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<Vec<_>>();
+
+        assert!(!columns_before.contains(&"reasoning_efforts_json".to_string()));
+        assert!(!columns_before.contains(&"default_reasoning_effort".to_string()));
+
+        drop(pool);
+
+        let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
+        let columns_after = sqlx::query(
+            r#"
+            SELECT name
+            FROM pragma_table_info('ai_models')
+            ORDER BY cid ASC
+            "#,
+        )
+        .fetch_all(&migrated_pool)
+        .await
+        .expect("ai_models columns after")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<Vec<_>>();
+
+        assert!(columns_after.contains(&"reasoning_efforts_json".to_string()));
+        assert!(columns_after.contains(&"default_reasoning_effort".to_string()));
     }
 
     #[tokio::test]

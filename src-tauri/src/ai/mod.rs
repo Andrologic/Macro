@@ -1,5 +1,6 @@
 pub mod chatgpt;
 pub mod copilot;
+pub mod reasoning_catalog;
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -121,4 +121,32 @@ describe('providerApi fetchModelsFromProvider', () => {
       error: 'Request cancelled.',
     });
   });
+
+  it('keeps supported_parameters from provider model payloads', async () => {
+    tauriFetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({
+        object: 'list',
+        data: [
+          {
+            id: 'openai/gpt-5',
+            name: 'GPT-5',
+            supported_parameters: ['reasoning', 'tools'],
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    ));
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      providerId: 'openrouter',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models[0]?.supported_parameters).toEqual(['reasoning', 'tools']);
+  });
 });

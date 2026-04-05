@@ -93,12 +93,17 @@ const providerState = {
   } as Record<string, Array<{ id: string; name: string; isEnabled: boolean }>>,
   selectedProviderId: 'provider-1' as string | null,
   selectedModelId: 'model-1' as string | null,
+  selectedReasoningEffort: null as string | null,
   loadProviderModels: mock(async (providerId: string) => providerState.modelsByProvider[providerId] ?? []),
   scanModelsForProvider: mock(async (providerId: string) => providerState.modelsByProvider[providerId] ?? []),
   resolveProviderApiKey: mock(async () => undefined),
   selectedSupportsNativeToolCalling: () => false,
+  markReasoningUnsupportedForModel: mock(() => undefined),
   selectModel: mock((modelId: string) => {
     providerState.selectedModelId = modelId;
+  }),
+  selectReasoningEffort: mock((effort: string | null) => {
+    providerState.selectedReasoningEffort = effort;
   }),
   selectProvider: mock((providerId: string) => {
     providerState.selectedProviderId = providerId;

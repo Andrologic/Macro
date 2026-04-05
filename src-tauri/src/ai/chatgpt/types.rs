@@ -26,6 +26,8 @@ pub struct AiChatRequest {
     pub request_id: String,
     pub provider_id: String,
     pub model_id: String,
+    pub reasoning_effort: Option<String>,
+    pub previous_response_id: Option<String>,
     pub messages: Vec<AiChatMessage>,
     #[serde(default)]
     pub tools: Vec<Value>,
@@ -95,6 +97,10 @@ pub struct AiStreamDoneEvent {
     pub request_id: String,
     pub output_text: String,
     pub tool_calls: Vec<AiToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_traces: Option<Vec<AiToolTrace>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -186,6 +192,8 @@ pub(super) struct TokenResponse {
 pub(super) struct ChatGptResponsesRequest {
     pub(super) model: String,
     pub(super) instructions: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) previous_response_id: Option<String>,
     pub(super) input: Vec<ResponsesMessageItem>,
     pub(super) tools: Vec<Value>,
     pub(super) tool_choice: String,
