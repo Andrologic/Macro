@@ -237,6 +237,20 @@ export interface DbAppSetting {
 }
 
 export type ExternalOpenAction = 'editor' | 'terminal' | 'files';
+export type ExternalAppKind = 'none' | 'builtin' | 'detected';
+
+export interface ExternalAppOptionDto {
+  id: string;
+  label: string;
+  action: ExternalOpenAction;
+  kind: ExternalAppKind;
+}
+
+export interface ExternalAppCatalogDto {
+  editor: ExternalAppOptionDto[];
+  terminal: ExternalAppOptionDto[];
+  files: ExternalAppOptionDto[];
+}
 
 export interface DbProjectContextState {
   project_id: string;
@@ -1734,13 +1748,17 @@ export async function dbReconcileProjectRegistry(params: {
 export async function openExternalTarget(params: {
   targetPath: string;
   action: ExternalOpenAction;
-  commandOverride?: string | null;
+  appId: string;
 }): Promise<void> {
   return invoke('open_external_target', {
     targetPath: params.targetPath,
     action: params.action,
-    commandOverride: params.commandOverride ?? null,
+    appId: params.appId,
   });
+}
+
+export async function listExternalApps(): Promise<ExternalAppCatalogDto> {
+  return invoke<ExternalAppCatalogDto>('list_external_apps');
 }
 
 export async function validateToolExecution(params: {

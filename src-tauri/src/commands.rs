@@ -23,6 +23,7 @@ use regex::RegexBuilder;
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::SqlitePool;
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -255,10 +256,890 @@ impl ExternalOpenAction {
     }
 }
 
+impl ExternalOpenAction {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Editor => "editor",
+            Self::Terminal => "terminal",
+            Self::Files => "files",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExternalAppOptionDto {
+    pub id: String,
+    pub label: String,
+    pub action: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExternalAppCatalogDto {
+    pub editor: Vec<ExternalAppOptionDto>,
+    pub terminal: Vec<ExternalAppOptionDto>,
+    pub files: Vec<ExternalAppOptionDto>,
+}
+
 struct ExternalLaunchCommand {
     program: String,
     args: Vec<String>,
     current_dir: Option<PathBuf>,
+}
+
+fn external_app_option(
+    id: &str,
+    label: &str,
+    action: ExternalOpenAction,
+    kind: &str,
+) -> ExternalAppOptionDto {
+    ExternalAppOptionDto {
+        id: id.to_string(),
+        label: label.to_string(),
+        action: action.as_str().to_string(),
+        kind: kind.to_string(),
+    }
+}
+
+fn none_external_app(action: ExternalOpenAction) -> ExternalAppOptionDto {
+    external_app_option("none", "Do nothing", action, "none")
+}
+
+fn binary_candidates(binary: &str) -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let path = Path::new(binary);
+        if path.extension().is_some() {
+            return vec![binary.to_string()];
+        }
+
+        return vec![
+            format!("{}.exe", binary),
+            format!("{}.cmd", binary),
+            format!("{}.bat", binary),
+            binary.to_string(),
+        ];
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![binary.to_string()]
+    }
+}
+
+fn is_binary_available(binary: &str) -> bool {
+    let binary_path = Path::new(binary);
+    if binary_path.components().count() > 1 {
+        return binary_path.exists();
+    }
+
+    let Some(path_var) = env::var_os("PATH") else {
+        return false;
+    };
+
+    env::split_paths(&path_var).any(|dir| {
+        binary_candidates(binary)
+            .into_iter()
+            .map(|candidate| dir.join(candidate))
+            .any(|candidate| candidate.is_file())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn mac_app_bundle_path(names: &[&str]) -> Option<PathBuf> {
+    let app_bundles = names
+        .iter()
+        .map(|name| {
+            if name.ends_with(".app") {
+                name.to_string()
+            } else {
+                format!("{}.app", name)
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut candidate_roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/Applications/Utilities"),
+        PathBuf::from("/System/Applications"),
+        PathBuf::from("/System/Applications/Utilities"),
+        PathBuf::from("/System/Library/CoreServices"),
+    ];
+
+    if let Some(home_dir) = env::var_os("HOME") {
+        candidate_roots.push(PathBuf::from(&home_dir).join("Applications"));
+        candidate_roots.push(PathBuf::from(home_dir).join("Applications/Utilities"));
+    }
+
+    candidate_roots.into_iter().find_map(|root| {
+        app_bundles
+            .iter()
+            .map(|bundle| root.join(bundle))
+            .find(|candidate| candidate.exists())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn mac_app_exists(names: &[&str]) -> bool {
+    mac_app_bundle_path(names).is_some()
+}
+
+#[cfg(target_os = "macos")]
+fn push_mac_app(
+    apps: &mut Vec<ExternalAppOptionDto>,
+    id: &str,
+    label: &str,
+    action: ExternalOpenAction,
+    bundle_names: &[&str],
+    kind: &str,
+) {
+    if mac_app_exists(bundle_names) {
+        apps.push(external_app_option(id, label, action, kind));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn mac_app_executable_path(bundle_names: &[&str], executable_names: &[&str]) -> Option<PathBuf> {
+    let bundle_path = mac_app_bundle_path(bundle_names)?;
+    let executable_dir = bundle_path.join("Contents/MacOS");
+
+    for executable_name in executable_names {
+        let candidate = executable_dir.join(executable_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    std::fs::read_dir(&executable_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.is_file())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_binary_or_app_executable(
+    binary_names: &[&str],
+    bundle_names: &[&str],
+    executable_names: &[&str],
+) -> Option<String> {
+    binary_names
+        .iter()
+        .find(|binary_name| is_binary_available(binary_name))
+        .map(|binary_name| (*binary_name).to_string())
+        .or_else(|| {
+            mac_app_executable_path(bundle_names, executable_names)
+                .map(|path| path.to_string_lossy().to_string())
+        })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn push_binary_app(
+    apps: &mut Vec<ExternalAppOptionDto>,
+    id: &str,
+    label: &str,
+    action: ExternalOpenAction,
+    binary_name: &str,
+    kind: &str,
+) {
+    if is_binary_available(binary_name) {
+        apps.push(external_app_option(id, label, action, kind));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn build_external_app_catalog() -> ExternalAppCatalogDto {
+    let mut editor = vec![none_external_app(ExternalOpenAction::Editor)];
+    push_mac_app(
+        &mut editor,
+        "vscode",
+        "Visual Studio Code",
+        ExternalOpenAction::Editor,
+        &["Visual Studio Code"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "vscode-insiders",
+        "VS Code Insiders",
+        ExternalOpenAction::Editor,
+        &["Visual Studio Code - Insiders", "VS Code - Insiders"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "vscodium",
+        "VSCodium",
+        ExternalOpenAction::Editor,
+        &["VSCodium"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "cursor",
+        "Cursor",
+        ExternalOpenAction::Editor,
+        &["Cursor"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "windsurf",
+        "Windsurf",
+        ExternalOpenAction::Editor,
+        &["Windsurf"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "zed",
+        "Zed",
+        ExternalOpenAction::Editor,
+        &["Zed"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "antigravity",
+        "Antigravity",
+        ExternalOpenAction::Editor,
+        &["Antigravity"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "sublime-text",
+        "Sublime Text",
+        ExternalOpenAction::Editor,
+        &["Sublime Text"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "bbedit",
+        "BBEdit",
+        ExternalOpenAction::Editor,
+        &["BBEdit"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "nova",
+        "Nova",
+        ExternalOpenAction::Editor,
+        &["Nova"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "textmate",
+        "TextMate",
+        ExternalOpenAction::Editor,
+        &["TextMate"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "fleet",
+        "JetBrains Fleet",
+        ExternalOpenAction::Editor,
+        &["Fleet"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "intellij-idea",
+        "IntelliJ IDEA",
+        ExternalOpenAction::Editor,
+        &["IntelliJ IDEA", "IntelliJ IDEA CE", "IntelliJ IDEA Ultimate"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "pycharm",
+        "PyCharm",
+        ExternalOpenAction::Editor,
+        &["PyCharm", "PyCharm CE", "PyCharm Professional"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "webstorm",
+        "WebStorm",
+        ExternalOpenAction::Editor,
+        &["WebStorm"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "phpstorm",
+        "PhpStorm",
+        ExternalOpenAction::Editor,
+        &["PhpStorm"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "goland",
+        "GoLand",
+        ExternalOpenAction::Editor,
+        &["GoLand"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "clion",
+        "CLion",
+        ExternalOpenAction::Editor,
+        &["CLion"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "rider",
+        "Rider",
+        ExternalOpenAction::Editor,
+        &["Rider"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "rubymine",
+        "RubyMine",
+        ExternalOpenAction::Editor,
+        &["RubyMine"],
+        "detected",
+    );
+    push_mac_app(
+        &mut editor,
+        "rustrover",
+        "RustRover",
+        ExternalOpenAction::Editor,
+        &["RustRover"],
+        "detected",
+    );
+
+    let mut terminal = vec![none_external_app(ExternalOpenAction::Terminal)];
+    push_mac_app(
+        &mut terminal,
+        "terminal",
+        "Terminal",
+        ExternalOpenAction::Terminal,
+        &["Terminal"],
+        "builtin",
+    );
+    push_mac_app(
+        &mut terminal,
+        "ghostty",
+        "Ghostty",
+        ExternalOpenAction::Terminal,
+        &["Ghostty"],
+        "detected",
+    );
+    push_mac_app(
+        &mut terminal,
+        "wezterm",
+        "WezTerm",
+        ExternalOpenAction::Terminal,
+        &["WezTerm"],
+        "detected",
+    );
+    push_mac_app(
+        &mut terminal,
+        "kitty",
+        "Kitty",
+        ExternalOpenAction::Terminal,
+        &["kitty", "Kitty"],
+        "detected",
+    );
+    push_mac_app(
+        &mut terminal,
+        "alacritty",
+        "Alacritty",
+        ExternalOpenAction::Terminal,
+        &["Alacritty"],
+        "detected",
+    );
+
+    let mut files = vec![none_external_app(ExternalOpenAction::Files)];
+    push_mac_app(
+        &mut files,
+        "finder",
+        "Finder",
+        ExternalOpenAction::Files,
+        &["Finder"],
+        "builtin",
+    );
+    push_mac_app(
+        &mut files,
+        "path-finder",
+        "Path Finder",
+        ExternalOpenAction::Files,
+        &["Path Finder"],
+        "detected",
+    );
+    push_mac_app(
+        &mut files,
+        "forklift",
+        "ForkLift",
+        ExternalOpenAction::Files,
+        &["ForkLift"],
+        "detected",
+    );
+    push_mac_app(
+        &mut files,
+        "commander-one",
+        "Commander One",
+        ExternalOpenAction::Files,
+        &["Commander One"],
+        "detected",
+    );
+
+    ExternalAppCatalogDto {
+        editor,
+        terminal,
+        files,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn build_external_app_catalog() -> ExternalAppCatalogDto {
+    let mut editor = vec![none_external_app(ExternalOpenAction::Editor)];
+    push_binary_app(
+        &mut editor,
+        "vscode",
+        "Visual Studio Code",
+        ExternalOpenAction::Editor,
+        "code",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "vscode-insiders",
+        "VS Code Insiders",
+        ExternalOpenAction::Editor,
+        "code-insiders",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "vscodium",
+        "VSCodium",
+        ExternalOpenAction::Editor,
+        "codium",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "cursor",
+        "Cursor",
+        ExternalOpenAction::Editor,
+        "cursor",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "windsurf",
+        "Windsurf",
+        ExternalOpenAction::Editor,
+        "windsurf",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "zed",
+        "Zed",
+        ExternalOpenAction::Editor,
+        "zed",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "sublime-text",
+        "Sublime Text",
+        ExternalOpenAction::Editor,
+        "subl",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "lapce",
+        "Lapce",
+        ExternalOpenAction::Editor,
+        "lapce",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "fleet",
+        "JetBrains Fleet",
+        ExternalOpenAction::Editor,
+        "fleet",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "intellij-idea",
+        "IntelliJ IDEA",
+        ExternalOpenAction::Editor,
+        "idea64",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "pycharm",
+        "PyCharm",
+        ExternalOpenAction::Editor,
+        "pycharm64",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "webstorm",
+        "WebStorm",
+        ExternalOpenAction::Editor,
+        "webstorm64",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "phpstorm",
+        "PhpStorm",
+        ExternalOpenAction::Editor,
+        "phpstorm64",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "goland",
+        "GoLand",
+        ExternalOpenAction::Editor,
+        "goland64",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "clion",
+        "CLion",
+        ExternalOpenAction::Editor,
+        "clion64",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "rider",
+        "Rider",
+        ExternalOpenAction::Editor,
+        "rider64",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "rustrover",
+        "RustRover",
+        ExternalOpenAction::Editor,
+        "rustrover64",
+        "detected",
+    );
+
+    let mut terminal = vec![none_external_app(ExternalOpenAction::Terminal)];
+    push_binary_app(
+        &mut terminal,
+        "windows-terminal",
+        "Windows Terminal",
+        ExternalOpenAction::Terminal,
+        "wt",
+        "detected",
+    );
+    terminal.push(external_app_option(
+        "powershell",
+        "PowerShell",
+        ExternalOpenAction::Terminal,
+        "builtin",
+    ));
+    push_binary_app(
+        &mut terminal,
+        "pwsh",
+        "PowerShell 7",
+        ExternalOpenAction::Terminal,
+        "pwsh",
+        "detected",
+    );
+    terminal.push(external_app_option(
+        "command-prompt",
+        "Command Prompt",
+        ExternalOpenAction::Terminal,
+        "builtin",
+    ));
+    push_binary_app(
+        &mut terminal,
+        "wezterm",
+        "WezTerm",
+        ExternalOpenAction::Terminal,
+        "wezterm",
+        "detected",
+    );
+    push_binary_app(
+        &mut terminal,
+        "ghostty",
+        "Ghostty",
+        ExternalOpenAction::Terminal,
+        "ghostty",
+        "detected",
+    );
+    push_binary_app(
+        &mut terminal,
+        "kitty",
+        "Kitty",
+        ExternalOpenAction::Terminal,
+        "kitty",
+        "detected",
+    );
+    let files = vec![
+        none_external_app(ExternalOpenAction::Files),
+        external_app_option(
+            "explorer",
+            "File Explorer",
+            ExternalOpenAction::Files,
+            "builtin",
+        ),
+    ];
+
+    ExternalAppCatalogDto {
+        editor,
+        terminal,
+        files,
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn build_external_app_catalog() -> ExternalAppCatalogDto {
+    let mut editor = vec![none_external_app(ExternalOpenAction::Editor)];
+    push_binary_app(
+        &mut editor,
+        "vscode",
+        "Visual Studio Code",
+        ExternalOpenAction::Editor,
+        "code",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "vscode-insiders",
+        "VS Code Insiders",
+        ExternalOpenAction::Editor,
+        "code-insiders",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "vscodium",
+        "VSCodium",
+        ExternalOpenAction::Editor,
+        "codium",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "code-oss",
+        "Code - OSS",
+        ExternalOpenAction::Editor,
+        "code-oss",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "cursor",
+        "Cursor",
+        ExternalOpenAction::Editor,
+        "cursor",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "windsurf",
+        "Windsurf",
+        ExternalOpenAction::Editor,
+        "windsurf",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "zed",
+        "Zed",
+        ExternalOpenAction::Editor,
+        "zed",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "sublime-text",
+        "Sublime Text",
+        ExternalOpenAction::Editor,
+        "subl",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "lapce",
+        "Lapce",
+        ExternalOpenAction::Editor,
+        "lapce",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "fleet",
+        "JetBrains Fleet",
+        ExternalOpenAction::Editor,
+        "fleet",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "kate",
+        "Kate",
+        ExternalOpenAction::Editor,
+        "kate",
+        "detected",
+    );
+    push_binary_app(
+        &mut editor,
+        "geany",
+        "Geany",
+        ExternalOpenAction::Editor,
+        "geany",
+        "detected",
+    );
+
+    let mut terminal = vec![none_external_app(ExternalOpenAction::Terminal)];
+    push_binary_app(
+        &mut terminal,
+        "gnome-terminal",
+        "GNOME Terminal",
+        ExternalOpenAction::Terminal,
+        "gnome-terminal",
+        "detected",
+    );
+    push_binary_app(
+        &mut terminal,
+        "konsole",
+        "Konsole",
+        ExternalOpenAction::Terminal,
+        "konsole",
+        "detected",
+    );
+    push_binary_app(
+        &mut terminal,
+        "xfce4-terminal",
+        "Xfce Terminal",
+        ExternalOpenAction::Terminal,
+        "xfce4-terminal",
+        "detected",
+    );
+    push_binary_app(
+        &mut terminal,
+        "tilix",
+        "Tilix",
+        ExternalOpenAction::Terminal,
+        "tilix",
+        "detected",
+    );
+    push_binary_app(
+        &mut terminal,
+        "mate-terminal",
+        "MATE Terminal",
+        ExternalOpenAction::Terminal,
+        "mate-terminal",
+        "detected",
+    );
+    push_binary_app(
+        &mut terminal,
+        "kitty",
+        "Kitty",
+        ExternalOpenAction::Terminal,
+        "kitty",
+        "detected",
+    );
+    push_binary_app(
+        &mut terminal,
+        "wezterm",
+        "WezTerm",
+        ExternalOpenAction::Terminal,
+        "wezterm",
+        "detected",
+    );
+    push_binary_app(
+        &mut terminal,
+        "ghostty",
+        "Ghostty",
+        ExternalOpenAction::Terminal,
+        "ghostty",
+        "detected",
+    );
+    let mut files = vec![none_external_app(ExternalOpenAction::Files)];
+    push_binary_app(
+        &mut files,
+        "xdg-open",
+        "System File Browser",
+        ExternalOpenAction::Files,
+        "xdg-open",
+        "builtin",
+    );
+    push_binary_app(
+        &mut files,
+        "nautilus",
+        "Nautilus",
+        ExternalOpenAction::Files,
+        "nautilus",
+        "detected",
+    );
+    push_binary_app(
+        &mut files,
+        "dolphin",
+        "Dolphin",
+        ExternalOpenAction::Files,
+        "dolphin",
+        "detected",
+    );
+    push_binary_app(
+        &mut files,
+        "thunar",
+        "Thunar",
+        ExternalOpenAction::Files,
+        "thunar",
+        "detected",
+    );
+    push_binary_app(
+        &mut files,
+        "nemo",
+        "Nemo",
+        ExternalOpenAction::Files,
+        "nemo",
+        "detected",
+    );
+    push_binary_app(
+        &mut files,
+        "caja",
+        "Caja",
+        ExternalOpenAction::Files,
+        "caja",
+        "detected",
+    );
+    push_binary_app(
+        &mut files,
+        "pcmanfm",
+        "PCManFM",
+        ExternalOpenAction::Files,
+        "pcmanfm",
+        "detected",
+    );
+
+    ExternalAppCatalogDto {
+        editor,
+        terminal,
+        files,
+    }
 }
 
 fn target_parent_dir(path: &Path) -> Option<PathBuf> {
@@ -269,139 +1150,510 @@ fn target_parent_dir(path: &Path) -> Option<PathBuf> {
     }
 }
 
-fn apply_target_path_to_args(
-    raw_args: Vec<String>,
+#[cfg(target_os = "macos")]
+fn mac_open_known_app_command(
+    bundle_names: &[&str],
     target_path: &Path,
-    action: ExternalOpenAction,
-) -> Vec<String> {
-    let target = target_path.to_string_lossy().to_string();
-    let mut replaced_any = false;
-    let mut args = raw_args
-        .into_iter()
-        .map(|arg| {
-            let replaced = arg
-                .replace("{path}", &target)
-                .replace("{target}", &target)
-                .replace("{cwd}", &target);
-            if replaced != arg {
-                replaced_any = true;
-            }
-            replaced
-        })
-        .collect::<Vec<_>>();
+) -> CommandResult<ExternalLaunchCommand> {
+    let bundle_path = mac_app_bundle_path(bundle_names)
+        .ok_or_else(|| command_error("Configured macOS app was not found."))?;
+    let app_name = bundle_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| command_error("Configured macOS app bundle is invalid."))?;
 
-    if !replaced_any {
-        match action {
-            ExternalOpenAction::Editor | ExternalOpenAction::Files | ExternalOpenAction::Terminal => {
-                args.push(target);
-            }
-        }
-    }
+    Ok(ExternalLaunchCommand {
+        program: "open".to_string(),
+        args: vec![
+            "-a".to_string(),
+            app_name.to_string(),
+            target_path.to_string_lossy().to_string(),
+        ],
+        current_dir: target_parent_dir(target_path),
+    })
+}
 
-    args
+#[cfg(target_os = "windows")]
+fn escape_powershell_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[cfg(target_os = "windows")]
+fn escape_cmd_literal(value: &str) -> String {
+    value.replace('"', "\"\"")
+}
+
+#[cfg(target_os = "macos")]
+fn mac_binary_or_app_command(
+    binary_names: &[&str],
+    bundle_names: &[&str],
+    executable_names: &[&str],
+    args: Vec<String>,
+    target_path: &Path,
+) -> CommandResult<ExternalLaunchCommand> {
+    let program = mac_binary_or_app_executable(binary_names, bundle_names, executable_names)
+        .ok_or_else(|| command_error(format!("App is installed but no launch binary was found.")))?;
+
+    Ok(ExternalLaunchCommand {
+        program,
+        args,
+        current_dir: target_parent_dir(target_path),
+    })
 }
 
 fn build_external_open_command(
-    action: ExternalOpenAction,
     target_path: &Path,
-    command_override: Option<&str>,
+    app_id: &str,
 ) -> CommandResult<ExternalLaunchCommand> {
-    if let Some(command_override) = command_override
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        let parts = shell_words::split(command_override)
-            .map_err(|error| command_error(format!("Invalid open command: {}", error)))?;
-        let (program, raw_args) = parts
-            .split_first()
-            .ok_or_else(|| command_error("Open command cannot be empty"))?;
-        return Ok(ExternalLaunchCommand {
-            program: program.to_string(),
-            args: apply_target_path_to_args(raw_args.to_vec(), target_path, action),
-            current_dir: target_parent_dir(target_path),
-        });
-    }
-
     #[cfg(target_os = "macos")]
-    let command = match action {
-        ExternalOpenAction::Editor => ExternalLaunchCommand {
-            program: "open".to_string(),
-            args: vec![
-                "-a".to_string(),
-                "Visual Studio Code".to_string(),
+    let command = match app_id {
+        "vscode" => mac_open_known_app_command(&["Visual Studio Code"], target_path)?,
+        "vscode-insiders" => {
+            mac_open_known_app_command(&["Visual Studio Code - Insiders", "VS Code - Insiders"], target_path)?
+        }
+        "vscodium" => mac_open_known_app_command(&["VSCodium"], target_path)?,
+        "cursor" => mac_open_known_app_command(&["Cursor"], target_path)?,
+        "windsurf" => mac_open_known_app_command(&["Windsurf"], target_path)?,
+        "zed" => mac_open_known_app_command(&["Zed"], target_path)?,
+        "antigravity" => mac_open_known_app_command(&["Antigravity"], target_path)?,
+        "sublime-text" => mac_open_known_app_command(&["Sublime Text"], target_path)?,
+        "bbedit" => mac_open_known_app_command(&["BBEdit"], target_path)?,
+        "nova" => mac_open_known_app_command(&["Nova"], target_path)?,
+        "textmate" => mac_open_known_app_command(&["TextMate"], target_path)?,
+        "fleet" => mac_open_known_app_command(&["Fleet"], target_path)?,
+        "intellij-idea" => mac_open_known_app_command(
+            &["IntelliJ IDEA", "IntelliJ IDEA CE", "IntelliJ IDEA Ultimate"],
+            target_path,
+        )?,
+        "pycharm" => mac_open_known_app_command(
+            &["PyCharm", "PyCharm CE", "PyCharm Professional"],
+            target_path,
+        )?,
+        "webstorm" => mac_open_known_app_command(&["WebStorm"], target_path)?,
+        "phpstorm" => mac_open_known_app_command(&["PhpStorm"], target_path)?,
+        "goland" => mac_open_known_app_command(&["GoLand"], target_path)?,
+        "clion" => mac_open_known_app_command(&["CLion"], target_path)?,
+        "rider" => mac_open_known_app_command(&["Rider"], target_path)?,
+        "rubymine" => mac_open_known_app_command(&["RubyMine"], target_path)?,
+        "rustrover" => mac_open_known_app_command(&["RustRover"], target_path)?,
+        "terminal" => mac_open_known_app_command(&["Terminal"], target_path)?,
+        "ghostty" => mac_binary_or_app_command(
+            &["ghostty"],
+            &["Ghostty"],
+            &["ghostty"],
+            vec![
+                "--working-directory".to_string(),
                 target_path.to_string_lossy().to_string(),
             ],
-            current_dir: target_parent_dir(target_path),
-        },
-        ExternalOpenAction::Terminal => ExternalLaunchCommand {
-            program: "open".to_string(),
-            args: vec![
-                "-a".to_string(),
-                "Terminal".to_string(),
+            target_path,
+        )?,
+        "wezterm" => mac_binary_or_app_command(
+            &["wezterm"],
+            &["WezTerm"],
+            &["wezterm", "wezterm-gui"],
+            vec![
+                "start".to_string(),
+                "--cwd".to_string(),
                 target_path.to_string_lossy().to_string(),
             ],
-            current_dir: target_parent_dir(target_path),
-        },
-        ExternalOpenAction::Files => ExternalLaunchCommand {
-            program: "open".to_string(),
-            args: vec![
-                "-a".to_string(),
-                "Finder".to_string(),
+            target_path,
+        )?,
+        "kitty" => mac_binary_or_app_command(
+            &["kitty"],
+            &["kitty", "Kitty"],
+            &["kitty"],
+            vec![
+                "launch".to_string(),
+                "--cwd".to_string(),
                 target_path.to_string_lossy().to_string(),
             ],
-            current_dir: target_parent_dir(target_path),
-        },
+            target_path,
+        )?,
+        "alacritty" => mac_binary_or_app_command(
+            &["alacritty"],
+            &["Alacritty"],
+            &["alacritty"],
+            vec![
+                "--working-directory".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            target_path,
+        )?,
+        "finder" => mac_open_known_app_command(&["Finder"], target_path)?,
+        "path-finder" => mac_open_known_app_command(&["Path Finder"], target_path)?,
+        "forklift" => mac_open_known_app_command(&["ForkLift"], target_path)?,
+        "commander-one" => mac_open_known_app_command(&["Commander One"], target_path)?,
+        "none" => {
+            return Err(command_error("This open action is disabled."));
+        }
+        _ => {
+            return Err(command_error(format!(
+                "Unsupported external app id: {}",
+                app_id
+            )))
+        }
     };
 
     #[cfg(target_os = "windows")]
-    let command = match action {
-        ExternalOpenAction::Editor => ExternalLaunchCommand {
+    let command = match app_id {
+        "vscode" => ExternalLaunchCommand {
             program: "code".to_string(),
             args: vec![target_path.to_string_lossy().to_string()],
             current_dir: target_parent_dir(target_path),
         },
-        ExternalOpenAction::Terminal => ExternalLaunchCommand {
+        "vscode-insiders" => ExternalLaunchCommand {
+            program: "code-insiders".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "vscodium" => ExternalLaunchCommand {
+            program: "codium".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "cursor" => ExternalLaunchCommand {
+            program: "cursor".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "windsurf" => ExternalLaunchCommand {
+            program: "windsurf".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "zed" => ExternalLaunchCommand {
+            program: "zed".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "sublime-text" => ExternalLaunchCommand {
+            program: "subl".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "lapce" => ExternalLaunchCommand {
+            program: "lapce".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "fleet" => ExternalLaunchCommand {
+            program: "fleet".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "intellij-idea" => ExternalLaunchCommand {
+            program: "idea64".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "pycharm" => ExternalLaunchCommand {
+            program: "pycharm64".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "webstorm" => ExternalLaunchCommand {
+            program: "webstorm64".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "phpstorm" => ExternalLaunchCommand {
+            program: "phpstorm64".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "goland" => ExternalLaunchCommand {
+            program: "goland64".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "clion" => ExternalLaunchCommand {
+            program: "clion64".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "rider" => ExternalLaunchCommand {
+            program: "rider64".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "rustrover" => ExternalLaunchCommand {
+            program: "rustrover64".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "windows-terminal" => ExternalLaunchCommand {
             program: "wt".to_string(),
-            args: vec!["-d".to_string(), target_path.to_string_lossy().to_string()],
+            args: vec![
+                "new-tab".to_string(),
+                "--startingDirectory".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
             current_dir: target_parent_dir(target_path),
         },
-        ExternalOpenAction::Files => ExternalLaunchCommand {
-            program: "explorer".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
+        "powershell" => ExternalLaunchCommand {
+            program: "powershell".to_string(),
+            args: vec![
+                "-NoExit".to_string(),
+                "-Command".to_string(),
+                format!(
+                    "Set-Location -LiteralPath '{}'",
+                    escape_powershell_literal(&target_path.to_string_lossy())
+                ),
+            ],
             current_dir: target_parent_dir(target_path),
         },
-    };
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let command = match action {
-        ExternalOpenAction::Editor => ExternalLaunchCommand {
-            program: "code".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
+        "command-prompt" => ExternalLaunchCommand {
+            program: "cmd".to_string(),
+            args: vec![
+                "/K".to_string(),
+                format!(
+                    r#"cd /d "{}""#,
+                    escape_cmd_literal(&target_path.to_string_lossy())
+                ),
+            ],
             current_dir: target_parent_dir(target_path),
         },
-        ExternalOpenAction::Terminal => ExternalLaunchCommand {
-            program: "x-terminal-emulator".to_string(),
+        "pwsh" => ExternalLaunchCommand {
+            program: "pwsh".to_string(),
+            args: vec![
+                "-NoExit".to_string(),
+                "-Command".to_string(),
+                format!(
+                    "Set-Location -LiteralPath '{}'",
+                    escape_powershell_literal(&target_path.to_string_lossy())
+                ),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        "wezterm" => ExternalLaunchCommand {
+            program: "wezterm".to_string(),
+            args: vec![
+                "start".to_string(),
+                "--cwd".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        "ghostty" => ExternalLaunchCommand {
+            program: "ghostty".to_string(),
             args: vec![
                 "--working-directory".to_string(),
                 target_path.to_string_lossy().to_string(),
             ],
             current_dir: target_parent_dir(target_path),
         },
-        ExternalOpenAction::Files => ExternalLaunchCommand {
+        "kitty" => ExternalLaunchCommand {
+            program: "kitty".to_string(),
+            args: vec![
+                "launch".to_string(),
+                "--cwd".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        "explorer" => ExternalLaunchCommand {
+            program: "explorer".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "none" => {
+            return Err(command_error("This open action is disabled."));
+        }
+        _ => {
+            return Err(command_error(format!(
+                "Unsupported external app id: {}",
+                app_id
+            )))
+        }
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let command = match app_id {
+        "vscode" => ExternalLaunchCommand {
+            program: "code".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "vscode-insiders" => ExternalLaunchCommand {
+            program: "code-insiders".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "vscodium" => ExternalLaunchCommand {
+            program: "codium".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "code-oss" => ExternalLaunchCommand {
+            program: "code-oss".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "cursor" => ExternalLaunchCommand {
+            program: "cursor".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "windsurf" => ExternalLaunchCommand {
+            program: "windsurf".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "zed" => ExternalLaunchCommand {
+            program: "zed".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "sublime-text" => ExternalLaunchCommand {
+            program: "subl".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "lapce" => ExternalLaunchCommand {
+            program: "lapce".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "fleet" => ExternalLaunchCommand {
+            program: "fleet".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "kate" => ExternalLaunchCommand {
+            program: "kate".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "geany" => ExternalLaunchCommand {
+            program: "geany".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "gnome-terminal" => ExternalLaunchCommand {
+            program: "gnome-terminal".to_string(),
+            args: vec![
+                "--working-directory".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        "konsole" => ExternalLaunchCommand {
+            program: "konsole".to_string(),
+            args: vec![
+                "--workdir".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        "xfce4-terminal" => ExternalLaunchCommand {
+            program: "xfce4-terminal".to_string(),
+            args: vec![
+                "--working-directory".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        "tilix" => ExternalLaunchCommand {
+            program: "tilix".to_string(),
+            args: vec![
+                "--working-directory".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        "mate-terminal" => ExternalLaunchCommand {
+            program: "mate-terminal".to_string(),
+            args: vec![
+                "--working-directory".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        "kitty" => ExternalLaunchCommand {
+            program: "kitty".to_string(),
+            args: vec![
+                "launch".to_string(),
+                "--cwd".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        "wezterm" => ExternalLaunchCommand {
+            program: "wezterm".to_string(),
+            args: vec![
+                "start".to_string(),
+                "--cwd".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        "ghostty" => ExternalLaunchCommand {
+            program: "ghostty".to_string(),
+            args: vec![
+                "--working-directory".to_string(),
+                target_path.to_string_lossy().to_string(),
+            ],
+            current_dir: target_parent_dir(target_path),
+        },
+        "xdg-open" => ExternalLaunchCommand {
             program: "xdg-open".to_string(),
             args: vec![target_path.to_string_lossy().to_string()],
             current_dir: target_parent_dir(target_path),
         },
+        "nautilus" => ExternalLaunchCommand {
+            program: "nautilus".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "dolphin" => ExternalLaunchCommand {
+            program: "dolphin".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "thunar" => ExternalLaunchCommand {
+            program: "thunar".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "nemo" => ExternalLaunchCommand {
+            program: "nemo".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "caja" => ExternalLaunchCommand {
+            program: "caja".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "pcmanfm" => ExternalLaunchCommand {
+            program: "pcmanfm".to_string(),
+            args: vec![target_path.to_string_lossy().to_string()],
+            current_dir: target_parent_dir(target_path),
+        },
+        "none" => {
+            return Err(command_error("This open action is disabled."));
+        }
+        _ => {
+            return Err(command_error(format!(
+                "Unsupported external app id: {}",
+                app_id
+            )))
+        }
     };
 
     Ok(command)
 }
 
 #[tauri::command]
+pub async fn list_external_apps() -> CommandResult<ExternalAppCatalogDto> {
+    Ok(build_external_app_catalog())
+}
+
+#[tauri::command]
 pub async fn open_external_target(
     target_path: String,
     action: String,
-    command_override: Option<String>,
+    app_id: String,
 ) -> CommandResult<()> {
     let action = ExternalOpenAction::parse(&action)
         .ok_or_else(|| command_error(format!("Unsupported open action: {}", action)))?;
@@ -409,8 +1661,22 @@ pub async fn open_external_target(
     let canonical_path = resolved_path
         .canonicalize()
         .map_err(|error| command_error(format!("Open target not found: {}", error)))?;
+    let app_catalog = build_external_app_catalog();
+    let action_apps = match action {
+        ExternalOpenAction::Editor => &app_catalog.editor,
+        ExternalOpenAction::Terminal => &app_catalog.terminal,
+        ExternalOpenAction::Files => &app_catalog.files,
+    };
 
-    let launch = build_external_open_command(action, &canonical_path, command_override.as_deref())?;
+    if !action_apps.iter().any(|app| app.id == app_id) {
+        return Err(command_error(format!(
+            "App id \"{}\" is not available for {}.",
+            app_id,
+            action.as_str()
+        )));
+    }
+
+    let launch = build_external_open_command(&canonical_path, app_id.as_str())?;
 
     tokio::task::spawn_blocking(move || {
         let mut command = Command::new(&launch.program);
@@ -1681,10 +2947,7 @@ pub async fn db_update_provider_settings(
 }
 
 #[tauri::command]
-pub async fn db_get_setting(
-    pool: State<'_, DbPool>,
-    key: String,
-) -> CommandResult<Option<String>> {
+pub async fn db_get_setting(pool: State<'_, DbPool>, key: String) -> CommandResult<Option<String>> {
     let pool = get_pool(&pool).await?;
 
     let result = sqlx::query_scalar::<_, String>(
