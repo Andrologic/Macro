@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS messages (
     token_count INTEGER,
     tool_traces_json TEXT,
     hidden_context TEXT,
+    provider_input_items_json TEXT,
+    provider_turn_state_json TEXT,
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 

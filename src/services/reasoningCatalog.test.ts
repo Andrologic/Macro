@@ -14,6 +14,28 @@ describe('reasoningCatalog', () => {
     });
   });
 
+  it('resolves cached ChatGPT GPT-5 families with visible reasoning choices', () => {
+    expect(
+      getReasoningCapabilityForModel({
+        providerType: 'chatgpt',
+        modelId: 'gpt-5.4-mini',
+      })
+    ).toEqual({
+      reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+      defaultReasoningEffort: 'medium',
+    });
+
+    expect(
+      getReasoningCapabilityForModel({
+        providerType: 'chatgpt',
+        modelId: 'gpt-5.3-codex',
+      })
+    ).toEqual({
+      reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+      defaultReasoningEffort: 'medium',
+    });
+  });
+
   it('requires explicit OpenRouter reasoning support in supported_parameters', () => {
     expect(
       getReasoningCapabilityForModel({

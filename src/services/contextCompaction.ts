@@ -110,6 +110,20 @@ const estimateTokensForStreamContent = (content: StreamMessageContent): number =
   }, 0);
 };
 
+const estimateTokensForProviderInputItems = (providerInputItems?: unknown[]): number => {
+  if (!Array.isArray(providerInputItems) || providerInputItems.length === 0) {
+    return 0;
+  }
+
+  return estimateTokensForText(JSON.stringify(providerInputItems));
+};
+
+const estimateTokensForStreamMessage = (message: StreamMessage): number =>
+  Math.max(
+    estimateTokensForStreamContent(message.content),
+    estimateTokensForProviderInputItems(message.provider_input_items)
+  );
+
 const countImagePlaceholderTokens = (messages: StreamMessage[]): number =>
   messages.reduce((total, message) => {
     if (typeof message.content === 'string') return total;
@@ -500,7 +514,7 @@ export const estimateConversationFootprint = (
   );
   const imagePlaceholderTokens = countImagePlaceholderTokens(params.preparedMessages);
   const totalPreparedTokens = params.preparedMessages.reduce(
-    (total, message) => total + estimateTokensForStreamContent(message.content),
+    (total, message) => total + estimateTokensForStreamMessage(message),
     0
   );
   const hiddenContextTokens = params.orderedMessages.reduce(

@@ -16,11 +16,39 @@
       "default_effort": "high"
     },
     {
+      "id": "gpt-5.4",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.4(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["low", "medium", "high", "xhigh"],
+      "default_effort": "medium"
+    },
+    {
       "id": "gpt-5.2-pro",
       "provider_types": ["chatgpt", "openai", "openrouter"],
       "model_patterns": ["^(?:openai/)?gpt-5\\.2-pro(?:-[A-Za-z0-9._-]+)?$"],
       "supported_efforts": ["medium", "high", "xhigh"],
       "default_effort": "high"
+    },
+    {
+      "id": "gpt-5.3-codex-spark",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.3-codex-spark(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["low", "medium", "high", "xhigh"],
+      "default_effort": "high"
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.3-codex(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["low", "medium", "high", "xhigh"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "gpt-5.2",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.2(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["low", "medium", "high", "xhigh"],
+      "default_effort": "medium"
     },
     {
       "id": "gpt-5.1",
