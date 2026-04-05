@@ -234,6 +234,60 @@ export const Footer: React.FC = () => {
     return results;
   }, [scopeProjects, translate]);
 
+  const describeMacroResultForToast = useCallback((action: FooterSyncAction, result: tauriIpc.MacroBranchSyncDto | null) => {
+    if (!result) {
+      return '';
+    }
+
+    if (result.reason === 'dirty') {
+      return action === 'fetch'
+        ? t(
+          'footer.sync.fetchDirtyDescription',
+          'Le fetch du code est terminé. @macro a encore des changements locaux a enregistrer.'
+        )
+        : t(
+          'footer.sync.macroDirtyDescription',
+          '@macro a encore des changements locaux a enregistrer avant le pull ou le push.'
+        );
+    }
+
+    return `@macro: ${getMacroSyncDescription(result) || formatGitOutput(result.output, translate)}`;
+  }, [t, translate]);
+
+  const handleCommitMacroMetadata = useCallback(async () => {
+    if (!isTauriRuntime || syncAction || scopeProjects.length === 0) {
+      return;
+    }
+
+    setIsRefreshing(true);
+    try {
+      const result = await scopedMacroSyncService.commitMacroMetadata();
+      if (result) {
+        setMacroSnapshot(result);
+        presentConflictIfNeeded(result, 'refresh');
+      }
+
+      const description = describeMacroResultForToast('fetch', result);
+      const hasErrors = result?.state === 'failed' || result?.state === 'conflict';
+      if (hasErrors) {
+        toast.error(t('footer.sync.macroCommitFailed', '@macro commit failed'), {
+          description,
+          notification: { category: 'git_sync_attention_required' },
+        });
+      } else {
+        toast.success(t('footer.sync.macroCommitComplete', '@macro commit complete'), {
+          description,
+          notification: {
+            category: result?.state === 'pending' ? 'git_sync_attention_required' : 'git_sync_completed',
+          },
+        });
+      }
+    } finally {
+      await refreshFooterStatus({ ensureMacro: true });
+      setIsRefreshing(false);
+    }
+  }, [describeMacroResultForToast, isTauriRuntime, presentConflictIfNeeded, refreshFooterStatus, scopeProjects.length, scopedMacroSyncService, syncAction, t]);
+
   const handleSyncAction = useCallback(async (action: FooterSyncAction) => {
     if (!isTauriRuntime || syncAction || scopeProjects.length === 0) return;
     setSyncAction(action);
@@ -255,14 +309,27 @@ export const Footer: React.FC = () => {
       const codeSummary = codeResults.length > 0
         ? [`${successes}/${codeResults.length} repos`, ...failures.slice(0, 2).map((result) => `${result.projectName}: ${result.message}`)].join(' | ')
         : '';
-      const macroSummary = macroResult ? `@macro: ${getMacroSyncDescription(macroResult) || formatGitOutput(macroResult.output, translate)}` : '';
+      const macroSummary = describeMacroResultForToast(action, macroResult);
       const description = [codeSummary, macroSummary].filter(Boolean).join(' | ');
       const hasErrors = failures.length > 0 || macroResult?.state === 'failed' || macroResult?.state === 'conflict';
       const hasPending = macroResult?.state === 'pending';
+      const pendingActions = macroResult?.next_action === 'commit'
+        ? [{
+          label: t('footer.sync.macroSaveAction', 'Enregistrer @macro'),
+          variant: 'primary' as const,
+          onClick: async () => {
+            await handleCommitMacroMetadata();
+          },
+        }]
+        : undefined;
       if (hasErrors) {
         toast.error(t(`footer.sync.${action}Incomplete`, `${action} incomplete`), { description, notification: { category: 'git_sync_attention_required' } });
       } else if (hasPending) {
-        toast.info(t(`footer.sync.${action}Pending`, `${action} requires attention`), { description, notification: { category: 'git_sync_attention_required' } });
+        toast.info(t(`footer.sync.${action}Pending`, `${action} requires attention`), {
+          description,
+          actions: pendingActions,
+          notification: { category: 'git_sync_attention_required' },
+        });
       } else {
         toast.success(t(`footer.sync.${action}Complete`, `${action} complete`), { description, notification: { category: 'git_sync_completed' } });
       }
@@ -270,7 +337,7 @@ export const Footer: React.FC = () => {
       await refreshFooterStatus({ ensureMacro: action === 'fetch' });
       setSyncAction(null);
     }
-  }, [isTauriRuntime, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, scopeProjects.length, scopedMacroSyncService, syncAction, t, translate]);
+  }, [describeMacroResultForToast, handleCommitMacroMetadata, isTauriRuntime, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, scopeProjects.length, scopedMacroSyncService, syncAction, t]);
 
   const macroConflictEntries = useMemo<ConflictResolutionEntry[]>(() => {
     const repositories = metadataSyncRepositories.length > 0 ? metadataSyncRepositories : scopeProjects.map((project) => ({
