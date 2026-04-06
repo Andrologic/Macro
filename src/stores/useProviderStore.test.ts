@@ -50,9 +50,19 @@ const fetchModelsFromProviderMock = mock(async () => ({
   success: true,
   models: [],
 }));
-const testProviderConnectionMock = mock(async () => ({
+const probeModelsEndpointMock = mock(async () => ({
+  success: true,
+  status: 'reachable',
+  source: 'models_endpoint',
+  message: 'Connected! Found 0 models.',
+  models: [],
+}));
+const probeProviderReachabilityMock = mock(async () => ({
   success: true,
   message: 'Connected',
+  status: 'reachable',
+  source: 'models_endpoint',
+  models: [],
 }));
 
 const loadProviderStore = async () => {
@@ -83,7 +93,8 @@ const loadProviderStore = async () => {
   }));
   mock.module('../services/providerApi', () => ({
     fetchModelsFromProvider: fetchModelsFromProviderMock,
-    testProviderConnection: testProviderConnectionMock,
+    probeModelsEndpoint: probeModelsEndpointMock,
+    probeProviderReachability: probeProviderReachabilityMock,
   }));
   mock.module('../services/aiConfig', () => ({
     loadAIConfigFile: async () => null,
@@ -119,7 +130,8 @@ describe('useProviderStore secret resolution', () => {
     getProviderSettingsMock.mockClear();
     listProviderModelsMock.mockClear();
     fetchModelsFromProviderMock.mockClear();
-    testProviderConnectionMock.mockClear();
+    probeModelsEndpointMock.mockClear();
+    probeProviderReachabilityMock.mockClear();
   });
 
   it('loads provider configs without touching the keychain', async () => {
@@ -136,6 +148,7 @@ describe('useProviderStore secret resolution', () => {
       isLoadingModels: false,
       lastError: null,
       connectionStatus: {},
+      providerReachabilityById: {},
       authErrorsByProvider: {},
       authRequestIdsByProvider: {},
       copilotStatusByProvider: {},
@@ -152,6 +165,8 @@ describe('useProviderStore secret resolution', () => {
       apiKey: undefined,
       apiKeyLoaded: false,
     });
+    expect(providerStore.useProviderStore.getState().providerReachabilityById['provider-openai']).toBeUndefined();
+    expect(providerStore.useProviderStore.getState().connectionStatus['provider-openai']).toBeUndefined();
   });
 
   it('reveals a stored key once and caches it for the session', async () => {
@@ -163,7 +178,7 @@ describe('useProviderStore secret resolution', () => {
     await providerStore.useProviderStore.getState().testConnection('provider-openai');
 
     expect(revealProviderApiKeyMock).toHaveBeenCalledTimes(1);
-    expect(testProviderConnectionMock).toHaveBeenCalledTimes(2);
+    expect(probeProviderReachabilityMock).toHaveBeenCalledTimes(2);
     expect(providerStore.useProviderStore.getState().providerConfigs[0]).toMatchObject({
       hasStoredApiKey: true,
       apiKey: 'test-api-key',
@@ -177,7 +192,7 @@ describe('useProviderStore secret resolution', () => {
     await providerStore.useProviderStore.getState().initialize();
 
     expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
-    expect(testProviderConnectionMock).not.toHaveBeenCalled();
+    expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
   });
 
   it('clears cached secret metadata when the key is removed', async () => {
@@ -209,7 +224,7 @@ describe('useProviderStore secret resolution', () => {
     expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
     expect(listProviderModelsMock).not.toHaveBeenCalled();
     expect(fetchModelsFromProviderMock).not.toHaveBeenCalled();
-    expect(testProviderConnectionMock).not.toHaveBeenCalled();
+    expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
   });
 
   it('does not scan models immediately after creating a provider with an API key', async () => {
@@ -227,7 +242,77 @@ describe('useProviderStore secret resolution', () => {
     expect(createProviderConfigMock).toHaveBeenCalledTimes(1);
     expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
     expect(fetchModelsFromProviderMock).not.toHaveBeenCalled();
-    expect(testProviderConnectionMock).not.toHaveBeenCalled();
+    expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+  });
+
+  it('invalidates previous reachability when the base URL changes', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    providerStore.useProviderStore.setState({
+      providerReachabilityById: {
+        'provider-openai': {
+          status: 'reachable',
+          lastVerifiedAt: '2026-04-04T00:00:00.000Z',
+          lastVerifiedBy: 'models_endpoint',
+        },
+      },
+      connectionStatus: {
+        'provider-openai': 'online',
+      },
+    });
+
+    await providerStore.useProviderStore.getState().updateProviderConfig('provider-openai', {
+      baseUrl: 'https://proxy.example.com/v1',
+    });
+
+    expect(providerStore.useProviderStore.getState().providerReachabilityById['provider-openai']).toBeUndefined();
+    expect(providerStore.useProviderStore.getState().connectionStatus['provider-openai']).toBeUndefined();
+  });
+
+  it('promotes a provider to reachable after a successful runtime response', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    providerStore.useProviderStore
+      .getState()
+      .markProviderReachable('provider-openai', { modelId: 'MiniMax-M2.7' });
+
+    expect(providerStore.useProviderStore.getState().providerReachabilityById['provider-openai']).toMatchObject({
+      status: 'reachable',
+      lastVerifiedBy: 'chat_completion_runtime',
+      modelIdUsed: 'MiniMax-M2.7',
+    });
+    expect(providerStore.useProviderStore.getState().connectionStatus['provider-openai']).toBe('online');
+  });
+
+  it('passes known models to the reachability probe for fallback verification', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    providerStore.useProviderStore.setState({
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'MiniMax-M2.7',
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'MiniMax-M2.7',
+            name: 'MiniMax-M2.7',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore.getState().testConnection('provider-openai');
+
+    expect(probeProviderReachabilityMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preferredModelId: 'MiniMax-M2.7',
+        modelIds: [],
+      })
+    );
   });
 
   it('falls back to the new model default reasoning effort when the previous effort is invalid', async () => {
