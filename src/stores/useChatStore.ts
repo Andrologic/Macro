@@ -4134,6 +4134,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           onComplete: (result) => {
             tokenBatcher.flushNow();
             applyStreamCompletion(params.assistantMessage.id, result);
+            useProviderStore
+              .getState()
+              .markProviderReachable(params.selectedProviderId, { modelId: params.selectedModelId });
 
             set((state) => {
               const conversations = state.conversations.map((conv) =>
