@@ -322,15 +322,6 @@ pub fn run() {
                         *pool_guard = Some(pool.clone());
                         drop(pool_guard);
                         tracing::info!("Database initialized successfully");
-
-                        // Run keychain-backed legacy secret migration after the DB is already
-                        // published so a delayed macOS unlock prompt cannot leave the app in a
-                        // transient "Database not initialized" state.
-                        if let Err(error) =
-                            ai::chatgpt::migrate_provider_secret(&pool, "chatgpt").await
-                        {
-                            tracing::warn!("Failed to migrate ChatGPT secret: {}", error);
-                        }
                     }
                     Err(e) => {
                         tracing::error!("Failed to initialize database: {}", e);

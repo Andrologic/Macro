@@ -24,11 +24,32 @@ const listProviderConfigsMock = mock(async () => [
 
 const revealProviderApiKeyMock = mock(async () => 'test-api-key');
 const updateProviderConfigMock = mock(async () => undefined);
+const createProviderConfigMock = mock(async () => ({
+  id: 'provider-created',
+  name: 'Created Provider',
+  provider_type: 'openai',
+  base_url: 'https://api.openai.com/v1',
+  api_key: null,
+  has_stored_api_key: true,
+  is_enabled: true,
+  is_local: false,
+  auth_status: null,
+  auth_source: null,
+  plan_type: null,
+  account_label: null,
+  token_expires_at: null,
+  created_at: '2026-04-04T00:00:00.000Z',
+  updated_at: '2026-04-04T00:00:00.000Z',
+}));
 const getProviderSettingsMock = mock(async () => ({
   provider_id: 'provider-openai',
   filter_free_models: false,
 }));
 const listProviderModelsMock = mock(async () => []);
+const fetchModelsFromProviderMock = mock(async () => ({
+  success: true,
+  models: [],
+}));
 const testProviderConnectionMock = mock(async () => ({
   success: true,
   message: 'Connected',
@@ -43,6 +64,7 @@ const loadProviderStore = async () => {
     listProviderConfigs: listProviderConfigsMock,
     revealProviderApiKey: revealProviderApiKeyMock,
     updateProviderConfig: updateProviderConfigMock,
+    createProviderConfig: createProviderConfigMock,
     updateConversationDetails: mock(async () => undefined),
     createMessage: mock(async (conversationId: string, role: string, content: string) => ({
       id: `message-${conversationId}-${role}`,
@@ -60,10 +82,7 @@ const loadProviderStore = async () => {
     gitBranchList: mock(async () => ({ local: [], remote: [], current: null })),
   }));
   mock.module('../services/providerApi', () => ({
-    fetchModelsFromProvider: mock(async () => ({
-      success: true,
-      models: [],
-    })),
+    fetchModelsFromProvider: fetchModelsFromProviderMock,
     testProviderConnection: testProviderConnectionMock,
   }));
   mock.module('../services/aiConfig', () => ({
@@ -96,8 +115,10 @@ describe('useProviderStore secret resolution', () => {
     listProviderConfigsMock.mockClear();
     revealProviderApiKeyMock.mockClear();
     updateProviderConfigMock.mockClear();
+    createProviderConfigMock.mockClear();
     getProviderSettingsMock.mockClear();
     listProviderModelsMock.mockClear();
+    fetchModelsFromProviderMock.mockClear();
     testProviderConnectionMock.mockClear();
   });
 
@@ -150,6 +171,15 @@ describe('useProviderStore secret resolution', () => {
     });
   });
 
+  it('initializes without auto-revealing stored API keys', async () => {
+    const providerStore = await loadProviderStore();
+
+    await providerStore.useProviderStore.getState().initialize();
+
+    expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
+    expect(testProviderConnectionMock).not.toHaveBeenCalled();
+  });
+
   it('clears cached secret metadata when the key is removed', async () => {
     const providerStore = await loadProviderStore();
     await providerStore.useProviderStore.getState().loadProviderConfigs();
@@ -165,6 +195,39 @@ describe('useProviderStore secret resolution', () => {
       apiKey: undefined,
       apiKeyLoaded: true,
     });
+  });
+
+  it('does not rescan models immediately after updating a provider key', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    await providerStore.useProviderStore.getState().updateProviderConfig('provider-openai', {
+      apiKey: 'test-api-key',
+    });
+
+    expect(updateProviderConfigMock).toHaveBeenCalledTimes(1);
+    expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
+    expect(listProviderModelsMock).not.toHaveBeenCalled();
+    expect(fetchModelsFromProviderMock).not.toHaveBeenCalled();
+    expect(testProviderConnectionMock).not.toHaveBeenCalled();
+  });
+
+  it('does not scan models immediately after creating a provider with an API key', async () => {
+    const providerStore = await loadProviderStore();
+
+    await providerStore.useProviderStore.getState().createProviderConfig({
+      name: 'Created Provider',
+      providerType: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'test-api-key',
+      isEnabled: true,
+      isLocal: false,
+    });
+
+    expect(createProviderConfigMock).toHaveBeenCalledTimes(1);
+    expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
+    expect(fetchModelsFromProviderMock).not.toHaveBeenCalled();
+    expect(testProviderConnectionMock).not.toHaveBeenCalled();
   });
 
   it('falls back to the new model default reasoning effort when the previous effort is invalid', async () => {

@@ -130,10 +130,9 @@ async fn stream_chat_inner(
     }
 
     if !saw_completed {
-        let provider_input_items =
-            optional_output_items(normalize_provider_input_items_for_replay(
-                &completion_accumulator.output_items,
-            )?);
+        let provider_input_items = optional_output_items(
+            normalize_provider_input_items_for_replay(&completion_accumulator.output_items)?,
+        );
         app_handle
             .emit(
                 "ai:done",
@@ -411,10 +410,12 @@ pub(super) fn build_responses_request(
                     continue;
                 }
 
-                input.push(serialize_response_input_item(ResponsesMessageItem::Message {
-                    role: "user".to_string(),
-                    content: build_response_content_items(&message.content, false)?,
-                })?);
+                input.push(serialize_response_input_item(
+                    ResponsesMessageItem::Message {
+                        role: "user".to_string(),
+                        content: build_response_content_items(&message.content, false)?,
+                    },
+                )?);
             }
             "tool" => {
                 if let Some(provider_input_items) = extract_message_provider_input_items(message)? {
@@ -499,7 +500,9 @@ fn extract_message_provider_input_items(
     extract_provider_turn_output_items(message.provider_turn_state.as_ref())
 }
 
-fn extract_provider_turn_output_items(provider_turn_state: Option<&Value>) -> Result<Option<Vec<Value>>, String> {
+fn extract_provider_turn_output_items(
+    provider_turn_state: Option<&Value>,
+) -> Result<Option<Vec<Value>>, String> {
     let Some(provider_turn_state) = provider_turn_state else {
         return Ok(None);
     };
@@ -696,17 +699,14 @@ fn normalize_message_content_part_for_replay(
             })))
         }
         "input_image" | "image_url" => {
-            let image_url = part
-                .get("image_url")
-                .and_then(|value| {
-                    value.as_str().map(str::to_string).or_else(|| {
-                        value
-                            .get("url")
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
+            let image_url =
+                part.get("image_url")
+                    .and_then(|value| {
+                        value.as_str().map(str::to_string).or_else(|| {
+                            value.get("url").and_then(Value::as_str).map(str::to_string)
+                        })
                     })
-                })
-                .ok_or_else(|| "Message image content is missing image_url.".to_string())?;
+                    .ok_or_else(|| "Message image content is missing image_url.".to_string())?;
 
             Ok(Some(json!({
                 "type": "input_image",

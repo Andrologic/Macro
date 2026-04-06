@@ -1019,7 +1019,13 @@
       "baseUrlLabel": "Basis-URL",
       "baseUrlPlaceholder": "https://api.openai.com/v1",
       "apiKeyLabel": "API-Schlüssel",
-      "apiKeyPlaceholder": "sk-..."
+      "apiKeyPlaceholder": "sk-...",
+      "apiKeyStoredPlaceholder": "Im Schlüsselbund gespeichert",
+      "apiKeyStoredHint": "Dieser Schlüssel ist im System-Schlüsselbund gespeichert.",
+      "revealApiKey": "API-Schlüssel anzeigen",
+      "hideApiKey": "API-Schlüssel ausblenden",
+      "replaceApiKey": "Ersetzen",
+      "clearApiKey": "Gespeicherten Schlüssel löschen"
     },
     "authErrors": {
       "browser_open_failed": "Ihr Browser konnte für die ChatGPT-Anmeldung nicht geöffnet werden.",
