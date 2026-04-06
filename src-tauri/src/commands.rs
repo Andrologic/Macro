@@ -15,6 +15,9 @@ use crate::core::tool_policy::{
 };
 use crate::db::{models::*, repository, DbError};
 use crate::dev_overrides::DevProviderOverridesFile;
+use crate::fs::{
+    validate_path as validate_fs_path, validate_path_for_write as validate_fs_path_for_write,
+};
 use crate::git::GitState;
 use crate::secrets;
 use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
@@ -244,6 +247,386 @@ fn to_macro_virtual_relative(path: &str) -> String {
     } else {
         format!(".macro/{}", normalized.trim_start_matches("./"))
     }
+}
+
+#[derive(Debug, Clone)]
+enum ParsedPatchOperation {
+    Add { path: String, lines: Vec<String> },
+    Update { path: String, hunks: Vec<PatchHunk> },
+    Delete { path: String },
+}
+
+#[derive(Debug, Clone)]
+struct PatchHunk {
+    lines: Vec<PatchHunkLine>,
+}
+
+#[derive(Debug, Clone)]
+struct PatchHunkLine {
+    kind: char,
+    content: String,
+}
+
+#[derive(Debug, Clone)]
+struct PendingFileChange {
+    display_path: String,
+    effective_workspace: PathBuf,
+    effective_path: String,
+    absolute_path: PathBuf,
+    status: String,
+    new_content: Option<String>,
+    created: bool,
+    bytes_written: u64,
+    additions: usize,
+    deletions: usize,
+}
+
+fn parse_apply_patch(patch_text: &str) -> CommandResult<Vec<ParsedPatchOperation>> {
+    let lines: Vec<&str> = patch_text.lines().collect();
+    if lines.first().copied() != Some("*** Begin Patch") {
+        return Err(command_error(
+            "Invalid apply_patch payload: missing '*** Begin Patch' header.",
+        ));
+    }
+    if lines.last().copied() != Some("*** End Patch") {
+        return Err(command_error(
+            "Invalid apply_patch payload: missing '*** End Patch' footer.",
+        ));
+    }
+
+    let mut operations = Vec::new();
+    let mut index = 1usize;
+    while index + 1 < lines.len() {
+        let line = lines[index];
+        if line.trim().is_empty() {
+            index += 1;
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            let mut added_lines = Vec::new();
+            index += 1;
+            while index + 1 < lines.len() && !lines[index].starts_with("*** ") {
+                let current = lines[index];
+                let Some(content) = current.strip_prefix('+') else {
+                    return Err(command_error(format!(
+                        "Invalid add-file line for {}: expected '+' prefix.",
+                        path
+                    )));
+                };
+                added_lines.push(content.to_string());
+                index += 1;
+            }
+            operations.push(ParsedPatchOperation::Add {
+                path: path.trim().to_string(),
+                lines: added_lines,
+            });
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Update File: ") {
+            let mut hunks = Vec::new();
+            let mut hunk_lines = Vec::new();
+            index += 1;
+            while index + 1 < lines.len() && !lines[index].starts_with("*** ") {
+                let current = lines[index];
+                if current == "@@" || current.starts_with("@@ ") {
+                    if !hunk_lines.is_empty() {
+                        hunks.push(PatchHunk { lines: hunk_lines });
+                        hunk_lines = Vec::new();
+                    }
+                    index += 1;
+                    continue;
+                }
+
+                let Some(kind) = current.chars().next() else {
+                    return Err(command_error(format!(
+                        "Invalid update hunk line for {}.",
+                        path
+                    )));
+                };
+                if !matches!(kind, ' ' | '+' | '-') {
+                    return Err(command_error(format!(
+                        "Invalid update hunk line for {}: expected ' ', '+', or '-'.",
+                        path
+                    )));
+                }
+                hunk_lines.push(PatchHunkLine {
+                    kind,
+                    content: current[1..].to_string(),
+                });
+                index += 1;
+            }
+            if !hunk_lines.is_empty() {
+                hunks.push(PatchHunk { lines: hunk_lines });
+            }
+            if hunks.is_empty() {
+                return Err(command_error(format!(
+                    "Update patch for {} must contain at least one hunk.",
+                    path
+                )));
+            }
+            operations.push(ParsedPatchOperation::Update {
+                path: path.trim().to_string(),
+                hunks,
+            });
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Delete File: ") {
+            operations.push(ParsedPatchOperation::Delete {
+                path: path.trim().to_string(),
+            });
+            index += 1;
+            continue;
+        }
+
+        return Err(command_error(format!(
+            "Invalid apply_patch section header: {}",
+            line
+        )));
+    }
+
+    if operations.is_empty() {
+        return Err(command_error(
+            "Invalid apply_patch payload: no file operations were provided.",
+        ));
+    }
+
+    Ok(operations)
+}
+
+fn split_text_lines(content: &str) -> (Vec<String>, bool) {
+    let trailing_newline = content.ends_with('\n');
+    let mut lines = content
+        .split('\n')
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
+    if trailing_newline {
+        let _ = lines.pop();
+    }
+    (lines, trailing_newline)
+}
+
+fn join_text_lines(lines: &[String], trailing_newline: bool) -> String {
+    let mut joined = lines.join("\n");
+    if trailing_newline {
+        joined.push('\n');
+    }
+    joined
+}
+
+fn find_line_sequence(lines: &[String], needle: &[String], start_index: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(start_index.min(lines.len()));
+    }
+    if needle.len() > lines.len() {
+        return None;
+    }
+
+    for candidate_start in start_index..=lines.len().saturating_sub(needle.len()) {
+        if lines[candidate_start..candidate_start + needle.len()] == *needle {
+            return Some(candidate_start);
+        }
+    }
+    None
+}
+
+fn apply_patch_hunks_to_content(
+    path: &str,
+    current_content: &str,
+    hunks: &[PatchHunk],
+) -> CommandResult<String> {
+    let (mut lines, trailing_newline) = split_text_lines(current_content);
+    let mut search_start = 0usize;
+
+    for hunk in hunks {
+        let old_lines = hunk
+            .lines
+            .iter()
+            .filter(|line| line.kind != '+')
+            .map(|line| line.content.clone())
+            .collect::<Vec<_>>();
+        let replacement_lines = hunk
+            .lines
+            .iter()
+            .filter(|line| line.kind != '-')
+            .map(|line| line.content.clone())
+            .collect::<Vec<_>>();
+
+        let replace_at = find_line_sequence(&lines, &old_lines, search_start).ok_or_else(|| {
+            command_error(format!(
+                "Patch hunk could not be applied cleanly to {}.",
+                path
+            ))
+        })?;
+        let replace_end = replace_at + old_lines.len();
+        lines.splice(replace_at..replace_end, replacement_lines.iter().cloned());
+        search_start = replace_at + replacement_lines.len();
+    }
+
+    Ok(join_text_lines(&lines, trailing_newline))
+}
+
+fn compute_line_change_stats(old_content: &str, new_content: &str) -> (usize, usize) {
+    let old_lines = old_content.lines().collect::<Vec<_>>();
+    let new_lines = new_content.lines().collect::<Vec<_>>();
+
+    let mut prefix = 0usize;
+    while prefix < old_lines.len()
+        && prefix < new_lines.len()
+        && old_lines[prefix] == new_lines[prefix]
+    {
+        prefix += 1;
+    }
+
+    let mut suffix = 0usize;
+    while suffix < old_lines.len().saturating_sub(prefix)
+        && suffix < new_lines.len().saturating_sub(prefix)
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    (
+        new_lines.len().saturating_sub(prefix + suffix),
+        old_lines.len().saturating_sub(prefix + suffix),
+    )
+}
+
+fn build_diff_summary(changes: &[PendingFileChange]) -> String {
+    changes
+        .iter()
+        .map(|change| {
+            format!(
+                "{} {} (+{} -{})",
+                change.status.to_uppercase(),
+                change.display_path,
+                change.additions,
+                change.deletions
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn resolve_validated_tool_path(
+    workspace: &Path,
+    path: &str,
+    for_write: bool,
+) -> CommandResult<PathBuf> {
+    let path_buf = PathBuf::from(path);
+    if for_write {
+        validate_fs_path_for_write(&path_buf, workspace)
+            .map_err(|error| command_error(error.to_string()))
+    } else {
+        validate_fs_path(&path_buf, workspace).map_err(|error| command_error(error.to_string()))
+    }
+}
+
+async fn build_post_write_response(
+    changes: &[PendingFileChange],
+    extra_fields: serde_json::Map<String, Value>,
+) -> CommandResult<String> {
+    let mut files = Vec::new();
+    let mut validation_files = Vec::new();
+    let mut errors = Vec::new();
+
+    for change in changes {
+        let validation = if change.new_content.is_some() {
+            match fs::read_file_internal(
+                &change.effective_workspace,
+                change.effective_path.clone(),
+                None,
+            )
+            .await
+            {
+                Ok(read_result) => serde_json::json!({
+                    "path": change.display_path,
+                    "exists": true,
+                    "readable": true,
+                    "is_binary": read_result.is_binary,
+                    "size": read_result.size,
+                    "encoding": read_result.encoding,
+                    "language": read_result.language,
+                }),
+                Err(error) => {
+                    errors.push(format!(
+                        "Validation failed for {}: {}",
+                        change.display_path, error
+                    ));
+                    serde_json::json!({
+                        "path": change.display_path,
+                        "exists": true,
+                        "readable": false,
+                        "is_binary": false,
+                        "size": 0,
+                        "encoding": Value::Null,
+                        "language": Value::Null,
+                    })
+                }
+            }
+        } else {
+            let exists = tokio::fs::try_exists(&change.absolute_path)
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to validate deleted file {}: {}",
+                        change.display_path, error
+                    ))
+                })?;
+            if exists {
+                errors.push(format!(
+                    "Deletion validation failed for {}: file still exists.",
+                    change.display_path
+                ));
+            }
+            serde_json::json!({
+                "path": change.display_path,
+                "exists": exists,
+                "readable": false,
+                "is_binary": false,
+                "size": 0,
+                "encoding": Value::Null,
+                "language": Value::Null,
+            })
+        };
+
+        validation_files.push(validation.clone());
+        files.push(serde_json::json!({
+            "path": change.display_path,
+            "status": change.status,
+            "additions": change.additions,
+            "deletions": change.deletions,
+            "created": change.created,
+            "bytes_written": change.bytes_written,
+            "validation": validation,
+        }));
+    }
+
+    let mut response = serde_json::Map::new();
+    response.insert("ok".to_string(), Value::Bool(errors.is_empty()));
+    response.insert("files".to_string(), Value::Array(files));
+    response.insert(
+        "diff".to_string(),
+        Value::String(build_diff_summary(changes)),
+    );
+    response.insert("diagnostics".to_string(), Value::Array(Vec::new()));
+    response.insert(
+        "validation".to_string(),
+        serde_json::json!({
+            "all_files_readable": errors.is_empty(),
+            "files": validation_files,
+        }),
+    );
+    response.insert(
+        "errors".to_string(),
+        Value::Array(errors.into_iter().map(Value::String).collect()),
+    );
+    response.extend(extra_fields);
+
+    serde_json::to_string_pretty(&Value::Object(response))
+        .map_err(|error| command_error(error.to_string()))
 }
 
 #[derive(Clone, Copy)]
@@ -1859,23 +2242,48 @@ pub async fn execute_workspace_tool(
             )
             .await?;
 
+            let absolute_path =
+                resolve_validated_tool_path(&effective_workspace, effective_path.as_str(), true)?;
+
             let write_result = fs::write_file_internal(
                 &effective_workspace,
-                effective_path,
-                content,
+                effective_path.clone(),
+                content.clone(),
                 create_dirs,
                 Some(mode_trimmed == "Debug"),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
 
-            serde_json::to_string_pretty(&serde_json::json!({
-                "ok": true,
-                "path": write_result.path,
-                "bytes_written": write_result.bytes_written,
-                "created": write_result.created
-            }))
-            .map_err(|error| command_error(error.to_string()))
+            let change = PendingFileChange {
+                display_path: path.clone(),
+                effective_workspace,
+                effective_path,
+                absolute_path,
+                status: if write_result.created {
+                    "created".to_string()
+                } else {
+                    "updated".to_string()
+                },
+                new_content: Some(content.clone()),
+                created: write_result.created,
+                bytes_written: write_result.bytes_written,
+                additions: content.lines().count(),
+                deletions: 0,
+            };
+
+            build_post_write_response(
+                &[change],
+                serde_json::Map::from_iter([
+                    ("path".to_string(), Value::String(write_result.path)),
+                    (
+                        "bytes_written".to_string(),
+                        Value::Number(serde_json::Number::from(write_result.bytes_written)),
+                    ),
+                    ("created".to_string(), Value::Bool(write_result.created)),
+                ]),
+            )
+            .await
         }
         "edit" => {
             let path = json_arg_string(&args, "path")
@@ -1917,24 +2325,246 @@ pub async fn execute_workspace_tool(
                 current.content.replacen(&old_text, &new_text, 1)
             };
 
+            let absolute_path =
+                resolve_validated_tool_path(&effective_workspace, effective_path.as_str(), true)?;
+
             let write_result = fs::write_file_internal(
                 &effective_workspace,
-                effective_path,
-                updated,
+                effective_path.clone(),
+                updated.clone(),
                 Some(true),
                 Some(mode_trimmed == "Debug"),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
 
-            serde_json::to_string_pretty(&serde_json::json!({
-                "ok": true,
-                "replacements": if replace_all { occurrences } else { 1 },
-                "path": write_result.path,
-                "bytes_written": write_result.bytes_written,
-                "created": write_result.created
-            }))
-            .map_err(|error| command_error(error.to_string()))
+            let (additions, deletions) = compute_line_change_stats(&current.content, &updated);
+            let change = PendingFileChange {
+                display_path: path.clone(),
+                effective_workspace,
+                effective_path,
+                absolute_path,
+                status: if write_result.created {
+                    "created".to_string()
+                } else {
+                    "updated".to_string()
+                },
+                new_content: Some(updated),
+                created: write_result.created,
+                bytes_written: write_result.bytes_written,
+                additions,
+                deletions,
+            };
+
+            build_post_write_response(
+                &[change],
+                serde_json::Map::from_iter([
+                    (
+                        "replacements".to_string(),
+                        Value::Number(serde_json::Number::from(if replace_all {
+                            occurrences as u64
+                        } else {
+                            1
+                        })),
+                    ),
+                    ("path".to_string(), Value::String(write_result.path)),
+                    (
+                        "bytes_written".to_string(),
+                        Value::Number(serde_json::Number::from(write_result.bytes_written)),
+                    ),
+                    ("created".to_string(), Value::Bool(write_result.created)),
+                ]),
+            )
+            .await
+        }
+        "apply_patch" => {
+            let patch_text = json_arg_string(&args, "patch_text").ok_or_else(|| {
+                command_error("Missing patch_text argument for apply_patch tool.")
+            })?;
+            let operations = parse_apply_patch(&patch_text)?;
+
+            for operation in operations.iter() {
+                let operation_path = match operation {
+                    ParsedPatchOperation::Add { path, .. }
+                    | ParsedPatchOperation::Update { path, .. }
+                    | ParsedPatchOperation::Delete { path } => path,
+                };
+
+                let validation = validate_tool_execution(
+                    &mode_trimmed,
+                    &tool_trimmed,
+                    Some(operation_path.as_str()),
+                );
+                if !validation.allowed {
+                    return Ok(validation.reason.unwrap_or_else(|| {
+                        format!(
+                            "Tool {} is not allowed for path {}",
+                            tool_trimmed, operation_path
+                        )
+                    }));
+                }
+            }
+
+            let mut pending_changes = Vec::new();
+
+            for operation in operations {
+                match operation {
+                    ParsedPatchOperation::Add { path, lines } => {
+                        let effective_path = remap_macro_tool_path(path.as_str());
+                        let effective_workspace = resolve_workspace_for_tool_path(
+                            &workspace,
+                            &git_state,
+                            Some(path.as_str()),
+                            workspace_scope.as_deref(),
+                        )
+                        .await?;
+                        let absolute_path = resolve_validated_tool_path(
+                            &effective_workspace,
+                            effective_path.as_str(),
+                            true,
+                        )?;
+                        if tokio::fs::try_exists(&absolute_path)
+                            .await
+                            .map_err(|error| {
+                                command_error(format!(
+                                    "Failed to inspect {} before apply_patch: {}",
+                                    path, error
+                                ))
+                            })?
+                        {
+                            return Ok(format!(
+                                "Cannot add file {} because it already exists.",
+                                path
+                            ));
+                        }
+
+                        let new_content = join_text_lines(&lines, true);
+                        pending_changes.push(PendingFileChange {
+                            display_path: path,
+                            effective_workspace,
+                            effective_path,
+                            absolute_path,
+                            status: "created".to_string(),
+                            new_content: Some(new_content.clone()),
+                            created: true,
+                            bytes_written: new_content.len() as u64,
+                            additions: new_content.lines().count(),
+                            deletions: 0,
+                        });
+                    }
+                    ParsedPatchOperation::Update { path, hunks } => {
+                        let effective_path = remap_macro_tool_path(path.as_str());
+                        let effective_workspace = resolve_workspace_for_tool_path(
+                            &workspace,
+                            &git_state,
+                            Some(path.as_str()),
+                            workspace_scope.as_deref(),
+                        )
+                        .await?;
+                        let current = fs::read_file_internal(
+                            &effective_workspace,
+                            effective_path.clone(),
+                            Some(mode_trimmed == "Debug"),
+                        )
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
+
+                        if current.is_binary {
+                            return Ok(format!("Cannot apply patch to binary file: {}", path));
+                        }
+
+                        let absolute_path = resolve_validated_tool_path(
+                            &effective_workspace,
+                            effective_path.as_str(),
+                            true,
+                        )?;
+                        let new_content =
+                            apply_patch_hunks_to_content(path.as_str(), &current.content, &hunks)?;
+                        let (additions, deletions) =
+                            compute_line_change_stats(&current.content, &new_content);
+
+                        pending_changes.push(PendingFileChange {
+                            display_path: path,
+                            effective_workspace,
+                            effective_path,
+                            absolute_path,
+                            status: "updated".to_string(),
+                            new_content: Some(new_content.clone()),
+                            created: false,
+                            bytes_written: new_content.len() as u64,
+                            additions,
+                            deletions,
+                        });
+                    }
+                    ParsedPatchOperation::Delete { path } => {
+                        let effective_path = remap_macro_tool_path(path.as_str());
+                        let effective_workspace = resolve_workspace_for_tool_path(
+                            &workspace,
+                            &git_state,
+                            Some(path.as_str()),
+                            workspace_scope.as_deref(),
+                        )
+                        .await?;
+                        let absolute_path = resolve_validated_tool_path(
+                            &effective_workspace,
+                            effective_path.as_str(),
+                            false,
+                        )?;
+                        let current = fs::read_file_internal(
+                            &effective_workspace,
+                            effective_path.clone(),
+                            Some(mode_trimmed == "Debug"),
+                        )
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
+                        let deletion_count = current.content.lines().count();
+                        pending_changes.push(PendingFileChange {
+                            display_path: path,
+                            effective_workspace,
+                            effective_path,
+                            absolute_path,
+                            status: "deleted".to_string(),
+                            new_content: None,
+                            created: false,
+                            bytes_written: 0,
+                            additions: 0,
+                            deletions: deletion_count,
+                        });
+                    }
+                }
+            }
+
+            for change in pending_changes.iter() {
+                if let Some(new_content) = change.new_content.as_ref() {
+                    fs::write_file_internal(
+                        &change.effective_workspace,
+                        change.effective_path.clone(),
+                        new_content.clone(),
+                        Some(true),
+                        Some(mode_trimmed == "Debug"),
+                    )
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                } else {
+                    tokio::fs::remove_file(&change.absolute_path)
+                        .await
+                        .map_err(|error| {
+                            command_error(format!(
+                                "Failed to delete {}: {}",
+                                change.display_path, error
+                            ))
+                        })?;
+                }
+            }
+
+            build_post_write_response(
+                &pending_changes,
+                serde_json::Map::from_iter([(
+                    "applied_operations".to_string(),
+                    Value::Number(serde_json::Number::from(pending_changes.len() as u64)),
+                )]),
+            )
+            .await
         }
         "glob" => {
             let pattern = json_arg_string(&args, "pattern").unwrap_or_else(|| "**/*".to_string());
@@ -3096,7 +3726,10 @@ pub async fn db_set_setting(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_requested_workspace, resolve_workspace_for_tool_path};
+    use super::{
+        apply_patch_hunks_to_content, parse_apply_patch, resolve_requested_workspace,
+        resolve_workspace_for_tool_path, ParsedPatchOperation,
+    };
     use crate::git::GitState;
     use std::fs;
     use tempfile::TempDir;
@@ -3138,6 +3771,79 @@ mod tests {
         .expect("resolve metadata workspace");
 
         assert_eq!(resolved, workspace.path().join(".macro"));
+    }
+
+    #[test]
+    fn parse_apply_patch_supports_add_update_delete_sections() {
+        let parsed = parse_apply_patch(
+            [
+                "*** Begin Patch",
+                "*** Update File: src/app.ts",
+                "@@",
+                "-before",
+                "+after",
+                "*** Add File: notes.md",
+                "+hello",
+                "*** Delete File: old.md",
+                "*** End Patch",
+            ]
+            .join("\n")
+            .as_str(),
+        )
+        .expect("parse apply_patch");
+
+        assert_eq!(parsed.len(), 3);
+        match &parsed[0] {
+            ParsedPatchOperation::Update { path, hunks } => {
+                assert_eq!(path, "src/app.ts");
+                assert_eq!(hunks.len(), 1);
+            }
+            _ => panic!("expected update operation"),
+        }
+        match &parsed[1] {
+            ParsedPatchOperation::Add { path, lines } => {
+                assert_eq!(path, "notes.md");
+                assert_eq!(lines, &vec!["hello".to_string()]);
+            }
+            _ => panic!("expected add operation"),
+        }
+        match &parsed[2] {
+            ParsedPatchOperation::Delete { path } => {
+                assert_eq!(path, "old.md");
+            }
+            _ => panic!("expected delete operation"),
+        }
+    }
+
+    #[test]
+    fn apply_patch_hunks_to_content_updates_expected_lines() {
+        let parsed = parse_apply_patch(
+            [
+                "*** Begin Patch",
+                "*** Update File: src/app.ts",
+                "@@",
+                " export const value = 1;",
+                "-console.log(value);",
+                "+console.info(value);",
+                "*** End Patch",
+            ]
+            .join("\n")
+            .as_str(),
+        )
+        .expect("parse apply_patch");
+
+        let ParsedPatchOperation::Update { path, hunks } = &parsed[0] else {
+            panic!("expected update operation");
+        };
+
+        let updated = apply_patch_hunks_to_content(
+            path,
+            "export const value = 1;\nconsole.log(value);\n",
+            hunks,
+        )
+        .expect("apply patch");
+
+        assert_eq!(updated, "export const value = 1;\nconsole.info(value);\n");
     }
 }
 
