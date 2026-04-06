@@ -1,0 +1,5 @@
+[ai.copilotOAuth]
+clientId = "Ov23liDvVdfyEW8rml19"
+displayName = "Macro"
+deviceCodeUrl = "https://github.com/login/device/code"
+accessTokenUrl = "https://github.com/login/oauth/access_token"
