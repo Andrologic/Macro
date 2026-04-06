@@ -60,6 +60,7 @@ const projectGroups: ProjectGroup[] = [
 
 const appState = {
   mode: 'Architect' as AppMode,
+  agentType: 'build' as const,
   selectedGroupId: 'group-1' as string | null,
   selectedProjectId: 'project-1' as string | null,
   selectedTaskId: null as string | null,
@@ -99,6 +100,7 @@ const providerState = {
   resolveProviderApiKey: mock(async () => undefined),
   selectedSupportsNativeToolCalling: () => false,
   markReasoningUnsupportedForModel: mock(() => undefined),
+  markProviderReachable: mock(() => undefined),
   selectModel: mock((modelId: string) => {
     providerState.selectedModelId = modelId;
   }),
@@ -108,6 +110,60 @@ const providerState = {
   selectProvider: mock((providerId: string) => {
     providerState.selectedProviderId = providerId;
   }),
+};
+
+const ALL_INTERNAL_TOOL_IDS = [
+  'mark_source_passage',
+  'read_sources',
+  'edit_source_passage',
+  'read_file',
+  'web_search',
+  'web_fetch',
+  'list',
+  'read',
+  'write',
+  'edit',
+  'apply_patch',
+  'glob',
+  'grep',
+  'git_status',
+  'git_log',
+  'git_branch_list',
+  'git_diff',
+  'git_get_tree',
+  'git_add',
+  'git_commit',
+  'git_checkout',
+  'git_merge',
+  'git_reset',
+  'git_stash',
+  'terminal_create_session',
+  'terminal_run',
+  'terminal_read',
+  'terminal_kill',
+  'need_add',
+  'strategy_generate',
+  'plan_create',
+  'plan_list',
+  'plan_get',
+  'plan_update',
+  'plan_delete',
+  'plan_restore',
+  'plan_set_active',
+  'strategy_get',
+  'strategy_update',
+  'strategy_delete',
+] as const;
+
+const toolsStoreState = {
+  selectedTools: [] as string[],
+  setSelectedTools: () => undefined,
+  internalTools: Object.fromEntries(
+    ALL_INTERNAL_TOOL_IDS.map((toolId) => [toolId, { id: toolId }])
+  ) as Record<string, { id: string }>,
+  isToolEnabled: (_toolId: string) => true,
+  getEnabledChatToolIds: () => ['read_file', 'web_search', 'web_fetch'],
+  loadSettings: mock(async () => undefined),
 };
 
 const useProviderStoreMock = {
@@ -245,6 +301,7 @@ const sendChatNonStreamingMock = mock(
       description: 'Refresh checkout state and cart recovery.',
     })
 );
+const streamChatMock = mock(async () => ({ usage: null }));
 
 const getLocalProjectContextStateMock = mock(async (_groupId: string) => ({
   architectConversationId: 'project-architect-conversation',
@@ -330,10 +387,7 @@ const registerUseChatStoreMocks = () => {
 
   mock.module('./useToolsStore', () => ({
     useToolsStore: {
-      getState: () => ({
-        selectedTools: [],
-        setSelectedTools: () => undefined,
-      }),
+      getState: () => toolsStoreState,
     },
   }));
 
@@ -367,7 +421,7 @@ const registerUseChatStoreMocks = () => {
   }));
 
   mock.module('../services/streamingChat', () => ({
-    streamChat: mock(async () => ({ usage: null })),
+    streamChat: streamChatMock,
     cancelStream: mock(() => undefined),
     sendChatNonStreaming: sendChatNonStreamingMock,
   }));
@@ -556,6 +610,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     (globalThis as { localStorage?: unknown }).localStorage = localStorageMock;
 
     appState.mode = 'Architect';
+    appState.agentType = 'build';
     appState.selectedGroupId = 'group-1';
     appState.selectedProjectId = 'project-1';
     appState.selectedTaskId = null;
@@ -564,8 +619,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     providerState.selectedProviderId = 'provider-1';
     providerState.selectedModelId = 'model-1';
+    providerState.selectedSupportsNativeToolCalling = () => false;
     providerState.loadProviderModels.mockClear();
     providerState.scanModelsForProvider.mockClear();
+    providerState.markProviderReachable.mockClear();
     providerState.selectModel.mockClear();
     providerState.selectProvider.mockClear();
 
@@ -589,6 +646,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     getArchitectPlanMock.mockClear();
     listArchitectPlansMock.mockClear();
     updateArchitectPlanMock.mockClear();
+    streamChatMock.mockClear();
     sendChatNonStreamingMock.mockClear();
     getLocalProjectContextStateMock.mockClear();
     syncArchitectPlanChatFromConversationMock.mockClear();
@@ -598,6 +656,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     deleteConversationMock.mockClear();
     deleteConversationsMock.mockClear();
     importMessagesMock.mockClear();
+    toolsStoreState.loadSettings.mockClear();
   });
 
   afterEach(async () => {
@@ -1053,6 +1112,51 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'Refresh checkout state and cart recovery.'
     );
     expect(useChatStore.getState().conversations[0]?.title).toBe('Plan - Checkout refresh - 1710000000000');
+  });
+
+  it('launches Architect conversations with the plan explorer internal profile', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    localStorage.setItem(
+      'macro_promptPlanExplorer',
+      JSON.stringify('Custom PLAN_EXPLORER prompt for tests.')
+    );
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('plan-conv')],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'plan-conv',
+      content: 'Structure le plan pour refondre le checkout.',
+    });
+
+    expect(streamChatMock).toHaveBeenCalledTimes(1);
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      internalAgentProfile?: string | null;
+      allowedToolIds: string[];
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(streamOptions.internalAgentProfile).toBe('plan_explorer');
+    expect(streamOptions.allowedToolIds).not.toContain('write');
+    expect(streamOptions.allowedToolIds).not.toContain('edit');
+    expect(streamOptions.allowedToolIds).not.toContain('apply_patch');
+    expect(streamOptions.allowedToolIds).toContain('plan_get');
+    expect(streamOptions.allowedToolIds).toContain('strategy_update');
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'Custom PLAN_EXPLORER prompt for tests.'
+    );
   });
 
   it('reuses the same implement conversation for the selected task', async () => {
@@ -1522,36 +1626,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       }),
     ];
 
-    const { streamChat } = await import('../services/streamingChat');
-    (
-      streamChat as unknown as {
-        mockImplementationOnce: (implementation: (options: {
-          onComplete?: (result: {
-            visibleContent: string;
-            toolTraces: unknown[];
-            hiddenContext?: unknown;
-            usage: null;
-          }) => void;
-        }) => Promise<{ usage: null }>) => void;
-      }
-    ).mockImplementationOnce(async ({ onComplete }) => {
-      onComplete?.({
-        visibleContent: [
-          'I need one blocking choice before I continue.',
-          '',
-          '[quick-replies]',
-          '- Use CSV download only',
-          '- Add CSV and TSV',
-          '- Keep it behind a feature flag',
-          '[/quick-replies]',
-        ].join('\n'),
-        toolTraces: [],
-        hiddenContext: undefined,
-        usage: null,
-      });
-      return { usage: null };
-    });
-
     const { useChatStore } = await loadChatStore();
     useChatStore.setState({
       conversations: [
@@ -1578,6 +1652,32 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       content: 'Implémente l’export CSV.',
       taskId: 'manual-task-1',
     });
+    const onComplete = (((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0]) as {
+      onComplete?: (result: {
+        visibleContent: string;
+        toolTraces: unknown[];
+        hiddenContext?: unknown;
+        usage: null;
+      }) => void;
+    } | undefined)?.onComplete;
+    onComplete?.({
+      visibleContent: [
+        'I need one blocking choice before I continue.',
+        '',
+        '[quick-replies]',
+        '- Use CSV download only',
+        '- Add CSV and TSV',
+        '- Keep it behind a feature flag',
+        '[/quick-replies]',
+      ].join('\n'),
+      toolTraces: [],
+      hiddenContext: undefined,
+      usage: null,
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(taskStoreState.startTask).toHaveBeenCalledWith('manual-task-1');
     expect(taskStoreState.markTaskAwaitingResponse).toHaveBeenCalledWith('manual-task-1');
@@ -1726,6 +1826,119 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ]);
     expect(useChatStore.getState().sendState).toBe('streaming');
     useChatStore.getState().stopStreaming();
+  });
+
+  it('launches InReview Implement conversations with the task reviewer profile', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    taskStoreState.tasks = [createImplementTask({ status: 'InReview' })];
+    localStorage.setItem(
+      'macro_promptTaskReviewer',
+      JSON.stringify('Custom TASK_REVIEWER prompt for tests.')
+    );
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Passe une review critique puis corrige ce qui est minimal.',
+      taskId: 'task-1',
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(streamChatMock).toHaveBeenCalledTimes(1);
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      internalAgentProfile?: string | null;
+      allowedToolIds: string[];
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(streamOptions.internalAgentProfile).toBe('task_reviewer');
+    expect(streamOptions.allowedToolIds).toContain('apply_patch');
+    expect(streamOptions.allowedToolIds).toContain('git_diff');
+    expect(streamOptions.allowedToolIds).toContain('terminal_run');
+    expect(streamOptions.allowedToolIds).not.toContain('git_commit');
+    expect(streamOptions.allowedToolIds).not.toContain('git_merge');
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'Custom TASK_REVIEWER prompt for tests.'
+    );
+  });
+
+  it('loads the repo auditor prompt override for debug conflict assistance flows', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Debug';
+    appState.selectedTaskId = null;
+    localStorage.setItem(
+      'macro_promptRepoAuditor',
+      JSON.stringify('Custom REPO_AUDITOR prompt for tests.')
+    );
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('debug-conv'),
+          scope_mode: 'Debug',
+          title: 'Debug conversation',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'debug-conv',
+      selectedConversationIdsByMode: { Debug: 'debug-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'debug-conv',
+      content: 'Diagnose the git conflict safely.',
+      internalAgentProfile: 'repo_auditor',
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(streamChatMock).toHaveBeenCalledTimes(1);
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      internalAgentProfile?: string | null;
+      allowedToolIds: string[];
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(streamOptions.internalAgentProfile).toBe('repo_auditor');
+    expect(streamOptions.allowedToolIds).not.toContain('terminal_run');
+    expect(streamOptions.allowedToolIds).not.toContain('apply_patch');
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'Custom REPO_AUDITOR prompt for tests.'
+    );
   });
 
   it('rejects Implement sends when task preflight does not move the task into progress', async () => {

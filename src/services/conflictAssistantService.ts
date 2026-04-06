@@ -1,7 +1,11 @@
+import type { InternalAgentProfile } from "./internalAgentProfile";
 import { useAppStore } from '../stores/useAppStore';
 import { useChatStore } from '../stores/useChatStore';
 
-export const openConflictAssistant = async (prompt: string): Promise<string> => {
+export const openConflictAssistant = async (
+  prompt: string,
+  internalAgentProfile: InternalAgentProfile = "repo_auditor"
+): Promise<string> => {
   useAppStore.getState().setMode('Debug');
   const chatStore = useChatStore.getState();
   const conversationId = await chatStore.ensureConversationForCurrentMode();
@@ -9,6 +13,10 @@ export const openConflictAssistant = async (prompt: string): Promise<string> => 
     throw new Error('No Debug conversation available.');
   }
 
-  await chatStore.sendMessage({ conversationId, content: prompt });
+  await chatStore.sendMessage({
+    conversationId,
+    content: prompt,
+    internalAgentProfile,
+  });
   return conversationId;
 };
