@@ -1019,7 +1019,13 @@
       "baseUrlLabel": "ベースURL",
       "baseUrlPlaceholder": "https://api.openai.com/v1",
       "apiKeyLabel": "APIキー",
-      "apiKeyPlaceholder": "スク..."
+      "apiKeyPlaceholder": "スク...",
+      "apiKeyStoredPlaceholder": "キーチェーンに保存済み",
+      "apiKeyStoredHint": "このキーはシステムのキーチェーンに保存されています。",
+      "revealApiKey": "APIキーを表示",
+      "hideApiKey": "APIキーを隠す",
+      "replaceApiKey": "置き換える",
+      "clearApiKey": "保存済みキーを消去"
     },
     "authErrors": {
       "browser_open_failed": "ChatGPT ログイン用にブラウザを開けませんでした。",

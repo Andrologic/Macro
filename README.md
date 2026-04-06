@@ -185,7 +185,7 @@ VITE_REMOTE_TIMEOUT_MS=15000
 
 ### Local API Keys for Tauri Dev
 
-To avoid re-entering provider API keys on every `bun run tauri:dev` restart, create a local keys file:
+Recommended for day-to-day macOS development: to avoid repeated keychain prompts and re-entering provider API keys on every `bun run tauri:dev` restart, create a local keys file:
 
 ```bash
 cp dev/ai-keys.local.example.json dev/ai-keys.local.json
