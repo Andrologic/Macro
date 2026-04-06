@@ -10,6 +10,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions } from './webSearch';
 import * as tauriIpc from './tauriIpc';
 import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from './architectChat';
+import type { InternalAgentProfile } from './internalAgentProfile';
 import {
   requireMacroToolRegistryEntry,
   toFunctionToolShape,
@@ -100,6 +101,7 @@ export interface StreamCompletionResult {
 export interface StreamingChatOptions {
   conversationId?: string;
   mode?: AppMode;
+  internalAgentProfile?: InternalAgentProfile | null;
   providerId: string;
   providerType: string;
   baseUrl: string;

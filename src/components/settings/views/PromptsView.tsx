@@ -1,117 +1,188 @@
-import React, { useState, useEffect } from 'react';
-import { loadPreference, savePreference, PREF_KEYS } from '../../../services/preferences';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  PROMPT_PREFERENCE_DEFINITIONS,
+  PROMPT_PREFERENCE_KEYS,
+  getDefaultPromptForPreferenceKey,
+  loadPreferences,
+  savePreferences,
+  type PromptPreferenceKey,
+} from '../../../services/preferences';
 import { Icon } from '../../ui/Icon';
 import { cn } from '../../../utils/cn';
 
+type PromptState = Record<PromptPreferenceKey, string>;
+
+const createDefaultPromptState = (): PromptState =>
+  Object.fromEntries(
+    PROMPT_PREFERENCE_KEYS.map((key) => [key, getDefaultPromptForPreferenceKey(key)])
+  ) as PromptState;
+
+const DEFAULT_PROMPT_STATE = createDefaultPromptState();
+
 export const PromptsView: React.FC = () => {
-    const [architectPrompt, setArchitectPrompt] = useState('');
-    const [implementPrompt, setImplementPrompt] = useState('');
-    const [chatPrompt, setChatPrompt] = useState('');
-    const [debugPrompt, setDebugPrompt] = useState('');
+  const [prompts, setPrompts] = useState<PromptState>(DEFAULT_PROMPT_STATE);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
-    const [isSaving, setIsSaving] = useState(false);
-    const [saveSuccess, setSaveSuccess] = useState(false);
+  useEffect(() => {
+    const loadPromptValues = async () => {
+      const storedPrompts = await loadPreferences<Partial<PromptState>>([
+        ...PROMPT_PREFERENCE_KEYS,
+      ]);
 
-    useEffect(() => {
-        const loadPrompts = async () => {
-            const pArchitect = await loadPreference<string>(PREF_KEYS.PROMPT_ARCHITECT);
-            const pImplement = await loadPreference<string>(PREF_KEYS.PROMPT_IMPLEMENT);
-            const pChat = await loadPreference<string>(PREF_KEYS.PROMPT_CHAT);
-            const pDebug = await loadPreference<string>(PREF_KEYS.PROMPT_DEBUG);
-
-            setArchitectPrompt(pArchitect);
-            setImplementPrompt(pImplement);
-            setChatPrompt(pChat);
-            setDebugPrompt(pDebug);
-        };
-        loadPrompts();
-    }, []);
-
-    const handleSave = async () => {
-        setIsSaving(true);
-        setSaveSuccess(false);
-
-        await savePreference(PREF_KEYS.PROMPT_ARCHITECT, architectPrompt);
-        await savePreference(PREF_KEYS.PROMPT_IMPLEMENT, implementPrompt);
-        await savePreference(PREF_KEYS.PROMPT_CHAT, chatPrompt);
-        await savePreference(PREF_KEYS.PROMPT_DEBUG, debugPrompt);
-
-        setIsSaving(false);
-        setSaveSuccess(true);
-
-        setTimeout(() => setSaveSuccess(false), 3000);
+      setPrompts({
+        ...DEFAULT_PROMPT_STATE,
+        ...storedPrompts,
+      });
     };
 
-    const handleReset = async () => {
-        // Basic defaults
-        setArchitectPrompt("You are the Architect AI. Manage isolated plans in `@macro` metadata. Each plan has its own conversation, needs, and strategy. Follow strict Git Flow: each subproject GitFlow profile defines a development target branch plus a main branch, each plan integrates on a plan branch rendered from that profile, planned work branches are rendered per subproject from branchType + branchSlug using feature/release/hotfix/bugfix families, and independent implementation features use the dedicated standalone feature template from that same subproject profile. Prefer branchType + branchSlug in strategy payloads rather than hard-coding full branch names. Use need_add to capture requirements. Do not call strategy_generate automatically: discuss and refine needs first, then call strategy_generate only when the user explicitly asks to generate or regenerate strategy. Plan names/slugs are unique forever and cannot be reused. Use strategy_get/strategy_update/strategy_delete for strategy changes. Use plan_create/plan_list/plan_get/plan_update/plan_delete/plan_restore/plan_set_active for plan management.");
-        setImplementPrompt("You are the Implementer. Follow the tasks to implement the specific feature.");
-        setChatPrompt("You are a helpful AI assistant.");
-        setDebugPrompt("You are the Debugger. Use workspace tools to investigate and fix issues.");
-    };
+    void loadPromptValues();
+  }, []);
 
-    const renderTextarea = (label: string, value: string, onChange: (val: string) => void) => (
-        <div className="space-y-2">
-            <label className="text-sm font-medium text-foreground">{label}</label>
-            <textarea
-                value={value}
-                onChange={(e) => onChange(e.target.value)}
-                className="w-full min-h-[120px] p-3 rounded-lg bg-background border border-border/50 text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-y font-mono"
-                spellCheck={false}
-            />
-        </div>
+  const hasAnyModifiedPrompt = useMemo(
+    () =>
+      PROMPT_PREFERENCE_KEYS.some(
+        (key) => prompts[key] !== getDefaultPromptForPreferenceKey(key)
+      ),
+    [prompts]
+  );
+
+  const handlePromptChange = (key: PromptPreferenceKey, value: string) => {
+    setPrompts((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  };
+
+  const handleRestorePrompt = (key: PromptPreferenceKey) => {
+    handlePromptChange(key, getDefaultPromptForPreferenceKey(key));
+  };
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    setSaveSuccess(false);
+
+    await savePreferences(prompts);
+
+    setIsSaving(false);
+    setSaveSuccess(true);
+
+    setTimeout(() => setSaveSuccess(false), 3000);
+  };
+
+  const handleRestoreAll = () => {
+    setPrompts(createDefaultPromptState());
+  };
+
+  const renderPromptEditor = (key: PromptPreferenceKey) => {
+    const definition = PROMPT_PREFERENCE_DEFINITIONS.find(
+      (entry) => entry.key === key
     );
+    if (!definition) {
+      return null;
+    }
+
+    const isModified = prompts[key] !== getDefaultPromptForPreferenceKey(key);
 
     return (
-        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300 pb-10">
-            <div className="flex items-center justify-between mb-4">
-                <div>
-                    <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-                        System Prompts
-                    </h4>
-                    <p className="text-xs text-muted-foreground mt-1">
-                        Customize the system instructions the AI uses for each mode.
-                    </p>
-                </div>
-
-                <div className="flex items-center gap-2">
-                    <button
-                        onClick={handleReset}
-                        className="px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                        Reset Defaults
-                    </button>
-                    <button
-                        onClick={handleSave}
-                        disabled={isSaving}
-                        className={cn(
-                            "px-4 py-1.5 rounded-md text-xs font-medium transition-all duration-200 flex items-center gap-2",
-                            saveSuccess
-                                ? "bg-emerald-500/20 text-emerald-500"
-                                : "bg-primary text-primary-foreground hover:bg-primary/90"
-                        )}
-                    >
-                        {isSaving ? (
-                            <Icon name="loader" size={14} className="animate-spin" />
-                        ) : saveSuccess ? (
-                            <Icon name="check" size={14} />
-                        ) : (
-                            <Icon name="edit" size={14} />
-                        )}
-                        {saveSuccess ? 'Saved' : 'Save Changes'}
-                    </button>
-                </div>
-            </div>
-
-            <div className="space-y-6 bg-card/40 p-5 rounded-xl border border-border/50">
-                {renderTextarea('Architect Mode', architectPrompt, setArchitectPrompt)}
-                <div className="h-px bg-border/50" />
-                {renderTextarea('Implement Mode', implementPrompt, setImplementPrompt)}
-                <div className="h-px bg-border/50" />
-                {renderTextarea('Chat Mode', chatPrompt, setChatPrompt)}
-                <div className="h-px bg-border/50" />
-                {renderTextarea('Debug Mode', debugPrompt, setDebugPrompt)}
-            </div>
+      <div key={key} className="space-y-3">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <label
+              htmlFor={key}
+              className="text-sm font-medium text-foreground"
+            >
+              {definition.label}
+            </label>
+            <p className="text-xs text-muted-foreground">
+              {definition.description}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleRestorePrompt(key)}
+            disabled={!isModified}
+            className={cn(
+              'shrink-0 px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+              isModified
+                ? 'text-foreground hover:bg-accent hover:text-accent-foreground'
+                : 'text-muted-foreground/60 cursor-not-allowed'
+            )}
+          >
+            Restore
+          </button>
         </div>
+        <textarea
+          id={key}
+          value={prompts[key]}
+          onChange={(event) => handlePromptChange(key, event.target.value)}
+          className="w-full min-h-[140px] p-3 rounded-lg bg-background border border-border/50 text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-y font-mono"
+          spellCheck={false}
+        />
+      </div>
     );
+  };
+
+  return (
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300 pb-10">
+      <div className="flex items-center justify-between gap-4 mb-4">
+        <div>
+          <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
+            System Prompts
+          </h4>
+          <p className="text-xs text-muted-foreground mt-1">
+            Customize the base mode prompts and the internal profile prompts used
+            during plan, review, and repo-audit flows.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleRestoreAll}
+            disabled={!hasAnyModifiedPrompt}
+            className={cn(
+              'px-3 py-1.5 text-xs font-medium transition-colors rounded-md',
+              hasAnyModifiedPrompt
+                ? 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                : 'text-muted-foreground/60 cursor-not-allowed'
+            )}
+          >
+            Restore All
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={isSaving}
+            className={cn(
+              'px-4 py-1.5 rounded-md text-xs font-medium transition-all duration-200 flex items-center gap-2',
+              saveSuccess
+                ? 'bg-emerald-500/20 text-emerald-500'
+                : 'bg-primary text-primary-foreground hover:bg-primary/90'
+            )}
+          >
+            {isSaving ? (
+              <Icon name="loader" size={14} className="animate-spin" />
+            ) : saveSuccess ? (
+              <Icon name="check" size={14} />
+            ) : (
+              <Icon name="edit" size={14} />
+            )}
+            {saveSuccess ? 'Saved' : 'Save Changes'}
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-6 bg-card/40 p-5 rounded-xl border border-border/50">
+        {PROMPT_PREFERENCE_DEFINITIONS.map((definition, index) => (
+          <React.Fragment key={definition.key}>
+            {renderPromptEditor(definition.key)}
+            {index < PROMPT_PREFERENCE_DEFINITIONS.length - 1 ? (
+              <div className="h-px bg-border/50" />
+            ) : null}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
 };
