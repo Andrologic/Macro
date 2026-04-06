@@ -31,6 +31,7 @@ import { useTaskStore, type ImplementTask } from "./useTaskStore";
 import { getToolModePolicy as getLocalToolModePolicy } from "../services/toolModePolicy";
 import { executeWorkspaceTool } from "../services/workspaceToolExecutor";
 import {
+  MODE_PROMPT_KEYS_BY_MODE,
   loadPreference,
   PREF_KEYS,
   savePreference,
@@ -100,6 +101,12 @@ import {
   type SummaryGenerationInput,
 } from "../services/contextCompaction";
 import { applyEditingStrategyToToolIds } from "../services/aiEditingStrategy";
+import {
+  filterToolIdsForInternalAgentProfile,
+  getInternalAgentProfilePromptPreferenceKey,
+  resolveInternalAgentProfile,
+  type InternalAgentProfile,
+} from "../services/internalAgentProfile";
 import {
   filterCopilotSupportedToolIds,
   MACRO_TOOL_REGISTRY,
@@ -549,6 +556,7 @@ interface ChatStore {
     content: string;
     taskId?: string | null;
     images?: MessageImageAttachment[];
+    internalAgentProfile?: InternalAgentProfile | null;
   }) => Promise<ChatSendResult>;
   stopStreaming: () => void;
   editMessage: (messageId: string, newContent: string) => Promise<void>;
@@ -1158,7 +1166,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    if (refreshedTask.status !== "InProgress") {
+    if (
+      refreshedTask.status !== "InProgress" &&
+      refreshedTask.status !== "InReview"
+    ) {
       throw buildSendError(
         useTaskStore.getState().lastError ||
           `Task ${taskId} is not ready to receive a message (current status: ${refreshedTask.status}).`,
@@ -2754,6 +2765,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const prepareMessagesForRequest = async (
     conversationId: string,
     allowedToolIds: string[],
+    internalAgentProfile?: InternalAgentProfile | null,
     messageWithImagesId?: string,
   ) => {
     const appState = useAppStore.getState();
@@ -2950,34 +2962,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const appMode = appState.mode;
-    const agentType =
-      appMode === "Architect"
-        ? "plan"
-        : appMode === "Implement"
-          ? appState.agentType
-          : null;
-    let modePrompt = "";
-
-    switch (appMode) {
-      case "Architect":
-        modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_ARCHITECT);
-        break;
-      case "Implement":
-        modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_IMPLEMENT);
-        break;
-      case "Chat":
-        modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_CHAT);
-        break;
-      case "Debug":
-        modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_DEBUG);
-        break;
-    }
+    const agentType = appMode === "Implement" ? appState.agentType : null;
+    const modePrompt = await loadPreference<string>(
+      MODE_PROMPT_KEYS_BY_MODE[appMode]
+    );
 
     if (modePrompt) {
       systemInstructions.unshift(modePrompt);
     }
 
-    if (agentType === "plan") {
+    const internalAgentProfilePromptKey =
+      getInternalAgentProfilePromptPreferenceKey(internalAgentProfile);
+    const internalAgentProfilePrompt = internalAgentProfilePromptKey
+      ? await loadPreference<string>(internalAgentProfilePromptKey)
+      : null;
+    if (internalAgentProfilePrompt) {
+      systemInstructions.push(internalAgentProfilePrompt);
+    }
+
+    if (
+      agentType === "plan" &&
+      internalAgentProfile !== "task_reviewer" &&
+      internalAgentProfile !== "repo_auditor"
+    ) {
       systemInstructions.push(
         "Agent type is PLAN. Focus on planning before execution: clarify goals, propose a step-by-step implementation plan, identify risks/dependencies, and ask for confirmation before suggesting direct file edits. Do not claim code was changed unless a tool call actually performed the change.",
       );
@@ -3282,7 +3289,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     set(snapshot);
   };
 
-  const getAllowedToolIdsForCurrentMode = async (): Promise<string[]> => {
+  const getAllowedToolIdsForCurrentMode = async (
+    internalAgentProfile?: InternalAgentProfile | null,
+  ): Promise<string[]> => {
     if (!useProviderStore.getState().selectedSupportsNativeToolCalling()) {
       return [];
     }
@@ -3303,6 +3312,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             strategyFilterForSelectedProvider(toolIds),
           )
         : strategyFilterForSelectedProvider(toolIds);
+    const finalizeAllowedToolIds = (toolIds: string[]): string[] => {
+      const filteredToolIds = filterToolIdsForInternalAgentProfile(
+        filterForSelectedProvider(toolIds),
+        internalAgentProfile,
+      );
+
+      if (
+        internalAgentProfile === "task_reviewer" &&
+        toolIds.includes("apply_patch") &&
+        !filteredToolIds.includes("apply_patch")
+      ) {
+        return Array.from(new Set([...filteredToolIds, "apply_patch"]));
+      }
+
+      return filteredToolIds;
+    };
 
     const mode = useAppStore.getState().mode;
     const modePolicy = await getModePolicyForCurrentMode();
@@ -3310,7 +3335,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (mode === "Chat") {
       const enabledChatTools = toolsState.getEnabledChatToolIds();
-      return filterForSelectedProvider(
+      return finalizeAllowedToolIds(
         enabledChatTools.filter((toolId) =>
           modePolicy.allowedToolIds.includes(toolId),
         ),
@@ -3321,7 +3346,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const enabledTools = Object.values(toolsState.internalTools)
         .filter((tool) => toolsState.isToolEnabled(tool.id))
         .map((tool) => tool.id);
-      return filterForSelectedProvider(
+      return finalizeAllowedToolIds(
         enabledTools.filter((toolId) =>
           modePolicy.allowedToolIds.includes(toolId),
         ),
@@ -3332,7 +3357,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .filter((tool) => toolsState.isToolEnabled(tool.id))
       .map((tool) => tool.id);
 
-    return filterForSelectedProvider(
+    return finalizeAllowedToolIds(
       enabledTools.filter((toolId) =>
         modePolicy.allowedToolIds.includes(toolId),
       ),
@@ -3922,12 +3947,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string;
     replyToMessageId: string;
     userContent: string;
+    resolvedTaskId: string;
+    modeAtSend: AppMode;
     providerId: string;
     modelId: string;
     reasoningEffort?: ReasoningEffort | null;
     providerConfig: NonNullable<
       ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
     >;
+    internalAgentProfile?: InternalAgentProfile | null;
   }) => {
     try {
       await ensureToolsLoaded();
@@ -3935,11 +3963,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       // Continue with currently available tool state (safe default is no tools)
     }
 
-    const allowedToolIds = await getAllowedToolIdsForCurrentMode();
+    const taskStatus = params.resolvedTaskId
+      ? useTaskStore.getState().getTaskById(params.resolvedTaskId)?.status ??
+        null
+      : null;
+    const internalAgentProfile = resolveInternalAgentProfile({
+      mode: params.modeAtSend,
+      taskStatus,
+      overrideProfile: params.internalAgentProfile,
+    });
+    const allowedToolIds = await getAllowedToolIdsForCurrentMode(
+      internalAgentProfile,
+    );
     const showToolTraces = useAppStore.getState().mode === "Debug";
     const preparedRequest = await prepareMessagesForRequest(
       params.conversationId,
       allowedToolIds,
+      internalAgentProfile,
       params.replyToMessageId,
     );
     const compactedRequest = await compactConversationMessages({
@@ -3984,6 +4024,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       messagesForRequest: compactedRequest.messages,
       executionContext: preparedRequest.executionContext,
       fileToolContext,
+      internalAgentProfile,
       enableWebSearch,
       enableWebFetch,
       webSearchOptions,
@@ -4020,11 +4061,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
     >;
     allowedToolIds: string[];
+    internalAgentProfile?: InternalAgentProfile | null;
   }) => {
     try {
       const preparedRequest = await prepareMessagesForRequest(
         params.conversationId,
         params.allowedToolIds,
+        params.internalAgentProfile,
       );
       await compactConversationMessages({
         conversationId: params.conversationId,
@@ -4057,6 +4100,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     providerConfig: NonNullable<
       ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
     >;
+    internalAgentProfile?: InternalAgentProfile | null;
     messagesForRequest: StreamMessage[];
     executionContext: {
       workspacePath: string | null;
@@ -4103,6 +4147,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await streamChat({
           conversationId: params.conversationId,
           mode: params.modeAtSend,
+          internalAgentProfile: params.internalAgentProfile,
           providerId: params.selectedProviderId,
           providerType: params.providerConfig.providerType,
           baseUrl: params.providerConfig.baseUrl,
@@ -4167,6 +4212,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               reasoningEffort: params.selectedReasoningEffort,
               providerConfig: params.providerConfig,
               allowedToolIds: params.allowedToolIds,
+              internalAgentProfile: params.internalAgentProfile,
             });
             const taskAfterStream = params.resolvedTaskId
               ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
@@ -4177,7 +4223,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (
               params.modeAtSend === "Implement" &&
               params.resolvedTaskId &&
-              taskAfterStream?.status === "InProgress" &&
+              taskAfterStream &&
+              taskAfterStream.status !== "Completed" &&
+              taskAfterStream.status !== "Failed" &&
               parsedCompletion.requiresUserReply
             ) {
               void useTaskStore
@@ -5505,7 +5553,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return getOrderedConversationMessages(conversationId);
     },
 
-    sendMessage: async ({ conversationId, content, taskId, images }) => {
+    sendMessage: async ({
+      conversationId,
+      content,
+      taskId,
+      images,
+      internalAgentProfile,
+    }) => {
       if (get().sendState === "preparing") {
         const error = buildSendError("A message is already being prepared.");
         set({ sendState: "error", lastError: error.message });
@@ -5654,10 +5708,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
             conversationId,
             replyToMessageId: userMessage.id,
             userContent: content,
+            resolvedTaskId,
+            modeAtSend,
             providerId: selectedProviderId,
             modelId: selectedModelId,
             reasoningEffort: selectedReasoningEffort,
             providerConfig: providerConfigForUse,
+            internalAgentProfile,
           });
 
           startAssistantStream({
@@ -5669,6 +5726,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             selectedModelId,
             selectedReasoningEffort,
             providerConfig: providerConfigForUse,
+            internalAgentProfile: streamLaunch.internalAgentProfile,
             messagesForRequest: streamLaunch.messagesForRequest,
             executionContext: streamLaunch.executionContext,
             fileToolContext: streamLaunch.fileToolContext,
@@ -5884,6 +5942,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           conversationId,
           replyToMessageId: messageId,
           userContent: newContent,
+          resolvedTaskId: target.task_id ?? "",
+          modeAtSend: modeAtEdit,
           providerId: selectedProviderId,
           modelId: selectedModelId,
           reasoningEffort: selectedReasoningEffort,
@@ -5899,6 +5959,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           selectedModelId,
           selectedReasoningEffort,
           providerConfig: providerConfigForUse,
+          internalAgentProfile: streamLaunch.internalAgentProfile,
           messagesForRequest: streamLaunch.messagesForRequest,
           executionContext: streamLaunch.executionContext,
           fileToolContext: streamLaunch.fileToolContext,

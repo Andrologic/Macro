@@ -6,6 +6,7 @@
  */
 
 import { load, Store } from "@tauri-apps/plugin-store";
+import type { AppMode } from "../types";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
 import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
 
@@ -43,6 +44,9 @@ export const PREF_KEYS = {
   PROMPT_IMPLEMENT: "promptImplement",
   PROMPT_CHAT: "promptChat",
   PROMPT_DEBUG: "promptDebug",
+  PROMPT_PLAN_EXPLORER: "promptPlanExplorer",
+  PROMPT_TASK_REVIEWER: "promptTaskReviewer",
+  PROMPT_REPO_AUDITOR: "promptRepoAuditor",
   IMPLEMENT_EXECUTION_MODE: "implementExecutionMode",
   NOTIFICATION_CHANNEL_MODES: "notificationChannelModes",
   ARCHITECT_GIT_BASE_BRANCH: "architectGitBaseBranch",
@@ -71,6 +75,115 @@ export const PREF_KEYS = {
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
+
+const DEFAULT_MODE_PROMPTS = {
+  [PREF_KEYS.PROMPT_ARCHITECT]:
+    "You are the Architect AI. Your job is to analyze the user's project, identify requirements, and produce structured strategies stored in the `@macro` branch metadata.\n\nIMPORTANT RULES:\n1. Each plan is isolated: one plan has its own conversation, needs, and strategy.\n2. Always ensure a plan is active before strategy actions.\n3. Use `need_add` for each requirement. Do not only describe needs in plain text.\n4. Do not call `strategy_generate` automatically. First discuss and refine needs with the user. Call `strategy_generate` only after an explicit user request to generate or regenerate strategy.\n5. Use `strategy_get` before modifying and `strategy_update` to patch or replace strategy.\n6. Use `strategy_delete` only when explicitly requested and always pass confirm=true.\n7. Never call `plan_create`, `plan_delete`, `plan_restore`, or `plan_set_active` in Architect chat. The AI may only work on existing plans via `plan_list`, `plan_get`, and `plan_update`. If a plan must be created, selected, archived, deleted, or restored, ask the user to do it from the plan selector.\n8. `plan_update` may only change the optional label/title alias and description. It must never change plan status or activate a plan.\n9. New plans still use a generated identifier as canonical title and slug when the user creates them manually. Optional labels and descriptions are secondary metadata only.\n10. Git workflow is strict: each subproject GitFlow profile defines a development target branch plus a main branch, and each new plan integrates on a plan branch rendered from that profile. Planned work branches are rendered per subproject as feature/release/hotfix/bugfix branches. Independent implementation features use a dedicated standalone feature template that is also resolved per subproject. In strategy payloads, prefer `branchType` plus `branchSlug`; concrete branch names are derived later from each subproject's settings.\n11. Never ask the user for a plan title before manual creation. If the user wants a friendlier description on an existing plan, store it as an optional label via `plan_update.label` or the legacy `title` alias.\n12. Never rename the canonical id or slug of a new plan. For new plans, `plan_update.title` and `strategy_generate.plan_title` are only aliases for the optional secondary label.\n13. After using an Architect tool, always produce a short natural-language recap of what changed, what you learned, and the next useful step. Do not stop at tool calls only.",
+  [PREF_KEYS.PROMPT_IMPLEMENT]:
+    "You are the Implementer. Follow the tasks to implement the specific feature.",
+  [PREF_KEYS.PROMPT_CHAT]:
+    "You are a helpful AI assistant.",
+  [PREF_KEYS.PROMPT_DEBUG]:
+    "You are the Debugger. Use workspace tools to investigate and fix issues.",
+} as const;
+
+const DEFAULT_INTERNAL_PROFILE_PROMPTS = {
+  [PREF_KEYS.PROMPT_PLAN_EXPLORER]:
+    "Internal agent profile is PLAN_EXPLORER. Inspect the existing plan context, structure what matters, and propose the next useful planning step. Stay exploration-first and avoid code-execution behavior outside the dedicated planning and read-only inspection tools.",
+  [PREF_KEYS.PROMPT_TASK_REVIEWER]:
+    "Internal agent profile is TASK_REVIEWER. Review changes critically from diffs, touched files, and verification results. Prefer minimal, targeted fixes and keep the task review easy for a human to validate.",
+  [PREF_KEYS.PROMPT_REPO_AUDITOR]:
+    "Internal agent profile is REPO_AUDITOR. Diagnose repository, worktree, merge, and finalization blockers carefully. Focus on safe remediation of the reported Git issues only, and do not broaden the change scope.",
+} as const;
+
+export const PROMPT_PREFERENCE_KEYS = [
+  PREF_KEYS.PROMPT_ARCHITECT,
+  PREF_KEYS.PROMPT_IMPLEMENT,
+  PREF_KEYS.PROMPT_CHAT,
+  PREF_KEYS.PROMPT_DEBUG,
+  PREF_KEYS.PROMPT_PLAN_EXPLORER,
+  PREF_KEYS.PROMPT_TASK_REVIEWER,
+  PREF_KEYS.PROMPT_REPO_AUDITOR,
+] as const;
+
+export type PromptPreferenceKey = (typeof PROMPT_PREFERENCE_KEYS)[number];
+
+export type PromptPreferenceDefinition = {
+  key: PromptPreferenceKey;
+  label: string;
+  description: string;
+  scope: "mode" | "internal_profile";
+};
+
+export const MODE_PROMPT_KEYS_BY_MODE: Record<AppMode, PromptPreferenceKey> = {
+  Architect: PREF_KEYS.PROMPT_ARCHITECT,
+  Implement: PREF_KEYS.PROMPT_IMPLEMENT,
+  Chat: PREF_KEYS.PROMPT_CHAT,
+  Debug: PREF_KEYS.PROMPT_DEBUG,
+};
+
+export const INTERNAL_AGENT_PROFILE_PROMPT_KEYS = {
+  plan_explorer: PREF_KEYS.PROMPT_PLAN_EXPLORER,
+  task_reviewer: PREF_KEYS.PROMPT_TASK_REVIEWER,
+  repo_auditor: PREF_KEYS.PROMPT_REPO_AUDITOR,
+} as const;
+
+export type PromptBackedInternalAgentProfile =
+  keyof typeof INTERNAL_AGENT_PROFILE_PROMPT_KEYS;
+
+const PROMPT_DEFAULTS = {
+  ...DEFAULT_MODE_PROMPTS,
+  ...DEFAULT_INTERNAL_PROFILE_PROMPTS,
+} as const satisfies Record<PromptPreferenceKey, string>;
+
+export const PROMPT_PREFERENCE_DEFINITIONS: PromptPreferenceDefinition[] = [
+  {
+    key: PREF_KEYS.PROMPT_ARCHITECT,
+    label: "Architect Mode",
+    description: "Base system prompt for Architect conversations.",
+    scope: "mode",
+  },
+  {
+    key: PREF_KEYS.PROMPT_IMPLEMENT,
+    label: "Implement Mode",
+    description: "Base system prompt for Implement conversations.",
+    scope: "mode",
+  },
+  {
+    key: PREF_KEYS.PROMPT_CHAT,
+    label: "Chat Mode",
+    description: "Base system prompt for general chat conversations.",
+    scope: "mode",
+  },
+  {
+    key: PREF_KEYS.PROMPT_DEBUG,
+    label: "Debug Mode",
+    description: "Base system prompt for debugging conversations.",
+    scope: "mode",
+  },
+  {
+    key: PREF_KEYS.PROMPT_PLAN_EXPLORER,
+    label: "Plan Explorer Profile",
+    description: "Extra guidance injected for Architect planning and exploration flows.",
+    scope: "internal_profile",
+  },
+  {
+    key: PREF_KEYS.PROMPT_TASK_REVIEWER,
+    label: "Task Reviewer Profile",
+    description: "Extra guidance injected while reviewing an Implement task in review.",
+    scope: "internal_profile",
+  },
+  {
+    key: PREF_KEYS.PROMPT_REPO_AUDITOR,
+    label: "Repo Auditor Profile",
+    description: "Extra guidance injected for Git conflict, finalization, and repository audit flows.",
+    scope: "internal_profile",
+  },
+];
+
+export const getDefaultPromptForPreferenceKey = (
+  key: PromptPreferenceKey
+): string => PROMPT_DEFAULTS[key];
 
 // Default values
 export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
@@ -101,10 +214,13 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
     modeSelections: {},
     conversationSelections: {},
   },
-  [PREF_KEYS.PROMPT_ARCHITECT]: "You are the Architect AI. Your job is to analyze the user's project, identify requirements, and produce structured strategies stored in the `@macro` branch metadata.\n\nIMPORTANT RULES:\n1. Each plan is isolated: one plan has its own conversation, needs, and strategy.\n2. Always ensure a plan is active before strategy actions.\n3. Use `need_add` for each requirement. Do not only describe needs in plain text.\n4. Do not call `strategy_generate` automatically. First discuss and refine needs with the user. Call `strategy_generate` only after an explicit user request to generate or regenerate strategy.\n5. Use `strategy_get` before modifying and `strategy_update` to patch or replace strategy.\n6. Use `strategy_delete` only when explicitly requested and always pass confirm=true.\n7. Never call `plan_create`, `plan_delete`, `plan_restore`, or `plan_set_active` in Architect chat. The AI may only work on existing plans via `plan_list`, `plan_get`, and `plan_update`. If a plan must be created, selected, archived, deleted, or restored, ask the user to do it from the plan selector.\n8. `plan_update` may only change the optional label/title alias and description. It must never change plan status or activate a plan.\n9. New plans still use a generated identifier as canonical title and slug when the user creates them manually. Optional labels and descriptions are secondary metadata only.\n10. Git workflow is strict: each subproject GitFlow profile defines a development target branch plus a main branch, and each new plan integrates on a plan branch rendered from that profile. Planned work branches are rendered per subproject as feature/release/hotfix/bugfix branches. Independent implementation features use a dedicated standalone feature template that is also resolved per subproject. In strategy payloads, prefer `branchType` plus `branchSlug`; concrete branch names are derived later from each subproject's settings.\n11. Never ask the user for a plan title before manual creation. If the user wants a friendlier description on an existing plan, store it as an optional label via `plan_update.label` or the legacy `title` alias.\n12. Never rename the canonical id or slug of a new plan. For new plans, `plan_update.title` and `strategy_generate.plan_title` are only aliases for the optional secondary label.\n13. After using an Architect tool, always produce a short natural-language recap of what changed, what you learned, and the next useful step. Do not stop at tool calls only.",
-  [PREF_KEYS.PROMPT_IMPLEMENT]: "You are the Implementer. Follow the tasks to implement the specific feature.",
-  [PREF_KEYS.PROMPT_CHAT]: "You are a helpful AI assistant.",
-  [PREF_KEYS.PROMPT_DEBUG]: "You are the Debugger. Use workspace tools to investigate and fix issues.",
+  [PREF_KEYS.PROMPT_ARCHITECT]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_ARCHITECT],
+  [PREF_KEYS.PROMPT_IMPLEMENT]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_IMPLEMENT],
+  [PREF_KEYS.PROMPT_CHAT]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_CHAT],
+  [PREF_KEYS.PROMPT_DEBUG]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_DEBUG],
+  [PREF_KEYS.PROMPT_PLAN_EXPLORER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_PLAN_EXPLORER],
+  [PREF_KEYS.PROMPT_TASK_REVIEWER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_TASK_REVIEWER],
+  [PREF_KEYS.PROMPT_REPO_AUDITOR]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_REPO_AUDITOR],
   [PREF_KEYS.IMPLEMENT_EXECUTION_MODE]: "semi_auto",
   [PREF_KEYS.NOTIFICATION_CHANNEL_MODES]: DEFAULT_NOTIFICATION_CHANNEL_MODES,
   [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'develop',
