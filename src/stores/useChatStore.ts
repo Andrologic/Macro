@@ -1,22 +1,48 @@
-import { create } from 'zustand';
-import { AppMode, ChatMessage, ContextRefKind, ContextReference, Conversation, ConversationCompactionState, PlanNode, PlanNodeStatus, PlanNodeType, PredictedBranch, ReasoningEffort, ToolTrace } from '../types';
-import { toServiceError } from '../services/contracts/errors';
-import { providerHasCredentials, useProviderStore } from './useProviderStore';
-import { useCitationsStore } from './useCitationsStore';
-import type { Citation } from './useCitationsStore';
-import { streamChat, cancelStream, sendChatNonStreaming, type StreamCompletionResult, type StreamMessage } from '../services/streamingChat';
-import { getStreamingWebSearchConfig } from '../services/webSearchSettings';
-import { useToolsStore } from './useToolsStore';
-import { useAppStore } from './useAppStore';
-import { useTaskStore, type ImplementTask } from './useTaskStore';
-import { getToolModePolicy as getLocalToolModePolicy } from '../services/toolModePolicy';
-import { executeWorkspaceTool } from '../services/workspaceToolExecutor';
-import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
-import { useNeedsStore } from './useNeedsStore';
-import { useTerminalStore } from './useTerminalStore';
-import { devLogger } from '../utils/devLogger';
-import { canUseRemoteKernel, getRemoteToolModePolicy } from '../services/remoteKernelApi';
-import * as tauriIpc from '../services/tauriIpc';
+import { create } from "zustand";
+import {
+  AppMode,
+  ChatMessage,
+  ContextRefKind,
+  ContextReference,
+  Conversation,
+  ConversationCompactionState,
+  PlanNode,
+  PlanNodeStatus,
+  PlanNodeType,
+  PredictedBranch,
+  ReasoningEffort,
+  ToolTrace,
+} from "../types";
+import { toServiceError } from "../services/contracts/errors";
+import { providerHasCredentials, useProviderStore } from "./useProviderStore";
+import { useCitationsStore } from "./useCitationsStore";
+import type { Citation } from "./useCitationsStore";
+import {
+  streamChat,
+  cancelStream,
+  sendChatNonStreaming,
+  type StreamCompletionResult,
+  type StreamMessage,
+} from "../services/streamingChat";
+import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
+import { useToolsStore } from "./useToolsStore";
+import { useAppStore } from "./useAppStore";
+import { useTaskStore, type ImplementTask } from "./useTaskStore";
+import { getToolModePolicy as getLocalToolModePolicy } from "../services/toolModePolicy";
+import { executeWorkspaceTool } from "../services/workspaceToolExecutor";
+import {
+  loadPreference,
+  PREF_KEYS,
+  savePreference,
+} from "../services/preferences";
+import { useNeedsStore } from "./useNeedsStore";
+import { useTerminalStore } from "./useTerminalStore";
+import { devLogger } from "../utils/devLogger";
+import {
+  canUseRemoteKernel,
+  getRemoteToolModePolicy,
+} from "../services/remoteKernelApi";
+import * as tauriIpc from "../services/tauriIpc";
 import {
   type ArchitectPlanRecord,
   getArchitectPlan,
@@ -30,12 +56,12 @@ import {
   saveArchitectPlanNeeds,
   syncArchitectPlanChatFromConversation,
   updateArchitectPlan,
-} from '../services/architectPlanService';
+} from "../services/architectPlanService";
 import {
   getArchitectPlanConversationTitle,
   isDefaultNewPlanFamilyLabel,
   isCanonicalArchitectPlan,
-} from '../services/architectPlanPresentation';
+} from "../services/architectPlanPresentation";
 import {
   buildArchitectPlanToolFollowUpInstruction,
   formatArchitectNeedAddToolResult,
@@ -45,51 +71,61 @@ import {
   formatArchitectStrategyGenerateToolResult,
   formatArchitectStrategyGetToolResult,
   formatArchitectStrategyUpdateToolResult,
-} from '../services/architectChat';
-import { normalizeArchitectToolId } from '../services/architectToolNames';
-import { renderGitFlowBranchName, renderStandaloneFeatureBranchName } from '../services/architectGitNaming';
+} from "../services/architectChat";
+import { normalizeArchitectToolId } from "../services/architectToolNames";
+import {
+  renderGitFlowBranchName,
+  renderStandaloneFeatureBranchName,
+} from "../services/architectGitNaming";
 import {
   getPlanNodeBranchIntent,
   type WorkBranchType,
-} from '../services/gitFlowBranchIntents';
-import { normalizeStrategyDependencies } from '../services/implementTaskDerivation';
-import { getLocalProjectContextState } from '../services/localProjectContext';
+} from "../services/gitFlowBranchIntents";
+import { normalizeStrategyDependencies } from "../services/implementTaskDerivation";
+import { getLocalProjectContextState } from "../services/localProjectContext";
 import {
   getFocusedProjectForGroup,
   getGlobalProjectById,
   getProjectGroupByProjectId,
   getScopedActionableProjectIds,
   getScopedProjectIds,
-} from '../services/globalProjects';
-import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from '../services/macroSyncService';
-import { resolveProjectExecutionContext } from '../services/projectExecutionContext';
-import { parseMessageQuickReplies } from '../services/chatQuickReplies';
+} from "../services/globalProjects";
+import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from "../services/macroSyncService";
+import { resolveProjectExecutionContext } from "../services/projectExecutionContext";
+import { parseMessageQuickReplies } from "../services/chatQuickReplies";
 import {
   buildCompactedMessagesForRequest,
   invalidateCompactionFromMessage,
   resolveModelContextWindowTokens,
   type SummaryGenerationInput,
-} from '../services/contextCompaction';
-import { filterCopilotSupportedToolIds, MACRO_TOOL_REGISTRY } from '../shared/macroToolRegistry';
+} from "../services/contextCompaction";
+import { applyEditingStrategyToToolIds } from "../services/aiEditingStrategy";
+import {
+  filterCopilotSupportedToolIds,
+  MACRO_TOOL_REGISTRY,
+} from "../shared/macroToolRegistry";
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
 const MANUAL_FEATURE_MAX_SLUG_LENGTH = 64;
 const MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT = 4;
 const metadataGenerationInFlight = new Set<string>();
-const conversationCompactionStateCache = new Map<string, ConversationCompactionState | null>();
+const conversationCompactionStateCache = new Map<
+  string,
+  ConversationCompactionState | null
+>();
 const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
 const EMPTY_MESSAGE_IMAGES: MessageImageAttachment[] = [];
 
 const createTokenBatcher = (appendChunk: (chunk: string) => void) => {
-  let buffer = '';
+  let buffer = "";
   let rafId: number | null = null;
 
   const flush = () => {
     rafId = null;
     if (!buffer) return;
     const chunk = buffer;
-    buffer = '';
+    buffer = "";
     appendChunk(chunk);
   };
 
@@ -106,7 +142,7 @@ const createTokenBatcher = (appendChunk: (chunk: string) => void) => {
       }
       if (!buffer) return;
       const chunk = buffer;
-      buffer = '';
+      buffer = "";
       appendChunk(chunk);
     },
     dispose: () => {
@@ -114,53 +150,66 @@ const createTokenBatcher = (appendChunk: (chunk: string) => void) => {
         window.cancelAnimationFrame(rafId);
         rafId = null;
       }
-      buffer = '';
+      buffer = "";
     },
   };
 };
 
 const getConversationFallbackTitle = (content: string): string => {
-  const cleaned = content.replace(/\s+/g, ' ').trim();
-  if (!cleaned) return 'New Conversation';
-  const words = cleaned.split(' ').slice(0, 6).join(' ');
+  const cleaned = content.replace(/\s+/g, " ").trim();
+  if (!cleaned) return "New Conversation";
+  const words = cleaned.split(" ").slice(0, 6).join(" ");
   return words.slice(0, METADATA_MAX_TITLE_LENGTH);
 };
 
 const getConversationFallbackDescription = (content: string): string => {
-  const cleaned = content.replace(/\s+/g, ' ').trim();
-  if (!cleaned) return 'General discussion.';
+  const cleaned = content.replace(/\s+/g, " ").trim();
+  if (!cleaned) return "General discussion.";
   return cleaned.slice(0, METADATA_MAX_DESCRIPTION_LENGTH);
 };
 
-const extractJsonObjectFromModelOutput = (raw: string): Record<string, unknown> => {
-  const noThinking = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  const firstBrace = noThinking.indexOf('{');
-  const lastBrace = noThinking.lastIndexOf('}');
+const extractJsonObjectFromModelOutput = (
+  raw: string,
+): Record<string, unknown> => {
+  const noThinking = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  const firstBrace = noThinking.indexOf("{");
+  const lastBrace = noThinking.lastIndexOf("}");
   if (firstBrace === -1 || lastBrace <= firstBrace) {
-    throw new Error('No JSON object found');
+    throw new Error("No JSON object found");
   }
 
-  return JSON.parse(noThinking.slice(firstBrace, lastBrace + 1)) as Record<string, unknown>;
+  return JSON.parse(noThinking.slice(firstBrace, lastBrace + 1)) as Record<
+    string,
+    unknown
+  >;
 };
 
-const extractMetadataFromModelOutput = (raw: string): { title: string; description: string } => {
+const extractMetadataFromModelOutput = (
+  raw: string,
+): { title: string; description: string } => {
   const parsed = extractJsonObjectFromModelOutput(raw) as {
     title?: unknown;
     description?: unknown;
   };
 
-  if (typeof parsed.title !== 'string' || typeof parsed.description !== 'string') {
-    throw new Error('Invalid metadata shape');
+  if (
+    typeof parsed.title !== "string" ||
+    typeof parsed.description !== "string"
+  ) {
+    throw new Error("Invalid metadata shape");
   }
 
-  const title = parsed.title.replace(/\s+/g, ' ').trim().slice(0, METADATA_MAX_TITLE_LENGTH);
+  const title = parsed.title
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, METADATA_MAX_TITLE_LENGTH);
   const description = parsed.description
-    .replace(/\s+/g, ' ')
+    .replace(/\s+/g, " ")
     .trim()
     .slice(0, METADATA_MAX_DESCRIPTION_LENGTH);
 
   if (!title || !description) {
-    throw new Error('Empty metadata values');
+    throw new Error("Empty metadata values");
   }
 
   return { title, description };
@@ -170,20 +219,22 @@ const normalizeManualFeatureSlugInput = (value: string): string => {
   const normalized = value
     .trim()
     .toLowerCase()
-    .replace(/^refs\/heads\//, '')
-    .replace(/\\/g, '/')
-    .replace(/\/+$/, '');
-  const leaf = normalized.split('/').filter(Boolean).pop() || normalized;
+    .replace(/^refs\/heads\//, "")
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+  const leaf = normalized.split("/").filter(Boolean).pop() || normalized;
   return (
     leaf
-      .replace(/[^a-z0-9._-]+/g, '-')
-      .replace(/^-+/, '')
-      .replace(/-+$/, '')
-      .slice(0, MANUAL_FEATURE_MAX_SLUG_LENGTH) || 'work'
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^-+/, "")
+      .replace(/-+$/, "")
+      .slice(0, MANUAL_FEATURE_MAX_SLUG_LENGTH) || "work"
   );
 };
 
-const extractManualFeatureMetadataFromModelOutput = (raw: string): {
+const extractManualFeatureMetadataFromModelOutput = (
+  raw: string,
+): {
   title: string;
   description: string;
   featureSlug: string;
@@ -195,22 +246,25 @@ const extractManualFeatureMetadataFromModelOutput = (raw: string): {
   };
 
   if (
-    typeof parsed.title !== 'string' ||
-    typeof parsed.description !== 'string' ||
-    typeof parsed.featureSlug !== 'string'
+    typeof parsed.title !== "string" ||
+    typeof parsed.description !== "string" ||
+    typeof parsed.featureSlug !== "string"
   ) {
-    throw new Error('Invalid manual feature metadata shape');
+    throw new Error("Invalid manual feature metadata shape");
   }
 
-  const title = parsed.title.replace(/\s+/g, ' ').trim().slice(0, METADATA_MAX_TITLE_LENGTH);
+  const title = parsed.title
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, METADATA_MAX_TITLE_LENGTH);
   const description = parsed.description
-    .replace(/\s+/g, ' ')
+    .replace(/\s+/g, " ")
     .trim()
     .slice(0, METADATA_MAX_DESCRIPTION_LENGTH);
   const featureSlug = normalizeManualFeatureSlugInput(parsed.featureSlug);
 
   if (!title || !description || !featureSlug) {
-    throw new Error('Empty manual feature metadata values');
+    throw new Error("Empty manual feature metadata values");
   }
 
   return { title, description, featureSlug };
@@ -226,10 +280,13 @@ const buildManualFeatureFallbackMetadata = (content: string) => {
 const normalizeComparableBranchName = (value: string): string =>
   value
     .trim()
-    .replace(/^refs\/heads\//, '')
-    .replace(/^refs\/remotes\//, '');
+    .replace(/^refs\/heads\//, "")
+    .replace(/^refs\/remotes\//, "");
 
-const branchNameMatchesCandidate = (existingBranchName: string, candidateBranchName: string): boolean => {
+const branchNameMatchesCandidate = (
+  existingBranchName: string,
+  candidateBranchName: string,
+): boolean => {
   const normalizedExisting = normalizeComparableBranchName(existingBranchName);
   return (
     normalizedExisting === candidateBranchName ||
@@ -237,9 +294,9 @@ const branchNameMatchesCandidate = (existingBranchName: string, candidateBranchN
   );
 };
 
-const MESSAGE_IMAGES_STORAGE_KEY = 'macro_chat_message_images';
+const MESSAGE_IMAGES_STORAGE_KEY = "macro_chat_message_images";
 
-type AISelectionModeKey = 'ChatDebug' | 'Architect' | 'Implement';
+type AISelectionModeKey = "ChatDebug" | "Architect" | "Implement";
 
 interface PersistedAISelection {
   providerId: string | null;
@@ -261,17 +318,19 @@ const EMPTY_AI_CONTEXT_SELECTIONS: PersistedAIContextSelections = {
 };
 
 const getSelectionModeKey = (mode: AppMode): AISelectionModeKey => {
-  if (mode === 'Chat' || mode === 'Debug') {
-    return 'ChatDebug';
+  if (mode === "Chat" || mode === "Debug") {
+    return "ChatDebug";
   }
-  if (mode === 'Architect') {
-    return 'Architect';
+  if (mode === "Architect") {
+    return "Architect";
   }
-  return 'Implement';
+  return "Implement";
 };
 
-const normalizePersistedSelection = (value: unknown): PersistedAISelection | null => {
-  if (!value || typeof value !== 'object') return null;
+const normalizePersistedSelection = (
+  value: unknown,
+): PersistedAISelection | null => {
+  if (!value || typeof value !== "object") return null;
   const candidate = value as {
     providerId?: unknown;
     modelId?: unknown;
@@ -280,11 +339,11 @@ const normalizePersistedSelection = (value: unknown): PersistedAISelection | nul
   };
 
   const providerId =
-    candidate.providerId === null || typeof candidate.providerId === 'string'
+    candidate.providerId === null || typeof candidate.providerId === "string"
       ? candidate.providerId
       : null;
   const modelId =
-    candidate.modelId === null || typeof candidate.modelId === 'string'
+    candidate.modelId === null || typeof candidate.modelId === "string"
       ? candidate.modelId
       : null;
 
@@ -296,18 +355,23 @@ const normalizePersistedSelection = (value: unknown): PersistedAISelection | nul
     providerId,
     modelId,
     reasoningEffort:
-      candidate.reasoningEffort === null || typeof candidate.reasoningEffort === 'string'
-        ? (candidate.reasoningEffort as ReasoningEffort | null | undefined) ?? null
+      candidate.reasoningEffort === null ||
+      typeof candidate.reasoningEffort === "string"
+        ? ((candidate.reasoningEffort as ReasoningEffort | null | undefined) ??
+          null)
         : null,
     updatedAt:
-      typeof candidate.updatedAt === 'string' && candidate.updatedAt.trim().length > 0
+      typeof candidate.updatedAt === "string" &&
+      candidate.updatedAt.trim().length > 0
         ? candidate.updatedAt
         : new Date().toISOString(),
   };
 };
 
-const normalizeAIContextSelections = (value: unknown): PersistedAIContextSelections => {
-  if (!value || typeof value !== 'object') {
+const normalizeAIContextSelections = (
+  value: unknown,
+): PersistedAIContextSelections => {
+  if (!value || typeof value !== "object") {
     return { ...EMPTY_AI_CONTEXT_SELECTIONS };
   }
 
@@ -317,10 +381,16 @@ const normalizeAIContextSelections = (value: unknown): PersistedAIContextSelecti
     conversationSelections?: unknown;
   };
 
-  const modeSelections: Partial<Record<AISelectionModeKey, PersistedAISelection>> = {};
-  if (raw.modeSelections && typeof raw.modeSelections === 'object') {
+  const modeSelections: Partial<
+    Record<AISelectionModeKey, PersistedAISelection>
+  > = {};
+  if (raw.modeSelections && typeof raw.modeSelections === "object") {
     const modeMap = raw.modeSelections as Record<string, unknown>;
-    for (const key of ['ChatDebug', 'Architect', 'Implement'] as AISelectionModeKey[]) {
+    for (const key of [
+      "ChatDebug",
+      "Architect",
+      "Implement",
+    ] as AISelectionModeKey[]) {
       const normalized = normalizePersistedSelection(modeMap[key]);
       if (normalized) {
         modeSelections[key] = normalized;
@@ -329,9 +399,12 @@ const normalizeAIContextSelections = (value: unknown): PersistedAIContextSelecti
   }
 
   const conversationSelections: Record<string, PersistedAISelection> = {};
-  if (raw.conversationSelections && typeof raw.conversationSelections === 'object') {
+  if (
+    raw.conversationSelections &&
+    typeof raw.conversationSelections === "object"
+  ) {
     for (const [conversationId, selection] of Object.entries(
-      raw.conversationSelections as Record<string, unknown>
+      raw.conversationSelections as Record<string, unknown>,
     )) {
       const normalized = normalizePersistedSelection(selection);
       if (normalized) {
@@ -356,35 +429,43 @@ export interface MessageImageAttachment {
   createdAt: string;
 }
 
-const loadMessageImagesFromStorage = (): Record<string, MessageImageAttachment[]> => {
-  if (typeof window === 'undefined') return {};
+const loadMessageImagesFromStorage = (): Record<
+  string,
+  MessageImageAttachment[]
+> => {
+  if (typeof window === "undefined") return {};
   try {
     const raw = window.localStorage.getItem(MESSAGE_IMAGES_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<string, MessageImageAttachment[]>;
-    if (!parsed || typeof parsed !== 'object') return {};
+    if (!parsed || typeof parsed !== "object") return {};
     return parsed;
   } catch {
     return {};
   }
 };
 
-const saveMessageImagesToStorage = (imagesByMessageId: Record<string, MessageImageAttachment[]>) => {
-  if (typeof window === 'undefined') return;
+const saveMessageImagesToStorage = (
+  imagesByMessageId: Record<string, MessageImageAttachment[]>,
+) => {
+  if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(MESSAGE_IMAGES_STORAGE_KEY, JSON.stringify(imagesByMessageId));
+    window.localStorage.setItem(
+      MESSAGE_IMAGES_STORAGE_KEY,
+      JSON.stringify(imagesByMessageId),
+    );
   } catch {
     // Ignore storage errors
   }
 };
 
-type ChatHydrationStatus = 'idle' | 'hydrating' | 'ready' | 'error';
-type ChatRestoreStatus = 'idle' | 'resolving' | 'ready' | 'error';
+type ChatHydrationStatus = "idle" | "hydrating" | "ready" | "error";
+type ChatRestoreStatus = "idle" | "resolving" | "ready" | "error";
 type ChatContextKey = string;
-type ChatSendState = 'idle' | 'preparing' | 'streaming' | 'error';
+type ChatSendState = "idle" | "preparing" | "streaming" | "error";
 
 interface ChatSendResult {
-  status: 'sent';
+  status: "sent";
   conversationId: string;
   userMessageId: string;
   assistantMessageId: string;
@@ -393,7 +474,7 @@ interface ChatSendResult {
 interface ArchitectTranscriptState {
   dbCount: number;
   metadataCount: number;
-  relation: 'equal' | 'db_prefix' | 'metadata_prefix' | 'diverged';
+  relation: "equal" | "db_prefix" | "metadata_prefix" | "diverged";
 }
 
 interface ChatStore {
@@ -421,9 +502,12 @@ interface ChatStore {
     patch: Partial<
       Pick<
         ChatMessage,
-        'tool_traces' | 'hidden_context' | 'provider_input_items' | 'provider_turn_state'
+        | "tool_traces"
+        | "hidden_context"
+        | "provider_input_items"
+        | "provider_turn_state"
       >
-    >
+    >,
   ) => void;
   updateLastMessage: (content: string) => void;
   appendToLastMessage: (token: string) => void;
@@ -434,7 +518,7 @@ interface ChatStore {
     title: string,
     taskId: string | null,
     projectId: string | null,
-    groupId?: string | null
+    groupId?: string | null,
   ) => Promise<Conversation>;
   ensureArchitectConversationForPlan: (params: {
     plan: ArchitectPlanRecord;
@@ -452,9 +536,9 @@ interface ChatStore {
   deleteConversation: (
     conversationId: string,
     confirmation?: {
-      mode: 'chat' | 'implement' | 'architect';
+      mode: "chat" | "implement" | "architect";
       typedProjectName?: string;
-    }
+    },
   ) => Promise<void>;
   deleteChatConversations: (conversationIds: string[]) => Promise<void>;
   markAsRead: (conversationId: string) => void;
@@ -468,32 +552,40 @@ interface ChatStore {
   }) => Promise<ChatSendResult>;
   stopStreaming: () => void;
   editMessage: (messageId: string, newContent: string) => Promise<void>;
-  setMessageImages: (messageId: string, images: MessageImageAttachment[]) => void;
+  setMessageImages: (
+    messageId: string,
+    images: MessageImageAttachment[],
+  ) => void;
   getMessageImages: (messageId: string) => MessageImageAttachment[];
   composerContextRefs: ContextReference[];
   addComposerContextRef: (ref: ContextReference) => void;
   removeComposerContextRef: (id: string, kind: ContextRefKind) => void;
   clearComposerContextRefs: () => void;
-  reconcileProjectRegistry: (validGroupIds: string[], validProjectIds: string[]) => void;
+  reconcileProjectRegistry: (
+    validGroupIds: string[],
+    validProjectIds: string[],
+  ) => void;
   initialize: () => Promise<void>;
 }
 
 interface TranscriptComparableMessage {
   id: string;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content: string;
   createdAt: string;
 }
 
-const mapDbConversationToConversation = (conversation: tauriIpc.DbConversation): Conversation => ({
+const mapDbConversationToConversation = (
+  conversation: tauriIpc.DbConversation,
+): Conversation => ({
   id: conversation.id,
   title: conversation.title,
-  description: conversation.description || '',
+  description: conversation.description || "",
   scope_mode: conversation.scope_mode,
   task_id: conversation.task_id,
   group_id: conversation.group_id,
   project_id: conversation.project_id,
-  last_message: conversation.last_message || '',
+  last_message: conversation.last_message || "",
   message_count: conversation.message_count,
   updated_at: conversation.updated_at,
   is_unread: false,
@@ -508,10 +600,11 @@ const parseDbToolTraces = (raw: string | null): ToolTrace[] | undefined => {
     const traces = parsed.filter(
       (trace): trace is ToolTrace =>
         !!trace &&
-        typeof trace === 'object' &&
-        typeof (trace as ToolTrace).tool_call_id === 'string' &&
-        typeof (trace as ToolTrace).tool_name === 'string' &&
-        ((trace as ToolTrace).status === 'running' || (trace as ToolTrace).status === 'done')
+        typeof trace === "object" &&
+        typeof (trace as ToolTrace).tool_call_id === "string" &&
+        typeof (trace as ToolTrace).tool_name === "string" &&
+        ((trace as ToolTrace).status === "running" ||
+          (trace as ToolTrace).status === "done"),
     );
     return traces.length > 0 ? traces : undefined;
   } catch {
@@ -520,13 +613,17 @@ const parseDbToolTraces = (raw: string | null): ToolTrace[] | undefined => {
 };
 
 const parseDbProviderTurnState = (
-  raw: string | null
-): ChatMessage['provider_turn_state'] | undefined => {
+  raw: string | null,
+): ChatMessage["provider_turn_state"] | undefined => {
   if (!raw) return undefined;
 
   try {
-    const parsed = JSON.parse(raw) as ChatMessage['provider_turn_state'] | null;
-    if (!parsed || parsed.provider !== 'chatgpt' || !Array.isArray(parsed.output_items)) {
+    const parsed = JSON.parse(raw) as ChatMessage["provider_turn_state"] | null;
+    if (
+      !parsed ||
+      parsed.provider !== "chatgpt" ||
+      !Array.isArray(parsed.output_items)
+    ) {
       return undefined;
     }
     return parsed;
@@ -536,8 +633,8 @@ const parseDbProviderTurnState = (
 };
 
 const parseDbProviderInputItems = (
-  raw: string | null
-): ChatMessage['provider_input_items'] | undefined => {
+  raw: string | null,
+): ChatMessage["provider_input_items"] | undefined => {
   if (!raw) {
     return undefined;
   }
@@ -552,24 +649,28 @@ const parseDbProviderInputItems = (
 
 const mapDbMessageToChatMessage = (
   message: tauriIpc.DbMessage,
-  conversationById: Map<string, Conversation>
+  conversationById: Map<string, Conversation>,
 ): ChatMessage => {
-  const taskId = conversationById.get(message.conversation_id)?.task_id ?? '';
-  if (message.role === 'assistant') {
+  const taskId = conversationById.get(message.conversation_id)?.task_id ?? "";
+  if (message.role === "assistant") {
     const parsed = parseMessageQuickReplies(message.content);
     return {
       id: message.id,
       task_id: taskId,
       conversation_id: message.conversation_id,
-      role: message.role as 'user' | 'assistant',
+      role: message.role as "user" | "assistant",
       content: parsed.content,
       timestamp: message.created_at,
       choices: parsed.choices,
       allow_free_response: parsed.allowFreeResponse,
       tool_traces: parseDbToolTraces(message.tool_traces_json),
       hidden_context: message.hidden_context ?? undefined,
-      provider_input_items: parseDbProviderInputItems(message.provider_input_items_json),
-      provider_turn_state: parseDbProviderTurnState(message.provider_turn_state_json),
+      provider_input_items: parseDbProviderInputItems(
+        message.provider_input_items_json,
+      ),
+      provider_turn_state: parseDbProviderTurnState(
+        message.provider_turn_state_json,
+      ),
     };
   }
 
@@ -577,31 +678,44 @@ const mapDbMessageToChatMessage = (
     id: message.id,
     task_id: taskId,
     conversation_id: message.conversation_id,
-    role: message.role as 'user' | 'assistant',
+    role: message.role as "user" | "assistant",
     content: message.content,
     timestamp: message.created_at,
     tool_traces: parseDbToolTraces(message.tool_traces_json),
     hidden_context: message.hidden_context ?? undefined,
-    provider_input_items: parseDbProviderInputItems(message.provider_input_items_json),
-    provider_turn_state: parseDbProviderTurnState(message.provider_turn_state_json),
+    provider_input_items: parseDbProviderInputItems(
+      message.provider_input_items_json,
+    ),
+    provider_turn_state: parseDbProviderTurnState(
+      message.provider_turn_state_json,
+    ),
   };
 };
 
-const buildChatContextKey = (appState: Pick<
-  ReturnType<typeof useAppStore.getState>,
-  'mode' | 'selectedGroupId' | 'selectedProjectId' | 'selectedTaskId' | 'activeArchitectPlanId' | 'activePlanContext'
->): ChatContextKey => {
+const buildChatContextKey = (
+  appState: Pick<
+    ReturnType<typeof useAppStore.getState>,
+    | "mode"
+    | "selectedGroupId"
+    | "selectedProjectId"
+    | "selectedTaskId"
+    | "activeArchitectPlanId"
+    | "activePlanContext"
+  >,
+): ChatContextKey => {
   return [
     appState.mode,
-    appState.selectedGroupId || 'none',
-    appState.selectedProjectId || 'none',
-    appState.selectedTaskId || 'none',
-    appState.activeArchitectPlanId || 'none',
-    appState.activePlanContext?.targetBranch || 'none',
-  ].join('::');
+    appState.selectedGroupId || "none",
+    appState.selectedProjectId || "none",
+    appState.selectedTaskId || "none",
+    appState.activeArchitectPlanId || "none",
+    appState.activePlanContext?.targetBranch || "none",
+  ].join("::");
 };
 
-const toComparableChatMessage = (message: ChatMessage): TranscriptComparableMessage => ({
+const toComparableChatMessage = (
+  message: ChatMessage,
+): TranscriptComparableMessage => ({
   id: message.id,
   role: message.role,
   content: message.content,
@@ -609,10 +723,12 @@ const toComparableChatMessage = (message: ChatMessage): TranscriptComparableMess
 });
 
 const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessage[] =>
-  [...messages].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  [...messages].sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+  );
 
 const indexMessagesByConversation = (
-  messages: ChatMessage[]
+  messages: ChatMessage[],
 ): Record<string, ChatMessage[]> => {
   const grouped: Record<string, ChatMessage[]> = {};
 
@@ -626,7 +742,9 @@ const indexMessagesByConversation = (
   }
 
   Object.keys(grouped).forEach((conversationId) => {
-    grouped[conversationId] = sortMessagesChronologically(grouped[conversationId]!);
+    grouped[conversationId] = sortMessagesChronologically(
+      grouped[conversationId]!,
+    );
   });
 
   return grouped;
@@ -642,21 +760,25 @@ const buildMessageState = (messages: ChatMessage[]) => ({
 });
 
 const getConversationMessagesFromState = (
-  state: Pick<ChatStore, 'messages' | 'messagesByConversationId'>,
-  conversationId: string
+  state: Pick<ChatStore, "messages" | "messagesByConversationId">,
+  conversationId: string,
 ): ChatMessage[] => {
   const indexedMessages = state.messagesByConversationId[conversationId];
   if (indexedMessages) {
     return indexedMessages;
   }
 
-  const fallbackMessages = state.messages.filter((msg) => msg.conversation_id === conversationId);
+  const fallbackMessages = state.messages.filter(
+    (msg) => msg.conversation_id === conversationId,
+  );
   return fallbackMessages.length > 0
     ? sortMessagesChronologically(fallbackMessages)
     : EMPTY_CHAT_MESSAGES;
 };
 
-const getStrictTranscriptFingerprint = (message: TranscriptComparableMessage): string => {
+const getStrictTranscriptFingerprint = (
+  message: TranscriptComparableMessage,
+): string => {
   const trimmedId = message.id.trim();
   if (trimmedId.length > 0) {
     return `id:${trimmedId}`;
@@ -664,22 +786,26 @@ const getStrictTranscriptFingerprint = (message: TranscriptComparableMessage): s
   return `f:${message.role}:${message.content}:${message.createdAt}`;
 };
 
-const getSemanticTranscriptFingerprint = (message: TranscriptComparableMessage): string =>
-  `s:${message.role}:${message.content}`;
+const getSemanticTranscriptFingerprint = (
+  message: TranscriptComparableMessage,
+): string => `s:${message.role}:${message.content}`;
 
 const compareTranscriptSequence = (
   dbMessages: TranscriptComparableMessage[],
   metadataMessages: TranscriptComparableMessage[],
-  fingerprintFor: (message: TranscriptComparableMessage) => string
+  fingerprintFor: (message: TranscriptComparableMessage) => string,
 ): ArchitectTranscriptState => {
   const sharedLength = Math.min(dbMessages.length, metadataMessages.length);
 
   for (let index = 0; index < sharedLength; index += 1) {
-    if (fingerprintFor(dbMessages[index]!) !== fingerprintFor(metadataMessages[index]!)) {
+    if (
+      fingerprintFor(dbMessages[index]!) !==
+      fingerprintFor(metadataMessages[index]!)
+    ) {
       return {
         dbCount: dbMessages.length,
         metadataCount: metadataMessages.length,
-        relation: 'diverged',
+        relation: "diverged",
       };
     }
   }
@@ -688,34 +814,37 @@ const compareTranscriptSequence = (
     return {
       dbCount: dbMessages.length,
       metadataCount: metadataMessages.length,
-      relation: 'equal',
+      relation: "equal",
     };
   }
 
   return {
     dbCount: dbMessages.length,
     metadataCount: metadataMessages.length,
-    relation: dbMessages.length < metadataMessages.length ? 'db_prefix' : 'metadata_prefix',
+    relation:
+      dbMessages.length < metadataMessages.length
+        ? "db_prefix"
+        : "metadata_prefix",
   };
 };
 
 const compareArchitectTranscriptState = (
   dbMessages: TranscriptComparableMessage[],
-  metadataMessages: TranscriptComparableMessage[]
+  metadataMessages: TranscriptComparableMessage[],
 ): ArchitectTranscriptState => {
   const strictState = compareTranscriptSequence(
     dbMessages,
     metadataMessages,
-    getStrictTranscriptFingerprint
+    getStrictTranscriptFingerprint,
   );
-  if (strictState.relation !== 'diverged') {
+  if (strictState.relation !== "diverged") {
     return strictState;
   }
 
   return compareTranscriptSequence(
     dbMessages,
     metadataMessages,
-    getSemanticTranscriptFingerprint
+    getSemanticTranscriptFingerprint,
   );
 };
 
@@ -745,40 +874,60 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
-  const providerHasAuthSession = (provider: { providerType: string; authStatus?: string }): boolean => {
-    if (provider.providerType === 'chatgpt') {
-      return ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '');
+  const providerHasAuthSession = (provider: {
+    providerType: string;
+    authStatus?: string;
+  }): boolean => {
+    if (provider.providerType === "chatgpt") {
+      return ["authenticated", "refreshing", "expired"].includes(
+        provider.authStatus ?? "",
+      );
     }
 
-    if (provider.providerType === 'copilot') {
-      return provider.authStatus === 'connected';
+    if (provider.providerType === "copilot") {
+      return provider.authStatus === "connected";
     }
 
     return false;
   };
 
   const hasProviderCredentials = (providerId: string): boolean => {
-    const provider = useProviderStore.getState().providerConfigs.find((candidate) => candidate.id === providerId);
+    const provider = useProviderStore
+      .getState()
+      .providerConfigs.find((candidate) => candidate.id === providerId);
     if (!provider || !provider.isEnabled) return false;
     return providerHasCredentials(provider);
   };
 
   const hasProviderRuntimeCredentials = (providerId: string): boolean => {
-    const provider = useProviderStore.getState().providerConfigs.find((candidate) => candidate.id === providerId);
+    const provider = useProviderStore
+      .getState()
+      .providerConfigs.find((candidate) => candidate.id === providerId);
     if (!provider || !provider.isEnabled) return false;
-    return provider.isLocal || !!provider.apiKey?.trim() || providerHasAuthSession(provider);
+    return (
+      provider.isLocal ||
+      !!provider.apiKey?.trim() ||
+      providerHasAuthSession(provider)
+    );
   };
 
-  const isSelectionUsable = (selection: PersistedAISelection | null): boolean => {
+  const isSelectionUsable = (
+    selection: PersistedAISelection | null,
+  ): boolean => {
     if (!selection?.providerId || !selection.modelId) return false;
     if (!hasProviderCredentials(selection.providerId)) return false;
 
     const providerState = useProviderStore.getState();
     const models = providerState.modelsByProvider[selection.providerId] || [];
-    return models.some((model) => model.id === selection.modelId && model.isEnabled !== false);
+    return models.some(
+      (model) => model.id === selection.modelId && model.isEnabled !== false,
+    );
   };
 
-  const persistSelectionForContext = (mode: AppMode, conversationId: string | null) => {
+  const persistSelectionForContext = (
+    mode: AppMode,
+    conversationId: string | null,
+  ) => {
     const selection = getCurrentSelection();
     if (!selection) return;
 
@@ -791,9 +940,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       },
       conversationSelections: conversationId
         ? {
-          ...aiSelections.conversationSelections,
-          [conversationId]: selection,
-        }
+            ...aiSelections.conversationSelections,
+            [conversationId]: selection,
+          }
         : aiSelections.conversationSelections,
     };
     persistAiSelections();
@@ -801,7 +950,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const removeConversationSelection = (conversationId: string) => {
     if (!aiSelections.conversationSelections[conversationId]) return;
-    const nextConversationSelections = { ...aiSelections.conversationSelections };
+    const nextConversationSelections = {
+      ...aiSelections.conversationSelections,
+    };
     delete nextConversationSelections[conversationId];
     aiSelections = {
       ...aiSelections,
@@ -810,13 +961,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
     persistAiSelections();
   };
 
-  const applySelection = async (selection: PersistedAISelection | null): Promise<boolean> => {
+  const applySelection = async (
+    selection: PersistedAISelection | null,
+  ): Promise<boolean> => {
     if (!selection?.providerId || !selection.modelId) {
       return false;
     }
 
     const providerStore = useProviderStore.getState();
-    const provider = providerStore.providerConfigs.find((candidate) => candidate.id === selection.providerId);
+    const provider = providerStore.providerConfigs.find(
+      (candidate) => candidate.id === selection.providerId,
+    );
     if (!provider || !provider.isEnabled) {
       return false;
     }
@@ -830,15 +985,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectedReasoningEffort: selection.reasoningEffort ?? null,
     });
 
-    let loadedModels = await providerStore.loadProviderModels(selection.providerId);
+    let loadedModels = await providerStore.loadProviderModels(
+      selection.providerId,
+    );
     let modelExists = loadedModels.some(
-      (model) => model.id === selection.modelId && model.isEnabled !== false
+      (model) => model.id === selection.modelId && model.isEnabled !== false,
     );
 
     if (!modelExists && hasProviderRuntimeCredentials(selection.providerId)) {
-      loadedModels = await providerStore.scanModelsForProvider(selection.providerId);
+      loadedModels = await providerStore.scanModelsForProvider(
+        selection.providerId,
+      );
       modelExists = loadedModels.some(
-        (model) => model.id === selection.modelId && model.isEnabled !== false
+        (model) => model.id === selection.modelId && model.isEnabled !== false,
       );
     }
 
@@ -847,20 +1006,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     useProviderStore.getState().selectModel(selection.modelId);
-    useProviderStore.getState().selectReasoningEffort(selection.reasoningEffort ?? null);
+    useProviderStore
+      .getState()
+      .selectReasoningEffort(selection.reasoningEffort ?? null);
     return true;
   };
 
   const applyFallbackSelection = async (): Promise<boolean> => {
     const providerStore = useProviderStore.getState();
     const candidateProviders = providerStore.providerConfigs.filter(
-      (provider) => providerHasCredentials(provider)
+      (provider) => providerHasCredentials(provider),
     );
 
     for (const provider of candidateProviders) {
       providerStore.selectProvider(provider.id);
       const models = await providerStore.loadProviderModels(provider.id);
-      const firstEnabledModel = models.find((model) => model.isEnabled !== false);
+      const firstEnabledModel = models.find(
+        (model) => model.isEnabled !== false,
+      );
       if (firstEnabledModel) {
         useProviderStore.getState().selectModel(firstEnabledModel.id);
         return true;
@@ -868,8 +1031,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!hasProviderRuntimeCredentials(provider.id)) {
         continue;
       }
-      const scannedModels = await providerStore.scanModelsForProvider(provider.id);
-      const firstEnabledScannedModel = scannedModels.find((model) => model.isEnabled !== false);
+      const scannedModels = await providerStore.scanModelsForProvider(
+        provider.id,
+      );
+      const firstEnabledScannedModel = scannedModels.find(
+        (model) => model.isEnabled !== false,
+      );
       if (firstEnabledScannedModel) {
         useProviderStore.getState().selectModel(firstEnabledScannedModel.id);
         return true;
@@ -879,7 +1046,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return false;
   };
 
-  const applySelectionForContext = async (mode: AppMode, conversationId: string | null) => {
+  const applySelectionForContext = async (
+    mode: AppMode,
+    conversationId: string | null,
+  ) => {
     const modeKey = getSelectionModeKey(mode);
     const conversationSelection = conversationId
       ? aiSelections.conversationSelections[conversationId] || null
@@ -917,14 +1087,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const pruneConversationSelections = (conversations: Conversation[]) => {
-    const existingConversationIds = new Set(conversations.map((conversation) => conversation.id));
+    const existingConversationIds = new Set(
+      conversations.map((conversation) => conversation.id),
+    );
     const nextConversationSelections: Record<string, PersistedAISelection> = {};
 
-    Object.entries(aiSelections.conversationSelections).forEach(([conversationId, selection]) => {
-      if (existingConversationIds.has(conversationId)) {
-        nextConversationSelections[conversationId] = selection;
-      }
-    });
+    Object.entries(aiSelections.conversationSelections).forEach(
+      ([conversationId, selection]) => {
+        if (existingConversationIds.has(conversationId)) {
+          nextConversationSelections[conversationId] = selection;
+        }
+      },
+    );
 
     if (
       Object.keys(nextConversationSelections).length !==
@@ -939,7 +1113,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const waitForHydration = async (): Promise<void> => {
-    if (get().hydrationStatus !== 'hydrating' || !hydrationPromise) {
+    if (get().hydrationStatus !== "hydrating" || !hydrationPromise) {
       return;
     }
 
@@ -952,7 +1126,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const buildSendError = (message: string): Error => new Error(message);
 
-  const assertImplementTaskReadyForSend = async (taskId: string): Promise<ImplementTask> => {
+  const assertImplementTaskReadyForSend = async (
+    taskId: string,
+  ): Promise<ImplementTask> => {
     const taskStore = useTaskStore.getState();
     const task = taskStore.getTaskById(taskId);
 
@@ -964,9 +1140,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return task;
     }
 
-    if (task.status === 'Pending') {
+    if (task.status === "Pending") {
       await taskStore.startTask(taskId);
-    } else if (task.status === 'AwaitingResponse' || task.status === 'Failed') {
+    } else if (task.status === "AwaitingResponse" || task.status === "Failed") {
       await taskStore.retryTask(taskId);
     }
 
@@ -977,14 +1153,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (refreshedTask.draft) {
       throw buildSendError(
-        useTaskStore.getState().lastError || 'Task is still in draft mode and cannot receive messages yet.'
+        useTaskStore.getState().lastError ||
+          "Task is still in draft mode and cannot receive messages yet.",
       );
     }
 
-    if (refreshedTask.status !== 'InProgress') {
+    if (refreshedTask.status !== "InProgress") {
       throw buildSendError(
         useTaskStore.getState().lastError ||
-          `Task ${taskId} is not ready to receive a message (current status: ${refreshedTask.status}).`
+          `Task ${taskId} is not ready to receive a message (current status: ${refreshedTask.status}).`,
       );
     }
 
@@ -994,44 +1171,55 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const ensureProviderSelectionSync = () => {
     if (providerSelectionUnsubscribe) return;
 
-    providerSelectionUnsubscribe = useProviderStore.subscribe((nextState, previousState) => {
-      if (!aiSelectionsLoaded) return;
+    providerSelectionUnsubscribe = useProviderStore.subscribe(
+      (nextState, previousState) => {
+        if (!aiSelectionsLoaded) return;
 
-      const providerChanged = nextState.selectedProviderId !== previousState.selectedProviderId;
-      const modelChanged = nextState.selectedModelId !== previousState.selectedModelId;
-      const reasoningChanged = nextState.selectedReasoningEffort !== previousState.selectedReasoningEffort;
-      if (!providerChanged && !modelChanged && !reasoningChanged) {
-        return;
-      }
+        const providerChanged =
+          nextState.selectedProviderId !== previousState.selectedProviderId;
+        const modelChanged =
+          nextState.selectedModelId !== previousState.selectedModelId;
+        const reasoningChanged =
+          nextState.selectedReasoningEffort !==
+          previousState.selectedReasoningEffort;
+        if (!providerChanged && !modelChanged && !reasoningChanged) {
+          return;
+        }
 
-      const appState = useAppStore.getState();
-      const selectedConversationId = get().selectedConversationId;
-      persistSelectionForContext(appState.mode, selectedConversationId);
-    });
+        const appState = useAppStore.getState();
+        const selectedConversationId = get().selectedConversationId;
+        persistSelectionForContext(appState.mode, selectedConversationId);
+      },
+    );
   };
 
   const ensureContextSelectionSync = () => {
     if (contextSelectionUnsubscribe) return;
 
-    contextSelectionUnsubscribe = useAppStore.subscribe((nextState, previousState) => {
-      if (buildChatContextKey(nextState) === buildChatContextKey(previousState)) {
-        return;
-      }
-      void get().ensureConversationForCurrentMode();
-    });
+    contextSelectionUnsubscribe = useAppStore.subscribe(
+      (nextState, previousState) => {
+        if (
+          buildChatContextKey(nextState) === buildChatContextKey(previousState)
+        ) {
+          return;
+        }
+        void get().ensureConversationForCurrentMode();
+      },
+    );
   };
 
   const sanitizeAssistantContentForModel = (content: string): string => {
     return content
-      .split('\n')
+      .split("\n")
       .filter((line) => {
         const trimmed = line.trim();
         if (/^\[\s*TOOL\s*\]/i.test(trimmed)) return false;
         if (/^\[\s*TOOL_DONE\s*\]/i.test(trimmed)) return false;
-        if (/^🔍\s*\*\*(Recherche web|Web search):\*\*/i.test(trimmed)) return false;
+        if (/^🔍\s*\*\*(Recherche web|Web search):\*\*/i.test(trimmed))
+          return false;
         return true;
       })
-      .join('\n')
+      .join("\n")
       .trim();
   };
 
@@ -1043,12 +1231,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const getSelectedModelContextWindowTokens = (
     providerId: string,
     modelId: string,
-    providerType: string
+    providerType: string,
   ): number => {
     const providerState = useProviderStore.getState();
-    const selectedModel = (providerState.modelsByProvider[providerId] || []).find(
-      (model) => model.id === modelId
-    );
+    const selectedModel = (
+      providerState.modelsByProvider[providerId] || []
+    ).find((model) => model.id === modelId);
     return resolveModelContextWindowTokens({
       providerType,
       modelContextWindowTokens: selectedModel?.contextWindowTokens,
@@ -1056,15 +1244,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const mapDbCompactionStateToState = (
-    record: tauriIpc.DbConversationCompactionState
+    record: tauriIpc.DbConversationCompactionState,
   ): ConversationCompactionState => ({
     conversationId: record.conversation_id,
     upToMessageId: record.up_to_message_id,
     summaryText: record.summary_text,
-    toolDigest: JSON.parse(record.tool_digest_json || '[]'),
-    usedSourcePassageIds: JSON.parse(record.used_source_passage_ids_json || '[]'),
+    toolDigest: JSON.parse(record.tool_digest_json || "[]"),
+    usedSourcePassageIds: JSON.parse(
+      record.used_source_passage_ids_json || "[]",
+    ),
     interestingSourcePassageIds: JSON.parse(
-      record.interesting_source_passage_ids_json || '[]'
+      record.interesting_source_passage_ids_json || "[]",
     ),
     estimatedTokensBefore: record.estimated_tokens_before,
     estimatedTokensAfter: record.estimated_tokens_after,
@@ -1075,7 +1265,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   });
 
   const getConversationCompactionState = async (
-    conversationId: string
+    conversationId: string,
   ): Promise<ConversationCompactionState | null> => {
     if (conversationCompactionStateCache.has(conversationId)) {
       return conversationCompactionStateCache.get(conversationId) ?? null;
@@ -1085,25 +1275,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
       conversationCompactionStateCache.set(conversationId, null);
       return null;
     }
-    if (typeof tauriIpc.dbGetConversationCompactionState !== 'function') {
+    if (typeof tauriIpc.dbGetConversationCompactionState !== "function") {
       conversationCompactionStateCache.set(conversationId, null);
       return null;
     }
 
     try {
-      const record = await tauriIpc.dbGetConversationCompactionState(conversationId);
+      const record =
+        await tauriIpc.dbGetConversationCompactionState(conversationId);
       const state = record ? mapDbCompactionStateToState(record) : null;
       conversationCompactionStateCache.set(conversationId, state);
       return state;
     } catch (error) {
-      console.error('Failed to load conversation compaction state:', error);
+      console.error("Failed to load conversation compaction state:", error);
       conversationCompactionStateCache.set(conversationId, null);
       return null;
     }
   };
 
   const persistConversationCompactionState = async (
-    state: ConversationCompactionState | null
+    state: ConversationCompactionState | null,
   ): Promise<void> => {
     if (!state?.conversationId) {
       return;
@@ -1113,7 +1304,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!tauriIpc.isTauriAvailable()) {
       return;
     }
-    if (typeof tauriIpc.dbUpsertConversationCompactionState !== 'function') {
+    if (typeof tauriIpc.dbUpsertConversationCompactionState !== "function") {
       return;
     }
 
@@ -1123,9 +1314,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         up_to_message_id: state.upToMessageId,
         summary_text: state.summaryText,
         tool_digest_json: JSON.stringify(state.toolDigest),
-        used_source_passage_ids_json: JSON.stringify(state.usedSourcePassageIds),
+        used_source_passage_ids_json: JSON.stringify(
+          state.usedSourcePassageIds,
+        ),
         interesting_source_passage_ids_json: JSON.stringify(
-          state.interestingSourcePassageIds
+          state.interestingSourcePassageIds,
         ),
         estimated_tokens_before: state.estimatedTokensBefore,
         estimated_tokens_after: state.estimatedTokensAfter,
@@ -1133,91 +1326,99 @@ export const useChatStore = create<ChatStore>((set, get) => {
         version: state.version,
       });
     } catch (error) {
-      console.error('Failed to persist conversation compaction state:', error);
+      console.error("Failed to persist conversation compaction state:", error);
     }
   };
 
-  const deleteConversationCompactionState = async (conversationId: string): Promise<void> => {
+  const deleteConversationCompactionState = async (
+    conversationId: string,
+  ): Promise<void> => {
     conversationCompactionStateCache.delete(conversationId);
     if (!tauriIpc.isTauriAvailable()) {
       return;
     }
-    if (typeof tauriIpc.dbDeleteConversationCompactionState !== 'function') {
+    if (typeof tauriIpc.dbDeleteConversationCompactionState !== "function") {
       return;
     }
 
     try {
       await tauriIpc.dbDeleteConversationCompactionState(conversationId);
     } catch (error) {
-      console.error('Failed to delete conversation compaction state:', error);
+      console.error("Failed to delete conversation compaction state:", error);
     }
   };
 
-  const prepareCompactionSummaryMessages = (input: SummaryGenerationInput): StreamMessage[] => {
+  const prepareCompactionSummaryMessages = (
+    input: SummaryGenerationInput,
+  ): StreamMessage[] => {
     const compactedTranscript = input.compactableMessages
       .map((message) => {
         const content =
-          message.role === 'assistant'
+          message.role === "assistant"
             ? sanitizeAssistantContentForModel(message.content)
             : message.content;
-        return `${message.role.toUpperCase()} [${message.id}]\n${content.trim() || '[empty]'}`;
+        return `${message.role.toUpperCase()} [${message.id}]\n${content.trim() || "[empty]"}`;
       })
-      .join('\n\n---\n\n');
+      .join("\n\n---\n\n");
 
     const retainedContext = input.retainedMessages
-      .filter((message) => message.role === 'user' || message.role === 'assistant')
+      .filter(
+        (message) => message.role === "user" || message.role === "assistant",
+      )
       .slice(-6)
       .map((message) => {
         const content =
-          message.role === 'assistant'
+          message.role === "assistant"
             ? sanitizeAssistantContentForModel(message.content)
             : message.content;
-        return `${message.role.toUpperCase()} [${message.id}]\n${content.trim() || '[empty]'}`;
+        return `${message.role.toUpperCase()} [${message.id}]\n${content.trim() || "[empty]"}`;
       })
-      .join('\n\n---\n\n');
+      .join("\n\n---\n\n");
 
     const toolDigest = input.toolDigest
       .map(
         (entry) =>
-          `- kind=${entry.kind}; tool=${entry.tool_name}; target=${entry.target}; evidence=${entry.evidence_excerpt}`
+          `- kind=${entry.kind}; tool=${entry.tool_name}; target=${entry.target}; evidence=${entry.evidence_excerpt}`,
       )
-      .join('\n');
+      .join("\n");
 
     const usedPassages = input.usedSourcePassages
       .map(
         (citation) =>
-          `- ${citation.title}${citation.source ? ` (${citation.source})` : ''}: ${citation.snippet || ''}`
+          `- ${citation.title}${citation.source ? ` (${citation.source})` : ""}: ${citation.snippet || ""}`,
       )
-      .join('\n');
+      .join("\n");
 
     const interestingPassages = input.interestingSourcePassages
       .map(
         (citation) =>
-          `- ${citation.title}${citation.source ? ` (${citation.source})` : ''}: ${citation.snippet || ''}`
+          `- ${citation.title}${citation.source ? ` (${citation.source})` : ""}: ${citation.snippet || ""}`,
       )
-      .join('\n');
+      .join("\n");
 
     return [
       {
-        role: 'system',
+        role: "system",
         content:
-          'Compact older conversation history for a programming agent. Return ONLY valid JSON with keys ' +
+          "Compact older conversation history for a programming agent. Return ONLY valid JSON with keys " +
           '"currentObjective", "decisions", "openQuestions", "activeFiles", "summary". ' +
           'Use short factual strings. "decisions", "openQuestions", and "activeFiles" must be arrays of strings. ' +
-          'Do not mention tool calling policy. Do not invent facts. Prefer stable, implementation-relevant facts.',
+          "Do not mention tool calling policy. Do not invent facts. Prefer stable, implementation-relevant facts.",
       },
       {
-        role: 'user',
+        role: "user",
         content: [
-          'Older transcript to compact:',
-          compactedTranscript || '[none]',
-          retainedContext ? `Recent retained context:\n${retainedContext}` : '',
-          toolDigest ? `Deterministic tool facts:\n${toolDigest}` : '',
-          usedPassages ? `Used source passages:\n${usedPassages}` : '',
-          interestingPassages ? `Interesting source passages:\n${interestingPassages}` : '',
+          "Older transcript to compact:",
+          compactedTranscript || "[none]",
+          retainedContext ? `Recent retained context:\n${retainedContext}` : "",
+          toolDigest ? `Deterministic tool facts:\n${toolDigest}` : "",
+          usedPassages ? `Used source passages:\n${usedPassages}` : "",
+          interestingPassages
+            ? `Interesting source passages:\n${interestingPassages}`
+            : "",
         ]
           .filter(Boolean)
-          .join('\n\n'),
+          .join("\n\n"),
       },
     ];
   };
@@ -1232,38 +1433,56 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
 
     const currentObjective =
-      typeof parsed.currentObjective === 'string' ? parsed.currentObjective.trim() : '';
-    const summary = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+      typeof parsed.currentObjective === "string"
+        ? parsed.currentObjective.trim()
+        : "";
+    const summary =
+      typeof parsed.summary === "string" ? parsed.summary.trim() : "";
     const decisions = Array.isArray(parsed.decisions)
-      ? parsed.decisions.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      ? parsed.decisions.filter(
+          (value): value is string =>
+            typeof value === "string" && value.trim().length > 0,
+        )
       : [];
     const openQuestions = Array.isArray(parsed.openQuestions)
-      ? parsed.openQuestions.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      ? parsed.openQuestions.filter(
+          (value): value is string =>
+            typeof value === "string" && value.trim().length > 0,
+        )
       : [];
     const activeFiles = Array.isArray(parsed.activeFiles)
-      ? parsed.activeFiles.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      ? parsed.activeFiles.filter(
+          (value): value is string =>
+            typeof value === "string" && value.trim().length > 0,
+        )
       : [];
 
     return [
-      currentObjective ? `Current objective: ${currentObjective}` : '',
-      decisions.length > 0 ? `Decisions made:\n${decisions.map((item) => `- ${item}`).join('\n')}` : '',
+      currentObjective ? `Current objective: ${currentObjective}` : "",
+      decisions.length > 0
+        ? `Decisions made:\n${decisions.map((item) => `- ${item}`).join("\n")}`
+        : "",
       openQuestions.length > 0
-        ? `Open questions:\n${openQuestions.map((item) => `- ${item}`).join('\n')}`
-        : '',
-      activeFiles.length > 0 ? `Active files/projects:\n${activeFiles.map((item) => `- ${item}`).join('\n')}` : '',
-      summary ? `Summary:\n${summary}` : '',
+        ? `Open questions:\n${openQuestions.map((item) => `- ${item}`).join("\n")}`
+        : "",
+      activeFiles.length > 0
+        ? `Active files/projects:\n${activeFiles.map((item) => `- ${item}`).join("\n")}`
+        : "",
+      summary ? `Summary:\n${summary}` : "",
     ]
       .filter(Boolean)
-      .join('\n\n')
+      .join("\n\n")
       .trim();
   };
 
   const generateCompactionSummary = async (
-    providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>,
+    providerConfig: NonNullable<
+      ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
+    >,
     providerId: string,
     modelId: string,
     reasoningEffort: ReasoningEffort | null | undefined,
-    input: SummaryGenerationInput
+    input: SummaryGenerationInput,
   ): Promise<string | null> => {
     try {
       const output = await sendChatNonStreaming({
@@ -1281,7 +1500,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return summary || null;
     } catch (error) {
       devLogger.info(
-        `Compaction summary generation failed for provider=${providerConfig.providerType}: ${toServiceError(error).message}`
+        `Compaction summary generation failed for provider=${providerConfig.providerType}: ${toServiceError(error).message}`,
       );
       return null;
     }
@@ -1292,20 +1511,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
     providerId: string;
     modelId: string;
     reasoningEffort?: ReasoningEffort | null;
-    providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>;
+    providerConfig: NonNullable<
+      ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
+    >;
     allowedToolIds: string[];
     systemMessage: string;
     preparedMessages: StreamMessage[];
     orderedMessages: ChatMessage[];
     citations: Citation[];
-    mode: 'background' | 'blocking';
+    mode: "background" | "blocking";
   }) => {
     const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
-    const currentCompactionState = await getConversationCompactionState(params.conversationId);
+    const currentCompactionState = await getConversationCompactionState(
+      params.conversationId,
+    );
     const modelContextWindowTokens = getSelectedModelContextWindowTokens(
       params.providerId,
       params.modelId,
-      params.providerConfig.providerType
+      params.providerConfig.providerType,
     );
 
     const result = await buildCompactedMessagesForRequest({
@@ -1323,7 +1546,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           params.providerId,
           params.modelId,
           params.reasoningEffort,
-          input
+          input,
         ),
     });
 
@@ -1337,7 +1560,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (result.degraded) {
       devLogger.info(
-        `Context compaction degraded conversation=${params.conversationId} ratio=${result.footprintAfter.totalContextRatio.toFixed(3)}`
+        `Context compaction degraded conversation=${params.conversationId} ratio=${result.footprintAfter.totalContextRatio.toFixed(3)}`,
       );
     }
 
@@ -1350,7 +1573,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     await toolsState.loadSettings();
   };
 
-  const getModePolicyForCurrentMode = async (): Promise<{ allowedToolIds: string[]; enforceMacroOnlyWrites: boolean }> => {
+  const getModePolicyForCurrentMode = async (): Promise<{
+    allowedToolIds: string[];
+    enforceMacroOnlyWrites: boolean;
+  }> => {
     const mode = useAppStore.getState().mode;
 
     if (tauriIpc.isTauriAvailable()) {
@@ -1361,7 +1587,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           enforceMacroOnlyWrites: backendPolicy.enforce_macro_only_writes,
         };
       } catch (error) {
-        console.warn('Failed to load backend tool policy, using local fallback:', error);
+        console.warn(
+          "Failed to load backend tool policy, using local fallback:",
+          error,
+        );
       }
     }
 
@@ -1373,7 +1602,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           enforceMacroOnlyWrites: backendPolicy.enforce_macro_only_writes,
         };
       } catch (error) {
-        console.warn('Failed to load remote backend tool policy, using local fallback:', error);
+        console.warn(
+          "Failed to load remote backend tool policy, using local fallback:",
+          error,
+        );
       }
     }
 
@@ -1392,7 +1624,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const toolsState = useToolsStore.getState();
-    if (mode === 'Chat') {
+    if (mode === "Chat") {
       return toolsState.isChatToolEnabled(toolId);
     }
 
@@ -1403,7 +1635,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
     assistantMessageId: string,
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
   ): Promise<string | void> => {
     const normalizedToolName = normalizeArchitectToolId(toolName);
 
@@ -1417,7 +1649,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
 
     const resolveArchitectTargetBranch = (rawTargetBranch: unknown): string => {
-      if (typeof rawTargetBranch === 'string' && rawTargetBranch.trim().length > 0) {
+      if (
+        typeof rawTargetBranch === "string" &&
+        rawTargetBranch.trim().length > 0
+      ) {
         return resolveTargetBranch(rawTargetBranch);
       }
 
@@ -1434,21 +1669,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return getGitFlowBaseBranch();
     };
 
-    const hydratePlanContext = async (targetBranch: string, planId: string): Promise<void> => {
+    const hydratePlanContext = async (
+      targetBranch: string,
+      planId: string,
+    ): Promise<void> => {
       const plan = await getArchitectPlan(targetBranch, planId);
-      if (!plan || plan.status === 'deleted') return;
+      if (!plan || plan.status === "deleted") return;
 
       const appStore = useAppStore.getState();
-      const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
+      const planProjectId = resolvePlanProjectContextId(
+        plan,
+        appStore.selectedProjectId,
+      );
       const scopedProjectIds = getScopedProjectIds(
         appStore.projectGroups,
         appStore.selectedGroupId,
-        appStore.selectedProjectId
+        appStore.selectedProjectId,
       );
       const isPlanAlreadyInScope =
         scopedProjectIds.length > 0 &&
         (getArchitectPlanProjectIds(plan).length === 0 ||
-          getArchitectPlanProjectIds(plan).some((projectId) => scopedProjectIds.includes(projectId)));
+          getArchitectPlanProjectIds(plan).some((projectId) =>
+            scopedProjectIds.includes(projectId),
+          ));
       if (planProjectId && !isPlanAlreadyInScope) {
         await appStore.switchProjectContext(planProjectId);
       }
@@ -1477,16 +1720,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const hasSharedConversation = Boolean(
         conversationId &&
         plansIndex.plans.some(
-          (candidate) => candidate.id !== plan.id && candidate.conversationId === conversationId
-        )
+          (candidate) =>
+            candidate.id !== plan.id &&
+            candidate.conversationId === conversationId,
+        ),
       );
 
       const fallbackGroupId = appStore.selectedGroupId;
-      const fallbackGroupProjectId = getFocusedProjectForGroup(
-        appStore.projectGroups,
-        fallbackGroupId,
-        appStore.selectedProjectId
-      )?.id ?? null;
+      const fallbackGroupProjectId =
+        getFocusedProjectForGroup(
+          appStore.projectGroups,
+          fallbackGroupId,
+          appStore.selectedProjectId,
+        )?.id ?? null;
       const fallbackProjectId =
         resolvePlanProjectContextId(plan, appStore.selectedProjectId) ||
         fallbackGroupProjectId ||
@@ -1502,12 +1748,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     };
 
-    const allowedNodeTypes = new Set<PlanNodeType>(['spec', 'feature', 'task', 'milestone']);
-    const allowedNodeStatuses = new Set<PlanNodeStatus>(['pending', 'in-progress', 'completed', 'blocked']);
+    const allowedNodeTypes = new Set<PlanNodeType>([
+      "spec",
+      "feature",
+      "task",
+      "milestone",
+    ]);
+    const allowedNodeStatuses = new Set<PlanNodeStatus>([
+      "pending",
+      "in-progress",
+      "completed",
+      "blocked",
+    ]);
 
     const normalizeNodeInput = (
       rawNode: unknown,
-      index: number
+      index: number,
     ): {
       id?: string;
       title: string;
@@ -1520,31 +1776,49 @@ export const useChatStore = create<ChatStore>((set, get) => {
       dependencies: string[];
       projectIds: string[];
     } => {
-      const node = (rawNode && typeof rawNode === 'object' ? rawNode : {}) as Record<string, unknown>;
-      const title = typeof node.title === 'string' ? node.title.trim() : '';
-      const description = typeof node.description === 'string' ? node.description.trim() : '';
-      const rawType = typeof node.type === 'string' ? node.type.trim().toLowerCase() : 'task';
-      const rawStatus = typeof node.status === 'string' ? node.status.trim().toLowerCase() : 'pending';
-      const assignedBranchRaw = typeof node.assignedBranch === 'string' ? node.assignedBranch.trim() : '';
-      const branchTypeRaw = typeof node.branchType === 'string' ? node.branchType.trim().toLowerCase() : '';
-      const branchSlugRaw = typeof node.branchSlug === 'string' ? node.branchSlug.trim() : '';
+      const node = (
+        rawNode && typeof rawNode === "object" ? rawNode : {}
+      ) as Record<string, unknown>;
+      const title = typeof node.title === "string" ? node.title.trim() : "";
+      const description =
+        typeof node.description === "string" ? node.description.trim() : "";
+      const rawType =
+        typeof node.type === "string" ? node.type.trim().toLowerCase() : "task";
+      const rawStatus =
+        typeof node.status === "string"
+          ? node.status.trim().toLowerCase()
+          : "pending";
+      const assignedBranchRaw =
+        typeof node.assignedBranch === "string"
+          ? node.assignedBranch.trim()
+          : "";
+      const branchTypeRaw =
+        typeof node.branchType === "string"
+          ? node.branchType.trim().toLowerCase()
+          : "";
+      const branchSlugRaw =
+        typeof node.branchSlug === "string" ? node.branchSlug.trim() : "";
       const dependencies = Array.isArray(node.dependencies)
         ? node.dependencies
-            .filter((dep): dep is string => typeof dep === 'string')
+            .filter((dep): dep is string => typeof dep === "string")
             .map((dep) => dep.trim())
             .filter(Boolean)
         : [];
       const projectIds = Array.isArray(node.projectIds)
         ? node.projectIds
-            .filter((projectId): projectId is string => typeof projectId === 'string')
+            .filter(
+              (projectId): projectId is string => typeof projectId === "string",
+            )
             .map((projectId) => projectId.trim())
             .filter(Boolean)
-        : typeof node.projectId === 'string' && node.projectId.trim().length > 0
+        : typeof node.projectId === "string" && node.projectId.trim().length > 0
           ? [node.projectId.trim()]
           : [];
 
       if (!title) {
-        throw new Error(`Invalid strategy node at index ${index}: missing title.`);
+        throw new Error(
+          `Invalid strategy node at index ${index}: missing title.`,
+        );
       }
       if (!allowedNodeTypes.has(rawType as PlanNodeType)) {
         throw new Error(`Invalid node type for "${title}": ${rawType}.`);
@@ -1561,7 +1835,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
 
       return {
-        id: typeof node.id === 'string' ? node.id.trim() : undefined,
+        id: typeof node.id === "string" ? node.id.trim() : undefined,
         title,
         description,
         type: rawType as PlanNodeType,
@@ -1576,23 +1850,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const buildPredictedBranches = (
       nodes: PlanNode[],
-      planSlug: string
+      planSlug: string,
     ): PredictedBranch[] => {
-      const branchMap = new Map<string, {
-        projectId: string;
-        taskIds: string[];
-        branchType: WorkBranchType;
-        branchSlug: string;
-        name: string;
-        parentBranch: string;
-      }>();
+      const branchMap = new Map<
+        string,
+        {
+          projectId: string;
+          taskIds: string[];
+          branchType: WorkBranchType;
+          branchSlug: string;
+          name: string;
+          parentBranch: string;
+        }
+      >();
       nodes.forEach((node) => {
         const branchIntent = getPlanNodeBranchIntent(node);
-        const projectIds = Array.isArray(node.projectIds) && node.projectIds.length > 0
-          ? node.projectIds
-          : (node.projectId ? [node.projectId] : []);
+        const projectIds =
+          Array.isArray(node.projectIds) && node.projectIds.length > 0
+            ? node.projectIds
+            : node.projectId
+              ? [node.projectId]
+              : [];
         projectIds.forEach((projectId) => {
-          const projectSettings = useAppStore.getState().getProjectById(projectId)?.gitFlowSettings;
+          const projectSettings = useAppStore
+            .getState()
+            .getProjectById(projectId)?.gitFlowSettings;
           const branchName = renderGitFlowBranchName({
             branchType: branchIntent.branchType,
             planSlug,
@@ -1600,7 +1882,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             settings: projectSettings,
           });
           const parentBranch = renderGitFlowBranchName({
-            branchType: 'plan',
+            branchType: "plan",
             planSlug,
             settings: projectSettings,
           });
@@ -1619,7 +1901,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
       });
 
-      const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
+      const colors = [
+        "#3b82f6",
+        "#10b981",
+        "#f59e0b",
+        "#ef4444",
+        "#8b5cf6",
+        "#ec4899",
+        "#06b6d4",
+      ];
       return Array.from(branchMap.values()).map((value, index) => ({
         id: `branch-${Date.now()}-${index}`,
         name: value.name,
@@ -1627,7 +1917,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         parentBranch: value.parentBranch,
         projectId: value.projectId,
         taskIds: Array.from(new Set(value.taskIds)),
-        status: 'pending' as const,
+        status: "pending" as const,
         branchType: value.branchType,
         branchSlug: value.branchSlug,
       }));
@@ -1648,53 +1938,77 @@ export const useChatStore = create<ChatStore>((set, get) => {
       activePlanTitle: string;
       activePlanDescription: string;
     }> => {
-      const { targetBranch, activePlanId, nodesInput, reuseExistingIds = false, existingNodesForPatch = [] } = params;
+      const {
+        targetBranch,
+        activePlanId,
+        nodesInput,
+        reuseExistingIds = false,
+        existingNodesForPatch = [],
+      } = params;
 
       if (nodesInput.length === 0) {
-        throw new Error('No nodes provided for strategy update.');
+        throw new Error("No nodes provided for strategy update.");
       }
       if (nodesInput.length > 250) {
-        throw new Error('Strategy too large. Maximum 250 nodes.');
+        throw new Error("Strategy too large. Maximum 250 nodes.");
       }
 
       const appState = useAppStore.getState();
       const selectedProjectIds = getScopedActionableProjectIds(
         appState.projectGroups,
         appState.selectedGroupId,
-        appState.selectedProjectId
+        appState.selectedProjectId,
       );
-      const fallbackProjectIds = appState.projectGroups.flatMap((group) => group.projects).map((project) => project.id);
-      const defaultProjectIds = Array.from(new Set([
-        ...selectedProjectIds,
-        ...(appState.selectedProjectId ? [appState.selectedProjectId] : []),
-        ...fallbackProjectIds,
-      ])).filter(Boolean);
+      const fallbackProjectIds = appState.projectGroups
+        .flatMap((group) => group.projects)
+        .map((project) => project.id);
+      const defaultProjectIds = Array.from(
+        new Set([
+          ...selectedProjectIds,
+          ...(appState.selectedProjectId ? [appState.selectedProjectId] : []),
+          ...fallbackProjectIds,
+        ]),
+      ).filter(Boolean);
 
       const activePlan = await getArchitectPlan(targetBranch, activePlanId);
-      if (!activePlan || activePlan.status === 'deleted') {
-        throw new Error(`Active plan ${activePlanId} is unavailable. Select another plan.`);
+      if (!activePlan || activePlan.status === "deleted") {
+        throw new Error(
+          `Active plan ${activePlanId} is unavailable. Select another plan.`,
+        );
       }
 
       const planSlug = activePlan.slug;
 
       const idBase = `plan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const existingIdByTitle = new Map(existingNodesForPatch.map((node) => [node.title, node.id]));
+      const existingIdByTitle = new Map(
+        existingNodesForPatch.map((node) => [node.title, node.id]),
+      );
 
-      const normalizedNodes = nodesInput.map((rawNode, index) => normalizeNodeInput(rawNode, index));
+      const normalizedNodes = nodesInput.map((rawNode, index) =>
+        normalizeNodeInput(rawNode, index),
+      );
       const titleSet = new Set<string>();
       normalizedNodes.forEach((node) => {
         if (titleSet.has(node.title)) {
-          throw new Error(`Duplicate strategy node title detected: "${node.title}".`);
+          throw new Error(
+            `Duplicate strategy node title detected: "${node.title}".`,
+          );
         }
         titleSet.add(node.title);
       });
 
       const planNodes: PlanNode[] = normalizedNodes.map((node, index) => {
-        const existingId = reuseExistingIds ? existingIdByTitle.get(node.title) : undefined;
+        const existingId = reuseExistingIds
+          ? existingIdByTitle.get(node.title)
+          : undefined;
         const preferredId = node.id || existingId;
-        const resolvedProjectIds = node.projectIds.length > 0 ? node.projectIds : defaultProjectIds;
+        const resolvedProjectIds =
+          node.projectIds.length > 0 ? node.projectIds : defaultProjectIds;
         return {
-          id: preferredId && preferredId.length > 0 ? preferredId : `${idBase}-${index}`,
+          id:
+            preferredId && preferredId.length > 0
+              ? preferredId
+              : `${idBase}-${index}`,
           title: node.title,
           description: node.description,
           type: node.type,
@@ -1717,7 +2031,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           if (byId) return byId.id;
           const byTitle = nodeByTitle.get(dependencyRef);
           if (byTitle) return byTitle.id;
-          throw new Error(`Unknown dependency "${dependencyRef}" for node "${node.title}".`);
+          throw new Error(
+            `Unknown dependency "${dependencyRef}" for node "${node.title}".`,
+          );
         });
       });
 
@@ -1732,7 +2048,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (node) {
           for (const dependencyId of node.dependencies) {
             if (!nodeById.has(dependencyId)) {
-              throw new Error(`Dependency id "${dependencyId}" is missing from strategy nodes.`);
+              throw new Error(
+                `Dependency id "${dependencyId}" is missing from strategy nodes.`,
+              );
             }
             if (dependencyId === id || hasCycle(dependencyId)) {
               return true;
@@ -1746,24 +2064,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       for (const node of planNodes) {
         if (hasCycle(node.id)) {
-          throw new Error(`Cycle detected in strategy dependencies near node "${node.title}".`);
+          throw new Error(
+            `Cycle detected in strategy dependencies near node "${node.title}".`,
+          );
         }
       }
 
-      const predictedBranches = buildPredictedBranches(
-        planNodes,
-        planSlug
-      );
+      const predictedBranches = buildPredictedBranches(planNodes, planSlug);
 
-      const normalizedStrategy = normalizeStrategyDependencies(planNodes, predictedBranches);
-      const resolvedProjectIds = Array.from(new Set(normalizedStrategy.nodes.flatMap((node) => node.projectIds || (node.projectId ? [node.projectId] : []))));
+      const normalizedStrategy = normalizeStrategyDependencies(
+        planNodes,
+        predictedBranches,
+      );
+      const resolvedProjectIds = Array.from(
+        new Set(
+          normalizedStrategy.nodes.flatMap(
+            (node) =>
+              node.projectIds || (node.projectId ? [node.projectId] : []),
+          ),
+        ),
+      );
       const targetBranchesByProjectId = Object.fromEntries(
         resolvedProjectIds.map((projectId) => [
           projectId,
           activePlan.targetBranchesByProjectId?.[projectId] ||
             appState.getProjectById(projectId)?.gitFlowSettings?.baseBranch ||
             activePlan.targetBranch,
-        ])
+        ]),
       );
       return {
         planNodes: normalizedStrategy.nodes,
@@ -1775,32 +2102,39 @@ export const useChatStore = create<ChatStore>((set, get) => {
         activePlanDescription: activePlan.description,
       };
     };
-    if (normalizedToolName === 'need_add') {
+    if (normalizedToolName === "need_add") {
       const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
-        return 'Cannot need_add without an active plan. Create or select a plan first.';
+        return "Cannot need_add without an active plan. Create or select a plan first.";
       }
 
-      const title = typeof args.title === 'string' ? args.title.trim() : '';
-      const description = typeof args.description === 'string' ? args.description.trim() : '';
-      const category = typeof args.category === 'string' ? args.category.trim().toLowerCase() : '';
-      const priority = typeof args.priority === 'string' ? args.priority.trim().toLowerCase() : '';
+      const title = typeof args.title === "string" ? args.title.trim() : "";
+      const description =
+        typeof args.description === "string" ? args.description.trim() : "";
+      const category =
+        typeof args.category === "string"
+          ? args.category.trim().toLowerCase()
+          : "";
+      const priority =
+        typeof args.priority === "string"
+          ? args.priority.trim().toLowerCase()
+          : "";
       if (!title || !description || !category || !priority) {
-        return 'Missing required fields for need_add (title, description, category, priority).';
+        return "Missing required fields for need_add (title, description, category, priority).";
       }
 
       const allowedCategories = new Set([
-        'functional',
-        'technical',
-        'ux',
-        'performance',
-        'security',
-        'data',
-        'business',
-        'other',
+        "functional",
+        "technical",
+        "ux",
+        "performance",
+        "security",
+        "data",
+        "business",
+        "other",
       ]);
-      const allowedPriorities = new Set(['low', 'medium', 'high']);
+      const allowedPriorities = new Set(["low", "medium", "high"]);
       if (!allowedCategories.has(category)) {
         return `Invalid category for need_add: ${category}.`;
       }
@@ -1810,13 +2144,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const tags = Array.isArray(args.tags)
         ? Array.from(
-          new Set(
-            args.tags
-              .filter((tag): tag is string => typeof tag === 'string')
-              .map((tag) => tag.trim().toLowerCase())
-              .filter((tag) => tag.length > 0)
-          )
-        ).slice(0, 12)
+            new Set(
+              args.tags
+                .filter((tag): tag is string => typeof tag === "string")
+                .map((tag) => tag.trim().toLowerCase())
+                .filter((tag) => tag.length > 0),
+            ),
+          ).slice(0, 12)
         : [];
 
       const id = useNeedsStore.getState().addNeed({
@@ -1826,7 +2160,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         category: category as any,
         priority: priority as any,
         tags,
-        status: 'identified',
+        status: "identified",
         sourceMessageId: assistantMessageId,
       });
 
@@ -1844,15 +2178,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     }
 
-    if (normalizedToolName === 'plan_create') {
-      return 'plan_create is disabled in Architect chat. Ask the user to create a plan from the plan selector, then continue on the active plan.';
+    if (normalizedToolName === "plan_create") {
+      return "plan_create is disabled in Architect chat. Ask the user to create a plan from the plan selector, then continue on the active plan.";
     }
 
-    if (normalizedToolName === 'plan_list') {
+    if (normalizedToolName === "plan_list") {
       const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const includeDeleted = args.include_deleted === true;
       const includeArchived = args.include_archived === true || includeDeleted;
-      const plansIndex = await listArchitectPlans(targetBranch, includeDeleted, includeArchived);
+      const plansIndex = await listArchitectPlans(
+        targetBranch,
+        includeDeleted,
+        includeArchived,
+      );
 
       return formatArchitectPlanListToolResult({
         targetBranch,
@@ -1861,80 +2199,92 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     }
 
-    if (normalizedToolName === 'plan_get') {
-      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+    if (normalizedToolName === "plan_get") {
+      const planId =
+        typeof args.plan_id === "string" ? args.plan_id.trim() : "";
       if (!planId) {
-        return 'Missing plan_id for plan_get.';
+        return "Missing plan_id for plan_get.";
       }
       const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const plan = await getArchitectPlan(targetBranch, planId);
-      if (!plan || plan.status === 'deleted') {
+      if (!plan || plan.status === "deleted") {
         return `Plan ${planId} is unavailable.`;
       }
 
       return formatArchitectPlanGetToolResult(plan);
     }
 
-    if (normalizedToolName === 'plan_update') {
-      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+    if (normalizedToolName === "plan_update") {
+      const planId =
+        typeof args.plan_id === "string" ? args.plan_id.trim() : "";
       if (!planId) {
-        return 'Missing plan_id for plan_update.';
+        return "Missing plan_id for plan_update.";
       }
       const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const existingPlan = await getArchitectPlan(targetBranch, planId);
-      if (!existingPlan || existingPlan.status === 'deleted') {
+      if (!existingPlan || existingPlan.status === "deleted") {
         return `Plan ${planId} is unavailable.`;
       }
       if (args.status !== undefined) {
-        return 'plan_update cannot modify plan status in Architect chat.';
+        return "plan_update cannot modify plan status in Architect chat.";
       }
       if (args.set_active !== undefined) {
-        return 'plan_update cannot change the active plan in Architect chat. Ask the user to select the plan from the plan selector instead.';
+        return "plan_update cannot change the active plan in Architect chat. Ask the user to select the plan from the plan selector instead.";
       }
 
       const isCanonicalPlan = isCanonicalArchitectPlan(existingPlan);
-      const titleAlias = typeof args.title === 'string' ? args.title.trim() : undefined;
-      const label = typeof args.label === 'string' ? args.label.trim() : undefined;
+      const titleAlias =
+        typeof args.title === "string" ? args.title.trim() : undefined;
+      const label =
+        typeof args.label === "string" ? args.label.trim() : undefined;
       const shouldPassTitleAlias =
         titleAlias !== undefined &&
-        (!isCanonicalPlan || titleAlias !== existingPlan.title || label !== undefined);
+        (!isCanonicalPlan ||
+          titleAlias !== existingPlan.title ||
+          label !== undefined);
 
       const updatedPlan = await updateArchitectPlan({
         branchName: targetBranch,
         planId,
         ...(shouldPassTitleAlias ? { title: titleAlias } : {}),
         ...(label !== undefined ? { label } : {}),
-        ...(typeof args.description === 'string' ? { description: args.description } : {}),
+        ...(typeof args.description === "string"
+          ? { description: args.description }
+          : {}),
       });
 
       if (resolveActivePlanId() === updatedPlan.id) {
         await hydratePlanContext(targetBranch, updatedPlan.id);
       }
 
-      return formatArchitectPlanUpdateToolResult(updatedPlan, resolveActivePlanId());
+      return formatArchitectPlanUpdateToolResult(
+        updatedPlan,
+        resolveActivePlanId(),
+      );
     }
 
-    if (normalizedToolName === 'plan_delete') {
-      return 'plan_delete is disabled in Architect chat. Ask the user to delete or archive the plan from the plan selector if needed.';
+    if (normalizedToolName === "plan_delete") {
+      return "plan_delete is disabled in Architect chat. Ask the user to delete or archive the plan from the plan selector if needed.";
     }
 
-    if (normalizedToolName === 'plan_restore') {
-      return 'plan_restore is disabled in Architect chat. Ask the user to restore the plan from the plan selector if needed.';
+    if (normalizedToolName === "plan_restore") {
+      return "plan_restore is disabled in Architect chat. Ask the user to restore the plan from the plan selector if needed.";
     }
 
-    if (normalizedToolName === 'plan_set_active') {
-      return 'plan_set_active is disabled in Architect chat. Ask the user to select the plan from the plan selector.';
+    if (normalizedToolName === "plan_set_active") {
+      return "plan_set_active is disabled in Architect chat. Ask the user to select the plan from the plan selector.";
     }
 
-    if (normalizedToolName === 'strategy_generate') {
+    if (normalizedToolName === "strategy_generate") {
       const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
-        return 'Cannot generate strategy without an active plan. Create or select a plan first.';
+        return "Cannot generate strategy without an active plan. Create or select a plan first.";
       }
 
       const rawNodes = Array.isArray(args.nodes) ? args.nodes : [];
-      const inputPlanId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      const inputPlanId =
+        typeof args.plan_id === "string" ? args.plan_id.trim() : "";
       if (inputPlanId && inputPlanId !== activePlanId) {
         return `strategy_generate can only update the active plan (${activePlanId}).`;
       }
@@ -1947,10 +2297,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const activePlan = await getArchitectPlan(targetBranch, activePlanId);
       const requestedPlanTitleAlias =
-        typeof args.plan_title === 'string' ? args.plan_title.trim() : undefined;
-      const inputDescription = typeof args.plan_description === 'string'
-        ? args.plan_description
-        : activePlan?.description || '';
+        typeof args.plan_title === "string"
+          ? args.plan_title.trim()
+          : undefined;
+      const inputDescription =
+        typeof args.plan_description === "string"
+          ? args.plan_description
+          : activePlan?.description || "";
 
       await updateArchitectPlan({
         branchName: targetBranch,
@@ -1961,7 +2314,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             : { title: requestedPlanTitleAlias }
           : {}),
         description: inputDescription,
-        status: 'draft',
+        status: "draft",
         nodes: strategy.planNodes,
         predictedBranches: strategy.predictedBranches,
         projectId: strategy.resolvedProjectId,
@@ -1983,88 +2336,123 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     }
 
-    if (normalizedToolName === 'strategy_get') {
+    if (normalizedToolName === "strategy_get") {
       const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
-        return 'Cannot get strategy without an active plan. Create or select a plan first.';
+        return "Cannot get strategy without an active plan. Create or select a plan first.";
       }
       const plan = await getArchitectPlan(targetBranch, activePlanId);
-      if (!plan || plan.status === 'deleted') {
+      if (!plan || plan.status === "deleted") {
         return `Active plan ${activePlanId} is unavailable.`;
       }
 
       return formatArchitectStrategyGetToolResult(plan);
     }
 
-    if (normalizedToolName === 'strategy_update') {
+    if (normalizedToolName === "strategy_update") {
       const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
-        return 'Cannot update strategy without an active plan. Create or select a plan first.';
+        return "Cannot update strategy without an active plan. Create or select a plan first.";
       }
 
       const activePlan = await getArchitectPlan(targetBranch, activePlanId);
-      if (!activePlan || activePlan.status === 'deleted') {
+      if (!activePlan || activePlan.status === "deleted") {
         return `Active plan ${activePlanId} is unavailable.`;
       }
 
       const replace = args.replace === true;
       const rawNodes = Array.isArray(args.nodes) ? args.nodes : [];
-      const rawOperations = Array.isArray(args.operations) ? args.operations : [];
+      const rawOperations = Array.isArray(args.operations)
+        ? args.operations
+        : [];
 
       let nodesInput: unknown[] = [];
       if (replace || rawNodes.length > 0) {
         if (rawNodes.length === 0) {
-          return 'strategy_update with replace=true requires non-empty nodes.';
+          return "strategy_update with replace=true requires non-empty nodes.";
         }
         nodesInput = rawNodes;
       } else {
         if (rawOperations.length === 0) {
-          return 'strategy_update requires either nodes or operations.';
+          return "strategy_update requires either nodes or operations.";
         }
 
         const working = [...activePlan.nodes];
         let idCounter = 0;
         for (const [index, rawOperation] of rawOperations.entries()) {
-          const operation = (rawOperation && typeof rawOperation === 'object' ? rawOperation : {}) as Record<string, unknown>;
-          const action = typeof operation.action === 'string' ? operation.action.trim().toLowerCase() : '';
-          const nodeId = typeof operation.node_id === 'string' ? operation.node_id.trim() : '';
-          const titleRef = typeof operation.title === 'string' ? operation.title.trim() : '';
+          const operation = (
+            rawOperation && typeof rawOperation === "object" ? rawOperation : {}
+          ) as Record<string, unknown>;
+          const action =
+            typeof operation.action === "string"
+              ? operation.action.trim().toLowerCase()
+              : "";
+          const nodeId =
+            typeof operation.node_id === "string"
+              ? operation.node_id.trim()
+              : "";
+          const titleRef =
+            typeof operation.title === "string" ? operation.title.trim() : "";
           const locateIndex = nodeId
             ? working.findIndex((node) => node.id === nodeId)
             : titleRef
               ? working.findIndex((node) => node.title === titleRef)
               : -1;
 
-          if (action === 'remove') {
+          if (action === "remove") {
             if (locateIndex < 0) {
               return `strategy_update remove failed at operation ${index + 1}: node not found.`;
             }
             const removedNode = working[locateIndex];
             working.splice(locateIndex, 1);
             working.forEach((node) => {
-              node.dependencies = node.dependencies.filter((dependencyId) => dependencyId !== removedNode.id);
+              node.dependencies = node.dependencies.filter(
+                (dependencyId) => dependencyId !== removedNode.id,
+              );
             });
             continue;
           }
 
-          if (action === 'update') {
+          if (action === "update") {
             if (locateIndex < 0) {
               return `strategy_update update failed at operation ${index + 1}: node not found.`;
             }
             const target = working[locateIndex];
-            const nextTitle = typeof operation.title === 'string' ? operation.title.trim() : target.title;
-            const nextDescription = typeof operation.description === 'string' ? operation.description : target.description || '';
-            const nextTypeRaw = typeof operation.type === 'string' ? operation.type.trim().toLowerCase() : target.type;
-            const nextStatusRaw = typeof operation.status === 'string' ? operation.status.trim().toLowerCase() : target.status;
-            const nextBranchRaw = typeof operation.assignedBranch === 'string' ? operation.assignedBranch.trim() : target.assignedBranch || 'work';
+            const nextTitle =
+              typeof operation.title === "string"
+                ? operation.title.trim()
+                : target.title;
+            const nextDescription =
+              typeof operation.description === "string"
+                ? operation.description
+                : target.description || "";
+            const nextTypeRaw =
+              typeof operation.type === "string"
+                ? operation.type.trim().toLowerCase()
+                : target.type;
+            const nextStatusRaw =
+              typeof operation.status === "string"
+                ? operation.status.trim().toLowerCase()
+                : target.status;
+            const nextBranchRaw =
+              typeof operation.assignedBranch === "string"
+                ? operation.assignedBranch.trim()
+                : target.assignedBranch || "work";
             const nextBranchTypeRaw =
-              typeof operation.branchType === 'string' ? operation.branchType.trim().toLowerCase() : target.branchType;
+              typeof operation.branchType === "string"
+                ? operation.branchType.trim().toLowerCase()
+                : target.branchType;
             const nextBranchSlugRaw =
-              typeof operation.branchSlug === 'string' ? operation.branchSlug.trim() : target.branchSlug;
+              typeof operation.branchSlug === "string"
+                ? operation.branchSlug.trim()
+                : target.branchSlug;
             const nextDependencies = Array.isArray(operation.dependencies)
-              ? operation.dependencies.filter((dep): dep is string => typeof dep === 'string').map((dep) => dep.trim()).filter(Boolean)
+              ? operation.dependencies
+                  .filter((dep): dep is string => typeof dep === "string")
+                  .map((dep) => dep.trim())
+                  .filter(Boolean)
               : target.dependencies;
 
             if (!allowedNodeTypes.has(nextTypeRaw as PlanNodeType)) {
@@ -2095,7 +2483,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             continue;
           }
 
-          if (action === 'add') {
+          if (action === "add") {
             const normalized = normalizeNodeInput(operation, index);
             idCounter += 1;
             working.push({
@@ -2161,19 +2549,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     }
 
-    if (normalizedToolName === 'strategy_delete') {
+    if (normalizedToolName === "strategy_delete") {
       const targetBranch = resolveArchitectTargetBranch(args.target_branch);
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
-        return 'Cannot delete strategy without an active plan. Create or select a plan first.';
+        return "Cannot delete strategy without an active plan. Create or select a plan first.";
       }
 
       if (args.confirm !== true) {
-        return 'strategy_delete requires confirm=true to proceed.';
+        return "strategy_delete requires confirm=true to proceed.";
       }
 
       const activePlan = await getArchitectPlan(targetBranch, activePlanId);
-      if (!activePlan || activePlan.status === 'deleted') {
+      if (!activePlan || activePlan.status === "deleted") {
         return `Active plan ${activePlanId} is unavailable.`;
       }
 
@@ -2196,17 +2584,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (
-      normalizedToolName === 'list' ||
-      normalizedToolName === 'read' ||
-      normalizedToolName === 'write' ||
-      normalizedToolName === 'edit' ||
-      normalizedToolName === 'glob' ||
-      normalizedToolName === 'grep' ||
-      normalizedToolName === 'terminal_create_session' ||
-      normalizedToolName === 'terminal_run' ||
-      normalizedToolName === 'terminal_read' ||
-      normalizedToolName === 'terminal_kill' ||
-      normalizedToolName.startsWith('git_')
+      normalizedToolName === "list" ||
+      normalizedToolName === "read" ||
+      normalizedToolName === "write" ||
+      normalizedToolName === "edit" ||
+      normalizedToolName === "glob" ||
+      normalizedToolName === "grep" ||
+      normalizedToolName === "terminal_create_session" ||
+      normalizedToolName === "terminal_run" ||
+      normalizedToolName === "terminal_read" ||
+      normalizedToolName === "terminal_kill" ||
+      normalizedToolName.startsWith("git_")
     ) {
       const mode = useAppStore.getState().mode;
       const appState = useAppStore.getState();
@@ -2225,9 +2613,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         branchWorktrees: taskState.branchWorktrees,
       });
 
-      if (normalizedToolName === 'terminal_create_session') {
+      if (normalizedToolName === "terminal_create_session") {
         const explicitProjectId =
-          typeof args.project_id === 'string' && args.project_id.trim().length > 0
+          typeof args.project_id === "string" &&
+          args.project_id.trim().length > 0
             ? args.project_id.trim()
             : null;
         const projectId =
@@ -2237,7 +2626,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           executionContext.projectId;
 
         if (!projectId) {
-          return 'Missing project_id argument for terminal_create_session.';
+          return "Missing project_id argument for terminal_create_session.";
         }
 
         if (explicitProjectId) {
@@ -2249,39 +2638,49 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         const session = await useTerminalStore.getState().createSession({
           projectId,
-          cwd: typeof args.cwd === 'string' ? args.cwd : null,
+          cwd: typeof args.cwd === "string" ? args.cwd : null,
         });
         return JSON.stringify(session, null, 2);
       }
 
-      if (normalizedToolName === 'terminal_run') {
-        const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
-        const command = typeof args.command === 'string' ? args.command : '';
-        if (!sessionId) return 'Missing session_id argument for terminal_run.';
-        if (!command.trim()) return 'Missing command argument for terminal_run.';
+      if (normalizedToolName === "terminal_run") {
+        const sessionId =
+          typeof args.session_id === "string" ? args.session_id.trim() : "";
+        const command = typeof args.command === "string" ? args.command : "";
+        if (!sessionId) return "Missing session_id argument for terminal_run.";
+        if (!command.trim())
+          return "Missing command argument for terminal_run.";
 
         const session = await useTerminalStore.getState().runCommand({
           sessionId,
           command,
           timeoutMs:
-            typeof args.timeout_ms === 'number' ? Math.max(1, Math.floor(args.timeout_ms)) : null,
+            typeof args.timeout_ms === "number"
+              ? Math.max(1, Math.floor(args.timeout_ms))
+              : null,
         });
         return JSON.stringify(session, null, 2);
       }
 
-      if (normalizedToolName === 'terminal_read') {
-        const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
-        if (!sessionId) return 'Missing session_id argument for terminal_read.';
+      if (normalizedToolName === "terminal_read") {
+        const sessionId =
+          typeof args.session_id === "string" ? args.session_id.trim() : "";
+        if (!sessionId) return "Missing session_id argument for terminal_read.";
 
-        const session = await useTerminalStore.getState().readSession(sessionId);
+        const session = await useTerminalStore
+          .getState()
+          .readSession(sessionId);
         return JSON.stringify(session, null, 2);
       }
 
-      if (normalizedToolName === 'terminal_kill') {
-        const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
-        if (!sessionId) return 'Missing session_id argument for terminal_kill.';
+      if (normalizedToolName === "terminal_kill") {
+        const sessionId =
+          typeof args.session_id === "string" ? args.session_id.trim() : "";
+        if (!sessionId) return "Missing session_id argument for terminal_kill.";
 
-        const session = await useTerminalStore.getState().killSession(sessionId);
+        const session = await useTerminalStore
+          .getState()
+          .killSession(sessionId);
         return JSON.stringify(session, null, 2);
       }
 
@@ -2303,44 +2702,49 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return getConversationMessagesFromState(state, conversationId);
   };
 
-  const cloneProviderInputItems = (items?: unknown[] | null): unknown[] | undefined => {
+  const cloneProviderInputItems = (
+    items?: unknown[] | null,
+  ): unknown[] | undefined => {
     if (!Array.isArray(items) || items.length === 0) {
       return undefined;
     }
 
     return items.map((item) =>
-      item && typeof item === 'object'
+      item && typeof item === "object"
         ? JSON.parse(JSON.stringify(item))
-        : item
+        : item,
     );
   };
 
   const buildProviderInputItemsFromContent = (
-    role: 'user' | 'assistant',
-    content: StreamMessage['content']
+    role: "user" | "assistant",
+    content: StreamMessage["content"],
   ): unknown[] => {
-    const parts = typeof content === 'string'
-      ? [{
-        type: role === 'user' ? 'input_text' : 'output_text',
-        text: content,
-      }]
-      : content.map((part) => {
-        if (part.type === 'image_url') {
-          return {
-            type: 'input_image',
-            image_url: part.image_url.url,
-          };
-        }
+    const parts =
+      typeof content === "string"
+        ? [
+            {
+              type: role === "user" ? "input_text" : "output_text",
+              text: content,
+            },
+          ]
+        : content.map((part) => {
+            if (part.type === "image_url") {
+              return {
+                type: "input_image",
+                image_url: part.image_url.url,
+              };
+            }
 
-        return {
-          type: role === 'user' ? 'input_text' : 'output_text',
-          text: part.text || '',
-        };
-      });
+            return {
+              type: role === "user" ? "input_text" : "output_text",
+              text: part.text || "",
+            };
+          });
 
     return [
       {
-        type: 'message',
+        type: "message",
         role,
         content: parts,
       },
@@ -2350,7 +2754,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const prepareMessagesForRequest = async (
     conversationId: string,
     allowedToolIds: string[],
-    messageWithImagesId?: string
+    messageWithImagesId?: string,
   ) => {
     const appState = useAppStore.getState();
     const taskState = useTaskStore.getState();
@@ -2367,25 +2771,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
       activeRepositoryPath: taskState.activeRepositoryPath,
       branchWorktrees: taskState.branchWorktrees,
     });
-    const contextCitations = useCitationsStore.getState().getConversationContextCitations(conversationId);
-    const sourceCitations = useCitationsStore.getState().getConversationSourceCitations(conversationId);
-    const citations = allowedToolIds.includes('mark_source_passage')
+    const contextCitations = useCitationsStore
+      .getState()
+      .getConversationContextCitations(conversationId);
+    const sourceCitations = useCitationsStore
+      .getState()
+      .getConversationSourceCitations(conversationId);
+    const citations = allowedToolIds.includes("mark_source_passage")
       ? [...contextCitations, ...sourceCitations]
       : contextCitations;
-    const fileCitations = contextCitations.filter((c) => c.type === 'file' || c.type === 'document');
+    const fileCitations = contextCitations.filter(
+      (c) => c.type === "file" || c.type === "document",
+    );
     const availableFiles = fileCitations
       .map((c) => c.path || c.title || c.source)
       .filter(Boolean)
-      .join(', ');
+      .join(", ");
     const orderedMessages = getOrderedConversationMessages(conversationId);
-    const lastUserIndex = orderedMessages.map(m => m.role).lastIndexOf('user');
+    const lastUserIndex = orderedMessages
+      .map((m) => m.role)
+      .lastIndexOf("user");
     const messageImagesByMessageId = get().messageImagesByMessageId;
 
-    const providerInputItemsByMessageId: Record<string, unknown[] | undefined> = {};
+    const providerInputItemsByMessageId: Record<string, unknown[] | undefined> =
+      {};
 
     const preparedMessages = orderedMessages.map((message, index) => {
       let messageContent = message.content;
-      if (message.role === 'assistant') {
+      if (message.role === "assistant") {
         messageContent = sanitizeAssistantContentForModel(messageContent);
       }
 
@@ -2396,10 +2809,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (citations.length > 0) {
           const contextBlock = citations
             .map((c, i) => {
-              const kind = c.scope === 'source' ? 'Important Source' : 'Context';
-              return `[${kind} ${i + 1}: ${c.title}]\n${c.snippet || c.source || ''}`;
+              const kind =
+                c.scope === "source" ? "Important Source" : "Context";
+              return `[${kind} ${i + 1}: ${c.title}]\n${c.snippet || c.source || ""}`;
             })
-            .join('\n\n---\n\n');
+            .join("\n\n---\n\n");
           blocks.push(`CONTEXT INFORMATION:\n\n${contextBlock}`);
         }
 
@@ -2409,53 +2823,68 @@ export const useChatStore = create<ChatStore>((set, get) => {
             .map((ref) => {
               const lines: string[] = [`[${ref.kind}: ${ref.title}]`];
               if (ref.subtitle) lines.push(`Category: ${ref.subtitle}`);
-              if ('description' in ref.data && ref.data.description) {
+              if ("description" in ref.data && ref.data.description) {
                 lines.push(`Description: ${ref.data.description}`);
               }
-              if ('status' in ref.data && ref.data.status) {
+              if ("status" in ref.data && ref.data.status) {
                 lines.push(`Status: ${ref.data.status}`);
               }
-              if ('priority' in ref.data && ref.data.priority) {
+              if ("priority" in ref.data && ref.data.priority) {
                 lines.push(`Priority: ${ref.data.priority}`);
               }
-              if ('tags' in ref.data && Array.isArray(ref.data.tags) && ref.data.tags.length > 0) {
-                lines.push(`Tags: ${ref.data.tags.join(', ')}`);
+              if (
+                "tags" in ref.data &&
+                Array.isArray(ref.data.tags) &&
+                ref.data.tags.length > 0
+              ) {
+                lines.push(`Tags: ${ref.data.tags.join(", ")}`);
               }
-              if ('type' in ref.data && ref.data.type) {
+              if ("type" in ref.data && ref.data.type) {
                 lines.push(`Type: ${ref.data.type}`);
               }
-              if ('dependencies' in ref.data && Array.isArray(ref.data.dependencies) && ref.data.dependencies.length > 0) {
-                lines.push(`Dependencies: ${ref.data.dependencies.join(', ')}`);
+              if (
+                "dependencies" in ref.data &&
+                Array.isArray(ref.data.dependencies) &&
+                ref.data.dependencies.length > 0
+              ) {
+                lines.push(`Dependencies: ${ref.data.dependencies.join(", ")}`);
               }
-              return lines.join('\n');
+              return lines.join("\n");
             })
-            .join('\n\n---\n\n');
+            .join("\n\n---\n\n");
           blocks.push(`REFERENCED ITEMS:\n\n${refsBlock}`);
         }
 
         if (blocks.length > 0) {
-          messageContent = `${blocks.join('\n\n')}\n\nUSER REQUEST: ${message.content}`;
+          messageContent = `${blocks.join("\n\n")}\n\nUSER REQUEST: ${message.content}`;
         }
       }
 
-      if (message.role === 'user' && messageWithImagesId && message.id === messageWithImagesId) {
+      if (
+        message.role === "user" &&
+        messageWithImagesId &&
+        message.id === messageWithImagesId
+      ) {
         const images = messageImagesByMessageId[message.id] || [];
         if (images.length > 0) {
           const content = [
-            { type: 'text' as const, text: messageContent },
+            { type: "text" as const, text: messageContent },
             ...images.map((image) => ({
-              type: 'image_url' as const,
+              type: "image_url" as const,
               image_url: { url: image.dataUrl },
             })),
           ];
           providerInputItemsByMessageId[message.id] =
             cloneProviderInputItems(message.provider_input_items) ??
-            buildProviderInputItemsFromContent('user', content);
+            buildProviderInputItemsFromContent("user", content);
           return {
-            role: 'user' as const,
+            role: "user" as const,
             content,
             ...(providerInputItemsByMessageId[message.id]
-              ? { provider_input_items: providerInputItemsByMessageId[message.id] }
+              ? {
+                  provider_input_items:
+                    providerInputItemsByMessageId[message.id],
+                }
               : {}),
           };
         }
@@ -2463,14 +2892,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       providerInputItemsByMessageId[message.id] =
         cloneProviderInputItems(message.provider_input_items) ??
-        (
-          message.role === 'user' || message.role === 'assistant'
-            ? buildProviderInputItemsFromContent(message.role, messageContent)
-            : undefined
-        );
+        (message.role === "user" || message.role === "assistant"
+          ? buildProviderInputItemsFromContent(message.role, messageContent)
+          : undefined);
 
       return {
-        role: message.role as 'user' | 'assistant',
+        role: message.role as "user" | "assistant",
         content: messageContent,
         ...(providerInputItemsByMessageId[message.id]
           ? { provider_input_items: providerInputItemsByMessageId[message.id] }
@@ -2482,54 +2909,66 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
 
     const systemInstructions: string[] = [];
-    if (allowedToolIds.includes('read_file')) {
+    if (allowedToolIds.includes("read_file")) {
       systemInstructions.push(
-        `When the user asks to inspect or analyze an attached file, call read_file first using the file name/path. Available files: ${availableFiles || 'none'}.`
+        `When the user asks to inspect or analyze an attached file, call read_file first using the file name/path. Available files: ${availableFiles || "none"}.`,
       );
     }
-    if (allowedToolIds.includes('mark_source_passage')) {
+    if (allowedToolIds.includes("mark_source_passage")) {
       systemInstructions.push(
-        'Use mark_source_passage for source tracking. Use kind="interesting" for key excerpts worth keeping while analyzing sources. Use kind="used" only for excerpts you actually used in your final answer. Always include concise title and exact passage. Add source or url when available, and reason when helpful. Only mark genuinely important passages.'
+        'Use mark_source_passage for source tracking. Use kind="interesting" for key excerpts worth keeping while analyzing sources. Use kind="used" only for excerpts you actually used in your final answer. Always include concise title and exact passage. Add source or url when available, and reason when helpful. Only mark genuinely important passages.',
       );
     }
-    if (allowedToolIds.includes('read_sources')) {
+    if (allowedToolIds.includes("read_sources")) {
       systemInstructions.push(
-        'Use read_sources when you need to review previously saved source passages before answering or editing citations.'
+        "Use read_sources when you need to review previously saved source passages before answering or editing citations.",
       );
     }
-    if (allowedToolIds.includes('edit_source_passage')) {
+    if (allowedToolIds.includes("edit_source_passage")) {
       systemInstructions.push(
-        'Use edit_source_passage only when the user asks to update, reclassify, or delete saved source passages.'
+        "Use edit_source_passage only when the user asks to update, reclassify, or delete saved source passages.",
       );
     }
-    if (useAppStore.getState().mode === 'Debug') {
+    if (allowedToolIds.includes("apply_patch")) {
       systemInstructions.push(
-        'In Debug mode, for any question about current directory, file existence, path, or file content, you MUST call workspace tools first (list/read). ' +
-        'If filename is ambiguous (example: "readme"), list the directory first and then read the exact matched filename (example: README.md). ' +
-        'If a read fails, report the exact tool error and ask for a precise path. Never invent file content or project paths.'
+        "For file edits, use apply_patch instead of write/edit. Macro patch format is: *** Begin Patch, then one or more sections using *** Add File:, *** Update File:, or *** Delete File:, and finally *** End Patch. In update hunks, prefix context lines with a space, removals with -, additions with +, and separate hunks with @@ when needed.",
+      );
+    } else if (
+      allowedToolIds.includes("write") ||
+      allowedToolIds.includes("edit")
+    ) {
+      systemInstructions.push(
+        "For file edits in this session, use write/edit tools and do not emit apply_patch.",
+      );
+    }
+    if (useAppStore.getState().mode === "Debug") {
+      systemInstructions.push(
+        "In Debug mode, for any question about current directory, file existence, path, or file content, you MUST call workspace tools first (list/read). " +
+          'If filename is ambiguous (example: "readme"), list the directory first and then read the exact matched filename (example: README.md). ' +
+          "If a read fails, report the exact tool error and ask for a precise path. Never invent file content or project paths.",
       );
     }
 
     const appMode = appState.mode;
     const agentType =
-      appMode === 'Architect'
-        ? 'plan'
-        : appMode === 'Implement'
+      appMode === "Architect"
+        ? "plan"
+        : appMode === "Implement"
           ? appState.agentType
           : null;
-    let modePrompt = '';
+    let modePrompt = "";
 
     switch (appMode) {
-      case 'Architect':
+      case "Architect":
         modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_ARCHITECT);
         break;
-      case 'Implement':
+      case "Implement":
         modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_IMPLEMENT);
         break;
-      case 'Chat':
+      case "Chat":
         modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_CHAT);
         break;
-      case 'Debug':
+      case "Debug":
         modePrompt = await loadPreference<string>(PREF_KEYS.PROMPT_DEBUG);
         break;
     }
@@ -2538,9 +2977,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.unshift(modePrompt);
     }
 
-    if (agentType === 'plan') {
+    if (agentType === "plan") {
       systemInstructions.push(
-        'Agent type is PLAN. Focus on planning before execution: clarify goals, propose a step-by-step implementation plan, identify risks/dependencies, and ask for confirmation before suggesting direct file edits. Do not claim code was changed unless a tool call actually performed the change.'
+        "Agent type is PLAN. Focus on planning before execution: clarify goals, propose a step-by-step implementation plan, identify risks/dependencies, and ask for confirmation before suggesting direct file edits. Do not claim code was changed unless a tool call actually performed the change.",
       );
     }
 
@@ -2551,53 +2990,59 @@ export const useChatStore = create<ChatStore>((set, get) => {
       executionContext.taskId ||
       executionContext.branchName
     ) {
-      const scopedProjects = executionContext.projectIds
-        .map((projectId) => appState.getProjectById(projectId)?.name || projectId)
-        .join(', ') || 'none';
-      const mountSummary = executionContext.projectMounts
-        .map((mount) => `${mount.mountName}=>${mount.displayName}`)
-        .join(', ') || 'none';
+      const scopedProjects =
+        executionContext.projectIds
+          .map(
+            (projectId) =>
+              appState.getProjectById(projectId)?.name || projectId,
+          )
+          .join(", ") || "none";
+      const mountSummary =
+        executionContext.projectMounts
+          .map((mount) => `${mount.mountName}=>${mount.displayName}`)
+          .join(", ") || "none";
       systemInstructions.push(
-        `[Execution Context] global_project="${executionContext.groupName || executionContext.groupId || 'none'}", default_subproject="${executionContext.projectName || executionContext.projectId || 'none'}", focused_subproject="${executionContext.focusedProjectId || 'none'}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || 'none'}", branch="${executionContext.branchName || 'none'}", virtual_root="${executionContext.virtualRootEnabled ? 'enabled' : 'disabled'}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only subproject mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one subproject explicitly. Git and terminal operations must target exactly one subproject; there is no git or terminal at the virtual root.`
+        `[Execution Context] global_project="${executionContext.groupName || executionContext.groupId || "none"}", default_subproject="${executionContext.projectName || executionContext.projectId || "none"}", focused_subproject="${executionContext.focusedProjectId || "none"}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || "none"}", branch="${executionContext.branchName || "none"}", virtual_root="${executionContext.virtualRootEnabled ? "enabled" : "disabled"}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only subproject mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one subproject explicitly. Git and terminal operations must target exactly one subproject; there is no git or terminal at the virtual root.`,
       );
     }
 
-    if (appMode === 'Architect') {
+    if (appMode === "Architect") {
       systemInstructions.push(buildArchitectPlanToolFollowUpInstruction());
       systemInstructions.push(
-        'In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).'
+        "In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).",
       );
       systemInstructions.push(
-        'In Architect mode, never call `plan_create`. The AI may only inspect, update, or activate existing plans. If no suitable plan exists, ask the user to create one from the plan selector before continuing.'
+        "In Architect mode, never call `plan_create`. The AI may only inspect, update, or activate existing plans. If no suitable plan exists, ask the user to create one from the plan selector before continuing.",
       );
       systemInstructions.push(
-        'In Architect mode, never call `plan_delete` or `plan_restore`. If a plan should be removed, archived, or restored, ask the user to do it from the plan selector.'
+        "In Architect mode, never call `plan_delete` or `plan_restore`. If a plan should be removed, archived, or restored, ask the user to do it from the plan selector.",
       );
       systemInstructions.push(
-        'In Architect mode, `plan_update` may only change the optional label/title alias and description. Never use it to change plan status or activate a plan.'
+        "In Architect mode, `plan_update` may only change the optional label/title alias and description. Never use it to change plan status or activate a plan.",
       );
       systemInstructions.push(
-        'In Architect mode, never call `plan_set_active`. If another plan should become active, ask the user to select it from the plan selector.'
+        "In Architect mode, never call `plan_set_active`. If another plan should become active, ask the user to select it from the plan selector.",
       );
       systemInstructions.push(
-        'Git workflow for plans is strict: each new plan gets a generated identifier and uses that identifier as its canonical slug. Integration branch is `plan/<plan-id>` from `develop`; strategy branches must be `feature/<plan-id>/<feature-slug>` and merge into the plan branch in dependency order. Optional labels must never change git branch identity.'
+        "Git workflow for plans is strict: each new plan gets a generated identifier and uses that identifier as its canonical slug. Integration branch is `plan/<plan-id>` from `develop`; strategy branches must be `feature/<plan-id>/<feature-slug>` and merge into the plan branch in dependency order. Optional labels must never change git branch identity.",
       );
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {
         systemInstructions.push(
-          `[Active Plan] id="${activePlanContext.id}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || 'none'}", description="${activePlanContext.description || 'none'}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". New plans are identifier-first. Use plan_update.label (or title as legacy alias) only for the optional secondary label, and never rename the canonical id/slug of a new plan.`
+          `[Active Plan] id="${activePlanContext.id}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || "none"}", description="${activePlanContext.description || "none"}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". New plans are identifier-first. Use plan_update.label (or title as legacy alias) only for the optional secondary label, and never rename the canonical id/slug of a new plan.`,
         );
       }
     }
 
     const systemMessage =
-      systemInstructions.join(' ') || 'Use context information when it is provided.';
+      systemInstructions.join(" ") ||
+      "Use context information when it is provided.";
 
     return {
       systemMessage,
       messages: [
         {
-          role: 'system' as const,
+          role: "system" as const,
           content: systemMessage,
         },
         ...preparedMessages,
@@ -2613,47 +3058,52 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const recalcConversation = (
     conversationId: string,
     messages: ChatMessage[],
-    updatedAt?: string
+    updatedAt?: string,
   ) => {
-    const conversationMessages = indexMessagesByConversation(messages)[conversationId] ?? [];
+    const conversationMessages =
+      indexMessagesByConversation(messages)[conversationId] ?? [];
     const lastMessage = conversationMessages[conversationMessages.length - 1];
     return {
       message_count: conversationMessages.length,
-      last_message: lastMessage?.content ?? '',
+      last_message: lastMessage?.content ?? "",
       updated_at: updatedAt ?? new Date().toISOString(),
     };
   };
 
-  const getConversationGroupId = (conversation: Conversation): string | null => {
+  const getConversationGroupId = (
+    conversation: Conversation,
+  ): string | null => {
     if (conversation.group_id) {
       return conversation.group_id;
     }
 
-    return getProjectGroupByProjectId(
-      useAppStore.getState().projectGroups,
-      conversation.project_id
-    )?.id ?? null;
+    return (
+      getProjectGroupByProjectId(
+        useAppStore.getState().projectGroups,
+        conversation.project_id,
+      )?.id ?? null
+    );
   };
 
   const getConversationScopeMode = (conversation: Conversation): AppMode => {
     if (
-      conversation.scope_mode === 'Architect' ||
-      conversation.scope_mode === 'Implement' ||
-      conversation.scope_mode === 'Chat' ||
-      conversation.scope_mode === 'Debug'
+      conversation.scope_mode === "Architect" ||
+      conversation.scope_mode === "Implement" ||
+      conversation.scope_mode === "Chat" ||
+      conversation.scope_mode === "Debug"
     ) {
       return conversation.scope_mode;
     }
 
     if (conversation.task_id) {
-      return 'Implement';
+      return "Implement";
     }
 
     if (conversation.group_id || conversation.project_id) {
-      return 'Architect';
+      return "Architect";
     }
 
-    return 'Chat';
+    return "Chat";
   };
 
   const isConversationAllowedForMode = (
@@ -2661,27 +3111,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
     mode: AppMode,
     selectedGroupId: string | null,
     selectedProjectId: string | null,
-    selectedTaskId: string | null
+    selectedTaskId: string | null,
   ): boolean => {
     if (getConversationScopeMode(conversation) !== mode) {
       return false;
     }
 
-    if (mode === 'Chat' || mode === 'Debug') {
+    if (mode === "Chat" || mode === "Debug") {
       return true;
     }
 
-    if (mode === 'Architect') {
+    if (mode === "Architect") {
       if (selectedGroupId) {
-        return getConversationGroupId(conversation) === selectedGroupId && !conversation.task_id;
+        return (
+          getConversationGroupId(conversation) === selectedGroupId &&
+          !conversation.task_id
+        );
       }
       if (selectedProjectId) {
-        return conversation.project_id === selectedProjectId && !conversation.task_id;
+        return (
+          conversation.project_id === selectedProjectId && !conversation.task_id
+        );
       }
       return !conversation.task_id;
     }
 
-    if (mode === 'Implement') {
+    if (mode === "Implement") {
       if (!selectedTaskId) return false;
       return conversation.task_id === selectedTaskId;
     }
@@ -2694,7 +3149,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     mode: AppMode,
     selectedGroupId: string | null,
     selectedProjectId: string | null,
-    selectedTaskId: string | null
+    selectedTaskId: string | null,
   ): string | null => {
     const scoped = conversations
       .filter((conversation) =>
@@ -2703,11 +3158,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           mode,
           selectedGroupId,
           selectedProjectId,
-          selectedTaskId
-        )
+          selectedTaskId,
+        ),
       )
-      .sort((a, b) =>
-        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      .sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
       );
 
     return scoped[0]?.id ?? null;
@@ -2715,27 +3171,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const getLatestConversationForTask = (
     taskId: string,
-    conversations: Conversation[] = get().conversations
+    conversations: Conversation[] = get().conversations,
   ): Conversation | null =>
     conversations
       .filter(
         (conversation) =>
-          getConversationScopeMode(conversation) === 'Implement' &&
-          conversation.task_id === taskId
+          getConversationScopeMode(conversation) === "Implement" &&
+          conversation.task_id === taskId,
       )
-      .sort((a, b) =>
-        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      .sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
       )[0] ?? null;
 
   type ConversationRemovalSnapshot = Pick<
     ChatStore,
-    | 'conversations'
-    | 'messages'
-    | 'messagesByConversationId'
-    | 'messageIndexById'
-    | 'messageImagesByMessageId'
-    | 'selectedConversationId'
-    | 'selectedConversationIdsByMode'
+    | "conversations"
+    | "messages"
+    | "messagesByConversationId"
+    | "messageIndexById"
+    | "messageImagesByMessageId"
+    | "selectedConversationId"
+    | "selectedConversationIdsByMode"
   >;
 
   const buildConversationRemovalSnapshot = (): ConversationRemovalSnapshot => {
@@ -2753,21 +3210,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const buildConversationRemovalState = (
     state: ConversationRemovalSnapshot,
-    conversationIds: string[]
+    conversationIds: string[],
   ): ConversationRemovalSnapshot => {
     const idsToRemove = new Set(conversationIds);
     const appState = useAppStore.getState();
     const nextConversations = state.conversations.filter(
-      (conversation) => !idsToRemove.has(conversation.id)
+      (conversation) => !idsToRemove.has(conversation.id),
     );
     const nextMessages = state.messages.filter(
-      (message) => !idsToRemove.has(message.conversation_id)
+      (message) => !idsToRemove.has(message.conversation_id),
     );
-    const remainingMessageIds = new Set(nextMessages.map((message) => message.id));
+    const remainingMessageIds = new Set(
+      nextMessages.map((message) => message.id),
+    );
     const nextImages = Object.fromEntries(
       Object.entries(state.messageImagesByMessageId).filter(([messageId]) =>
-        remainingMessageIds.has(messageId)
-      )
+        remainingMessageIds.has(messageId),
+      ),
     );
     saveMessageImagesToStorage(nextImages);
 
@@ -2783,17 +3242,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       appState.mode,
       appState.selectedGroupId,
       appState.selectedProjectId,
-      appState.selectedTaskId
+      appState.selectedTaskId,
     );
 
     const nextSelectedConversationId =
-      state.selectedConversationId && idsToRemove.has(state.selectedConversationId)
+      state.selectedConversationId &&
+      idsToRemove.has(state.selectedConversationId)
         ? fallbackForCurrentMode
         : state.selectedConversationId;
 
     nextByMode[appState.mode] =
       nextSelectedConversationId &&
-      nextConversations.some((conversation) => conversation.id === nextSelectedConversationId)
+      nextConversations.some(
+        (conversation) => conversation.id === nextSelectedConversationId,
+      )
         ? nextSelectedConversationId
         : fallbackForCurrentMode;
 
@@ -2813,7 +3275,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     set((state) => buildConversationRemovalState(state, conversationIds));
   };
 
-  const restoreConversationRemovalSnapshot = (snapshot: ConversationRemovalSnapshot) => {
+  const restoreConversationRemovalSnapshot = (
+    snapshot: ConversationRemovalSnapshot,
+  ) => {
     saveMessageImagesToStorage(snapshot.messageImagesByMessageId);
     set(snapshot);
   };
@@ -2825,30 +3289,42 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const providerState = useProviderStore.getState();
     const selectedProvider = providerState.providerConfigs.find(
-      (provider) => provider.id === providerState.selectedProviderId
+      (provider) => provider.id === providerState.selectedProviderId,
     );
+    const strategyFilterForSelectedProvider = (toolIds: string[]): string[] =>
+      applyEditingStrategyToToolIds(
+        toolIds,
+        selectedProvider?.providerType,
+        providerState.selectedModelId,
+      );
     const filterForSelectedProvider = (toolIds: string[]): string[] =>
-      selectedProvider?.providerType === 'copilot'
-        ? filterCopilotSupportedToolIds(toolIds)
-        : toolIds;
+      selectedProvider?.providerType === "copilot"
+        ? filterCopilotSupportedToolIds(
+            strategyFilterForSelectedProvider(toolIds),
+          )
+        : strategyFilterForSelectedProvider(toolIds);
 
     const mode = useAppStore.getState().mode;
     const modePolicy = await getModePolicyForCurrentMode();
     const toolsState = useToolsStore.getState();
 
-    if (mode === 'Chat') {
+    if (mode === "Chat") {
       const enabledChatTools = toolsState.getEnabledChatToolIds();
       return filterForSelectedProvider(
-        enabledChatTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId))
+        enabledChatTools.filter((toolId) =>
+          modePolicy.allowedToolIds.includes(toolId),
+        ),
       );
     }
 
-    if (mode === 'Debug') {
+    if (mode === "Debug") {
       const enabledTools = Object.values(toolsState.internalTools)
         .filter((tool) => toolsState.isToolEnabled(tool.id))
         .map((tool) => tool.id);
       return filterForSelectedProvider(
-        enabledTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId))
+        enabledTools.filter((toolId) =>
+          modePolicy.allowedToolIds.includes(toolId),
+        ),
       );
     }
 
@@ -2857,43 +3333,54 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .map((tool) => tool.id);
 
     return filterForSelectedProvider(
-      enabledTools.filter((toolId) => modePolicy.allowedToolIds.includes(toolId))
+      enabledTools.filter((toolId) =>
+        modePolicy.allowedToolIds.includes(toolId),
+      ),
     );
   };
 
   const buildGuidedToolRetryPolicy = (params: {
     userContent: string;
     allowedToolIds: string[];
-    fileToolContext: Array<{ title: string; source: string; path?: string; snippet?: string }>;
+    fileToolContext: Array<{
+      title: string;
+      source: string;
+      path?: string;
+      snippet?: string;
+    }>;
   }) => {
     if (!useProviderStore.getState().selectedSupportsNativeToolCalling()) {
       return undefined;
     }
 
-    if (params.fileToolContext.length > 0 && params.allowedToolIds.includes('read_file')) {
+    if (
+      params.fileToolContext.length > 0 &&
+      params.allowedToolIds.includes("read_file")
+    ) {
       return {
-        requiredToolNames: ['read_file'],
+        requiredToolNames: ["read_file"],
         retrySystemPrompt:
-          'You must call read_file before answering about attached files or document context. ' +
-          'Do not summarize, infer, or quote file contents until read_file has been used with the exact file name or path. ' +
-          'If the filename is ambiguous, say so only after attempting the appropriate tool call.',
+          "You must call read_file before answering about attached files or document context. " +
+          "Do not summarize, infer, or quote file contents until read_file has been used with the exact file name or path. " +
+          "If the filename is ambiguous, say so only after attempting the appropriate tool call.",
         maxRetries: 1,
       };
     }
 
     const debugLikeQuestion =
-      useAppStore.getState().mode === 'Debug' &&
-      (params.allowedToolIds.includes('list') || params.allowedToolIds.includes('read')) &&
+      useAppStore.getState().mode === "Debug" &&
+      (params.allowedToolIds.includes("list") ||
+        params.allowedToolIds.includes("read")) &&
       /\b(file|files|path|paths|directory|folder|cwd|workspace|readme|package\.json|current directory|content|contents|fichier|fichiers|chemin|dossier|répertoire|contenu)\b/i.test(
-        params.userContent
+        params.userContent,
       );
 
     if (debugLikeQuestion) {
       return {
-        requiredToolNames: ['list', 'read'],
+        requiredToolNames: ["list", "read"],
         retrySystemPrompt:
-          'In Debug mode, you must call list or read before answering questions about files, paths, directories, current working directory, or file contents. ' +
-          'Do not invent filenames, paths, or source contents. Use the appropriate workspace tool first, then answer from the exact tool output.',
+          "In Debug mode, you must call list or read before answering questions about files, paths, directories, current working directory, or file contents. " +
+          "Do not invent filenames, paths, or source contents. Use the appropriate workspace tool first, then answer from the exact tool output.",
         maxRetries: 1,
       };
     }
@@ -2903,37 +3390,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const prepareMetadataMessages = (firstUserContent: string) => [
     {
-      role: 'system' as const,
+      role: "system" as const,
       content:
-        'Generate concise metadata for this conversation. Return ONLY valid JSON with keys: title, description. ' +
-        'title: 3-7 words, specific and action-oriented. description: one clear sentence under 180 characters.',
+        "Generate concise metadata for this conversation. Return ONLY valid JSON with keys: title, description. " +
+        "title: 3-7 words, specific and action-oriented. description: one clear sentence under 180 characters.",
     },
     {
-      role: 'user' as const,
+      role: "user" as const,
       content: firstUserContent,
     },
   ];
 
   const prepareManualFeatureMetadataMessages = (
     firstUserContent: string,
-    unavailableBranchNames: string[] = []
+    unavailableBranchNames: string[] = [],
   ) => {
     const unavailableBranchSummary =
       unavailableBranchNames.length > 0
-        ? ` These branch names are already taken and must not be reused: ${unavailableBranchNames.join(', ')}. Return a different featureSlug.`
-        : '';
+        ? ` These branch names are already taken and must not be reused: ${unavailableBranchNames.join(", ")}. Return a different featureSlug.`
+        : "";
 
     return [
       {
-        role: 'system' as const,
+        role: "system" as const,
         content:
-          'Generate concise metadata for a standalone implementation feature. Return ONLY valid JSON with keys: title, description, featureSlug. ' +
-          'title: 3-7 words, specific and action-oriented. description: one clear sentence under 180 characters. ' +
-          'featureSlug: lowercase kebab-case branch slug without any branch prefix; the concrete branch name is rendered later from each subproject\'s independent feature template.' +
+          "Generate concise metadata for a standalone implementation feature. Return ONLY valid JSON with keys: title, description, featureSlug. " +
+          "title: 3-7 words, specific and action-oriented. description: one clear sentence under 180 characters. " +
+          "featureSlug: lowercase kebab-case branch slug without any branch prefix; the concrete branch name is rendered later from each subproject's independent feature template." +
           unavailableBranchSummary,
       },
       {
-        role: 'user' as const,
+        role: "user" as const,
         content: firstUserContent,
       },
     ];
@@ -2941,18 +3428,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const updateConversationMetadataLocally = (
     conversationId: string,
-    metadata: { title: string; description: string }
+    metadata: { title: string; description: string },
   ) => {
     set((state) => ({
       conversations: state.conversations.map((conversation) =>
         conversation.id === conversationId
           ? {
-            ...conversation,
-            title: metadata.title,
-            description: metadata.description,
-            updated_at: new Date().toISOString(),
-          }
-          : conversation
+              ...conversation,
+              title: metadata.title,
+              description: metadata.description,
+              updated_at: new Date().toISOString(),
+            }
+          : conversation,
       ),
     }));
   };
@@ -2967,13 +3454,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     apiKey?: string;
     modelId: string;
     reasoningEffort?: ReasoningEffort | null;
-    }) => {
+  }) => {
     const taskStore = useTaskStore.getState();
     const task = taskStore.getTaskById(params.taskId);
     if (
       !task ||
-      task.task_source !== 'standalone' ||
-      task.standalone_kind !== 'manual_feature' ||
+      task.task_source !== "standalone" ||
+      task.standalone_kind !== "manual_feature" ||
       task.draft !== true
     ) {
       return;
@@ -2982,19 +3469,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const appState = useAppStore.getState();
     const projectIds = Array.from(
       new Set(
-        [
-          ...(task.project_ids || []),
-          task.project_id,
-        ].filter((projectId): projectId is string => typeof projectId === 'string' && projectId.trim().length > 0)
-      )
+        [...(task.project_ids || []), task.project_id].filter(
+          (projectId): projectId is string =>
+            typeof projectId === "string" && projectId.trim().length > 0,
+        ),
+      ),
     );
 
-    const renderManualFeatureBranchCandidates = (featureSlug: string): Array<{ projectId: string; branchName: string }> => {
-      const projectIdsToCheck = projectIds.length > 0
-        ? projectIds
-        : (appState.selectedGroupId
-          ? getScopedActionableProjectIds(appState.projectGroups, appState.selectedGroupId, null)
-          : []);
+    const renderManualFeatureBranchCandidates = (
+      featureSlug: string,
+    ): Array<{ projectId: string; branchName: string }> => {
+      const projectIdsToCheck =
+        projectIds.length > 0
+          ? projectIds
+          : appState.selectedGroupId
+            ? getScopedActionableProjectIds(
+                appState.projectGroups,
+                appState.selectedGroupId,
+                null,
+              )
+            : [];
 
       return projectIdsToCheck.map((projectId) => ({
         projectId,
@@ -3006,7 +3500,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
 
     const findConflictingBranchCandidates = async (
-      featureSlug: string
+      featureSlug: string,
     ): Promise<Array<{ projectId: string; branchName: string }>> => {
       if (!tauriIpc.isTauriAvailable()) {
         return [];
@@ -3016,24 +3510,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const conflictResults = await Promise.all(
         branchCandidates.map(async (candidate) => {
-          const repoPath = appState.getProjectById(candidate.projectId)?.path?.trim();
+          const repoPath = appState
+            .getProjectById(candidate.projectId)
+            ?.path?.trim();
           if (!repoPath) {
             return null;
           }
 
           const branches = await tauriIpc.gitBranchList(repoPath);
-          const branchTaken = [...branches.local, ...branches.remote].some((branch) =>
-            branchNameMatchesCandidate(branch.name, candidate.branchName)
+          const branchTaken = [...branches.local, ...branches.remote].some(
+            (branch) =>
+              branchNameMatchesCandidate(branch.name, candidate.branchName),
           );
 
           return branchTaken ? candidate : null;
-        })
+        }),
       );
 
-      return conflictResults.filter((candidate): candidate is { projectId: string; branchName: string } => Boolean(candidate));
+      return conflictResults.filter(
+        (candidate): candidate is { projectId: string; branchName: string } =>
+          Boolean(candidate),
+      );
     };
 
-    const requestManualFeatureMetadata = async (unavailableBranchNames: string[]) => {
+    const requestManualFeatureMetadata = async (
+      unavailableBranchNames: string[],
+    ) => {
       const output = await sendChatNonStreaming({
         providerId: params.providerId,
         providerType: params.providerType,
@@ -3043,21 +3545,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
         reasoningEffort: params.reasoningEffort,
         messages: prepareManualFeatureMetadataMessages(
           params.firstUserContent,
-          unavailableBranchNames
+          unavailableBranchNames,
         ),
-        onComplete: () => { },
-        onError: () => { },
+        onComplete: () => {},
+        onError: () => {},
       });
       return extractManualFeatureMetadataFromModelOutput(output);
     };
 
-    const resolveAvailableFallbackSlug = async (baseSlug: string): Promise<string> => {
+    const resolveAvailableFallbackSlug = async (
+      baseSlug: string,
+    ): Promise<string> => {
       const normalizedBaseSlug = normalizeManualFeatureSlugInput(baseSlug);
 
       for (let suffix = 0; suffix < 50; suffix += 1) {
         const candidateSlug =
-          suffix === 0 ? normalizedBaseSlug : normalizeManualFeatureSlugInput(`${normalizedBaseSlug}-${suffix + 1}`);
-        const conflictingCandidates = await findConflictingBranchCandidates(candidateSlug);
+          suffix === 0
+            ? normalizedBaseSlug
+            : normalizeManualFeatureSlugInput(
+                `${normalizedBaseSlug}-${suffix + 1}`,
+              );
+        const conflictingCandidates =
+          await findConflictingBranchCandidates(candidateSlug);
         if (conflictingCandidates.length === 0) {
           return candidateSlug;
         }
@@ -3069,12 +3578,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let metadata = buildManualFeatureFallbackMetadata(params.firstUserContent);
     let unavailableBranchNames: string[] = [];
 
-    for (let attempt = 0; attempt < MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT; attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT;
+      attempt += 1
+    ) {
       if (attempt === 0) {
         try {
           metadata = await requestManualFeatureMetadata(unavailableBranchNames);
         } catch {
-          metadata = buildManualFeatureFallbackMetadata(params.firstUserContent);
+          metadata = buildManualFeatureFallbackMetadata(
+            params.firstUserContent,
+          );
         }
       } else {
         try {
@@ -3082,12 +3597,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         } catch {
           metadata = {
             ...metadata,
-            featureSlug: await resolveAvailableFallbackSlug(metadata.featureSlug),
+            featureSlug: await resolveAvailableFallbackSlug(
+              metadata.featureSlug,
+            ),
           };
         }
       }
 
-      const conflictingCandidates = await findConflictingBranchCandidates(metadata.featureSlug);
+      const conflictingCandidates = await findConflictingBranchCandidates(
+        metadata.featureSlug,
+      );
       if (conflictingCandidates.length === 0) {
         break;
       }
@@ -3096,7 +3615,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         new Set([
           ...unavailableBranchNames,
           ...conflictingCandidates.map((candidate) => candidate.branchName),
-        ])
+        ]),
       );
       if (attempt === MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT - 1) {
         metadata = {
@@ -3127,10 +3646,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     await taskStore.startTask(params.taskId);
 
     const refreshedTask = useTaskStore.getState().getTaskById(params.taskId);
-    if (!refreshedTask || refreshedTask.draft || refreshedTask.status !== 'InProgress') {
+    if (
+      !refreshedTask ||
+      refreshedTask.draft ||
+      refreshedTask.status !== "InProgress"
+    ) {
       const failureMessage =
         useTaskStore.getState().lastError ||
-        'Failed to initialize the manual feature execution context.';
+        "Failed to initialize the manual feature execution context.";
       throw new Error(failureMessage);
     }
   };
@@ -3173,8 +3696,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         modelId,
         reasoningEffort,
         messages: prepareMetadataMessages(firstUserContent),
-        onComplete: () => { },
-        onError: () => { },
+        onComplete: () => {},
+        onError: () => {},
       });
 
       let metadata: { title: string; description: string };
@@ -3201,19 +3724,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       if (architectPlan) {
         try {
-          const plan = await getArchitectPlan(architectPlan.targetBranch, architectPlan.planId);
+          const plan = await getArchitectPlan(
+            architectPlan.targetBranch,
+            architectPlan.planId,
+          );
           const shouldAdoptMetadata = Boolean(
             plan &&
-            plan.status !== 'deleted' &&
+            plan.status !== "deleted" &&
             plan.conversationId === conversationId &&
             isCanonicalArchitectPlan(plan) &&
             isDefaultNewPlanFamilyLabel(plan.label) &&
             plan.nodes.length === 0 &&
-            plan.predictedBranches.length === 0
+            plan.predictedBranches.length === 0,
           );
 
           if (shouldAdoptMetadata && plan) {
-            const nextDescription = plan.description.trim() || metadata.description;
+            const nextDescription =
+              plan.description.trim() || metadata.description;
             const updatedPlan = await updateArchitectPlan({
               branchName: architectPlan.targetBranch,
               planId: plan.id,
@@ -3225,7 +3752,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
               title: getArchitectPlanConversationTitle(updatedPlan),
               description: nextDescription,
             };
-            updateConversationMetadataLocally(conversationId, conversationMetadata);
+            updateConversationMetadataLocally(
+              conversationId,
+              conversationMetadata,
+            );
 
             if (tauriIpc.isTauriAvailable()) {
               tauriIpc
@@ -3244,7 +3774,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 architectPlan.targetBranch
             ) {
               appState.setPlanNodes(updatedPlan.nodes || []);
-              appState.setPredictedBranches(updatedPlan.predictedBranches || []);
+              appState.setPredictedBranches(
+                updatedPlan.predictedBranches || [],
+              );
               appState.setActivePlanContext({
                 id: updatedPlan.id,
                 slug: updatedPlan.slug,
@@ -3253,21 +3785,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 description: updatedPlan.description,
                 status: updatedPlan.status,
                 targetBranch: updatedPlan.targetBranch,
-                targetBranchesByProjectId: updatedPlan.targetBranchesByProjectId,
+                targetBranchesByProjectId:
+                  updatedPlan.targetBranchesByProjectId,
                 hasMixedTargetBranches:
                   Boolean(updatedPlan.targetBranchesByProjectId) &&
-                  new Set(Object.values(updatedPlan.targetBranchesByProjectId || {})).size > 1,
+                  new Set(
+                    Object.values(updatedPlan.targetBranchesByProjectId || {}),
+                  ).size > 1,
               });
 
               const planNeeds = await getArchitectPlanNeeds(
                 architectPlan.targetBranch,
-                updatedPlan.id
+                updatedPlan.id,
               );
-              useNeedsStore.getState().replaceNeedsForPlan(updatedPlan.id, planNeeds);
+              useNeedsStore
+                .getState()
+                .replaceNeedsForPlan(updatedPlan.id, planNeeds);
             }
           }
         } catch (error) {
-          console.warn('Failed to sync architect plan metadata from first message:', error);
+          console.warn(
+            "Failed to sync architect plan metadata from first message:",
+            error,
+          );
         }
       }
     } catch {
@@ -3290,7 +3830,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const applyStreamCompletion = (messageId: string, result: StreamCompletionResult) => {
+  const applyStreamCompletion = (
+    messageId: string,
+    result: StreamCompletionResult,
+  ) => {
     get().updateMessageFields(messageId, {
       tool_traces: result.toolTraces,
       hidden_context: result.hiddenContext,
@@ -3302,13 +3845,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const persistProviderInputItemsForMessage = async (
     messageId: string,
-    providerInputItems: unknown[] | undefined
+    providerInputItems: unknown[] | undefined,
   ) => {
     if (!Array.isArray(providerInputItems) || providerInputItems.length === 0) {
       return;
     }
 
-    const message = get().messages.find((candidate) => candidate.id === messageId);
+    const message = get().messages.find(
+      (candidate) => candidate.id === messageId,
+    );
     if (!message) {
       return;
     }
@@ -3329,7 +3874,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerTurnState: message.provider_turn_state,
       });
     } catch (error) {
-      console.error('Failed to persist provider input items for message:', error);
+      console.error(
+        "Failed to persist provider input items for message:",
+        error,
+      );
     }
   };
 
@@ -3342,24 +3890,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
       id: `msg-${Date.now()}`,
       task_id: params.taskId,
       conversation_id: params.conversationId,
-      role: 'user',
+      role: "user",
       content: params.content,
       timestamp: new Date().toISOString(),
     };
 
     if (tauriIpc.isTauriAvailable()) {
       try {
-        const dbMessage = await tauriIpc.createMessage(params.conversationId, 'user', params.content);
+        const dbMessage = await tauriIpc.createMessage(
+          params.conversationId,
+          "user",
+          params.content,
+        );
         userMessage = {
           id: dbMessage.id,
           task_id: params.taskId,
           conversation_id: dbMessage.conversation_id,
-          role: 'user',
+          role: "user",
           content: dbMessage.content,
           timestamp: dbMessage.created_at,
         };
       } catch (error) {
-        console.error('Failed to create user message in DB:', error);
+        console.error("Failed to create user message in DB:", error);
       }
     }
 
@@ -3373,7 +3925,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     providerId: string;
     modelId: string;
     reasoningEffort?: ReasoningEffort | null;
-    providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>;
+    providerConfig: NonNullable<
+      ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
+    >;
   }) => {
     try {
       await ensureToolsLoaded();
@@ -3382,11 +3936,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const allowedToolIds = await getAllowedToolIdsForCurrentMode();
-    const showToolTraces = useAppStore.getState().mode === 'Debug';
+    const showToolTraces = useAppStore.getState().mode === "Debug";
     const preparedRequest = await prepareMessagesForRequest(
       params.conversationId,
       allowedToolIds,
-      params.replyToMessageId
+      params.replyToMessageId,
     );
     const compactedRequest = await compactConversationMessages({
       conversationId: params.conversationId,
@@ -3399,19 +3953,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       preparedMessages: preparedRequest.preparedMessages,
       orderedMessages: preparedRequest.orderedMessages,
       citations: preparedRequest.citations,
-      mode: 'blocking',
+      mode: "blocking",
     });
     const fileToolContext = useCitationsStore
       .getState()
       .getConversationContextCitations(params.conversationId)
-      .filter((c) => c.type === 'file' || c.type === 'document')
+      .filter((c) => c.type === "file" || c.type === "document")
       .map((c) => ({
         title: c.title,
         source: c.source,
         path: c.path,
         snippet: c.snippet,
       }));
-    const { enableWebSearch, enableWebFetch, webSearchOptions } = getStreamingWebSearchConfig();
+    const { enableWebSearch, enableWebFetch, webSearchOptions } =
+      getStreamingWebSearchConfig();
     const guidedToolRetry = buildGuidedToolRetryPolicy({
       userContent: params.userContent,
       allowedToolIds,
@@ -3420,7 +3975,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     await persistProviderInputItemsForMessage(
       params.replyToMessageId,
-      preparedRequest.providerInputItemsByMessageId[params.replyToMessageId]
+      preparedRequest.providerInputItemsByMessageId[params.replyToMessageId],
     );
 
     return {
@@ -3439,19 +3994,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const applyAssistantLaunchError = (
     assistantMessageId: string,
     error: unknown,
-    options?: { setSendState?: boolean }
+    options?: { setSendState?: boolean },
   ) => {
     const normalized = toServiceError(error);
     get().updateMessageContent(
       assistantMessageId,
-      `Error: ${normalized.message}`
+      `Error: ${normalized.message}`,
     );
     set({
       lastError: normalized.message,
       isLoading: false,
       isStreaming: false,
       abortController: null,
-      ...(options?.setSendState ? { sendState: 'error' as const } : {}),
+      ...(options?.setSendState ? { sendState: "error" as const } : {}),
     });
     return normalized;
   };
@@ -3461,13 +4016,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     providerId: string;
     modelId: string;
     reasoningEffort?: ReasoningEffort | null;
-    providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>;
+    providerConfig: NonNullable<
+      ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
+    >;
     allowedToolIds: string[];
   }) => {
     try {
       const preparedRequest = await prepareMessagesForRequest(
         params.conversationId,
-        params.allowedToolIds
+        params.allowedToolIds,
       );
       await compactConversationMessages({
         conversationId: params.conversationId,
@@ -3480,11 +4037,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         preparedMessages: preparedRequest.preparedMessages,
         orderedMessages: preparedRequest.orderedMessages,
         citations: preparedRequest.citations,
-        mode: 'background',
+        mode: "background",
       });
     } catch (error) {
       devLogger.info(
-        `Background compaction failed for conversation=${params.conversationId}: ${toServiceError(error).message}`
+        `Background compaction failed for conversation=${params.conversationId}: ${toServiceError(error).message}`,
       );
     }
   };
@@ -3497,16 +4054,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
     selectedProviderId: string;
     selectedModelId: string;
     selectedReasoningEffort?: ReasoningEffort | null;
-    providerConfig: NonNullable<ReturnType<typeof useProviderStore.getState>['providerConfigs'][number]>;
+    providerConfig: NonNullable<
+      ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
+    >;
     messagesForRequest: StreamMessage[];
     executionContext: {
       workspacePath: string | null;
       defaultWorkspacePath: string | null;
-      projectMounts: ReturnType<typeof resolveProjectExecutionContext>['projectMounts'];
+      projectMounts: ReturnType<
+        typeof resolveProjectExecutionContext
+      >["projectMounts"];
       virtualRootEnabled: boolean;
       focusedProjectId: string | null;
     };
-    fileToolContext: Array<{ title: string; source: string; path?: string; snippet?: string }>;
+    fileToolContext: Array<{
+      title: string;
+      source: string;
+      path?: string;
+      snippet?: string;
+    }>;
     allowedToolIds: string[];
     guidedToolRetry?: {
       requiredToolNames: string[];
@@ -3516,13 +4082,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     showToolTraces: boolean;
     enableWebSearch: boolean;
     enableWebFetch: boolean;
-    webSearchOptions: ReturnType<typeof getStreamingWebSearchConfig>['webSearchOptions'];
+    webSearchOptions: ReturnType<
+      typeof getStreamingWebSearchConfig
+    >["webSearchOptions"];
   }) => {
     const abortController = new AbortController();
     set({
       isLoading: true,
       isStreaming: true,
-      sendState: 'streaming',
+      sendState: "streaming",
       abortController,
       lastError: null,
     });
@@ -3559,7 +4127,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             tokenBatcher.push(token);
           },
           onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
-            get().updateMessageFields(params.assistantMessage.id, { tool_traces: toolTraces });
+            get().updateMessageFields(params.assistantMessage.id, {
+              tool_traces: toolTraces,
+            });
           },
           onComplete: (result) => {
             tokenBatcher.flushNow();
@@ -3569,19 +4139,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
               const conversations = state.conversations.map((conv) =>
                 conv.id === params.conversationId
                   ? {
-                    ...conv,
-                    last_message:
-                      result.visibleContent.slice(0, 100) +
-                      (result.visibleContent.length > 100 ? '...' : ''),
-                    updated_at: new Date().toISOString(),
-                  }
-                  : conv
+                      ...conv,
+                      last_message:
+                        result.visibleContent.slice(0, 100) +
+                        (result.visibleContent.length > 100 ? "..." : ""),
+                      updated_at: new Date().toISOString(),
+                    }
+                  : conv,
               );
               return {
                 conversations,
                 isLoading: false,
                 isStreaming: false,
-                sendState: 'idle',
+                sendState: "idle",
                 abortController: null,
               };
             });
@@ -3598,19 +4168,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const taskAfterStream = params.resolvedTaskId
               ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
               : undefined;
-            const parsedCompletion = parseMessageQuickReplies(result.visibleContent);
+            const parsedCompletion = parseMessageQuickReplies(
+              result.visibleContent,
+            );
             if (
-              params.modeAtSend === 'Implement' &&
+              params.modeAtSend === "Implement" &&
               params.resolvedTaskId &&
-              taskAfterStream?.status === 'InProgress' &&
+              taskAfterStream?.status === "InProgress" &&
               parsedCompletion.requiresUserReply
             ) {
-              void useTaskStore.getState().markTaskAwaitingResponse(params.resolvedTaskId);
+              void useTaskStore
+                .getState()
+                .markTaskAwaitingResponse(params.resolvedTaskId);
             }
             void syncMacroMetadataAfterStreamService({
               mode: params.modeAtSend,
               conversationId: params.conversationId,
-              trigger: 'send',
+              trigger: "send",
             });
             tokenBatcher.dispose();
           },
@@ -3618,18 +4192,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
             tokenBatcher.dispose();
             get().updateMessageContent(
               params.assistantMessage.id,
-              `Error: ${error.message}`
+              `Error: ${error.message}`,
             );
             set({
               isLoading: false,
               isStreaming: false,
-              sendState: 'error',
+              sendState: "error",
               lastError: error.message,
               abortController: null,
             });
           },
           onToolCall: (toolName, args) => {
-            return handleToolCall(params.conversationId, params.assistantMessage.id, toolName, args);
+            return handleToolCall(
+              params.conversationId,
+              params.assistantMessage.id,
+              toolName,
+              args,
+            );
           },
         });
       } catch (error) {
@@ -3637,12 +4216,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const normalized = toServiceError(error);
         get().updateMessageContent(
           params.assistantMessage.id,
-          `Error: ${normalized.message}`
+          `Error: ${normalized.message}`,
         );
         set({
           isLoading: false,
           isStreaming: false,
-          sendState: 'error',
+          sendState: "error",
           lastError: normalized.message,
           abortController: null,
         });
@@ -3652,11 +4231,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const persistAssistantStreamResult = (
     conversationId: string,
-    result: StreamCompletionResult
+    result: StreamCompletionResult,
   ) => {
     if (!tauriIpc.isTauriAvailable()) return;
     tauriIpc
-      .createMessage(conversationId, 'assistant', result.visibleContent, {
+      .createMessage(conversationId, "assistant", result.visibleContent, {
         toolTraces: result.toolTraces,
         hiddenContext: result.hiddenContext,
         providerInputItems: result.providerInputItems,
@@ -3666,9 +4245,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const logArchitectTranscriptEvent = (
-    level: 'info' | 'warn',
+    level: "info" | "warn",
     event: string,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
   ) => {
     const entry = {
       event,
@@ -3676,7 +4255,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ...payload,
     };
 
-    if (level === 'warn') {
+    if (level === "warn") {
       console.warn(JSON.stringify(entry));
       return;
     }
@@ -3686,11 +4265,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const applyConversationSelection = (
     conversationId: string,
-    mode: AppMode = useAppStore.getState().mode
+    mode: AppMode = useAppStore.getState().mode,
   ): boolean => {
     const appState = useAppStore.getState();
     const state = get();
-    const conversation = state.conversations.find((candidate) => candidate.id === conversationId);
+    const conversation = state.conversations.find(
+      (candidate) => candidate.id === conversationId,
+    );
     if (!conversation) {
       return false;
     }
@@ -3701,7 +4282,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         mode,
         appState.selectedGroupId,
         appState.selectedProjectId,
-        appState.selectedTaskId
+        appState.selectedTaskId,
       )
     ) {
       return false;
@@ -3716,7 +4297,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       conversations: current.conversations.map((candidate) =>
         candidate.id === conversationId
           ? { ...candidate, is_unread: false }
-          : candidate
+          : candidate,
       ),
     }));
     return true;
@@ -3739,47 +4320,53 @@ export const useChatStore = create<ChatStore>((set, get) => {
     groupId?: string | null;
     selectConversation?: boolean;
   }): Promise<Conversation> => {
-    const { title, taskId, projectId, groupId, selectConversation = true } = params;
+    const {
+      title,
+      taskId,
+      projectId,
+      groupId,
+      selectConversation = true,
+    } = params;
     const appState = useAppStore.getState();
     const mode = appState.mode;
     const effectiveTaskId =
-      mode === 'Implement'
-        ? appState.selectedTaskId ?? taskId
-        : taskId;
+      mode === "Implement" ? (appState.selectedTaskId ?? taskId) : taskId;
     const linkedTask = effectiveTaskId
       ? useTaskStore.getState().getTaskById(effectiveTaskId)
       : undefined;
     const resolvedTitle =
-      mode === 'Implement' && linkedTask?.title
+      mode === "Implement" && linkedTask?.title
         ? `Task - ${linkedTask.title}`
-        : title.trim() || 'New Conversation';
+        : title.trim() || "New Conversation";
     const resolvedTaskId =
-      mode === 'Chat'
-        ? null
-        : mode === 'Implement'
-          ? effectiveTaskId
-          : taskId;
+      mode === "Chat" ? null : mode === "Implement" ? effectiveTaskId : taskId;
     const resolvedProjectId =
-      mode === 'Chat'
+      mode === "Chat"
         ? null
-        : mode === 'Implement'
-        ? projectId ?? linkedTask?.project_id ?? appState.selectedProjectId ?? null
-        : projectId;
+        : mode === "Implement"
+          ? (projectId ??
+            linkedTask?.project_id ??
+            appState.selectedProjectId ??
+            null)
+          : projectId;
     const resolvedGroupId =
-      mode === 'Chat'
+      mode === "Chat"
         ? null
-        : mode === 'Implement'
-        ? groupId ?? appState.selectedGroupId ?? null
-        : groupId ?? null;
+        : mode === "Implement"
+          ? (groupId ?? appState.selectedGroupId ?? null)
+          : (groupId ?? null);
 
-    if (mode === 'Implement' && !resolvedTaskId) {
-      throw new Error('Implement conversations must be linked to a task.');
+    if (mode === "Implement" && !resolvedTaskId) {
+      throw new Error("Implement conversations must be linked to a task.");
     }
 
-    if (mode === 'Implement' && resolvedTaskId) {
+    if (mode === "Implement" && resolvedTaskId) {
       const existingConversation = getLatestConversationForTask(resolvedTaskId);
       if (existingConversation) {
-        if (selectConversation && applyConversationSelection(existingConversation.id, mode)) {
+        if (
+          selectConversation &&
+          applyConversationSelection(existingConversation.id, mode)
+        ) {
           persistSelectionForContext(mode, existingConversation.id);
           void applySelectionForContext(mode, existingConversation.id);
         }
@@ -3800,16 +4387,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
         newConversation = mapDbConversationToConversation(dbConversation);
       } catch (error) {
-        console.error('Failed to create conversation in DB:', error);
+        console.error("Failed to create conversation in DB:", error);
         newConversation = {
           id: `conv-${Date.now()}`,
           title: resolvedTitle,
-          description: '',
+          description: "",
           scope_mode: mode,
           task_id: resolvedTaskId,
           group_id: resolvedGroupId,
           project_id: resolvedProjectId,
-          last_message: '',
+          last_message: "",
           message_count: 0,
           updated_at: new Date().toISOString(),
           is_unread: true,
@@ -3819,12 +4406,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       newConversation = {
         id: `conv-${Date.now()}`,
         title: resolvedTitle,
-        description: '',
+        description: "",
         scope_mode: mode,
         task_id: resolvedTaskId,
         group_id: resolvedGroupId,
         project_id: resolvedProjectId,
-        last_message: '',
+        last_message: "",
         message_count: 0,
         updated_at: new Date().toISOString(),
         is_unread: true,
@@ -3835,7 +4422,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       conversations: [newConversation, ...state.conversations],
     }));
 
-    if (selectConversation && applyConversationSelection(newConversation.id, mode)) {
+    if (
+      selectConversation &&
+      applyConversationSelection(newConversation.id, mode)
+    ) {
       persistSelectionForContext(mode, newConversation.id);
       void applySelectionForContext(mode, newConversation.id);
     }
@@ -3845,23 +4435,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const appendImportedMessagesToState = (
     conversationId: string,
-    importedMessages: tauriIpc.DbMessage[] | TranscriptComparableMessage[]
+    importedMessages: tauriIpc.DbMessage[] | TranscriptComparableMessage[],
   ): number => {
     if (importedMessages.length === 0) {
       return 0;
     }
 
     const state = get();
-    const existingMessageIds = new Set(state.messages.map((message) => message.id));
-    const conversationById = new Map(state.conversations.map((conversation) => [conversation.id, conversation]));
+    const existingMessageIds = new Set(
+      state.messages.map((message) => message.id),
+    );
+    const conversationById = new Map(
+      state.conversations.map((conversation) => [
+        conversation.id,
+        conversation,
+      ]),
+    );
     const normalizedMessages = importedMessages
       .map((message) => {
-        if ('conversation_id' in message) {
+        if ("conversation_id" in message) {
           return mapDbMessageToChatMessage(message, conversationById);
         }
         return {
           id: message.id,
-          task_id: conversationById.get(conversationId)?.task_id ?? '',
+          task_id: conversationById.get(conversationId)?.task_id ?? "",
           conversation_id: conversationId,
           role: message.role,
           content: message.content,
@@ -3876,11 +4473,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const mergedMessages = [...state.messages, ...normalizedMessages];
     const latestImportedTimestamp =
-      normalizedMessages[normalizedMessages.length - 1]?.timestamp ?? new Date().toISOString();
+      normalizedMessages[normalizedMessages.length - 1]?.timestamp ??
+      new Date().toISOString();
     const conversationMeta = recalcConversation(
       conversationId,
       mergedMessages,
-      latestImportedTimestamp
+      latestImportedTimestamp,
     );
 
     set({
@@ -3888,7 +4486,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       conversations: state.conversations.map((conversation) =>
         conversation.id === conversationId
           ? { ...conversation, ...conversationMeta }
-          : conversation
+          : conversation,
       ),
     });
 
@@ -3897,7 +4495,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const importTranscriptSuffix = async (
     conversationId: string,
-    transcript: TranscriptComparableMessage[]
+    transcript: TranscriptComparableMessage[],
   ): Promise<number> => {
     if (transcript.length === 0) {
       return 0;
@@ -3912,11 +4510,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             role: message.role,
             content: message.content,
             created_at: message.createdAt,
-          }))
+          })),
         );
         return appendImportedMessagesToState(conversationId, imported);
       } catch (error) {
-        console.error('Failed to import architect transcript into DB:', error);
+        console.error("Failed to import architect transcript into DB:", error);
       }
     }
 
@@ -3927,7 +4525,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     branchName: string;
     planId: string;
     conversationId: string;
-    reason: ArchitectTranscriptState['relation'];
+    reason: ArchitectTranscriptState["relation"];
   }) => {
     try {
       await syncArchitectPlanChatFromConversation({
@@ -3935,12 +4533,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
         planId: params.planId,
         conversationId: params.conversationId,
       });
-      logArchitectTranscriptEvent('info', 'architect_transcript_metadata_synced', params);
+      logArchitectTranscriptEvent(
+        "info",
+        "architect_transcript_metadata_synced",
+        params,
+      );
     } catch (error) {
-      logArchitectTranscriptEvent('warn', 'architect_transcript_metadata_sync_failed', {
-        ...params,
-        error: toServiceError(error).message,
-      });
+      logArchitectTranscriptEvent(
+        "warn",
+        "architect_transcript_metadata_sync_failed",
+        {
+          ...params,
+          error: toServiceError(error).message,
+        },
+      );
     }
   };
 
@@ -3963,14 +4569,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
       sharedConversation = false,
     } = params;
     const existingConversation = plan.conversationId
-      ? get().conversations.find((conversation) => conversation.id === plan.conversationId) ?? null
+      ? (get().conversations.find(
+          (conversation) => conversation.id === plan.conversationId,
+        ) ?? null)
       : null;
-    const transcript = await getArchitectPlanChatMessages(targetBranch, plan.id).catch(() => []);
+    const transcript = await getArchitectPlanChatMessages(
+      targetBranch,
+      plan.id,
+    ).catch(() => []);
 
-    let conversation = existingConversation && !sharedConversation &&
-      getConversationScopeMode(existingConversation) === 'Architect'
-      ? existingConversation
-      : null;
+    let conversation =
+      existingConversation &&
+      !sharedConversation &&
+      getConversationScopeMode(existingConversation) === "Architect"
+        ? existingConversation
+        : null;
     let createdConversation = false;
     let restoredTranscript = false;
 
@@ -3985,39 +4598,48 @@ export const useChatStore = create<ChatStore>((set, get) => {
       createdConversation = true;
     }
 
-    const localMessages = getOrderedConversationMessages(conversation.id).map(toComparableChatMessage);
+    const localMessages = getOrderedConversationMessages(conversation.id).map(
+      toComparableChatMessage,
+    );
     const transcriptMessages = transcript.map((message) => ({
       id: message.id,
       role: message.role,
       content: message.content,
       createdAt: message.createdAt,
     }));
-    const transcriptState = compareArchitectTranscriptState(localMessages, transcriptMessages);
+    const transcriptState = compareArchitectTranscriptState(
+      localMessages,
+      transcriptMessages,
+    );
 
-    if (transcriptState.relation === 'db_prefix') {
+    if (transcriptState.relation === "db_prefix") {
       const importedCount = await importTranscriptSuffix(
         conversation.id,
-        transcriptMessages.slice(localMessages.length)
+        transcriptMessages.slice(localMessages.length),
       );
       restoredTranscript = importedCount > 0;
       if (importedCount > 0) {
-        logArchitectTranscriptEvent('info', 'architect_transcript_restored_suffix', {
-          planId: plan.id,
-          conversationId: conversation.id,
-          importedCount,
-          dbCount: transcriptState.dbCount,
-          metadataCount: transcriptState.metadataCount,
-        });
+        logArchitectTranscriptEvent(
+          "info",
+          "architect_transcript_restored_suffix",
+          {
+            planId: plan.id,
+            conversationId: conversation.id,
+            importedCount,
+            dbCount: transcriptState.dbCount,
+            metadataCount: transcriptState.metadataCount,
+          },
+        );
       }
-    } else if (transcriptState.relation === 'metadata_prefix') {
+    } else if (transcriptState.relation === "metadata_prefix") {
       await syncArchitectMetadataFromDb({
         branchName: targetBranch,
         planId: plan.id,
         conversationId: conversation.id,
         reason: transcriptState.relation,
       });
-    } else if (transcriptState.relation === 'diverged') {
-      logArchitectTranscriptEvent('warn', 'architect_transcript_diverged', {
+    } else if (transcriptState.relation === "diverged") {
+      logArchitectTranscriptEvent("warn", "architect_transcript_diverged", {
         planId: plan.id,
         conversationId: conversation.id,
         dbCount: transcriptState.dbCount,
@@ -4058,24 +4680,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (tauriIpc.isTauriAvailable()) {
       try {
         const snapshot = await tauriIpc.getChatSnapshot();
-        conversations = snapshot.conversations.map(mapDbConversationToConversation);
+        conversations = snapshot.conversations.map(
+          mapDbConversationToConversation,
+        );
         const conversationById = new Map(
-          conversations.map((conversation) => [conversation.id, conversation])
+          conversations.map((conversation) => [conversation.id, conversation]),
         );
         messages = snapshot.messages.map((message) =>
-          mapDbMessageToChatMessage(message, conversationById)
+          mapDbMessageToChatMessage(message, conversationById),
         );
       } catch (snapshotError) {
-        console.warn('Falling back to legacy chat hydration path:', snapshotError);
+        console.warn(
+          "Falling back to legacy chat hydration path:",
+          snapshotError,
+        );
         const dbConversations = await tauriIpc.listConversations();
         conversations = dbConversations.map(mapDbConversationToConversation);
         const conversationById = new Map(
-          conversations.map((conversation) => [conversation.id, conversation])
+          conversations.map((conversation) => [conversation.id, conversation]),
         );
         for (const conversation of dbConversations) {
           const dbMessages = await tauriIpc.listMessages(conversation.id);
           messages.push(
-            ...dbMessages.map((message) => mapDbMessageToChatMessage(message, conversationById))
+            ...dbMessages.map((message) =>
+              mapDbMessageToChatMessage(message, conversationById),
+            ),
           );
         }
       }
@@ -4087,7 +4716,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const existingMessageIds = new Set(messages.map((message) => message.id));
     const prunedImages: Record<string, MessageImageAttachment[]> = {};
     Object.entries(loadedImages).forEach(([messageId, items]) => {
-      if (existingMessageIds.has(messageId) && Array.isArray(items) && items.length > 0) {
+      if (
+        existingMessageIds.has(messageId) &&
+        Array.isArray(items) &&
+        items.length > 0
+      ) {
         prunedImages[messageId] = items;
       }
     });
@@ -4099,53 +4732,67 @@ export const useChatStore = create<ChatStore>((set, get) => {
       messageImagesByMessageId: prunedImages,
       selectedConversationId: null,
       selectedConversationIdsByMode: {},
-      hydrationStatus: 'ready',
-      restoreStatus: 'idle',
+      hydrationStatus: "ready",
+      restoreStatus: "idle",
       activeContextKey: null,
       selectionRequestId: 0,
       isLoading: false,
-      sendState: 'idle',
+      sendState: "idle",
       lastError: null,
     });
   };
 
   const resolveConversationForCurrentContext = async (
     requestId: number,
-    contextKey: ChatContextKey
+    contextKey: ChatContextKey,
   ): Promise<string | null> => {
     const isCurrentRequest = () => {
       const state = get();
-      return state.selectionRequestId === requestId && state.activeContextKey === contextKey;
+      return (
+        state.selectionRequestId === requestId &&
+        state.activeContextKey === contextKey
+      );
     };
 
     const appState = useAppStore.getState();
-    const { mode, selectedGroupId, selectedProjectId, selectedTaskId } = appState;
+    const { mode, selectedGroupId, selectedProjectId, selectedTaskId } =
+      appState;
     let state = get();
 
-    if (mode === 'Debug') {
+    if (mode === "Debug") {
       return getFallbackConversationIdForMode(
         state.conversations,
-        'Debug',
+        "Debug",
         selectedGroupId,
         selectedProjectId,
-        selectedTaskId
+        selectedTaskId,
       );
     }
 
-    if (mode === 'Architect' && appState.activeArchitectPlanId) {
+    if (mode === "Architect" && appState.activeArchitectPlanId) {
       try {
-        const targetBranch = resolveTargetBranch(appState.activePlanContext?.targetBranch);
-        const activePlan = await getArchitectPlan(targetBranch, appState.activeArchitectPlanId);
+        const targetBranch = resolveTargetBranch(
+          appState.activePlanContext?.targetBranch,
+        );
+        const activePlan = await getArchitectPlan(
+          targetBranch,
+          appState.activeArchitectPlanId,
+        );
         if (!isCurrentRequest()) return null;
-        if (activePlan && activePlan.status !== 'deleted') {
+        if (activePlan && activePlan.status !== "deleted") {
           const conversationId = activePlan.conversationId;
           let hasSharedConversation = false;
           if (conversationId) {
-            const plansSnapshot = await listArchitectPlans(targetBranch, true, true);
+            const plansSnapshot = await listArchitectPlans(
+              targetBranch,
+              true,
+              true,
+            );
             if (!isCurrentRequest()) return null;
             hasSharedConversation = plansSnapshot.plans.some(
               (candidate) =>
-                candidate.id !== activePlan.id && candidate.conversationId === conversationId
+                candidate.id !== activePlan.id &&
+                candidate.conversationId === conversationId,
             );
           }
           const fallbackProjectId =
@@ -4167,10 +4814,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
         }
       } catch (error) {
-        logArchitectTranscriptEvent('warn', 'architect_conversation_resolution_failed', {
-          planId: appState.activeArchitectPlanId,
-          error: toServiceError(error).message,
-        });
+        logArchitectTranscriptEvent(
+          "warn",
+          "architect_conversation_resolution_failed",
+          {
+            planId: appState.activeArchitectPlanId,
+            error: toServiceError(error).message,
+          },
+        );
       }
     }
 
@@ -4181,13 +4832,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     state = get();
 
     const localContextConversationId =
-      mode === 'Architect'
+      mode === "Architect"
         ? localProjectContext?.architectConversationId
-        : mode === 'Implement'
+        : mode === "Implement"
           ? localProjectContext?.implementConversationId
           : null;
     const localContextConversation = localContextConversationId
-      ? state.conversations.find((conversation) => conversation.id === localContextConversationId)
+      ? state.conversations.find(
+          (conversation) => conversation.id === localContextConversationId,
+        )
       : null;
 
     if (
@@ -4197,7 +4850,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         mode,
         selectedGroupId,
         selectedProjectId,
-        selectedTaskId
+        selectedTaskId,
       )
     ) {
       return localContextConversation.id;
@@ -4205,7 +4858,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const rememberedId = state.selectedConversationIdsByMode[mode] ?? null;
     const rememberedConversation = rememberedId
-      ? state.conversations.find((conversation) => conversation.id === rememberedId)
+      ? state.conversations.find(
+          (conversation) => conversation.id === rememberedId,
+        )
       : null;
 
     if (
@@ -4215,7 +4870,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         mode,
         selectedGroupId,
         selectedProjectId,
-        selectedTaskId
+        selectedTaskId,
       )
     ) {
       return rememberedConversation.id;
@@ -4226,24 +4881,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
       mode,
       selectedGroupId,
       selectedProjectId,
-      selectedTaskId
+      selectedTaskId,
     );
     if (fallbackConversationId) {
       return fallbackConversationId;
     }
 
-    if (mode === 'Architect' && selectedGroupId) {
-      const globalProject = getGlobalProjectById(appState.projectGroups, selectedGroupId);
+    if (mode === "Architect" && selectedGroupId) {
+      const globalProject = getGlobalProjectById(
+        appState.projectGroups,
+        selectedGroupId,
+      );
       const fallbackProjectId =
         getFocusedProjectForGroup(
           appState.projectGroups,
           selectedGroupId,
           selectedProjectId,
-          localProjectContext
+          localProjectContext,
         )?.id ??
         selectedProjectId ??
         null;
-      const title = globalProject ? `Architect - ${globalProject.name}` : 'Architect Session';
+      const title = globalProject
+        ? `Architect - ${globalProject.name}`
+        : "Architect Session";
       const created = await createConversationRecord({
         title,
         taskId: null,
@@ -4255,7 +4915,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return created.id;
     }
 
-    if (mode === 'Implement' && selectedTaskId) {
+    if (mode === "Implement" && selectedTaskId) {
       const task = useTaskStore.getState().getTaskById(selectedTaskId);
       const projectId =
         task?.project_id ??
@@ -4263,11 +4923,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           appState.projectGroups,
           selectedGroupId,
           selectedProjectId,
-          localProjectContext
+          localProjectContext,
         )?.id ??
         selectedProjectId;
       const created = await createConversationRecord({
-        title: task ? `Task - ${task.title}` : 'Task Session',
+        title: task ? `Task - ${task.title}` : "Task Session",
         taskId: selectedTaskId,
         projectId: projectId ?? null,
         groupId: selectedGroupId,
@@ -4287,13 +4947,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversations: [],
     selectedConversationId: null,
     selectedConversationIdsByMode: {},
-    hydrationStatus: 'idle',
-    restoreStatus: 'idle',
+    hydrationStatus: "idle",
+    restoreStatus: "idle",
     activeContextKey: null,
     selectionRequestId: 0,
     isLoading: false,
     isStreaming: false,
-    sendState: 'idle',
+    sendState: "idle",
     lastError: null,
     abortController: null,
     messageImagesByMessageId: {},
@@ -4304,13 +4964,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const conversations = state.conversations.map((conv) =>
           conv.id === message.conversation_id
             ? {
-              ...conv,
-              last_message: message.content,
-              message_count: conv.message_count + 1,
-              updated_at: new Date().toISOString(),
-              is_unread: message.role === 'assistant' ? true : conv.is_unread,
-            }
-            : conv
+                ...conv,
+                last_message: message.content,
+                message_count: conv.message_count + 1,
+                updated_at: new Date().toISOString(),
+                is_unread: message.role === "assistant" ? true : conv.is_unread,
+              }
+            : conv,
         );
         const nextMessages = [...state.messages, message];
         const nextConversationMessages = sortMessagesChronologically([
@@ -4335,16 +4995,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
     clearLastError: () =>
       set((state) => ({
         lastError: null,
-        sendState: state.isStreaming ? 'streaming' : 'idle',
+        sendState: state.isStreaming ? "streaming" : "idle",
       })),
 
     updateMessageContent: (messageId, content) =>
       set((state) => {
         const targetIndex = state.messageIndexById[messageId];
         const updatedMessage =
-          typeof targetIndex === 'number' ? state.messages[targetIndex] : undefined;
+          typeof targetIndex === "number"
+            ? state.messages[targetIndex]
+            : undefined;
         const parsedContent =
-          updatedMessage?.role === 'assistant'
+          updatedMessage?.role === "assistant"
             ? parseMessageQuickReplies(content)
             : {
                 content,
@@ -4352,7 +5014,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 allowFreeResponse: undefined,
                 requiresUserReply: false,
               };
-        if (!updatedMessage || typeof targetIndex !== 'number') {
+        if (!updatedMessage || typeof targetIndex !== "number") {
           return state;
         }
 
@@ -4366,28 +5028,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         const updatedConversationMessages = getConversationMessagesFromState(
           state,
-          updatedMessage.conversation_id
+          updatedMessage.conversation_id,
         ).map((message) =>
           message.id === messageId
             ? {
-              ...message,
-              content: parsedContent.content,
-              choices: parsedContent.choices,
-              allow_free_response: parsedContent.allowFreeResponse,
-            }
-            : message
+                ...message,
+                content: parsedContent.content,
+                choices: parsedContent.choices,
+                allow_free_response: parsedContent.allowFreeResponse,
+              }
+            : message,
         );
 
         const conversationMeta = {
           message_count: updatedConversationMessages.length,
-          last_message: updatedConversationMessages[updatedConversationMessages.length - 1]?.content ?? '',
+          last_message:
+            updatedConversationMessages[updatedConversationMessages.length - 1]
+              ?.content ?? "",
           updated_at: new Date().toISOString(),
         };
 
         const conversations = state.conversations.map((conv) =>
           conv.id === updatedMessage.conversation_id
             ? { ...conv, ...conversationMeta }
-            : conv
+            : conv,
         );
 
         return {
@@ -4404,7 +5068,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     updateMessageFields: (messageId, patch) =>
       set((state) => {
         const targetIndex = state.messageIndexById[messageId];
-        if (typeof targetIndex !== 'number') {
+        if (typeof targetIndex !== "number") {
           return state;
         }
 
@@ -4418,10 +5082,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: updatedMessages,
           messagesByConversationId: {
             ...state.messagesByConversationId,
-            [updatedMessages[targetIndex]!.conversation_id]: getConversationMessagesFromState(
-              state,
-              updatedMessages[targetIndex]!.conversation_id
-            ).map((message) => (message.id === messageId ? updatedMessages[targetIndex]! : message)),
+            [updatedMessages[targetIndex]!.conversation_id]:
+              getConversationMessagesFromState(
+                state,
+                updatedMessages[targetIndex]!.conversation_id,
+              ).map((message) =>
+                message.id === messageId
+                  ? updatedMessages[targetIndex]!
+                  : message,
+              ),
           },
           messageIndexById: state.messageIndexById,
         };
@@ -4446,12 +5115,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: updatedMessages,
           messagesByConversationId: {
             ...state.messagesByConversationId,
-            [updatedLastMessage.conversation_id]: getConversationMessagesFromState(
-              state,
-              updatedLastMessage.conversation_id
-            ).map((message) =>
-              message.id === updatedLastMessage.id ? updatedLastMessage : message
-            ),
+            [updatedLastMessage.conversation_id]:
+              getConversationMessagesFromState(
+                state,
+                updatedLastMessage.conversation_id,
+              ).map((message) =>
+                message.id === updatedLastMessage.id
+                  ? updatedLastMessage
+                  : message,
+              ),
           },
           messageIndexById: state.messageIndexById,
         };
@@ -4476,12 +5148,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: updatedMessages,
           messagesByConversationId: {
             ...state.messagesByConversationId,
-            [updatedLastMessage.conversation_id]: getConversationMessagesFromState(
-              state,
-              updatedLastMessage.conversation_id
-            ).map((message) =>
-              message.id === updatedLastMessage.id ? updatedLastMessage : message
-            ),
+            [updatedLastMessage.conversation_id]:
+              getConversationMessagesFromState(
+                state,
+                updatedLastMessage.conversation_id,
+              ).map((message) =>
+                message.id === updatedLastMessage.id
+                  ? updatedLastMessage
+                  : message,
+              ),
           },
           messageIndexById: state.messageIndexById,
         };
@@ -4490,7 +5165,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     appendToMessage: (messageId, tokenChunk) =>
       set((state) => {
         const targetIndex = state.messageIndexById[messageId];
-        if (typeof targetIndex !== 'number') {
+        if (typeof targetIndex !== "number") {
           return state;
         }
 
@@ -4510,9 +5185,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             ...state.messagesByConversationId,
             [targetMessage.conversation_id]: getConversationMessagesFromState(
               state,
-              targetMessage.conversation_id
+              targetMessage.conversation_id,
             ).map((message) =>
-              message.id === messageId ? updatedMessages[targetIndex]! : message
+              message.id === messageId
+                ? updatedMessages[targetIndex]!
+                : message,
             ),
           },
           messageIndexById: state.messageIndexById,
@@ -4544,7 +5221,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     addComposerContextRef: (ref) =>
       set((state) => {
         const exists = state.composerContextRefs.some(
-          (r) => r.id === ref.id && r.kind === ref.kind
+          (r) => r.id === ref.id && r.kind === ref.kind,
         );
         if (exists) return state;
         return { composerContextRefs: [...state.composerContextRefs, ref] };
@@ -4553,7 +5230,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     removeComposerContextRef: (id, kind) =>
       set((state) => ({
         composerContextRefs: state.composerContextRefs.filter(
-          (r) => !(r.id === id && r.kind === kind)
+          (r) => !(r.id === id && r.kind === kind),
         ),
       })),
 
@@ -4570,7 +5247,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
               ? conversation.group_id
               : null,
           project_id:
-            conversation.project_id && validProjectIdSet.has(conversation.project_id)
+            conversation.project_id &&
+            validProjectIdSet.has(conversation.project_id)
               ? conversation.project_id
               : null,
         })),
@@ -4613,9 +5291,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       if (ensuredConversation.conversationId) {
         const mode = useAppStore.getState().mode;
-        if (applyConversationSelection(ensuredConversation.conversationId, mode)) {
+        if (
+          applyConversationSelection(ensuredConversation.conversationId, mode)
+        ) {
           persistSelectionForContext(mode, ensuredConversation.conversationId);
-          await applySelectionForContext(mode, ensuredConversation.conversationId);
+          await applySelectionForContext(
+            mode,
+            ensuredConversation.conversationId,
+          );
         }
       }
 
@@ -4633,26 +5316,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set({
         selectionRequestId: requestId,
         activeContextKey: contextKey,
-        restoreStatus: 'resolving',
+        restoreStatus: "resolving",
         lastError: null,
       });
 
       const isCurrentRequest = () => {
         const state = get();
-        return state.selectionRequestId === requestId && state.activeContextKey === contextKey;
+        return (
+          state.selectionRequestId === requestId &&
+          state.activeContextKey === contextKey
+        );
       };
 
       try {
-        const conversationId = await resolveConversationForCurrentContext(requestId, contextKey);
+        const conversationId = await resolveConversationForCurrentContext(
+          requestId,
+          contextKey,
+        );
         if (!isCurrentRequest()) {
           return get().selectedConversationId;
         }
 
-        if (conversationId && applyConversationSelection(conversationId, mode)) {
+        if (
+          conversationId &&
+          applyConversationSelection(conversationId, mode)
+        ) {
           persistSelectionForContext(mode, conversationId);
           await applySelectionForContext(mode, conversationId);
           if (isCurrentRequest()) {
-            set({ restoreStatus: 'ready', lastError: null });
+            set({ restoreStatus: "ready", lastError: null });
           }
           return conversationId;
         }
@@ -4660,14 +5352,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         clearConversationSelection(mode);
         await applySelectionForContext(mode, null);
         if (isCurrentRequest()) {
-          set({ restoreStatus: 'ready', lastError: null });
+          set({ restoreStatus: "ready", lastError: null });
         }
         return null;
       } catch (error) {
         const normalized = toServiceError(error);
         if (isCurrentRequest()) {
           set({
-            restoreStatus: 'error',
+            restoreStatus: "error",
             lastError: normalized.message,
           });
         }
@@ -4681,15 +5373,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       set((state) => ({
         conversations: state.conversations.map((conv) =>
-          conv.id === conversationId ? { ...conv, title } : conv
+          conv.id === conversationId ? { ...conv, title } : conv,
         ),
       }));
     },
 
     deleteConversation: async (conversationId, confirmation) => {
-      const conversation = get().conversations.find((candidate) => candidate.id === conversationId);
+      const conversation = get().conversations.find(
+        (candidate) => candidate.id === conversationId,
+      );
       if (!conversation) {
-        throw new Error('Conversation introuvable.');
+        throw new Error("Conversation introuvable.");
       }
       const linkedTask = conversation.task_id
         ? useTaskStore.getState().getTaskById(conversation.task_id)
@@ -4697,40 +5391,48 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const conversationScopeMode = getConversationScopeMode(conversation);
 
-      if (conversationScopeMode === 'Implement') {
-        if (confirmation?.mode !== 'implement') {
+      if (conversationScopeMode === "Implement") {
+        if (confirmation?.mode !== "implement") {
           throw new Error(
-            'Suppression bloquée: une conversation Implement nécessite une confirmation explicite.'
+            "Suppression bloquée: une conversation Implement nécessite une confirmation explicite.",
           );
         }
-      } else if (conversationScopeMode === 'Architect') {
+      } else if (conversationScopeMode === "Architect") {
         const appState = useAppStore.getState();
         const projectName =
           (conversation.group_id
-            ? getGlobalProjectById(appState.projectGroups, conversation.group_id)?.name?.trim()
+            ? getGlobalProjectById(
+                appState.projectGroups,
+                conversation.group_id,
+              )?.name?.trim()
             : null) ||
           (conversation.project_id
             ? appState.getProjectById(conversation.project_id)?.name?.trim()
             : null) ||
           null;
 
-        if (confirmation?.mode !== 'architect') {
+        if (confirmation?.mode !== "architect") {
           throw new Error(
-            'Suppression bloquée: une conversation Architect nécessite de confirmer le nom du projet.'
+            "Suppression bloquée: une conversation Architect nécessite de confirmer le nom du projet.",
           );
         }
 
-        if (projectName && confirmation.typedProjectName?.trim() !== projectName) {
-          throw new Error('Le nom du projet ne correspond pas.');
+        if (
+          projectName &&
+          confirmation.typedProjectName?.trim() !== projectName
+        ) {
+          throw new Error("Le nom du projet ne correspond pas.");
         }
-      } else if (confirmation && confirmation.mode !== 'chat') {
-        throw new Error('Type de confirmation invalide pour une conversation Chat.');
+      } else if (confirmation && confirmation.mode !== "chat") {
+        throw new Error(
+          "Type de confirmation invalide pour une conversation Chat.",
+        );
       }
 
       if (
         linkedTask &&
-        linkedTask.task_source === 'standalone' &&
-        linkedTask.standalone_kind === 'manual_feature' &&
+        linkedTask.task_source === "standalone" &&
+        linkedTask.standalone_kind === "manual_feature" &&
         linkedTask.draft
       ) {
         await useTaskStore.getState().deleteManualFeatureDraft(linkedTask.id);
@@ -4751,15 +5453,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       const conversationsById = new Map(
-        get().conversations.map((conversation) => [conversation.id, conversation])
+        get().conversations.map((conversation) => [
+          conversation.id,
+          conversation,
+        ]),
       );
       uniqueIds.forEach((conversationId) => {
         const conversation = conversationsById.get(conversationId);
         if (!conversation) {
-          throw new Error('Conversation introuvable.');
+          throw new Error("Conversation introuvable.");
         }
-        if (getConversationScopeMode(conversation) !== 'Chat') {
-          throw new Error('La suppression groupée est réservée aux conversations Chat.');
+        if (getConversationScopeMode(conversation) !== "Chat") {
+          throw new Error(
+            "La suppression groupée est réservée aux conversations Chat.",
+          );
         }
       });
 
@@ -4783,7 +5490,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     markAsRead: (conversationId) =>
       set((state) => ({
         conversations: state.conversations.map((conv) =>
-          conv.id === conversationId ? { ...conv, is_unread: false } : conv
+          conv.id === conversationId ? { ...conv, is_unread: false } : conv,
         ),
       })),
 
@@ -4796,27 +5503,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     sendMessage: async ({ conversationId, content, taskId, images }) => {
-      if (get().sendState === 'preparing') {
-        const error = buildSendError('A message is already being prepared.');
-        set({ sendState: 'error', lastError: error.message });
+      if (get().sendState === "preparing") {
+        const error = buildSendError("A message is already being prepared.");
+        set({ sendState: "error", lastError: error.message });
         throw error;
       }
 
-      set({ sendState: 'preparing', lastError: null });
+      set({ sendState: "preparing", lastError: null });
 
       try {
         const providerState = useProviderStore.getState();
-        const { selectedProviderId, selectedModelId, selectedReasoningEffort, providerConfigs } = providerState;
+        const {
+          selectedProviderId,
+          selectedModelId,
+          selectedReasoningEffort,
+          providerConfigs,
+        } = providerState;
         const modeAtSend = useAppStore.getState().mode;
         persistSelectionForContext(modeAtSend, conversationId);
 
         if (!selectedProviderId || !selectedModelId) {
-          throw buildSendError('Select a provider and model before sending a message.');
+          throw buildSendError(
+            "Select a provider and model before sending a message.",
+          );
         }
 
-        const providerConfig = providerConfigs.find((p) => p.id === selectedProviderId);
+        const providerConfig = providerConfigs.find(
+          (p) => p.id === selectedProviderId,
+        );
         if (!providerConfig) {
-          throw buildSendError('Provider configuration not found.');
+          throw buildSendError("Provider configuration not found.");
         }
         const resolvedApiKey =
           providerConfig.isLocal || providerHasAuthSession(providerConfig)
@@ -4825,32 +5541,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const providerConfigForUse = {
           ...providerConfig,
           apiKey: resolvedApiKey,
-          apiKeyLoaded: providerConfig.apiKeyLoaded || resolvedApiKey !== undefined,
+          apiKeyLoaded:
+            providerConfig.apiKeyLoaded || resolvedApiKey !== undefined,
         };
 
         const conversationTaskId =
-          get().conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null;
+          get().conversations.find(
+            (conversation) => conversation.id === conversationId,
+          )?.task_id ?? null;
         const selectedTaskIdForMode =
-          modeAtSend === 'Implement'
-            ? useAppStore.getState().selectedTaskId ?? ''
-            : '';
+          modeAtSend === "Implement"
+            ? (useAppStore.getState().selectedTaskId ?? "")
+            : "";
         const resolvedTaskId =
-          modeAtSend === 'Chat'
-            ? ''
-            : taskId ?? conversationTaskId ?? selectedTaskIdForMode;
+          modeAtSend === "Chat"
+            ? ""
+            : (taskId ?? conversationTaskId ?? selectedTaskIdForMode);
         let taskForSend = resolvedTaskId
           ? useTaskStore.getState().getTaskById(resolvedTaskId)
           : undefined;
         let finalizedManualFeatureDraft = false;
 
-        if (modeAtSend === 'Implement') {
+        if (modeAtSend === "Implement") {
           if (!resolvedTaskId) {
-            throw buildSendError('Select a task before sending a message in Implement mode.');
+            throw buildSendError(
+              "Select a task before sending a message in Implement mode.",
+            );
           }
 
           if (
-            taskForSend?.task_source === 'standalone' &&
-            taskForSend.standalone_kind === 'manual_feature' &&
+            taskForSend?.task_source === "standalone" &&
+            taskForSend.standalone_kind === "manual_feature" &&
             taskForSend.draft === true
           ) {
             finalizedManualFeatureDraft = true;
@@ -4867,12 +5588,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
           }
 
-          taskForSend = await assertImplementTaskReadyForSend(resolvedTaskId) ?? taskForSend;
+          taskForSend =
+            (await assertImplementTaskReadyForSend(resolvedTaskId)) ??
+            taskForSend;
         }
 
-        const userMessageCountBeforeSend = getOrderedConversationMessages(conversationId).filter(
-          (message) => message.role === 'user'
-        ).length;
+        const userMessageCountBeforeSend = getOrderedConversationMessages(
+          conversationId,
+        ).filter((message) => message.role === "user").length;
 
         const userMessage = await buildUserMessageForSend({
           conversationId,
@@ -4889,11 +5612,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
           const appState = useAppStore.getState();
           const architectPlan =
-            modeAtSend === 'Architect' && appState.activeArchitectPlanId
+            modeAtSend === "Architect" && appState.activeArchitectPlanId
               ? {
-                planId: appState.activeArchitectPlanId,
-                targetBranch: resolveTargetBranch(appState.activePlanContext?.targetBranch),
-              }
+                  planId: appState.activeArchitectPlanId,
+                  targetBranch: resolveTargetBranch(
+                    appState.activePlanContext?.targetBranch,
+                  ),
+                }
               : undefined;
 
           void maybeGenerateConversationMetadata({
@@ -4913,8 +5638,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           id: `msg-${Date.now()}-assistant`,
           task_id: resolvedTaskId,
           conversation_id: conversationId,
-          role: 'assistant',
-          content: '',
+          role: "assistant",
+          content: "",
           tool_traces: [],
           timestamp: new Date().toISOString(),
         };
@@ -4952,11 +5677,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
             webSearchOptions: streamLaunch.webSearchOptions,
           });
         } catch (error) {
-          applyAssistantLaunchError(assistantMessage.id, error, { setSendState: true });
+          applyAssistantLaunchError(assistantMessage.id, error, {
+            setSendState: true,
+          });
         }
 
         return {
-          status: 'sent',
+          status: "sent",
           conversationId,
           userMessageId: userMessage.id,
           assistantMessageId: assistantMessage.id,
@@ -4964,7 +5691,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } catch (error) {
         const normalized = toServiceError(error);
         set({
-          sendState: 'error',
+          sendState: "error",
           lastError: normalized.message,
           isLoading: false,
           isStreaming: false,
@@ -4981,30 +5708,47 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       // Cancel the active reader and stream
       cancelStream();
-      set({ isStreaming: false, isLoading: false, sendState: 'idle', abortController: null });
+      set({
+        isStreaming: false,
+        isLoading: false,
+        sendState: "idle",
+        abortController: null,
+      });
     },
 
     editMessage: async (messageId, newContent) => {
-      const { selectedProviderId, selectedModelId, selectedReasoningEffort, providerConfigs } = useProviderStore.getState();
+      const {
+        selectedProviderId,
+        selectedModelId,
+        selectedReasoningEffort,
+        providerConfigs,
+      } = useProviderStore.getState();
       const modeAtEdit = useAppStore.getState().mode;
       if (!selectedProviderId || !selectedModelId) {
-        set({ lastError: 'Select a provider and model before sending a message.' });
+        set({
+          lastError: "Select a provider and model before sending a message.",
+        });
         return;
       }
 
-      const providerConfig = providerConfigs.find((p) => p.id === selectedProviderId);
+      const providerConfig = providerConfigs.find(
+        (p) => p.id === selectedProviderId,
+      );
       if (!providerConfig) {
-        set({ lastError: 'Provider configuration not found.' });
+        set({ lastError: "Provider configuration not found." });
         return;
       }
       const resolvedApiKey =
         providerConfig.isLocal || providerHasAuthSession(providerConfig)
           ? providerConfig.apiKey
-          : await useProviderStore.getState().resolveProviderApiKey(selectedProviderId);
+          : await useProviderStore
+              .getState()
+              .resolveProviderApiKey(selectedProviderId);
       const providerConfigForUse = {
         ...providerConfig,
         apiKey: resolvedApiKey,
-        apiKeyLoaded: providerConfig.apiKeyLoaded || resolvedApiKey !== undefined,
+        apiKeyLoaded:
+          providerConfig.apiKeyLoaded || resolvedApiKey !== undefined,
       };
 
       const state = get();
@@ -5012,7 +5756,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!target) return;
 
       const conversationId = target.conversation_id;
-      if (modeAtEdit === 'Implement' && target.task_id) {
+      if (modeAtEdit === "Implement" && target.task_id) {
         try {
           await assertImplementTaskReadyForSend(target.task_id);
         } catch (error) {
@@ -5023,47 +5767,63 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       if (tauriIpc.isTauriAvailable()) {
-        tauriIpc.deleteMessagesAfter(conversationId, messageId).catch(console.error);
+        tauriIpc
+          .deleteMessagesAfter(conversationId, messageId)
+          .catch(console.error);
       }
 
       set((current) => {
         const updatedMessages = current.messages.map((message) =>
-          message.id === messageId ? { ...message, content: newContent } : message
+          message.id === messageId
+            ? { ...message, content: newContent }
+            : message,
         );
 
         const conversationMessages = updatedMessages
           .filter((message) => message.conversation_id === conversationId)
-          .sort((a, b) =>
-            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          .sort(
+            (a, b) =>
+              new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
           );
 
         const targetIndex = conversationMessages.findIndex(
-          (message) => message.id === messageId
+          (message) => message.id === messageId,
         );
 
         const allowedIds = new Set(
-          conversationMessages.slice(0, targetIndex + 1).map((message) => message.id)
+          conversationMessages
+            .slice(0, targetIndex + 1)
+            .map((message) => message.id),
         );
 
         const trimmedMessages = updatedMessages.filter((message) =>
-          message.conversation_id === conversationId ? allowedIds.has(message.id) : true
+          message.conversation_id === conversationId
+            ? allowedIds.has(message.id)
+            : true,
         );
 
-        const conversationMeta = recalcConversation(conversationId, trimmedMessages);
+        const conversationMeta = recalcConversation(
+          conversationId,
+          trimmedMessages,
+        );
 
         const conversations = current.conversations.map((conv) =>
-          conv.id === conversationId ? { ...conv, ...conversationMeta } : conv
+          conv.id === conversationId ? { ...conv, ...conversationMeta } : conv,
         );
 
         const keptConversationMessageIds = new Set(
           trimmedMessages
             .filter((message) => message.conversation_id === conversationId)
-            .map((message) => message.id)
+            .map((message) => message.id),
         );
         const nextImages = { ...current.messageImagesByMessageId };
         Object.keys(nextImages).forEach((messageIdKey) => {
           const message = trimmedMessages.find((m) => m.id === messageIdKey);
-          if (!message || (message.conversation_id === conversationId && !keptConversationMessageIds.has(messageIdKey))) {
+          if (
+            !message ||
+            (message.conversation_id === conversationId &&
+              !keptConversationMessageIds.has(messageIdKey))
+          ) {
             delete nextImages[messageIdKey];
           }
         });
@@ -5079,20 +5839,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       // Keep manual context, but drop source passages produced by assistant messages that were trimmed.
       const keptConversationMessageIds = get()
-        .messages
-        .filter((message) => message.conversation_id === conversationId)
+        .messages.filter(
+          (message) => message.conversation_id === conversationId,
+        )
         .map((message) => message.id);
       useCitationsStore
         .getState()
-        .pruneConversationSourceCitations(conversationId, keptConversationMessageIds);
+        .pruneConversationSourceCitations(
+          conversationId,
+          keptConversationMessageIds,
+        );
 
-      const currentOrderedMessages = getOrderedConversationMessages(conversationId);
-      const existingCompactionState = await getConversationCompactionState(conversationId);
+      const currentOrderedMessages =
+        getOrderedConversationMessages(conversationId);
+      const existingCompactionState =
+        await getConversationCompactionState(conversationId);
       if (
         invalidateCompactionFromMessage(
           existingCompactionState,
           currentOrderedMessages,
-          messageId
+          messageId,
         )
       ) {
         await deleteConversationCompactionState(conversationId);
@@ -5102,8 +5868,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         id: `msg-${Date.now()}-assistant`,
         task_id: target.task_id,
         conversation_id: conversationId,
-        role: 'assistant',
-        content: '',
+        role: "assistant",
+        content: "",
         tool_traces: [],
         timestamp: new Date().toISOString(),
       };
@@ -5125,7 +5891,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           assistantMessage,
           conversationId,
           modeAtSend: modeAtEdit,
-          resolvedTaskId: target.task_id ?? '',
+          resolvedTaskId: target.task_id ?? "",
           selectedProviderId,
           selectedModelId,
           selectedReasoningEffort,
@@ -5148,16 +5914,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
     initialize: async () => {
       set({
         isLoading: true,
-        sendState: 'idle',
+        sendState: "idle",
         lastError: null,
-        hydrationStatus: 'hydrating',
-        restoreStatus: 'idle',
+        hydrationStatus: "hydrating",
+        restoreStatus: "idle",
         activeContextKey: null,
         selectionRequestId: 0,
       });
       try {
         aiSelections = normalizeAIContextSelections(
-          await loadPreference<PersistedAIContextSelections>(PREF_KEYS.AI_CONTEXT_SELECTIONS)
+          await loadPreference<PersistedAIContextSelections>(
+            PREF_KEYS.AI_CONTEXT_SELECTIONS,
+          ),
         );
         aiSelectionsLoaded = true;
         ensureProviderSelectionSync();
@@ -5171,7 +5939,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } catch (error) {
         hydrationPromise = null;
         const normalized = toServiceError(error);
-        console.error('Failed to initialize chat store:', normalized.message);
+        console.error("Failed to initialize chat store:", normalized.message);
         const messageImagesByMessageId = loadMessageImagesFromStorage();
         set({
           conversations: [],
@@ -5179,12 +5947,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messageImagesByMessageId,
           selectedConversationId: null,
           selectedConversationIdsByMode: {},
-          hydrationStatus: 'error',
-          restoreStatus: 'error',
+          hydrationStatus: "error",
+          restoreStatus: "error",
           activeContextKey: null,
           selectionRequestId: 0,
           isLoading: false,
-          sendState: 'error',
+          sendState: "error",
           lastError: normalized.message,
         });
 

@@ -27,6 +27,7 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "grep",
         "write",
         "edit",
+        "apply_patch",
         "git_status",
         "git_log",
         "git_branch_list",
@@ -83,6 +84,7 @@ fn implement_and_debug_allowed_tool_ids() -> &'static [&'static str] {
         "grep",
         "write",
         "edit",
+        "apply_patch",
         "git_status",
         "git_log",
         "git_branch_list",
@@ -102,7 +104,7 @@ fn implement_and_debug_allowed_tool_ids() -> &'static [&'static str] {
 }
 
 fn is_write_tool(tool_id: &str) -> bool {
-    matches!(tool_id, "write" | "edit")
+    matches!(tool_id, "write" | "edit" | "apply_patch")
 }
 
 fn normalize_relative_path_parts(raw_path: &str) -> Option<Vec<String>> {
@@ -228,13 +230,21 @@ pub fn validate_tool_execution(
                 }
             }
             None => {
+                if tool_id == "apply_patch" {
+                    return ToolValidationResult {
+                        allowed: true,
+                        reason: None,
+                        enforce_macro_only_writes,
+                    };
+                }
                 return ToolValidationResult {
                     allowed: false,
                     reason: Some(
-                        "Architect mode requires a target path for write/edit tools".to_string(),
+                        "Architect mode requires a target path for write/edit/apply_patch tools"
+                            .to_string(),
                     ),
                     enforce_macro_only_writes,
-                }
+                };
             }
         }
     }
