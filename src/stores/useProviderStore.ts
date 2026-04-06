@@ -2,7 +2,11 @@ import { create } from 'zustand';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { ProviderConfig, AIProvider, AIModel, ProviderSettings, ReasoningEffort } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
-import { fetchModelsFromProvider, testProviderConnection } from '../services/providerApi';
+import {
+  fetchModelsFromProvider,
+  probeModelsEndpoint,
+  probeProviderReachability,
+} from '../services/providerApi';
 import { findProviderConfig, loadAIConfigFile } from '../services/aiConfig';
 import { loadPreference, PREF_KEYS } from '../services/preferences';
 import { AppMode } from '../types';
@@ -308,6 +312,138 @@ const toProviderStatus = (
   return connectionStatus === 'online' ? 'online' : 'offline';
 };
 
+export type ProviderReachabilityStatus =
+  | 'unknown'
+  | 'checking'
+  | 'reachable'
+  | 'unreachable'
+  | 'probe_unsupported';
+
+export type ProviderReachabilityVerifiedBy =
+  | 'models_endpoint'
+  | 'chat_completions_probe'
+  | 'chat_completion_runtime'
+  | 'linked_auth';
+
+export interface ProviderReachabilityRecord {
+  status: ProviderReachabilityStatus;
+  lastVerifiedAt?: string;
+  lastVerifiedBy?: ProviderReachabilityVerifiedBy;
+  lastError?: string;
+  modelIdUsed?: string;
+}
+
+export interface ProviderConnectionTestResult {
+  success: boolean;
+  message: string;
+  status: ProviderReachabilityStatus;
+  source?: ProviderReachabilityVerifiedBy;
+  modelIdUsed?: string;
+}
+
+const toLegacyConnectionStatus = (
+  status: ProviderReachabilityStatus
+): 'online' | 'offline' | 'checking' | undefined => {
+  if (status === 'reachable') return 'online';
+  if (status === 'unreachable') return 'offline';
+  if (status === 'checking') return 'checking';
+  return undefined;
+};
+
+const omitRuntimeStateKey = <T extends Record<string, unknown>>(input: T, providerId: string): T => {
+  const { [providerId]: _removed, ...rest } = input;
+  return rest as T;
+};
+
+const buildReachabilityRecord = (params: {
+  status: ProviderReachabilityStatus;
+  lastVerifiedBy?: ProviderReachabilityVerifiedBy;
+  lastError?: string;
+  modelIdUsed?: string;
+}): ProviderReachabilityRecord => ({
+  status: params.status,
+  lastVerifiedAt:
+    params.status === 'checking' || params.status === 'unknown'
+      ? undefined
+      : new Date().toISOString(),
+  lastVerifiedBy: params.lastVerifiedBy,
+  lastError: params.lastError,
+  modelIdUsed: params.modelIdUsed,
+});
+
+const applyReachabilityState = <
+  T extends Pick<ProviderStore, 'providerReachabilityById' | 'connectionStatus' | 'providers'>
+>(
+  state: T,
+  providerId: string,
+  next: ProviderReachabilityRecord | undefined
+): Pick<ProviderStore, 'providerReachabilityById' | 'connectionStatus' | 'providers'> => {
+  const providerReachabilityById = next
+    ? { ...state.providerReachabilityById, [providerId]: next }
+    : omitRuntimeStateKey(state.providerReachabilityById, providerId);
+  const legacyStatus = next ? toLegacyConnectionStatus(next.status) : undefined;
+  const connectionStatus = legacyStatus
+    ? { ...state.connectionStatus, [providerId]: legacyStatus }
+    : omitRuntimeStateKey(state.connectionStatus, providerId);
+
+  return {
+    providerReachabilityById,
+    connectionStatus,
+    providers: state.providers.map((provider) =>
+      provider.id === providerId
+        ? {
+            ...provider,
+            status: next?.status === 'reachable' ? 'online' : 'offline',
+          }
+        : provider
+    ),
+  };
+};
+
+const withReachabilityRecord = <
+  T extends Pick<ProviderStore, 'providerReachabilityById' | 'connectionStatus' | 'providers'>
+>(
+  state: T,
+  providerId: string,
+  params: Parameters<typeof buildReachabilityRecord>[0]
+): Pick<ProviderStore, 'providerReachabilityById' | 'connectionStatus' | 'providers'> =>
+  applyReachabilityState(state, providerId, buildReachabilityRecord(params));
+
+const clearProviderReachability = <
+  T extends Pick<ProviderStore, 'providerReachabilityById' | 'connectionStatus' | 'providers'>
+>(
+  state: T,
+  providerId: string
+): Pick<ProviderStore, 'providerReachabilityById' | 'connectionStatus' | 'providers'> =>
+  applyReachabilityState(state, providerId, undefined);
+
+const invalidateRuntimeProviderReachability = <
+  T extends Pick<ProviderStore, 'providerReachabilityById' | 'connectionStatus' | 'providers'>
+>(
+  state: T,
+  providerId: string,
+  providerType?: string | null
+): Partial<Pick<ProviderStore, 'providerReachabilityById' | 'connectionStatus' | 'providers'>> =>
+  isLinkedProviderType(providerType) ? {} : clearProviderReachability(state, providerId);
+
+const getReachabilityProbeModels = (params: {
+  providerId: string;
+  selectedProviderId: string | null;
+  selectedModelId: string | null;
+  modelsByProvider: Record<string, AIModel[]>;
+}): { preferredModelId: string | null; modelIds: string[] } => {
+  const models = (params.modelsByProvider[params.providerId] || []).filter(
+    (model) => model.isEnabled !== false
+  );
+  const preferredModelId =
+    params.selectedProviderId === params.providerId ? params.selectedModelId : null;
+  const modelIds = models
+    .map((model) => model.id)
+    .filter((modelId) => modelId !== preferredModelId);
+
+  return { preferredModelId, modelIds };
+};
+
 const getErrorMessage = (error: unknown, fallback: string): string => {
   if (error instanceof Error && error.message.trim()) {
     return error.message;
@@ -434,6 +570,7 @@ interface ProviderStore {
   isLoadingModels: boolean;
   lastError: string | null;
   connectionStatus: Record<string, 'online' | 'offline' | 'checking'>;
+  providerReachabilityById: Record<string, ProviderReachabilityRecord | undefined>;
   reasoningUnsupportedModelKeys: Record<string, boolean>;
   authErrorsByProvider: Record<string, ProviderAuthErrorState | undefined>;
   authRequestIdsByProvider: Record<string, string | undefined>;
@@ -482,7 +619,8 @@ interface ProviderStore {
   startCopilotAuth: (providerId?: string) => Promise<void>;
   cancelCopilotAuth: (providerId: string) => Promise<void>;
   disconnectProviderAuth: (providerId: string) => Promise<ProviderConfig>;
-  testConnection: (providerId: string) => Promise<{ success: boolean; message: string }>;
+  testConnection: (providerId: string) => Promise<ProviderConnectionTestResult>;
+  markProviderReachable: (providerId: string, options?: { modelId?: string | null }) => void;
   supportsNativeToolCalling: (providerId?: string | null, modelId?: string | null) => boolean;
   selectedSupportsNativeToolCalling: () => boolean;
 }
@@ -499,6 +637,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   isLoadingModels: false,
   lastError: null,
   connectionStatus: {},
+  providerReachabilityById: {},
   reasoningUnsupportedModelKeys: {},
   authErrorsByProvider: {},
   authRequestIdsByProvider: {},
@@ -526,6 +665,21 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   selectedSupportsNativeToolCalling: () => {
     const state = get();
     return state.supportsNativeToolCalling(state.selectedProviderId, state.selectedModelId);
+  },
+
+  markProviderReachable: (providerId: string, options?: { modelId?: string | null }) => {
+    const provider = get().providerConfigs.find((entry) => entry.id === providerId);
+    if (!provider || isLinkedProviderType(provider.providerType)) {
+      return;
+    }
+
+    set((state) => ({
+      ...withReachabilityRecord(state, providerId, {
+        status: 'reachable',
+        lastVerifiedBy: 'chat_completion_runtime',
+        modelIdUsed: options?.modelId ?? undefined,
+      }),
+    }));
   },
 
   getAvailableReasoningEfforts: (providerId?: string | null, modelId?: string | null) => {
@@ -703,7 +857,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             {
               id: c.id,
               name: c.name,
-              status: toProviderStatus(c),
+              status: toProviderStatus(c, get().connectionStatus[c.id]),
               baseUrl: c.baseUrl,
               isLocal: c.isLocal,
               isEnabled: c.isEnabled,
@@ -771,7 +925,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             {
               id: c.id,
               name: c.name,
-              status: toProviderStatus(c),
+              status: toProviderStatus(c, get().connectionStatus[c.id]),
               baseUrl: c.baseUrl,
               isLocal: c.isLocal,
               isEnabled: c.isEnabled,
@@ -881,7 +1035,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
       set({ isLoadingModels: true });
       set((state) => ({
-        connectionStatus: { ...state.connectionStatus, [providerId]: 'checking' },
+        ...withReachabilityRecord(state, providerId, {
+          status: 'checking',
+          lastVerifiedBy: 'linked_auth',
+        }),
       }));
 
       try {
@@ -903,10 +1060,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         });
         set((state) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
-          connectionStatus: { ...state.connectionStatus, [providerId]: 'online' },
-          providers: state.providers.map((p) =>
-            p.id === providerId ? { ...p, status: 'online' } : p
-          ),
+          ...withReachabilityRecord(state, providerId, {
+            status: 'reachable',
+            lastVerifiedBy: 'linked_auth',
+          }),
           isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
         }));
@@ -943,10 +1100,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         const message =
           error instanceof Error ? error.message : `Failed to sync ${providerLabel} models`;
         set((state) => ({
-          connectionStatus: { ...state.connectionStatus, [providerId]: 'offline' },
-          providers: state.providers.map((p) =>
-            p.id === providerId ? { ...p, status: 'offline' } : p
-          ),
+          ...withReachabilityRecord(state, providerId, {
+            status: 'unreachable',
+            lastVerifiedBy: 'linked_auth',
+            lastError: message,
+          }),
           isLoadingModels: false,
           lastError: message,
         }));
@@ -962,11 +1120,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
     set({ isLoadingModels: true });
     set((state) => ({
-      connectionStatus: { ...state.connectionStatus, [providerId]: 'checking' },
+      ...withReachabilityRecord(state, providerId, { status: 'checking' }),
     }));
 
     try {
-      const result = await fetchModelsFromProvider({
+      const result = await probeModelsEndpoint({
         baseUrl: config.baseUrl,
         apiKey,
         providerId: config.providerType,
@@ -974,15 +1132,14 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
       if (!result.success) {
         set((state) => ({
-          connectionStatus: { ...state.connectionStatus, [providerId]: 'offline' },
+          ...withReachabilityRecord(state, providerId, {
+            status: result.status,
+            lastVerifiedBy: result.source,
+            lastError: result.message,
+            modelIdUsed: result.modelIdUsed,
+          }),
           isLoadingModels: false,
-          lastError: result.error,
-        }));
-
-        set((state) => ({
-          providers: state.providers.map((p) =>
-            p.id === providerId ? { ...p, status: 'offline' } : p
-          ),
+          lastError: result.message,
         }));
 
         return modelsByProvider[providerId] || [];
@@ -1028,15 +1185,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         });
         set((state) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
-          connectionStatus: { ...state.connectionStatus, [providerId]: 'online' },
+          ...withReachabilityRecord(state, providerId, {
+            status: 'reachable',
+            lastVerifiedBy: result.source,
+          }),
           isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
-        }));
-
-        set((state) => ({
-          providers: state.providers.map((p) =>
-            p.id === providerId ? { ...p, status: 'online' } : p
-          ),
         }));
 
         const { selectedProviderId, selectedModelId } = get();
@@ -1087,21 +1241,22 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
       set((state) => ({
         modelsByProvider: { ...state.modelsByProvider, [providerId]: models },
-        connectionStatus: { ...state.connectionStatus, [providerId]: 'online' },
+        ...withReachabilityRecord(state, providerId, {
+          status: 'reachable',
+          lastVerifiedBy: result.source,
+        }),
         isLoadingModels: false,
-      }));
-
-      set((state) => ({
-        providers: state.providers.map((p) =>
-          p.id === providerId ? { ...p, status: 'online' } : p
-        ),
       }));
 
       return models;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to scan models';
       set((state) => ({
-        connectionStatus: { ...state.connectionStatus, [providerId]: 'offline' },
+        ...withReachabilityRecord(state, providerId, {
+          status: 'unreachable',
+          lastVerifiedBy: 'models_endpoint',
+          lastError: message,
+        }),
         isLoadingModels: false,
         lastError: message,
       }));
@@ -1182,6 +1337,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const normalized = updated.map((model) => normalizeDbModel(model, providerType));
       set((state) => ({
         modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+        ...invalidateRuntimeProviderReachability(state, providerId, providerType),
         ...(state.selectedProviderId === providerId
           ? {
               selectedReasoningEffort: resolveSelectedReasoningEffort({
@@ -1226,6 +1382,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           },
         ]),
       },
+      ...invalidateRuntimeProviderReachability(
+        state,
+        providerId,
+        get().providerConfigs.find((provider) => provider.id === providerId)?.providerType
+      ),
     }));
   },
 
@@ -1246,6 +1407,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const normalized = updated.map((model) => normalizeDbModel(model, providerType));
       set((state) => ({
         modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+        ...invalidateRuntimeProviderReachability(state, providerId, providerType),
         ...(state.selectedProviderId === providerId
           ? {
               selectedReasoningEffort: resolveSelectedReasoningEffort({
@@ -1291,6 +1453,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             ...state.modelsByProvider,
             [providerId]: nextModels,
           },
+          ...invalidateRuntimeProviderReachability(
+            state,
+            providerId,
+            get().providerConfigs.find((provider) => provider.id === providerId)?.providerType
+          ),
         };
       });
     }
@@ -1338,6 +1505,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const normalized = updated.map((model) => normalizeDbModel(model, providerType));
       set((state) => ({
         modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
+        ...invalidateRuntimeProviderReachability(state, providerId, providerType),
         ...(state.selectedProviderId === providerId
           ? {
               selectedReasoningEffort: resolveSelectedReasoningEffort({
@@ -1361,6 +1529,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             (model) => model.id !== modelId
           ),
         },
+        ...invalidateRuntimeProviderReachability(
+          state,
+          providerId,
+          get().providerConfigs.find((provider) => provider.id === providerId)?.providerType
+        ),
       }));
     }
 
@@ -1549,6 +1722,17 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     try {
       const currentConfig = get().providerConfigs.find((provider) => provider.id === id);
       const providerType = updates.providerType ?? currentConfig?.providerType;
+      const currentApiKey = currentConfig?.apiKey?.trim() ?? '';
+      const nextApiKey =
+        updates.apiKey === undefined ? currentApiKey : updates.apiKey.trim();
+      const shouldInvalidateReachability =
+        !!currentConfig &&
+        (
+          (updates.baseUrl !== undefined && updates.baseUrl !== currentConfig.baseUrl) ||
+          updates.providerType !== undefined ||
+          updates.apiKey !== undefined && nextApiKey !== currentApiKey ||
+          updates.isEnabled === false
+        );
       const persistedUpdates = isLinkedProviderType(providerType)
         ? {
             ...updates,
@@ -1598,6 +1782,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               )
             : p
         ),
+        ...(shouldInvalidateReachability
+          ? clearProviderReachability(state, id)
+          : {}),
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update provider';
@@ -1644,6 +1831,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         set((state) => ({
           providerConfigs: [...state.providerConfigs, newConfig],
           providers: [...state.providers, newProvider],
+          providerReachabilityById: { ...state.providerReachabilityById, [created.id]: undefined },
         }));
 
         await get().loadProviderSettings(created.id);
@@ -1671,6 +1859,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         set((state) => ({
           providerConfigs: [...state.providerConfigs, newConfig],
           providers: [...state.providers, newProvider],
+          providerReachabilityById: { ...state.providerReachabilityById, [id]: undefined },
         }));
       }
     } catch (error) {
@@ -1695,6 +1884,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         providerSettingsById: Object.fromEntries(
           Object.entries(state.providerSettingsById).filter(([key]) => key !== id)
         ),
+        providerReachabilityById: omitRuntimeStateKey(state.providerReachabilityById, id),
+        connectionStatus: omitRuntimeStateKey(state.connectionStatus, id),
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to delete provider';
@@ -2152,7 +2343,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     try {
       const updated = normalizeDbProviderConfig(await tauriIpc.aiDisconnectProviderAuth(providerId));
       set((state) => ({
-        connectionStatus: { ...state.connectionStatus, [providerId]: 'offline' },
+        ...clearProviderReachability(state, providerId),
         authErrorsByProvider: { ...state.authErrorsByProvider, [providerId]: undefined },
         modelsByProvider: {
           ...state.modelsByProvider,
@@ -2171,11 +2362,14 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     const config = providerConfigs.find((c) => c.id === providerId);
     
     if (!config) {
-      return { success: false, message: 'Provider not found' };
+      return { success: false, message: 'Provider not found', status: 'unknown' };
     }
 
     set((state) => ({
-      connectionStatus: { ...state.connectionStatus, [providerId]: 'checking' },
+      ...withReachabilityRecord(state, providerId, {
+        status: 'checking',
+        lastVerifiedBy: isLinkedProviderType(config.providerType) ? 'linked_auth' : undefined,
+      }),
     }));
 
     if (isLinkedProviderType(config.providerType)) {
@@ -2183,6 +2377,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         return {
           success: false,
           message: 'Browser login is in progress.',
+          status: 'checking',
         };
       }
 
@@ -2190,16 +2385,14 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         if (!tauriIpc.isTauriAvailable()) {
           const message = 'GitHub Copilot status checks require the desktop app.';
           set((state) => ({
-            connectionStatus: {
-              ...state.connectionStatus,
-              [providerId]: 'offline',
-            },
-            providers: state.providers.map((p) =>
-              p.id === providerId ? { ...p, status: 'offline' } : p
-            ),
+            ...withReachabilityRecord(state, providerId, {
+              status: 'unreachable',
+              lastVerifiedBy: 'linked_auth',
+              lastError: message,
+            }),
           }));
 
-          return { success: false, message };
+          return { success: false, message, status: 'unreachable', source: 'linked_auth' };
         }
 
         try {
@@ -2213,10 +2406,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               ...state.copilotStatusByProvider,
               [providerId]: status,
             },
-            connectionStatus: {
-              ...state.connectionStatus,
-              [providerId]: success ? 'online' : 'offline',
-            },
+            ...withReachabilityRecord(state, providerId, {
+              status: success ? 'reachable' : 'unreachable',
+              lastVerifiedBy: 'linked_auth',
+              lastError: success ? undefined : message,
+            }),
             authErrorsByProvider: {
               ...state.authErrorsByProvider,
               [providerId]: authError,
@@ -2231,21 +2425,22 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
                   })
                 : provider
             ),
-            providers: state.providers.map((p) =>
-              p.id === providerId
-                ? { ...p, status: success ? 'online' : 'offline' }
-                : p
-            ),
           }));
 
-          return { success, message };
+          return {
+            success,
+            message,
+            status: success ? 'reachable' : 'unreachable',
+            source: 'linked_auth',
+          };
         } catch (error) {
           const message = getErrorMessage(error, 'Failed to check GitHub Copilot status.');
           set((state) => ({
-            connectionStatus: {
-              ...state.connectionStatus,
-              [providerId]: 'offline',
-            },
+            ...withReachabilityRecord(state, providerId, {
+              status: 'unreachable',
+              lastVerifiedBy: 'linked_auth',
+              lastError: message,
+            }),
             copilotStatusByProvider: {
               ...state.copilotStatusByProvider,
               [providerId]: undefined,
@@ -2254,12 +2449,14 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               ...state.authErrorsByProvider,
               [providerId]: { code: 'copilot_health_failed', message },
             },
-            providers: state.providers.map((p) =>
-              p.id === providerId ? { ...p, status: 'offline' } : p
-            ),
           }));
 
-          return { success: false, message };
+          return {
+            success: false,
+            message,
+            status: 'unreachable',
+            source: 'linked_auth',
+          };
         }
       }
 
@@ -2270,39 +2467,53 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           : 'Not linked. Use Connect with ChatGPT.';
 
       set((state) => ({
-        connectionStatus: {
-          ...state.connectionStatus,
-          [providerId]: success ? 'online' : 'offline',
-        },
-        providers: state.providers.map((p) =>
-          p.id === providerId
-            ? { ...p, status: success ? 'online' : 'offline' }
-            : p
-        ),
+        ...withReachabilityRecord(state, providerId, {
+          status: success ? 'reachable' : 'unreachable',
+          lastVerifiedBy: 'linked_auth',
+          lastError: success ? undefined : message,
+        }),
       }));
 
-      return { success, message };
+      return {
+        success,
+        message,
+        status: success ? 'reachable' : 'unreachable',
+        source: 'linked_auth',
+      };
     }
 
     const apiKey = config.isLocal ? undefined : await resolveProviderApiKey(providerId);
-    const result = await testProviderConnection(
-      config.baseUrl,
+    const { selectedProviderId, selectedModelId, modelsByProvider } = get();
+    const probeModels = getReachabilityProbeModels({
+      providerId,
+      selectedProviderId,
+      selectedModelId,
+      modelsByProvider,
+    });
+    const result = await probeProviderReachability({
+      baseUrl: config.baseUrl,
       apiKey,
-      config.providerType
-    );
+      providerId: config.providerType,
+      preferredModelId: probeModels.preferredModelId,
+      modelIds: probeModels.modelIds,
+      timeout: 5000,
+    });
 
     set((state) => ({
-      connectionStatus: {
-        ...state.connectionStatus,
-        [providerId]: result.success ? 'online' : 'offline',
-      },
-      providers: state.providers.map((p) =>
-        p.id === providerId
-          ? { ...p, status: result.success ? 'online' : 'offline' }
-          : p
-      ),
+      ...withReachabilityRecord(state, providerId, {
+        status: result.status,
+        lastVerifiedBy: result.source,
+        lastError: result.success ? undefined : result.message,
+        modelIdUsed: result.modelIdUsed,
+      }),
     }));
 
-    return result;
+    return {
+      success: result.success,
+      message: result.message,
+      status: result.status,
+      source: result.source,
+      modelIdUsed: result.modelIdUsed,
+    };
   },
 }));

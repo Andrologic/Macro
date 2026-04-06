@@ -149,4 +149,61 @@ describe('providerApi fetchModelsFromProvider', () => {
     expect(result.success).toBe(true);
     expect(result.models[0]?.supported_parameters).toEqual(['reasoning', 'tools']);
   });
+
+  it('falls back to chat completions when the models endpoint is unsupported', async () => {
+    tauriFetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (String(input).endsWith('/models')) {
+        return new Response('missing', { status: 404 });
+      }
+
+      expect(init?.method).toBe('POST');
+      return new Response(
+        JSON.stringify({
+          id: 'resp_123',
+          choices: [{ message: { role: 'assistant', content: 'ok' } }],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    });
+
+    const { probeProviderReachability } = await loadProviderApi();
+    const result = await probeProviderReachability({
+      baseUrl: 'https://api.minimax.io/v1',
+      providerId: 'custom',
+      preferredModelId: 'MiniMax-M2.7',
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'reachable',
+      source: 'chat_completions_probe',
+      modelIdUsed: 'MiniMax-M2.7',
+    });
+  });
+
+  it('returns probe_unsupported when verification needs a model and none is known', async () => {
+    tauriFetchMock.mockImplementation(async (input: string) => {
+      if (String(input).endsWith('/models')) {
+        return new Response('missing', { status: 404 });
+      }
+
+      throw new Error('unexpected request');
+    });
+
+    const { probeProviderReachability } = await loadProviderApi();
+    const result = await probeProviderReachability({
+      baseUrl: 'https://api.minimax.io/v1',
+      providerId: 'custom',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      status: 'probe_unsupported',
+      source: 'chat_completions_probe',
+    });
+    expect(result.message).toContain('requires a known model');
+  });
 });
