@@ -1887,9 +1887,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
   });
 
-  it('loads the repo auditor prompt override for debug conflict assistance flows', async () => {
+  it('loads the repo auditor prompt override for implement conflict assistance flows', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
-    appState.mode = 'Debug';
+    appState.mode = 'Implement';
     appState.selectedTaskId = null;
     localStorage.setItem(
       'macro_promptRepoAuditor',
@@ -1901,13 +1901,13 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversations: [
         {
           ...createConversation('debug-conv'),
-          scope_mode: 'Debug',
-          title: 'Debug conversation',
+          scope_mode: 'Implement',
+          title: 'Repository review',
         },
       ],
       messages: [],
       selectedConversationId: 'debug-conv',
-      selectedConversationIdsByMode: { Debug: 'debug-conv' },
+      selectedConversationIdsByMode: { Implement: 'debug-conv' },
       isLoading: false,
       isStreaming: false,
       sendState: 'idle',

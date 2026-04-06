@@ -137,7 +137,7 @@
       "macroPendingDifferences": "Metadata sync still has pending local or remote differences.",
       "macroPushComplete": "@macro push complete",
       "aiConflictAssistantStarted": "AI conflict assistant started",
-      "aiConflictAssistantDescription": "Switched to Debug mode and posted the conflict context.",
+      "aiConflictAssistantDescription": "Opened an Implement review conversation and posted the conflict context.",
       "aiConflictAssistantStartFailed": "Failed to start AI assistant",
       "nextAction": "Next action: {{action}}.",
       "macroConflictTitle": "@macro sync conflict",
@@ -769,7 +769,7 @@
     "planFinalizationBlockedDescription": "Resolve the repository blockers below, then retry finalization explicitly.",
     "planReviewReplicaRepair": "Repair plan metadata replicas",
     "aiConflictAssistantStarted": "AI conflict assistant started",
-    "planFinalizationAssistantDescription": "Switched to Debug mode and posted the plan finalization blockers.",
+    "planFinalizationAssistantDescription": "Opened an Implement review conversation and posted the plan finalization blockers.",
     "noAggregatedDiff": "No aggregated diff between the plan branch and the base branch for this repository.",
     "context": {
       "default": "Focused diff",

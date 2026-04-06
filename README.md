@@ -298,7 +298,7 @@ Optional environment variables:
 Available endpoints (initial implementation):
 
 - `GET /health`
-- `GET /v1/tools/mode-policy?mode=Architect|Chat|Implement|Debug`
+- `GET /v1/tools/mode-policy?mode=Architect|Chat|Implement`
 - `POST /v1/tools/validate`
 - `GET /api/v1/workspace/bootstrap`
 - `GET /api/v1/workspace/tasks`

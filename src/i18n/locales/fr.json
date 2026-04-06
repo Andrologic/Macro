@@ -137,7 +137,7 @@
       "macroPendingDifferences": "La synchronisation des métadonnées présente toujours des différences locales ou distantes en attente.",
       "macroPushComplete": "@macro push terminé",
       "aiConflictAssistantStarted": "Assistant IA de conflit lancé",
-      "aiConflictAssistantDescription": "Passage en mode Debug et publication du contexte de conflit.",
+      "aiConflictAssistantDescription": "Ouverture d’une conversation de revue Implement et publication du contexte de conflit.",
       "aiConflictAssistantStartFailed": "Impossible de lancer l'assistant IA",
       "nextAction": "Action suivante : {{action}}.",
       "macroConflictTitle": "Conflit de sync @macro",
@@ -769,7 +769,7 @@
     "planFinalizationBlockedDescription": "Résolvez les bloqueurs de référentiel ci-dessous, puis réessayez explicitement la finalisation.",
     "planReviewReplicaRepair": "Réparer les réplicas de métadonnées du plan",
     "aiConflictAssistantStarted": "Assistant IA de conflit lancé",
-    "planFinalizationAssistantDescription": "Passage en mode Debug et publication des bloqueurs de finalisation du plan.",
+    "planFinalizationAssistantDescription": "Ouverture d’une conversation de revue Implement et publication des bloqueurs de finalisation du plan.",
     "noAggregatedDiff": "Aucune différence agrégée entre la branche du plan et la branche de base pour ce référentiel.",
     "context": {
       "default": "Diff ciblé",

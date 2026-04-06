@@ -6,7 +6,6 @@ const promptDefaults = {
   promptArchitect: 'Architect default prompt',
   promptImplement: 'Implement default prompt',
   promptChat: 'Chat default prompt',
-  promptDebug: 'Debug default prompt',
   promptPlanExplorer: 'Plan explorer default prompt',
   promptTaskReviewer: 'Task reviewer default prompt',
   promptRepoAuditor: 'Repo auditor default prompt',
@@ -29,12 +28,6 @@ const promptDefinitions = [
     key: 'promptChat',
     label: 'Chat Mode',
     description: 'Base system prompt for general chat conversations.',
-    scope: 'mode',
-  },
-  {
-    key: 'promptDebug',
-    label: 'Debug Mode',
-    description: 'Base system prompt for debugging conversations.',
     scope: 'mode',
   },
   {
@@ -127,7 +120,7 @@ describe('PromptsView', () => {
     });
 
     const textareas = Array.from(container?.querySelectorAll('textarea') ?? []);
-    expect(textareas).toHaveLength(7);
+    expect(textareas).toHaveLength(6);
     expect(
       (container?.querySelector('#promptPlanExplorer') as HTMLTextAreaElement | null)?.value
     ).toBe('Customized plan explorer prompt');
@@ -169,7 +162,6 @@ describe('PromptsView', () => {
       promptArchitect: promptDefaults.promptArchitect,
       promptImplement: promptDefaults.promptImplement,
       promptChat: promptDefaults.promptChat,
-      promptDebug: promptDefaults.promptDebug,
       promptPlanExplorer: promptDefaults.promptPlanExplorer,
       promptTaskReviewer: promptDefaults.promptTaskReviewer,
       promptRepoAuditor: 'Customized repo auditor prompt',

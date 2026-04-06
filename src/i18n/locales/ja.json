@@ -137,7 +137,7 @@
       "macroPendingDifferences": "メタデータ同期には保留中のローカルまたはリモートの差分がまだあります。",
       "macroPushComplete": "@マクロプッシュ完了",
       "aiConflictAssistantStarted": "AI競合アシスタント開始",
-      "aiConflictAssistantDescription": "デバッグ モードに切り替えて、競合コンテキストをポストしました。",
+      "aiConflictAssistantDescription": "Implement レビュー用の会話を開き、競合コンテキストを投稿しました。",
       "aiConflictAssistantStartFailed": "AIアシスタントの起動に失敗しました",
       "nextAction": "次のアクション:{{action}}。",
       "macroConflictTitle": "@マクロ同期の競合",
@@ -769,7 +769,7 @@
     "planFinalizationBlockedDescription": "以下のリポジトリ ブロッカーを解決してから、明示的にファイナライズを再試行してください。",
     "planReviewReplicaRepair": "修復計画メタデータのレプリカ",
     "aiConflictAssistantStarted": "AI競合アシスタント開始",
-    "planFinalizationAssistantDescription": "デバッグ モードに切り替えて、計画完了のブロッカーを投稿しました。",
+    "planFinalizationAssistantDescription": "Implement レビュー用の会話を開き、計画完了のブロッカーを投稿しました。",
     "noAggregatedDiff": "このリポジトリのプラン ブランチとベース ブランチの間に集計された差分はありません。",
     "context": {
       "default": "フォーカス diff",

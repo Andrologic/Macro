@@ -151,7 +151,7 @@ const getFirstUsableProvider = (providerConfigs: ProviderConfig[]): ProviderConf
   return providerConfigs.find((provider) => providerHasCredentials(provider)) ?? null;
 };
 
-type AISelectionModeKey = 'ChatDebug' | 'Architect' | 'Implement';
+type AISelectionModeKey = 'Chat' | 'Architect' | 'Implement';
 
 interface PersistedAISelection {
   providerId: string | null;
@@ -166,7 +166,7 @@ interface PersistedAIContextSelections {
 }
 
 const getSelectionModeKey = (mode: AppMode): AISelectionModeKey => {
-  if (mode === 'Chat' || mode === 'Debug') return 'ChatDebug';
+  if (mode === 'Chat') return 'Chat';
   if (mode === 'Architect') return 'Architect';
   return 'Implement';
 };
@@ -201,7 +201,13 @@ const getModeSelectionFromPreference = (
   const raw = value as PersistedAIContextSelections;
   const modeSelections = raw.modeSelections;
   if (!modeSelections || typeof modeSelections !== 'object') return null;
-  return normalizePersistedSelection(modeSelections[getSelectionModeKey(mode)]);
+  const modeKey = getSelectionModeKey(mode);
+  const directSelection = normalizePersistedSelection(modeSelections[modeKey]);
+  if (directSelection) return directSelection;
+  if (modeKey === 'Chat') {
+    return normalizePersistedSelection((modeSelections as Record<string, unknown>).ChatDebug);
+  }
+  return null;
 };
 
 export const providerHasAuthSession = (

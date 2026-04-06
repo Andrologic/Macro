@@ -104,7 +104,6 @@ export function Header({
     { value: 'Architect', label: t('header.architect'), icon: 'compass' },
     { value: 'Implement', label: t('header.implement'), icon: 'code' },
     { value: 'Chat', label: t('header.chat'), icon: 'message-circle' },
-    { value: 'Debug', label: t('header.debug'), icon: 'terminal' },
   ];
 
   const currentMode = modeOptions.find((candidate) => candidate.value === mode) || modeOptions[0];

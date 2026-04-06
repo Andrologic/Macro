@@ -70,7 +70,7 @@ fn chat_allowed_tool_ids() -> &'static [&'static str] {
     &["read_sources", "read_file", "web_search", "web_fetch"]
 }
 
-fn implement_and_debug_allowed_tool_ids() -> &'static [&'static str] {
+fn implement_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "mark_source_passage",
         "read_sources",
@@ -169,8 +169,7 @@ fn resolve_mode_policy(mode: &str) -> Option<(&'static [&'static str], bool)> {
     match mode.trim() {
         "Architect" => Some((architect_allowed_tool_ids(), true)),
         "Chat" => Some((chat_allowed_tool_ids(), false)),
-        "Debug" => Some((implement_and_debug_allowed_tool_ids(), false)),
-        "Implement" => Some((implement_and_debug_allowed_tool_ids(), false)),
+        "Implement" => Some((implement_allowed_tool_ids(), false)),
         _ => None,
     }
 }

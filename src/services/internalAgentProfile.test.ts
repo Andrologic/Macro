@@ -29,7 +29,7 @@ describe("internalAgentProfile", () => {
   it("lets explicit overrides force the repo auditor profile", () => {
     expect(
       resolveInternalAgentProfile({
-        mode: "Debug",
+        mode: "Implement",
         overrideProfile: "repo_auditor",
       })
     ).toBe("repo_auditor");
