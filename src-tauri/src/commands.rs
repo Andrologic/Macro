@@ -2152,7 +2152,7 @@ pub async fn execute_workspace_tool(
                 recursive,
                 include_hidden,
                 max_depth,
-                Some(mode_trimmed == "Debug"),
+                Some(false),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -2187,7 +2187,7 @@ pub async fn execute_workspace_tool(
             let result = fs::read_file_internal(
                 &effective_workspace,
                 effective_path,
-                Some(mode_trimmed == "Debug"),
+                Some(false),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -2250,7 +2250,7 @@ pub async fn execute_workspace_tool(
                 effective_path.clone(),
                 content.clone(),
                 create_dirs,
-                Some(mode_trimmed == "Debug"),
+                Some(false),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -2305,7 +2305,7 @@ pub async fn execute_workspace_tool(
             let current = fs::read_file_internal(
                 &effective_workspace,
                 effective_path.clone(),
-                Some(mode_trimmed == "Debug"),
+                Some(false),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -2333,7 +2333,7 @@ pub async fn execute_workspace_tool(
                 effective_path.clone(),
                 updated.clone(),
                 Some(true),
-                Some(mode_trimmed == "Debug"),
+                Some(false),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -2464,7 +2464,7 @@ pub async fn execute_workspace_tool(
                         let current = fs::read_file_internal(
                             &effective_workspace,
                             effective_path.clone(),
-                            Some(mode_trimmed == "Debug"),
+                            Some(false),
                         )
                         .await
                         .map_err(|error| command_error(error.to_string()))?;
@@ -2513,7 +2513,7 @@ pub async fn execute_workspace_tool(
                         let current = fs::read_file_internal(
                             &effective_workspace,
                             effective_path.clone(),
-                            Some(mode_trimmed == "Debug"),
+                            Some(false),
                         )
                         .await
                         .map_err(|error| command_error(error.to_string()))?;
@@ -2541,7 +2541,7 @@ pub async fn execute_workspace_tool(
                         change.effective_path.clone(),
                         new_content.clone(),
                         Some(true),
-                        Some(mode_trimmed == "Debug"),
+                        Some(false),
                     )
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2569,12 +2569,7 @@ pub async fn execute_workspace_tool(
         "glob" => {
             let pattern = json_arg_string(&args, "pattern").unwrap_or_else(|| "**/*".to_string());
             let include_hidden = json_arg_bool(&args, "include_hidden").unwrap_or(false);
-            let mode_is_debug = mode_trimmed == "Debug";
-            let list_path = if mode_is_debug {
-                json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
-            } else {
-                ".".to_string()
-            };
+            let list_path = ".".to_string();
             let list_is_macro_scope = is_macro_scoped_path(list_path.as_str());
             let effective_list_path = remap_macro_tool_path(list_path.as_str());
             let effective_workspace = resolve_workspace_for_tool_path(
@@ -2591,7 +2586,7 @@ pub async fn execute_workspace_tool(
                 Some(true),
                 Some(include_hidden),
                 None,
-                Some(mode_is_debug),
+                Some(false),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -2632,12 +2627,7 @@ pub async fn execute_workspace_tool(
             let is_regexp = json_arg_bool(&args, "is_regexp").unwrap_or(false);
             let include_pattern = json_arg_string(&args, "include_pattern");
             let max_results = json_arg_u32(&args, "max_results").unwrap_or(50).max(1) as usize;
-            let mode_is_debug = mode_trimmed == "Debug";
-            let list_path = if mode_is_debug {
-                json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string())
-            } else {
-                ".".to_string()
-            };
+            let list_path = ".".to_string();
             let list_is_macro_scope = is_macro_scoped_path(list_path.as_str());
             let effective_list_path = remap_macro_tool_path(list_path.as_str());
             let effective_workspace = resolve_workspace_for_tool_path(
@@ -2654,7 +2644,7 @@ pub async fn execute_workspace_tool(
                 Some(true),
                 Some(include_hidden),
                 None,
-                Some(mode_is_debug),
+                Some(false),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -2696,14 +2686,10 @@ pub async fn execute_workspace_tool(
                     }
                 }
 
-                let read_path = if mode_is_debug {
-                    entry.path
-                } else {
-                    relative_path.clone()
-                };
+                let read_path = relative_path.clone();
 
                 let content =
-                    fs::read_file_internal(&effective_workspace, read_path, Some(mode_is_debug))
+                    fs::read_file_internal(&effective_workspace, read_path, Some(false))
                         .await
                         .map_err(|error| command_error(error.to_string()))?;
 

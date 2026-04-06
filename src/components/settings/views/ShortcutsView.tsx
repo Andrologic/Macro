@@ -39,10 +39,6 @@ const shortcutTranslationKeys: Record<
     label: 'shortcuts.items.switchChat.label',
     description: 'shortcuts.items.switchChat.description',
   },
-  'app.switchMode.debug': {
-    label: 'shortcuts.items.switchDebug.label',
-    description: 'shortcuts.items.switchDebug.description',
-  },
   'app.toggleLeftPanel': {
     label: 'shortcuts.items.toggleLeftPanel.label',
     description: 'shortcuts.items.toggleLeftPanel.description',

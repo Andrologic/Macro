@@ -628,14 +628,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       };
     }
 
-    if (mode === 'Debug') {
-      return {
-        icon: 'terminal' as const,
-        title: currentConversation?.title || t('chat.debugSession', 'Debug Session'),
-        subtitle: projectScopeLabel || null,
-      };
-    }
-
     return {
       icon: 'message-square' as const,
       title: currentConversation?.title || t('chat.newConversation', 'New Conversation'),
@@ -1071,18 +1063,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     !isConversationPending &&
     (Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0);
 
-  const handleDebugRefresh = async () => {
-    if (isStreaming) {
-      stopStreaming();
-    }
-    await createConversation(t('chat.debugSession', 'Debug Session'), null, null);
-    composerEditorRef.current?.clear();
-    setInputValue('');
-    setComposerImages([]);
-    setPromptHistoryIndex(null);
-    setDraftBeforeHistory('');
-  };
-
   const navigatePromptHistory = useCallback((direction: 'up' | 'down') => {
     if (promptHistory.length === 0) return;
 
@@ -1190,16 +1170,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 <LazyPlanSelector />
               </Suspense>
             )}
-            {mode === 'Debug' && (
-              <button
-                onClick={() => void handleDebugRefresh()}
-                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                title="Reset debug chat"
-              >
-                <Icon name="refresh-cw" size={12} />
-                Reset
-              </button>
-            )}
             {headerActions}
           </div>
         </header>
@@ -1233,7 +1203,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     measureElement={measureMessageElement}
                     currentMessagesLength={currentMessages.length}
                     isStreaming={isStreaming}
-                    showToolTraces={mode !== 'Debug'}
+                    showToolTraces
                     isEditing={isEditing}
                     editingValue={editingValue}
                     editingImages={editingImages}

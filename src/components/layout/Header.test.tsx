@@ -7,7 +7,7 @@ import {
   getTitleBarLayout,
 } from './titleBarLayout';
 
-type AppMode = 'Chat' | 'Architect' | 'Implement' | 'Debug';
+type AppMode = 'Chat' | 'Architect' | 'Implement';
 
 type AppStoreState = {
   mode: AppMode;

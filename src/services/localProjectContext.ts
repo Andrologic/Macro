@@ -77,8 +77,7 @@ const normalizeSessionContext = (
   mode:
     value?.mode === 'Architect' ||
     value?.mode === 'Implement' ||
-    value?.mode === 'Chat' ||
-    value?.mode === 'Debug'
+    value?.mode === 'Chat'
       ? value.mode
       : null,
   updatedAt: typeof value?.updatedAt === 'string' ? value.updatedAt : toNowIso(),

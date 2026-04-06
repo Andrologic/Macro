@@ -2132,7 +2132,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             const deterministicError = [
               'La lecture fichier ne provient pas du workspace actif (context snippet uniquement).',
               'Je refuse de synthétiser ce contenu pour éviter les hallucinations.',
-              'Relance avec un chemin explicite (ex: README.md) ou vérifie le root Debug.',
+              'Relance avec un chemin explicite (ex: README.md) ou vérifie le projet cible.',
             ].join('\n');
 
             void deterministicError;

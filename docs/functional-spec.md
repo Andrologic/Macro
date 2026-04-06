@@ -66,7 +66,7 @@ Macro n'a pas vocation a etre :
 - un simple chat generaliste sans workflow de developpement
 - une interface publique pour les outils internes de debug de l'application
 
-Le mode interne `Debug` est exclu du perimetre fonctionnel public.
+Le perimetre fonctionnel public repose sur les modes `Architect`, `Implement` et `Chat`.
 
 ---
 
@@ -221,7 +221,7 @@ Macro expose trois modes produits dans son perimetre public :
 - Implement
 - Chat
 
-Le mode `Debug` peut exister dans l'application, mais il est considere comme un outillage interne et ne fait pas partie de la specification fonctionnelle publique.
+Le mode `Debug` ne fait plus partie de l'application ni de la specification fonctionnelle publique.
 
 ### 7.1 Mode Architect
 
