@@ -70,7 +70,7 @@ export const ProvidersSettings: React.FC = () => {
   const { t } = useTranslation();
   const {
     providerConfigs,
-    connectionStatus,
+    providerReachabilityById,
     copilotStatusByProvider,
     copilotDownloadStateByProvider,
     copilotAuthStateByProvider,
@@ -374,25 +374,32 @@ export const ProvidersSettings: React.FC = () => {
       };
     }
 
-    const status = connectionStatus[provider.id] ?? 'offline';
-    if (status === 'checking') {
+    const reachability = providerReachabilityById[provider.id];
+    if (reachability?.status === 'checking') {
       return {
         label: t('providers.status.checking', 'Checking'),
         dot: 'bg-blue-500',
         text: 'text-blue-600',
       };
     }
-    if (status === 'online') {
+    if (reachability?.status === 'reachable') {
       return {
         label: t('providers.status.active', 'Active'),
         dot: 'bg-emerald-500',
         text: 'text-emerald-600',
       };
     }
+    if (reachability?.status === 'unreachable') {
+      return {
+        label: t('providers.status.offline', 'Offline'),
+        dot: 'bg-red-500',
+        text: 'text-red-600',
+      };
+    }
     return {
-      label: t('providers.status.offline', 'Offline'),
-      dot: 'bg-red-500',
-      text: 'text-red-600',
+      label: t('providers.status.configured', 'Configured'),
+      dot: 'bg-amber-500',
+      text: 'text-amber-600',
     };
   };
 
