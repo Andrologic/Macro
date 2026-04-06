@@ -1019,7 +1019,13 @@
       "baseUrlLabel": "Base URL",
       "baseUrlPlaceholder": "https://api.openai.com/v1",
       "apiKeyLabel": "API Key",
-      "apiKeyPlaceholder": "sk-..."
+      "apiKeyPlaceholder": "sk-...",
+      "apiKeyStoredPlaceholder": "Stored in Keychain",
+      "apiKeyStoredHint": "This key is stored in the system keychain.",
+      "revealApiKey": "Reveal API key",
+      "hideApiKey": "Hide API key",
+      "replaceApiKey": "Replace",
+      "clearApiKey": "Clear stored key"
     },
     "authErrors": {
       "browser_open_failed": "Failed to open your browser for ChatGPT login.",

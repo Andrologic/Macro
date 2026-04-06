@@ -43,6 +43,8 @@ pub(super) async fn ensure_fresh_secret(
     pool: &SqlitePool,
     provider_id: &str,
 ) -> Result<ChatGptSecret, String> {
+    migrate_provider_secret(pool, provider_id).await?;
+
     let secret = secrets::get_chatgpt_secret(provider_id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "ChatGPT is not linked. Use Connect with ChatGPT first.".to_string())?;

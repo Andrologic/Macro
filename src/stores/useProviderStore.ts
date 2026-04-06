@@ -143,9 +143,6 @@ const resolveSelectedReasoningEffort = (params: {
   );
 };
 
-const hasLoadedApiKey = (provider: Pick<ProviderConfig, 'providerType' | 'apiKey'>): boolean =>
-  !isLinkedProviderType(provider.providerType) && !!provider.apiKey?.trim();
-
 const getFirstUsableProvider = (providerConfigs: ProviderConfig[]): ProviderConfig | null => {
   return providerConfigs.find((provider) => providerHasCredentials(provider)) ?? null;
 };
@@ -227,12 +224,6 @@ export const providerHasCredentials = (
     !isLinkedProviderType(provider.providerType) &&
     (provider.hasStoredApiKey || !!provider.apiKey?.trim());
   return provider.isEnabled && (provider.isLocal || hasApiKey || providerHasAuthSession(provider));
-};
-
-const providerHasRuntimeCredentials = (
-  provider: Pick<ProviderConfig, 'isEnabled' | 'isLocal' | 'apiKey' | 'providerType' | 'authStatus'>
-): boolean => {
-  return provider.isEnabled && (provider.isLocal || hasLoadedApiKey(provider) || providerHasAuthSession(provider));
 };
 
 const mergeLocalProviderConfig = async (
@@ -553,21 +544,17 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   initialize: async () => {
-    const { loadProviderConfigs, loadProviderModels, scanModelsForProvider, testConnection } = get();
+    const { loadProviderConfigs, loadProviderModels, testConnection, selectProvider } = get();
     await loadProviderConfigs();
 
-    const { providerConfigs, selectProvider } = get();
+    const { providerConfigs } = get();
     const connectivityChecks: Array<Promise<unknown>> = [];
 
     for (const provider of providerConfigs) {
       await loadProviderModels(provider.id);
       const models = get().modelsByProvider[provider.id] || [];
 
-      const hasCredentials = providerHasRuntimeCredentials(provider);
-      const shouldCheckConnectivity =
-        provider.isEnabled && (provider.providerType === 'copilot' || hasCredentials);
-
-      if (!shouldCheckConnectivity) {
+      if (!provider.isEnabled) {
         continue;
       }
 
@@ -576,11 +563,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         continue;
       }
 
-      if (models.length === 0) {
-        connectivityChecks.push(scanModelsForProvider(provider.id));
-      } else {
-        connectivityChecks.push(testConnection(provider.id));
+      // Avoid keychain reads on boot for API-key and ChatGPT providers.
+      if (!provider.isLocal) {
+        continue;
       }
+
+      connectivityChecks.push(models.length === 0 ? get().scanModelsForProvider(provider.id) : testConnection(provider.id));
     }
 
     void Promise.allSettled(connectivityChecks);
@@ -609,17 +597,17 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           (model) => model.id === persistedSelection.modelId && model.isEnabled !== false
         );
 
-        if (!hasPreferredModel) {
-          preferredModels = await scanModelsForProvider(preferredProvider.id);
-          hasPreferredModel = preferredModels.some(
-            (model) => model.id === persistedSelection.modelId && model.isEnabled !== false
-          );
-        }
-
         if (hasPreferredModel) {
           set({ selectedProviderId: preferredProvider.id });
           get().selectModel(persistedSelection.modelId);
           get().selectReasoningEffort(persistedSelection.reasoningEffort ?? null);
+          return;
+        }
+
+        const fallbackModelId = getFirstEnabledModelId(preferredModels);
+        if (fallbackModelId) {
+          set({ selectedProviderId: preferredProvider.id });
+          get().selectModel(fallbackModelId);
           return;
         }
       }
@@ -1611,21 +1599,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             : p
         ),
       }));
-
-      const config = get().providerConfigs.find((c) => c.id === id);
-      const nextConfig = config ? ({ ...config, ...persistedUpdates } as ProviderConfig) : null;
-      const shouldScan = nextConfig
-        ? isLinkedProviderType(nextConfig.providerType)
-          ? providerHasAuthSession(nextConfig)
-          : providerHasRuntimeCredentials(nextConfig)
-        : false;
-      if (shouldScan) {
-        await get().loadProviderModels(id);
-        const models = get().modelsByProvider[id] || [];
-        if (models.length === 0) {
-          await get().scanModelsForProvider(id);
-        }
-      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update provider';
       set({ lastError: message });
@@ -1674,10 +1647,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         }));
 
         await get().loadProviderSettings(created.id);
-
-        if (providerHasCredentials(newConfig)) {
-          await get().scanModelsForProvider(created.id);
-        }
       } else {
         // Mock creation for development
         const id = `provider_${Date.now()}`;
@@ -1703,10 +1672,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           providerConfigs: [...state.providerConfigs, newConfig],
           providers: [...state.providers, newProvider],
         }));
-
-        if (providerHasCredentials(newConfig)) {
-          await get().scanModelsForProvider(id);
-        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create provider';
