@@ -137,7 +137,7 @@
       "macroPendingDifferences": "메타데이터 동기화에는 아직 보류 중인 로컬 또는 원격 차이가 있습니다.",
       "macroPushComplete": "@매크로 푸시 완료",
       "aiConflictAssistantStarted": "AI 충돌 도우미 시작됨",
-      "aiConflictAssistantDescription": "디버그 모드로 전환하고 충돌 컨텍스트를 게시했습니다.",
+      "aiConflictAssistantDescription": "Implement 리뷰 대화를 열고 충돌 컨텍스트를 게시했습니다.",
       "aiConflictAssistantStartFailed": "AI 도우미를 시작하지 못했습니다.",
       "nextAction": "다음 작업:{{action}}.",
       "macroConflictTitle": "@매크로 동기화 충돌",
@@ -769,7 +769,7 @@
     "planFinalizationBlockedDescription": "아래 저장소 차단 문제를 해결한 후 명시적으로 마무리를 다시 시도하세요.",
     "planReviewReplicaRepair": "복구 계획 메타데이터 복제본",
     "aiConflictAssistantStarted": "AI 충돌 도우미 시작됨",
-    "planFinalizationAssistantDescription": "디버그 모드로 전환하고 계획 마무리 차단기를 게시했습니다.",
+    "planFinalizationAssistantDescription": "Implement 리뷰 대화를 열고 계획 마무리 차단기를 게시했습니다.",
     "noAggregatedDiff": "이 저장소의 계획 분기와 기본 분기 간에 집계된 차이점이 없습니다.",
     "context": {
       "default": "집중 diff",

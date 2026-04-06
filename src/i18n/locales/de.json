@@ -137,7 +137,7 @@
       "macroPendingDifferences": "Bei der Metadatensynchronisierung stehen noch lokale oder Remote-Unterschiede aus.",
       "macroPushComplete": "@macro push abgeschlossen",
       "aiConflictAssistantStarted": "KI-Konfliktassistent gestartet",
-      "aiConflictAssistantDescription": "In den Debug-Modus gewechselt und den Konfliktkontext gepostet.",
+      "aiConflictAssistantDescription": "Eine Implement-Review-Konversation wurde geoeffnet und der Konfliktkontext wurde gepostet.",
       "aiConflictAssistantStartFailed": "Der KI-Assistent konnte nicht gestartet werden",
       "nextAction": "Nächste Aktion: {{action}}.",
       "macroConflictTitle": "@macro-Synchronisierungskonflikt",
@@ -769,7 +769,7 @@
     "planFinalizationBlockedDescription": "Lösen Sie die unten aufgeführten Repository-Blocker auf und versuchen Sie dann explizit, die Finalisierung erneut durchzuführen.",
     "planReviewReplicaRepair": "Metadatenreplikate des Plans reparieren",
     "aiConflictAssistantStarted": "KI-Konfliktassistent gestartet",
-    "planFinalizationAssistantDescription": "In den Debug-Modus gewechselt und die Plan-Finalisierungsblocker veröffentlicht.",
+    "planFinalizationAssistantDescription": "Eine Implement-Review-Konversation wurde geoeffnet und die Blocker fuer die Planfinalisierung wurden gepostet.",
     "noAggregatedDiff": "Für dieses Repository gibt es keinen aggregierten Unterschied zwischen dem Planzweig und dem Basiszweig.",
     "context": {
       "default": "Fokussierter Diff",

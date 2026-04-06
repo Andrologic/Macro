@@ -34,7 +34,6 @@ export const ToolsView: React.FC = () => {
   const chatPolicy = useMemo(() => getToolModePolicy('Chat'), []);
   const architectPolicy = useMemo(() => getToolModePolicy('Architect'), []);
   const implementPolicy = useMemo(() => getToolModePolicy('Implement'), []);
-  const debugPolicy = useMemo(() => getToolModePolicy('Debug'), []);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [webSearchSettings, setWebSearchSettings] = useState<WebSearchSettings>(getWebSearchSettings);
@@ -79,12 +78,7 @@ export const ToolsView: React.FC = () => {
           'tools.modeHintChat',
           'Chat mode: user-selected tools from the Chat toolbox are respected before execution.'
         )
-      : mode === 'Debug'
-        ? t(
-            'tools.modeHintDebug',
-            'Debug mode: all globally enabled tools are available for testing (no chat-mode restriction).'
-          )
-        : t(
+      : t(
             'tools.modeHintAuto',
             'Architect/Implement: enabled tools may run automatically when the model needs them; usage is shown inline in chat.'
           );
@@ -296,11 +290,6 @@ export const ToolsView: React.FC = () => {
                       {implementPolicy.allowedToolIds.includes(tool.id) && (
                         <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">
                           {t('header.implement', 'Implement')}
-                        </span>
-                      )}
-                      {debugPolicy.allowedToolIds.includes(tool.id) && (
-                        <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">
-                          {t('header.debug', 'Debug')}
                         </span>
                       )}
                       {(tool.id === 'write' || tool.id === 'edit') && (

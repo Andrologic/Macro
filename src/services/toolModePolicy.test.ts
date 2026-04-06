@@ -56,28 +56,6 @@ describe("toolModePolicy", () => {
     expect(policy.enforceMacroOnlyWrites).toBe(false);
   });
 
-  it("allows all tools in debug mode without macro-only write restriction", () => {
-    const policy = getToolModePolicy("Debug");
-    expect(policy.allowedToolIds.includes("write")).toBe(true);
-    expect(policy.allowedToolIds.includes("edit")).toBe(true);
-    expect(policy.allowedToolIds.includes("apply_patch")).toBe(true);
-    expect(policy.allowedToolIds.includes("list")).toBe(true);
-    expect(policy.allowedToolIds.includes("read")).toBe(true);
-    expect(policy.allowedToolIds.includes("glob")).toBe(true);
-    expect(policy.allowedToolIds.includes("grep")).toBe(true);
-    expect(policy.allowedToolIds.includes("git_status")).toBe(true);
-    expect(policy.allowedToolIds.includes("git_log")).toBe(true);
-    expect(policy.allowedToolIds.includes("git_branch_list")).toBe(true);
-    expect(policy.allowedToolIds.includes("git_diff")).toBe(true);
-    expect(policy.allowedToolIds.includes("git_get_tree")).toBe(true);
-    expect(policy.allowedToolIds.includes("git_add")).toBe(true);
-    expect(policy.allowedToolIds.includes("git_commit")).toBe(true);
-    expect(policy.allowedToolIds.includes("git_checkout")).toBe(true);
-    expect(policy.allowedToolIds.includes("git_reset")).toBe(true);
-    expect(policy.allowedToolIds.includes("git_stash")).toBe(true);
-    expect(policy.enforceMacroOnlyWrites).toBe(false);
-  });
-
   it("detects legacy .macro scoped paths", () => {
     expect(isMacroScopedPath(".macro")).toBe(true);
     expect(isMacroScopedPath(".macro/branches/main/plan.md")).toBe(true);

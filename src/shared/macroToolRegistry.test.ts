@@ -13,7 +13,7 @@ describe('macroToolRegistry', () => {
   });
 
   it('covers every frontend mode policy tool id', () => {
-    const modes = ['Chat', 'Architect', 'Implement', 'Debug'] as const;
+    const modes = ['Chat', 'Architect', 'Implement'] as const;
 
     for (const mode of modes) {
       for (const toolId of getToolModePolicy(mode).allowedToolIds) {

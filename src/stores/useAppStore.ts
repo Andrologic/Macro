@@ -180,8 +180,7 @@ const normalizePath = (value: string): string =>
 const isAppMode = (value: unknown): value is AppMode =>
   value === "Architect" ||
   value === "Implement" ||
-  value === "Chat" ||
-  value === "Debug";
+  value === "Chat";
 
 const isLegacyWorkspaceMockPath = (path?: string): boolean => {
   const normalized = normalizePath(path || "");
@@ -841,7 +840,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   rightPanelWidth: 320,
   isLeftPanelOpen: true,
   isRightPanelOpen: true,
-  enabledModes: ["Architect", "Implement", "Chat", "Debug"],
+  enabledModes: ["Architect", "Implement", "Chat"],
   uiZoomMode: "auto",
   uiZoomLevel: 1,
   projectSwitchPolicy: "resume_per_project",
@@ -3148,7 +3147,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       const resolvedMode: AppMode = isAppMode(sessionMode)
         ? sessionMode
-        : ["Architect", "Implement", "Chat", "Debug"].includes(lastActiveMode)
+        : ["Architect", "Implement", "Chat"].includes(lastActiveMode)
           ? lastActiveMode
           : "Implement";
       const resolvedAgentType: AgentType = ["build", "plan"].includes(

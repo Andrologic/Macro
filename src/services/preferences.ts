@@ -43,7 +43,6 @@ export const PREF_KEYS = {
   PROMPT_ARCHITECT: "promptArchitect",
   PROMPT_IMPLEMENT: "promptImplement",
   PROMPT_CHAT: "promptChat",
-  PROMPT_DEBUG: "promptDebug",
   PROMPT_PLAN_EXPLORER: "promptPlanExplorer",
   PROMPT_TASK_REVIEWER: "promptTaskReviewer",
   PROMPT_REPO_AUDITOR: "promptRepoAuditor",
@@ -83,8 +82,6 @@ const DEFAULT_MODE_PROMPTS = {
     "You are the Implementer. Follow the tasks to implement the specific feature.",
   [PREF_KEYS.PROMPT_CHAT]:
     "You are a helpful AI assistant.",
-  [PREF_KEYS.PROMPT_DEBUG]:
-    "You are the Debugger. Use workspace tools to investigate and fix issues.",
 } as const;
 
 const DEFAULT_INTERNAL_PROFILE_PROMPTS = {
@@ -100,7 +97,6 @@ export const PROMPT_PREFERENCE_KEYS = [
   PREF_KEYS.PROMPT_ARCHITECT,
   PREF_KEYS.PROMPT_IMPLEMENT,
   PREF_KEYS.PROMPT_CHAT,
-  PREF_KEYS.PROMPT_DEBUG,
   PREF_KEYS.PROMPT_PLAN_EXPLORER,
   PREF_KEYS.PROMPT_TASK_REVIEWER,
   PREF_KEYS.PROMPT_REPO_AUDITOR,
@@ -119,7 +115,6 @@ export const MODE_PROMPT_KEYS_BY_MODE: Record<AppMode, PromptPreferenceKey> = {
   Architect: PREF_KEYS.PROMPT_ARCHITECT,
   Implement: PREF_KEYS.PROMPT_IMPLEMENT,
   Chat: PREF_KEYS.PROMPT_CHAT,
-  Debug: PREF_KEYS.PROMPT_DEBUG,
 };
 
 export const INTERNAL_AGENT_PROFILE_PROMPT_KEYS = {
@@ -153,12 +148,6 @@ export const PROMPT_PREFERENCE_DEFINITIONS: PromptPreferenceDefinition[] = [
     key: PREF_KEYS.PROMPT_CHAT,
     label: "Chat Mode",
     description: "Base system prompt for general chat conversations.",
-    scope: "mode",
-  },
-  {
-    key: PREF_KEYS.PROMPT_DEBUG,
-    label: "Debug Mode",
-    description: "Base system prompt for debugging conversations.",
     scope: "mode",
   },
   {
@@ -217,7 +206,6 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.PROMPT_ARCHITECT]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_ARCHITECT],
   [PREF_KEYS.PROMPT_IMPLEMENT]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_IMPLEMENT],
   [PREF_KEYS.PROMPT_CHAT]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_CHAT],
-  [PREF_KEYS.PROMPT_DEBUG]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_DEBUG],
   [PREF_KEYS.PROMPT_PLAN_EXPLORER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_PLAN_EXPLORER],
   [PREF_KEYS.PROMPT_TASK_REVIEWER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_TASK_REVIEWER],
   [PREF_KEYS.PROMPT_REPO_AUDITOR]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_REPO_AUDITOR],

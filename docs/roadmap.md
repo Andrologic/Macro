@@ -34,7 +34,7 @@ Un ecart devenu obsolete doit etre supprime.
 L'application dispose deja d'une base solide :
 
 - shell desktop React + Tauri fonctionnel
-- modes `Architect`, `Implement`, `Chat`, `Debug` deja presents
+- modes `Architect`, `Implement`, `Chat` deja presents
 - gestion de plans cote Architect deja avancee
 - pipeline Git et metadata deja bien amorce
 - taches, review et commit deja presents cote Implement

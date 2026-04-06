@@ -565,7 +565,7 @@ Exemples :
 
 - Architect peut manipuler les metadata et certains outils de planification
 - Chat reste plus restreint
-- Implement et Debug ont acces a davantage d'outils de workspace et Git
+- Implement a acces a davantage d'outils de workspace et Git
 
 ### 13.2 Validation d'execution
 

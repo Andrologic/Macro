@@ -978,7 +978,7 @@ async fn backfill_conversation_scope_mode(
         END
         WHERE scope_mode IS NULL
            OR TRIM(scope_mode) = ''
-           OR scope_mode NOT IN ('Chat', 'Architect', 'Implement', 'Debug')
+           OR scope_mode NOT IN ('Chat', 'Architect', 'Implement')
         "#
     };
 
@@ -1613,8 +1613,6 @@ mod tests {
                 'blank-scope', 'Blank', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, '', NULL, NULL, NULL
             ), (
                 'invalid-scope', 'Invalid', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, 'Weird', NULL, 'group-1', NULL
-            ), (
-                'debug-scope', 'Debug', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, 'Debug', NULL, NULL, NULL
             )"#,
         )
         .await;
@@ -1626,7 +1624,6 @@ mod tests {
             &migrated_pool,
             &[
                 ("blank-scope", "Chat"),
-                ("debug-scope", "Debug"),
                 ("invalid-scope", "Architect"),
             ],
         )

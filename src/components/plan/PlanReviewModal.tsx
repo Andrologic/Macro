@@ -247,7 +247,7 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
       toast.success(t('implement.aiConflictAssistantStarted', 'AI conflict assistant started'), {
         description: t(
           'implement.planFinalizationAssistantDescription',
-          'Switched to Debug mode and posted the plan finalization blockers.'
+          'Opened an Implement review conversation and posted the plan finalization blockers.'
         ),
       });
     } catch (assistantError) {
