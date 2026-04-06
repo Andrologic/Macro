@@ -671,7 +671,7 @@ const getVirtualRootEntries = (candidates: ProjectWorkspaceCandidate[]) =>
 const formatResolvedWorkspacePath = (
   candidate: ProjectWorkspaceCandidate | null,
   relativePath: string,
-  mode: AppMode,
+  _mode: AppMode,
 ): { virtualPath: string; realPath: string | null } => {
   if (!candidate) {
     return {
@@ -682,22 +682,19 @@ const formatResolvedWorkspacePath = (
 
   return {
     virtualPath: toVirtualPath(candidate, relativePath),
-    realPath:
-      mode === "Debug" && candidate.workspacePath
-        ? joinPathWithinWorkspace(candidate.workspacePath, relativePath || ".")
-        : null,
+    realPath: null,
   };
 };
 
 const normalizeDirEntryForVirtualRoot = (
   entry: tauriIpc.FsDirEntryDto,
   candidate: ProjectWorkspaceCandidate,
-  mode: AppMode,
+  _mode: AppMode,
 ): tauriIpc.FsDirEntryDto => {
   const virtualPath = toVirtualPath(candidate, entry.relative_path || ".");
   const nextEntry: tauriIpc.FsDirEntryDto = {
     ...entry,
-    path: mode === "Debug" ? entry.path : virtualPath,
+    path: virtualPath,
     relative_path: virtualPath,
     name: entry.name,
     is_readonly: entry.is_readonly || candidate.isReadOnly,
@@ -883,29 +880,8 @@ export const resolveToolWorkspaceRouting = (
 const isAbsolutePath = (value: string): boolean =>
   /^(?:[a-zA-Z]:\/|\/)/.test(value.replace(/\\/g, "/"));
 
-const resolvePathForMode = (inputPath: string, mode: AppMode): string => {
-  if (mode !== "Debug") {
-    return inputPath;
-  }
-
-  const root =
-    getSelectedProjectRoot().replace(/\\/g, "/").replace(/\/$/, "") || ".";
-  const normalizedInput = (inputPath || ".").replace(/\\/g, "/");
-
-  if (normalizedInput.startsWith("/")) {
-    return normalizedInput;
-  }
-
-  if (normalizedInput === "." || normalizedInput === "") {
-    return root;
-  }
-
-  if (root === ".") {
-    return normalizedInput;
-  }
-
-  return `${root}/${normalizedInput}`;
-};
+const resolvePathForMode = (inputPath: string, _mode: AppMode): string =>
+  inputPath;
 
 const joinPathWithinWorkspace = (
   workspacePath: string,
@@ -976,13 +952,11 @@ const readAllCandidateFiles = async (
   mode: AppMode,
   workspacePath?: string | null,
 ) => {
-  const debugMode = mode === "Debug";
   const entries = await tauriIpc.fsListDir({
     path: resolveDirectPath(".", mode, workspacePath),
     recursive: true,
     includeHidden,
-    allowOutsideWorkspace:
-      debugMode || Boolean(normalizeWorkspacePath(workspacePath)),
+    allowOutsideWorkspace: Boolean(normalizeWorkspacePath(workspacePath)),
   });
   return entries.filter((entry) => entry.kind === "file");
 };
@@ -1336,7 +1310,7 @@ export const executeWorkspaceTool = async (
 
     if (gitBackendToolIds.has(toolName) && !virtualRootEnabled) {
       const explicitRepoPath = sanitizePathInput(toString(args.repo_path));
-      const shouldUseBackendFirst = !(mode === "Debug" && !explicitRepoPath);
+      const shouldUseBackendFirst = true;
 
       if (shouldUseBackendFirst) {
         const backendArgs: ToolArgs = {
@@ -1890,19 +1864,18 @@ export const executeWorkspaceTool = async (
             }
           }
           validationFiles.push(validation);
-          files.push({
-            path: change.target.displayPath,
-            status: change.status,
+        files.push({
+          path: change.target.displayPath,
+          status: change.status,
             additions: change.additions,
             deletions: change.deletions,
             created: change.created,
             bytes_written: change.bytesWritten,
-            validation,
-            project_id: change.target.candidate.id,
-            mount_name: change.target.candidate.mountName,
-            ...(mode === "Debug" ? { real_path: change.target.realPath } : {}),
-          });
-        }
+          validation,
+          project_id: change.target.candidate.id,
+          mount_name: change.target.candidate.mountName,
+        });
+      }
 
         return JSON.stringify(
           {
@@ -2713,14 +2686,12 @@ export const executeWorkspaceTool = async (
         typeof args.max_depth === "number"
           ? Math.max(1, Math.floor(args.max_depth))
           : undefined;
-      const debugMode = mode === "Debug";
-
       const entries = await tauriIpc.fsListDir({
         path,
         recursive,
         includeHidden,
         maxDepth,
-        allowOutsideWorkspace: debugMode || Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
       });
       return JSON.stringify({ path, count: entries.length, entries }, null, 2);
     }
@@ -2735,14 +2706,10 @@ export const executeWorkspaceTool = async (
       try {
         result = await tauriIpc.fsReadFileWithOptions({
           path,
-          allowOutsideWorkspace:
-            mode === "Debug" || Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
         });
       } catch (readError) {
-        if (
-          (mode !== "Debug" && !effectiveWorkspacePath) ||
-          isAbsolutePath(inputPath)
-        ) {
+        if (!effectiveWorkspacePath || isAbsolutePath(inputPath)) {
           throw readError;
         }
 
@@ -2858,15 +2825,13 @@ export const executeWorkspaceTool = async (
         content,
         createDirs,
         allowOutsideWorkspace:
-          mode === "Debug" ||
-          (!useMetadataWorkspace && Boolean(effectiveWorkspacePath)),
+          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
       });
       const readback = await tauriIpc.fsReadFileWithOptions({
         path,
         allowOutsideWorkspace:
-          mode === "Debug" ||
-          (!useMetadataWorkspace && Boolean(effectiveWorkspacePath)),
+          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
       });
       return buildStructuredWriteResponse({
@@ -2909,8 +2874,7 @@ export const executeWorkspaceTool = async (
       const current = await tauriIpc.fsReadFileWithOptions({
         path,
         allowOutsideWorkspace:
-          mode === "Debug" ||
-          (!useMetadataWorkspace && Boolean(effectiveWorkspacePath)),
+          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
       });
       if (current.is_binary) {
@@ -2934,16 +2898,14 @@ export const executeWorkspaceTool = async (
         content: updated,
         createDirs: true,
         allowOutsideWorkspace:
-          mode === "Debug" ||
-          (!useMetadataWorkspace && Boolean(effectiveWorkspacePath)),
+          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
       });
       const stats = computeLineChangeStats(current.content, updated);
       const readback = await tauriIpc.fsReadFileWithOptions({
         path,
         allowOutsideWorkspace:
-          mode === "Debug" ||
-          (!useMetadataWorkspace && Boolean(effectiveWorkspacePath)),
+          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
       });
       return buildStructuredWriteResponse({
@@ -3024,8 +2986,7 @@ export const executeWorkspaceTool = async (
         const current = await tauriIpc.fsReadFileWithOptions({
           path: realPath,
           allowOutsideWorkspace:
-            mode === "Debug" ||
-            (!useMetadataWorkspace && Boolean(effectiveWorkspacePath)),
+            !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
           workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
         });
 
@@ -3085,8 +3046,7 @@ export const executeWorkspaceTool = async (
           content: change.newContent,
           createDirs: true,
           allowOutsideWorkspace:
-            mode === "Debug" ||
-            (!useMetadataWorkspace && Boolean(effectiveWorkspacePath)),
+            !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
           workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
         });
       }
@@ -3112,8 +3072,7 @@ export const executeWorkspaceTool = async (
             const readback = await tauriIpc.fsReadFileWithOptions({
               path: change.realPath,
               allowOutsideWorkspace:
-                mode === "Debug" ||
-                (!useMetadataWorkspace && Boolean(effectiveWorkspacePath)),
+                !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
               workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             });
             validation = {
@@ -3229,8 +3188,7 @@ export const executeWorkspaceTool = async (
             mode,
             effectiveWorkspacePath,
           ),
-          allowOutsideWorkspace:
-            mode === "Debug" || Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
         });
         if (content.is_binary) continue;
 

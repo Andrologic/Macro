@@ -41,9 +41,6 @@ export const useGlobalShortcuts = (): void => {
         case 'app.switchMode.chat':
           appState.setMode('Chat');
           return true;
-        case 'app.switchMode.debug':
-          appState.setMode('Debug');
-          return true;
         case 'app.toggleLeftPanel':
           appState.setLeftPanelOpen(!appState.isLeftPanelOpen);
           return true;
@@ -94,7 +91,7 @@ export const useGlobalShortcuts = (): void => {
 
         if (definition.id === 'chat.stopStreaming' && !isStreaming) return false;
         if (definition.id.startsWith('app.switchMode') && settingsOpen) return false;
-        if (definition.id === 'chat.newConversation' && mode !== 'Chat' && mode !== 'Debug') return false;
+        if (definition.id === 'chat.newConversation' && mode !== 'Chat') return false;
         if (
           (definition.id === 'chat.historyPrevious' || definition.id === 'chat.historyNext') &&
           (promptHistoryNavigationMode !== 'shortcut_only' || !isChatInputFocused)

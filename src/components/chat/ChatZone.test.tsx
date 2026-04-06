@@ -3,7 +3,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-type AppMode = 'Chat' | 'Architect' | 'Implement' | 'Debug';
+type AppMode = 'Chat' | 'Architect' | 'Implement';
 
 type MockConversation = {
   id: string;

@@ -83,13 +83,6 @@ export const getToolModePolicy = (mode: AppMode): ToolModePolicy => {
     };
   }
 
-  if (mode === "Debug") {
-    return {
-      allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_TOOLS, ...TERMINAL_TOOLS],
-      enforceMacroOnlyWrites: false,
-    };
-  }
-
   return {
     allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_TOOLS, ...TERMINAL_TOOLS],
     enforceMacroOnlyWrites: false,

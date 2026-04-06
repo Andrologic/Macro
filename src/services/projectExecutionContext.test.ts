@@ -183,10 +183,10 @@ describe('resolveProjectExecutionContext', () => {
     });
   });
 
-  it('falls back to the selected project when no group context is available', async () => {
+  it('falls back to the selected project when an implement conversation has no task scope', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
-      mode: 'Debug',
+      mode: 'Implement',
       projects,
       selectedProjectId: 'macro-web',
     });

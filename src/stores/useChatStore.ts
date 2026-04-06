@@ -303,7 +303,7 @@ const branchNameMatchesCandidate = (
 
 const MESSAGE_IMAGES_STORAGE_KEY = "macro_chat_message_images";
 
-type AISelectionModeKey = "ChatDebug" | "Architect" | "Implement";
+type AISelectionModeKey = "Chat" | "Architect" | "Implement";
 
 interface PersistedAISelection {
   providerId: string | null;
@@ -325,8 +325,8 @@ const EMPTY_AI_CONTEXT_SELECTIONS: PersistedAIContextSelections = {
 };
 
 const getSelectionModeKey = (mode: AppMode): AISelectionModeKey => {
-  if (mode === "Chat" || mode === "Debug") {
-    return "ChatDebug";
+  if (mode === "Chat") {
+    return "Chat";
   }
   if (mode === "Architect") {
     return "Architect";
@@ -393,14 +393,16 @@ const normalizeAIContextSelections = (
   > = {};
   if (raw.modeSelections && typeof raw.modeSelections === "object") {
     const modeMap = raw.modeSelections as Record<string, unknown>;
-    for (const key of [
-      "ChatDebug",
-      "Architect",
-      "Implement",
-    ] as AISelectionModeKey[]) {
+    for (const key of ["Chat", "Architect", "Implement"] as AISelectionModeKey[]) {
       const normalized = normalizePersistedSelection(modeMap[key]);
       if (normalized) {
         modeSelections[key] = normalized;
+      }
+    }
+    if (!modeSelections.Chat) {
+      const legacyChatSelection = normalizePersistedSelection(modeMap.ChatDebug);
+      if (legacyChatSelection) {
+        modeSelections.Chat = legacyChatSelection;
       }
     }
   }
@@ -2953,14 +2955,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "For file edits in this session, use write/edit tools and do not emit apply_patch.",
       );
     }
-    if (useAppStore.getState().mode === "Debug") {
-      systemInstructions.push(
-        "In Debug mode, for any question about current directory, file existence, path, or file content, you MUST call workspace tools first (list/read). " +
-          'If filename is ambiguous (example: "readme"), list the directory first and then read the exact matched filename (example: README.md). ' +
-          "If a read fails, report the exact tool error and ask for a precise path. Never invent file content or project paths.",
-      );
-    }
-
     const appMode = appState.mode;
     const agentType = appMode === "Implement" ? appState.agentType : null;
     const modePrompt = await loadPreference<string>(
@@ -3096,8 +3090,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (
       conversation.scope_mode === "Architect" ||
       conversation.scope_mode === "Implement" ||
-      conversation.scope_mode === "Chat" ||
-      conversation.scope_mode === "Debug"
+      conversation.scope_mode === "Chat"
     ) {
       return conversation.scope_mode;
     }
@@ -3124,7 +3117,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return false;
     }
 
-    if (mode === "Chat" || mode === "Debug") {
+    if (mode === "Chat") {
       return true;
     }
 
@@ -3144,7 +3137,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (mode === "Implement") {
-      if (!selectedTaskId) return false;
+      if (!selectedTaskId) {
+        return !conversation.task_id;
+      }
       return conversation.task_id === selectedTaskId;
     }
 
@@ -3342,17 +3337,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    if (mode === "Debug") {
-      const enabledTools = Object.values(toolsState.internalTools)
-        .filter((tool) => toolsState.isToolEnabled(tool.id))
-        .map((tool) => tool.id);
-      return finalizeAllowedToolIds(
-        enabledTools.filter((toolId) =>
-          modePolicy.allowedToolIds.includes(toolId),
-        ),
-      );
-    }
-
     const enabledTools = Object.values(toolsState.internalTools)
       .filter((tool) => toolsState.isToolEnabled(tool.id))
       .map((tool) => tool.id);
@@ -3388,24 +3372,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           "You must call read_file before answering about attached files or document context. " +
           "Do not summarize, infer, or quote file contents until read_file has been used with the exact file name or path. " +
           "If the filename is ambiguous, say so only after attempting the appropriate tool call.",
-        maxRetries: 1,
-      };
-    }
-
-    const debugLikeQuestion =
-      useAppStore.getState().mode === "Debug" &&
-      (params.allowedToolIds.includes("list") ||
-        params.allowedToolIds.includes("read")) &&
-      /\b(file|files|path|paths|directory|folder|cwd|workspace|readme|package\.json|current directory|content|contents|fichier|fichiers|chemin|dossier|répertoire|contenu)\b/i.test(
-        params.userContent,
-      );
-
-    if (debugLikeQuestion) {
-      return {
-        requiredToolNames: ["list", "read"],
-        retrySystemPrompt:
-          "In Debug mode, you must call list or read before answering questions about files, paths, directories, current working directory, or file contents. " +
-          "Do not invent filenames, paths, or source contents. Use the appropriate workspace tool first, then answer from the exact tool output.",
         maxRetries: 1,
       };
     }
@@ -3975,7 +3941,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const allowedToolIds = await getAllowedToolIdsForCurrentMode(
       internalAgentProfile,
     );
-    const showToolTraces = useAppStore.getState().mode === "Debug";
+    const showToolTraces = false;
     const preparedRequest = await prepareMessagesForRequest(
       params.conversationId,
       allowedToolIds,
@@ -4407,10 +4373,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? (groupId ?? appState.selectedGroupId ?? null)
           : (groupId ?? null);
 
-    if (mode === "Implement" && !resolvedTaskId) {
-      throw new Error("Implement conversations must be linked to a task.");
-    }
-
     if (mode === "Implement" && resolvedTaskId) {
       const existingConversation = getLatestConversationForTask(resolvedTaskId);
       if (existingConversation) {
@@ -4810,16 +4772,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       appState;
     let state = get();
 
-    if (mode === "Debug") {
-      return getFallbackConversationIdForMode(
-        state.conversations,
-        "Debug",
-        selectedGroupId,
-        selectedProjectId,
-        selectedTaskId,
-      );
-    }
-
     if (mode === "Architect" && appState.activeArchitectPlanId) {
       try {
         const targetBranch = resolveTargetBranch(
@@ -4981,6 +4933,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
         title: task ? `Task - ${task.title}` : "Task Session",
         taskId: selectedTaskId,
         projectId: projectId ?? null,
+        groupId: selectedGroupId,
+        selectConversation: false,
+      });
+      if (!isCurrentRequest()) return null;
+      return created.id;
+    }
+
+    if (mode === "Implement") {
+      const fallbackProjectId =
+        getFocusedProjectForGroup(
+          appState.projectGroups,
+          selectedGroupId,
+          selectedProjectId,
+          localProjectContext,
+        )?.id ??
+        selectedProjectId ??
+        null;
+      const fallbackTitle = fallbackProjectId
+        ? `Repository review`
+        : "Implement Session";
+      const created = await createConversationRecord({
+        title: fallbackTitle,
+        taskId: null,
+        projectId: fallbackProjectId,
         groupId: selectedGroupId,
         selectConversation: false,
       });
@@ -5619,13 +5595,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           : undefined;
         let finalizedManualFeatureDraft = false;
 
-        if (modeAtSend === "Implement") {
-          if (!resolvedTaskId) {
-            throw buildSendError(
-              "Select a task before sending a message in Implement mode.",
-            );
-          }
-
+        if (modeAtSend === "Implement" && resolvedTaskId) {
           if (
             taskForSend?.task_source === "standalone" &&
             taskForSend.standalone_kind === "manual_feature" &&

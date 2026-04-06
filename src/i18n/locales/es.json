@@ -137,7 +137,7 @@
       "macroPendingDifferences": "La sincronización de metadatos aún tiene diferencias locales o remotas pendientes.",
       "macroPushComplete": "@macro push completo",
       "aiConflictAssistantStarted": "Se inició el asistente de conflictos de IA",
-      "aiConflictAssistantDescription": "Se cambió al modo de depuración y se publicó el contexto del conflicto.",
+      "aiConflictAssistantDescription": "Se abrió una conversación de revisión en Implement y se publicó el contexto del conflicto.",
       "aiConflictAssistantStartFailed": "No se pudo iniciar el asistente de IA",
       "nextAction": "Próxima acción: {{action}}.",
       "macroConflictTitle": "@conflicto de sincronización de macros",
@@ -769,7 +769,7 @@
     "planFinalizationBlockedDescription": "Resuelva los bloqueadores del repositorio a continuación y luego vuelva a intentar la finalización explícitamente.",
     "planReviewReplicaRepair": "Réplicas de metadatos del plan de reparación",
     "aiConflictAssistantStarted": "Se inició el asistente de conflictos de IA",
-    "planFinalizationAssistantDescription": "Se cambió al modo de depuración y se publicaron los bloqueadores de finalización del plan.",
+    "planFinalizationAssistantDescription": "Se abrió una conversación de revisión en Implement y se publicaron los bloqueadores de finalización del plan.",
     "noAggregatedDiff": "No hay diferencias agregadas entre la rama del plan y la rama base para este repositorio.",
     "context": {
       "default": "Diff focalizado",
