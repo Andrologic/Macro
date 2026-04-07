@@ -1,0 +1,11 @@
+import fs from 'fs';
+const path = 'src/components/modals/FileChangesDiffModal.tsx';
+let data = fs.readFileSync(path, 'utf8');
+data = data.replace('rounded-[20px] border bg-background shadow-2xl ring-1 ring-border/50', 'rounded-xl bg-background shadow-2xl');
+data = data.replace('border-r bg-muted/20', 'bg-muted/10');
+data = data.replace('border-b p-4', 'p-4');
+data = data.replace('border-b px-4 py-3', 'px-4 py-3');
+data = data.replace('bg-muted/40 p-1 ring-1 ring-border/50', 'bg-muted/40 p-1');
+data = data.replace('shadow-sm ring-1 ring-border', 'shadow-sm');
+data = data.replace('border-t bg-card/95 px-6 py-4', 'bg-card/95 px-6 py-4');
+fs.writeFileSync(path, data, 'utf8');
