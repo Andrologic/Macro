@@ -1775,29 +1775,24 @@ pub(crate) fn diff_repo(
     }
 
     let mut output = String::new();
-    let push_line = |output: &mut String, line: &git2::DiffLine<'_>| {
+    let mut print_cb = |_delta: git2::DiffDelta<'_>, _hunk: Option<git2::DiffHunk<'_>>, line: git2::DiffLine<'_>| {
         let origin = line.origin();
         // Only prepend origin for content lines, not file/hunk headers
         if matches!(origin, '+' | '-' | ' ') {
             output.push(origin);
         }
         output.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+        true
     };
 
     if let Some(head) = head {
         let head_commit = resolve_commit(repo, head)?;
         let head_tree = head_commit.tree()?;
         let diff = repo.diff_tree_to_tree(base_tree.as_ref(), Some(&head_tree), Some(&mut opts))?;
-        diff.print(DiffFormat::Patch, |_, _, line| {
-            push_line(&mut output, &line);
-            true
-        })?;
+        diff.print(DiffFormat::Patch, &mut print_cb)?;
     } else {
         let diff = repo.diff_tree_to_workdir_with_index(base_tree.as_ref(), Some(&mut opts))?;
-        diff.print(DiffFormat::Patch, |_, _, line| {
-            push_line(&mut output, &line);
-            true
-        })?;
+        diff.print(DiffFormat::Patch, &mut print_cb)?;
     }
 
     Ok(output)
