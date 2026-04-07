@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import { Icon } from '../ui/Icon';
@@ -52,6 +52,7 @@ const STATUS_META = {
 
 export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onClose }) => {
   const { t } = useTranslation();
+  const titleId = useId();
   const session = useFileChangesStore((state) => state.diffModalSession);
   const repository = useFileChangesStore((state) => {
     const currentSession = state.diffModalSession;
@@ -208,8 +209,9 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
       }}
       role="dialog"
       aria-modal="true"
+      aria-labelledby={titleId}
     >
-      <div className="flex h-full w-full max-w-[1800px] overflow-hidden rounded-xl bg-background shadow-2xl ring-1 ring-border/10">
+      <div className="relative z-0 flex h-[calc(100vh-4rem)] w-[calc(100vw-2rem)] max-h-[min(940px,calc(100vh-4rem))] max-w-[1800px] overflow-hidden rounded-xl bg-background shadow-2xl ring-1 ring-border/10 sm:h-[calc(100vh-5rem)] sm:w-[calc(100vw-3rem)]">
         <aside className="flex w-[200px] shrink-0 flex-col bg-muted/10">
           <div className="p-4">
             <h3 className="truncate text-sm font-semibold tracking-tight">{repository.branchName}</h3>
@@ -264,7 +266,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
           <header className="flex shrink-0 items-center justify-between px-4 py-3">
             <div className="flex min-w-0 flex-1 items-center gap-3 pr-4">
               <div className="min-w-0">
-                <h2 className="truncate text-sm font-medium leading-tight">
+                <h2 id={titleId} className="truncate text-sm font-medium leading-tight">
                   <span className="text-muted-foreground">{getFileDir(change.path) || '/'}</span>
                   <span className="text-foreground">{getFileLabel(change.path)}</span>
                 </h2>
@@ -280,13 +282,13 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
 
           <div className="relative min-h-0 flex-1 bg-muted/5">
             {repository.lastError && (
-              <div className="absolute inset-x-4 top-4 z-10 rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <div className="absolute inset-x-4 top-4 z-20 rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                 {repository.lastError}
               </div>
             )}
 
             {isHydrating ? (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6">
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 p-6">
                 <div className="flex items-center gap-3">
                   <Icon name="loader" size={20} className="animate-spin text-primary" />
                   <span className="text-sm font-medium text-muted-foreground">
@@ -300,16 +302,17 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 </div>
               </div>
             ) : change.hunks.length === 0 ? (
-              <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
+              <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
                 {t('implement.noTextualDiff', 'No textual diff is available for this file.')}
               </div>
             ) : (
               <DiffMergeView
-                key={`${change.id}:${change.contextMode}`}
+                key={change.id}
                 original={change.originalContent}
                 modified={session.rightDraftContent}
                 language={change.language}
                 className="h-full w-full border-none md:border-none"
+                editable={canEdit}
                 autoFocus={canEdit}
                 onChange={(value) => {
                   if (canEdit) {

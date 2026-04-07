@@ -9,6 +9,11 @@ describe('DiffMergeView', () => {
 
   const flushRender = async () => {
     await Promise.resolve();
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
     await Promise.resolve();
   };
 
@@ -184,6 +189,37 @@ describe('DiffMergeView', () => {
     });
 
     expect(container?.querySelector('.cm-merge-revert button')).not.toBeNull();
+    expect(container?.querySelector('.cm-merge-revert .macro-diff-revert-icon')).not.toBeNull();
+  });
+
+  it('keeps revert controls in the merge flow without manual scroll compensation', async () => {
+    await act(async () => {
+      root?.render(
+        <DiffMergeView
+          original={'line 1\nline 2\nline 3'}
+          modified={'line 1\nchanged line 2\nline 3'}
+          revertControls="a-to-b"
+        />
+      );
+      await flushRender();
+    });
+
+    const mergeRoot = container?.querySelector('.macro-diff-merge-root') as HTMLElement | null;
+    expect(mergeRoot).not.toBeNull();
+    const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
+    expect(revertButton).not.toBeNull();
+    expect(revertButton?.style.transform).toBe('');
+
+    await act(async () => {
+      if (mergeRoot) {
+        mergeRoot.scrollTop = 96;
+        mergeRoot.dispatchEvent(new Event('scroll'));
+      }
+      await flushRender();
+    });
+
+    expect(container?.querySelector('.cm-merge-revert button')).toBe(revertButton);
+    expect(mergeRoot?.style.getPropertyValue('--macro-diff-revert-scroll-y')).toBe('');
   });
 
   it('applies language extension for typescript', async () => {
@@ -199,6 +235,41 @@ describe('DiffMergeView', () => {
     });
 
     expect(container?.querySelector('[data-language="typescript"]')).not.toBeNull();
+  });
+
+  it('falls back to text for unsupported languages', async () => {
+    await act(async () => {
+      root?.render(
+        <DiffMergeView
+          original={'hello'}
+          modified={'hello world'}
+          language="python"
+        />
+      );
+      await flushRender();
+    });
+
+    expect(container?.querySelector('[data-language="text"]')).not.toBeNull();
+  });
+
+  it('renders the right editor as truly read-only when editable is false', async () => {
+    let latestHandle: MergeViewEditorHandle | null = null;
+
+    await act(async () => {
+      root?.render(
+        <DiffMergeView
+          original={'legacy();'}
+          modified={'legacy();'}
+          editable={false}
+          onEditorReady={(handle) => {
+            latestHandle = handle;
+          }}
+        />
+      );
+      await flushRender();
+    });
+
+    expect(requireHandle(latestHandle).b.contentDOM.getAttribute('contenteditable')).toBe('false');
   });
 
   it('handles large content without crashing', async () => {
