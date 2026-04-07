@@ -31,8 +31,7 @@ type Repository = {
   };
 };
 
-let repository: Repository;
-let diffSession: {
+type DiffSession = {
   repositoryId: string;
   changeId: string;
   rightDraftContent: string;
@@ -40,19 +39,25 @@ let diffSession: {
   isDirty: boolean;
   isSaving: boolean;
   isHydratingFullContext: boolean;
-} | null;
+};
+
+let repository: Repository;
+let diffSession: DiffSession | null;
 let importCounter = 0;
+let latestDiffProps: { original: string; modified: string; language: string | undefined } | null = null;
+let diffRenderCount = 0;
 
 const markAsReviewedMock = mock(() => undefined);
-const loadChangeContextMock = mock(async () => undefined);
 const updateRightDraftMock = mock(() => undefined);
 const resetRightDraftMock = mock(() => undefined);
 const saveRightDraftMock = mock(async () => undefined);
-const goToAdjacentDiffMock = mock(() => undefined);
 const openDiffModalMock = mock(() => undefined);
 
 const createStoreHook = <T,>(getSnapshot: () => T) => {
-  const hook = () => getSnapshot();
+  const hook = <S,>(selector?: (state: T) => S): T | S => {
+    const snapshot = getSnapshot();
+    return selector ? selector(snapshot) : snapshot;
+  };
   return hook;
 };
 
@@ -60,15 +65,12 @@ const loadModal = async () => {
   mock.restore();
 
   const useFileChangesStore = createStoreHook(() => ({
-    getRepository: (repositoryId: string) => (repositoryId === repository.id ? repository : undefined),
-    getChange: (_repositoryId: string, changeId: string) => repository.changes.find((change) => change.id === changeId),
-    getDiffModalSession: () => diffSession,
+    repositories: [repository],
+    diffModalSession: diffSession,
     markAsReviewed: markAsReviewedMock,
-    loadChangeContext: loadChangeContextMock,
     updateRightDraft: updateRightDraftMock,
     resetRightDraft: resetRightDraftMock,
     saveRightDraft: saveRightDraftMock,
-    goToAdjacentDiff: goToAdjacentDiffMock,
     openDiffModal: openDiffModalMock,
   }));
 
@@ -101,38 +103,47 @@ const loadModal = async () => {
     ),
   }));
 
-  mock.module('../ui/CodeViewer', () => ({
-    CodeViewer: ({
-      code,
-      readOnly,
-      onChange,
+  mock.module('../ui/DiffMergeView', () => ({
+    DiffMergeView: ({
+      original,
+      modified,
+      language,
       onEditorReady,
     }: {
-      code: string;
-      readOnly?: boolean;
-      onChange?: (value: string) => void;
-      onEditorReady?: (view: unknown) => void;
+      original: string;
+      modified: string;
+      language?: string;
+      onEditorReady?: (editor: unknown) => void;
     }) => {
-      onEditorReady?.(null);
+      latestDiffProps = { original, modified, language };
+      diffRenderCount += 1;
+
+      React.useEffect(() => {
+        onEditorReady?.({
+          a: { state: { doc: { toString: () => original } } },
+          b: { state: { doc: { toString: () => modified } } },
+          dom: document.createElement('div'),
+        });
+
+        return () => {
+          onEditorReady?.(null);
+        };
+      }, [modified, onEditorReady, original]);
+
       return (
-        <textarea
-          data-code-viewer={readOnly ? 'readonly' : 'editable'}
-          readOnly={readOnly}
-          value={code}
-          onChange={(event) => onChange?.(event.target.value)}
+        <div
+          data-diff-merge-view="true"
+          data-original={original}
+          data-modified={modified}
+          data-language={language ?? ''}
+          data-render-count={diffRenderCount}
         />
       );
     },
   }));
 
   mock.module('../ui/ConfirmPromptModal', () => ({
-    ConfirmPromptModal: ({
-      isOpen,
-      title,
-    }: {
-      isOpen: boolean;
-      title: string;
-    }) => (isOpen ? <div data-confirm-modal="true">{title}</div> : null),
+    ConfirmPromptModal: ({ title }: { title: string }) => <div data-confirm-modal="true">{title}</div>,
   }));
 
   importCounter += 1;
@@ -156,12 +167,12 @@ describe('FileChangesDiffModal', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    latestDiffProps = null;
+    diffRenderCount = 0;
     markAsReviewedMock.mockClear();
-    loadChangeContextMock.mockClear();
     updateRightDraftMock.mockClear();
     resetRightDraftMock.mockClear();
     saveRightDraftMock.mockClear();
-    goToAdjacentDiffMock.mockClear();
     openDiffModalMock.mockClear();
 
     repository = {
@@ -247,7 +258,7 @@ describe('FileChangesDiffModal', () => {
     mock.restore();
   });
 
-  it('renders the redesigned modal with key metadata and stage areas', async () => {
+  it('renders the current repository, file metadata, and diff props from the store session', async () => {
     const { FileChangesDiffModal } = await loadModal();
 
     await act(async () => {
@@ -256,28 +267,15 @@ describe('FileChangesDiffModal', () => {
     });
 
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.body.textContent).toContain('feature/review-redesign');
+    expect(document.body.textContent).toContain('1 / 3 files validated');
     expect(document.body.textContent).toContain('src/feature.tsx');
-    expect(document.body.textContent).toContain('File 2/3');
-    expect(document.body.textContent).toContain('+7');
-    expect(document.body.textContent).toContain('-2');
-    expect(document.body.textContent).toContain('Before');
-    expect(document.body.textContent).toContain('After');
-  });
-
-  it('navigates to previous and next files from the header controls', async () => {
-    const { FileChangesDiffModal } = await loadModal();
-
-    await act(async () => {
-      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
-      await Promise.resolve();
+    expect(document.body.querySelector('[data-diff-merge-view="true"]')).not.toBeNull();
+    expect(latestDiffProps).toEqual({
+      original: 'before();',
+      modified: 'after();',
+      language: 'typescript',
     });
-
-    findButton('Previous')?.click();
-    findButton('Next')?.click();
-
-    expect(goToAdjacentDiffMock).toHaveBeenCalledTimes(2);
-    expect(goToAdjacentDiffMock).toHaveBeenNthCalledWith(1, 'previous');
-    expect(goToAdjacentDiffMock).toHaveBeenNthCalledWith(2, 'next');
   });
 
   it('opens another file from the compact file rail', async () => {
@@ -337,7 +335,7 @@ describe('FileChangesDiffModal', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('disables validation while dirty and keeps save/reset available', async () => {
+  it('shows save and reset controls while the draft is dirty', async () => {
     diffSession = {
       ...diffSession!,
       isDirty: true,
@@ -351,12 +349,13 @@ describe('FileChangesDiffModal', () => {
       await Promise.resolve();
     });
 
-    expect(findButton('Validate')?.disabled).toBe(true);
-    expect(findButton('Save right side')?.disabled).toBe(false);
+    expect(document.body.textContent).toContain('Unsaved draft. Save to validate or reset.');
+    expect(findButton('Save draft')?.disabled).toBe(false);
     expect(findButton('Reset draft')?.disabled).toBe(false);
+    expect(findButton('Validate file')).toBeUndefined();
   });
 
-  it('shows deleted files as read-only in the review flow', async () => {
+  it('renders deleted files with the current session content and disabled actions', async () => {
     diffSession = {
       ...diffSession!,
       changeId: 'change-3',
@@ -371,8 +370,14 @@ describe('FileChangesDiffModal', () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).toContain('Deleted files are read-only in this validation flow.');
-    expect(findButton('Save right side')?.disabled).toBe(true);
+    expect(latestDiffProps).toEqual({
+      original: 'legacy();',
+      modified: '',
+      language: 'typescript',
+    });
+    expect(findButton('Reset draft')?.disabled).toBe(true);
+    expect(findButton('Validate file')?.disabled).toBe(true);
+    expect(document.body.textContent).toContain('Validated');
   });
 
   it('surfaces loading, missing diff text, and repository errors without breaking layout', async () => {
@@ -394,7 +399,66 @@ describe('FileChangesDiffModal', () => {
     });
 
     expect(document.body.textContent).toContain('Repository is temporarily unavailable.');
-    expect(document.body.textContent).toContain('Preparing editor...');
-    expect(document.body.textContent).toContain('No textual diff is available for this file. The split view falls back to full-file content.');
+    expect(document.body.textContent).toContain('Loading full file context...');
+    expect(document.body.textContent).toContain('Working...');
+    expect(document.body.querySelector('[data-diff-merge-view="true"]')).toBeNull();
+  });
+
+  it('updates diff props when switching files and when the loaded context changes', async () => {
+    const { FileChangesDiffModal } = await loadModal();
+
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await Promise.resolve();
+    });
+
+    expect(latestDiffProps).toEqual({
+      original: 'before();',
+      modified: 'after();',
+      language: 'typescript',
+    });
+
+    diffSession = {
+      ...diffSession!,
+      changeId: 'change-1',
+      rightDraftContent: 'const list = [];',
+      lastLoadedModifiedContent: 'const list = [];',
+    };
+
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await Promise.resolve();
+    });
+
+    expect(latestDiffProps).toEqual({
+      original: '',
+      modified: 'const list = [];',
+      language: 'typescript',
+    });
+
+    repository.changes[0] = {
+      ...repository.changes[0],
+      contextMode: 'full',
+      originalContent: '// before\nconst list = [];',
+      modifiedContent: '// before\nconst list = [];\nconsole.log(list);',
+    };
+    diffSession = {
+      ...diffSession!,
+      changeId: 'change-1',
+      rightDraftContent: '// before\nconst list = [];\nconsole.log(list);',
+      lastLoadedModifiedContent: '// before\nconst list = [];\nconsole.log(list);',
+    };
+
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await Promise.resolve();
+    });
+
+    expect(latestDiffProps).toEqual({
+      original: '// before\nconst list = [];',
+      modified: '// before\nconst list = [];\nconsole.log(list);',
+      language: 'typescript',
+    });
+    expect(diffRenderCount).toBeGreaterThanOrEqual(3);
   });
 });

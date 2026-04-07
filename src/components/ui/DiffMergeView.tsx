@@ -1,12 +1,14 @@
 import { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { MergeView } from '@codemirror/merge';
-import { EditorState, Compartment } from '@codemirror/state';
+import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
+import { StyleModule } from 'style-mod';
 import { basicSetup } from 'codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { rust } from '@codemirror/lang-rust';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { cn } from '../../utils/cn';
+import { useOptionalTheme } from '../theme/ThemeProvider';
 
 export interface DiffMergeViewProps {
   original: string;
@@ -63,97 +65,135 @@ const createEditorTheme = (isDark: boolean) => EditorView.theme({
   },
 }, { dark: isDark });
 
-const createDiffTheme = () => EditorView.baseTheme({
-  '&dark .cm-changedLines': {
-    backgroundColor: 'rgba(248, 81, 73, 0.1)',
-    borderLeft: '3px solid rgba(248, 81, 73, 0.4)',
-    borderRight: '3px solid rgba(46, 160, 67, 0.4)',
-  },
-  '&light .cm-changedLines': {
-    backgroundColor: 'rgba(248, 81, 73, 0.06)',
-    borderLeft: '3px solid rgba(207, 34, 46, 0.4)',
-    borderRight: '3px solid rgba(26, 127, 55, 0.4)',
-  },
-  '&dark .cm-deletedChunk': {
-    backgroundColor: 'rgba(248, 81, 73, 0.15)',
-    borderLeft: '3px solid rgb(248, 81, 73)',
-    borderRight: '3px solid rgb(248, 81, 73)',
-  },
-  '&light .cm-deletedChunk': {
-    backgroundColor: 'rgba(248, 81, 73, 0.1)',
-    borderLeft: '3px solid rgb(207, 34, 46)',
-    borderRight: '3px solid rgb(207, 34, 46)',
-  },
-  '&dark .cm-insertedChunk': {
-    backgroundColor: 'rgba(46, 160, 67, 0.15)',
-    borderLeft: '3px solid rgb(46, 160, 67)',
-    borderRight: '3px solid rgb(46, 160, 67)',
-  },
-  '&light .cm-insertedChunk': {
-    backgroundColor: 'rgba(46, 160, 67, 0.1)',
-    borderLeft: '3px solid rgb(26, 127, 55)',
-    borderRight: '3px solid rgb(26, 127, 55)',
-  },
-  '&dark .cm-deletedText': {
-    backgroundColor: 'rgba(248, 81, 73, 0.3)',
-    color: '#ffd7d5',
-  },
-  '&light .cm-deletedText': {
-    backgroundColor: 'rgba(248, 81, 73, 0.2)',
-    color: '#8c2f39',
-  },
-  '&dark .cm-insertedText': {
-    backgroundColor: 'rgba(46, 160, 67, 0.3)',
-    color: '#c8f2d1',
-  },
-  '&light .cm-insertedText': {
-    backgroundColor: 'rgba(46, 160, 67, 0.2)',
-    color: '#1f5e32',
-  },
-  '.cm-mergeView': {
-    height: '100%',
-    display: 'flex',
-  },
-  '.cm-mergeView .cm-editor': {
-    height: '100%',
-    flex: 1,
-    minWidth: 0,
-  },
-  '.cm-mergeView .cm-mergeView-gap': {
-    flex: '0 0 1px',
-    backgroundColor: 'transparent',
-  },
-  '.cm-mergeView-chunk': {
-    position: 'relative',
-  },
-  '.cm-mergeView-chunk .cm-revertButton': {
-    position: 'absolute',
-    top: '2px',
-    right: '2px',
-    cursor: 'pointer',
-    opacity: '0.3',
-    transition: 'opacity 0.15s',
-    backgroundColor: 'var(--background)',
-    border: 'none',
-    borderRadius: '4px',
-    padding: '2px 6px',
-    fontSize: '11px',
-    color: 'var(--foreground)',
-  },
-  '.cm-mergeView-chunk .cm-revertButton:hover': {
-    opacity: '1',
-    backgroundColor: 'var(--muted)',
-  },
-  '.cm-mergeView-chunk .cm-revertButton:focus': {
-    outline: '2px solid var(--primary)',
-    outlineOffset: '2px',
-  },
-});
+const createDiffTheme = (isDark: boolean) => {
+  const deletedLineBackground = isDark ? 'rgba(248, 81, 73, 0.24)' : 'rgba(248, 81, 73, 0.16)';
+  const deletedAccent = isDark ? 'rgb(248, 81, 73)' : 'rgb(207, 34, 46)';
+  const deletedTextBackground = isDark ? 'rgba(248, 81, 73, 0.38)' : 'rgba(248, 81, 73, 0.24)';
+  const deletedTextColor = isDark ? '#ffd7d5' : '#8c2f39';
+  const insertedLineBackground = isDark ? 'rgba(46, 160, 67, 0.24)' : 'rgba(46, 160, 67, 0.16)';
+  const insertedAccent = isDark ? 'rgb(46, 160, 67)' : 'rgb(26, 127, 55)';
+  const insertedTextBackground = isDark ? 'rgba(46, 160, 67, 0.38)' : 'rgba(46, 160, 67, 0.24)';
+  const insertedTextColor = isDark ? '#c8f2d1' : '#1f5e32';
+  const revertRailBackground = isDark ? 'rgba(255, 255, 255, 0.02)' : 'rgba(15, 23, 42, 0.03)';
+  const revertRailBorder = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(15, 23, 42, 0.08)';
+  const revertButtonBackground = isDark ? 'rgba(39, 44, 52, 0.9)' : 'rgba(255, 255, 255, 0.95)';
+  const revertButtonHoverBackground = isDark ? 'rgba(63, 70, 82, 0.98)' : 'rgba(241, 245, 249, 0.98)';
+  const revertButtonColor = isDark ? '#f8fafc' : '#0f172a';
 
-const scrollSyncCompartment = new Compartment();
+  return EditorView.styleModule.of(new StyleModule({
+    '.macro-diff-merge-root': {
+      height: '100%',
+      overflowY: 'auto',
+    },
+    '.macro-diff-merge-root .cm-mergeViewEditors': {
+      display: 'flex',
+      alignItems: 'stretch',
+      minHeight: '100%',
+    },
+    '.macro-diff-merge-root .cm-mergeViewEditor': {
+      display: 'flex',
+      flexGrow: '1',
+      flexBasis: '0',
+      minWidth: '0',
+      overflow: 'hidden',
+    },
+    '.macro-diff-merge-root .cm-mergeViewEditor .cm-editor': {
+      flex: '1 1 auto',
+      minWidth: '0',
+      height: '100%',
+    },
+    '.macro-diff-merge-root .cm-merge-revert': {
+      width: '1.8rem',
+      flexShrink: '0',
+      backgroundColor: revertRailBackground,
+      borderLeft: `1px solid ${revertRailBorder}`,
+      borderRight: `1px solid ${revertRailBorder}`,
+    },
+    '.macro-diff-merge-root .cm-merge-revert button': {
+      border: 'none',
+      borderRadius: '6px',
+      backgroundColor: revertButtonBackground,
+      color: revertButtonColor,
+      boxShadow: `0 0 0 1px ${revertRailBorder}`,
+      fontSize: '11px',
+      lineHeight: '1',
+      padding: '4px 0',
+      opacity: '0.78',
+      transition: 'background-color 120ms ease, opacity 120ms ease',
+    },
+    '.macro-diff-merge-root .cm-merge-revert button:hover': {
+      opacity: '1',
+      backgroundColor: revertButtonHoverBackground,
+    },
+    '.macro-diff-merge-root .cm-merge-revert button:focus-visible': {
+      outline: `2px solid ${insertedAccent}`,
+      outlineOffset: '1px',
+    },
+    '.macro-diff-merge-root .cm-merge-a .cm-changedLine': {
+      backgroundColor: deletedLineBackground,
+    },
+    '.macro-diff-merge-root .cm-merge-b .cm-changedLine': {
+      backgroundColor: insertedLineBackground,
+    },
+    '.macro-diff-merge-root .cm-inlineChangedLine': {
+      backgroundColor: insertedLineBackground,
+    },
+    '.macro-diff-merge-root .cm-merge-a .cm-changedText': {
+      backgroundColor: deletedTextBackground,
+      color: deletedTextColor,
+      borderRadius: '2px',
+    },
+    '.macro-diff-merge-root .cm-merge-b .cm-changedText': {
+      backgroundColor: insertedTextBackground,
+      color: insertedTextColor,
+      borderRadius: '2px',
+    },
+    '.macro-diff-merge-root .cm-merge-a .cm-changedLineGutter': {
+      backgroundColor: deletedAccent,
+    },
+    '.macro-diff-merge-root .cm-merge-b .cm-changedLineGutter': {
+      backgroundColor: insertedAccent,
+    },
+    '.macro-diff-merge-root .cm-inlineChangedLineGutter': {
+      backgroundColor: insertedAccent,
+    },
+    '.macro-diff-merge-root .cm-deletedChunk': {
+      paddingLeft: '6px',
+      backgroundColor: deletedLineBackground,
+      borderRadius: '0 6px 6px 0',
+    },
+    '.macro-diff-merge-root .cm-deletedChunk .cm-deletedText': {
+      backgroundColor: deletedTextBackground,
+      color: deletedTextColor,
+      borderRadius: '2px',
+    },
+    '.macro-diff-merge-root .cm-deletedLineGutter': {
+      backgroundColor: deletedAccent,
+    },
+    '.macro-diff-merge-root .cm-deletedLine': {
+      textDecoration: 'none',
+    },
+    '.macro-diff-merge-root .cm-deletedLine del': {
+      textDecoration: 'none',
+    },
+    '.macro-diff-merge-root .cm-insertedLine': {
+      textDecoration: 'none',
+    },
+  }));
+};
 
-const createScrollSyncExtension = () => {
-  return scrollSyncCompartment.of([]);
+/**
+ * Scrolls the MergeView to the first changed line after the diff has been computed.
+ * Uses a small delay to let CodeMirror finish its diff computation before looking
+ * for highlighted elements.
+ */
+const scrollToFirstChange = (mergeView: MergeView) => {
+  requestAnimationFrame(() => {
+    const firstChanged = mergeView.dom.querySelector('.cm-changedLine, .cm-deletedChunk');
+    if (firstChanged) {
+      firstChanged.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  });
 };
 
 export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProps>(({
@@ -166,48 +206,62 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   onEditorReady,
   revertControls = 'a-to-b',
 }, ref) => {
+  const themeContext = useOptionalTheme();
+  const isDark = themeContext?.isDark ?? true;
   const containerRef = useRef<HTMLDivElement>(null);
   const mergeViewRef = useRef<MergeView | null>(null);
+  const originalRef = useRef(original);
+  const modifiedRef = useRef(modified);
   const onChangeRef = useRef(onChange);
+  const onEditorReadyRef = useRef(onEditorReady);
   const syncingRef = useRef<'a' | 'b' | null>(null);
+  const isApplyingExternalUpdateRef = useRef(false);
 
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
 
   useEffect(() => {
+    onEditorReadyRef.current = onEditorReady;
+  }, [onEditorReady]);
+
+  useEffect(() => {
+    originalRef.current = original;
+    modifiedRef.current = modified;
+  }, [modified, original]);
+
+  useEffect(() => {
     if (!containerRef.current) return;
 
     const languageExt = resolveLanguageExtension(language);
-    const baseTheme = createEditorTheme(true);
-    const diffTheme = createDiffTheme();
+    const baseTheme = createEditorTheme(isDark);
+    const diffTheme = createDiffTheme(isDark);
+    const themeExtensions = isDark ? [oneDark] : [];
 
     const mergeView = new MergeView({
       a: {
-        doc: original,
+        doc: originalRef.current,
         extensions: [
           basicSetup,
-          oneDark,
+          ...themeExtensions,
           baseTheme,
           diffTheme,
           languageExt,
           EditorState.readOnly.of(true),
-          createScrollSyncExtension(),
         ],
       },
       b: {
-        doc: modified,
+        doc: modifiedRef.current,
         extensions: [
           basicSetup,
-          oneDark,
+          ...themeExtensions,
           baseTheme,
           diffTheme,
           languageExt,
           EditorView.updateListener.of((update) => {
-            if (!update.docChanged) return;
+            if (!update.docChanged || isApplyingExternalUpdateRef.current) return;
             onChangeRef.current?.(update.state.doc.toString());
           }),
-          createScrollSyncExtension(),
         ],
       },
       parent: containerRef.current,
@@ -216,6 +270,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       gutter: true,
     });
 
+    mergeView.dom.classList.add('macro-diff-merge-root');
     mergeViewRef.current = mergeView;
 
     const handle: MergeViewEditorHandle = {
@@ -224,11 +279,10 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       dom: mergeView.dom,
     };
 
-    onEditorReady?.(handle);
+    onEditorReadyRef.current?.(handle);
 
-    if (autoFocus) {
-      mergeView.b.focus();
-    }
+    // Auto-scroll to the first changed line
+    scrollToFirstChange(mergeView);
 
     const aScroll = mergeView.a.scrollDOM;
     const bScroll = mergeView.b.scrollDOM;
@@ -263,55 +317,81 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
     return () => {
       aScroll.removeEventListener('scroll', aToB);
       bScroll.removeEventListener('scroll', bToA);
-      onEditorReady?.(null);
+      onEditorReadyRef.current?.(null);
       mergeView.destroy();
       mergeViewRef.current = null;
     };
-  }, [language, revertControls, autoFocus]);
+  }, [isDark, language, revertControls]);
 
-  // Handle original content update
+  useEffect(() => {
+    if (!autoFocus) return;
+    mergeViewRef.current?.b.focus();
+  }, [autoFocus]);
+
   useEffect(() => {
     const mergeView = mergeViewRef.current;
     if (!mergeView) return;
 
     const currentOriginal = mergeView.a.state.doc.toString();
-    if (currentOriginal === original) return;
-
-    mergeView.a.dispatch({
-      changes: {
-        from: 0,
-        to: currentOriginal.length,
-        insert: original,
-      },
-    });
-  }, [original]);
-
-  // Handle modified content update
-  useEffect(() => {
-    const mergeView = mergeViewRef.current;
-    if (!mergeView) return;
-
     const currentModified = mergeView.b.state.doc.toString();
-    if (currentModified === modified) return;
+    const shouldUpdateOriginal = currentOriginal !== original;
+    const shouldUpdateModified = currentModified !== modified;
 
-    mergeView.b.dispatch({
-      changes: {
-        from: 0,
-        to: currentModified.length,
-        insert: modified,
-      },
-    });
-  }, [modified]);
+    if (!shouldUpdateOriginal && !shouldUpdateModified) {
+      return;
+    }
+
+    if (shouldUpdateOriginal) {
+      mergeView.a.dispatch({
+        changes: {
+          from: 0,
+          to: currentOriginal.length,
+          insert: original,
+        },
+      });
+    }
+
+    if (!shouldUpdateModified) {
+      return;
+    }
+
+    isApplyingExternalUpdateRef.current = true;
+    try {
+      mergeView.b.dispatch({
+        changes: {
+          from: 0,
+          to: currentModified.length,
+          insert: modified,
+        },
+      });
+    } finally {
+      isApplyingExternalUpdateRef.current = false;
+    }
+  }, [modified, original]);
 
   useImperativeHandle(ref, () => {
-    const mergeView = mergeViewRef.current;
-    if (!mergeView) {
-      throw new Error('MergeView not initialized');
-    }
     return {
-      a: mergeView.a,
-      b: mergeView.b,
-      dom: mergeView.dom,
+      get a() {
+        const mergeView = mergeViewRef.current;
+        if (!mergeView) {
+          throw new Error('MergeView not initialized');
+        }
+        return mergeView.a;
+      },
+      get b() {
+        const mergeView = mergeViewRef.current;
+        if (!mergeView) {
+          throw new Error('MergeView not initialized');
+        }
+        return mergeView.b;
+      },
+      get dom() {
+        const mergeView = mergeViewRef.current;
+        if (!mergeView) {
+          throw new Error('MergeView not initialized');
+        }
+        return mergeView.dom;
+      },
     };
   }, []);
 

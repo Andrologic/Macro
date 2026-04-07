@@ -32,8 +32,7 @@ describe('CodeMirrorEditor diff highlights', () => {
           lineHighlights={[
             {
               lineNumber: 2,
-              lineClass: 'cm-diff-added',
-              gutterClass: 'cm-diff-gutter-added',
+              className: 'cm-diff-added',
             },
           ]}
         />
@@ -44,9 +43,6 @@ describe('CodeMirrorEditor diff highlights', () => {
 
     const lineEl = container?.querySelector('.cm-line.cm-diff-added');
     expect(lineEl).not.toBeNull();
-
-    const gutterEl = container?.querySelector('.cm-gutterElement.cm-diff-gutter-added');
-    expect(gutterEl).not.toBeNull();
   });
 
   it('renders multiple different highlight types correctly', async () => {
@@ -55,9 +51,9 @@ describe('CodeMirrorEditor diff highlights', () => {
         <CodeMirrorEditor
           code={'line 1\nline 2\nline 3\nline 4\nline 5'}
           lineHighlights={[
-            { lineNumber: 1, lineClass: 'cm-diff-removed', gutterClass: 'cm-diff-gutter-removed' },
-            { lineNumber: 3, lineClass: 'cm-diff-added', gutterClass: 'cm-diff-gutter-added' },
-            { lineNumber: 5, lineClass: 'cm-diff-modified-right', gutterClass: 'cm-diff-gutter-modified-right' },
+            { lineNumber: 1, className: 'cm-diff-removed' },
+            { lineNumber: 3, className: 'cm-diff-added' },
+            { lineNumber: 5, className: 'cm-diff-modified-right' },
           ]}
         />
       );
@@ -66,11 +62,8 @@ describe('CodeMirrorEditor diff highlights', () => {
     });
 
     expect(container?.querySelector('.cm-line.cm-diff-removed')).not.toBeNull();
-    expect(container?.querySelector('.cm-gutterElement.cm-diff-gutter-removed')).not.toBeNull();
     expect(container?.querySelector('.cm-line.cm-diff-added')).not.toBeNull();
-    expect(container?.querySelector('.cm-gutterElement.cm-diff-gutter-added')).not.toBeNull();
     expect(container?.querySelector('.cm-line.cm-diff-modified-right')).not.toBeNull();
-    expect(container?.querySelector('.cm-gutterElement.cm-diff-gutter-modified-right')).not.toBeNull();
   });
 
   it('line highlights are preserved after code content update', async () => {
@@ -79,7 +72,7 @@ describe('CodeMirrorEditor diff highlights', () => {
         <CodeMirrorEditor
           code={'line 1\nline 2\nline 3'}
           lineHighlights={[
-            { lineNumber: 2, lineClass: 'cm-diff-added', gutterClass: 'cm-diff-gutter-added' },
+            { lineNumber: 2, className: 'cm-diff-added' },
           ]}
           onChange={() => {}}
         />
@@ -89,7 +82,6 @@ describe('CodeMirrorEditor diff highlights', () => {
     });
 
     expect(container?.querySelector('.cm-line.cm-diff-added')).not.toBeNull();
-    expect(container?.querySelector('.cm-gutterElement.cm-diff-gutter-added')).not.toBeNull();
   });
 
   it('handles empty highlights array without errors', async () => {

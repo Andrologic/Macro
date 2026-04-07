@@ -1,77 +1,81 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useFileChangesStore, type FileChangeContextMode } from '../../stores/useFileChangesStore';
+import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { Button } from '../ui/Button';
-import { DiffMergeView } from '../ui/DiffMergeView';
+import { DiffMergeView, type MergeViewEditorHandle } from '../ui/DiffMergeView';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 
 interface FileChangesDiffModalProps {
   onClose: () => void;
 }
 
-const CONTEXT_LABELS = {
-  default: 'Focused diff',
-  expanded: 'Expanded context',
-  full: 'Full file context',
-} as const;
-
-const STATUS_LABELS = {
-  added: 'Added',
-  modified: 'Modified',
-  deleted: 'Deleted',
-} as const;
-
-const CONTEXT_OPTIONS: FileChangeContextMode[] = ['default', 'expanded', 'full'];
+const DEBUG_FILE_DIFF_STORAGE_KEY = 'debug:file-diff';
 
 const getFileLabel = (path: string): string => path.split('/').filter(Boolean).pop() || path;
+
 const getFileDir = (path: string): string => {
   const parts = path.split('/');
-  return parts.length > 1 ? parts.slice(0, -1).join('/') + '/' : '';
+  return parts.length > 1 ? `${parts.slice(0, -1).join('/')}/` : '';
 };
+
+const getFirstMismatchIndex = (left: string, right: string): number => {
+  const boundary = Math.min(left.length, right.length);
+  for (let index = 0; index < boundary; index += 1) {
+    if (left[index] !== right[index]) {
+      return index;
+    }
+  }
+  return left.length === right.length ? -1 : boundary;
+};
+
+const isDiffDebugEnabled = (): boolean =>
+  Boolean(import.meta.env?.DEV) &&
+  typeof window !== 'undefined' &&
+  window.localStorage.getItem(DEBUG_FILE_DIFF_STORAGE_KEY) === '1';
 
 const STATUS_META = {
   added: {
-    icon: 'plus',
     color: 'text-emerald-500',
     bg: 'bg-emerald-500/10',
-    border: 'border-emerald-500/20',
   },
   modified: {
-    icon: 'edit',
     color: 'text-amber-500',
     bg: 'bg-amber-500/10',
-    border: 'border-amber-500/20',
   },
   deleted: {
-    icon: 'trash',
     color: 'text-destructive',
     bg: 'bg-destructive/10',
-    border: 'border-destructive/20',
   },
 } as const;
 
 export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onClose }) => {
   const { t } = useTranslation();
-  const {
-    getRepository,
-    getChange,
-    getDiffModalSession,
-    markAsReviewed,
-    loadChangeContext,
-    updateRightDraft,
-    resetRightDraft,
-    saveRightDraft,
-    openDiffModal,
-  } = useFileChangesStore();
-
-  const session = getDiffModalSession();
-  const repository = session ? getRepository(session.repositoryId) : undefined;
-  const change = session ? getChange(session.repositoryId, session.changeId) : undefined;
+  const session = useFileChangesStore((state) => state.diffModalSession);
+  const repository = useFileChangesStore((state) => {
+    const currentSession = state.diffModalSession;
+    return currentSession
+      ? state.repositories.find((candidate) => candidate.id === currentSession.repositoryId)
+      : undefined;
+  });
+  const change = useFileChangesStore((state) => {
+    const currentSession = state.diffModalSession;
+    if (!currentSession) {
+      return undefined;
+    }
+    return state.repositories
+      .find((candidate) => candidate.id === currentSession.repositoryId)
+      ?.changes.find((candidate) => candidate.id === currentSession.changeId);
+  });
+  const markAsReviewed = useFileChangesStore((state) => state.markAsReviewed);
+  const updateRightDraft = useFileChangesStore((state) => state.updateRightDraft);
+  const resetRightDraft = useFileChangesStore((state) => state.resetRightDraft);
+  const saveRightDraft = useFileChangesStore((state) => state.saveRightDraft);
+  const openDiffModal = useFileChangesStore((state) => state.openDiffModal);
 
   const [pendingChangeId, setPendingChangeId] = useState<string | null>(null);
-  const [isConfirmingDiscard, setIsConfirmingDiscard] = useState<boolean>(false);
+  const [isConfirmingDiscard, setIsConfirmingDiscard] = useState(false);
 
   const isHydrating = Boolean(
     session?.isHydratingFullContext || (repository && change && repository.loadingChangeId === change.id)
@@ -80,8 +84,6 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
   const isBusy = isHydrating || isSaving;
   const isDirty = session?.isDirty === true;
   const canEdit = Boolean(change?.canEdit && session && !isHydrating);
-
-  const statusMeta = change ? STATUS_META[change.status] : STATUS_META.modified;
 
   useEffect(() => {
     if (!session) return;
@@ -92,72 +94,122 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
     };
   }, [session]);
 
-  const attemptClose = () => {
+  useLayoutEffect(() => {
+    if (!session || !repository || !change || !isDiffDebugEnabled()) {
+      return;
+    }
+
+    const original = change.originalContent;
+    const modified = session.rightDraftContent;
+
+    console.groupCollapsed(`[FileChangesDiffModal] Diff inputs for ${change.path}`);
+    console.log({
+      repositoryId: session.repositoryId,
+      changeId: session.changeId,
+      contextMode: change.contextMode,
+      isHydrating,
+      isDirty,
+      originalLength: original.length,
+      modifiedLength: modified.length,
+      sameString: original === modified,
+      firstMismatchIndex: getFirstMismatchIndex(original, modified),
+    });
+    console.groupEnd();
+  }, [change, isDirty, isHydrating, repository, session]);
+
+  const attemptClose = useCallback(() => {
     if (isDirty) {
       setPendingChangeId('close');
       setIsConfirmingDiscard(true);
       return;
     }
     onClose();
-  };
+  }, [isDirty, onClose]);
 
-  const handleConfirmDiscard = () => {
+  const handleConfirmDiscard = useCallback(() => {
     setIsConfirmingDiscard(false);
     resetRightDraft();
+
     if (pendingChangeId === 'close') {
       onClose();
     } else if (pendingChangeId && repository) {
       openDiffModal(repository.id, pendingChangeId);
     }
-    setPendingChangeId(null);
-};
 
-  const handleCancelDiscard = () => {
+    setPendingChangeId(null);
+  }, [onClose, openDiffModal, pendingChangeId, repository, resetRightDraft]);
+
+  const handleCancelDiscard = useCallback(() => {
     setIsConfirmingDiscard(false);
     setPendingChangeId(null);
-
-};
+  }, []);
 
   useEffect(() => {
     if (!session) return;
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
       attemptClose();
     };
+
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isDirty, onClose, session]);
-	  if (!session || !repository || !change) {
-    return null;
-  }
-	  const handleValidate = async () => {
-    if (isBusy || isDirty) return;
+  }, [attemptClose, session]);
+
+  const handleValidate = useCallback(async () => {
+    if (!repository || !change || isBusy || isDirty) return;
     await markAsReviewed(repository.id, change.id);
     onClose();
-	  };
+  }, [change, isBusy, isDirty, markAsReviewed, onClose, repository]);
 
-  const handleNavigation = (changeId: string) => {
+  const handleNavigation = useCallback((changeId: string) => {
+    if (!repository) return;
+
     if (isDirty) {
       setPendingChangeId(changeId);
       setIsConfirmingDiscard(true);
       return;
     }
+
     openDiffModal(repository.id, changeId);
-	  };
+  }, [isDirty, openDiffModal, repository]);
+
+  const handleDebugEditorReady = useCallback((editor: MergeViewEditorHandle | null) => {
+    if (!editor || !session || !change || !isDiffDebugEnabled()) {
+      return;
+    }
+
+    const actualOriginal = editor.a.state.doc.toString();
+    const actualModified = editor.b.state.doc.toString();
+
+    console.groupCollapsed(`[FileChangesDiffModal] MergeView mounted for ${change.path}`);
+    console.log({
+      repositoryId: session.repositoryId,
+      changeId: session.changeId,
+      contextMode: change.contextMode,
+      actualOriginalLength: actualOriginal.length,
+      actualModifiedLength: actualModified.length,
+      sameString: actualOriginal === actualModified,
+      firstMismatchIndex: getFirstMismatchIndex(actualOriginal, actualModified),
+    });
+    console.groupEnd();
+  }, [change, session]);
+
+  if (!session || !repository || !change) {
+    return null;
+  }
 
   return (
     <div
-      className="fixed inset-0 z-[95] flex items-center justify-center p-4 pt-12 sm:p-6 sm:pt-14 bg-background/50 backdrop-blur-sm"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) attemptClose();
+      className="fixed inset-0 z-[95] flex items-center justify-center bg-background/50 p-4 pt-12 backdrop-blur-sm sm:p-6 sm:pt-14"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) attemptClose();
       }}
       role="dialog"
       aria-modal="true"
     >
       <div className="flex h-full w-full max-w-[1800px] overflow-hidden rounded-xl bg-background shadow-2xl ring-1 ring-border/10">
-        
-        {/* SIDEBAR: File List */}
         <aside className="flex w-[200px] shrink-0 flex-col bg-muted/10">
           <div className="p-4">
             <h3 className="truncate text-sm font-semibold tracking-tight">{repository.branchName}</h3>
@@ -165,11 +217,13 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
               {repository.stats.reviewed} / {repository.stats.total} {t('implement.validatedFiles', 'files validated')}
             </p>
           </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+
+          <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
             {repository.changes.map((candidate) => {
               const isCurrent = candidate.id === change.id;
               const isPending = !candidate.reviewed;
               const meta = STATUS_META[candidate.status];
+
               return (
                 <button
                   key={candidate.id}
@@ -193,10 +247,12 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                   >
                     {candidate.status === 'added' ? '+' : candidate.status === 'deleted' ? '-' : 'M'}
                   </span>
+
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[13px] font-medium">{getFileLabel(candidate.path)}</div>
                     <div className="truncate text-[11px] opacity-70">{getFileDir(candidate.path) || '/'}</div>
                   </div>
+
                   {isPending && <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />}
                 </button>
               );
@@ -204,7 +260,6 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
           </div>
         </aside>
 
-        {/* MAIN: Details & Diff */}
         <main className="flex min-w-0 flex-1 flex-col bg-background">
           <header className="flex shrink-0 items-center justify-between px-4 py-3">
             <div className="flex min-w-0 flex-1 items-center gap-3 pr-4">
@@ -215,7 +270,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 </h2>
               </div>
             </div>
-            
+
             <div className="flex shrink-0 items-center gap-4">
               <Button variant="ghost" size="sm" onClick={attemptClose} aria-label={t('common.close', 'Close')}>
                 <Icon name="x" size={16} />
@@ -229,19 +284,39 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 {repository.lastError}
               </div>
             )}
-            {change.hunks.length === 0 ? (
+
+            {isHydrating ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6">
+                <div className="flex items-center gap-3">
+                  <Icon name="loader" size={20} className="animate-spin text-primary" />
+                  <span className="text-sm font-medium text-muted-foreground">
+                    {t('implement.loadingFullContext', 'Loading full file context...')}
+                  </span>
+                </div>
+                <div className="w-full max-w-md space-y-2">
+                  <div className="h-3 animate-pulse rounded bg-muted/40" />
+                  <div className="h-3 w-4/5 animate-pulse rounded bg-muted/30" />
+                  <div className="h-3 w-3/5 animate-pulse rounded bg-muted/20" />
+                </div>
+              </div>
+            ) : change.hunks.length === 0 ? (
               <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
                 {t('implement.noTextualDiff', 'No textual diff is available for this file.')}
               </div>
             ) : (
               <DiffMergeView
-                key={`${change.id}-${isHydrating}`}
+                key={`${change.id}:${change.contextMode}`}
                 original={change.originalContent}
                 modified={session.rightDraftContent}
                 language={change.language}
                 className="h-full w-full border-none md:border-none"
                 autoFocus={canEdit}
-                onChange={(val) => canEdit && updateRightDraft(val)}
+                onChange={(value) => {
+                  if (canEdit) {
+                    updateRightDraft(value);
+                  }
+                }}
+                onEditorReady={handleDebugEditorReady}
                 revertControls={canEdit ? 'a-to-b' : undefined}
               />
             )}
@@ -265,19 +340,19 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
 
             <div className="flex items-center gap-2">
               <Button
-                variant="outline"
+                variant="secondary"
                 size="sm"
                 onClick={() => resetRightDraft()}
                 disabled={!canEdit || !isDirty || isSaving}
               >
                 {t('implement.resetDraft', 'Reset draft')}
               </Button>
-              
+
               {isDirty ? (
                 <Button
-                  variant="default"
+                  variant="primary"
                   size="sm"
-                  onClick={() => saveRightDraft()}
+                  onClick={() => void saveRightDraft()}
                   disabled={isSaving}
                   className="bg-primary text-primary-foreground hover:bg-primary/90"
                 >
@@ -285,13 +360,13 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 </Button>
               ) : (
                 <Button
-                  variant="default"
+                  variant="primary"
                   size="sm"
-                  onClick={handleValidate}
+                  onClick={() => void handleValidate()}
                   disabled={isBusy || change.reviewed}
                   className="bg-primary text-primary-foreground hover:bg-primary/90"
-               >
-						{t('implement.validateFile', 'Validate file')}
+                >
+                  {t('implement.validateFile', 'Validate file')}
                 </Button>
               )}
             </div>
@@ -301,6 +376,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
 
       {isConfirmingDiscard && (
         <ConfirmPromptModal
+          isOpen={isConfirmingDiscard}
           title={t('implement.discardChangesTitle', 'Discard unsaved changes?')}
           description={t(
             'implement.discardChangesDesc',
@@ -310,9 +386,9 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
           cancelLabel={t('common.cancel', 'Cancel')}
           onConfirm={handleConfirmDiscard}
           onCancel={handleCancelDiscard}
-          variant="destructive"
+          confirmVariant="error"
         />
       )}
     </div>
   );
-}; 
+};
