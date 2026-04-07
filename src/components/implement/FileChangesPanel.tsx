@@ -283,9 +283,13 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       resetReviewState();
       return;
     }
+    if (isDiffModalOpen) {
+      return;
+    }
     void loadCurrentChanges();
   }, [
     currentTask?.status,
+    isDiffModalOpen,
     loadCurrentChanges,
     resetReviewState,
     selectedGroupId,
@@ -295,6 +299,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   useEffect(() => {
     if (!selectedGroupId || !selectedTaskId) {
+      return;
+    }
+    if (isDiffModalOpen) {
       return;
     }
 
@@ -356,7 +363,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         window.clearTimeout(timeoutId);
       }
     };
-  }, [isCommitting, loadCurrentChanges, selectedGroupId, selectedTaskId]);
+  }, [isCommitting, isDiffModalOpen, loadCurrentChanges, selectedGroupId, selectedTaskId]);
 
   useEffect(() => {
     if (repositories.length === 0) return;
@@ -750,8 +757,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
       {isDiffModalOpen && selectedDiffTarget && (
         <FileChangesDiffModal
-          repositoryId={selectedDiffTarget.repositoryId}
-          changeId={selectedDiffTarget.changeId}
           onClose={closeDiffModal}
         />
       )}
