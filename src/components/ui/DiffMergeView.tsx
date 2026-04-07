@@ -15,6 +15,7 @@ export interface DiffMergeViewProps {
   modified: string;
   language?: string;
   className?: string;
+  editable?: boolean;
   autoFocus?: boolean;
   onChange?: (value: string) => void;
   onEditorReady?: (editor: MergeViewEditorHandle | null) => void;
@@ -27,17 +28,73 @@ export interface MergeViewEditorHandle {
   dom: HTMLElement;
 }
 
+const resolveLanguageName = (language: string) => {
+  if (language === 'rust') {
+    return 'rust';
+  }
+  if (language === 'javascript' || language === 'jsx') {
+    return 'javascript';
+  }
+  if (language === 'typescript' || language === 'tsx') {
+    return 'typescript';
+  }
+  return 'text';
+};
+
 const resolveLanguageExtension = (language: string) => {
   if (language === 'rust') {
     return rust();
   }
-  if (language === 'javascript' || language === 'jsx') {
+  if (language === 'javascript') {
     return javascript({ jsx: true, typescript: false });
   }
-  if (language === 'typescript' || language === 'tsx') {
+  if (language === 'typescript') {
     return javascript({ jsx: true, typescript: true });
   }
   return [];
+};
+
+const createRevertIcon = (direction: 'left' | 'right') => {
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.classList.add('macro-diff-revert-icon');
+
+  const line = document.createElementNS(svgNS, 'path');
+  const head = document.createElementNS(svgNS, 'path');
+
+  if (direction === 'left') {
+    line.setAttribute('d', 'M15 10H5');
+    head.setAttribute('d', 'M9 6l-4 4 4 4');
+  } else {
+    line.setAttribute('d', 'M5 10h10');
+    head.setAttribute('d', 'M11 6l4 4-4 4');
+  }
+
+  for (const element of [line, head]) {
+    element.setAttribute('fill', 'none');
+    element.setAttribute('stroke', 'currentColor');
+    element.setAttribute('stroke-width', '2.2');
+    element.setAttribute('stroke-linecap', 'round');
+    element.setAttribute('stroke-linejoin', 'round');
+    svg.appendChild(element);
+  }
+
+  return svg;
+};
+
+const createRevertControl = (direction: 'left' | 'right') => {
+  const button = document.createElement('button');
+  const label = 'Revert this chunk';
+
+  button.type = 'button';
+  button.className = 'macro-diff-revert-button';
+  button.setAttribute('aria-label', label);
+  button.setAttribute('title', label);
+  button.appendChild(createRevertIcon(direction));
+
+  return button;
 };
 
 const createEditorTheme = (isDark: boolean) => EditorView.theme({
@@ -65,7 +122,7 @@ const createDiffTheme = (isDark: boolean) => {
   const insertedAccent = isDark ? 'rgb(46, 160, 67)' : 'rgb(26, 127, 55)';
   const insertedTextBackground = isDark ? 'rgba(46, 160, 67, 0.38)' : 'rgba(46, 160, 67, 0.24)';
   const insertedTextColor = isDark ? '#c8f2d1' : '#1f5e32';
-  const revertRailBackground = isDark ? 'rgba(255, 255, 255, 0.02)' : 'rgba(15, 23, 42, 0.03)';
+  const panelSeparator = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(15, 23, 42, 0.12)';
   const revertRailBorder = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(15, 23, 42, 0.08)';
   const revertButtonBackground = isDark ? 'rgba(39, 44, 52, 0.9)' : 'rgba(255, 255, 255, 0.95)';
   const revertButtonHoverBackground = isDark ? 'rgba(63, 70, 82, 0.98)' : 'rgba(241, 245, 249, 0.98)';
@@ -74,7 +131,6 @@ const createDiffTheme = (isDark: boolean) => {
   return EditorView.styleModule.of(new StyleModule({
     '.macro-diff-merge-root': {
       height: '100%',
-      overflowY: 'auto',
     },
     '.macro-diff-merge-root .cm-mergeViewEditors': {
       display: 'flex',
@@ -88,37 +144,74 @@ const createDiffTheme = (isDark: boolean) => {
       minWidth: '0',
       overflow: 'hidden',
     },
+    '.macro-diff-merge-root .cm-mergeViewEditor:first-child': {
+      boxShadow: `inset -1px 0 0 ${panelSeparator}`,
+    },
     '.macro-diff-merge-root .cm-mergeViewEditor .cm-editor': {
       flex: '1 1 auto',
       minWidth: '0',
       height: '100%',
     },
     '.macro-diff-merge-root .cm-merge-revert': {
-      width: '1.8rem',
+      position: 'relative',
+      width: '0',
+      minWidth: '0',
+      maxWidth: '0',
+      flexBasis: '0',
       flexShrink: '0',
-      backgroundColor: revertRailBackground,
-      borderLeft: `1px solid ${revertRailBorder}`,
-      borderRight: `1px solid ${revertRailBorder}`,
+      overflow: 'visible',
+      marginLeft: '-1rem',
+      marginRight: '-1rem',
+      pointerEvents: 'none',
+      zIndex: '30',
     },
     '.macro-diff-merge-root .cm-merge-revert button': {
-      border: 'none',
-      borderRadius: '6px',
+      position: 'absolute',
+      left: '0',
+      width: '2rem',
+      height: '2rem',
+      minWidth: '2rem',
+      maxWidth: '2rem',
+      transform: 'translateX(-50%)',
+      transformOrigin: 'center',
+      zIndex: '60',
+      border: `1px solid ${revertRailBorder}`,
+      borderRadius: '999px',
       backgroundColor: revertButtonBackground,
       color: revertButtonColor,
-      boxShadow: `0 0 0 1px ${revertRailBorder}`,
-      fontSize: '11px',
+      boxShadow: isDark
+        ? '0 10px 24px rgba(15, 23, 42, 0.38)'
+        : '0 10px 22px rgba(15, 23, 42, 0.14)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      boxSizing: 'border-box',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
       lineHeight: '1',
-      padding: '4px 0',
-      opacity: '0.78',
-      transition: 'background-color 120ms ease, opacity 120ms ease',
+      padding: '0',
+      opacity: '0.94',
+      transition: 'background-color 120ms ease, opacity 120ms ease, transform 120ms ease, box-shadow 120ms ease',
     },
     '.macro-diff-merge-root .cm-merge-revert button:hover': {
       opacity: '1',
       backgroundColor: revertButtonHoverBackground,
+      transform: 'translateX(-50%) scale(1.05)',
+      boxShadow: isDark
+        ? '0 14px 28px rgba(15, 23, 42, 0.48)'
+        : '0 14px 28px rgba(15, 23, 42, 0.18)',
     },
     '.macro-diff-merge-root .cm-merge-revert button:focus-visible': {
       outline: `2px solid ${insertedAccent}`,
       outlineOffset: '1px',
+    },
+    '.macro-diff-merge-root .cm-merge-revert button:active': {
+      transform: 'translateX(-50%) scale(0.98)',
+    },
+    '.macro-diff-merge-root .cm-merge-revert .macro-diff-revert-icon': {
+      width: '1rem',
+      height: '1rem',
+      opacity: '1',
     },
     '.macro-diff-merge-root .cm-merge-a .cm-changedLine': {
       backgroundColor: deletedLineBackground,
@@ -186,7 +279,7 @@ const scrollToFirstChange = (mergeView: MergeView) => {
       const scrollers = Array.from(mergeView.dom.querySelectorAll('.cm-scroller'));
       const scrollLefts = scrollers.map(s => s.scrollLeft);
       
-      firstChanged.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      firstChanged.scrollIntoView({ block: 'center', inline: 'nearest' });
       
       // Restore scrollLeft
       requestAnimationFrame(() => {
@@ -203,13 +296,15 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   modified,
   language = 'typescript',
   className,
+  editable = true,
   autoFocus = false,
   onChange,
   onEditorReady,
-  revertControls = 'a-to-b',
+  revertControls,
 }, ref) => {
   const themeContext = useOptionalTheme();
   const isDark = themeContext?.isDark ?? true;
+  const resolvedLanguage = resolveLanguageName(language);
   const containerRef = useRef<HTMLDivElement>(null);
   const mergeViewRef = useRef<MergeView | null>(null);
   const originalRef = useRef(original);
@@ -235,7 +330,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const languageExt = resolveLanguageExtension(language);
+    const languageExt = resolveLanguageExtension(resolvedLanguage);
     const baseTheme = createEditorTheme(isDark);
     const diffTheme = createDiffTheme(isDark);
     const themeExtensions = isDark ? [oneDark] : [];
@@ -262,6 +357,8 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
           baseTheme,
           diffTheme,
           languageExt,
+          EditorView.editable.of(editable),
+          EditorState.readOnly.of(!editable),
           EditorView.updateListener.of((update) => {
             if (!update.docChanged || isApplyingExternalUpdateRef.current) return;
             onChangeRef.current?.(update.state.doc.toString());
@@ -270,6 +367,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       },
       parent: containerRef.current,
       revertControls,
+      renderRevertControl: () => createRevertControl(revertControls === 'b-to-a' ? 'left' : 'right'),
       highlightChanges: true,
       gutter: true,
     });
@@ -325,12 +423,12 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       mergeView.destroy();
       mergeViewRef.current = null;
     };
-  }, [isDark, language, revertControls]);
+  }, [editable, isDark, resolvedLanguage, revertControls]);
 
   useEffect(() => {
-    if (!autoFocus) return;
+    if (!autoFocus || !editable) return;
     mergeViewRef.current?.b.focus();
-  }, [autoFocus]);
+  }, [autoFocus, editable]);
 
   useEffect(() => {
     const mergeView = mergeViewRef.current;
@@ -402,6 +500,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   return (
     <div
       ref={containerRef}
+      data-language={resolvedLanguage}
       className={cn(
         'h-full overflow-hidden rounded-md border border-border',
         className
