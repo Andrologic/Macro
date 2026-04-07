@@ -49,15 +49,6 @@ const createEditorTheme = (isDark: boolean) => EditorView.theme({
     overflow: 'auto',
     fontFamily: '"JetBrains Mono", "Fira Code", monospace',
   },
-  '.cm-content': {
-    minHeight: '100%',
-    padding: '12px 24px 16px 12px',
-  },
-  '.cm-gutters': {
-    minHeight: '100%',
-    paddingTop: '12px',
-    paddingBottom: '16px',
-  },
   '.cm-lineNumbers .cm-gutterElement': {
     minWidth: '3ch',
     paddingLeft: '8px',
@@ -191,7 +182,18 @@ const scrollToFirstChange = (mergeView: MergeView) => {
   requestAnimationFrame(() => {
     const firstChanged = mergeView.dom.querySelector('.cm-changedLine, .cm-deletedChunk');
     if (firstChanged) {
+      // Save scrollLeft for all scrollers to prevent horizontal scrolling
+      const scrollers = Array.from(mergeView.dom.querySelectorAll('.cm-scroller'));
+      const scrollLefts = scrollers.map(s => s.scrollLeft);
+      
       firstChanged.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      
+      // Restore scrollLeft
+      requestAnimationFrame(() => {
+        scrollers.forEach((s, i) => {
+          s.scrollLeft = scrollLefts[i] ?? 0;
+        });
+      });
     }
   });
 };
@@ -243,6 +245,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
         doc: originalRef.current,
         extensions: [
           basicSetup,
+          EditorView.lineWrapping,
           ...themeExtensions,
           baseTheme,
           diffTheme,
@@ -254,6 +257,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
         doc: modifiedRef.current,
         extensions: [
           basicSetup,
+          EditorView.lineWrapping,
           ...themeExtensions,
           baseTheme,
           diffTheme,
