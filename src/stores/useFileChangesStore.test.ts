@@ -370,6 +370,7 @@ describe('useFileChangesStore', () => {
     await store.loadCurrentChanges();
 
     store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
     expect(useFileChangesStore.getState().selectedDiffTarget).toEqual({
       repositoryId: repositoryIdA,
       changeId: changeIdA,
@@ -383,7 +384,67 @@ describe('useFileChangesStore', () => {
     expect(nextState.currentTaskId).toBe('task-2');
     expect(nextState.currentTaskLoadState).toBe('ready');
     expect(nextState.selectedDiffTarget).toBeNull();
+    expect(nextState.diffModalSession).toBeNull();
     expect(nextState.isDiffModalOpen).toBe(false);
+  });
+
+  it('creates an independent right-side draft session when opening the diff modal', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+
+    const session = useFileChangesStore.getState().getDiffModalSession();
+    expect(session).not.toBeNull();
+    expect(session?.repositoryId).toBe(repositoryIdA);
+    expect(session?.changeId).toBe(changeIdA);
+    expect(session?.rightDraftContent).toContain('const value = 2;');
+    expect(session?.isDirty).toBe(false);
+
+    store.updateRightDraft('const value = 42;\nconsole.log(value);');
+
+    const updatedSession = useFileChangesStore.getState().getDiffModalSession();
+    expect(updatedSession?.rightDraftContent).toContain('const value = 42;');
+    expect(updatedSession?.isDirty).toBe(true);
+    expect(useFileChangesStore.getState().getChange(repositoryIdA, changeIdA)?.modifiedContent).toContain('const value = 2;');
+  });
+
+  it('resets only the right-side draft content', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    store.updateRightDraft('const value = 7;\nconsole.log(value);');
+
+    expect(useFileChangesStore.getState().getDiffModalSession()?.isDirty).toBe(true);
+
+    store.resetRightDraft();
+
+    const session = useFileChangesStore.getState().getDiffModalSession();
+    expect(session?.isDirty).toBe(false);
+    expect(session?.rightDraftContent).toContain('const value = 2;');
+  });
+
+  it('saves the right-side draft, reloads the diff, and marks the file as unreviewed again', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    store.markAsReviewed(repositoryIdA, changeIdA);
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    store.updateRightDraft('const value = 9;\nconsole.log(value);');
+
+    await store.saveRightDraft();
+
+    const session = useFileChangesStore.getState().getDiffModalSession();
+    const change = useFileChangesStore.getState().getChange(repositoryIdA, changeIdA);
+    expect(fsWriteFileMock).toHaveBeenCalledTimes(1);
+    expect(session?.isDirty).toBe(false);
+    expect(session?.rightDraftContent).toContain('const value = 9;');
+    expect(change?.modifiedContent).toContain('const value = 9;');
+    expect(change?.reviewed).toBe(false);
   });
 
   it('does not reuse the active repository path when the dedicated worktree mapping is missing', async () => {

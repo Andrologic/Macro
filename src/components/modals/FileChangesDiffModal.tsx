@@ -1,13 +1,16 @@
-import React from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import type { EditorView } from '@codemirror/view';
 import { useTranslation } from 'react-i18next';
 import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import { Icon } from '../ui/Icon';
 import { CodeViewer } from '../ui/CodeViewer';
 import { cn } from '../../utils/cn';
+import { Button } from '../ui/Button';
+import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
+import { buildSplitDiffRows } from '../../services/gitDiffParser';
 
 interface FileChangesDiffModalProps {
-  repositoryId: string;
-  changeId: string;
   onClose: () => void;
 }
 
@@ -23,317 +26,422 @@ const STATUS_LABELS = {
   deleted: 'Deleted',
 } as const;
 
-export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({
-  repositoryId,
-  changeId,
-  onClose,
-}) => {
+type PendingAction = 'close' | 'previous' | 'next' | null;
+
+const getScrollElement = (view: EditorView | null): HTMLElement | null => view?.scrollDOM ?? null;
+
+export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onClose }) => {
   const { t } = useTranslation();
   const {
     getRepository,
     getChange,
+    getDiffModalSession,
     markAsReviewed,
-    markAsUnreviewed,
     loadChangeContext,
-    startEditingChange,
-    updateEditingBuffer,
-    cancelEditingChange,
-    saveEditedChange,
+    updateRightDraft,
+    resetRightDraft,
+    saveRightDraft,
+    goToAdjacentDiff,
   } = useFileChangesStore();
+  const session = getDiffModalSession();
+  const repository = session ? getRepository(session.repositoryId) : undefined;
+  const change = session ? getChange(session.repositoryId, session.changeId) : undefined;
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const leftViewRef = useRef<EditorView | null>(null);
+  const rightViewRef = useRef<EditorView | null>(null);
+  const syncingOwnerRef = useRef<'left' | 'right' | null>(null);
 
-  const repository = getRepository(repositoryId);
-  const change = getChange(repositoryId, changeId);
+  const repositoryIndex = useMemo(() => {
+    if (!repository || !change) return -1;
+    return repository.changes.findIndex((candidate) => candidate.id === change.id);
+  }, [repository, change]);
 
-  if (!repository || !change) return null;
+  const canGoPrevious = repositoryIndex > 0;
+  const canGoNext = repositoryIndex >= 0 && !!repository && repositoryIndex < repository.changes.length - 1;
+  const isHydrating = Boolean(
+    session?.isHydratingFullContext || (repository && change && repository.loadingChangeId === change.id)
+  );
+  const isSaving = Boolean(session?.isSaving || (repository && change && repository.savingChangeId === change.id));
+  const isBusy = isHydrating || isSaving;
+  const isDirty = session?.isDirty === true;
+  const canEdit = Boolean(change?.canEdit && session && !isHydrating);
+  const lineHighlights = useMemo(() => {
+    if (!change || !session) {
+      return { left: [], right: [] };
+    }
 
-  const isLoadingContext = repository.loadingChangeId === changeId;
-  const isSavingEdit = repository.savingChangeId === changeId;
-  const isBusy = isLoadingContext || isSavingEdit;
+    const rows = buildSplitDiffRows(change.originalContent, session.rightDraftContent);
+    const left = rows.flatMap((row) => (
+      row.kind === 'removed' || row.kind === 'modified'
+        ? row.leftLineNumber
+          ? [{ lineNumber: row.leftLineNumber, className: 'cm-git-removed' }]
+          : []
+        : []
+    ));
+    const right = rows.flatMap((row) => (
+      row.kind === 'added' || row.kind === 'modified'
+        ? row.rightLineNumber
+          ? [{ lineNumber: row.rightLineNumber, className: 'cm-git-added' }]
+          : []
+        : []
+    ));
 
-  const handleMarkReviewed = () => {
-    markAsReviewed(repositoryId, changeId);
+    return { left, right };
+  }, [change, session]);
+
+  useEffect(() => {
+    if (!session) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      if (isDirty) {
+        setPendingAction('close');
+        return;
+      }
+      onClose();
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isDirty, onClose, session]);
+
+  useEffect(() => {
+    const leftScroll = getScrollElement(leftViewRef.current);
+    const rightScroll = getScrollElement(rightViewRef.current);
+    if (!leftScroll || !rightScroll) return;
+
+    const syncVertical = (owner: 'left' | 'right', scrollTop: number, horizontalSource?: HTMLElement) => {
+      if (syncingOwnerRef.current && syncingOwnerRef.current !== owner) {
+        return;
+      }
+
+      syncingOwnerRef.current = owner;
+
+      const nextLeftTop = Math.min(scrollTop, Math.max(0, leftScroll.scrollHeight - leftScroll.clientHeight));
+      const nextRightTop = Math.min(scrollTop, Math.max(0, rightScroll.scrollHeight - rightScroll.clientHeight));
+
+      if (leftScroll.scrollTop !== nextLeftTop) {
+        leftScroll.scrollTop = nextLeftTop;
+      }
+      if (rightScroll.scrollTop !== nextRightTop) {
+        rightScroll.scrollTop = nextRightTop;
+      }
+
+      if (horizontalSource === leftScroll && rightScroll.scrollLeft !== leftScroll.scrollLeft) {
+        rightScroll.scrollLeft = leftScroll.scrollLeft;
+      }
+      if (horizontalSource === rightScroll && leftScroll.scrollLeft !== rightScroll.scrollLeft) {
+        leftScroll.scrollLeft = rightScroll.scrollLeft;
+      }
+
+      requestAnimationFrame(() => {
+        if (syncingOwnerRef.current === owner) {
+          syncingOwnerRef.current = null;
+        }
+      });
+    };
+
+    const onLeftScroll = () => syncVertical('left', leftScroll.scrollTop, leftScroll);
+    const onRightScroll = () => syncVertical('right', rightScroll.scrollTop, rightScroll);
+
+    leftScroll.addEventListener('scroll', onLeftScroll);
+    rightScroll.addEventListener('scroll', onRightScroll);
+
+    return () => {
+      leftScroll.removeEventListener('scroll', onLeftScroll);
+      rightScroll.removeEventListener('scroll', onRightScroll);
+    };
+  }, [session?.changeId]);
+
+  if (!session || !repository || !change) {
+    return null;
+  }
+
+  const attemptAction = (action: Exclude<PendingAction, null>) => {
+    if (isDirty) {
+      setPendingAction(action);
+      return;
+    }
+
+    if (action === 'close') {
+      onClose();
+      return;
+    }
+
+    goToAdjacentDiff(action);
+  };
+
+  const handleConfirmDiscard = () => {
+    const action = pendingAction;
+    setPendingAction(null);
+    if (!action) return;
+
+    if (action === 'close') {
+      onClose();
+      return;
+    }
+
+    goToAdjacentDiff(action);
+  };
+
+  const handleValidate = () => {
+    if (isBusy || isDirty) return;
+    markAsReviewed(repository.id, change.id);
     onClose();
   };
 
-  const handleEditStart = async () => {
-    try {
-      await startEditingChange(repositoryId, changeId);
-    } catch {
-      // Repository state surfaces lastError in the modal.
-    }
-  };
-
-  const handleSaveEdit = async () => {
-    try {
-      await saveEditedChange(repositoryId, changeId);
-    } catch {
-      // Repository state surfaces lastError in the modal.
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="w-full max-w-6xl max-h-[92vh] bg-card border border-border shadow-2xl rounded-xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-muted/20 shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
-            <div
-              className={cn(
-                'w-8 h-8 rounded-lg flex items-center justify-center',
-                change.status === 'added'
-                  ? 'bg-emerald-500/10'
-                  : change.status === 'modified'
-                    ? 'bg-amber-500/10'
-                    : 'bg-red-500/10'
-              )}
-            >
-              <Icon
-                name={change.status === 'added' ? 'plus' : change.status === 'modified' ? 'edit' : 'trash'}
-                size={16}
-                className={
-                  change.status === 'added'
-                    ? 'text-emerald-500'
-                    : change.status === 'modified'
-                      ? 'text-amber-500'
-                      : 'text-red-500'
-                }
-              />
-            </div>
-            <div className="min-w-0">
-              <h2 className="text-sm font-semibold text-foreground truncate">{change.path}</h2>
-              <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5 flex-wrap">
-                <span className="text-emerald-500">+{change.additions}</span>
-                <span className="text-red-400">-{change.deletions}</span>
-                <span className="capitalize">
-                  {t(`implement.changeStatus.${change.status}`, STATUS_LABELS[change.status])}
-                </span>
-                <span className="px-2 py-0.5 rounded-full bg-background/80 border border-border">
-                  {t(`implement.context.${change.contextMode}`, CONTEXT_LABELS[change.contextMode])}
-                </span>
-                <span className="px-2 py-0.5 rounded-full bg-background/80 border border-border">
-                  {repository.branchName}
-                </span>
+  const backdrop = (
+    <div
+      className="fixed inset-0 z-[95] flex items-center justify-center bg-background/80 backdrop-blur-sm"
+      onMouseDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        attemptAction('close');
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="file-diff-modal-title"
+    >
+      <div className="flex h-[92vh] w-[96vw] max-w-[1680px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
+        <header className="sticky top-0 z-10 border-b border-border bg-card/95 px-6 py-4 backdrop-blur">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-3">
+                <div
+                  className={cn(
+                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
+                    change.status === 'added'
+                      ? 'bg-emerald-500/10 text-emerald-500'
+                      : change.status === 'modified'
+                        ? 'bg-amber-500/10 text-amber-500'
+                        : 'bg-red-500/10 text-red-500'
+                  )}
+                >
+                  <Icon
+                    name={change.status === 'added' ? 'plus' : change.status === 'modified' ? 'edit' : 'trash'}
+                    size={18}
+                  />
+                </div>
+                <div className="min-w-0">
+                  <h2 id="file-diff-modal-title" className="truncate text-base font-semibold text-foreground">
+                    {change.path}
+                  </h2>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span className="rounded-full border border-border bg-muted/50 px-2 py-0.5">
+                      {t(`implement.changeStatus.${change.status}`, STATUS_LABELS[change.status])}
+                    </span>
+                    <span className="rounded-full border border-border bg-muted/50 px-2 py-0.5">
+                      {t(`implement.context.${change.contextMode}`, CONTEXT_LABELS[change.contextMode])}
+                    </span>
+                    <span className="rounded-full border border-border bg-muted/50 px-2 py-0.5">
+                      {repository.branchName}
+                    </span>
+                    <span className="font-mono text-emerald-500">+{change.additions}</span>
+                    <span className="font-mono text-red-400">-{change.deletions}</span>
+                    <span>
+                      {repositoryIndex + 1}/{repository.changes.length}
+                    </span>
+                    {change.reviewed && (
+                      <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-emerald-500">
+                        {t('implement.validated', 'Validated')}
+                      </span>
+                    )}
+                    {isDirty && (
+                      <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-amber-500">
+                        {t('implement.unsavedDraft', 'Unsaved draft')}
+                      </span>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {change.reviewed && !change.isEditing && (
-              <button
-                type="button"
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  markAsUnreviewed(repositoryId, changeId);
-                }}
-                className="flex items-center gap-1.5 px-2 py-1 rounded bg-emerald-500/10 text-emerald-500 text-xs"
-                title={t('implement.rightClickToInvalidate', 'Right-click to invalidate')}
+
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => attemptAction('previous')}
+                disabled={!canGoPrevious || isSaving}
               >
-                <Icon name="check" size={12} />
-                {t('implement.validated', 'Validated')}
-              </button>
-            )}
-            <button onClick={onClose} className="p-2 hover:bg-accent rounded-full transition-colors">
-              <Icon name="x" size={18} className="text-muted-foreground" />
-            </button>
+                <Icon name="chevron-left" size={14} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => attemptAction('next')}
+                disabled={!canGoNext || isSaving}
+              >
+                <Icon name="chevron-right" size={14} />
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => attemptAction('close')}>
+                <Icon name="x" size={14} />
+              </Button>
+            </div>
           </div>
-        </div>
+        </header>
 
         {repository.lastError && (
-          <div className="px-6 py-3 border-b border-border bg-red-500/5 text-sm text-red-500">
+          <div className="border-b border-border bg-red-500/5 px-6 py-3 text-sm text-red-500">
             {repository.lastError}
           </div>
         )}
 
-        {change.isEditing ? (
-          <div className="flex-1 overflow-auto p-4 space-y-4">
-            <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm text-muted-foreground">
+        <div className="flex-1 overflow-hidden bg-background">
+          {isHydrating && (
+            <div className="border-b border-border bg-primary/5 px-6 py-3 text-sm text-primary">
               {t(
-                'implement.manualEditNeedsValidationNotice',
-                'Manual edits are allowed here, but the file will need to be validated again before commit.'
+                'implement.loadingFullContextForEditing',
+                'Loading the full file before enabling editing on the right side...'
               )}
             </div>
-            <CodeViewer
-              code={change.editingContent ?? change.modifiedContent}
-              language={change.language}
-              readOnly={false}
-              onChange={(value) => updateEditingBuffer(repositoryId, changeId, value)}
-              className="min-h-[60vh]"
-            />
-          </div>
-        ) : (
-          <div className="flex-1 overflow-auto bg-background">
-            {change.hunks.length === 0 ? (
-              <div className="p-6 space-y-4">
-                <div className="text-sm text-muted-foreground">
-                  {t(
-                    'implement.noTextualDiff',
-                    'No textual diff is available for this file. Use a broader review context if needed.'
-                  )}
-                </div>
-                {change.modifiedContent.trim().length > 0 && (
-                  <CodeViewer
-                    code={change.modifiedContent}
-                    language={change.language}
-                    className="min-h-[40vh]"
-                  />
-                )}
-              </div>
-            ) : (
-              <div className="font-mono text-xs leading-relaxed">
-                {change.hunks.map((hunk, hunkIndex) => (
-                  <div key={`${hunk.header}-${hunkIndex}`} className="border-b border-border/40 last:border-b-0">
-                    <div className="px-4 py-2 bg-muted/30 text-muted-foreground border-b border-border/40">
-                      {hunk.header}
-                    </div>
-                    {hunk.lines.map((line, lineIndex) => (
-                      <div
-                        key={`${hunkIndex}-${lineIndex}`}
-                        className={cn(
-                          'grid grid-cols-[4rem_4rem_2rem_minmax(0,1fr)] border-b border-border/20 last:border-b-0',
-                          line.type === 'added'
-                            ? 'bg-emerald-500/5'
-                            : line.type === 'removed'
-                              ? 'bg-red-500/5'
-                              : ''
-                        )}
-                      >
-                        <div className="px-2 py-0.5 text-right text-muted-foreground/60 border-r border-border/20 select-none">
-                          {line.oldLineNumber ?? ''}
-                        </div>
-                        <div className="px-2 py-0.5 text-right text-muted-foreground/60 border-r border-border/20 select-none">
-                          {line.newLineNumber ?? ''}
-                        </div>
-                        <div
-                          className={cn(
-                            'px-1 py-0.5 text-center border-r border-border/20 select-none',
-                            line.type === 'added'
-                              ? 'text-emerald-500 bg-emerald-500/10'
-                              : line.type === 'removed'
-                                ? 'text-red-400 bg-red-500/10'
-                                : 'text-transparent'
-                          )}
-                        >
-                          {line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' '}
-                        </div>
-                        <pre
-                          className={cn(
-                            'px-3 py-0.5 whitespace-pre overflow-x-auto',
-                            line.type === 'added'
-                              ? 'text-emerald-600 dark:text-emerald-400'
-                              : line.type === 'removed'
-                                ? 'text-red-600 dark:text-red-400 line-through opacity-70'
-                                : 'text-foreground'
-                          )}
-                        >
-                          {line.content || ' '}
-                        </pre>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+          )}
+          {!change.canEdit && (
+            <div className="border-b border-border bg-muted/40 px-6 py-3 text-sm text-muted-foreground">
+              {t(
+                'implement.deletedChangeReadOnlyValidation',
+                'Deleted files are read-only in this validation flow.'
+              )}
+            </div>
+          )}
+          {change.hunks.length === 0 && (
+            <div className="border-b border-border bg-muted/40 px-6 py-3 text-sm text-muted-foreground">
+              {t(
+                'implement.noTextualDiff',
+                'No textual diff is available for this file. The split view falls back to full-file content.'
+              )}
+            </div>
+          )}
 
-        <div className="flex items-center justify-between px-6 py-4 border-t border-border bg-muted/20 shrink-0 gap-4">
-          <div className="flex items-center gap-3 flex-wrap text-xs text-muted-foreground">
+          <div className="grid h-full min-h-0 grid-cols-1 divide-y divide-border lg:grid-cols-2 lg:divide-x lg:divide-y-0">
+            <section className="flex min-h-0 flex-col">
+              <div className="border-b border-border bg-muted/30 px-4 py-2">
+                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                  <Icon name="file-code" size={12} />
+                  {t('diffViewer.before', 'Before')}
+                </div>
+              </div>
+              <div className="min-h-0 flex-1 overflow-hidden bg-card">
+                <CodeViewer
+                  code={change.originalContent}
+                  language={change.language}
+                  className="h-full border-0 rounded-none"
+                  wrapLines={false}
+                  lineHighlights={lineHighlights.left}
+                  hideVerticalScrollbar
+                  onEditorReady={(view) => {
+                    leftViewRef.current = view;
+                  }}
+                />
+              </div>
+            </section>
+
+            <section className="flex min-h-0 flex-col">
+              <div className="border-b border-border bg-muted/30 px-4 py-2">
+                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                  <Icon name={canEdit ? 'edit' : 'lock'} size={12} />
+                  {t('diffViewer.after', 'After')}
+                </div>
+              </div>
+              <div className="min-h-0 flex-1 overflow-hidden bg-card">
+                <CodeViewer
+                  code={session.rightDraftContent}
+                  language={change.language}
+                  className="h-full border-0 rounded-none"
+                  readOnly={!canEdit || isSaving}
+                  wrapLines={false}
+                  autoFocus={canEdit}
+                  lineHighlights={lineHighlights.right}
+                  onChange={(value) => updateRightDraft(value)}
+                  onEditorReady={(view) => {
+                    rightViewRef.current = view;
+                  }}
+                />
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <footer className="sticky bottom-0 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-card/95 px-6 py-4 backdrop-blur">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span>
               {change.hunks.length} {t('implement.hunks', 'hunks')}
             </span>
-            {!change.canEdit && (
-              <span className="text-red-400">
-                {t('implement.deletedChangeReadOnlyValidation', 'Deleted files are read-only in this validation flow.')}
-              </span>
+            {session.isHydratingFullContext && (
+              <span>{t('implement.preparingEditor', 'Preparing editor...')}</span>
             )}
           </div>
 
-          <div className="flex items-center gap-3">
-            {!change.isEditing && change.contextMode === 'default' && (
-              <button
-                onClick={() => void loadChangeContext(repositoryId, changeId, 'expanded')}
-                disabled={isBusy}
-                className="px-4 py-2 text-sm font-medium rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {change.contextMode !== 'full' && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void loadChangeContext(repository.id, change.id, 'full')}
+                disabled={isBusy || isDirty}
               >
-                <Icon name={isLoadingContext ? 'loader' : 'expand'} size={14} className={isLoadingContext ? 'animate-spin' : undefined} />
+                <Icon name={isHydrating ? 'loader' : 'expand'} size={14} className={isHydrating ? 'animate-spin' : undefined} />
                 {t('implement.loadMoreContext', 'Load more context')}
-              </button>
+              </Button>
             )}
-
-            {!change.isEditing && change.contextMode !== 'full' && (
-              <button
-                onClick={() => void loadChangeContext(repositoryId, changeId, 'full')}
-                disabled={isBusy}
-                className="px-4 py-2 text-sm font-medium rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-              >
-                <Icon name={isLoadingContext ? 'loader' : 'maximize'} size={14} className={isLoadingContext ? 'animate-spin' : undefined} />
-                {t('implement.loadFullFile', 'Load full file')}
-              </button>
-            )}
-
-            {!change.isEditing && change.canEdit && change.contextMode === 'full' && (
-              <button
-                onClick={() => void handleEditStart()}
-                disabled={isBusy}
-                className="px-4 py-2 text-sm font-medium rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-              >
-                <Icon name={isLoadingContext ? 'loader' : 'edit'} size={14} className={isLoadingContext ? 'animate-spin' : undefined} />
-                {t('implement.editFullFile', 'Edit full file')}
-              </button>
-            )}
-
-            {!change.isEditing && change.canEdit && change.contextMode !== 'full' && (
-              <button
-                onClick={() => void loadChangeContext(repositoryId, changeId, 'full')}
-                disabled={isBusy}
-                className="px-4 py-2 text-sm font-medium rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-              >
-                <Icon name={isLoadingContext ? 'loader' : 'maximize'} size={14} className={isLoadingContext ? 'animate-spin' : undefined} />
-                {t('implement.loadFullFileToEdit', 'Load full file to edit')}
-              </button>
-            )}
-
-            {change.isEditing && (
-              <button
-                onClick={() => cancelEditingChange(repositoryId, changeId)}
-                disabled={isBusy}
-                className="px-4 py-2 text-sm font-medium rounded-lg text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {t('common.cancel', 'Cancel')}
-              </button>
-            )}
-
-            <button
-              onClick={onClose}
-              className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => resetRightDraft()}
+              disabled={!canEdit || !isDirty || isSaving}
             >
-              {change.isEditing ? t('implement.closeWithoutSaving', 'Close') : t('common.close', 'Close')}
-            </button>
-
-            {change.isEditing ? (
-              <button
-                onClick={() => void handleSaveEdit()}
-                disabled={isBusy}
-                className="px-4 py-2 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:bg-primary/90 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Icon name={isSavingEdit ? 'loader' : 'check'} size={14} className={isSavingEdit ? 'animate-spin' : undefined} />
-                {isSavingEdit
-                  ? t('implement.savingEdit', 'Saving changes...')
-                  : t('implement.saveEdit', 'Save edit')}
-              </button>
-            ) : (
-              !change.reviewed && (
-                <button
-                  onClick={handleMarkReviewed}
-                  disabled={isBusy}
-                  className="px-4 py-2 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:bg-primary/90 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Icon name="check" size={14} />
-                  {t('implement.markValidated', 'Validate file')}
-                </button>
-              )
-            )}
+              {t('implement.resetDraft', 'Reset draft')}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => void saveRightDraft()}
+              disabled={!canEdit || !isDirty || isBusy}
+            >
+              {isSaving ? t('implement.savingChanges', 'Saving...') : t('implement.saveRightSide', 'Save right side')}
+            </Button>
+            <Button
+              variant="success"
+              size="sm"
+              onClick={handleValidate}
+              disabled={isBusy || isDirty}
+            >
+              {t('implement.validateFile', 'Validate')}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => attemptAction('close')}>
+              {t('common.close', 'Close')}
+            </Button>
           </div>
-        </div>
+        </footer>
       </div>
+
+      <ConfirmPromptModal
+        isOpen={pendingAction !== null}
+        title={t('implement.discardUnsavedChangesTitle', 'Discard unsaved changes?')}
+        description={t(
+          'implement.discardUnsavedChangesDescription',
+          'Your edits on the right side have not been saved yet. This action will discard them.'
+        )}
+        confirmLabel={t('implement.discardChanges', 'Discard changes')}
+        cancelLabel={t('common.cancel', 'Cancel')}
+        confirmVariant="error"
+        onCancel={() => setPendingAction(null)}
+        onConfirm={() => handleConfirmDiscard()}
+      />
     </div>
   );
+
+  return createPortal(backdrop, document.body);
 };
+
+export default FileChangesDiffModal;

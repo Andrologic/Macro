@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { parseUnifiedDiff } from './gitDiffParser';
+import { buildSplitDiffRows, parseUnifiedDiff } from './gitDiffParser';
 
 describe('gitDiffParser', () => {
   it('parses additions/deletions, hunks, and reconstructs versions', () => {
@@ -86,5 +86,74 @@ describe('gitDiffParser', () => {
       oldLineNumber: null,
       newLineNumber: 11,
     });
+  });
+
+  it('builds aligned split rows for replacements with different line counts', () => {
+    const rows = buildSplitDiffRows(
+      'alpha\nbeta\ngamma',
+      'alpha\nbeta updated\nbeta extra\ngamma'
+    );
+
+    expect(rows).toEqual([
+      {
+        kind: 'context',
+        leftLineNumber: 1,
+        rightLineNumber: 1,
+        leftContent: 'alpha',
+        rightContent: 'alpha',
+      },
+      {
+        kind: 'modified',
+        leftLineNumber: 2,
+        rightLineNumber: 2,
+        leftContent: 'beta',
+        rightContent: 'beta updated',
+      },
+      {
+        kind: 'added',
+        leftLineNumber: null,
+        rightLineNumber: 3,
+        leftContent: '',
+        rightContent: 'beta extra',
+      },
+      {
+        kind: 'context',
+        leftLineNumber: 3,
+        rightLineNumber: 4,
+        leftContent: 'gamma',
+        rightContent: 'gamma',
+      },
+    ]);
+  });
+
+  it('builds aligned split rows for pure deletions and pure additions', () => {
+    const rows = buildSplitDiffRows(
+      'line one\nline two',
+      'line two\nline three'
+    );
+
+    expect(rows).toEqual([
+      {
+        kind: 'removed',
+        leftLineNumber: 1,
+        rightLineNumber: null,
+        leftContent: 'line one',
+        rightContent: '',
+      },
+      {
+        kind: 'context',
+        leftLineNumber: 2,
+        rightLineNumber: 1,
+        leftContent: 'line two',
+        rightContent: 'line two',
+      },
+      {
+        kind: 'added',
+        leftLineNumber: null,
+        rightLineNumber: 2,
+        leftContent: '',
+        rightContent: 'line three',
+      },
+    ]);
   });
 });
