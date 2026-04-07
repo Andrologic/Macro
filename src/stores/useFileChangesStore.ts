@@ -396,6 +396,9 @@ const loadFileChangeEntry = async (
     paths: [file.path],
     contextLines: FILE_CHANGE_CONTEXT_LINES[contextMode],
   });
+  console.log('--- RAW PATCH START ---');
+  console.log(patch);
+  console.log('--- RAW PATCH END ---');
   const parsed = parseUnifiedDiff(patch || '');
 
   return {
