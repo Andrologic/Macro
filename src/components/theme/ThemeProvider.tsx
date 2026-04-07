@@ -18,8 +18,12 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
+export function useOptionalTheme() {
+  return useContext(ThemeContext);
+}
+
 export function useTheme() {
-  const context = useContext(ThemeContext);
+  const context = useOptionalTheme();
   if (!context) {
     throw new Error('useTheme must be used within a ThemeProvider');
   }
