@@ -136,6 +136,13 @@ pub struct GitMergeCheckDto {
     pub has_changes: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFilePairDto {
+    pub original_content: String,
+    pub modified_content: String,
+}
+
 #[derive(Serialize, Clone)]
 pub struct MacroBranchSyncDto {
     pub branch: String,
@@ -1909,6 +1916,75 @@ pub(crate) fn diff_repo(
     Ok(output)
 }
 
+pub(crate) fn validate_repo_relative_file_path(path: &str) -> Result<PathBuf> {
+    let candidate = PathBuf::from(path);
+    if candidate.as_os_str().is_empty() || candidate.is_absolute() {
+        return Err(BackendError::Validation(format!(
+            "Invalid repository-relative file path: {}",
+            path
+        )));
+    }
+
+    for component in candidate.components() {
+        match component {
+            std::path::Component::Normal(part) if part != ".git" => {}
+            _ => {
+                return Err(BackendError::Validation(format!(
+                    "Invalid repository-relative file path: {}",
+                    path
+                )))
+            }
+        }
+    }
+
+    Ok(candidate)
+}
+
+fn read_head_file_content(repo: &Repository, relative_path: &Path) -> Result<Option<String>> {
+    let Some(commit) = get_head_commit(repo)? else {
+        return Ok(None);
+    };
+
+    let tree = commit.tree()?;
+    let entry = match tree.get_path(relative_path) {
+        Ok(entry) => entry,
+        Err(_) => return Ok(None),
+    };
+    let object = entry.to_object(repo)?;
+    let Some(blob) = object.as_blob() else {
+        return Ok(None);
+    };
+
+    Ok(Some(String::from_utf8_lossy(blob.content()).to_string()))
+}
+
+fn read_worktree_file_content(repo_root: &Path, relative_path: &Path) -> Result<Option<String>> {
+    let absolute_path = repo_root.join(relative_path);
+
+    match fs::read(&absolute_path) {
+        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).to_string())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(BackendError::Io {
+            message: format!("Failed to read worktree file {:?}: {}", absolute_path, error),
+            source: error,
+        }),
+    }
+}
+
+pub(crate) fn read_git_file_pair(
+    repo: &Repository,
+    repo_root: &Path,
+    relative_path: &Path,
+) -> Result<GitFilePairDto> {
+    let original_content = read_head_file_content(repo, relative_path)?.unwrap_or_default();
+    let modified_content = read_worktree_file_content(repo_root, relative_path)?.unwrap_or_default();
+
+    Ok(GitFilePairDto {
+        original_content,
+        modified_content,
+    })
+}
+
 pub fn build_git_tree(repo: &Repository, branch: Option<&str>) -> Result<PredictedGitTreeDto> {
     let branch_name = if let Some(branch) = branch {
         validate_refspec(branch)?;
@@ -2358,6 +2434,31 @@ pub async fn git_diff(
                 paths,
             },
         )
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Read the full HEAD/worktree file pair for a repository-relative path.
+pub async fn git_read_file_pair(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    path: String,
+) -> Result<GitFilePairDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let relative_path = validate_repo_relative_file_path(&path)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        read_git_file_pair(&repo, &validated, &relative_path)
     })
     .await
     .map_err(to_join_error)?

@@ -30,7 +30,7 @@ const buildRepository = (reviewedMain: boolean): ReviewRepositoryState => ({
       modifiedContent: 'after();',
       language: 'typescript',
       hunks: [],
-      contextMode: 'default',
+      contextMode: 'focused',
       canEdit: true,
     },
     {
@@ -44,7 +44,7 @@ const buildRepository = (reviewedMain: boolean): ReviewRepositoryState => ({
       modifiedContent: 'export const child = true;',
       language: 'typescript',
       hunks: [],
-      contextMode: 'default',
+      contextMode: 'focused',
       canEdit: true,
     },
   ],

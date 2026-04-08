@@ -34,7 +34,7 @@ const buildRepository = (): ReviewRepositoryState => {
       modifiedContent: 'const list = [];',
       language: 'typescript',
       hunks: [makeHunk('@@ -0,0 +1 @@')],
-      contextMode: 'default',
+      contextMode: 'focused',
       canEdit: true,
     },
     {
@@ -48,7 +48,7 @@ const buildRepository = (): ReviewRepositoryState => {
       modifiedContent: 'after();',
       language: 'typescript',
       hunks: [makeHunk('@@ -1 +1 @@')],
-      contextMode: 'expanded',
+      contextMode: 'focused',
       canEdit: true,
     },
     {
@@ -94,6 +94,7 @@ const buildRepository = (): ReviewRepositoryState => {
 const buildSession = (overrides: Partial<FileDiffModalSession> = {}): FileDiffModalSession => ({
   repositoryId: 'repo-1',
   changeId: 'change-2',
+  originalContent: 'before();',
   rightDraftContent: 'after();',
   lastLoadedModifiedContent: 'after();',
   isDirty: false,
@@ -132,7 +133,6 @@ describe('FileChangesDiffModal', () => {
   let markAsReviewedMock: ReturnType<typeof mock>;
   let markAsUnreviewedMock: ReturnType<typeof mock>;
   let revertChangesMock: ReturnType<typeof mock>;
-  let loadChangeContextMock: ReturnType<typeof mock>;
   let updateRightDraftMock: ReturnType<typeof mock>;
   let resetRightDraftMock: ReturnType<typeof mock>;
   let saveRightDraftMock: ReturnType<typeof mock>;
@@ -152,7 +152,6 @@ describe('FileChangesDiffModal', () => {
       markAsReviewed: markAsReviewedMock,
       markAsUnreviewed: markAsUnreviewedMock,
       revertChanges: revertChangesMock,
-      loadChangeContext: loadChangeContextMock,
       updateRightDraft: updateRightDraftMock,
       resetRightDraft: resetRightDraftMock,
       saveRightDraft: saveRightDraftMock,
@@ -161,12 +160,12 @@ describe('FileChangesDiffModal', () => {
   };
 
   beforeEach(() => {
+    localStorage.clear();
     repository = buildRepository();
     diffSession = buildSession();
     markAsReviewedMock = mock(async () => undefined);
     markAsUnreviewedMock = mock(() => undefined);
     revertChangesMock = mock(async () => undefined);
-    loadChangeContextMock = mock(async () => undefined);
     updateRightDraftMock = mock(() => undefined);
     resetRightDraftMock = mock(() => undefined);
     saveRightDraftMock = mock(async () => undefined);
@@ -185,6 +184,7 @@ describe('FileChangesDiffModal', () => {
       await flushRender();
     });
     container?.remove();
+    localStorage.clear();
     root = null;
     container = null;
     useFileChangesStore.setState(initialStoreState, true);
@@ -261,10 +261,7 @@ describe('FileChangesDiffModal', () => {
   });
 
   it('shows save and reset controls while the draft is dirty', async () => {
-    repository.changes[1] = {
-      ...repository.changes[1],
-      contextMode: 'full',
-    };
+    localStorage.setItem('macro_implementDiffPresentationMode', JSON.stringify('full'));
     diffSession = buildSession({
       isDirty: true,
       rightDraftContent: 'after();\n// edited',
@@ -302,13 +299,16 @@ describe('FileChangesDiffModal', () => {
       await flushRender();
     });
 
+    expect(document.body.querySelector('.cm-merge-b .cm-content[contenteditable="false"]')).not.toBeNull();
+    expect(document.body.querySelector('.cm-merge-revert button')).not.toBeNull();
+
     await act(async () => {
       findButton('Full file context')?.click();
       await flushRender();
     });
 
-    expect(loadChangeContextMock).toHaveBeenCalledTimes(1);
-    expect(loadChangeContextMock).toHaveBeenCalledWith('repo-1', 'change-2', 'full');
+    expect(document.body.querySelector('.cm-merge-b .cm-content[contenteditable="true"]')).not.toBeNull();
+    expect(document.body.querySelector('.cm-merge-revert button')).not.toBeNull();
   });
 
   it('shows only invalidate for a validated file', async () => {
@@ -371,6 +371,7 @@ describe('FileChangesDiffModal', () => {
     repository.selectedChangeId = 'change-3';
     diffSession = buildSession({
       changeId: 'change-3',
+      originalContent: 'legacy();',
       rightDraftContent: '',
       lastLoadedModifiedContent: '',
     });
@@ -407,7 +408,7 @@ describe('FileChangesDiffModal', () => {
     });
 
     expect(document.body.textContent).toContain('Repository is temporarily unavailable.');
-    expect(document.body.textContent).toContain('Loading full file context...');
+    expect(document.body.textContent).toContain('Loading file diff...');
     expect(document.body.textContent).toContain('Working...');
     expect(document.body.querySelector('.macro-diff-merge-root')).toBeNull();
   });
@@ -425,6 +426,7 @@ describe('FileChangesDiffModal', () => {
       repository.selectedChangeId = 'change-1';
       diffSession = buildSession({
         changeId: 'change-1',
+        originalContent: '',
         rightDraftContent: 'const list = [];',
         lastLoadedModifiedContent: 'const list = [];',
       });
@@ -441,7 +443,6 @@ describe('FileChangesDiffModal', () => {
 
     repository.changes[0] = {
       ...repository.changes[0],
-      contextMode: 'full',
       originalContent: '// before\nconst list = [];',
       modifiedContent: '// before\nconst list = [];\nconsole.log(list);',
     };
@@ -449,6 +450,7 @@ describe('FileChangesDiffModal', () => {
     await act(async () => {
       diffSession = buildSession({
         changeId: 'change-1',
+        originalContent: '// before\nconst list = [];',
         rightDraftContent: '// before\nconst list = [];\nconsole.log(list);',
         lastLoadedModifiedContent: '// before\nconst list = [];\nconsole.log(list);',
       });

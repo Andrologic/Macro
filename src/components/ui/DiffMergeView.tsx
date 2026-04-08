@@ -19,6 +19,7 @@ export interface DiffMergeViewProps {
   modified: string;
   language?: string;
   className?: string;
+  presentationMode?: 'focused' | 'full';
   editable?: boolean;
   autoFocus?: boolean;
   onChange?: (value: string) => void;
@@ -130,6 +131,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   modified,
   language = 'typescript',
   className,
+  presentationMode = 'focused',
   editable = true,
   autoFocus = false,
   onChange,
@@ -147,6 +149,10 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   const onEditorReadyRef = useRef(onEditorReady);
   const syncingRef = useRef<'a' | 'b' | null>(null);
   const isApplyingExternalUpdateRef = useRef(false);
+  const collapseUnchanged =
+    presentationMode === 'focused'
+      ? { margin: 3, minSize: 4 }
+      : undefined;
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -204,6 +210,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       renderRevertControl: () => createRevertControl(),
       highlightChanges: true,
       gutter: true,
+      collapseUnchanged,
     });
 
     mergeView.dom.classList.add('macro-diff-merge-root');
@@ -258,6 +265,20 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       mergeViewRef.current = null;
     };
   }, [editable, resolvedLanguage, revertControls, themeContext?.theme]);
+
+  useEffect(() => {
+    const mergeView = mergeViewRef.current;
+    if (!mergeView) {
+      return;
+    }
+
+    mergeView.reconfigure({
+      revertControls,
+      highlightChanges: true,
+      gutter: true,
+      collapseUnchanged,
+    });
+  }, [collapseUnchanged, revertControls]);
 
   useEffect(() => {
     if (!autoFocus || !editable) return;

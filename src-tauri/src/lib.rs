@@ -464,6 +464,7 @@ pub fn run() {
             commands::git::git_reset,
             commands::git::git_stash,
             commands::git::git_diff,
+            commands::git::git_read_file_pair,
             commands::git::git_get_tree,
             commands::git::git_worktree_inspect,
             commands::git::git_worktree_create,
