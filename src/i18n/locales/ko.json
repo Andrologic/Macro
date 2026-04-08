@@ -644,6 +644,7 @@
     "noDiff": "아직 이 작업에 대한 코드 변경사항이 없습니다.",
     "manualEditNotice": "여기에서는 수동 편집이 허용되지만 커밋하기 전에 파일을 다시 검토해야 합니다.",
     "manualEditNeedsValidationNotice": "여기에서는 수동 편집이 허용되지만 커밋하기 전에 파일의 유효성을 다시 검사해야 합니다.",
+    "loadingFileDiff": "파일 diff를 불러오는 중...",
     "loadingFocusedContext": "집중 diff를 불러오는 중...",
     "deletedChangeReadOnly": "삭제된 파일은 이 검토 과정에서 읽기 전용입니다.",
     "deletedChangeReadOnlyValidation": "삭제된 파일은 이 유효성 검사 흐름에서 읽기 전용입니다.",

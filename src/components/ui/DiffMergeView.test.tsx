@@ -296,6 +296,112 @@ describe('DiffMergeView', () => {
     expect(container?.querySelector('.cm-merge-revert .macro-diff-revert-icon')).not.toBeNull();
   });
 
+  it('collapses unchanged sections in focused mode while keeping the central revert rail', async () => {
+    const original = Array.from({ length: 20 }, (_, index) =>
+      index === 9 ? 'const value = 1;' : `line ${index + 1};`
+    ).join('\n');
+    const modified = Array.from({ length: 20 }, (_, index) =>
+      index === 9 ? 'const value = 2;' : `line ${index + 1};`
+    ).join('\n');
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={original}
+            modified={modified}
+            presentationMode="focused"
+            revertControls="a-to-b"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    expect(container?.querySelector('.cm-collapsedLines')).not.toBeNull();
+    expect(container?.querySelector('.cm-merge-revert button')).not.toBeNull();
+  });
+
+  it('reconfigures the existing merge view when switching between focused and full presentation', async () => {
+    const original = Array.from({ length: 20 }, (_, index) =>
+      index === 9 ? 'const value = 1;' : `line ${index + 1};`
+    ).join('\n');
+    const modified = Array.from({ length: 20 }, (_, index) =>
+      index === 9 ? 'const value = 2;' : `line ${index + 1};`
+    ).join('\n');
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={original}
+            modified={modified}
+            presentationMode="focused"
+            revertControls="a-to-b"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const mergeRoot = container?.querySelector('.macro-diff-merge-root');
+    expect(container?.querySelector('.cm-collapsedLines')).not.toBeNull();
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={original}
+            modified={modified}
+            presentationMode="full"
+            revertControls="a-to-b"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    expect(container?.querySelector('.macro-diff-merge-root')).toBe(mergeRoot);
+    expect(container?.querySelector('.cm-collapsedLines')).toBeNull();
+    expect(container?.querySelector('.cm-merge-revert button')).not.toBeNull();
+  });
+
+  it('uncollapses a focused hidden section when the native collapsed widget is clicked', async () => {
+    const original = Array.from({ length: 20 }, (_, index) =>
+      index === 9 ? 'const value = 1;' : `line ${index + 1};`
+    ).join('\n');
+    const modified = Array.from({ length: 20 }, (_, index) =>
+      index === 9 ? 'const value = 2;' : `line ${index + 1};`
+    ).join('\n');
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={original}
+            modified={modified}
+            presentationMode="focused"
+            revertControls="a-to-b"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const initialCollapsedCount = container?.querySelectorAll('.cm-collapsedLines').length ?? 0;
+    const collapsed = container?.querySelector('.cm-collapsedLines') as HTMLElement | null;
+    expect(collapsed).not.toBeNull();
+    expect(initialCollapsedCount).toBeGreaterThan(0);
+
+    await act(async () => {
+      collapsed?.click();
+      await flushRender();
+    });
+
+    const nextCollapsedCount = container?.querySelectorAll('.cm-collapsedLines').length ?? 0;
+    expect(nextCollapsedCount).toBeLessThan(initialCollapsedCount);
+  });
+
   it('adapts merge surfaces to the active light theme', async () => {
     useAppStore.setState({ activeThemeId: 'macro-light' });
 

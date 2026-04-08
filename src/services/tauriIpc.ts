@@ -178,6 +178,11 @@ export interface GitMergeCheckDto {
   hasChanges: boolean;
 }
 
+export interface GitFilePairDto {
+  originalContent: string;
+  modifiedContent: string;
+}
+
 export type MacroSyncState = "clean" | "pending" | "failed" | "conflict";
 export type MacroSyncReason =
   | "clean"
@@ -1361,6 +1366,16 @@ export async function gitDiff(params: {
     contextLines: params.contextLines ?? null,
     ignoreWhitespace: params.ignoreWhitespace ?? null,
     paths: params.paths ?? null,
+  });
+}
+
+export async function gitReadFilePair(params: {
+  repoPath: string;
+  path: string;
+}): Promise<GitFilePairDto> {
+  return invoke<GitFilePairDto>("git_read_file_pair", {
+    repoPath: params.repoPath,
+    path: params.path,
   });
 }
 
