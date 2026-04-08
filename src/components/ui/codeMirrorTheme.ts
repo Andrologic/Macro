@@ -188,7 +188,7 @@ export const createCodeMirrorBaseTheme = (
   const tokens = createTokens(theme);
   const { hideVerticalScrollbar = false } = options;
   const contentPaddingTop = '8px';
-  const contentPaddingRight = '16px';
+  const contentPaddingRight = '0px';
   const contentPaddingBottom = '12px';
   const contentPaddingLeft = '0';
   const guttersPaddingTop = '0px';
@@ -367,7 +367,7 @@ export const createCodeMirrorDiffTheme = (theme?: Theme) => {
       flexShrink: '0',
       overflow: 'visible',
       pointerEvents: 'none',
-      backgroundColor: tokens.editorBackground,
+      backgroundColor: 'var(--macro-cm-editor-background, #ffffff)',
       zIndex: '30',
     },
     '.macro-diff-merge-root .cm-merge-revert button': {
