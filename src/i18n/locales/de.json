@@ -644,6 +644,7 @@
     "noDiff": "Für diese Aufgabe wurden noch keine Codeänderungen vorgenommen",
     "manualEditNotice": "Manuelle Bearbeitungen sind hier zulässig, die Datei muss jedoch vor dem Festschreiben erneut überprüft werden.",
     "manualEditNeedsValidationNotice": "Manuelle Änderungen sind hier zulässig, die Datei muss jedoch vor dem Festschreiben erneut validiert werden.",
+    "loadingFocusedContext": "Fokussierter Diff wird geladen...",
     "deletedChangeReadOnly": "Gelöschte Dateien sind in diesem Überprüfungsablauf schreibgeschützt.",
     "deletedChangeReadOnlyValidation": "Gelöschte Dateien sind in diesem Validierungsablauf schreibgeschützt.",
     "codePreview": "Codevorschau",

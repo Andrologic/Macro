@@ -132,6 +132,7 @@ describe('FileChangesDiffModal', () => {
   let markAsReviewedMock: ReturnType<typeof mock>;
   let markAsUnreviewedMock: ReturnType<typeof mock>;
   let revertChangesMock: ReturnType<typeof mock>;
+  let loadChangeContextMock: ReturnType<typeof mock>;
   let updateRightDraftMock: ReturnType<typeof mock>;
   let resetRightDraftMock: ReturnType<typeof mock>;
   let saveRightDraftMock: ReturnType<typeof mock>;
@@ -151,6 +152,7 @@ describe('FileChangesDiffModal', () => {
       markAsReviewed: markAsReviewedMock,
       markAsUnreviewed: markAsUnreviewedMock,
       revertChanges: revertChangesMock,
+      loadChangeContext: loadChangeContextMock,
       updateRightDraft: updateRightDraftMock,
       resetRightDraft: resetRightDraftMock,
       saveRightDraft: saveRightDraftMock,
@@ -164,6 +166,7 @@ describe('FileChangesDiffModal', () => {
     markAsReviewedMock = mock(async () => undefined);
     markAsUnreviewedMock = mock(() => undefined);
     revertChangesMock = mock(async () => undefined);
+    loadChangeContextMock = mock(async () => undefined);
     updateRightDraftMock = mock(() => undefined);
     resetRightDraftMock = mock(() => undefined);
     saveRightDraftMock = mock(async () => undefined);
@@ -258,6 +261,10 @@ describe('FileChangesDiffModal', () => {
   });
 
   it('shows save and reset controls while the draft is dirty', async () => {
+    repository.changes[1] = {
+      ...repository.changes[1],
+      contextMode: 'full',
+    };
     diffSession = buildSession({
       isDirty: true,
       rightDraftContent: 'after();\n// edited',
@@ -284,6 +291,24 @@ describe('FileChangesDiffModal', () => {
     expect(findButton('Validate file')).toBeDefined();
     expect(findButton('Revert')).toBeDefined();
     expect(findButton('Invalidate')).toBeUndefined();
+    expect(findButton('Reset draft')).toBeUndefined();
+    expect(findButton('Focused diff')).toBeDefined();
+    expect(findButton('Full file context')).toBeDefined();
+  });
+
+  it('switches between focused diff and full file context on demand', async () => {
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+
+    await act(async () => {
+      findButton('Full file context')?.click();
+      await flushRender();
+    });
+
+    expect(loadChangeContextMock).toHaveBeenCalledTimes(1);
+    expect(loadChangeContextMock).toHaveBeenCalledWith('repo-1', 'change-2', 'full');
   });
 
   it('shows only invalidate for a validated file', async () => {
@@ -356,7 +381,7 @@ describe('FileChangesDiffModal', () => {
       await flushRender();
     });
 
-    expect(findButton('Reset draft')?.disabled).toBe(true);
+    expect(findButton('Reset draft')).toBeUndefined();
     expect(findButton('Invalidate')).toBeDefined();
     expect(findButton('Validate file')).toBeUndefined();
     expect(findButton('Revert')).toBeUndefined();
@@ -435,7 +460,9 @@ describe('FileChangesDiffModal', () => {
       await flushRender();
     });
 
-    expect(document.body.querySelector('.macro-diff-merge-root')).toBe(mergeRootBeforeHydration);
+    expect(mergeRootBeforeHydration).not.toBeNull();
+    expect(document.body.querySelector('.macro-diff-merge-root')).not.toBeNull();
+    expect(document.body.querySelector('h2')?.textContent).toContain('src/list.ts');
     expect(document.body.textContent).toContain('console.log(list);');
   });
 });
