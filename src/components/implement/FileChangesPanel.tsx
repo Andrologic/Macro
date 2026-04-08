@@ -125,7 +125,7 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
   <div
     className={cn(
       'absolute inset-y-0 right-0 z-20 flex items-center gap-1 pr-2 pl-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100',
-      'bg-gradient-to-l from-background via-background/95 to-transparent backdrop-blur-[1px]',
+      'bg-transparent',
       className
     )}
   >
@@ -203,7 +203,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
         >
           <button
             onClick={() => setIsOpen(!isOpen)}
-            className="flex min-w-0 w-full items-center gap-2 px-2 py-1.5 pr-2 text-left"
+            className="flex min-w-0 w-full appearance-none items-center gap-2 border-0 bg-transparent px-2 py-1.5 pr-2 text-left outline-none"
           >
             <Icon
               name={isOpen ? 'chevron-down' : 'chevron-right'}
@@ -259,14 +259,18 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
     <div
       className={cn(
         'group relative rounded-lg transition-all overflow-hidden',
-        isSelected ? 'bg-primary/8' : change.reviewed ? 'hover:bg-accent/40' : 'bg-primary/[0.035] hover:bg-primary/[0.06]'
+        isSelected
+          ? 'bg-primary/[0.035]'
+          : change.reviewed
+            ? 'hover:bg-accent/40'
+            : 'bg-primary/[0.035] hover:bg-primary/[0.06]'
       )}
       style={{ marginLeft: `${depth * 12}px` }}
     >
       <button
         type="button"
         onClick={() => onFileClick(change.id)}
-        className="flex min-w-0 w-full items-center gap-2 px-2 py-1.5 pr-2 text-left"
+        className="flex min-w-0 w-full appearance-none items-center gap-2 border-0 bg-transparent px-2 py-1.5 pr-2 text-left outline-none"
       >
         <span
           className={cn(
@@ -744,7 +748,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         ),
                       }));
                     }}
-                    className="min-w-0 flex flex-1 items-center gap-2 text-left"
+                    className="min-w-0 flex flex-1 appearance-none items-center gap-2 border-0 bg-transparent text-left outline-none"
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       <Icon
