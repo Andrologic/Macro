@@ -976,16 +976,10 @@ export const createFileChangesStore = (
       selectedRepositoryId: derivedReviewState.selectedRepositoryId,
       reviewSummary: derivedReviewState.reviewSummary,
       selectedDiffTarget: { repositoryId, changeId },
-      diffModalSession: buildDiffModalSession(repositoryId, change, {
-        isHydratingFullContext: change.canEdit && change.contextMode !== 'full',
-      }),
+      diffModalSession: buildDiffModalSession(repositoryId, change),
       isDiffModalOpen: true,
     });
     syncActiveReviewRepository(deps, repository);
-
-    if (change.canEdit && change.contextMode !== 'full') {
-      void get().loadChangeContext(repositoryId, changeId, 'full');
-    }
   },
 
   closeDiffModal: () => {

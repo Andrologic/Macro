@@ -644,6 +644,7 @@
     "noDiff": "Aucun changement de code pour cette tâche pour le moment",
     "manualEditNotice": "Les modifications manuelles sont autorisées ici, mais le fichier devra être réexaminé avant la validation.",
     "manualEditNeedsValidationNotice": "Les modifications manuelles sont autorisées ici, mais le fichier devra être à nouveau validé avant la validation.",
+    "loadingFocusedContext": "Chargement du diff ciblé...",
     "deletedChangeReadOnly": "Les fichiers supprimés sont en lecture seule dans ce flux de révision.",
     "deletedChangeReadOnlyValidation": "Les fichiers supprimés sont en lecture seule dans ce flux de validation.",
     "codePreview": "Aperçu du code",
