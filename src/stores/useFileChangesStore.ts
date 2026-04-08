@@ -73,6 +73,9 @@ export interface FolderNode {
   name: string;
   path: string;
   type: 'folder' | 'file';
+  changeIds: string[];
+  allReviewed: boolean;
+  hasPendingReview: boolean;
   children?: FolderNode[];
   fileChange?: FileChangeEntry;
 }
@@ -137,7 +140,7 @@ interface FileChangesGitStatus {
 
 type FileChangesTauriDeps = Pick<
   typeof tauriIpc,
-  'isTauriAvailable' | 'gitDiff' | 'fsWriteFile' | 'gitAdd' | 'gitCommit'
+  'isTauriAvailable' | 'gitDiff' | 'fsWriteFile' | 'gitAdd' | 'gitCommit' | 'gitRestorePaths'
 > & {
   gitStatus: (repoPath: string) => Promise<FileChangesGitStatus>;
 };
@@ -199,10 +202,17 @@ export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
           name: part,
           path: currentPath,
           type: isFile ? 'file' : 'folder',
+          changeIds: isFile ? [change.id] : [],
+          allReviewed: isFile ? change.reviewed : false,
+          hasPendingReview: isFile ? !change.reviewed : false,
           children: isFile ? undefined : [],
           fileChange: isFile ? change : undefined,
         };
         current.push(existing);
+      }
+
+      if (!isFile) {
+        existing.changeIds = [...existing.changeIds, change.id];
       }
 
       if (!isFile && existing.children) {
@@ -211,7 +221,27 @@ export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
     }
   }
 
-  return root;
+  const annotateNode = (node: FolderNode): FolderNode => {
+    if (node.type === 'file') {
+      return {
+        ...node,
+        changeIds: node.fileChange ? [node.fileChange.id] : node.changeIds,
+        allReviewed: node.fileChange?.reviewed === true,
+        hasPendingReview: node.fileChange?.reviewed !== true,
+      };
+    }
+
+    const children = (node.children || []).map(annotateNode);
+    return {
+      ...node,
+      children,
+      changeIds: children.flatMap((child) => child.changeIds),
+      allReviewed: children.length > 0 && children.every((child) => child.allReviewed),
+      hasPendingReview: children.some((child) => child.hasPendingReview),
+    };
+  };
+
+  return root.map(annotateNode);
 }
 
 const deriveLanguage = (path: string): string => {
@@ -281,6 +311,19 @@ const updateRepositoryState = (
   repositories.map((repository) => (
     repository.id === repositoryId ? updater(repository) : repository
   ));
+
+const updateReviewedStateForChangeIds = (
+  changes: FileChangeEntry[],
+  changeIds: string[],
+  reviewed: boolean
+): FileChangeEntry[] => {
+  const targetIds = new Set(changeIds);
+  return changes.map((change) => (
+    targetIds.has(change.id)
+      ? { ...change, reviewed }
+      : change
+  ));
+};
 
 const syncActiveReviewRepository = (
   deps: FileChangesStoreDependencies,
@@ -570,9 +613,11 @@ interface FileChangesState {
   loadChangeContext: (repositoryId: string, changeId: string, contextMode: FileChangeContextMode) => Promise<void>;
   openDiffModal: (repositoryId: string, changeId: string) => void;
   closeDiffModal: () => void;
+  setReviewedState: (repositoryId: string, changeIds: string[], reviewed: boolean) => void;
   markAsReviewed: (repositoryId: string, changeId: string) => void;
   markAsUnreviewed: (repositoryId: string, changeId: string) => void;
   markAllAsReviewed: (repositoryId?: string) => void;
+  revertChanges: (repositoryId: string, changeIds: string[]) => Promise<void>;
   updateRightDraft: (content: string) => void;
   resetRightDraft: () => void;
   saveRightDraft: () => Promise<void>;
@@ -951,14 +996,15 @@ export const createFileChangesStore = (
     });
   },
 
-  markAsReviewed: (repositoryId, changeId) => {
+  setReviewedState: (repositoryId, changeIds, reviewed) => {
+    if (changeIds.length === 0) {
+      return;
+    }
+
     set((state) => ({
       ...(() => {
         const repositories = updateRepositoryState(state.repositories, repositoryId, (repository) => {
-          const changes = updateChangeEntry(repository.changes, changeId, (change) => ({
-            ...change,
-            reviewed: true,
-          }));
+          const changes = updateReviewedStateForChangeIds(repository.changes, changeIds, reviewed);
           return {
             ...repository,
             changes,
@@ -973,48 +1019,131 @@ export const createFileChangesStore = (
     }));
   },
 
+  markAsReviewed: (repositoryId, changeId) => {
+    get().setReviewedState(repositoryId, [changeId], true);
+  },
+
   markAsUnreviewed: (repositoryId, changeId) => {
-    set((state) => ({
-      ...(() => {
-        const repositories = updateRepositoryState(state.repositories, repositoryId, (repository) => {
-          const changes = updateChangeEntry(repository.changes, changeId, (change) => ({
-            ...change,
-            reviewed: false,
-          }));
-          return {
-            ...repository,
-            changes,
-            stats: computeStats(changes),
-          };
-        });
-        return {
-          repositories,
-          ...deriveReviewState(repositories, state.selectedRepositoryId),
-        };
-      })(),
-    }));
+    get().setReviewedState(repositoryId, [changeId], false);
   },
 
   markAllAsReviewed: (repositoryId) => {
     const targetRepositoryId = repositoryId || get().selectedRepositoryId;
     if (!targetRepositoryId) return;
+    const repository = get().getRepository(targetRepositoryId);
+    if (!repository) return;
+    get().setReviewedState(targetRepositoryId, repository.changes.map((change) => change.id), true);
+  },
+
+  revertChanges: async (repositoryId, changeIds) => {
+    if (changeIds.length === 0) {
+      return;
+    }
+
+    const repository = get().getRepository(repositoryId);
+    if (!repository) {
+      throw new Error(
+        tChanges('implement.errors.noActiveRepositoryPath', 'No active repository path found for this task.')
+      );
+    }
+
+    if (!deps.tauri.isTauriAvailable()) {
+      throw new Error(
+        tChanges('implement.errors.commitDesktopOnly', 'Git commit flow is only available in desktop mode.')
+      );
+    }
+
+    const targetIds = new Set(changeIds);
+    const targetChanges = repository.changes.filter((change) => targetIds.has(change.id));
+    if (targetChanges.length === 0) {
+      return;
+    }
+
+    const selectedDiffTarget = get().selectedDiffTarget;
+    const affectsOpenModal =
+      selectedDiffTarget?.repositoryId === repositoryId && targetIds.has(selectedDiffTarget.changeId);
+    const nextChangeIdAfterRevert = (() => {
+      if (!affectsOpenModal || !selectedDiffTarget) return null;
+      const currentIndex = repository.changes.findIndex((change) => change.id === selectedDiffTarget.changeId);
+      if (currentIndex < 0) return null;
+      for (let index = currentIndex + 1; index < repository.changes.length; index += 1) {
+        const candidate = repository.changes[index];
+        if (!targetIds.has(candidate.id)) {
+          return candidate.id;
+        }
+      }
+      return null;
+    })();
 
     set((state) => ({
-      ...(() => {
-        const repositories = updateRepositoryState(state.repositories, targetRepositoryId, (repository) => {
-          const changes = repository.changes.map((change) => ({ ...change, reviewed: true }));
-          return {
-            ...repository,
-            changes,
-            stats: computeStats(changes),
-          };
-        });
-        return {
-          repositories,
-          ...deriveReviewState(repositories, state.selectedRepositoryId),
-        };
-      })(),
+      repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+        ...currentRepository,
+        savingChangeId:
+          targetChanges.length === 1 ? targetChanges[0]?.id ?? currentRepository.savingChangeId : '__batch_revert__',
+        lastError: null,
+      })),
+      diffModalSession:
+        state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+          ? {
+            ...state.diffModalSession,
+            isSaving: true,
+          }
+          : state.diffModalSession,
+      lastError: null,
     }));
+
+    try {
+      await deps.tauri.gitRestorePaths({
+        repoPath: repository.worktreePath,
+        paths: targetChanges.map((change) => change.path),
+      });
+
+      await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+
+      if (affectsOpenModal) {
+        const refreshedRepository = get().getRepository(repositoryId);
+        if (nextChangeIdAfterRevert && refreshedRepository?.changes.some((change) => change.id === nextChangeIdAfterRevert)) {
+          get().openDiffModal(repositoryId, nextChangeIdAfterRevert);
+        } else {
+          get().closeDiffModal();
+        }
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : tChanges('implement.errors.revertChangesFailed', 'Failed to revert changes.');
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: null,
+          lastError: message,
+        })),
+        diffModalSession:
+          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+            ? {
+              ...state.diffModalSession,
+              isSaving: false,
+            }
+            : state.diffModalSession,
+        lastError: message,
+      }));
+      throw error;
+    } finally {
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: null,
+        })),
+        diffModalSession:
+          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+            ? {
+              ...state.diffModalSession,
+              isSaving: false,
+            }
+            : state.diffModalSession,
+      }));
+    }
   },
 
   updateRightDraft: (content) => {

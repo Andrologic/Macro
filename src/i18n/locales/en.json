@@ -652,6 +652,21 @@
     "diffTab": "Diff",
     "previewTab": "Preview",
     "revert": "Revert",
+    "validateAction": "Validate",
+    "invalidateAction": "Invalidate",
+    "revertAction": "Revert",
+    "validateFile": "Validate file",
+    "validatedFiles": "files validated",
+    "working": "Working...",
+    "resetDraft": "Reset draft",
+    "saveDraft": "Save draft",
+    "discardChangesTitle": "Discard unsaved changes?",
+    "discardChangesDesc": "You have made edits to this file. Are you sure you want to discard them?",
+    "discardButton": "Discard changes",
+    "revertScopeTitle": "Revert these changes?",
+    "revertScopeDescription": "This will discard the local changes for \"{{scope}}\".",
+    "revertSuccess": "Changes reverted.",
+    "revertFailed": "Failed to revert changes.",
     "stage": "Stage",
     "changeStatus": {
       "added": "Added",
@@ -797,7 +812,8 @@
       "loadChangesFailed": "Failed to load repository changes.",
       "commitMessageRequired": "Commit message is required.",
       "commitSucceededTaskNotCompleted": "Changes were committed, but the task could not be completed automatically.",
-      "deletedChangeReadOnly": "Deleted files are read-only during review. Restore them from the task flow instead."
+      "deletedChangeReadOnly": "Deleted files are read-only during review. Restore them from the task flow instead.",
+      "revertChangesFailed": "Failed to revert changes."
     },
     "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project."
   },

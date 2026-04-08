@@ -130,6 +130,8 @@ describe('FileChangesDiffModal', () => {
   let repository: ReviewRepositoryState;
   let diffSession: FileDiffModalSession;
   let markAsReviewedMock: ReturnType<typeof mock>;
+  let markAsUnreviewedMock: ReturnType<typeof mock>;
+  let revertChangesMock: ReturnType<typeof mock>;
   let updateRightDraftMock: ReturnType<typeof mock>;
   let resetRightDraftMock: ReturnType<typeof mock>;
   let saveRightDraftMock: ReturnType<typeof mock>;
@@ -147,6 +149,8 @@ describe('FileChangesDiffModal', () => {
       isCommitting: false,
       lastError: null,
       markAsReviewed: markAsReviewedMock,
+      markAsUnreviewed: markAsUnreviewedMock,
+      revertChanges: revertChangesMock,
       updateRightDraft: updateRightDraftMock,
       resetRightDraft: resetRightDraftMock,
       saveRightDraft: saveRightDraftMock,
@@ -158,6 +162,8 @@ describe('FileChangesDiffModal', () => {
     repository = buildRepository();
     diffSession = buildSession();
     markAsReviewedMock = mock(async () => undefined);
+    markAsUnreviewedMock = mock(() => undefined);
+    revertChangesMock = mock(async () => undefined);
     updateRightDraftMock = mock(() => undefined);
     resetRightDraftMock = mock(() => undefined);
     saveRightDraftMock = mock(async () => undefined);
@@ -269,6 +275,73 @@ describe('FileChangesDiffModal', () => {
     expect(findButton('Validate file')).toBeUndefined();
   });
 
+  it('shows validate and revert controls for a clean pending file', async () => {
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+
+    expect(findButton('Validate file')).toBeDefined();
+    expect(findButton('Revert')).toBeDefined();
+    expect(findButton('Invalidate')).toBeUndefined();
+  });
+
+  it('shows only invalidate for a validated file', async () => {
+    repository.changes[1] = {
+      ...repository.changes[1],
+      reviewed: true,
+    };
+    repository.stats.reviewed = 2;
+    diffSession = buildSession();
+    seedStore();
+
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+
+    expect(findButton('Invalidate')).toBeDefined();
+    expect(findButton('Validate file')).toBeUndefined();
+    expect(findButton('Revert')).toBeUndefined();
+  });
+
+  it('invalidates the current file from the footer', async () => {
+    repository.changes[1] = {
+      ...repository.changes[1],
+      reviewed: true,
+    };
+    repository.stats.reviewed = 2;
+    seedStore();
+
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+
+    await act(async () => {
+      findButton('Invalidate')?.click();
+      await flushRender();
+    });
+
+    expect(markAsUnreviewedMock).toHaveBeenCalledTimes(1);
+    expect(markAsUnreviewedMock).toHaveBeenCalledWith('repo-1', 'change-2');
+  });
+
+  it('reverts the current pending file from the footer', async () => {
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+
+    await act(async () => {
+      findButton('Revert')?.click();
+      await flushRender();
+    });
+
+    expect(revertChangesMock).toHaveBeenCalledTimes(1);
+    expect(revertChangesMock).toHaveBeenCalledWith('repo-1', ['change-2']);
+  });
+
   it('renders non-editable files as truly read-only with no revert controls', async () => {
     repository.selectedChangeId = 'change-3';
     diffSession = buildSession({
@@ -284,7 +357,9 @@ describe('FileChangesDiffModal', () => {
     });
 
     expect(findButton('Reset draft')?.disabled).toBe(true);
-    expect(findButton('Validate file')?.disabled).toBe(true);
+    expect(findButton('Invalidate')).toBeDefined();
+    expect(findButton('Validate file')).toBeUndefined();
+    expect(findButton('Revert')).toBeUndefined();
     expect(document.body.textContent).toContain('Validated');
     expect(document.body.querySelector('.cm-merge-revert button')).toBeNull();
     expect(document.body.querySelector('.cm-merge-b .cm-content[contenteditable="false"]')).not.toBeNull();
