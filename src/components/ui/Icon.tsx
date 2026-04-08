@@ -50,6 +50,7 @@ import {
   Cpu,
   User,
   Download,
+  Undo2,
   RotateCcw,
   Edit2,
   Trash2,
@@ -153,6 +154,7 @@ export type IconName =
   | 'cpu'
   | 'user'
   | 'download'
+  | 'undo-2'
   | 'rotate-ccw'
   | 'edit'
   | 'trash'
@@ -257,6 +259,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'cpu': Cpu,
   'user': User,
   'download': Download,
+  'undo-2': Undo2,
   'rotate-ccw': RotateCcw,
   'edit': Edit2,
   'trash': Trash2,

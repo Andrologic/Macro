@@ -651,7 +651,22 @@
     "fileCount_other": "{{count}} archivos",
     "diffTab": "Diff",
     "previewTab": "Preview",
-    "revert": "Revert",
+    "revert": "Revertir",
+    "validateAction": "Validar",
+    "invalidateAction": "Invalidar",
+    "revertAction": "Revertir",
+    "validateFile": "Validar archivo",
+    "validatedFiles": "archivos validados",
+    "working": "Procesando...",
+    "resetDraft": "Restablecer borrador",
+    "saveDraft": "Guardar borrador",
+    "discardChangesTitle": "¿Descartar cambios no guardados?",
+    "discardChangesDesc": "Has editado este archivo. ¿Seguro que quieres descartar esos cambios?",
+    "discardButton": "Descartar cambios",
+    "revertScopeTitle": "¿Revertir estos cambios?",
+    "revertScopeDescription": "Esto descartará los cambios locales de \"{{scope}}\".",
+    "revertSuccess": "Cambios revertidos.",
+    "revertFailed": "No se pudieron revertir los cambios.",
     "stage": "Stage",
     "changeStatus": {
       "added": "Añadido",
@@ -797,7 +812,8 @@
       "loadChangesFailed": "No se pudieron cargar los cambios del repositorio.",
       "commitMessageRequired": "El mensaje de commit es obligatorio.",
       "commitSucceededTaskNotCompleted": "Se confirmaron los cambios, pero la tarea no se pudo completar automáticamente.",
-      "deletedChangeReadOnly": "Los archivos eliminados son de solo lectura durante la revisión. En su lugar, restáurelos desde el flujo de tareas."
+      "deletedChangeReadOnly": "Los archivos eliminados son de solo lectura durante la revisión. En su lugar, restáurelos desde el flujo de tareas.",
+      "revertChangesFailed": "No se pudieron revertir los cambios."
     },
     "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project."
   },

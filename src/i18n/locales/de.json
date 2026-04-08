@@ -651,7 +651,22 @@
     "fileCount_other": "{{count}} Dateien",
     "diffTab": "Diff",
     "previewTab": "Preview",
-    "revert": "Revert",
+    "revert": "Verwerfen",
+    "validateAction": "Validieren",
+    "invalidateAction": "Ungültig machen",
+    "revertAction": "Verwerfen",
+    "validateFile": "Datei validieren",
+    "validatedFiles": "Dateien validiert",
+    "working": "Wird verarbeitet...",
+    "resetDraft": "Entwurf zurücksetzen",
+    "saveDraft": "Entwurf speichern",
+    "discardChangesTitle": "Ungespeicherte Änderungen verwerfen?",
+    "discardChangesDesc": "Du hast diese Datei bearbeitet. Möchtest du diese Änderungen wirklich verwerfen?",
+    "discardButton": "Änderungen verwerfen",
+    "revertScopeTitle": "Diese Änderungen verwerfen?",
+    "revertScopeDescription": "Dadurch werden die lokalen Änderungen für „{{scope}}“ verworfen.",
+    "revertSuccess": "Änderungen verworfen.",
+    "revertFailed": "Änderungen konnten nicht verworfen werden.",
     "stage": "Stage",
     "changeStatus": {
       "added": "Hinzugefügt",
@@ -797,7 +812,8 @@
       "loadChangesFailed": "Das Laden der Repository-Änderungen ist fehlgeschlagen.",
       "commitMessageRequired": "Eine Commit-Message ist erforderlich.",
       "commitSucceededTaskNotCompleted": "Änderungen wurden übernommen, die Aufgabe konnte jedoch nicht automatisch abgeschlossen werden.",
-      "deletedChangeReadOnly": "Gelöschte Dateien sind während der Überprüfung schreibgeschützt. Stellen Sie sie stattdessen aus dem Taskflow wieder her."
+      "deletedChangeReadOnly": "Gelöschte Dateien sind während der Überprüfung schreibgeschützt. Stellen Sie sie stattdessen aus dem Taskflow wieder her.",
+      "revertChangesFailed": "Änderungen konnten nicht verworfen werden."
     },
     "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project."
   },

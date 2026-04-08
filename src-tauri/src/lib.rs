@@ -460,6 +460,7 @@ pub fn run() {
             commands::git::git_merge,
             commands::git::git_commit,
             commands::git::git_add,
+            commands::git::git_restore_paths,
             commands::git::git_reset,
             commands::git::git_stash,
             commands::git::git_diff,
