@@ -154,6 +154,16 @@ const gitDiffMock = mock(async ({ repoPath, paths }: { repoPath: string; paths?:
   return buildPatch(repoPath, paths?.[0] || '');
 });
 
+const gitReadFilePairMock = mock(async ({ repoPath, path }: { repoPath: string; path: string }) => {
+  const original = initialOriginalFiles[repoPath]?.[path] ?? '';
+  const override = currentFiles[repoPath]?.[path];
+  const modified = override === null ? '' : override ?? original;
+  return {
+    originalContent: original,
+    modifiedContent: modified,
+  };
+});
+
 const fsWriteFileMock = mock(async ({ path, content }: { path: string; content: string }) => {
   const normalized = path.replace(/\\/g, '/');
   const isWorktreeA = normalized.startsWith(`${worktreeAPath}/`);
@@ -324,6 +334,7 @@ describe('useFileChangesStore', () => {
 
     gitStatusMock.mockClear();
     gitDiffMock.mockClear();
+    gitReadFilePairMock.mockClear();
     fsWriteFileMock.mockClear();
     gitRestorePathsMock.mockClear();
     gitAddMock.mockClear();
@@ -335,6 +346,7 @@ describe('useFileChangesStore', () => {
         isTauriAvailable: () => true,
         gitStatus: gitStatusMock,
         gitDiff: gitDiffMock,
+        gitReadFilePair: gitReadFilePairMock,
         fsWriteFile: fsWriteFileMock,
         gitRestorePaths: gitRestorePathsMock,
         gitAdd: gitAddMock,
@@ -437,11 +449,13 @@ describe('useFileChangesStore', () => {
 
     store.openDiffModal(repositoryIdA, changeIdA);
     await Promise.resolve();
+    await Promise.resolve();
 
     const session = useFileChangesStore.getState().getDiffModalSession();
     expect(session).not.toBeNull();
     expect(session?.repositoryId).toBe(repositoryIdA);
     expect(session?.changeId).toBe(changeIdA);
+    expect(session?.originalContent).toContain('const value = 1;');
     expect(session?.rightDraftContent).toContain('const value = 2;');
     expect(session?.isDirty).toBe(false);
 
@@ -453,19 +467,22 @@ describe('useFileChangesStore', () => {
     expect(useFileChangesStore.getState().getChange(repositoryIdA, changeIdA)?.modifiedContent).toContain('const value = 2;');
   });
 
-  it('opens the diff modal in focused mode without auto-loading the full file', async () => {
+  it('opens the diff modal with full file hydration while keeping focused as the initial presentation mode', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
     const initialGitDiffCalls = gitDiffMock.mock.calls.length;
 
     store.openDiffModal(repositoryIdA, changeIdA);
     await Promise.resolve();
+    await Promise.resolve();
 
     const session = useFileChangesStore.getState().getDiffModalSession();
     const change = useFileChangesStore.getState().getChange(repositoryIdA, changeIdA);
 
     expect(session?.isHydratingFullContext).toBe(false);
-    expect(change?.contextMode).toBe('default');
+    expect(change?.contextMode).toBe('focused');
+    expect(session?.originalContent).toContain('const value = 1;');
+    expect(gitReadFilePairMock).toHaveBeenCalledTimes(1);
     expect(gitDiffMock.mock.calls.length).toBe(initialGitDiffCalls);
   });
 
@@ -474,6 +491,7 @@ describe('useFileChangesStore', () => {
     await store.loadCurrentChanges();
 
     store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
     await Promise.resolve();
     store.updateRightDraft('const value = 7;\nconsole.log(value);');
 
@@ -492,6 +510,7 @@ describe('useFileChangesStore', () => {
 
     store.markAsReviewed(repositoryIdA, changeIdA);
     store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
     await Promise.resolve();
     store.updateRightDraft('const value = 9;\nconsole.log(value);');
 

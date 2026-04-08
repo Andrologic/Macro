@@ -1,11 +1,15 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useFileChangesStore, type FileChangeContextMode } from '../../stores/useFileChangesStore';
+import {
+  useFileChangesStore,
+  type DiffPresentationMode,
+} from '../../stores/useFileChangesStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { Button } from '../ui/Button';
 import { DiffMergeView, type MergeViewEditorHandle } from '../ui/DiffMergeView';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
+import { loadPreference, PREF_KEYS, savePreference } from '../../services/preferences';
 
 interface FileChangesDiffModalProps {
   onClose: () => void;
@@ -72,7 +76,6 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
   const markAsReviewed = useFileChangesStore((state) => state.markAsReviewed);
   const markAsUnreviewed = useFileChangesStore((state) => state.markAsUnreviewed);
   const revertChanges = useFileChangesStore((state) => state.revertChanges);
-  const loadChangeContext = useFileChangesStore((state) => state.loadChangeContext);
   const updateRightDraft = useFileChangesStore((state) => state.updateRightDraft);
   const resetRightDraft = useFileChangesStore((state) => state.resetRightDraft);
   const saveRightDraft = useFileChangesStore((state) => state.saveRightDraft);
@@ -80,7 +83,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
 
   const [pendingChangeId, setPendingChangeId] = useState<string | null>(null);
   const [isConfirmingDiscard, setIsConfirmingDiscard] = useState(false);
-  const [requestedContextMode, setRequestedContextMode] = useState<FileChangeContextMode | null>(null);
+  const [presentationMode, setPresentationMode] = useState<DiffPresentationMode>('focused');
 
   const isHydrating = Boolean(
     session?.isHydratingFullContext || (repository && change && repository.loadingChangeId === change.id)
@@ -88,9 +91,8 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
   const isSaving = Boolean(session?.isSaving || (repository && change && repository.savingChangeId === change.id));
   const isBusy = isHydrating || isSaving;
   const isDirty = session?.isDirty === true;
-  const canEdit = Boolean(change?.canEdit && session && !isHydrating && change?.contextMode === 'full');
-  const selectedContextMode: FileChangeContextMode = change?.contextMode === 'full' ? 'full' : 'default';
-  const activeContextMode = requestedContextMode ?? (session?.isHydratingFullContext ? 'full' : selectedContextMode);
+  const canEdit = Boolean(change?.canEdit && session && !isHydrating && presentationMode === 'full');
+  const canRevertChunks = Boolean(change?.canEdit && !change?.reviewed && !isHydrating);
 
   useEffect(() => {
     if (!session) return;
@@ -102,22 +104,32 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
   }, [session]);
 
   useEffect(() => {
-    setRequestedContextMode(null);
-  }, [change?.id, change?.contextMode]);
+    let cancelled = false;
+
+    void loadPreference<DiffPresentationMode>(PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE).then((value) => {
+      if (!cancelled && (value === 'focused' || value === 'full')) {
+        setPresentationMode(value);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (!session || !repository || !change || !isDiffDebugEnabled()) {
       return;
     }
 
-    const original = change.originalContent;
+    const original = session.originalContent;
     const modified = session.rightDraftContent;
 
     console.groupCollapsed(`[FileChangesDiffModal] Diff inputs for ${change.path}`);
     console.log({
       repositoryId: session.repositoryId,
       changeId: session.changeId,
-      contextMode: change.contextMode,
+      presentationMode,
       isHydrating,
       isDirty,
       originalLength: original.length,
@@ -126,7 +138,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
       firstMismatchIndex: getFirstMismatchIndex(original, modified),
     });
     console.groupEnd();
-  }, [change, isDirty, isHydrating, repository, session]);
+  }, [change, isDirty, isHydrating, presentationMode, repository, session]);
 
   const attemptClose = useCallback(() => {
     if (isDirty) {
@@ -196,18 +208,14 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
     openDiffModal(repository.id, changeId);
   }, [isDirty, openDiffModal, repository]);
 
-  const handleContextModeChange = useCallback(async (nextMode: FileChangeContextMode) => {
-    if (!repository || !change || isBusy || isDirty || selectedContextMode === nextMode) {
+  const handlePresentationModeChange = useCallback((nextMode: DiffPresentationMode) => {
+    if (isBusy || isDirty || presentationMode === nextMode) {
       return;
     }
 
-    setRequestedContextMode(nextMode);
-    try {
-      await loadChangeContext(repository.id, change.id, nextMode);
-    } finally {
-      setRequestedContextMode(null);
-    }
-  }, [change, isBusy, isDirty, loadChangeContext, repository, selectedContextMode]);
+    setPresentationMode(nextMode);
+    void savePreference(PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE, nextMode);
+  }, [isBusy, isDirty, presentationMode]);
 
   const handleDebugEditorReady = useCallback((editor: MergeViewEditorHandle | null) => {
     if (!editor || !session || !change || !isDiffDebugEnabled()) {
@@ -221,21 +229,21 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
     console.log({
       repositoryId: session.repositoryId,
       changeId: session.changeId,
-      contextMode: change.contextMode,
+      presentationMode,
       actualOriginalLength: actualOriginal.length,
       actualModifiedLength: actualModified.length,
       sameString: actualOriginal === actualModified,
       firstMismatchIndex: getFirstMismatchIndex(actualOriginal, actualModified),
     });
     console.groupEnd();
-  }, [change, session]);
+  }, [change, presentationMode, session]);
 
   if (!session || !repository || !change) {
     return null;
   }
 
-  const contextOptions: Array<{ mode: FileChangeContextMode; label: string }> = [
-    { mode: 'default', label: t('implement.context.default', 'Focused diff') },
+  const contextOptions: Array<{ mode: DiffPresentationMode; label: string }> = [
+    { mode: 'focused', label: t('implement.context.default', 'Focused diff') },
     { mode: 'full', label: t('implement.context.full', 'Full file context') },
   ];
 
@@ -316,13 +324,13 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 {contextOptions.map((option) => (
                   <Button
                     key={option.mode}
-                    variant={activeContextMode === option.mode ? 'secondary' : 'ghost'}
+                    variant={presentationMode === option.mode ? 'secondary' : 'ghost'}
                     size="sm"
-                    onClick={() => void handleContextModeChange(option.mode)}
+                    onClick={() => handlePresentationModeChange(option.mode)}
                     disabled={isBusy || isDirty}
                     className={cn(
                       'h-7 px-2.5 text-xs',
-                      activeContextMode === option.mode ? 'shadow-sm' : ''
+                      presentationMode === option.mode ? 'shadow-sm' : ''
                     )}
                   >
                     {option.label}
@@ -347,9 +355,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 <div className="flex items-center gap-3">
                   <Icon name="loader" size={20} className="animate-spin text-primary" />
                   <span className="text-sm font-medium text-muted-foreground">
-                    {activeContextMode === 'full'
-                      ? t('implement.loadingFullContext', 'Loading full file context...')
-                      : t('implement.loadingFocusedContext', 'Loading focused diff...')}
+                    {t('implement.loadingFileDiff', 'Loading file diff...')}
                   </span>
                 </div>
                 <div className="w-full max-w-md space-y-2">
@@ -365,9 +371,10 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
             ) : (
               <DiffMergeView
                 key={change.id}
-                original={change.originalContent}
+                original={session.originalContent}
                 modified={session.rightDraftContent}
                 language={change.language}
+                presentationMode={presentationMode}
                 className="h-full w-full border-none md:border-none"
                 editable={canEdit}
                 autoFocus={canEdit}
@@ -377,7 +384,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                   }
                 }}
                 onEditorReady={handleDebugEditorReady}
-                revertControls={canEdit ? 'a-to-b' : undefined}
+                revertControls={canRevertChunks ? 'a-to-b' : undefined}
               />
             )}
           </div>

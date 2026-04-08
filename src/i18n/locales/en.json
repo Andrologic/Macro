@@ -644,6 +644,7 @@
     "noDiff": "No code changes for this task yet",
     "manualEditNotice": "Manual edits are allowed here, but the file will need to be reviewed again before commit.",
     "manualEditNeedsValidationNotice": "Manual edits are allowed here, but the file will need to be validated again before commit.",
+    "loadingFileDiff": "Loading file diff...",
     "loadingFocusedContext": "Loading focused diff...",
     "deletedChangeReadOnly": "Deleted files are read-only in this review flow.",
     "deletedChangeReadOnlyValidation": "Deleted files are read-only in this validation flow.",

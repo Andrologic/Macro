@@ -14,7 +14,8 @@ import { toBranchWorktreeKey } from '../services/implementTaskDerivation';
 import { useAppStore } from './useAppStore';
 import { getGitFlowBaseBranch } from '../services/architectPlanService';
 
-export type FileChangeContextMode = 'default' | 'expanded' | 'full';
+export type DiffPresentationMode = 'focused' | 'full';
+export type FileChangeContextMode = DiffPresentationMode;
 export type ReviewRepositoryCommitState = 'idle' | 'committing' | 'committed' | 'no_changes';
 export type FileChangesTaskLoadState =
   | 'idle'
@@ -22,12 +23,6 @@ export type FileChangesTaskLoadState =
   | 'ready'
   | 'awaiting_worktree'
   | 'invalid_mapping';
-
-const FILE_CHANGE_CONTEXT_LINES: Record<FileChangeContextMode, number> = {
-  default: 3,
-  expanded: 12,
-  full: 100000,
-};
 
 export interface FileChangeEntry {
   id: string;
@@ -40,7 +35,7 @@ export interface FileChangeEntry {
   modifiedContent: string;
   language: string;
   hunks: ParsedDiffHunk[];
-  contextMode: FileChangeContextMode;
+  contextMode: DiffPresentationMode;
   canEdit: boolean;
 }
 
@@ -97,6 +92,7 @@ interface SelectedDiffTarget {
 export interface FileDiffModalSession {
   repositoryId: string;
   changeId: string;
+  originalContent: string;
   rightDraftContent: string;
   lastLoadedModifiedContent: string;
   isDirty: boolean;
@@ -140,7 +136,7 @@ interface FileChangesGitStatus {
 
 type FileChangesTauriDeps = Pick<
   typeof tauriIpc,
-  'isTauriAvailable' | 'gitDiff' | 'fsWriteFile' | 'gitAdd' | 'gitCommit' | 'gitRestorePaths'
+  'isTauriAvailable' | 'gitDiff' | 'gitReadFilePair' | 'fsWriteFile' | 'gitAdd' | 'gitCommit' | 'gitRestorePaths'
 > & {
   gitStatus: (repoPath: string) => Promise<FileChangesGitStatus>;
 };
@@ -428,16 +424,14 @@ const loadFileChangeEntry = async (
   repositoryId: string,
   worktreePath: string,
   file: { path: string; status: string },
-  previousChange?: FileChangeEntry,
-  contextModeOverride?: FileChangeContextMode
+  previousChange?: FileChangeEntry
 ): Promise<FileChangeEntry> => {
   const id = `${repositoryId}::${file.path}`;
   const status = normalizeStatus(file.status);
-  const contextMode = contextModeOverride ?? previousChange?.contextMode ?? 'default';
   const patch = await deps.tauri.gitDiff({
     repoPath: worktreePath,
     paths: [file.path],
-    contextLines: FILE_CHANGE_CONTEXT_LINES[contextMode],
+    contextLines: 3,
   });
   const parsed = parseUnifiedDiff(patch || '');
 
@@ -452,7 +446,7 @@ const loadFileChangeEntry = async (
     modifiedContent: parsed.modifiedContent,
     language: deriveLanguage(file.path),
     hunks: parsed.hunks,
-    contextMode,
+    contextMode: previousChange?.contextMode ?? 'focused',
     canEdit: status !== 'deleted',
   };
 };
@@ -582,6 +576,7 @@ const buildDiffModalSession = (
 ): FileDiffModalSession => ({
   repositoryId,
   changeId: change.id,
+  originalContent: change.originalContent,
   rightDraftContent: change.modifiedContent,
   lastLoadedModifiedContent: change.modifiedContent,
   isDirty: false,
@@ -610,7 +605,6 @@ interface FileChangesState {
   loadCurrentChanges: (options?: LoadCurrentChangesOptions) => Promise<void>;
   resetReviewState: () => void;
   selectRepository: (repositoryId: string | null) => void;
-  loadChangeContext: (repositoryId: string, changeId: string, contextMode: FileChangeContextMode) => Promise<void>;
   openDiffModal: (repositoryId: string, changeId: string) => void;
   closeDiffModal: () => void;
   setReviewedState: (repositoryId: string, changeIds: string[], reviewed: boolean) => void;
@@ -646,7 +640,95 @@ export const createFileChangesStore = (
     },
   };
 
-  return create<FileChangesState>((set, get) => ({
+  return create<FileChangesState>((set, get) => {
+    const hydrateDiffModalFile = async (repositoryId: string, changeId: string) => {
+      const repository = get().getRepository(repositoryId);
+      const change = get().getChange(repositoryId, changeId);
+      if (!repository || !change) {
+        return;
+      }
+
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          loadingChangeId: changeId,
+          lastError: null,
+        })),
+        diffModalSession:
+          state.diffModalSession &&
+          state.diffModalSession.repositoryId === repositoryId &&
+          state.diffModalSession.changeId === changeId
+            ? {
+              ...state.diffModalSession,
+              isHydratingFullContext: true,
+            }
+            : state.diffModalSession,
+        lastError: null,
+      }));
+
+      try {
+        const pair = await deps.tauri.gitReadFilePair({
+          repoPath: repository.worktreePath,
+          path: change.path,
+        });
+
+        set((state) => {
+          const isCurrentSession =
+            state.diffModalSession &&
+            state.diffModalSession.repositoryId === repositoryId &&
+            state.diffModalSession.changeId === changeId;
+
+          return {
+            repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+              ...currentRepository,
+              changes: updateChangeEntry(currentRepository.changes, changeId, (entry) => ({
+                ...entry,
+                originalContent: pair.originalContent,
+                modifiedContent: pair.modifiedContent,
+              })),
+              loadingChangeId: null,
+              lastError: null,
+            })),
+            diffModalSession: isCurrentSession && state.diffModalSession
+              ? {
+                ...state.diffModalSession,
+                originalContent: pair.originalContent,
+                rightDraftContent: state.diffModalSession.isDirty
+                  ? state.diffModalSession.rightDraftContent
+                  : pair.modifiedContent,
+                lastLoadedModifiedContent: pair.modifiedContent,
+                isHydratingFullContext: false,
+              }
+              : state.diffModalSession,
+            lastError: null,
+          };
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
+        set((state) => ({
+          repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+            ...currentRepository,
+            loadingChangeId: null,
+            lastError: message,
+          })),
+          diffModalSession:
+            state.diffModalSession &&
+            state.diffModalSession.repositoryId === repositoryId &&
+            state.diffModalSession.changeId === changeId
+              ? {
+                ...state.diffModalSession,
+                isHydratingFullContext: false,
+              }
+              : state.diffModalSession,
+          lastError: message,
+        }));
+      }
+    };
+
+    return ({
     currentTaskId: null,
     currentTaskLoadState: 'idle',
     currentTaskLoadMessage: null,
@@ -803,13 +885,11 @@ export const createFileChangesStore = (
         selectedDiffTarget &&
         previousDiffModalSession.repositoryId === selectedDiffTarget.repositoryId &&
         previousDiffModalSession.changeId === selectedDiffTarget.changeId
-          ? (() => {
-            const refreshedChange = repositories
-              .find((repository) => repository.id === selectedDiffTarget.repositoryId)
-              ?.changes.find((change) => change.id === selectedDiffTarget.changeId);
-            if (!refreshedChange) return null;
-            return buildDiffModalSession(selectedDiffTarget.repositoryId, refreshedChange);
-          })()
+          ? {
+            ...previousDiffModalSession,
+            isSaving: false,
+            isHydratingFullContext: false,
+          }
           : null;
 
       set({
@@ -880,86 +960,6 @@ export const createFileChangesStore = (
     syncActiveReviewRepository(deps, repository);
   },
 
-  loadChangeContext: async (repositoryId, changeId, contextMode) => {
-    const repository = get().getRepository(repositoryId);
-    const currentChange = repository?.changes.find((change) => change.id === changeId);
-    if (!repository || !currentChange || currentChange.contextMode === contextMode) {
-      return;
-    }
-
-    set((state) => ({
-      repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-        ...currentRepository,
-        loadingChangeId: changeId,
-        lastError: null,
-      })),
-      lastError: null,
-    }));
-
-    try {
-      const reloaded = await loadFileChangeEntry(
-        deps,
-        repositoryId,
-        repository.worktreePath,
-        { path: currentChange.path, status: currentChange.status },
-        currentChange,
-        contextMode
-      );
-
-      set((state) => ({
-        ...(() => {
-          const repositories = updateRepositoryState(state.repositories, repositoryId, (currentRepository) => {
-            const changes = updateChangeEntry(currentRepository.changes, changeId, () => reloaded);
-            return {
-              ...currentRepository,
-              changes,
-              loadingChangeId: null,
-              stats: computeStats(changes),
-              lastError: null,
-            };
-          });
-          const session = state.diffModalSession;
-          const shouldRefreshSession =
-            session &&
-            session.repositoryId === repositoryId &&
-            session.changeId === changeId &&
-            (!session.isDirty || session.isHydratingFullContext);
-          return {
-            repositories,
-            diffModalSession: shouldRefreshSession
-              ? buildDiffModalSession(repositoryId, reloaded, {
-                isHydratingFullContext: false,
-                isSaving: session?.isSaving ?? false,
-              })
-              : state.diffModalSession,
-          };
-        })(),
-      }));
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
-      set((state) => ({
-        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-          ...currentRepository,
-          loadingChangeId: null,
-          lastError: message,
-        })),
-        diffModalSession:
-          state.diffModalSession &&
-          state.diffModalSession.repositoryId === repositoryId &&
-          state.diffModalSession.changeId === changeId
-            ? {
-              ...state.diffModalSession,
-              isHydratingFullContext: false,
-            }
-            : state.diffModalSession,
-        lastError: message,
-      }));
-    }
-  },
-
   openDiffModal: (repositoryId, changeId) => {
     const repositories = get().repositories;
     const change = repositories
@@ -976,9 +976,12 @@ export const createFileChangesStore = (
       selectedRepositoryId: derivedReviewState.selectedRepositoryId,
       reviewSummary: derivedReviewState.reviewSummary,
       selectedDiffTarget: { repositoryId, changeId },
-      diffModalSession: buildDiffModalSession(repositoryId, change),
+      diffModalSession: buildDiffModalSession(repositoryId, change, {
+        isHydratingFullContext: true,
+      }),
       isDiffModalOpen: true,
     });
+    void hydrateDiffModalFile(repositoryId, changeId);
     syncActiveReviewRepository(deps, repository);
   },
 
@@ -1229,6 +1232,9 @@ export const createFileChangesStore = (
         diffModalSession: state.diffModalSession
           ? {
             ...state.diffModalSession,
+            rightDraftContent: nextContent,
+            lastLoadedModifiedContent: nextContent,
+            isDirty: false,
             isSaving: false,
           }
           : null,
@@ -1495,7 +1501,8 @@ export const createFileChangesStore = (
   },
 
   getReviewSummary: () => get().reviewSummary,
-  }));
+    });
+  });
 };
 
 export const useFileChangesStore = createFileChangesStore();
