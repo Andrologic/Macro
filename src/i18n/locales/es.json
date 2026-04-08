@@ -644,6 +644,7 @@
     "noDiff": "Aún no hay cambios de código para esta tarea",
     "manualEditNotice": "Aquí se permiten ediciones manuales, pero será necesario revisar el archivo nuevamente antes de enviarlo.",
     "manualEditNeedsValidationNotice": "Aquí se permiten ediciones manuales, pero será necesario validar el archivo nuevamente antes de confirmarlo.",
+    "loadingFileDiff": "Cargando diff del archivo...",
     "loadingFocusedContext": "Cargando diff focalizado...",
     "deletedChangeReadOnly": "Los archivos eliminados son de solo lectura en este flujo de revisión.",
     "deletedChangeReadOnlyValidation": "Los archivos eliminados son de solo lectura en este flujo de validación.",

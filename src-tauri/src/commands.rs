@@ -2859,6 +2859,33 @@ pub async fn execute_workspace_tool(
 
             Ok(patch)
         }
+        "git_read_file_pair" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let path = json_arg_string(&args, "path").unwrap_or_default();
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let pair = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let relative_path = git::validate_repo_relative_file_path(&path)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                git::read_git_file_pair(&repo, &validated, &relative_path)
+                    .map_err(|error| command_error(error.to_string()))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            serde_json::to_string_pretty(&pair).map_err(|error| command_error(error.to_string()))
+        }
         "git_get_tree" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let branch = json_arg_string(&args, "branch");
