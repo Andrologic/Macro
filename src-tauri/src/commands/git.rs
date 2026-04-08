@@ -1,6 +1,7 @@
 // Git Commands
 
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -775,6 +776,116 @@ pub(crate) fn add_paths(repo: &Repository, paths: &[String]) -> Result<()> {
     }
 
     index.write()?;
+    Ok(())
+}
+
+fn head_contains_path(repo: &Repository, path: &Path) -> Result<bool> {
+    let Some(head_commit) = get_head_commit(repo)? else {
+        return Ok(false);
+    };
+    let tree = head_commit.tree()?;
+    match tree.get_path(path) {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
+}
+
+pub(crate) fn restore_paths(repo: &Repository, paths: &[String]) -> Result<()> {
+    if paths.is_empty() {
+        return Err(BackendError::Git {
+            message: "No paths were provided to restore".to_string(),
+        });
+    }
+
+    let repo_root = repo_root(repo)?;
+    let mut tracked_paths = Vec::new();
+    let mut new_paths = Vec::new();
+
+    for input in paths {
+        let relative = if Path::new(input).is_absolute() {
+            to_repo_relative(&repo_root, Path::new(input))?
+        } else {
+            PathBuf::from(input)
+        };
+
+        if head_contains_path(repo, &relative)? {
+            tracked_paths.push(relative);
+        } else {
+            new_paths.push(relative);
+        }
+    }
+
+    if !tracked_paths.is_empty() {
+        let mut args = vec![
+            "restore".to_string(),
+            "--source=HEAD".to_string(),
+            "--staged".to_string(),
+            "--worktree".to_string(),
+            "--".to_string(),
+        ];
+        args.extend(
+            tracked_paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string()),
+        );
+        let output = run_git_command(&repo_root, &args)?;
+        if !output.success {
+            let details = command_output_text(&output);
+            return Err(BackendError::Git {
+                message: if details.is_empty() {
+                    "Failed to restore tracked paths".to_string()
+                } else {
+                    details
+                },
+            });
+        }
+    }
+
+    if !new_paths.is_empty() {
+        let mut rm_args = vec![
+            "rm".to_string(),
+            "--cached".to_string(),
+            "-r".to_string(),
+            "--ignore-unmatch".to_string(),
+            "--".to_string(),
+        ];
+        rm_args.extend(
+            new_paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string()),
+        );
+        let output = run_git_command(&repo_root, &rm_args)?;
+        if !output.success {
+            let details = command_output_text(&output);
+            return Err(BackendError::Git {
+                message: if details.is_empty() {
+                    "Failed to unstage newly added paths".to_string()
+                } else {
+                    details
+                },
+            });
+        }
+
+        for relative in &new_paths {
+            let absolute = repo_root.join(relative);
+            if absolute.is_file() {
+                fs::remove_file(&absolute).map_err(|error| BackendError::Io {
+                    message: format!("Failed to remove file {}: {}", absolute.display(), error),
+                    source: error,
+                })?;
+            } else if absolute.is_dir() {
+                fs::remove_dir_all(&absolute).map_err(|error| BackendError::Io {
+                    message: format!(
+                        "Failed to remove directory {}: {}",
+                        absolute.display(),
+                        error
+                    ),
+                    source: error,
+                })?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -2129,6 +2240,30 @@ pub async fn git_add(
         })?;
 
         add_paths(&repo, &paths)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Restore specific paths in the Git repository back to HEAD.
+pub async fn git_restore_paths(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    paths: Vec<String>,
+) -> Result<()> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        restore_paths(&repo, &paths)
     })
     .await
     .map_err(to_join_error)?

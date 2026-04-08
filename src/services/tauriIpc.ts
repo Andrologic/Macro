@@ -1312,6 +1312,16 @@ export async function gitAdd(params: {
   return invoke("git_add", { repoPath: params.repoPath, paths: params.paths });
 }
 
+export async function gitRestorePaths(params: {
+  repoPath: string;
+  paths: string[];
+}): Promise<void> {
+  return invoke("git_restore_paths", {
+    repoPath: params.repoPath,
+    paths: params.paths,
+  });
+}
+
 export async function gitReset(params: {
   repoPath: string;
   mode: "soft" | "mixed" | "hard";

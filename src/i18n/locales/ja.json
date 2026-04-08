@@ -651,7 +651,22 @@
     "fileCount_other": "{{count}}ファイル",
     "diffTab": "Diff",
     "previewTab": "Preview",
-    "revert": "Revert",
+    "revert": "元に戻す",
+    "validateAction": "検証",
+    "invalidateAction": "検証を取り消す",
+    "revertAction": "元に戻す",
+    "validateFile": "ファイルを検証",
+    "validatedFiles": "件の検証済みファイル",
+    "working": "処理中...",
+    "resetDraft": "下書きをリセット",
+    "saveDraft": "下書きを保存",
+    "discardChangesTitle": "未保存の変更を破棄しますか？",
+    "discardChangesDesc": "このファイルには編集があります。本当に破棄しますか？",
+    "discardButton": "変更を破棄",
+    "revertScopeTitle": "これらの変更を元に戻しますか？",
+    "revertScopeDescription": "これにより「{{scope}}」のローカル変更が破棄されます。",
+    "revertSuccess": "変更を元に戻しました。",
+    "revertFailed": "変更を元に戻せませんでした。",
     "stage": "Stage",
     "changeStatus": {
       "added": "追加した",
@@ -797,7 +812,8 @@
       "loadChangesFailed": "リポジトリの変更をロードできませんでした。",
       "commitMessageRequired": "コミットメッセージは必須です。",
       "commitSucceededTaskNotCompleted": "変更はコミットされましたが、タスクを自動的に完了できませんでした。",
-      "deletedChangeReadOnly": "削除されたファイルは、レビュー中は読み取り専用になります。代わりにタスク・フローからそれらを復元してください。"
+      "deletedChangeReadOnly": "削除されたファイルは、レビュー中は読み取り専用になります。代わりにタスク・フローからそれらを復元してください。",
+      "revertChangesFailed": "変更を元に戻せませんでした。"
     },
     "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project."
   },

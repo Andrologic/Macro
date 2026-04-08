@@ -16,6 +16,8 @@ import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { toast } from '../ui/toastService';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
+import { Button } from '../ui/Button';
+import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 
 interface FileChangesPanelProps {
   className?: string;
@@ -89,53 +91,144 @@ interface FolderTreeItemProps {
   node: FolderNode;
   depth: number;
   selectedChangeId: string | null;
-  invalidateTooltip: string;
   onFileClick: (changeId: string) => void;
-  onFileInvalidate: (changeId: string) => void;
+  onSetReviewedState: (changeIds: string[], reviewed: boolean) => void;
+  onRevert: (changeIds: string[], scopeLabel: string, requiresConfirm: boolean) => void;
+  labels: {
+    validate: string;
+    invalidate: string;
+    revert: string;
+  };
 }
 
-const hasPendingValidationInNode = (node: FolderNode): boolean => {
-  if (node.type === 'file') {
-    return node.fileChange?.reviewed !== true;
-  }
-  return Boolean(node.children?.some((child) => hasPendingValidationInNode(child)));
-};
+interface ScopeActionRailProps {
+  allReviewed: boolean;
+  onValidate: () => void;
+  onInvalidate: () => void;
+  onRevert?: () => void;
+  labels: {
+    validate: string;
+    invalidate: string;
+    revert: string;
+  };
+  className?: string;
+}
+
+const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
+  allReviewed,
+  onValidate,
+  onInvalidate,
+  onRevert,
+  labels,
+  className,
+}) => (
+  <div
+    className={cn(
+      'absolute inset-y-0 right-0 z-20 flex items-center gap-1 pr-2 pl-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100',
+      'bg-gradient-to-l from-background via-background/95 to-transparent backdrop-blur-[1px]',
+      className
+    )}
+  >
+    {allReviewed ? (
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 w-7 px-0"
+        title={labels.invalidate}
+        aria-label={labels.invalidate}
+        onClick={(event) => {
+          event.stopPropagation();
+          onInvalidate();
+        }}
+      >
+        <Icon name="x" size={14} />
+      </Button>
+    ) : (
+      <>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 w-7 px-0"
+          title={labels.validate}
+          aria-label={labels.validate}
+          onClick={(event) => {
+            event.stopPropagation();
+            onValidate();
+          }}
+        >
+          <Icon name="check" size={14} />
+        </Button>
+        {onRevert && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 px-0"
+            title={labels.revert}
+            aria-label={labels.revert}
+            onClick={(event) => {
+              event.stopPropagation();
+          onRevert();
+            }}
+          >
+            <Icon name="undo-2" size={14} />
+          </Button>
+        )}
+      </>
+    )}
+  </div>
+);
 
 const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
   repositoryId,
   node,
   depth,
   selectedChangeId,
-  invalidateTooltip,
   onFileClick,
-  onFileInvalidate,
+  onSetReviewedState,
+  onRevert,
+  labels,
 }) => {
   const [isOpen, setIsOpen] = useState(true);
-  const hasPendingValidation = hasPendingValidationInNode(node);
+  const hasPendingValidation = node.hasPendingReview;
 
   if (node.type === 'folder') {
     return (
       <div>
-        <button
-          onClick={() => setIsOpen(!isOpen)}
-          className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-accent/50 rounded transition-colors group"
-          style={{ paddingLeft: `${depth * 12 + 8}px` }}
+        <div
+          className="group relative rounded transition-colors hover:bg-accent/50"
+          style={{ marginLeft: `${depth * 12}px` }}
         >
-          <Icon
-            name={isOpen ? 'chevron-down' : 'chevron-right'}
-            size={12}
-            className="text-muted-foreground shrink-0"
+          <button
+            onClick={() => setIsOpen(!isOpen)}
+            className="flex min-w-0 w-full items-center gap-2 px-2 py-1.5 pr-2 text-left"
+          >
+            <Icon
+              name={isOpen ? 'chevron-down' : 'chevron-right'}
+              size={12}
+              className="text-muted-foreground shrink-0"
+            />
+            <Icon
+              name={isOpen ? 'folder-open' : 'folder'}
+              size={14}
+              className="text-primary/80 shrink-0"
+            />
+            <span className="text-sm text-foreground truncate">{node.name}</span>
+            {!isOpen && hasPendingValidation && (
+              <span className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0" />
+            )}
+          </button>
+          <ScopeActionRail
+            allReviewed={node.allReviewed}
+            onValidate={() => onSetReviewedState(node.changeIds, true)}
+            onInvalidate={() => onSetReviewedState(node.changeIds, false)}
+            onRevert={() => onRevert(node.changeIds, node.path, true)}
+            labels={labels}
+            className="rounded-r"
           />
-          <Icon
-            name={isOpen ? 'folder-open' : 'folder'}
-            size={14}
-            className="text-primary/80 shrink-0"
-          />
-          <span className="text-sm text-foreground truncate">{node.name}</span>
-          {!isOpen && hasPendingValidation && (
-            <span className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15" />
-          )}
-        </button>
+        </div>
         {isOpen && node.children && (
           <div>
             {node.children.map((child) => (
@@ -145,9 +238,10 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
                 node={child}
                 depth={depth + 1}
                 selectedChangeId={selectedChangeId}
-                invalidateTooltip={invalidateTooltip}
                 onFileClick={onFileClick}
-                onFileInvalidate={onFileInvalidate}
+                onSetReviewedState={onSetReviewedState}
+                onRevert={onRevert}
+                labels={labels}
               />
             ))}
           </div>
@@ -162,48 +256,51 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
   const isSelected = selectedChangeId === change.id;
 
   return (
-    <button
-      onClick={() => onFileClick(change.id)}
-      onContextMenu={(event) => {
-        if (!change.reviewed) return;
-        event.preventDefault();
-        onFileInvalidate(change.id);
-      }}
+    <div
       className={cn(
-        'w-full flex items-center gap-2 px-2 py-1.5 rounded-lg transition-all group',
-        isSelected
-          ? 'bg-primary/8'
-          : change.reviewed
-            ? 'hover:bg-accent/40'
-            : 'bg-primary/[0.035] hover:bg-primary/[0.06]'
+        'group relative rounded-lg transition-all overflow-hidden',
+        isSelected ? 'bg-primary/8' : change.reviewed ? 'hover:bg-accent/40' : 'bg-primary/[0.035] hover:bg-primary/[0.06]'
       )}
-      style={{ paddingLeft: `${depth * 12 + 8}px` }}
-      title={change.reviewed ? invalidateTooltip : undefined}
+      style={{ marginLeft: `${depth * 12}px` }}
     >
-      <span
-        className={cn(
-          'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[11px] font-semibold font-mono',
-          STATUS_BG[change.status]
-        )}
+      <button
+        type="button"
+        onClick={() => onFileClick(change.id)}
+        className="flex min-w-0 w-full items-center gap-2 px-2 py-1.5 pr-2 text-left"
       >
-        <span className={STATUS_COLORS[change.status]}>{STATUS_MARKERS[change.status]}</span>
-      </span>
+        <span
+          className={cn(
+            'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[11px] font-semibold font-mono',
+            STATUS_BG[change.status]
+          )}
+        >
+          <span className={STATUS_COLORS[change.status]}>{STATUS_MARKERS[change.status]}</span>
+        </span>
 
-      <span className="text-sm text-foreground truncate flex-1 text-left">{node.name}</span>
+        <span className="text-sm text-foreground truncate flex-1 text-left">{node.name}</span>
 
-      {!change.reviewed && (
-        <span className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15" />
-      )}
-
-      <div className="flex items-center gap-1 text-[11px] shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">
-        {change.additions > 0 && (
-          <span className="text-primary font-mono">+{change.additions}</span>
+        {!change.reviewed && (
+          <span className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0" />
         )}
-        {change.deletions > 0 && (
-          <span className="text-destructive font-mono">-{change.deletions}</span>
-        )}
-      </div>
-    </button>
+
+        <div className="flex items-center gap-1 text-[11px] shrink-0 opacity-60 transition-opacity group-hover:opacity-0">
+          {change.additions > 0 && (
+            <span className="text-primary font-mono">+{change.additions}</span>
+          )}
+          {change.deletions > 0 && (
+            <span className="text-destructive font-mono">-{change.deletions}</span>
+          )}
+        </div>
+      </button>
+      <ScopeActionRail
+        allReviewed={change.reviewed}
+        onValidate={() => onSetReviewedState([change.id], true)}
+        onInvalidate={() => onSetReviewedState([change.id], false)}
+        onRevert={() => onRevert([change.id], change.path, false)}
+        labels={labels}
+        className="rounded-r-lg"
+      />
+    </div>
   );
 };
 
@@ -255,6 +352,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const startReview = useTaskStore((state) => state.startReview);
   const finishTask = useTaskStore((state) => state.finishTask);
   const [expandedRepositoryIds, setExpandedRepositoryIds] = useState<Record<string, boolean>>({});
+  const [pendingRevertScope, setPendingRevertScope] = useState<{
+    repositoryId: string;
+    changeIds: string[];
+    scopeLabel: string;
+  } | null>(null);
   const {
     repositories,
     reviewSummary,
@@ -271,8 +373,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectRepository,
     openDiffModal,
     closeDiffModal,
+    setReviewedState,
     markAllAsReviewed,
-    markAsUnreviewed,
+    revertChanges,
     commitReviewedChanges,
     setCommitMessageDraft,
     getOverallStats,
@@ -475,6 +578,17 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     markAllAsReviewed(nextValidationRepository.id);
   };
 
+  const handleRevert = async (repositoryId: string, changeIds: string[]) => {
+    if (changeIds.length === 0) return;
+    try {
+      await revertChanges(repositoryId, changeIds);
+      toast.success(t('implement.revertSuccess', 'Changes reverted.'));
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      toast.error(messageText || t('implement.revertFailed', 'Failed to revert changes.'));
+    }
+  };
+
   const handleOpenCommit = () => {
     if (!nextCommitRepository) return;
     selectRepository(nextCommitRepository.id);
@@ -495,6 +609,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       const messageText = error instanceof Error ? error.message : String(error);
       toast.error(messageText || t('implement.completeTaskFailed', 'Failed to complete task'));
     }
+  };
+
+  const actionLabels = {
+    validate: t('implement.validateAction', 'Validate'),
+    invalidate: t('implement.invalidateAction', 'Invalidate'),
+    revert: t('implement.revertAction', 'Revert'),
   };
 
   if (!selectedGroupId) {
@@ -595,35 +715,38 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           const repositoryError = normalizeCommitErrorMessage(repository.lastError || '', translate);
           const repositoryName = getRepositoryDisplayName(repository, project?.name);
           const repositoryHasPendingValidation = repository.commitState === 'idle' && repository.stats.reviewed < repository.stats.total;
+          const repositoryChangeIds = repository.changes.map((change) => change.id);
           return (
             <section
               key={repository.id}
               className="mx-2 mb-1"
             >
-              <button
-                type="button"
-                onClick={() => {
-                  selectRepository(repository.id);
-                  setExpandedRepositoryIds((current) => ({
-                    ...current,
-                    [repository.id]: !(
-                      current[repository.id] ??
-                      (repositories.length === 1 ||
-                        repository.id === selectedRepositoryId ||
-                        repository.id === reviewSummary.nextRepositoryId)
-                    ),
-                  }));
-                }}
+              <div
                 className={cn(
-                  'w-full rounded-xl px-3 py-2.5 text-left transition-colors',
+                  'group relative w-full rounded-xl px-3 py-2.5 transition-colors overflow-hidden',
                   repository.id === selectedRepositoryId || isExpanded
                     ? 'bg-primary/5'
                     : 'bg-card hover:bg-accent/40'
                 )}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      selectRepository(repository.id);
+                      setExpandedRepositoryIds((current) => ({
+                        ...current,
+                        [repository.id]: !(
+                          current[repository.id] ??
+                          (repositories.length === 1 ||
+                            repository.id === selectedRepositoryId ||
+                            repository.id === reviewSummary.nextRepositoryId)
+                        ),
+                      }));
+                    }}
+                    className="min-w-0 flex flex-1 items-center gap-2 text-left"
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
                       <Icon
                         name={isExpanded ? 'chevron-down' : 'chevron-right'}
                         size={14}
@@ -638,7 +761,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         {repositoryName}
                       </span>
                       {!isExpanded && repositoryHasPendingValidation && (
-                        <span className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15" />
+                        <span className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0" />
                       )}
                       {repositorySummary?.isNextAction && !repositorySummary.isSelected && (
                         <span className="px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px]">
@@ -646,14 +769,30 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         </span>
                       )}
                     </div>
+                  </button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {repositorySummary && (
+                      <span className={cn('px-2 py-0.5 rounded-full text-[10px] shrink-0 transition-opacity group-hover:opacity-0', REVIEW_STATE_CLASSES[repositorySummary.state])}>
+                        {renderRepositoryState(repository, repositorySummary, translate)}
+                      </span>
+                    )}
                   </div>
-                  {repositorySummary && (
-                    <span className={cn('px-2 py-0.5 rounded-full text-[10px] shrink-0', REVIEW_STATE_CLASSES[repositorySummary.state])}>
-                      {renderRepositoryState(repository, repositorySummary, translate)}
-                    </span>
-                  )}
                 </div>
-              </button>
+                {repository.commitState === 'idle' && repositoryChangeIds.length > 0 && (
+                  <ScopeActionRail
+                    allReviewed={repository.stats.reviewed === repository.stats.total}
+                    onValidate={() => setReviewedState(repository.id, repositoryChangeIds, true)}
+                    onInvalidate={() => setReviewedState(repository.id, repositoryChangeIds, false)}
+                    onRevert={() => setPendingRevertScope({
+                      repositoryId: repository.id,
+                      changeIds: repositoryChangeIds,
+                      scopeLabel: repositoryName,
+                    })}
+                    labels={actionLabels}
+                    className="rounded-r-xl"
+                  />
+                )}
+              </div>
 
               {isExpanded && (
                 <div className="ml-3 mr-3 mb-3">
@@ -685,15 +824,27 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         node={node}
                         depth={0}
                         selectedChangeId={repository.selectedChangeId}
-                        invalidateTooltip={t('implement.rightClickToInvalidate', 'Right-click to invalidate')}
                         onFileClick={(changeId) => {
                           selectRepository(repository.id);
                           openDiffModal(repository.id, changeId);
                         }}
-                        onFileInvalidate={(changeId) => {
+                        onSetReviewedState={(changeIds, reviewed) => {
                           selectRepository(repository.id);
-                          markAsUnreviewed(repository.id, changeId);
+                          setReviewedState(repository.id, changeIds, reviewed);
                         }}
+                        onRevert={(changeIds, scopeLabel, requiresConfirm) => {
+                          selectRepository(repository.id);
+                          if (requiresConfirm) {
+                            setPendingRevertScope({
+                              repositoryId: repository.id,
+                              changeIds,
+                              scopeLabel,
+                            });
+                            return;
+                          }
+                          void handleRevert(repository.id, changeIds);
+                        }}
+                        labels={actionLabels}
                       />
                     ))}
                   </div>
@@ -758,6 +909,27 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       {isDiffModalOpen && selectedDiffTarget && (
         <FileChangesDiffModal
           onClose={closeDiffModal}
+        />
+      )}
+
+      {pendingRevertScope && (
+        <ConfirmPromptModal
+          isOpen={true}
+          title={t('implement.revertScopeTitle', 'Revert these changes?')}
+          description={t(
+            'implement.revertScopeDescription',
+            'This will discard the local changes for "{{scope}}".',
+            { scope: pendingRevertScope.scopeLabel }
+          )}
+          confirmLabel={t('implement.revertAction', 'Revert')}
+          cancelLabel={t('common.cancel', 'Cancel')}
+          confirmVariant="error"
+          onCancel={() => setPendingRevertScope(null)}
+          onConfirm={() => {
+            const scope = pendingRevertScope;
+            setPendingRevertScope(null);
+            void handleRevert(scope.repositoryId, scope.changeIds);
+          }}
         />
       )}
     </aside>

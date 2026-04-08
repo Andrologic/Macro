@@ -70,6 +70,8 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
       ?.changes.find((candidate) => candidate.id === currentSession.changeId);
   });
   const markAsReviewed = useFileChangesStore((state) => state.markAsReviewed);
+  const markAsUnreviewed = useFileChangesStore((state) => state.markAsUnreviewed);
+  const revertChanges = useFileChangesStore((state) => state.revertChanges);
   const updateRightDraft = useFileChangesStore((state) => state.updateRightDraft);
   const resetRightDraft = useFileChangesStore((state) => state.resetRightDraft);
   const saveRightDraft = useFileChangesStore((state) => state.saveRightDraft);
@@ -163,6 +165,16 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
     await markAsReviewed(repository.id, change.id);
     onClose();
   }, [change, isBusy, isDirty, markAsReviewed, onClose, repository]);
+
+  const handleInvalidate = useCallback(() => {
+    if (!repository || !change || isBusy || isDirty) return;
+    markAsUnreviewed(repository.id, change.id);
+  }, [change, isBusy, isDirty, markAsUnreviewed, repository]);
+
+  const handleRevert = useCallback(async () => {
+    if (!repository || !change || isBusy || isDirty || change.reviewed) return;
+    await revertChanges(repository.id, [change.id]);
+  }, [change, isBusy, isDirty, repository, revertChanges]);
 
   const handleNavigation = useCallback((changeId: string) => {
     if (!repository) return;
@@ -361,16 +373,35 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 >
                   {t('implement.saveDraft', 'Save draft')}
                 </Button>
-              ) : (
+              ) : change.reviewed ? (
                 <Button
-                  variant="primary"
+                  variant="secondary"
                   size="sm"
-                  onClick={() => void handleValidate()}
-                  disabled={isBusy || change.reviewed}
-                  className="bg-primary text-primary-foreground hover:bg-primary/90"
+                  onClick={handleInvalidate}
+                  disabled={isBusy}
                 >
-                  {t('implement.validateFile', 'Validate file')}
+                  {t('implement.invalidateAction', 'Invalidate')}
                 </Button>
+              ) : (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void handleRevert()}
+                    disabled={isBusy}
+                  >
+                    {t('implement.revertAction', 'Revert')}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => void handleValidate()}
+                    disabled={isBusy || change.reviewed}
+                    className="bg-primary text-primary-foreground hover:bg-primary/90"
+                  >
+                    {t('implement.validateFile', 'Validate file')}
+                  </Button>
+                </>
               )}
             </div>
           </footer>

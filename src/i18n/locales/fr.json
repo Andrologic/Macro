@@ -651,7 +651,22 @@
     "fileCount_other": "{{count}} fichiers",
     "diffTab": "Diff",
     "previewTab": "Preview",
-    "revert": "Revert",
+    "revert": "Annuler",
+    "validateAction": "Valider",
+    "invalidateAction": "Invalider",
+    "revertAction": "Annuler",
+    "validateFile": "Valider le fichier",
+    "validatedFiles": "fichiers validés",
+    "working": "Traitement en cours...",
+    "resetDraft": "Réinitialiser le brouillon",
+    "saveDraft": "Enregistrer le brouillon",
+    "discardChangesTitle": "Ignorer les modifications non enregistrées ?",
+    "discardChangesDesc": "Vous avez modifié ce fichier. Voulez-vous vraiment ignorer ces changements ?",
+    "discardButton": "Ignorer les changements",
+    "revertScopeTitle": "Annuler ces changements ?",
+    "revertScopeDescription": "Cela va annuler les modifications locales pour « {{scope}} ».",
+    "revertSuccess": "Changements annulés.",
+    "revertFailed": "Impossible d'annuler les changements.",
     "stage": "Stage",
     "changeStatus": {
       "added": "Ajouté",
@@ -797,7 +812,8 @@
       "loadChangesFailed": "Échec du chargement des modifications du référentiel.",
       "commitMessageRequired": "Un message de commit est requis.",
       "commitSucceededTaskNotCompleted": "Les modifications ont été validées, mais la tâche n'a pas pu être complétée automatiquement.",
-      "deletedChangeReadOnly": "Les fichiers supprimés sont en lecture seule pendant la review. Restaurez-les via le flow de tâche."
+      "deletedChangeReadOnly": "Les fichiers supprimés sont en lecture seule pendant la review. Restaurez-les via le flow de tâche.",
+      "revertChangesFailed": "Impossible d'annuler les changements."
     },
     "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project."
   },

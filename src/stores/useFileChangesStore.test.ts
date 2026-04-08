@@ -17,13 +17,14 @@ const changeIdB = `${repositoryIdB}::README.md`;
 const initialOriginalFiles: Record<string, Record<string, string>> = {
   [worktreeAPath]: {
     'src/main.ts': 'const value = 1;\nconsole.log(value);',
+    'src/deleted.ts': 'export const removed = true;\n',
   },
   [worktreeBPath]: {
     'README.md': 'Hello',
   },
 };
 
-let currentFiles: Record<string, Record<string, string>> = {};
+let currentFiles: Record<string, Record<string, string | null>> = {};
 let taskStatuses: Record<string, 'Pending' | 'InReview' | 'InProgress' | 'Completed'> = {
   'task-1': 'InReview',
   'task-2': 'InReview',
@@ -31,9 +32,43 @@ let taskStatuses: Record<string, 'Pending' | 'InReview' | 'InProgress' | 'Comple
   'task-4': 'Pending',
 };
 
+const getChangedFiles = (repoPath: string): Array<{ path: string; status: string }> => {
+  const original = initialOriginalFiles[repoPath] ?? {};
+  const current = currentFiles[repoPath] ?? {};
+  const paths = new Set([...Object.keys(original), ...Object.keys(current)]);
+  const changes: Array<{ path: string; status: string }> = [];
+
+  for (const path of paths) {
+    const hasOverride = Object.prototype.hasOwnProperty.call(current, path);
+    if (!hasOverride) {
+      continue;
+    }
+
+    const originalValue = original[path];
+    const currentValue = current[path];
+
+    if (originalValue === undefined && typeof currentValue === 'string') {
+      changes.push({ path, status: 'untracked' });
+      continue;
+    }
+
+    if (originalValue !== undefined && currentValue === null) {
+      changes.push({ path, status: 'deleted' });
+      continue;
+    }
+
+    if (originalValue !== undefined && typeof currentValue === 'string' && originalValue !== currentValue) {
+      changes.push({ path, status: 'modified' });
+    }
+  }
+
+  return changes.sort((left, right) => left.path.localeCompare(right.path));
+};
+
 const buildPatch = (repoPath: string, path: string): string => {
   const original = initialOriginalFiles[repoPath]?.[path] ?? '';
-  const modified = currentFiles[repoPath]?.[path] ?? '';
+  const override = currentFiles[repoPath]?.[path];
+  const modified = override === null ? '' : override ?? original;
   const originalLines = original.split('\n');
   const modifiedLines = modified.split('\n');
   const patchLines = [
@@ -67,20 +102,20 @@ const buildPatch = (repoPath: string, path: string): string => {
 };
 
 const buildGitStatus = (repoPath: string) => {
+  const changes = getChangedFiles(repoPath);
+
   if (repoPath === worktreeAPath) {
     return {
       branch: 'feature/task-a',
       head_commit: null,
       staged_files: [],
-      unstaged_files: currentFiles[repoPath]?.['src/main.ts']
-        ? [{ path: 'src/main.ts', status: 'modified' }]
-        : [],
-      untracked_files: [],
+      unstaged_files: changes.filter((change) => change.status !== 'untracked'),
+      untracked_files: changes.filter((change) => change.status === 'untracked'),
       conflicted_files: [],
       conflictedFiles: [],
       merge_in_progress: false,
       mergeInProgress: false,
-      is_clean: !currentFiles[repoPath]?.['src/main.ts'],
+      is_clean: changes.length === 0,
     };
   }
 
@@ -89,15 +124,13 @@ const buildGitStatus = (repoPath: string) => {
       branch: 'feature/task-b',
       head_commit: null,
       staged_files: [],
-      unstaged_files: currentFiles[repoPath]?.['README.md']
-        ? [{ path: 'README.md', status: 'modified' }]
-        : [],
-      untracked_files: [],
+      unstaged_files: changes.filter((change) => change.status !== 'untracked'),
+      untracked_files: changes.filter((change) => change.status === 'untracked'),
       conflicted_files: [],
       conflictedFiles: [],
       merge_in_progress: false,
       mergeInProgress: false,
-      is_clean: !currentFiles[repoPath]?.['README.md'],
+      is_clean: changes.length === 0,
     };
   }
 
@@ -126,12 +159,20 @@ const fsWriteFileMock = mock(async ({ path, content }: { path: string; content: 
   const isWorktreeA = normalized.startsWith(`${worktreeAPath}/`);
   const base = isWorktreeA ? worktreeAPath : worktreeBPath;
   const relative = normalized.slice(base.length + 1);
+  currentFiles[base] ||= {};
   currentFiles[base][relative] = content;
   return {
     path: normalized,
     bytes_written: content.length,
     created: false,
   };
+});
+
+const gitRestorePathsMock = mock(async ({ repoPath, paths }: { repoPath: string; paths: string[] }) => {
+  currentFiles[repoPath] ||= {};
+  for (const path of paths) {
+    delete currentFiles[repoPath][path];
+  }
 });
 
 const gitAddMock = mock(async () => undefined);
@@ -284,6 +325,7 @@ describe('useFileChangesStore', () => {
     gitStatusMock.mockClear();
     gitDiffMock.mockClear();
     fsWriteFileMock.mockClear();
+    gitRestorePathsMock.mockClear();
     gitAddMock.mockClear();
     gitCommitMock.mockClear();
     setTaskStatusMock.mockClear();
@@ -294,6 +336,7 @@ describe('useFileChangesStore', () => {
         gitStatus: gitStatusMock,
         gitDiff: gitDiffMock,
         fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
         gitAdd: gitAddMock,
         gitCommit: gitCommitMock,
       },
@@ -445,6 +488,80 @@ describe('useFileChangesStore', () => {
     expect(session?.rightDraftContent).toContain('const value = 9;');
     expect(change?.modifiedContent).toContain('const value = 9;');
     expect(change?.reviewed).toBe(false);
+  });
+
+  it('applies reviewed state in batch for a repository scope', async () => {
+    currentFiles[worktreeAPath]['src/new.ts'] = 'export const created = true;\n';
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const changeIds = repository?.changes.map((change) => change.id) ?? [];
+    expect(changeIds).toHaveLength(2);
+
+    store.setReviewedState(repositoryIdA, changeIds, true);
+
+    const updatedRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(updatedRepository?.stats.reviewed).toBe(2);
+    expect(updatedRepository?.changes.every((change) => change.reviewed)).toBe(true);
+
+    store.setReviewedState(repositoryIdA, changeIds, false);
+
+    const resetRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(resetRepository?.stats.reviewed).toBe(0);
+    expect(resetRepository?.changes.every((change) => !change.reviewed)).toBe(true);
+  });
+
+  it('reverts modified, added, and deleted files then reloads the repository state', async () => {
+    currentFiles[worktreeAPath]['src/new.ts'] = 'export const created = true;\n';
+    currentFiles[worktreeAPath]['src/deleted.ts'] = null;
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(repository?.changes.map((change) => change.path)).toEqual([
+      'src/deleted.ts',
+      'src/main.ts',
+      'src/new.ts',
+    ]);
+
+    await store.revertChanges(
+      repositoryIdA,
+      repository?.changes.map((change) => change.id) ?? []
+    );
+
+    expect(gitRestorePathsMock).toHaveBeenCalledTimes(1);
+    expect(gitRestorePathsMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      paths: ['src/deleted.ts', 'src/main.ts', 'src/new.ts'],
+    });
+
+    const refreshedRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(refreshedRepository?.changes).toHaveLength(0);
+    expect(useFileChangesStore.getState().reviewSummary.stateCounts.no_changes).toBe(1);
+  });
+
+  it('opens the next file in the diff modal when reverting the currently opened file', async () => {
+    currentFiles[worktreeAPath]['src/new.ts'] = 'export const created = true;\n';
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const mainChange = repository?.changes.find((change) => change.path === 'src/main.ts');
+    const newChange = repository?.changes.find((change) => change.path === 'src/new.ts');
+    expect(mainChange).toBeDefined();
+    expect(newChange).toBeDefined();
+
+    store.openDiffModal(repositoryIdA, mainChange!.id);
+    await Promise.resolve();
+
+    await store.revertChanges(repositoryIdA, [mainChange!.id]);
+
+    const selectedTarget = useFileChangesStore.getState().getSelectedDiffTarget();
+    expect(selectedTarget).toEqual({
+      repositoryId: repositoryIdA,
+      changeId: newChange!.id,
+    });
   });
 
   it('does not reuse the active repository path when the dedicated worktree mapping is missing', async () => {
