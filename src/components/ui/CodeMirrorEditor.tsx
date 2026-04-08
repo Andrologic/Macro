@@ -4,8 +4,13 @@ import { Compartment, EditorState, RangeSetBuilder } from '@codemirror/state';
 import { basicSetup } from 'codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { rust } from '@codemirror/lang-rust';
-import { oneDark } from '@codemirror/theme-one-dark';
 import { cn } from '../../utils/cn';
+import { useOptionalTheme } from '../theme/ThemeProvider';
+import {
+  createCodeMirrorBaseTheme,
+  getCodeMirrorThemeMetadata,
+  getCodeMirrorSyntaxExtensions,
+} from './codeMirrorTheme';
 
 // =============================================================================
 // CODEMIRROR EDITOR COMPONENT
@@ -89,6 +94,8 @@ const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
   lineHighlights = [],
   hideVerticalScrollbar = false,
 }) => {
+  const themeContext = useOptionalTheme();
+  const themeMetadata = getCodeMirrorThemeMetadata(themeContext?.theme);
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const latestCodeRef = useRef(code);
@@ -111,63 +118,19 @@ const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
   useEffect(() => {
     if (!editorRef.current) return;
 
+    const baseTheme = createCodeMirrorBaseTheme(themeContext?.theme, {
+      hideVerticalScrollbar,
+    });
+    const syntaxThemeExtensions = getCodeMirrorSyntaxExtensions(themeContext?.theme);
+
     const state = EditorState.create({
       doc: latestCodeRef.current,
       extensions: [
         basicSetup,
-        oneDark,
+        ...syntaxThemeExtensions,
         resolveLanguageExtension(language),
         ...(wrapLines ? [EditorView.lineWrapping] : []),
-        EditorView.theme({
-          '&': {
-            fontSize: '13px',
-            height: '100%',
-          },
-          '.cm-scroller': {
-            overflow: 'auto',
-            fontFamily: '"JetBrains Mono", "Fira Code", monospace',
-            ...(hideVerticalScrollbar
-              ? {
-                scrollbarWidth: 'none',
-                msOverflowStyle: 'none',
-              }
-              : {}),
-          },
-          '.cm-scroller::-webkit-scrollbar': hideVerticalScrollbar ? {
-            width: '0px',
-            height: '10px',
-          } : {},
-          '.cm-scroller::-webkit-scrollbar-thumb': hideVerticalScrollbar ? {
-            backgroundColor: 'rgba(148, 163, 184, 0.45)',
-            borderRadius: '999px',
-          } : {},
-          '.cm-scroller::-webkit-scrollbar-track': hideVerticalScrollbar ? {
-            backgroundColor: 'transparent',
-          } : {},
-          '.cm-scroller::-webkit-scrollbar-corner': hideVerticalScrollbar ? {
-            backgroundColor: 'transparent',
-          } : {},
-          '.cm-scroller::-webkit-scrollbar:vertical': hideVerticalScrollbar ? {
-            width: '0px',
-          } : {},
-          '.cm-content': {
-            minHeight: '100%',
-            padding: '12px 24px 16px 12px',
-          },
-          '.cm-gutters': {
-            minHeight: '100%',
-            paddingTop: '12px',
-            paddingBottom: '16px',
-          },
-          '.cm-line.cm-git-added': {
-            backgroundColor: 'rgba(34, 197, 94, 0.14)',
-            boxShadow: 'inset 3px 0 0 rgba(34, 197, 94, 0.7)',
-          },
-          '.cm-line.cm-git-removed': {
-            backgroundColor: 'rgba(239, 68, 68, 0.14)',
-            boxShadow: 'inset 3px 0 0 rgba(239, 68, 68, 0.7)',
-          },
-        }),
+        baseTheme,
         highlightCompartmentRef.current.of(
           buildLineHighlightExtension(
             EditorState.create({ doc: latestCodeRef.current }).doc,
@@ -200,7 +163,7 @@ const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
       view.destroy();
       viewRef.current = null;
     };
-  }, [autoFocus, hideVerticalScrollbar, language, onEditorReady, readOnly, wrapLines]);
+  }, [autoFocus, hideVerticalScrollbar, language, onEditorReady, readOnly, themeContext?.theme, wrapLines]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -232,6 +195,7 @@ const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
   return (
     <div
       ref={editorRef}
+      style={themeMetadata.surfaceVars as React.CSSProperties}
       className={cn(
         'rounded-md overflow-hidden border border-border',
         className
