@@ -16,13 +16,13 @@ const CodeMirrorEditor = lazy(() => import('./CodeMirrorEditor'));
 // =============================================================================
 
 const CodeViewerSkeleton: React.FC = () => (
-  <div className="w-full h-full min-h-[200px] bg-[#282c34] rounded-md overflow-hidden">
+  <div className="w-full h-full min-h-[200px] rounded-md overflow-hidden border border-border bg-card">
     <div className="p-4 space-y-2">
-      <Skeleton className="h-4 w-full bg-gray-700" />
-      <Skeleton className="h-4 w-11/12 bg-gray-700" />
-      <Skeleton className="h-4 w-4/5 bg-gray-700" />
-      <Skeleton className="h-4 w-full bg-gray-700" />
-      <Skeleton className="h-4 w-3/4 bg-gray-700" />
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-11/12" />
+      <Skeleton className="h-4 w-4/5" />
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-3/4" />
     </div>
   </div>
 );
