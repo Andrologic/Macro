@@ -215,7 +215,7 @@ describe('CodeMirrorEditor diff highlights', () => {
     expect(wrapper?.style.getPropertyValue('--macro-cm-editor-background')).toBe('#ffffff');
     expect(wrapper?.style.getPropertyValue('--macro-cm-editor-foreground')).toBe('#09090b');
     expect(wrapper?.style.getPropertyValue('--macro-cm-gutter-background')).toBe('#f4f4f5');
-    expect(document.head.textContent).toContain('padding: 8px 16px 12px 0;');
+    expect(document.head.textContent).toContain('padding: 8px 0px 12px 0;');
     expect(document.head.textContent).toContain('.cm-gutters {min-height: 100%; padding-top: 0px; padding-bottom: 12px; background-color: #f4f4f5; color: #71717a;');
     expect(document.head.textContent).not.toContain('.cm-editor .cm-gutters');
   });
