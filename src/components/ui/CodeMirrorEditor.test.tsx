@@ -1,13 +1,102 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { ThemeProvider, defaultTheme } from '../theme/ThemeProvider';
+import { useAppStore } from '../../stores/useAppStore';
+import type { Theme } from '../../types/theme';
 import CodeMirrorEditor from './CodeMirrorEditor';
+
+const initialAppStoreState = useAppStore.getState();
+const originalFetch = globalThis.fetch;
+const originalRequestIdleCallback = window.requestIdleCallback;
+const originalCancelIdleCallback = window.cancelIdleCallback;
+
+const macroLightTheme: Theme = {
+  name: 'Macro Light',
+  type: 'light',
+  colors: {
+    background: '#ffffff',
+    foreground: '#09090b',
+    card: '#ffffff',
+    cardForeground: '#09090b',
+    popover: '#ffffff',
+    popoverForeground: '#09090b',
+    primary: '#4f46e5',
+    primaryForeground: '#fafafa',
+    secondary: '#f4f4f5',
+    secondaryForeground: '#18181b',
+    muted: '#f4f4f5',
+    mutedForeground: '#71717a',
+    accent: '#f4f4f5',
+    accentForeground: '#18181b',
+    destructive: '#ef4444',
+    destructiveForeground: '#fafafa',
+    border: '#e4e4e7',
+    input: '#e4e4e7',
+    ring: '#4f46e5',
+  },
+};
+
+const jsonResponse = (payload: unknown): Response =>
+  new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+
+const installThemeFetchMock = (themes: Record<string, Theme>) => {
+  const manifest = {
+    themes: Object.entries(themes).map(([id, theme]) => ({
+      id,
+      name: theme.name,
+      path: `/themes/${id}.json`,
+      type: theme.type,
+    })),
+  };
+
+  globalThis.fetch = mock(async (url: string | URL | Request) => {
+    const normalizedUrl = String(url);
+    if (normalizedUrl.endsWith('/themes/manifest.json')) {
+      return jsonResponse(manifest);
+    }
+
+    const themeEntry = Object.entries(themes).find(([id]) => normalizedUrl.endsWith(`/themes/${id}.json`));
+    if (themeEntry) {
+      return jsonResponse(themeEntry[1]);
+    }
+
+    throw new Error(`Unexpected fetch URL in test: ${normalizedUrl}`);
+  }) as unknown as typeof fetch;
+};
+
+const flushRender = async () => {
+  await Promise.resolve();
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve());
+    });
+  });
+  await Promise.resolve();
+};
 
 describe('CodeMirrorEditor diff highlights', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
 
   beforeEach(() => {
+    localStorage.clear();
+    useAppStore.setState({ activeThemeId: 'macro-dark' });
+    installThemeFetchMock({
+      'macro-dark': defaultTheme,
+      'macro-light': macroLightTheme,
+    });
+
+    window.requestIdleCallback = ((callback: IdleRequestCallback) =>
+      window.setTimeout(() => callback({
+        didTimeout: false,
+        timeRemaining: () => 1,
+      } as IdleDeadline), 0)) as typeof window.requestIdleCallback;
+    window.cancelIdleCallback = ((id: number) => window.clearTimeout(id)) as typeof window.cancelIdleCallback;
+
     container = document.createElement('div');
     container.style.height = '320px';
     document.body.appendChild(container);
@@ -17,9 +106,14 @@ describe('CodeMirrorEditor diff highlights', () => {
   afterEach(async () => {
     await act(async () => {
       root?.unmount();
-      await Promise.resolve();
+      await flushRender();
     });
     container?.remove();
+    localStorage.clear();
+    useAppStore.setState(initialAppStoreState, true);
+    globalThis.fetch = originalFetch;
+    window.requestIdleCallback = originalRequestIdleCallback;
+    window.cancelIdleCallback = originalCancelIdleCallback;
     root = null;
     container = null;
   });
@@ -27,18 +121,19 @@ describe('CodeMirrorEditor diff highlights', () => {
   it('renders line and gutter classes for provided highlights', async () => {
     await act(async () => {
       root?.render(
-        <CodeMirrorEditor
-          code={'line 1\nline 2\nline 3'}
-          lineHighlights={[
-            {
-              lineNumber: 2,
-              className: 'cm-diff-added',
-            },
-          ]}
-        />
+        <ThemeProvider>
+          <CodeMirrorEditor
+            code={'line 1\nline 2\nline 3'}
+            lineHighlights={[
+              {
+                lineNumber: 2,
+                className: 'cm-diff-added',
+              },
+            ]}
+          />
+        </ThemeProvider>
       );
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushRender();
     });
 
     const lineEl = container?.querySelector('.cm-line.cm-diff-added');
@@ -48,17 +143,18 @@ describe('CodeMirrorEditor diff highlights', () => {
   it('renders multiple different highlight types correctly', async () => {
     await act(async () => {
       root?.render(
-        <CodeMirrorEditor
-          code={'line 1\nline 2\nline 3\nline 4\nline 5'}
-          lineHighlights={[
-            { lineNumber: 1, className: 'cm-diff-removed' },
-            { lineNumber: 3, className: 'cm-diff-added' },
-            { lineNumber: 5, className: 'cm-diff-modified-right' },
-          ]}
-        />
+        <ThemeProvider>
+          <CodeMirrorEditor
+            code={'line 1\nline 2\nline 3\nline 4\nline 5'}
+            lineHighlights={[
+              { lineNumber: 1, className: 'cm-diff-removed' },
+              { lineNumber: 3, className: 'cm-diff-added' },
+              { lineNumber: 5, className: 'cm-diff-modified-right' },
+            ]}
+          />
+        </ThemeProvider>
       );
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushRender();
     });
 
     expect(container?.querySelector('.cm-line.cm-diff-removed')).not.toBeNull();
@@ -69,16 +165,17 @@ describe('CodeMirrorEditor diff highlights', () => {
   it('line highlights are preserved after code content update', async () => {
     await act(async () => {
       root?.render(
-        <CodeMirrorEditor
-          code={'line 1\nline 2\nline 3'}
-          lineHighlights={[
-            { lineNumber: 2, className: 'cm-diff-added' },
-          ]}
-          onChange={() => {}}
-        />
+        <ThemeProvider>
+          <CodeMirrorEditor
+            code={'line 1\nline 2\nline 3'}
+            lineHighlights={[
+              { lineNumber: 2, className: 'cm-diff-added' },
+            ]}
+            onChange={() => {}}
+          />
+        </ThemeProvider>
       );
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushRender();
     });
 
     expect(container?.querySelector('.cm-line.cm-diff-added')).not.toBeNull();
@@ -87,16 +184,62 @@ describe('CodeMirrorEditor diff highlights', () => {
   it('handles empty highlights array without errors', async () => {
     await act(async () => {
       root?.render(
-        <CodeMirrorEditor
-          code={'line 1\nline 2\nline 3'}
-          lineHighlights={[]}
-        />
+        <ThemeProvider>
+          <CodeMirrorEditor
+            code={'line 1\nline 2\nline 3'}
+            lineHighlights={[]}
+          />
+        </ThemeProvider>
       );
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushRender();
     });
 
     expect(container?.querySelector('.cm-editor')).not.toBeNull();
     expect(container?.querySelectorAll('.cm-diff-added').length).toBe(0);
+  });
+
+  it('adapts editor surfaces to the active light theme', async () => {
+    useAppStore.setState({ activeThemeId: 'macro-light' });
+
+    await act(async () => {
+      root?.render(
+        <ThemeProvider>
+          <CodeMirrorEditor code={'const value = 1;'} />
+        </ThemeProvider>
+      );
+      await flushRender();
+    });
+
+    const wrapper = container?.firstElementChild as HTMLElement | null;
+    expect(wrapper).not.toBeNull();
+    expect(wrapper?.style.getPropertyValue('--macro-cm-editor-background')).toBe('#ffffff');
+    expect(wrapper?.style.getPropertyValue('--macro-cm-editor-foreground')).toBe('#09090b');
+    expect(wrapper?.style.getPropertyValue('--macro-cm-gutter-background')).toBe('#f4f4f5');
+    expect(document.head.textContent).toContain('padding: 8px 16px 12px 0;');
+    expect(document.head.textContent).toContain('.cm-gutters {min-height: 100%; padding-top: 0px; padding-bottom: 12px; background-color: #f4f4f5; color: #71717a;');
+    expect(document.head.textContent).not.toContain('.cm-editor .cm-gutters');
+  });
+
+  it('updates editor surfaces when the app theme changes', async () => {
+    await act(async () => {
+      root?.render(
+        <ThemeProvider>
+          <CodeMirrorEditor code={'const value = 1;'} />
+        </ThemeProvider>
+      );
+      await flushRender();
+    });
+
+    const getWrapper = () => container?.firstElementChild as HTMLElement | null;
+
+    expect(getWrapper()?.style.getPropertyValue('--macro-cm-editor-background')).toBe('#09090b');
+
+    await act(async () => {
+      useAppStore.getState().setTheme('macro-light');
+      await flushRender();
+    });
+
+    expect(getWrapper()?.style.getPropertyValue('--macro-cm-editor-background')).toBe('#ffffff');
+    expect(getWrapper()?.style.getPropertyValue('--macro-cm-editor-foreground')).toBe('#09090b');
   });
 });

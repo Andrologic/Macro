@@ -1,7 +1,76 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { act } from 'react';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { ThemeProvider, defaultTheme } from '../theme/ThemeProvider';
+import { useAppStore } from '../../stores/useAppStore';
+import type { Theme } from '../../types/theme';
 import { DiffMergeView, type MergeViewEditorHandle } from './DiffMergeView';
+
+const initialAppStoreState = useAppStore.getState();
+const originalFetch = globalThis.fetch;
+const originalRequestIdleCallback = window.requestIdleCallback;
+const originalCancelIdleCallback = window.cancelIdleCallback;
+
+const macroLightTheme: Theme = {
+  name: 'Macro Light',
+  type: 'light',
+  colors: {
+    background: '#ffffff',
+    foreground: '#09090b',
+    card: '#ffffff',
+    cardForeground: '#09090b',
+    popover: '#ffffff',
+    popoverForeground: '#09090b',
+    primary: '#4f46e5',
+    primaryForeground: '#fafafa',
+    secondary: '#f4f4f5',
+    secondaryForeground: '#18181b',
+    muted: '#f4f4f5',
+    mutedForeground: '#71717a',
+    accent: '#f4f4f5',
+    accentForeground: '#18181b',
+    destructive: '#ef4444',
+    destructiveForeground: '#fafafa',
+    border: '#e4e4e7',
+    input: '#e4e4e7',
+    ring: '#4f46e5',
+  },
+};
+
+const jsonResponse = (payload: unknown): Response =>
+  new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+
+const installThemeFetchMock = (themes: Record<string, Theme>) => {
+  const manifest = {
+    themes: Object.entries(themes).map(([id, theme]) => ({
+      id,
+      name: theme.name,
+      path: `/themes/${id}.json`,
+      type: theme.type,
+    })),
+  };
+
+  globalThis.fetch = mock(async (url: string | URL | Request) => {
+    const normalizedUrl = String(url);
+    if (normalizedUrl.endsWith('/themes/manifest.json')) {
+      return jsonResponse(manifest);
+    }
+
+    const themeEntry = Object.entries(themes).find(([id]) => normalizedUrl.endsWith(`/themes/${id}.json`));
+    if (themeEntry) {
+      return jsonResponse(themeEntry[1]);
+    }
+
+    throw new Error(`Unexpected fetch URL in test: ${normalizedUrl}`);
+  }) as unknown as typeof fetch;
+};
+
+const renderWithTheme = (node: ReactNode) => (
+  <ThemeProvider>{node}</ThemeProvider>
+);
 
 describe('DiffMergeView', () => {
   let container: HTMLDivElement | null = null;
@@ -18,6 +87,20 @@ describe('DiffMergeView', () => {
   };
 
   beforeEach(() => {
+    localStorage.clear();
+    useAppStore.setState({ activeThemeId: 'macro-dark' });
+    installThemeFetchMock({
+      'macro-dark': defaultTheme,
+      'macro-light': macroLightTheme,
+    });
+
+    window.requestIdleCallback = ((callback: IdleRequestCallback) =>
+      window.setTimeout(() => callback({
+        didTimeout: false,
+        timeRemaining: () => 1,
+      } as IdleDeadline), 0)) as typeof window.requestIdleCallback;
+    window.cancelIdleCallback = ((id: number) => window.clearTimeout(id)) as typeof window.cancelIdleCallback;
+
     container = document.createElement('div');
     container.style.height = '320px';
     document.body.appendChild(container);
@@ -30,6 +113,11 @@ describe('DiffMergeView', () => {
       await flushRender();
     });
     container?.remove();
+    localStorage.clear();
+    useAppStore.setState(initialAppStoreState, true);
+    globalThis.fetch = originalFetch;
+    window.requestIdleCallback = originalRequestIdleCallback;
+    window.cancelIdleCallback = originalCancelIdleCallback;
     root = null;
     container = null;
   });
@@ -42,10 +130,12 @@ describe('DiffMergeView', () => {
   it('renders merge view with two editors', async () => {
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'line 1\nline 2\nline 3'}
-          modified={'line 1\nmodified line 2\nline 3'}
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'line 1\nline 2\nline 3'}
+            modified={'line 1\nmodified line 2\nline 3'}
+          />
+        )
       );
       await flushRender();
     });
@@ -57,10 +147,12 @@ describe('DiffMergeView', () => {
   it('renders diff highlights for changed lines and text', async () => {
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'line 1\nline 2\nline 3'}
-          modified={'line 1\nline 20\nline 3'}
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'line 1\nline 2\nline 3'}
+            modified={'line 1\nline 20\nline 3'}
+          />
+        )
       );
       await flushRender();
     });
@@ -75,16 +167,18 @@ describe('DiffMergeView', () => {
 
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'before();'}
-          modified={'after();'}
-          onChange={() => {
-            onChangeCalls += 1;
-          }}
-          onEditorReady={(handle) => {
-            latestHandle = handle;
-          }}
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'before();'}
+            modified={'after();'}
+            onChange={() => {
+              onChangeCalls += 1;
+            }}
+            onEditorReady={(handle) => {
+              latestHandle = handle;
+            }}
+          />
+        )
       );
       await flushRender();
     });
@@ -94,16 +188,18 @@ describe('DiffMergeView', () => {
 
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'before();'}
-          modified={'after();\nconsole.log("synced");'}
-          onChange={() => {
-            onChangeCalls += 1;
-          }}
-          onEditorReady={(handle) => {
-            latestHandle = handle;
-          }}
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'before();'}
+            modified={'after();\nconsole.log("synced");'}
+            onChange={() => {
+              onChangeCalls += 1;
+            }}
+            onEditorReady={(handle) => {
+              latestHandle = handle;
+            }}
+          />
+        )
       );
       await flushRender();
     });
@@ -117,13 +213,15 @@ describe('DiffMergeView', () => {
 
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'line 1\nline 2'}
-          modified={'line 1\nline 20'}
-          onEditorReady={(handle) => {
-            latestHandle = handle;
-          }}
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'line 1\nline 2'}
+            modified={'line 1\nline 20'}
+            onEditorReady={(handle) => {
+              latestHandle = handle;
+            }}
+          />
+        )
       );
       await flushRender();
     });
@@ -133,13 +231,15 @@ describe('DiffMergeView', () => {
 
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'line 1\nline 2'}
-          modified={'line 1\nline 2'}
-          onEditorReady={(handle) => {
-            latestHandle = handle;
-          }}
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'line 1\nline 2'}
+            modified={'line 1\nline 2'}
+            onEditorReady={(handle) => {
+              latestHandle = handle;
+            }}
+          />
+        )
       );
       await flushRender();
     });
@@ -151,13 +251,15 @@ describe('DiffMergeView', () => {
 
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'alpha();'}
-          modified={'beta();'}
-          onEditorReady={(handle) => {
-            latestHandle = handle;
-          }}
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'alpha();'}
+            modified={'beta();'}
+            onEditorReady={(handle) => {
+              latestHandle = handle;
+            }}
+          />
+        )
       );
       await flushRender();
     });
@@ -169,7 +271,7 @@ describe('DiffMergeView', () => {
 
   it('handles empty content without errors', async () => {
     await act(async () => {
-      root?.render(<DiffMergeView original="" modified="" />);
+      root?.render(renderWithTheme(<DiffMergeView original="" modified="" />));
       await flushRender();
     });
 
@@ -179,11 +281,13 @@ describe('DiffMergeView', () => {
   it('renders revert controls when specified', async () => {
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'line 1\nline 2'}
-          modified={'line 1\nmodified line 2'}
-          revertControls="a-to-b"
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'line 1\nline 2'}
+            modified={'line 1\nmodified line 2'}
+            revertControls="a-to-b"
+          />
+        )
       );
       await flushRender();
     });
@@ -192,23 +296,63 @@ describe('DiffMergeView', () => {
     expect(container?.querySelector('.cm-merge-revert .macro-diff-revert-icon')).not.toBeNull();
   });
 
+  it('adapts merge surfaces to the active light theme', async () => {
+    useAppStore.setState({ activeThemeId: 'macro-light' });
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={'line 1\nline 2'}
+            modified={'line 1\nchanged line 2'}
+            revertControls="a-to-b"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
+    const mergeRoot = container?.querySelector('.macro-diff-merge-root') as HTMLElement | null;
+    const wrapper = container?.querySelector('[data-language]') as HTMLElement | null;
+
+    expect(wrapper).not.toBeNull();
+    expect(revertButton).not.toBeNull();
+    expect(mergeRoot).not.toBeNull();
+    expect(wrapper?.style.getPropertyValue('--macro-cm-editor-background')).toBe('#ffffff');
+    expect(wrapper?.style.getPropertyValue('--macro-cm-gutter-background')).toBe('#f4f4f5');
+    expect(wrapper?.style.getPropertyValue('--macro-cm-revert-button-background')).toBe('rgba(255, 255, 255, 0.980)');
+    expect(document.head.textContent).toContain('.cm-gutters {min-height: 100%; padding-top: 0px; padding-bottom: 12px; background-color: #f4f4f5; color: #71717a;');
+    expect(document.head.textContent).not.toContain('.cm-editor .cm-gutters');
+  });
+
   it('keeps revert controls in the merge flow without manual scroll compensation', async () => {
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'line 1\nline 2\nline 3'}
-          modified={'line 1\nchanged line 2\nline 3'}
-          revertControls="a-to-b"
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'line 1\nline 2\nline 3'}
+            modified={'line 1\nchanged line 2\nline 3'}
+            revertControls="a-to-b"
+          />
+        )
       );
       await flushRender();
     });
 
     const mergeRoot = container?.querySelector('.macro-diff-merge-root') as HTMLElement | null;
     expect(mergeRoot).not.toBeNull();
+    const revertRail = container?.querySelector('.cm-merge-revert') as HTMLElement | null;
+    expect(revertRail).not.toBeNull();
     const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
     expect(revertButton).not.toBeNull();
     expect(revertButton?.style.transform).toBe('');
+    expect(parseFloat(getComputedStyle(revertRail as HTMLElement).width)).toBeGreaterThan(15);
+    expect(parseFloat(getComputedStyle(revertRail as HTMLElement).width)).toBe(
+      parseFloat(getComputedStyle(revertButton as HTMLButtonElement).width)
+    );
+    expect(getComputedStyle(revertButton as HTMLButtonElement).left).toBe('0px');
+    expect(getComputedStyle(revertButton as HTMLButtonElement).borderRadius).toBe('6px');
 
     await act(async () => {
       if (mergeRoot) {
@@ -222,14 +366,44 @@ describe('DiffMergeView', () => {
     expect(mergeRoot?.style.getPropertyValue('--macro-diff-revert-scroll-y')).toBe('');
   });
 
+  it('updates merge surfaces when the app theme changes', async () => {
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={'line 1\nline 2'}
+            modified={'line 1\nchanged line 2'}
+            revertControls="a-to-b"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const getWrapper = () => container?.querySelector('[data-language]') as HTMLElement | null;
+
+    expect(getWrapper()?.style.getPropertyValue('--macro-cm-editor-background')).toBe('#09090b');
+    expect(getWrapper()?.style.getPropertyValue('--macro-cm-revert-button-background')).toBe('rgba(9, 9, 11, 0.960)');
+
+    await act(async () => {
+      useAppStore.getState().setTheme('macro-light');
+      await flushRender();
+    });
+
+    expect(getWrapper()?.style.getPropertyValue('--macro-cm-editor-background')).toBe('#ffffff');
+    expect(getWrapper()?.style.getPropertyValue('--macro-cm-revert-button-background')).toBe('rgba(255, 255, 255, 0.980)');
+  });
+
   it('applies language extension for typescript', async () => {
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'const x: number = 1;'}
-          modified={'const x: number = 2;'}
-          language="typescript"
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'const x: number = 1;'}
+            modified={'const x: number = 2;'}
+            language="typescript"
+          />
+        )
       );
       await flushRender();
     });
@@ -240,11 +414,13 @@ describe('DiffMergeView', () => {
   it('falls back to text for unsupported languages', async () => {
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'hello'}
-          modified={'hello world'}
-          language="python"
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'hello'}
+            modified={'hello world'}
+            language="python"
+          />
+        )
       );
       await flushRender();
     });
@@ -257,14 +433,16 @@ describe('DiffMergeView', () => {
 
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={'legacy();'}
-          modified={'legacy();'}
-          editable={false}
-          onEditorReady={(handle) => {
-            latestHandle = handle;
-          }}
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={'legacy();'}
+            modified={'legacy();'}
+            editable={false}
+            onEditorReady={(handle) => {
+              latestHandle = handle;
+            }}
+          />
+        )
       );
       await flushRender();
     });
@@ -278,10 +456,12 @@ describe('DiffMergeView', () => {
 
     await act(async () => {
       root?.render(
-        <DiffMergeView
-          original={largeOriginal}
-          modified={largeModified}
-        />
+        renderWithTheme(
+          <DiffMergeView
+            original={largeOriginal}
+            modified={largeModified}
+          />
+        )
       );
       await flushRender();
     });
