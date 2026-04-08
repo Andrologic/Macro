@@ -487,6 +487,20 @@ export const createCodeMirrorDiffTheme = (theme?: Theme) => {
         : '0 6px 14px rgba(15, 23, 42, 0.08)',
       transition: 'background-color 120ms ease, color 120ms ease, border-color 120ms ease',
     },
+    '.macro-diff-merge-root .cm-collapsedLines::before': {
+      content: '"["',
+      display: 'inline-block',
+      marginRight: '4px',
+      opacity: '0.7',
+      fontWeight: '500',
+    },
+    '.macro-diff-merge-root .cm-collapsedLines::after': {
+      content: '"]"',
+      display: 'inline-block',
+      marginLeft: '4px',
+      opacity: '0.7',
+      fontWeight: '500',
+    },
     '.macro-diff-merge-root .cm-collapsedLines:hover': {
       backgroundColor: withAlpha(tokens.selectionBackground, tokens.isDark ? 0.82 : 0.98),
       color: tokens.editorForeground,
