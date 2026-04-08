@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useFileChangesStore } from '../../stores/useFileChangesStore';
+import { useFileChangesStore, type FileChangeContextMode } from '../../stores/useFileChangesStore';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { Button } from '../ui/Button';
@@ -72,6 +72,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
   const markAsReviewed = useFileChangesStore((state) => state.markAsReviewed);
   const markAsUnreviewed = useFileChangesStore((state) => state.markAsUnreviewed);
   const revertChanges = useFileChangesStore((state) => state.revertChanges);
+  const loadChangeContext = useFileChangesStore((state) => state.loadChangeContext);
   const updateRightDraft = useFileChangesStore((state) => state.updateRightDraft);
   const resetRightDraft = useFileChangesStore((state) => state.resetRightDraft);
   const saveRightDraft = useFileChangesStore((state) => state.saveRightDraft);
@@ -79,6 +80,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
 
   const [pendingChangeId, setPendingChangeId] = useState<string | null>(null);
   const [isConfirmingDiscard, setIsConfirmingDiscard] = useState(false);
+  const [requestedContextMode, setRequestedContextMode] = useState<FileChangeContextMode | null>(null);
 
   const isHydrating = Boolean(
     session?.isHydratingFullContext || (repository && change && repository.loadingChangeId === change.id)
@@ -86,7 +88,9 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
   const isSaving = Boolean(session?.isSaving || (repository && change && repository.savingChangeId === change.id));
   const isBusy = isHydrating || isSaving;
   const isDirty = session?.isDirty === true;
-  const canEdit = Boolean(change?.canEdit && session && !isHydrating);
+  const canEdit = Boolean(change?.canEdit && session && !isHydrating && change?.contextMode === 'full');
+  const selectedContextMode: FileChangeContextMode = change?.contextMode === 'full' ? 'full' : 'default';
+  const activeContextMode = requestedContextMode ?? (session?.isHydratingFullContext ? 'full' : selectedContextMode);
 
   useEffect(() => {
     if (!session) return;
@@ -96,6 +100,10 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
       document.body.style.overflow = previousOverflow;
     };
   }, [session]);
+
+  useEffect(() => {
+    setRequestedContextMode(null);
+  }, [change?.id, change?.contextMode]);
 
   useLayoutEffect(() => {
     if (!session || !repository || !change || !isDiffDebugEnabled()) {
@@ -188,6 +196,19 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
     openDiffModal(repository.id, changeId);
   }, [isDirty, openDiffModal, repository]);
 
+  const handleContextModeChange = useCallback(async (nextMode: FileChangeContextMode) => {
+    if (!repository || !change || isBusy || isDirty || selectedContextMode === nextMode) {
+      return;
+    }
+
+    setRequestedContextMode(nextMode);
+    try {
+      await loadChangeContext(repository.id, change.id, nextMode);
+    } finally {
+      setRequestedContextMode(null);
+    }
+  }, [change, isBusy, isDirty, loadChangeContext, repository, selectedContextMode]);
+
   const handleDebugEditorReady = useCallback((editor: MergeViewEditorHandle | null) => {
     if (!editor || !session || !change || !isDiffDebugEnabled()) {
       return;
@@ -212,6 +233,11 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
   if (!session || !repository || !change) {
     return null;
   }
+
+  const contextOptions: Array<{ mode: FileChangeContextMode; label: string }> = [
+    { mode: 'default', label: t('implement.context.default', 'Focused diff') },
+    { mode: 'full', label: t('implement.context.full', 'Full file context') },
+  ];
 
   return (
     <div
@@ -275,7 +301,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
         </aside>
 
         <main className="flex min-w-0 flex-1 flex-col bg-background">
-          <header className="flex shrink-0 items-center justify-between px-4 py-3">
+          <header className="flex shrink-0 items-center justify-between gap-4 px-4 py-3">
             <div className="flex min-w-0 flex-1 items-center gap-3 pr-4">
               <div className="min-w-0">
                 <h2 id={titleId} className="truncate text-sm font-medium leading-tight">
@@ -286,6 +312,23 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
             </div>
 
             <div className="flex shrink-0 items-center gap-4">
+              <div className="flex items-center rounded-lg border border-border bg-muted/20 p-1">
+                {contextOptions.map((option) => (
+                  <Button
+                    key={option.mode}
+                    variant={activeContextMode === option.mode ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => void handleContextModeChange(option.mode)}
+                    disabled={isBusy || isDirty}
+                    className={cn(
+                      'h-7 px-2.5 text-xs',
+                      activeContextMode === option.mode ? 'shadow-sm' : ''
+                    )}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </div>
               <Button variant="ghost" size="sm" onClick={attemptClose} aria-label={t('common.close', 'Close')}>
                 <Icon name="x" size={16} />
               </Button>
@@ -304,7 +347,9 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 <div className="flex items-center gap-3">
                   <Icon name="loader" size={20} className="animate-spin text-primary" />
                   <span className="text-sm font-medium text-muted-foreground">
-                    {t('implement.loadingFullContext', 'Loading full file context...')}
+                    {activeContextMode === 'full'
+                      ? t('implement.loadingFullContext', 'Loading full file context...')
+                      : t('implement.loadingFocusedContext', 'Loading focused diff...')}
                   </span>
                 </div>
                 <div className="w-full max-w-md space-y-2">
@@ -354,25 +399,26 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
             </div>
 
             <div className="flex items-center gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => resetRightDraft()}
-                disabled={!canEdit || !isDirty || isSaving}
-              >
-                {t('implement.resetDraft', 'Reset draft')}
-              </Button>
-
               {isDirty ? (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => void saveRightDraft()}
-                  disabled={isSaving}
-                  className="bg-primary text-primary-foreground hover:bg-primary/90"
-                >
-                  {t('implement.saveDraft', 'Save draft')}
-                </Button>
+                <>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => resetRightDraft()}
+                    disabled={!canEdit || isSaving}
+                  >
+                    {t('implement.resetDraft', 'Reset draft')}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => void saveRightDraft()}
+                    disabled={isSaving}
+                    className="bg-primary text-primary-foreground hover:bg-primary/90"
+                  >
+                    {t('implement.saveDraft', 'Save draft')}
+                  </Button>
+                </>
               ) : change.reviewed ? (
                 <Button
                   variant="secondary"

@@ -453,6 +453,22 @@ describe('useFileChangesStore', () => {
     expect(useFileChangesStore.getState().getChange(repositoryIdA, changeIdA)?.modifiedContent).toContain('const value = 2;');
   });
 
+  it('opens the diff modal in focused mode without auto-loading the full file', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    const initialGitDiffCalls = gitDiffMock.mock.calls.length;
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+
+    const session = useFileChangesStore.getState().getDiffModalSession();
+    const change = useFileChangesStore.getState().getChange(repositoryIdA, changeIdA);
+
+    expect(session?.isHydratingFullContext).toBe(false);
+    expect(change?.contextMode).toBe('default');
+    expect(gitDiffMock.mock.calls.length).toBe(initialGitDiffCalls);
+  });
+
   it('resets only the right-side draft content', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
