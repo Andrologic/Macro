@@ -13,6 +13,7 @@ import {
   getCodeMirrorThemeMetadata,
   getCodeMirrorSyntaxExtensions,
 } from './codeMirrorTheme';
+import { collectRevertButtonPositions } from './diffMergeRevertAlignment';
 
 export interface DiffMergeViewProps {
   original: string;
@@ -147,6 +148,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   const modifiedRef = useRef(modified);
   const onChangeRef = useRef(onChange);
   const onEditorReadyRef = useRef(onEditorReady);
+  const scheduleRevertAlignmentRef = useRef<(() => void) | null>(null);
   const syncingRef = useRef<'a' | 'b' | null>(null);
   const isApplyingExternalUpdateRef = useRef(false);
   const collapseUnchanged =
@@ -229,6 +231,52 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
 
     const aScroll = mergeView.a.scrollDOM;
     const bScroll = mergeView.b.scrollDOM;
+    const ownerWindow = mergeView.dom.ownerDocument.defaultView ?? window;
+    const ResizeObserverCtor = ownerWindow.ResizeObserver;
+    let revertAlignmentFrame: number | null = null;
+
+    const scheduleRevertAlignment = () => {
+      if (!revertControls) {
+        return;
+      }
+      if (revertAlignmentFrame != null) {
+        return;
+      }
+
+      revertAlignmentFrame = ownerWindow.requestAnimationFrame(() => {
+        revertAlignmentFrame = ownerWindow.requestAnimationFrame(() => {
+          revertAlignmentFrame = null;
+          const currentMergeView = mergeViewRef.current;
+          if (!currentMergeView) {
+            return;
+          }
+
+          currentMergeView.a.requestMeasure({
+            read: () => {
+              const revertButtons = Array.from(
+                currentMergeView.dom.querySelectorAll('.cm-merge-revert button')
+              ) as HTMLElement[];
+
+              return collectRevertButtonPositions(currentMergeView, revertControls, revertButtons);
+            },
+            write: (positions) => {
+              if (mergeViewRef.current !== currentMergeView) {
+                return;
+              }
+
+              for (const { button, top } of positions) {
+                const nextTop = `${top}px`;
+                if (button.style.top !== nextTop) {
+                  button.style.top = nextTop;
+                }
+              }
+            },
+          });
+        });
+      });
+    };
+
+    scheduleRevertAlignmentRef.current = scheduleRevertAlignment;
 
     const syncScroll = (source: 'a' | 'b', target: EditorView['scrollDOM']) => {
       return () => {
@@ -242,6 +290,8 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
         if (Math.abs(target.scrollTop - targetScrollTop) > 1) {
           target.scrollTop = targetScrollTop;
         }
+
+        scheduleRevertAlignment();
 
         requestAnimationFrame(() => {
           if (syncingRef.current === source) {
@@ -257,7 +307,23 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
     aScroll.addEventListener('scroll', aToB, { passive: true });
     bScroll.addEventListener('scroll', bToA, { passive: true });
 
+    const resizeObserver = ResizeObserverCtor
+      ? new ResizeObserverCtor(() => {
+          scheduleRevertAlignment();
+        })
+      : null;
+
+    resizeObserver?.observe(containerRef.current);
+    ownerWindow.addEventListener('resize', scheduleRevertAlignment);
+    scheduleRevertAlignment();
+
     return () => {
+      scheduleRevertAlignmentRef.current = null;
+      resizeObserver?.disconnect();
+      ownerWindow.removeEventListener('resize', scheduleRevertAlignment);
+      if (revertAlignmentFrame != null) {
+        ownerWindow.cancelAnimationFrame(revertAlignmentFrame);
+      }
       aScroll.removeEventListener('scroll', aToB);
       bScroll.removeEventListener('scroll', bToA);
       onEditorReadyRef.current?.(null);
@@ -278,6 +344,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       gutter: true,
       collapseUnchanged,
     });
+    scheduleRevertAlignmentRef.current?.();
   }, [collapseUnchanged, revertControls]);
 
   useEffect(() => {
@@ -309,6 +376,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
     }
 
     if (!shouldUpdateModified) {
+      scheduleRevertAlignmentRef.current?.();
       return;
     }
 
@@ -324,6 +392,8 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
     } finally {
       isApplyingExternalUpdateRef.current = false;
     }
+
+    scheduleRevertAlignmentRef.current?.();
   }, [modified, original]);
 
   useImperativeHandle(ref, () => {
