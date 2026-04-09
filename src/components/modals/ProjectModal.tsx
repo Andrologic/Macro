@@ -75,7 +75,6 @@ export const ProjectModal: React.FC = () => {
   const [modalMode, setModalMode] = useState<ProjectModalMode>('new_group');
   const [targetGroupId, setTargetGroupId] = useState<string | null>(null);
   const [globalProjectName, setGlobalProjectName] = useState('');
-  const [subProjectName, setSubProjectName] = useState('');
   const [subProjectPath, setSubProjectPath] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -101,7 +100,6 @@ export const ProjectModal: React.FC = () => {
     setModalMode(defaultMode);
     setTargetGroupId(preselectedGroup?.id ?? null);
     setGlobalProjectName(preselectedGroup?.name ?? '');
-    setSubProjectName('');
     setSubProjectPath('');
     setError('');
     setIsSubmitting(false);
@@ -125,6 +123,7 @@ export const ProjectModal: React.FC = () => {
   const destinationSummary = isAttachingToExistingGroup
     ? targetGroup?.name || t('project.chooseGlobalProject', 'Choose a global project')
     : globalProjectName.trim() || t('project.newGlobalProject', 'New global project');
+  const derivedSubProjectName = inferProjectNameFromPath(subProjectPath);
   const pendingGitFlowValidationError = pendingGitFlowConfirmation
     ? pendingGitFlowConfirmation.branches.length > 1 &&
       pendingGitFlowConfirmation.mainBranch === pendingGitFlowConfirmation.baseBranch
@@ -229,13 +228,6 @@ export const ProjectModal: React.FC = () => {
 
     setSubProjectPath(selectedPath);
     setError('');
-
-    if (!subProjectName.trim()) {
-      const inferredName = inferProjectNameFromPath(selectedPath);
-      if (inferredName) {
-        setSubProjectName(inferredName);
-      }
-    }
   };
 
   const handleConfirmRareGitFlow = async () => {
@@ -371,7 +363,6 @@ export const ProjectModal: React.FC = () => {
     setError('');
 
     const trimmedGlobalProjectName = globalProjectName.trim();
-    const trimmedSubProjectName = subProjectName.trim();
     const trimmedSubProjectPath = subProjectPath.trim();
 
     if (isAttachingToExistingGroup && !targetGroupId) {
@@ -384,7 +375,7 @@ export const ProjectModal: React.FC = () => {
       return;
     }
 
-    if (!trimmedSubProjectName) {
+    if (!derivedSubProjectName) {
       setError(t('project.subprojectRequired', 'Subproject name is required'));
       return;
     }
@@ -392,7 +383,8 @@ export const ProjectModal: React.FC = () => {
     if (
       isAttachingToExistingGroup &&
       targetGroup?.projects.some(
-        (project) => project.name.trim().toLowerCase() === trimmedSubProjectName.toLowerCase()
+        (project) =>
+          project.name.trim().toLowerCase() === derivedSubProjectName.toLowerCase()
       )
     ) {
       setError(
@@ -414,7 +406,7 @@ export const ProjectModal: React.FC = () => {
     }
 
     const createPayload: PendingProjectCreation = {
-      name: trimmedSubProjectName,
+      name: derivedSubProjectName,
       description: '',
       groupId: isAttachingToExistingGroup ? targetGroupId : null,
       groupName: isAttachingToExistingGroup ? null : trimmedGlobalProjectName,
@@ -533,29 +525,6 @@ export const ProjectModal: React.FC = () => {
 
               <div>
                 <label className="block text-sm text-muted-foreground mb-2">
-                  {isAttachingToExistingGroup
-                    ? t('project.subprojectName', 'Subproject name')
-                    : t('project.firstSubprojectName', 'First subproject name')}{' '}
-                  <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={subProjectName}
-                  onChange={(event) => {
-                    setSubProjectName(event.target.value);
-                    setError('');
-                  }}
-                  placeholder={
-                    isAttachingToExistingGroup
-                      ? t('project.subprojectPlaceholder', 'e.g. iOS App')
-                      : t('project.firstSubprojectPlaceholder', 'e.g. Backend API')
-                  }
-                  className="w-full bg-muted border border-border rounded-xl px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm text-muted-foreground mb-2">
                   {t('project.localFolder', 'Local folder')}
                 </label>
                 <div className="flex gap-2">
@@ -640,7 +609,7 @@ export const ProjectModal: React.FC = () => {
 
       {pendingGitFlowConfirmation && (
         <ProjectGitFlowConfirmationModal
-          projectName={subProjectName.trim() || inferProjectNameFromPath(subProjectPath) || destinationSummary}
+          projectName={derivedSubProjectName || destinationSummary}
           branches={pendingGitFlowConfirmation.branches}
           currentBranch={pendingGitFlowConfirmation.currentBranch}
           mainBranch={pendingGitFlowConfirmation.mainBranch}
