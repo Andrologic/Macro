@@ -883,22 +883,20 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             {t('implement.validateChanges', 'Validate changes')}
           </button>
         )}
-        {isValidationStage && (
-          <button
-            onClick={handleOpenCommit}
-            disabled={isCommitDisabled}
-            title={isCommitDisabled ? commitDisabledReason : undefined}
-            className={cn(
-              'w-full py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
-              isCommitDisabled
-                ? 'bg-muted text-muted-foreground cursor-not-allowed'
-                : 'bg-primary text-primary-foreground hover:bg-primary/90'
-            )}
-          >
-            <Icon name="git-commit" size={14} />
-            {t('implement.commitChangesGeneric', 'Commit')}
-          </button>
-        )}
+        <button
+          onClick={handleOpenCommit}
+          disabled={isCommitDisabled}
+          title={isCommitDisabled ? commitDisabledReason : undefined}
+          className={cn(
+            'w-full py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
+            isCommitDisabled
+              ? 'bg-muted text-muted-foreground cursor-not-allowed'
+              : 'bg-primary text-primary-foreground hover:bg-primary/90'
+          )}
+        >
+          <Icon name="git-commit" size={14} />
+          {t('implement.commitChangesGeneric', 'Commit')}
+        </button>
         {canFinishTask && (
           <button
             onClick={() => void handleFinishTask()}
