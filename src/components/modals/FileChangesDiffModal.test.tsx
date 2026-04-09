@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { FileChangesDiffModal } from './FileChangesDiffModal';
+import { useAppStore } from '../../stores/useAppStore';
 import {
   useFileChangesStore,
   type FileChangeEntry,
@@ -11,6 +12,7 @@ import {
 import type { ParsedDiffHunk } from '../../services/gitDiffParser';
 
 const initialStoreState = useFileChangesStore.getState();
+const initialAppStoreState = useAppStore.getState();
 
 const makeHunk = (header: string): ParsedDiffHunk => ({
   header,
@@ -161,6 +163,7 @@ describe('FileChangesDiffModal', () => {
 
   beforeEach(() => {
     localStorage.clear();
+    useAppStore.setState({ codeOverflowMode: 'wrap' });
     repository = buildRepository();
     diffSession = buildSession();
     markAsReviewedMock = mock(async () => undefined);
@@ -188,6 +191,7 @@ describe('FileChangesDiffModal', () => {
     root = null;
     container = null;
     useFileChangesStore.setState(initialStoreState, true);
+    useAppStore.setState(initialAppStoreState, true);
   });
 
   it('renders the current repository, file metadata, and live diff view from the store session', async () => {
@@ -466,5 +470,16 @@ describe('FileChangesDiffModal', () => {
     expect(document.body.querySelector('.macro-diff-merge-root')).not.toBeNull();
     expect(document.body.querySelector('h2')?.textContent).toContain('src/list.ts');
     expect(document.body.textContent).toContain('console.log(list);');
+  });
+
+  it('inherits the global code overflow preference for the embedded diff viewer', async () => {
+    useAppStore.setState({ codeOverflowMode: 'horizontal_scroll' });
+
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-overflow-mode="horizontal_scroll"]')).not.toBeNull();
   });
 });
