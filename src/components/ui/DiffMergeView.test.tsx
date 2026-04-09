@@ -472,6 +472,113 @@ describe('DiffMergeView', () => {
     expect(mergeRoot?.style.getPropertyValue('--macro-diff-revert-scroll-y')).toBe('');
   });
 
+  it('repositions revert controls to the first wrapped visual line of the changed block', async () => {
+    let latestHandle: MergeViewEditorHandle | null = null;
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={'const value = "this is a very long string that stays the same until the wrapped changed token";'}
+            modified={'const value = "this is a very long string that stays the same until the wrapped changed result";'}
+            revertControls="a-to-b"
+            onEditorReady={(handle) => {
+              latestHandle = handle;
+            }}
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const handle = requireHandle(latestHandle);
+    const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
+    expect(revertButton).not.toBeNull();
+
+    const originalLineBlockAt = handle.b.lineBlockAt.bind(handle.b);
+    const originalCoordsAtPos = handle.b.coordsAtPos.bind(handle.b);
+    const originalDocumentTop = Object.getOwnPropertyDescriptor(handle.b, 'documentTop');
+    const changedText = Array.from(container?.querySelectorAll('.cm-changedText') ?? []).find((element) =>
+      element.textContent?.includes('result')
+    ) as HTMLElement | undefined;
+
+    expect(changedText).not.toBeUndefined();
+    const changedStartPos = handle.b.posAtDOM(changedText!.firstChild ?? changedText!, 0);
+
+    handle.b.lineBlockAt = ((...args: Parameters<typeof handle.b.lineBlockAt>) => {
+      const block = originalLineBlockAt(...args);
+      return {
+        ...block,
+        top: 100,
+      };
+    }) as typeof handle.b.lineBlockAt;
+
+    handle.b.coordsAtPos = ((pos: number, side?: -1 | 1) => {
+      if (pos === changedStartPos) {
+        return { top: 148, bottom: 172, left: 0, right: 0 } as ReturnType<typeof handle.b.coordsAtPos>;
+      }
+
+      return originalCoordsAtPos(pos, side);
+    }) as typeof handle.b.coordsAtPos;
+
+    Object.defineProperty(handle.b, 'documentTop', {
+      configurable: true,
+      get: () => 0,
+    });
+
+    await act(async () => {
+      container!.style.width = '540px';
+      window.dispatchEvent(new Event('resize'));
+      await flushRender();
+    });
+
+    expect(revertButton?.style.top).toBe('148px');
+
+    handle.b.lineBlockAt = originalLineBlockAt;
+    handle.b.coordsAtPos = originalCoordsAtPos;
+    if (originalDocumentTop) {
+      Object.defineProperty(handle.b, 'documentTop', originalDocumentTop);
+    }
+  });
+
+  it('recomputes revert control tops when width changes alter layout', async () => {
+    let latestHandle: MergeViewEditorHandle | null = null;
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={'before change'}
+            modified={'after change'}
+            revertControls="a-to-b"
+            onEditorReady={(handle) => {
+              latestHandle = handle;
+            }}
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const handle = requireHandle(latestHandle);
+    const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
+    expect(revertButton).not.toBeNull();
+
+    let measuredTop = 132;
+
+    handle.b.coordsAtPos = (() => {
+      return { top: measuredTop, bottom: measuredTop + 24, left: 0, right: 0 } as ReturnType<typeof handle.b.coordsAtPos>;
+    }) as typeof handle.b.coordsAtPos;
+
+    await act(async () => {
+      container!.style.width = '620px';
+      window.dispatchEvent(new Event('resize'));
+      await flushRender();
+    });
+
+    expect(revertButton?.style.top).toBe('132px');
+  });
+
   it('updates merge surfaces when the app theme changes', async () => {
     await act(async () => {
       root?.render(
