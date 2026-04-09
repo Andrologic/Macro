@@ -472,8 +472,10 @@ export const createCodeMirrorDiffTheme = (theme?: Theme) => {
       display: 'inline-flex',
       alignItems: 'center',
       gap: '6px',
-      margin: '6px 0',
-      padding: '4px 10px',
+      margin: '0',
+      minHeight: '27px',
+      padding: '0 10px',
+      boxSizing: 'border-box',
       borderRadius: '999px',
       border: `1px solid ${tokens.revertRailBorder}`,
       backgroundColor: withAlpha(tokens.gutterBackground, tokens.isDark ? 0.84 : 0.94),
@@ -481,7 +483,8 @@ export const createCodeMirrorDiffTheme = (theme?: Theme) => {
       cursor: 'pointer',
       fontSize: '11px',
       fontWeight: '600',
-      lineHeight: '1.2',
+      lineHeight: '1',
+      whiteSpace: 'nowrap',
       boxShadow: tokens.isDark
         ? '0 8px 18px rgba(15, 23, 42, 0.24)'
         : '0 6px 14px rgba(15, 23, 42, 0.08)',

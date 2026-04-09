@@ -1351,6 +1351,11 @@
     "after": "후에",
     "empty": "// 비어 있는"
   },
+  "diffMergeView": {
+    "codeMirrorPhrases": {
+      "unchangedLines": "변경되지 않은 줄 $개"
+    }
+  },
   "terminal": {
     "title": "Terminal",
     "openOnLaunch": "Open terminal on launch",

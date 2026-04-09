@@ -1351,6 +1351,11 @@
     "after": "Nachher",
     "empty": "// leer"
   },
+  "diffMergeView": {
+    "codeMirrorPhrases": {
+      "unchangedLines": "$ unveränderte Zeilen"
+    }
+  },
   "terminal": {
     "title": "Terminal",
     "openOnLaunch": "Open terminal on launch",
