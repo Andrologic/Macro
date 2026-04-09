@@ -1351,6 +1351,11 @@
     "after": "後",
     "empty": "// 空の"
   },
+  "diffMergeView": {
+    "codeMirrorPhrases": {
+      "unchangedLines": "$ 行の未変更"
+    }
+  },
   "terminal": {
     "title": "Terminal",
     "openOnLaunch": "Open terminal on launch",
