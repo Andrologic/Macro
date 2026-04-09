@@ -124,7 +124,7 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
 }) => (
   <div
     className={cn(
-      'absolute inset-y-0 right-0 z-20 flex items-center gap-1 pr-2 pl-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100',
+      'absolute inset-y-0 right-0 z-20 flex items-center gap-1 pr-1 pl-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100',
       'bg-transparent',
       className
     )}
