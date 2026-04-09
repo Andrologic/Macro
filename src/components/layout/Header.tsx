@@ -76,7 +76,6 @@ export function Header({
   const mode = useAppStore((state) => state.mode);
   const setMode = useAppStore((state) => state.setMode);
   const openSettings = useAppStore((state) => state.openSettings);
-  const openAccount = useAppStore((state) => state.openAccount);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const projectGroups = useAppStore((state) => state.projectGroups);
   const uiZoomMode = useAppStore((state) => state.uiZoomMode);
@@ -408,7 +407,6 @@ export function Header({
             <div className="hidden sm:block w-px h-5 bg-border mx-1" />
 
             {renderHeaderIconButton(() => openSettings(), 'settings', t('header.settings'), t('header.settings'))}
-            {renderHeaderIconButton(openAccount, 'user', t('header.account'), t('header.account'))}
 
             {isTauriAvailable && platformChrome.showCustomWindowControls ? (
               <div className="w-px h-5 bg-border mx-1" />
