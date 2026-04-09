@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import i18n from '../../i18n';
+import { loadTranslation } from '../../i18n/resources';
 import { ThemeProvider, defaultTheme } from '../theme/ThemeProvider';
 import { useAppStore } from '../../stores/useAppStore';
 import type { Theme } from '../../types/theme';
 import { DiffMergeView, type MergeViewEditorHandle } from './DiffMergeView';
 
 const initialAppStoreState = useAppStore.getState();
+const initialLanguage = i18n.resolvedLanguage || i18n.language || 'en';
 const originalFetch = globalThis.fetch;
 const originalRequestIdleCallback = window.requestIdleCallback;
 const originalCancelIdleCallback = window.cancelIdleCallback;
@@ -72,6 +75,14 @@ const renderWithTheme = (node: ReactNode) => (
   <ThemeProvider>{node}</ThemeProvider>
 );
 
+const ensureLanguage = async (language: 'en' | 'fr') => {
+  if (!i18n.hasResourceBundle(language, 'translation')) {
+    i18n.addResourceBundle(language, 'translation', await loadTranslation(language), true, true);
+  }
+
+  await i18n.changeLanguage(language);
+};
+
 describe('DiffMergeView', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
@@ -86,7 +97,8 @@ describe('DiffMergeView', () => {
     await Promise.resolve();
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await ensureLanguage('en');
     localStorage.clear();
     useAppStore.setState({ activeThemeId: 'macro-dark' });
     installThemeFetchMock({
@@ -112,6 +124,7 @@ describe('DiffMergeView', () => {
       root?.unmount();
       await flushRender();
     });
+    await ensureLanguage(initialLanguage === 'fr' ? 'fr' : 'en');
     container?.remove();
     localStorage.clear();
     useAppStore.setState(initialAppStoreState, true);
@@ -402,6 +415,44 @@ describe('DiffMergeView', () => {
     expect(nextCollapsedCount).toBeLessThan(initialCollapsedCount);
   });
 
+  it('rerenders the collapsed unchanged-lines label when the app language changes', async () => {
+    const original = Array.from({ length: 20 }, (_, index) =>
+      index === 9 ? 'const value = 1;' : `line ${index + 1};`
+    ).join('\n');
+    const modified = Array.from({ length: 20 }, (_, index) =>
+      index === 9 ? 'const value = 2;' : `line ${index + 1};`
+    ).join('\n');
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={original}
+            modified={modified}
+            presentationMode="focused"
+            revertControls="a-to-b"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const getCollapsedTexts = () =>
+      Array.from(container?.querySelectorAll('.cm-collapsedLines') ?? []).map((element) =>
+        element.textContent?.trim() ?? ''
+      );
+
+    expect(getCollapsedTexts().some((text) => text.includes('unchanged lines'))).toBe(true);
+
+    await act(async () => {
+      await ensureLanguage('fr');
+      await flushRender();
+    });
+
+    expect(getCollapsedTexts().some((text) => text.includes('lignes inchangées'))).toBe(true);
+    expect(getCollapsedTexts().some((text) => text.includes('unchanged lines'))).toBe(false);
+  });
+
   it('adapts merge surfaces to the active light theme', async () => {
     useAppStore.setState({ activeThemeId: 'macro-light' });
 
@@ -577,6 +628,234 @@ describe('DiffMergeView', () => {
     });
 
     expect(revertButton?.style.top).toBe('132px');
+  });
+
+  it('keeps the revert control aligned when a collapsed block sits above the changed chunk', async () => {
+    let latestHandle: MergeViewEditorHandle | null = null;
+    const original = Array.from({ length: 28 }, (_, index) =>
+      index === 13 ? 'const value = "this chunk stays long until before the wrapped token";' : `line ${index + 1};`
+    ).join('\n');
+    const modified = Array.from({ length: 28 }, (_, index) =>
+      index === 13 ? 'const value = "this chunk stays long until before the wrapped result";' : `line ${index + 1};`
+    ).join('\n');
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={original}
+            modified={modified}
+            presentationMode="focused"
+            revertControls="a-to-b"
+            onEditorReady={(handle) => {
+              latestHandle = handle;
+            }}
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const handle = requireHandle(latestHandle);
+    const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
+    expect(revertButton).not.toBeNull();
+    expect(container?.querySelector('.cm-collapsedLines')).not.toBeNull();
+
+    const originalLineBlockAt = handle.b.lineBlockAt.bind(handle.b);
+    const originalCoordsAtPos = handle.b.coordsAtPos.bind(handle.b);
+    const changedText = Array.from(container?.querySelectorAll('.cm-changedText') ?? []).find((element) =>
+      element.textContent?.includes('result')
+    ) as HTMLElement | undefined;
+
+    expect(changedText).not.toBeUndefined();
+    const changedStartPos = handle.b.posAtDOM(changedText!.firstChild ?? changedText!, 0);
+
+    handle.b.lineBlockAt = ((...args: Parameters<typeof handle.b.lineBlockAt>) => {
+      const block = originalLineBlockAt(...args);
+      return {
+        ...block,
+        top: 148,
+      };
+    }) as typeof handle.b.lineBlockAt;
+
+    handle.b.coordsAtPos = ((pos: number, side?: -1 | 1) => {
+      if (pos === changedStartPos) {
+        return { top: 196, bottom: 220, left: 0, right: 0 } as ReturnType<typeof handle.b.coordsAtPos>;
+      }
+
+      return originalCoordsAtPos(pos, side);
+    }) as typeof handle.b.coordsAtPos;
+
+    await act(async () => {
+      container!.style.width = '540px';
+      window.dispatchEvent(new Event('resize'));
+      await flushRender();
+    });
+
+    expect(revertButton?.style.top).toBe('196px');
+  });
+
+  it('keeps the revert control aligned when a collapsed block sits below the changed chunk', async () => {
+    let latestHandle: MergeViewEditorHandle | null = null;
+    const original = Array.from({ length: 24 }, (_, index) =>
+      index === 3 ? 'const message = "this line keeps going until before the wrapped token";' : `line ${index + 1};`
+    ).join('\n');
+    const modified = Array.from({ length: 24 }, (_, index) =>
+      index === 3 ? 'const message = "this line keeps going until before the wrapped result";' : `line ${index + 1};`
+    ).join('\n');
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={original}
+            modified={modified}
+            presentationMode="focused"
+            revertControls="a-to-b"
+            onEditorReady={(handle) => {
+              latestHandle = handle;
+            }}
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const handle = requireHandle(latestHandle);
+    const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
+    expect(revertButton).not.toBeNull();
+    expect(container?.querySelector('.cm-collapsedLines')).not.toBeNull();
+
+    const originalLineBlockAt = handle.b.lineBlockAt.bind(handle.b);
+    const originalCoordsAtPos = handle.b.coordsAtPos.bind(handle.b);
+    const changedText = Array.from(container?.querySelectorAll('.cm-changedText') ?? []).find((element) =>
+      element.textContent?.includes('result')
+    ) as HTMLElement | undefined;
+
+    expect(changedText).not.toBeUndefined();
+    const changedStartPos = handle.b.posAtDOM(changedText!.firstChild ?? changedText!, 0);
+
+    handle.b.lineBlockAt = ((...args: Parameters<typeof handle.b.lineBlockAt>) => {
+      const block = originalLineBlockAt(...args);
+      return {
+        ...block,
+        top: 100,
+      };
+    }) as typeof handle.b.lineBlockAt;
+
+    handle.b.coordsAtPos = ((pos: number, side?: -1 | 1) => {
+      if (pos === changedStartPos) {
+        return { top: 132, bottom: 156, left: 0, right: 0 } as ReturnType<typeof handle.b.coordsAtPos>;
+      }
+
+      return originalCoordsAtPos(pos, side);
+    }) as typeof handle.b.coordsAtPos;
+
+    await act(async () => {
+      container!.style.width = '620px';
+      window.dispatchEvent(new Event('resize'));
+      await flushRender();
+    });
+
+    expect(revertButton?.style.top).toBe('132px');
+  });
+
+  it('recomputes revert control tops after expanding a collapsed widget', async () => {
+    let latestHandle: MergeViewEditorHandle | null = null;
+    const original = Array.from({ length: 28 }, (_, index) =>
+      index === 13 ? 'const value = "this chunk stays long until before the wrapped token";' : `line ${index + 1};`
+    ).join('\n');
+    const modified = Array.from({ length: 28 }, (_, index) =>
+      index === 13 ? 'const value = "this chunk stays long until before the wrapped result";' : `line ${index + 1};`
+    ).join('\n');
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={original}
+            modified={modified}
+            presentationMode="focused"
+            revertControls="a-to-b"
+            onEditorReady={(handle) => {
+              latestHandle = handle;
+            }}
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const handle = requireHandle(latestHandle);
+    const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
+    const collapsed = container?.querySelector('.cm-collapsedLines') as HTMLElement | null;
+    expect(revertButton).not.toBeNull();
+    expect(collapsed).not.toBeNull();
+
+    const originalCoordsAtPos = handle.b.coordsAtPos.bind(handle.b);
+    const changedText = Array.from(container?.querySelectorAll('.cm-changedText') ?? []).find((element) =>
+      element.textContent?.includes('result')
+    ) as HTMLElement | undefined;
+
+    expect(changedText).not.toBeUndefined();
+    const changedStartPos = handle.b.posAtDOM(changedText!.firstChild ?? changedText!, 0);
+    let measuredTop = 132;
+
+    handle.b.coordsAtPos = ((pos: number, side?: -1 | 1) => {
+      if (pos === changedStartPos) {
+        return { top: measuredTop, bottom: measuredTop + 24, left: 0, right: 0 } as ReturnType<typeof handle.b.coordsAtPos>;
+      }
+
+      return originalCoordsAtPos(pos, side);
+    }) as typeof handle.b.coordsAtPos;
+
+    await act(async () => {
+      container!.style.width = '560px';
+      window.dispatchEvent(new Event('resize'));
+      await flushRender();
+    });
+
+    expect(revertButton?.style.top).toBe('132px');
+
+    measuredTop = 184;
+
+    await act(async () => {
+      collapsed?.click();
+      await flushRender();
+    });
+
+    expect(revertButton?.style.top).toBe('184px');
+  });
+
+  it('styles collapsed widgets without vertical margins so their measured height stays stable', async () => {
+    const original = Array.from({ length: 20 }, (_, index) =>
+      index === 9 ? 'const value = 1;' : `line ${index + 1};`
+    ).join('\n');
+    const modified = Array.from({ length: 20 }, (_, index) =>
+      index === 9 ? 'const value = 2;' : `line ${index + 1};`
+    ).join('\n');
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={original}
+            modified={modified}
+            presentationMode="focused"
+            revertControls="a-to-b"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const collapsed = container?.querySelector('.cm-collapsedLines') as HTMLElement | null;
+    expect(collapsed).not.toBeNull();
+
+    const collapsedStyles = getComputedStyle(collapsed as HTMLElement);
+    expect(collapsedStyles.marginTop).toBe('0px');
+    expect(collapsedStyles.marginBottom).toBe('0px');
+    expect(collapsedStyles.minHeight).toBe('27px');
   });
 
   it('updates merge surfaces when the app theme changes', async () => {

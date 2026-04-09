@@ -5,6 +5,7 @@ import { EditorView } from '@codemirror/view';
 import { basicSetup } from 'codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { rust } from '@codemirror/lang-rust';
+import { useTranslation } from 'react-i18next';
 import { cn } from '../../utils/cn';
 import { useOptionalTheme } from '../theme/ThemeProvider';
 import {
@@ -33,6 +34,12 @@ export interface MergeViewEditorHandle {
   b: EditorView;
   dom: HTMLElement;
 }
+
+const CODEMIRROR_UNCHANGED_LINES_PHRASE = '$ unchanged lines';
+
+const hasRevertRelevantLayoutChange = (
+  update: Pick<Parameters<Parameters<typeof EditorView.updateListener.of>[0]>[0], 'docChanged' | 'heightChanged' | 'viewportChanged' | 'geometryChanged'>
+) => update.docChanged || update.heightChanged || update.viewportChanged || update.geometryChanged;
 
 const resolveLanguageName = (language: string) => {
   if (language === 'rust') {
@@ -139,9 +146,14 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   onEditorReady,
   revertControls,
 }, ref) => {
+  const { t, i18n } = useTranslation();
   const themeContext = useOptionalTheme();
   const themeMetadata = getCodeMirrorThemeMetadata(themeContext?.theme);
   const resolvedLanguage = resolveLanguageName(language);
+  const resolvedLocale = i18n.resolvedLanguage || i18n.language || 'en';
+  const unchangedLinesPhrase = t('diffMergeView.codeMirrorPhrases.unchangedLines', {
+    defaultValue: CODEMIRROR_UNCHANGED_LINES_PHRASE,
+  });
   const containerRef = useRef<HTMLDivElement>(null);
   const mergeViewRef = useRef<MergeView | null>(null);
   const originalRef = useRef(original);
@@ -176,6 +188,18 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
     const baseTheme = createCodeMirrorBaseTheme(themeContext?.theme);
     const diffTheme = createCodeMirrorDiffTheme(themeContext?.theme);
     const themeExtensions = getCodeMirrorSyntaxExtensions(themeContext?.theme);
+    const phrasesExtension = EditorState.phrases.of({
+      [CODEMIRROR_UNCHANGED_LINES_PHRASE]: unchangedLinesPhrase,
+    });
+    const requestRevertAlignment = (
+      update: Pick<Parameters<Parameters<typeof EditorView.updateListener.of>[0]>[0], 'docChanged' | 'heightChanged' | 'viewportChanged' | 'geometryChanged'>
+    ) => {
+      if (!revertControls || !hasRevertRelevantLayoutChange(update)) {
+        return;
+      }
+
+      scheduleRevertAlignmentRef.current?.();
+    };
 
     const mergeView = new MergeView({
       a: {
@@ -187,6 +211,10 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
           baseTheme,
           diffTheme,
           languageExt,
+          phrasesExtension,
+          EditorView.updateListener.of((update) => {
+            requestRevertAlignment(update);
+          }),
           EditorState.readOnly.of(true),
         ],
       },
@@ -199,9 +227,11 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
           baseTheme,
           diffTheme,
           languageExt,
+          phrasesExtension,
           EditorView.editable.of(editable),
           EditorState.readOnly.of(!editable),
           EditorView.updateListener.of((update) => {
+            requestRevertAlignment(update);
             if (!update.docChanged || isApplyingExternalUpdateRef.current) return;
             onChangeRef.current?.(update.state.doc.toString());
           }),
@@ -330,7 +360,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       mergeView.destroy();
       mergeViewRef.current = null;
     };
-  }, [editable, resolvedLanguage, revertControls, themeContext?.theme]);
+  }, [editable, resolvedLanguage, resolvedLocale, revertControls, themeContext?.theme, unchangedLinesPhrase]);
 
   useEffect(() => {
     const mergeView = mergeViewRef.current;
