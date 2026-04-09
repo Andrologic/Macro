@@ -334,6 +334,10 @@
     "zoom_reset": "Reiniciar",
     "zoom_auto_desc": "Utiliza la escala de visualización de su sistema (Wayland/X11/macOS/Windows).",
     "zoom_override_desc": "Configure manualmente el zoom de la interfaz del 75% al 200%.",
+    "codeOverflow": "Desbordamiento del código",
+    "codeOverflowDesc": "Elige cómo se comportan las líneas largas en los visores de código y editores de diff.",
+    "codeOverflowWrap": "Ajustar líneas",
+    "codeOverflowScroll": "Desplazamiento horizontal",
     "architectGitFlow": {
       "title": "Architect Git Flow",
       "subtitle": "Controle la branch de destino y la denominación automática de branches utilizadas al validar planes. Los nuevos planes utilizan su identificador generado como slug del plan.",

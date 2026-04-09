@@ -358,6 +358,10 @@
     "zoom_reset": "Reset",
     "zoom_auto_desc": "Uses your system display scaling (Wayland/X11/macOS/Windows).",
     "zoom_override_desc": "Manually set interface zoom from 75% to 200%.",
+    "codeOverflow": "Code overflow",
+    "codeOverflowDesc": "Choose how long lines behave in code viewers and diff editors.",
+    "codeOverflowWrap": "Wrap lines",
+    "codeOverflowScroll": "Horizontal scroll",
     "architectGitFlow": {
       "title": "Architect Git Flow",
       "subtitle": "Configure the default Git Flow profile applied to new subprojects, including planned and independent feature branches. Existing subprojects can override these values individually.",

@@ -334,6 +334,10 @@
     "zoom_reset": "Réinitialiser",
     "zoom_auto_desc": "Utilise la mise à l'échelle de l'affichage de votre système (Wayland/X11/macOS/Windows).",
     "zoom_override_desc": "Réglez manuellement le zoom de l'interface de 75 % à 200 %.",
+    "codeOverflow": "Débordement du code",
+    "codeOverflowDesc": "Choisissez le comportement des longues lignes dans les viewers de code et les éditeurs de diff.",
+    "codeOverflowWrap": "Retour à la ligne",
+    "codeOverflowScroll": "Défilement horizontal",
     "architectGitFlow": {
       "title": "Architect Git Flow",
       "subtitle": "Configure le profil Git Flow par défaut appliqué aux nouveaux sous-projets, y compris pour les features planifiées et indépendantes. Les sous-projets existants peuvent remplacer ces valeurs individuellement.",

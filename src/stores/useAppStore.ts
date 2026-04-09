@@ -5,6 +5,7 @@ import { useTaskStore } from "./useTaskStore";
 import {
   AppMode,
   AgentType,
+  CodeOverflowMode,
   ImplementExecutionMode,
   Plan,
   ProjectGroup,
@@ -92,6 +93,11 @@ export type SettingsTab =
   | "architect";
 export type UiZoomMode = "auto" | "override";
 export type MetadataSyncState = "clean" | "pending" | "failed" | "conflict";
+
+const normalizeCodeOverflowMode = (
+  value: CodeOverflowMode | string | null | undefined,
+): CodeOverflowMode =>
+  value === "horizontal_scroll" ? "horizontal_scroll" : "wrap";
 
 export interface MetadataSyncRepositoryStatus {
   repoPath: string;
@@ -648,6 +654,7 @@ interface AppStore {
   enabledModes: AppMode[];
   uiZoomMode: UiZoomMode;
   uiZoomLevel: number;
+  codeOverflowMode: CodeOverflowMode;
   projectSwitchPolicy: ProjectSwitchPolicy;
   isProjectSwitching: boolean;
   metadataAutoPush: boolean;
@@ -705,6 +712,7 @@ interface AppStore {
   setEnabledModes: (modes: AppMode[]) => void;
   setUiZoomMode: (mode: UiZoomMode) => void;
   setUiZoomLevel: (level: number) => void;
+  setCodeOverflowMode: (mode: CodeOverflowMode) => void;
   setProjectSwitchPolicy: (policy: ProjectSwitchPolicy) => Promise<void>;
   setMetadataAutoPush: (enabled: boolean) => void;
   setImplementExecutionMode: (mode: ImplementExecutionMode) => void;
@@ -843,6 +851,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   enabledModes: ["Architect", "Implement", "Chat"],
   uiZoomMode: "auto",
   uiZoomLevel: 1,
+  codeOverflowMode: "wrap",
   projectSwitchPolicy: "resume_per_project",
   isProjectSwitching: false,
   metadataAutoPush: false,
@@ -1230,6 +1239,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const clampedLevel = clampUiZoomLevel(level);
     set({ uiZoomLevel: clampedLevel });
     void savePreference(PREF_KEYS.UI_ZOOM_LEVEL, clampedLevel);
+  },
+
+  setCodeOverflowMode: (mode) => {
+    const normalizedMode = normalizeCodeOverflowMode(mode);
+    set({ codeOverflowMode: normalizedMode });
+    void savePreference(PREF_KEYS.CODE_OVERFLOW_MODE, normalizedMode);
   },
 
   setPlanNodes: (nodes) => set({ planNodes: nodes }),
@@ -2979,6 +2994,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         rightOpen,
         uiZoomMode,
         uiZoomLevel,
+        codeOverflowMode,
         lastSelectedGroupId,
         lastSelectedProjectId,
         lastOpenProjectPath,
@@ -2998,6 +3014,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         loadPreference<boolean>(PREF_KEYS.IS_RIGHT_PANEL_OPEN),
         loadPreference<UiZoomMode>(PREF_KEYS.UI_ZOOM_MODE),
         loadPreference<number>(PREF_KEYS.UI_ZOOM_LEVEL),
+        loadPreference<CodeOverflowMode>(PREF_KEYS.CODE_OVERFLOW_MODE),
         loadPreference<string | null>(PREF_KEYS.LAST_SELECTED_GROUP_ID),
         loadPreference<string | null>(PREF_KEYS.LAST_SELECTED_PROJECT_ID),
         loadPreference<string | null>(PREF_KEYS.LAST_OPEN_PROJECT_PATH),
@@ -3019,6 +3036,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const normalizedZoomMode: UiZoomMode =
         uiZoomMode === "override" ? "override" : "auto";
       const normalizedZoomLevel = clampUiZoomLevel(uiZoomLevel);
+      const normalizedCodeOverflowMode =
+        normalizeCodeOverflowMode(codeOverflowMode);
       const normalizedImplementExecutionMode: ImplementExecutionMode =
         implementExecutionMode === "full_auto" ? "full_auto" : "semi_auto";
 
@@ -3187,6 +3206,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         isRightPanelOpen: rightOpen,
         uiZoomMode: normalizedZoomMode,
         uiZoomLevel: normalizedZoomLevel,
+        codeOverflowMode: normalizedCodeOverflowMode,
         metadataAutoPush,
         implementExecutionMode: normalizedImplementExecutionMode,
         notificationChannelModes: sanitizeNotificationChannelModes(

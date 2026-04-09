@@ -334,6 +334,10 @@
     "zoom_reset": "다시 놓기",
     "zoom_auto_desc": "시스템 디스플레이 크기 조정(Wayland/X11/macOS/Windows)을 사용합니다.",
     "zoom_override_desc": "인터페이스 확대/축소를 75%에서 200%까지 수동으로 설정합니다.",
+    "codeOverflow": "코드 오버플로",
+    "codeOverflowDesc": "코드 뷰어와 diff 편집기에서 긴 줄을 어떻게 표시할지 선택합니다.",
+    "codeOverflowWrap": "줄 바꿈",
+    "codeOverflowScroll": "가로 스크롤",
     "architectGitFlow": {
       "title": "Architect Git Flow",
       "subtitle": "계획 검증 시 사용되는 대상 분기 및 자동 분기 이름 지정을 제어합니다. 새 계획은 생성된 식별자를 계획 슬러그로 사용합니다.",

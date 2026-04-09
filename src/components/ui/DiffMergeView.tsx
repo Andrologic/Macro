@@ -6,7 +6,9 @@ import { basicSetup } from 'codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { rust } from '@codemirror/lang-rust';
 import { useTranslation } from 'react-i18next';
+import type { CodeOverflowMode } from '../../types';
 import { cn } from '../../utils/cn';
+import { useAppStore } from '../../stores/useAppStore';
 import { useOptionalTheme } from '../theme/ThemeProvider';
 import {
   createCodeMirrorBaseTheme,
@@ -15,6 +17,7 @@ import {
   getCodeMirrorSyntaxExtensions,
 } from './codeMirrorTheme';
 import { collectRevertButtonPositions } from './diffMergeRevertAlignment';
+import { mapScrollOffsetByRatio } from './diffMergeScrollSync';
 
 export interface DiffMergeViewProps {
   original: string;
@@ -27,6 +30,7 @@ export interface DiffMergeViewProps {
   onChange?: (value: string) => void;
   onEditorReady?: (editor: MergeViewEditorHandle | null) => void;
   revertControls?: 'a-to-b' | 'b-to-a';
+  overflowMode?: CodeOverflowMode;
 }
 
 export interface MergeViewEditorHandle {
@@ -145,11 +149,14 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   onChange,
   onEditorReady,
   revertControls,
+  overflowMode,
 }, ref) => {
   const { t, i18n } = useTranslation();
+  const globalOverflowMode = useAppStore((state) => state.codeOverflowMode);
   const themeContext = useOptionalTheme();
   const themeMetadata = getCodeMirrorThemeMetadata(themeContext?.theme);
   const resolvedLanguage = resolveLanguageName(language);
+  const resolvedOverflowMode = overflowMode ?? globalOverflowMode;
   const resolvedLocale = i18n.resolvedLanguage || i18n.language || 'en';
   const unchangedLinesPhrase = t('diffMergeView.codeMirrorPhrases.unchangedLines', {
     defaultValue: CODEMIRROR_UNCHANGED_LINES_PHRASE,
@@ -162,6 +169,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   const onEditorReadyRef = useRef(onEditorReady);
   const scheduleRevertAlignmentRef = useRef<(() => void) | null>(null);
   const syncingRef = useRef<'a' | 'b' | null>(null);
+  const lastScrollTopRef = useRef({ a: 0, b: 0 });
   const isApplyingExternalUpdateRef = useRef(false);
   const collapseUnchanged =
     presentationMode === 'focused'
@@ -206,7 +214,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
         doc: originalRef.current,
         extensions: [
           basicSetup,
-          EditorView.lineWrapping,
+          ...(resolvedOverflowMode === 'wrap' ? [EditorView.lineWrapping] : []),
           ...themeExtensions,
           baseTheme,
           diffTheme,
@@ -222,7 +230,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
         doc: modifiedRef.current,
         extensions: [
           basicSetup,
-          EditorView.lineWrapping,
+          ...(resolvedOverflowMode === 'wrap' ? [EditorView.lineWrapping] : []),
           ...themeExtensions,
           baseTheme,
           diffTheme,
@@ -264,6 +272,10 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
     const ownerWindow = mergeView.dom.ownerDocument.defaultView ?? window;
     const ResizeObserverCtor = ownerWindow.ResizeObserver;
     let revertAlignmentFrame: number | null = null;
+    lastScrollTopRef.current = {
+      a: aScroll.scrollTop,
+      b: bScroll.scrollTop,
+    };
 
     const scheduleRevertAlignment = () => {
       if (!revertControls) {
@@ -314,16 +326,43 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
         syncingRef.current = source;
 
         const sourceEl = source === 'a' ? aScroll : bScroll;
-        const scrollRatio = sourceEl.scrollTop / Math.max(1, sourceEl.scrollHeight - sourceEl.clientHeight);
-        const targetScrollTop = scrollRatio * Math.max(1, target.scrollHeight - target.clientHeight);
+        const targetKey = source === 'a' ? 'b' : 'a';
+        const previousScrollTop = lastScrollTopRef.current[source];
+        const targetScrollTop = mapScrollOffsetByRatio({
+          sourceOffset: sourceEl.scrollTop,
+          sourceScrollSize: sourceEl.scrollHeight,
+          sourceClientSize: sourceEl.clientHeight,
+          targetScrollSize: target.scrollHeight,
+          targetClientSize: target.clientHeight,
+        });
+        const didVerticalScroll = Math.abs(sourceEl.scrollTop - previousScrollTop) > 1;
 
         if (Math.abs(target.scrollTop - targetScrollTop) > 1) {
           target.scrollTop = targetScrollTop;
         }
 
-        scheduleRevertAlignment();
+        if (resolvedOverflowMode === 'horizontal_scroll') {
+          const targetScrollLeft = mapScrollOffsetByRatio({
+            sourceOffset: sourceEl.scrollLeft,
+            sourceScrollSize: sourceEl.scrollWidth,
+            sourceClientSize: sourceEl.clientWidth,
+            targetScrollSize: target.scrollWidth,
+            targetClientSize: target.clientWidth,
+          });
 
-        requestAnimationFrame(() => {
+          if (Math.abs(target.scrollLeft - targetScrollLeft) > 1) {
+            target.scrollLeft = targetScrollLeft;
+          }
+        }
+
+        lastScrollTopRef.current[source] = sourceEl.scrollTop;
+        lastScrollTopRef.current[targetKey] = target.scrollTop;
+
+        if (didVerticalScroll) {
+          scheduleRevertAlignment();
+        }
+
+        ownerWindow.requestAnimationFrame(() => {
           if (syncingRef.current === source) {
             syncingRef.current = null;
           }
@@ -360,7 +399,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       mergeView.destroy();
       mergeViewRef.current = null;
     };
-  }, [editable, resolvedLanguage, resolvedLocale, revertControls, themeContext?.theme, unchangedLinesPhrase]);
+  }, [editable, resolvedLanguage, resolvedLocale, resolvedOverflowMode, revertControls, themeContext?.theme, unchangedLinesPhrase]);
 
   useEffect(() => {
     const mergeView = mergeViewRef.current;
@@ -456,12 +495,13 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
     <div
       ref={containerRef}
       data-language={resolvedLanguage}
+      data-overflow-mode={resolvedOverflowMode}
       style={{
         ...themeMetadata.surfaceVars,
         ...themeMetadata.diffVars,
       } as CSSProperties}
       className={cn(
-        'h-full overflow-hidden rounded-md border border-border',
+        'h-full w-full min-w-0 overflow-hidden rounded-md border border-border',
         className
       )}
     />
