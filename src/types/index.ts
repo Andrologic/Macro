@@ -204,6 +204,7 @@ export type AuthStatus = 'authenticated' | 'unauthenticated' | 'loading';
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type Language = 'en' | 'fr';
 export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type CodeOverflowMode = 'wrap' | 'horizontal_scroll';
 
 // Tools & MCP types
 export type ToolStatus = 'enabled' | 'disabled' | 'error' | 'loading';

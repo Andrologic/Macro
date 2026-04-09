@@ -19,6 +19,8 @@ export const AppearanceView: React.FC = () => {
     uiZoomLevel,
     setUiZoomMode,
     setUiZoomLevel,
+    codeOverflowMode,
+    setCodeOverflowMode,
   } = useAppStore();
   const [themes, setThemes] = useState<LoadedTheme[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -119,6 +121,43 @@ export const AppearanceView: React.FC = () => {
               className="text-xs px-2 py-1 rounded-md border border-border/60 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
             >
               {t('settings.zoom_reset') || 'Reset'}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
+          {t('settings.codeOverflow') || 'Code overflow'}
+        </h4>
+
+        <div className="space-y-4 rounded-xl border border-border/50 bg-card/40 p-4">
+          <p className="text-sm text-muted-foreground">
+            {t('settings.codeOverflowDesc') || 'Choose how long lines behave in code viewers and diff editors.'}
+          </p>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setCodeOverflowMode('wrap')}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-sm font-medium transition-colors',
+                codeOverflowMode === 'wrap'
+                  ? 'bg-primary/15 text-primary border border-primary/30'
+                  : 'bg-muted/50 text-muted-foreground border border-border/60 hover:text-foreground'
+              )}
+            >
+              {t('settings.codeOverflowWrap') || 'Wrap lines'}
+            </button>
+            <button
+              onClick={() => setCodeOverflowMode('horizontal_scroll')}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-sm font-medium transition-colors',
+                codeOverflowMode === 'horizontal_scroll'
+                  ? 'bg-primary/15 text-primary border border-primary/30'
+                  : 'bg-muted/50 text-muted-foreground border border-border/60 hover:text-foreground'
+              )}
+            >
+              {t('settings.codeOverflowScroll') || 'Horizontal scroll'}
             </button>
           </div>
         </div>

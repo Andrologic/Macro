@@ -2,6 +2,7 @@ import React, { Suspense, lazy } from 'react';
 import { cn } from '../../utils/cn';
 import { Skeleton } from '../shared/Skeleton';
 import type { EditorView } from '@codemirror/view';
+import type { CodeOverflowMode } from '../../types';
 import type { CodeViewerLineHighlight } from './CodeMirrorEditor';
 
 // =============================================================================
@@ -37,7 +38,7 @@ interface CodeViewerProps {
   className?: string;
   readOnly?: boolean;
   onChange?: (value: string) => void;
-  wrapLines?: boolean;
+  overflowMode?: CodeOverflowMode;
   autoFocus?: boolean;
   onEditorReady?: (view: EditorView | null) => void;
   lineHighlights?: CodeViewerLineHighlight[];
@@ -58,14 +59,14 @@ export const CodeViewer: React.FC<CodeViewerProps> = ({
   className,
   readOnly = true,
   onChange,
-  wrapLines = true,
+  overflowMode,
   autoFocus = false,
   onEditorReady,
   lineHighlights = [],
   hideVerticalScrollbar = false,
 }) => {
   return (
-    <div className={cn("relative", className)}>
+    <div className={cn("relative w-full min-w-0", className)}>
       <Suspense fallback={<CodeViewerSkeleton />}>
         <CodeMirrorEditor
           code={code}
@@ -73,7 +74,7 @@ export const CodeViewer: React.FC<CodeViewerProps> = ({
           readOnly={readOnly}
           className={className}
           onChange={onChange}
-          wrapLines={wrapLines}
+          overflowMode={overflowMode}
           autoFocus={autoFocus}
           onEditorReady={onEditorReady}
           lineHighlights={lineHighlights}
