@@ -4,7 +4,9 @@ import { Compartment, EditorState, RangeSetBuilder } from '@codemirror/state';
 import { basicSetup } from 'codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { rust } from '@codemirror/lang-rust';
+import type { CodeOverflowMode } from '../../types';
 import { cn } from '../../utils/cn';
+import { useAppStore } from '../../stores/useAppStore';
 import { useOptionalTheme } from '../theme/ThemeProvider';
 import {
   createCodeMirrorBaseTheme,
@@ -27,7 +29,7 @@ interface CodeMirrorEditorProps {
   className?: string;
   readOnly?: boolean;
   onChange?: (value: string) => void;
-  wrapLines?: boolean;
+  overflowMode?: CodeOverflowMode;
   autoFocus?: boolean;
   onEditorReady?: (view: EditorView | null) => void;
   lineHighlights?: CodeViewerLineHighlight[];
@@ -88,14 +90,16 @@ const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
   className,
   readOnly = true,
   onChange,
-  wrapLines = true,
+  overflowMode,
   autoFocus = false,
   onEditorReady,
   lineHighlights = [],
   hideVerticalScrollbar = false,
 }) => {
+  const globalOverflowMode = useAppStore((state) => state.codeOverflowMode);
   const themeContext = useOptionalTheme();
   const themeMetadata = getCodeMirrorThemeMetadata(themeContext?.theme);
+  const resolvedOverflowMode = overflowMode ?? globalOverflowMode;
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const latestCodeRef = useRef(code);
@@ -129,7 +133,7 @@ const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
         basicSetup,
         ...syntaxThemeExtensions,
         resolveLanguageExtension(language),
-        ...(wrapLines ? [EditorView.lineWrapping] : []),
+        ...(resolvedOverflowMode === 'wrap' ? [EditorView.lineWrapping] : []),
         baseTheme,
         highlightCompartmentRef.current.of(
           buildLineHighlightExtension(
@@ -163,7 +167,7 @@ const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
       view.destroy();
       viewRef.current = null;
     };
-  }, [autoFocus, hideVerticalScrollbar, language, onEditorReady, readOnly, themeContext?.theme, wrapLines]);
+  }, [autoFocus, hideVerticalScrollbar, language, onEditorReady, readOnly, resolvedOverflowMode, themeContext?.theme]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -195,9 +199,10 @@ const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
   return (
     <div
       ref={editorRef}
+      data-overflow-mode={resolvedOverflowMode}
       style={themeMetadata.surfaceVars as React.CSSProperties}
       className={cn(
-        'rounded-md overflow-hidden border border-border',
+        'w-full min-w-0 rounded-md overflow-hidden border border-border',
         className
       )}
     />

@@ -334,6 +334,10 @@
     "zoom_reset": "リセット",
     "zoom_auto_desc": "システムのディスプレイ スケーリングを使用します (Wayland/X11/macOS/Windows)。",
     "zoom_override_desc": "インターフェイスのズームを 75% から 200% まで手動で設定します。",
+    "codeOverflow": "コードのオーバーフロー",
+    "codeOverflowDesc": "コードビューアーと diff エディターで長い行をどう扱うかを選択します。",
+    "codeOverflowWrap": "行を折り返す",
+    "codeOverflowScroll": "横スクロール",
     "architectGitFlow": {
       "title": "Architect Git Flow",
       "subtitle": "計画の検証時に使用されるターゲット ブランチと自動ブランチ命名を制御します。新しい計画は、生成された識別子を計画スラッグとして使用します。",

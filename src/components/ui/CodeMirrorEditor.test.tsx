@@ -242,4 +242,41 @@ describe('CodeMirrorEditor diff highlights', () => {
     expect(getWrapper()?.style.getPropertyValue('--macro-cm-editor-background')).toBe('#ffffff');
     expect(getWrapper()?.style.getPropertyValue('--macro-cm-editor-foreground')).toBe('#09090b');
   });
+
+  it('uses the global overflow mode when no prop override is provided', async () => {
+    useAppStore.setState({ codeOverflowMode: 'horizontal_scroll' });
+
+    await act(async () => {
+      root?.render(
+        <ThemeProvider>
+          <CodeMirrorEditor code={'const value = "a very long line that should keep scrolling horizontally";'} />
+        </ThemeProvider>
+      );
+      await flushRender();
+    });
+
+    const wrapper = container?.querySelector('[data-overflow-mode]') as HTMLElement | null;
+    expect(wrapper?.dataset.overflowMode).toBe('horizontal_scroll');
+    expect(container?.querySelector('.cm-lineWrapping')).toBeNull();
+  });
+
+  it('allows an explicit overflow mode prop to override the global preference', async () => {
+    useAppStore.setState({ codeOverflowMode: 'horizontal_scroll' });
+
+    await act(async () => {
+      root?.render(
+        <ThemeProvider>
+          <CodeMirrorEditor
+            code={'const value = "a very long line that should wrap when the prop says so";'}
+            overflowMode="wrap"
+          />
+        </ThemeProvider>
+      );
+      await flushRender();
+    });
+
+    const wrapper = container?.querySelector('[data-overflow-mode]') as HTMLElement | null;
+    expect(wrapper?.dataset.overflowMode).toBe('wrap');
+    expect(container?.querySelector('.cm-lineWrapping')).not.toBeNull();
+  });
 });

@@ -7,6 +7,7 @@ import { ThemeProvider, defaultTheme } from '../theme/ThemeProvider';
 import { useAppStore } from '../../stores/useAppStore';
 import type { Theme } from '../../types/theme';
 import { DiffMergeView, type MergeViewEditorHandle } from './DiffMergeView';
+import { mapScrollOffsetByRatio } from './diffMergeScrollSync';
 
 const initialAppStoreState = useAppStore.getState();
 const initialLanguage = i18n.resolvedLanguage || i18n.language || 'en';
@@ -155,6 +156,25 @@ describe('DiffMergeView', () => {
 
     expect(container?.querySelector('.cm-mergeView')).not.toBeNull();
     expect(container?.querySelectorAll('.cm-editor').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('uses the global overflow mode when no explicit prop is provided', async () => {
+    useAppStore.setState({ codeOverflowMode: 'horizontal_scroll' });
+
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={'const value = "a very long line that should keep horizontal scrolling";'}
+            modified={'const value = "a very long line that should keep horizontal scrolling, with a change";'}
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    expect(container?.querySelector('[data-overflow-mode="horizontal_scroll"]')).not.toBeNull();
+    expect(container?.querySelector('.cm-lineWrapping')).toBeNull();
   });
 
   it('renders diff highlights for changed lines and text', async () => {
@@ -307,6 +327,32 @@ describe('DiffMergeView', () => {
 
     expect(container?.querySelector('.cm-merge-revert button')).not.toBeNull();
     expect(container?.querySelector('.cm-merge-revert .macro-diff-revert-icon')).not.toBeNull();
+  });
+
+  it('maps horizontal scroll positions proportionally between both editors', () => {
+    expect(mapScrollOffsetByRatio({
+      sourceOffset: 400,
+      sourceScrollSize: 1000,
+      sourceClientSize: 200,
+      targetScrollSize: 1500,
+      targetClientSize: 300,
+    })).toBe(600);
+
+    expect(mapScrollOffsetByRatio({
+      sourceOffset: 1200,
+      sourceScrollSize: 1000,
+      sourceClientSize: 200,
+      targetScrollSize: 1500,
+      targetClientSize: 300,
+    })).toBe(1200);
+
+    expect(mapScrollOffsetByRatio({
+      sourceOffset: 50,
+      sourceScrollSize: 200,
+      sourceClientSize: 200,
+      targetScrollSize: 1500,
+      targetClientSize: 300,
+    })).toBe(0);
   });
 
   it('collapses unchanged sections in focused mode while keeping the central revert rail', async () => {

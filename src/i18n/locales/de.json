@@ -334,6 +334,10 @@
     "zoom_reset": "Zurücksetzen",
     "zoom_auto_desc": "Verwendet die Anzeigeskalierung Ihres Systems (Wayland/X11/macOS/Windows).",
     "zoom_override_desc": "Stellen Sie den Schnittstellenzoom manuell von 75 % auf 200 % ein.",
+    "codeOverflow": "Code-Überlauf",
+    "codeOverflowDesc": "Legen Sie fest, wie lange Zeilen in Code-Viewern und Diff-Editoren dargestellt werden.",
+    "codeOverflowWrap": "Zeilen umbrechen",
+    "codeOverflowScroll": "Horizontal scrollen",
     "architectGitFlow": {
       "title": "Architect Git Flow",
       "subtitle": "Steuern Sie den Zielzweig und die automatische Benennung von Branchesn, die bei der Validierung von Plänen verwendet werden. Neue Pläne verwenden ihre generierte Kennung als Plan-Slug.",
