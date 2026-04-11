@@ -44,8 +44,10 @@ direnv/.direnvrc
 
 # Tauri
 src-tauri/target/
-src-tauri/macro.db
+src-tauri/binaries/
+src-tauri/resources/macro-ai-runtime*
 src-tauri/resources/macro-copilot-bridge*
+src-tauri/macro.db
 
 # Local AI keys
 public/ai-keys.local.json

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "bunx vite --host",
-    "build:copilot-bridge": "node ./dev/build-copilot-bridge.mjs",
+    "build:ai-runtime": "node ./dev/build-ai-runtime.mjs",
     "build": "NODE_ENV=production bunx tsc && NODE_ENV=production bunx vite build",
     "build:analyze": "NODE_ENV=production bunx vite build --mode analyze",
     "bundle:check": "node ./dev/check-bundle-size.mjs",

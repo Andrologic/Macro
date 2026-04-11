@@ -1806,7 +1806,7 @@ const executeCopilotMacroTool = async (
 
   throw new BridgeError(
     'unsupported_tool',
-    `Macro Copilot bridge does not support tool "${toolId}" yet.`
+    `Macro AI runtime does not support tool "${toolId}" yet.`
   );
 };
 

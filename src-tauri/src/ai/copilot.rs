@@ -27,6 +27,8 @@ use tokio::sync::watch;
 use std::os::unix::fs::PermissionsExt;
 
 const MIN_CLI_VERSION: &str = "1.0.12";
+const AI_RUNTIME_BASENAME: &str = "macro-ai-runtime";
+const LEGACY_AI_RUNTIME_BASENAME: &str = "macro-copilot-bridge";
 const COPILOT_AUTO_UPDATE_ENV: (&str, &str) = ("COPILOT_AUTO_UPDATE", "false");
 const COPILOT_RUNTIME_METADATA_KEY: &str = "copilot.runtime.managed";
 const COPILOT_RUNTIME_MANIFEST_RESOURCE: &str = "copilot-runtime-manifest.json";
@@ -239,31 +241,44 @@ impl RuntimeSource {
     }
 }
 
-fn bridge_filename() -> &'static str {
+fn packaged_runtime_filename(base_name: &str) -> String {
     #[cfg(target_os = "windows")]
     {
-        "macro-copilot-bridge.exe"
+        format!("{}.exe", base_name)
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        "macro-copilot-bridge"
+        base_name.to_string()
     }
 }
 
-fn bridge_sidecar_filename() -> String {
+fn sidecar_runtime_filename(base_name: &str) -> String {
     #[cfg(target_os = "windows")]
     {
-        format!(
-            "macro-copilot-bridge-{}.exe",
-            env!("TAURI_ENV_TARGET_TRIPLE")
-        )
+        format!("{}-{}.exe", base_name, env!("TAURI_ENV_TARGET_TRIPLE"))
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        format!("macro-copilot-bridge-{}", env!("TAURI_ENV_TARGET_TRIPLE"))
+        format!("{}-{}", base_name, env!("TAURI_ENV_TARGET_TRIPLE"))
     }
+}
+
+fn bridge_filename() -> String {
+    packaged_runtime_filename(AI_RUNTIME_BASENAME)
+}
+
+fn legacy_bridge_filename() -> String {
+    packaged_runtime_filename(LEGACY_AI_RUNTIME_BASENAME)
+}
+
+fn bridge_sidecar_filename() -> String {
+    sidecar_runtime_filename(AI_RUNTIME_BASENAME)
+}
+
+fn legacy_bridge_sidecar_filename() -> String {
+    sidecar_runtime_filename(LEGACY_AI_RUNTIME_BASENAME)
 }
 
 fn bridge_candidates(_app_handle: &AppHandle) -> Vec<PathBuf> {
@@ -271,6 +286,8 @@ fn bridge_candidates(_app_handle: &AppHandle) -> Vec<PathBuf> {
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(parent) = current_exe.parent() {
             candidates.push(parent.join(bridge_filename()));
+            // Accept the old sidecar name during the rename so existing local builds still work.
+            candidates.push(parent.join(legacy_bridge_filename()));
         }
     }
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -279,7 +296,17 @@ fn bridge_candidates(_app_handle: &AppHandle) -> Vec<PathBuf> {
             .join("binaries")
             .join(bridge_sidecar_filename()),
     );
+    candidates.push(
+        manifest_dir
+            .join("binaries")
+            .join(legacy_bridge_sidecar_filename()),
+    );
     candidates.push(manifest_dir.join("resources").join(bridge_filename()));
+    candidates.push(
+        manifest_dir
+            .join("resources")
+            .join(legacy_bridge_filename()),
+    );
     candidates
 }
 
@@ -302,7 +329,7 @@ fn resolve_bridge_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
         .find(|candidate| candidate.exists())
         .ok_or_else(|| {
             format!(
-                "Macro Copilot bridge executable was not found. Expected {} in the packaged app bundle or dev sidecar directory.",
+                "Macro AI runtime executable was not found. Expected {} in the packaged app bundle or dev sidecar directory.",
                 bridge_filename()
             )
         })
@@ -468,7 +495,7 @@ fn spawn_bridge(
 
     command
         .spawn()
-        .map_err(|error| format!("Failed to start Macro Copilot bridge: {}", error))
+        .map_err(|error| format!("Failed to start Macro AI runtime: {}", error))
 }
 
 fn parse_json_lines(output: &str) -> Vec<Value> {
@@ -505,17 +532,17 @@ async fn run_bridge_json_command<T: for<'de> Deserialize<'de>>(
         let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| "Bridge stdin is unavailable.".to_string())?;
+            .ok_or_else(|| "AI runtime stdin is unavailable.".to_string())?;
         stdin
             .write_all(payload.as_bytes())
             .await
-            .map_err(|error| format!("Failed to write bridge request: {}", error))?;
+            .map_err(|error| format!("Failed to write AI runtime request: {}", error))?;
     }
 
     let output = child
         .wait_with_output()
         .await
-        .map_err(|error| format!("Failed to read bridge output: {}", error))?;
+        .map_err(|error| format!("Failed to read AI runtime output: {}", error))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let values = parse_json_lines(&stdout);
@@ -527,7 +554,7 @@ async fn run_bridge_json_command<T: for<'de> Deserialize<'de>>(
         } else if !stderr_message.is_empty() {
             stderr_message.to_string()
         } else {
-            "Macro Copilot bridge command failed.".to_string()
+            "Macro AI runtime command failed.".to_string()
         };
         return Err(message);
     }
@@ -535,9 +562,9 @@ async fn run_bridge_json_command<T: for<'de> Deserialize<'de>>(
     let value = values
         .last()
         .cloned()
-        .ok_or_else(|| "Macro Copilot bridge returned no JSON output.".to_string())?;
+        .ok_or_else(|| "Macro AI runtime returned no JSON output.".to_string())?;
     serde_json::from_value::<T>(value)
-        .map_err(|error| format!("Failed to parse bridge response: {}", error))
+        .map_err(|error| format!("Failed to parse AI runtime response: {}", error))
 }
 
 fn build_provider_metadata(status: &CopilotStatus) -> ProviderAuthMetadata {
@@ -1817,17 +1844,17 @@ async fn stream_chat_inner(
         stdin
             .write_all(payload.as_bytes())
             .await
-            .map_err(|error| format!("Failed to send Copilot bridge request: {}", error))?;
+            .map_err(|error| format!("Failed to send AI runtime request: {}", error))?;
     }
 
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "Copilot bridge stdout is unavailable.".to_string())?;
+        .ok_or_else(|| "AI runtime stdout is unavailable.".to_string())?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "Copilot bridge stderr is unavailable.".to_string())?;
+        .ok_or_else(|| "AI runtime stderr is unavailable.".to_string())?;
 
     let mut stdout_reader = BufReader::new(stdout).lines();
     let stderr_task = tokio::spawn(async move {
@@ -1848,7 +1875,7 @@ async fn stream_chat_inner(
     while let Some(line) = stdout_reader
         .next_line()
         .await
-        .map_err(|error| format!("Failed to read Copilot bridge output: {}", error))?
+        .map_err(|error| format!("Failed to read AI runtime output: {}", error))?
     {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -1856,7 +1883,7 @@ async fn stream_chat_inner(
         }
 
         let event = serde_json::from_str::<BridgeSendEvent>(trimmed)
-            .map_err(|error| format!("Invalid Copilot bridge event: {}", error))?;
+            .map_err(|error| format!("Invalid AI runtime event: {}", error))?;
 
         match event {
             BridgeSendEvent::Delta { delta } => {
@@ -1908,7 +1935,7 @@ async fn stream_chat_inner(
     let status = child
         .wait()
         .await
-        .map_err(|error| format!("Failed to wait for Copilot bridge process: {}", error))?;
+        .map_err(|error| format!("Failed to wait for AI runtime process: {}", error))?;
     let stderr_output = stderr_task.await.unwrap_or_default();
 
     if saw_done {
@@ -1923,7 +1950,7 @@ async fn stream_chat_inner(
         if !stderr_output.trim().is_empty() {
             return Err(stderr_output);
         }
-        return Err("GitHub Copilot bridge exited unexpectedly.".to_string());
+        return Err("Macro AI runtime exited unexpectedly.".to_string());
     }
 
     app_handle
