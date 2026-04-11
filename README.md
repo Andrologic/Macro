@@ -261,12 +261,12 @@ Built applications will be in `src-tauri/target/release/bundle/`.
 On macOS, the DMG is generated at `src-tauri/target/release/bundle/dmg/`.
 The Finder presentation intentionally stays minimal and native: app on the left, `Applications` shortcut on the right, no custom background image.
 
-### Apple Silicon Sidecar Build
+### Apple Silicon Runtime Sidecar
 
-The Copilot bridge is compiled as a Tauri sidecar into `src-tauri/binaries/` before desktop builds.
+The desktop app compiles an auxiliary AI runtime sidecar into `src-tauri/binaries/` before desktop builds.
 
-- local macOS Apple Silicon builds emit `macro-copilot-bridge-aarch64-apple-darwin`
-- Tauri embeds the final packaged sidecar as `macro-copilot-bridge` inside the app bundle
+- local macOS Apple Silicon builds emit `macro-ai-runtime-aarch64-apple-darwin`
+- Tauri embeds the final packaged sidecar as `macro-ai-runtime` inside the app bundle
 - the sidecar uses macOS entitlements compatible with Bun's JavaScript runtime
 
 ### macOS Release Runbook
@@ -278,7 +278,7 @@ The Copilot bridge is compiled as a Tauri sidecar into `src-tauri/binaries/` bef
 4. Trigger [`.github/workflows/release-macos.yml`](.github/workflows/release-macos.yml).
 5. Wait for the workflow to build, sign, notarize, staple, and validate the Apple Silicon `.app` and `.dmg`.
 6. Download the release artifact on a clean Apple Silicon Mac and smoke test:
-   app launch from Finder, terminal commands, Git access, Copilot bridge startup, keychain access, and notifications.
+   app launch from Finder, terminal commands, Git access, AI runtime startup, keychain access, and notifications.
 
 ### Headless Kernel (No GUI)
 

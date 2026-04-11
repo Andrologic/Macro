@@ -4,16 +4,16 @@
   "version": "../package.json",
   "identifier": "com.macro.desktop",
   "build": {
-    "beforeDevCommand": "bun run build:copilot-bridge && bun run dev",
+    "beforeDevCommand": "bun run build:ai-runtime && bun run dev",
     "devUrl": "http://localhost:1422",
-    "beforeBuildCommand": "bun run build:copilot-bridge && bun run build",
+    "beforeBuildCommand": "bun run build:ai-runtime && bun run build",
     "frontendDist": "../dist"
   },
   "bundle": {
     "active": true,
     "targets": "all",
     "externalBin": [
-      "binaries/macro-copilot-bridge"
+      "binaries/macro-ai-runtime"
     ],
     "resources": [
       "resources/copilot-runtime-manifest.json",
