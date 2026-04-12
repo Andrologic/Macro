@@ -44,6 +44,7 @@ const createNotificationItem = (
 ) => ({
   id: `notification-${index}`,
   level: 'info' as const,
+  variant: 'informational' as const,
   title: `Notification ${index}`,
   createdAt: new Date(Date.UTC(2026, 2, 20, 12, 0, index)).toISOString(),
   readAt: null,
@@ -112,6 +113,7 @@ describe('useNotificationCenterStore', () => {
     const items = notificationStore.useNotificationCenterStore.getState().items;
     expect(items).toHaveLength(3);
     expect(items[0].level).toBe('error');
+    expect(items[0].variant).toBe('informational');
     expect(items[1].level).toBe('warning');
     expect(items[2].level).toBe('info');
     expect(items[2].description).toBe('Helpful context');
@@ -202,6 +204,7 @@ describe('useNotificationCenterStore', () => {
     expect(hydrated).toHaveLength(1);
     expect(hydrated[0]).toMatchObject({
       level: 'info',
+      variant: 'informational',
       title: 'Persisted',
       description: 'Saved locally',
     });
@@ -224,9 +227,36 @@ describe('useNotificationCenterStore', () => {
       {
         id: 'notification-1',
         level: 'error',
+        variant: 'informational',
         title: 'Updated title',
         description: 'Updated description',
         createdAt: '2026-03-20T12:00:05.000Z',
+        readAt: null,
+      },
+    ]);
+  });
+
+  it('defaults older persisted items to the informational variant', () => {
+    localStorageMock.setItem(
+      notificationStore.NOTIFICATION_CENTER_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: 'legacy-item',
+          level: 'warning',
+          title: 'Legacy notification',
+          createdAt: '2026-03-20T12:00:00.000Z',
+          readAt: null,
+        },
+      ])
+    );
+
+    expect(notificationStore.readNotificationCenterItemsFromStorage()).toEqual([
+      {
+        id: 'legacy-item',
+        level: 'warning',
+        variant: 'informational',
+        title: 'Legacy notification',
+        createdAt: '2026-03-20T12:00:00.000Z',
         readAt: null,
       },
     ]);
@@ -261,6 +291,7 @@ describe('useNotificationCenterStore', () => {
       {
         id: 'valid-1',
         level: 'warning',
+        variant: 'informational',
         title: 'Keep me',
         createdAt: '2026-03-20T12:00:00.000Z',
         readAt: null,

@@ -13,7 +13,7 @@ import {
   AccordionTrigger,
   AccordionContent,
 } from '../../../ui/Accordion';
-import { toast } from '../../../ui/toastService';
+import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
@@ -297,9 +297,9 @@ export const ModelsSettings: React.FC = () => {
                           event.preventDefault();
                           try {
                             await scanModelsForProvider(provider.id);
-                            toast.success(t('models.modelsRefreshed', 'Models refreshed'));
+                            notify.success(t('models.modelsRefreshed', 'Models refreshed'));
                           } catch (error) {
-                            toast.error(
+                            notify.error(
                               getErrorMessage(
                                 error,
                                 t('models.refreshFailed', 'Failed to refresh models')
@@ -522,14 +522,14 @@ export const ModelsSettings: React.FC = () => {
                         modelId,
                         name
                       );
-                      toast.success(t('models.modelUpdated', 'Model updated successfully'));
+                      notify.success(t('models.modelUpdated', 'Model updated successfully'));
                     } else {
                       await addManualModel(manualModelEditor.providerId, modelId, name);
-                      toast.success(t('models.modelAdded', 'Model added successfully'));
+                      notify.success(t('models.modelAdded', 'Model added successfully'));
                     }
                     closeManualModelEditor();
                   } catch (error) {
-                    toast.error(
+                    notify.error(
                       getErrorMessage(
                         error,
                         isEditingManualModel
@@ -576,9 +576,9 @@ export const ModelsSettings: React.FC = () => {
               manualModelPendingDelete.modelId
             );
             setManualModelPendingDelete(null);
-            toast.success(t('models.modelDeleted', 'Model deleted successfully'));
+            notify.success(t('models.modelDeleted', 'Model deleted successfully'));
           } catch (error) {
-            toast.error(
+            notify.error(
               getErrorMessage(error, t('models.deleteFailed', 'Failed to delete model'))
             );
           } finally {

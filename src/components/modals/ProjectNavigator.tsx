@@ -16,7 +16,7 @@ import { toServiceError } from '../../services/contracts/errors';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import type { Project, ProjectGroup } from '../../types';
 import {
@@ -321,10 +321,10 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       setIsSubmittingConfirm(true);
       await renameProjectGroup(group.id, nextName);
       setRenameTarget(null);
-      toast.success(t('projects.groupRenamed', 'Project group renamed'));
+      notify.success(t('projects.groupRenamed', 'Project group renamed'));
     } catch (error) {
       const message = toServiceError(error).message || t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsSubmittingConfirm(false);
     }
@@ -336,10 +336,10 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       await removeProjectGroup(group.id);
       setMenuState(null);
       setRemoveTarget(null);
-      toast.success(t('projects.groupRemoved', 'Global project removed from Macro'));
+      notify.success(t('projects.groupRemoved', 'Global project removed from Macro'));
     } catch (error) {
       const message = toServiceError(error).message || t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsSubmittingConfirm(false);
     }
@@ -354,10 +354,10 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       setIsSubmittingConfirm(true);
       await renameProject(project.id, nextName);
       setRenameTarget(null);
-      toast.success(t('projects.projectRenamed', 'Project renamed'));
+      notify.success(t('projects.projectRenamed', 'Project renamed'));
     } catch (error) {
       const message = toServiceError(error).message || t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsSubmittingConfirm(false);
     }
@@ -381,7 +381,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
           : action === 'terminal'
             ? t('projects.openInTerminalFailed', 'Unable to open this subproject in the configured terminal.')
             : t('projects.openInFilesFailed', 'Unable to open this subproject in the configured file explorer.');
-      toast.error(fallbackTitle, {
+      notify.error(fallbackTitle, {
         description: toServiceError(error).message,
       });
     } finally {
@@ -399,10 +399,10 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       await removeProject(project.id);
       setMenuState(null);
       setRemoveTarget(null);
-      toast.success(t('projects.projectRemoved', 'Subproject removed from Macro'));
+      notify.success(t('projects.projectRemoved', 'Subproject removed from Macro'));
     } catch (error) {
       const message = toServiceError(error).message || t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsSubmittingConfirm(false);
     }

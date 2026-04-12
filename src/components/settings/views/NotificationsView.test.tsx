@@ -25,15 +25,15 @@ const updatePreferencesMock = mock(async (_preferences: unknown) => undefined);
 const setNotificationChannelModeMock = mock(
   (_category: unknown, _mode: unknown) => undefined
 );
-const emitDebugNotificationPreviewMock = mock(async (_preview: unknown, _channel: unknown) => ({
+const emitInformationalNotificationBlueprintMock = mock(async (_draft: unknown, _channel: unknown) => ({
   inAppSent: true,
   desktopSent: true,
 }));
-const emitAllDebugNotificationPreviewsMock = mock(async (_channel: unknown) => ({
-  total: 1,
-  inAppSent: 1,
-  desktopSent: 1,
+const emitActionableNotificationBlueprintMock = mock(async (_draft: unknown, _channel: unknown) => ({
+  inAppSent: true,
+  desktopSent: true,
 }));
+const simulateNotificationBlueprintActionMock = mock(async () => undefined);
 const initializeDesktopNotificationsMock = mock(async () => undefined);
 
 let importCounter = 0;
@@ -61,6 +61,38 @@ const desktopNotificationsMock = {
   sendDesktopNotificationPreview: mock(async () => true),
 };
 
+type SelectMockProps = React.SelectHTMLAttributes<HTMLSelectElement> & {
+  children: React.ReactNode;
+  value: string;
+  onChange: (event: React.ChangeEvent<HTMLSelectElement>) => void;
+  onInput?: (event: React.FormEvent<HTMLSelectElement>) => void;
+  className?: string;
+  'data-testid'?: string;
+};
+
+type InputMockProps = React.InputHTMLAttributes<HTMLInputElement> & {
+  'data-testid'?: string;
+};
+
+type TextareaMockProps = React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  'data-testid'?: string;
+};
+
+const controlHandlers = new Map<
+  string,
+  {
+    onChange?: (event: { target: { value: string } }) => void;
+    onInput?: (event: { target: { value: string } }) => void;
+  }
+>();
+
+const updateMockControl = async (testId: string, value: string) => {
+  const handlers = controlHandlers.get(testId);
+  handlers?.onInput?.({ target: { value } });
+  handlers?.onChange?.({ target: { value } });
+  await Promise.resolve();
+};
+
 const loadNotificationsView = async (devMode: boolean) => {
   mock.restore();
 
@@ -86,7 +118,7 @@ const loadNotificationsView = async (devMode: boolean) => {
   }));
 
   mock.module('../../ui/toastService', () => ({
-    toast: {
+    notify: {
       error: mock(() => undefined),
     },
   }));
@@ -96,17 +128,76 @@ const loadNotificationsView = async (devMode: boolean) => {
       children,
       value,
       onChange,
+      onInput,
       className,
-    }: {
-      children: React.ReactNode;
-      value: string;
-      onChange: (event: React.ChangeEvent<HTMLSelectElement>) => void;
-      className?: string;
-    }) => (
-      <select value={value} onChange={onChange} className={className}>
-        {children}
-      </select>
+      'data-testid': testId,
+      ...props
+    }: SelectMockProps) => (
+      (() => {
+        if (typeof testId === 'string') {
+          controlHandlers.set(testId, {
+            onChange: onChange as never,
+            onInput: onInput as never,
+          });
+        }
+
+        return (
+          <select
+            value={value}
+            onChange={onChange}
+            onInput={onInput}
+            className={className}
+            data-testid={testId}
+            {...props}
+          >
+            {children}
+          </select>
+        );
+      })()
     ),
+  }));
+
+  mock.module('../../ui/Input', () => ({
+    Input: ({
+      onChange,
+      onInput,
+      'data-testid': testId,
+      ...props
+    }: InputMockProps) => {
+      if (typeof testId === 'string') {
+        controlHandlers.set(testId, {
+          onChange: onChange as never,
+          onInput: onInput as never,
+        });
+      }
+
+      return <input data-testid={testId} onChange={onChange} onInput={onInput} {...props} />;
+    },
+  }));
+
+  mock.module('../../ui/Textarea', () => ({
+    Textarea: ({
+      onChange,
+      onInput,
+      'data-testid': testId,
+      ...props
+    }: TextareaMockProps) => {
+      if (typeof testId === 'string') {
+        controlHandlers.set(testId, {
+          onChange: onChange as never,
+          onInput: onInput as never,
+        });
+      }
+
+      return (
+        <textarea
+          data-testid={testId}
+          onChange={onChange}
+          onInput={onInput}
+          {...props}
+        />
+      );
+    },
   }));
 
   mock.module('../../ui/Switch', () => ({
@@ -139,22 +230,39 @@ const loadNotificationsView = async (devMode: boolean) => {
   }));
 
   mock.module('./notificationDebugCatalog', () => ({
-    DEBUG_NOTIFICATION_PREVIEWS: [
-      {
-        id: 'preview-1',
-        label: 'Preview 1',
-        description: 'Preview description',
-        level: 'info',
-        message: 'Preview message',
-        toastOptions: {},
-        supportsDesktop: true,
-        variant: 'standard',
-      },
+    DEFAULT_INFORMATIONAL_NOTIFICATION_BLUEPRINT_DRAFT: {
+      tone: 'info',
+      title: 'Background indexing finished',
+      description: 'Everything is up to date.',
+    },
+    DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT: {
+      tone: 'warning',
+      title: 'Base branch missing',
+      description: 'Choose what to do next to continue safely.',
+      actionCount: 2,
+      primaryActionLabel: 'Create',
+      secondaryActionLabel: 'Open settings',
+    },
+    emitInformationalNotificationBlueprint: (...args: [unknown, unknown]) =>
+      emitInformationalNotificationBlueprintMock(...args),
+    emitActionableNotificationBlueprint: (...args: [unknown, unknown]) =>
+      emitActionableNotificationBlueprintMock(...args),
+    getActionableNotificationBlueprintPreviewActions: (draft: {
+      actionCount: 1 | 2;
+      primaryActionLabel: string;
+      secondaryActionLabel: string;
+    }) => [
+      { label: draft.primaryActionLabel || 'Primary action', variant: 'primary' as const },
+      ...(draft.actionCount === 2
+        ? [
+            {
+              label: draft.secondaryActionLabel || 'Secondary action',
+              variant: 'secondary' as const,
+            },
+          ]
+        : []),
     ],
-    emitDebugNotificationPreview: (...args: [unknown, unknown]) =>
-      emitDebugNotificationPreviewMock(...args),
-    emitAllDebugNotificationPreviews: (...args: [unknown]) =>
-      emitAllDebugNotificationPreviewsMock(...args),
+    simulateNotificationBlueprintAction: () => simulateNotificationBlueprintActionMock(),
   }));
 
   importCounter += 1;
@@ -183,9 +291,11 @@ describe('NotificationsView', () => {
 
     updatePreferencesMock.mockClear();
     setNotificationChannelModeMock.mockClear();
-    emitDebugNotificationPreviewMock.mockClear();
-    emitAllDebugNotificationPreviewsMock.mockClear();
+    emitInformationalNotificationBlueprintMock.mockClear();
+    emitActionableNotificationBlueprintMock.mockClear();
+    simulateNotificationBlueprintActionMock.mockClear();
     initializeDesktopNotificationsMock.mockClear();
+    controlHandlers.clear();
     useNotificationCenterStore.setState({
       items: [],
       isCenterOpen: false,
@@ -237,6 +347,124 @@ describe('NotificationsView', () => {
     ).not.toBeNull();
   });
 
+  it('renders only the two blueprint panels with matching preview frame shells', async () => {
+    const { NotificationsView } = await loadNotificationsView(true);
+
+    await act(async () => {
+      root?.render(<NotificationsView />);
+      await Promise.resolve();
+    });
+
+    expect(
+      container?.querySelector('[data-testid="notification-blueprint-panel-informational"]')
+    ).not.toBeNull();
+    expect(
+      container?.querySelector('[data-testid="notification-blueprint-panel-actionable"]')
+    ).not.toBeNull();
+
+    const frames = Array.from(
+      container?.querySelectorAll('[data-testid="notification-blueprint-frame"]') ?? []
+    ) as HTMLElement[];
+
+    expect(frames).toHaveLength(2);
+    expect(frames[0]?.className).toBe(frames[1]?.className);
+  });
+
+  it('updates the live preview immediately when debug fields change', async () => {
+    const { NotificationsView } = await loadNotificationsView(true);
+
+    await act(async () => {
+      root?.render(<NotificationsView />);
+      await Promise.resolve();
+    });
+
+    const informationalTitle = container?.querySelector(
+      '[data-testid="informational-blueprint-title"]'
+    ) as HTMLInputElement | null;
+    const informationalDescription = container?.querySelector(
+      '[data-testid="informational-blueprint-description"]'
+    ) as HTMLTextAreaElement | null;
+    const informationalTone = container?.querySelector(
+      '[data-testid="informational-blueprint-tone"]'
+    ) as HTMLSelectElement | null;
+
+    expect(informationalTitle).not.toBeNull();
+    expect(informationalDescription).not.toBeNull();
+    expect(informationalTone).not.toBeNull();
+
+    await act(async () => {
+      await updateMockControl('informational-blueprint-title', 'Custom informational title');
+      await updateMockControl(
+        'informational-blueprint-description',
+        'A much longer debug description.'
+      );
+      await updateMockControl('informational-blueprint-tone', 'error');
+    });
+
+    const informationalPanel = container?.querySelector(
+      '[data-testid="notification-blueprint-panel-informational"]'
+    ) as HTMLElement | null;
+    const surface = informationalPanel?.querySelector(
+      '[data-notification-surface="true"]'
+    ) as HTMLElement | null;
+
+    expect(informationalPanel?.textContent).toContain('Custom informational title');
+    expect(informationalPanel?.textContent).toContain('A much longer debug description.');
+    expect(surface?.className).toContain('bg-background');
+  });
+
+  it('emits the current blueprint drafts through the dedicated helper functions', async () => {
+    const { NotificationsView } = await loadNotificationsView(true);
+
+    await act(async () => {
+      root?.render(<NotificationsView />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await updateMockControl('actionable-blueprint-title', 'Needs attention');
+      await updateMockControl('actionable-blueprint-action-count', '1');
+      await updateMockControl('actionable-blueprint-primary-action', 'Retry now');
+    });
+
+    const informationalAllButton = container?.querySelector(
+      '[data-testid="informational-blueprint-all"]'
+    ) as HTMLButtonElement | null;
+    const actionableInAppButton = container?.querySelector(
+      '[data-testid="actionable-blueprint-in-app"]'
+    ) as HTMLButtonElement | null;
+
+    await act(async () => {
+      informationalAllButton?.click();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      actionableInAppButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(emitInformationalNotificationBlueprintMock).toHaveBeenCalledWith(
+      {
+        tone: 'info',
+        title: 'Background indexing finished',
+        description: 'Everything is up to date.',
+      },
+      'all'
+    );
+    expect(emitActionableNotificationBlueprintMock).toHaveBeenCalledWith(
+      {
+        tone: 'warning',
+        title: 'Needs attention',
+        description: 'Choose what to do next to continue safely.',
+        actionCount: 1,
+        primaryActionLabel: 'Retry now',
+        secondaryActionLabel: 'Open settings',
+      },
+      'in_app'
+    );
+  });
+
   it('clears the notification center from the debug section', async () => {
     const { NotificationsView } = await loadNotificationsView(true);
 
@@ -245,6 +473,7 @@ describe('NotificationsView', () => {
         {
           id: 'debug-item',
           level: 'info',
+          variant: 'informational',
           title: 'Tracked preview',
           createdAt: '2026-04-12T09:00:00.000Z',
           readAt: null,

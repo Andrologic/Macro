@@ -7,6 +7,7 @@ import { Toaster as SonnerToaster } from 'sonner';
 export function Toaster() {
   return (
     <SonnerToaster
+      className="macro-toaster"
       position="bottom-right"
       expand={false}
       richColors
@@ -19,15 +20,20 @@ export function Toaster() {
           color: 'hsl(var(--foreground))',
         },
         classNames: {
-          toast: 'rounded-lg shadow-lg',
-          title: 'text-sm font-medium',
-          description: 'text-xs text-muted-foreground',
-          closeButton:
-            'bg-transparent border-border hover:bg-accent text-muted-foreground',
-          success: 'border-emerald-500/30 bg-emerald-500/10',
-          error: 'border-red-500/30 bg-red-500/10',
-          warning: 'border-amber-500/30 bg-amber-500/10',
-          info: 'border-blue-500/30 bg-blue-500/10',
+          toast: 'macro-toast rounded-lg shadow-lg',
+          title: 'macro-toast-title',
+          description: 'macro-toast-description',
+          content: 'macro-toast-content',
+          icon: 'macro-toast-icon',
+          closeButton: 'macro-toast-close',
+          actionButton: 'macro-toast-action',
+          cancelButton: 'macro-toast-cancel',
+          default: 'macro-toast-default',
+          loading: 'macro-toast-loading',
+          success: 'macro-toast-success',
+          error: 'macro-toast-error',
+          warning: 'macro-toast-warning',
+          info: 'macro-toast-info',
         },
       }}
     />

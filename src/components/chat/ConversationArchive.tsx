@@ -7,7 +7,7 @@ import { loadPreference, PREF_KEYS, savePreference } from '../../services/prefer
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import { formatDate } from '../../i18n/format';
 import type { Conversation } from '../../types';
@@ -566,7 +566,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
         }
       }
 
-      toast.success(
+      notify.success(
         shouldArchive
           ? normalizedIds.length === 1
             ? t('chat.conversationArchived', 'Conversation archived')
@@ -638,8 +638,8 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       setSelectedIds(new Set());
       setIsMultiSelectMode(false);
       setIsBulkDeleteOpen(false);
-      toast.success(
-        t('toast.chatConversationsDeleted', {
+      notify.success(
+        t('notify.chatConversationsDeleted', {
           count: conversationIds.length,
           defaultValue: '{{count}} conversations deleted',
         })
@@ -648,9 +648,9 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       const message =
         error instanceof Error
           ? error.message
-          : t('toast.chatDeleteFailed', 'Failed to delete conversations');
+          : t('notify.chatDeleteFailed', 'Failed to delete conversations');
       setBulkDeleteError(message);
-      toast.error(t('toast.chatDeleteFailed', 'Failed to delete conversations'), {
+      notify.error(t('notify.chatDeleteFailed', 'Failed to delete conversations'), {
         description: message,
       });
     } finally {

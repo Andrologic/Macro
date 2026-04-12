@@ -1,27 +1,41 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { DebugNotificationPreview } from './notificationDebugCatalog';
 
-const toastMock = {
+const notifyMock = {
   success: mock((_message?: unknown, _options?: unknown) => 'success-id'),
   info: mock((_message?: unknown, _options?: unknown) => 'info-id'),
   warning: mock((_message?: unknown, _options?: unknown) => 'warning-id'),
   error: mock((_message?: unknown, _options?: unknown) => 'error-id'),
+  actionRequired: mock((_message?: unknown, _options?: unknown) => 'action-id'),
 };
 
 const sendDesktopNotificationPreviewMock = mock(async (_input?: unknown) => true);
 
 let importCounter = 0;
 
-const loadCatalogModule = async () => {
+const loadBlueprintModule = async () => {
   mock.restore();
 
   mock.module('../../ui/toastService', () => ({
-    toast: toastMock,
+    notify: notifyMock,
   }));
 
   mock.module('../../../services/desktopNotifications', () => ({
     sendDesktopNotificationPreview: (input: unknown) =>
       sendDesktopNotificationPreviewMock(input),
+    maybeSendDesktopNotification: (input: unknown) =>
+      sendDesktopNotificationPreviewMock(input),
+    getDesktopNotificationStatus: () => 'granted' as const,
+    initializeDesktopNotifications: async () => undefined,
+    subscribeDesktopNotificationStatus: () => () => undefined,
+  }));
+  mock.module('../../../services/desktopNotifications.ts', () => ({
+    sendDesktopNotificationPreview: (input: unknown) =>
+      sendDesktopNotificationPreviewMock(input),
+    maybeSendDesktopNotification: (input: unknown) =>
+      sendDesktopNotificationPreviewMock(input),
+    getDesktopNotificationStatus: () => 'granted' as const,
+    initializeDesktopNotifications: async () => undefined,
+    subscribeDesktopNotificationStatus: () => () => undefined,
   }));
 
   importCounter += 1;
@@ -30,125 +44,163 @@ const loadCatalogModule = async () => {
 
 describe('notificationDebugCatalog', () => {
   beforeEach(() => {
-    toastMock.success.mockReset();
-    toastMock.success.mockImplementation((_message?: unknown, _options?: unknown) => 'success-id');
-    toastMock.info.mockReset();
-    toastMock.info.mockImplementation((_message?: unknown, _options?: unknown) => 'info-id');
-    toastMock.warning.mockReset();
-    toastMock.warning.mockImplementation((_message?: unknown, _options?: unknown) => 'warning-id');
-    toastMock.error.mockReset();
-    toastMock.error.mockImplementation((_message?: unknown, _options?: unknown) => 'error-id');
+    notifyMock.success.mockReset();
+    notifyMock.success.mockImplementation((_message?: unknown, _options?: unknown) => 'success-id');
+    notifyMock.info.mockReset();
+    notifyMock.info.mockImplementation((_message?: unknown, _options?: unknown) => 'info-id');
+    notifyMock.warning.mockReset();
+    notifyMock.warning.mockImplementation((_message?: unknown, _options?: unknown) => 'warning-id');
+    notifyMock.error.mockReset();
+    notifyMock.error.mockImplementation((_message?: unknown, _options?: unknown) => 'error-id');
+    notifyMock.actionRequired.mockReset();
+    notifyMock.actionRequired.mockImplementation((_message?: unknown, _options?: unknown) => 'action-id');
     sendDesktopNotificationPreviewMock.mockReset();
     sendDesktopNotificationPreviewMock.mockImplementation(async (_input?: unknown) => true);
   });
 
-  it('defines the canonical preview catalogue in a stable order', async () => {
-    const { DEBUG_NOTIFICATION_PREVIEWS } = await loadCatalogModule();
+  it('exposes stable default drafts for the two blueprints', async () => {
+    const {
+      DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT,
+      DEFAULT_INFORMATIONAL_NOTIFICATION_BLUEPRINT_DRAFT,
+    } = await loadBlueprintModule();
 
-    expect(
-      DEBUG_NOTIFICATION_PREVIEWS.map(
-        (preview: DebugNotificationPreview) => preview.id
-      )
-    ).toEqual([
-      'uncategorized-info',
-      'uncategorized-warning',
-      'uncategorized-error',
-      'uncategorized-success',
-      'uncategorized-actionable',
-      'task-attention-required',
-      'task-run-completed',
-      'task-completed',
-      'git-sync-completed',
-      'git-sync-pending',
-    ]);
+    expect(DEFAULT_INFORMATIONAL_NOTIFICATION_BLUEPRINT_DRAFT).toEqual({
+      tone: 'info',
+      title: 'Background indexing finished',
+      description: 'Everything is up to date.',
+    });
+    expect(DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT).toEqual({
+      tone: 'warning',
+      title: 'Base branch missing',
+      description: 'Choose what to do next to continue safely.',
+      actionCount: 2,
+      primaryActionLabel: 'Create',
+      secondaryActionLabel: 'Open settings',
+    });
   });
 
-  it('emits categorized in-app previews through the toast wrapper without forcing category routing', async () => {
-    const { DEBUG_NOTIFICATION_PREVIEWS, emitDebugNotificationPreview } = await loadCatalogModule();
-    const preview = DEBUG_NOTIFICATION_PREVIEWS.find(
-      (item: DebugNotificationPreview) => item.id === 'task-run-completed'
-    );
-
-    expect(preview).toBeDefined();
+  it('maps informational blueprint tones to the matching notify helpers', async () => {
+    const { emitInformationalNotificationBlueprint } = await loadBlueprintModule();
 
     await expect(
-      emitDebugNotificationPreview(preview!, 'in_app')
+      emitInformationalNotificationBlueprint(
+        {
+          tone: 'success',
+          title: 'Theme saved successfully',
+          description: 'Preview of a success message.',
+        },
+        'in_app'
+      )
     ).resolves.toEqual({
       inAppSent: true,
       desktopSent: false,
     });
 
-    expect(toastMock.success).toHaveBeenCalledWith(
-      'Task commands completed',
-      expect.any(Object)
+    expect(notifyMock.success).toHaveBeenCalledWith(
+      'Theme saved successfully',
+      expect.objectContaining({
+        description: 'Preview of a success message.',
+      })
     );
-    const options = toastMock.success.mock.calls[0]?.[1] as Record<string, unknown> | undefined;
-    expect(options).toBeDefined();
-    expect(options).not.toHaveProperty('notification');
-    expect(sendDesktopNotificationPreviewMock).not.toHaveBeenCalled();
   });
 
-  it('emits desktop previews through the dedicated desktop helper', async () => {
-    const { DEBUG_NOTIFICATION_PREVIEWS, emitDebugNotificationPreview } = await loadCatalogModule();
-    const preview = DEBUG_NOTIFICATION_PREVIEWS.find(
-      (item: DebugNotificationPreview) => item.id === 'uncategorized-error'
-    );
+  it('emits actionable blueprints through notify.actionRequired with the requested number of actions', async () => {
+    const {
+      emitActionableNotificationBlueprint,
+      getActionableNotificationBlueprintPreviewActions,
+    } = await loadBlueprintModule();
 
-    expect(preview).toBeDefined();
+    const previewActions = getActionableNotificationBlueprintPreviewActions({
+      tone: 'warning',
+      title: 'Base branch missing',
+      description: 'Choose what to do next.',
+      actionCount: 1,
+      primaryActionLabel: 'Create',
+      secondaryActionLabel: 'Ignored',
+    });
+
+    expect(previewActions).toEqual([
+      {
+        label: 'Create',
+        variant: 'primary',
+      },
+    ]);
 
     await expect(
-      emitDebugNotificationPreview(preview!, 'desktop')
+      emitActionableNotificationBlueprint(
+        {
+          tone: 'warning',
+          title: 'Base branch missing',
+          description: 'Choose what to do next.',
+          actionCount: 2,
+          primaryActionLabel: 'Create',
+          secondaryActionLabel: 'Open settings',
+        },
+        'in_app'
+      )
+    ).resolves.toEqual({
+      inAppSent: true,
+      desktopSent: false,
+    });
+
+    expect(notifyMock.actionRequired).toHaveBeenCalledWith(
+      'Base branch missing',
+      expect.objectContaining({
+        tone: 'warning',
+        actions: [
+          expect.objectContaining({ label: 'Create', variant: 'primary' }),
+          expect.objectContaining({ label: 'Open settings', variant: 'secondary' }),
+        ],
+      })
+    );
+  });
+
+  it('emits desktop previews for both blueprints through the dedicated desktop helper', async () => {
+    const {
+      emitActionableNotificationBlueprint,
+      emitInformationalNotificationBlueprint,
+    } = await loadBlueprintModule();
+
+    await expect(
+      emitInformationalNotificationBlueprint(
+        {
+          tone: 'error',
+          title: 'Git metadata sync failed',
+          description: 'Resolve the conflict before retrying the operation.',
+        },
+        'desktop'
+      )
     ).resolves.toEqual({
       inAppSent: false,
       desktopSent: true,
     });
 
-    expect(sendDesktopNotificationPreviewMock).toHaveBeenCalledWith({
+    await expect(
+      emitActionableNotificationBlueprint(
+        {
+          tone: 'info',
+          title: 'Git sync needs one more action',
+          description: 'A follow-up action is still required.',
+          actionCount: 2,
+          primaryActionLabel: 'Save @macro',
+          secondaryActionLabel: 'Review status',
+        },
+        'all'
+      )
+    ).resolves.toEqual({
+      inAppSent: true,
+      desktopSent: true,
+    });
+
+    expect(sendDesktopNotificationPreviewMock).toHaveBeenNthCalledWith(1, {
       title: 'Git metadata sync failed',
       body: 'Resolve the conflict before retrying the operation.',
-      notificationKey: 'debug-preview:uncategorized-error',
+      notificationKey: 'debug-blueprint:informational',
     });
-    expect(toastMock.error).not.toHaveBeenCalled();
-  });
-
-  it('replays preview batches in a stable order across all channels', async () => {
-    const {
-      DEBUG_NOTIFICATION_PREVIEWS,
-      emitAllDebugNotificationPreviews,
-    } = await loadCatalogModule();
-    const order: string[] = [];
-
-    toastMock.info.mockImplementation((message?: unknown) => {
-      order.push(`toast:${String(message)}`);
-      return 'info-id';
+    expect(sendDesktopNotificationPreviewMock).toHaveBeenNthCalledWith(2, {
+      title: 'Git sync needs one more action',
+      body: 'A follow-up action is still required.',
+      notificationKey: 'debug-blueprint:actionable',
     });
-    toastMock.error.mockImplementation((message?: unknown) => {
-      order.push(`toast:${String(message)}`);
-      return 'error-id';
-    });
-    sendDesktopNotificationPreviewMock.mockImplementation(async (input?: unknown) => {
-      order.push(`desktop:${String((input as { title?: string } | undefined)?.title)}`);
-      return true;
-    });
-
-    const subset = [
-      DEBUG_NOTIFICATION_PREVIEWS[0],
-      DEBUG_NOTIFICATION_PREVIEWS[2],
-    ];
-
-    await expect(
-      emitAllDebugNotificationPreviews('all', subset, 0)
-    ).resolves.toEqual({
-      total: 2,
-      inAppSent: 2,
-      desktopSent: 2,
-    });
-
-    expect(order).toEqual([
-      'toast:Background indexing finished',
-      'desktop:Background indexing finished',
-      'toast:Git metadata sync failed',
-      'desktop:Git metadata sync failed',
-    ]);
   });
 });
