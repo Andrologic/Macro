@@ -228,4 +228,36 @@ describe('desktopNotifications service', () => {
     expect(sendNotificationMock).toHaveBeenCalledTimes(1);
   });
 
+  it('allows debug previews while the app is foregrounded', async () => {
+    await expect(
+      desktopNotifications.sendDesktopNotificationPreview({
+        title: 'Preview alert',
+        body: 'Shown from debug tools',
+        notificationKey: 'preview:test',
+      })
+    ).resolves.toBe(true);
+
+    expect(sendNotificationMock).toHaveBeenCalledWith({
+      title: 'Preview alert',
+      body: 'Shown from debug tools',
+    });
+  });
+
+  it('does not deduplicate repeated debug preview keys', async () => {
+    await expect(
+      desktopNotifications.sendDesktopNotificationPreview({
+        title: 'Preview alert',
+        notificationKey: 'preview:test',
+      })
+    ).resolves.toBe(true);
+    await expect(
+      desktopNotifications.sendDesktopNotificationPreview({
+        title: 'Preview alert',
+        notificationKey: 'preview:test',
+      })
+    ).resolves.toBe(true);
+
+    expect(sendNotificationMock).toHaveBeenCalledTimes(2);
+  });
+
 });
