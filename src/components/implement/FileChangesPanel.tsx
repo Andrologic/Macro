@@ -14,7 +14,7 @@ import {
 } from '../../services/implementMultiRepoSummary';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
 import { Button } from '../ui/Button';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -548,14 +548,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
     try {
       const result = await commitReviewedChanges(nextCommitRepository.id, commitMessage);
-      toast.success(
+      notify.success(
         t('implement.repositoryCommitSuccess', 'Committed {{hash}} for this repository.', {
           hash: result.hash,
         })
       );
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
-      toast.error(
+      notify.error(
         normalizeCommitErrorMessage(
           messageText || t('implement.commitFailed', 'Failed to commit changes'),
           translate
@@ -569,10 +569,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     try {
       await startReview(currentTask.id);
       await loadCurrentChanges();
-      toast.success(t('implement.validationStarted', 'Task moved to validation'));
+      notify.success(t('implement.validationStarted', 'Task moved to validation'));
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
-      toast.error(messageText || t('implement.validationStartFailed', 'Failed to start validation'));
+      notify.error(messageText || t('implement.validationStartFailed', 'Failed to start validation'));
     }
   };
 
@@ -586,10 +586,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (changeIds.length === 0) return;
     try {
       await revertChanges(repositoryId, changeIds);
-      toast.success(t('implement.revertSuccess', 'Changes reverted.'));
+      notify.success(t('implement.revertSuccess', 'Changes reverted.'));
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
-      toast.error(messageText || t('implement.revertFailed', 'Failed to revert changes.'));
+      notify.error(messageText || t('implement.revertFailed', 'Failed to revert changes.'));
     }
   };
 
@@ -604,14 +604,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     try {
       await finishTask(currentTask.id);
       resetReviewState();
-      toast.success(t('implement.taskFinished', 'Task finished'), {
-        notification: {
-          category: 'task_completed',
-        },
+      notify.success(t('implement.taskFinished', 'Task finished'), {
+        category: 'task_completed',
       });
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
-      toast.error(messageText || t('implement.completeTaskFailed', 'Failed to complete task'));
+      notify.error(messageText || t('implement.completeTaskFailed', 'Failed to complete task'));
     }
   };
 

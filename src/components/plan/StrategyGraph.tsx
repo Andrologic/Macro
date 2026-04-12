@@ -7,7 +7,7 @@ import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/archit
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { getScopedProjectIds } from '../../services/globalProjects';
 import { normalizeNodeProjectIds } from '../../services/implementTaskDerivation';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import type { PlanNode, PlanNodeStatus } from '../../types';
@@ -210,13 +210,13 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       }
 
       const createdCount = (provision.createdPlanBranch ? 1 : 0) + provision.createdFeatureBranches.length;
-      toast.success(
+      notify.success(
         createdCount > 0
           ? `Plan validated — ${createdCount} branch${createdCount > 1 ? 'es' : ''} provisioned.`
           : 'Plan validated — branches already up to date.'
       );
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to validate plan.');
+      notify.error(err instanceof Error ? err.message : 'Failed to validate plan.');
     } finally {
       setIsValidating(false);
     }

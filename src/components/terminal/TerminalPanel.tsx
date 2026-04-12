@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { useTerminalStore } from '../../stores/useTerminalStore';
@@ -150,7 +150,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
     void action().catch((error) => {
       const message =
         error instanceof Error ? error.message : t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     });
   };
 
@@ -394,7 +394,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
             void writeInput(activeTab.id, input).catch((error) => {
               const message =
                 error instanceof Error ? error.message : t('common.error', 'An error occurred');
-              toast.error(message);
+              notify.error(message);
             });
           }}
           onResize={(cols, rows) => {

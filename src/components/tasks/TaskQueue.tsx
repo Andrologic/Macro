@@ -34,7 +34,7 @@ import { Icon, IconName } from '../ui/Icon';
 import { Select } from '../ui/Select';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { TaskProjectCommandsModal } from './TaskProjectCommandsModal';
 import type { TaskStatus } from '../../types';
@@ -486,13 +486,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   useEffect(() => {
     if (!taskError || taskError === lastErrorToastRef.current) return;
     lastErrorToastRef.current = taskError;
-    toast.error(taskError);
+    notify.error(taskError);
   }, [taskError]);
 
   useEffect(() => {
     if (!missingBaseBranchIssue) {
       if (missingBaseBranchToastRef.current !== null) {
-        toast.dismiss(missingBaseBranchToastRef.current);
+        notify.dismiss(missingBaseBranchToastRef.current);
       }
       missingBaseBranchToastRef.current = null;
       return;
@@ -509,11 +509,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     }
 
     if (missingBaseBranchToastRef.current !== null) {
-      toast.dismiss(missingBaseBranchToastRef.current);
+      notify.dismiss(missingBaseBranchToastRef.current);
     }
 
     missingBaseBranchToastRef.current = toastId;
-    toast.warning(
+    notify.actionRequired(
       t(
         'implement.missingBaseBranchToastTitle',
         'Branche {{baseBranch}} introuvable',
@@ -521,11 +521,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       ),
       {
         notificationKey: toastId,
-        notification: {
-          category: 'task_attention_required',
-        },
+        category: 'task_attention_required',
         duration: 12000,
         closeButton: true,
+        tone: 'warning',
         actions: [
           {
             label: t('implement.missingBaseBranchCreateAction', 'Créer'),
@@ -534,7 +533,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               setPendingTaskId(missingBaseBranchIssue.taskId);
               try {
                 await createMissingBaseBranch(missingBaseBranchIssue);
-                toast.success(
+                notify.success(
                   t('implement.missingBaseBranchCreated', '{{baseBranch}} créée', {
                     baseBranch: missingBaseBranchIssue.missingRef,
                   })
@@ -592,7 +591,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       null;
 
     if (actionableProjectIds.length === 0) {
-      toast.error(
+      notify.error(
         t(
           'implement.manualFeatureMissingProjects',
           'No editable repository is available for this global project.'
@@ -627,7 +626,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     } catch (error) {
       setSelectedTask(null);
       const message = error instanceof Error ? error.message : t('implement.manualFeatureCreateFailed', 'Failed to create manual feature.');
-      toast.error(message);
+      notify.error(message);
     } finally {
       setPendingTaskId((current) => (current === taskId ? null : current));
     }
@@ -913,7 +912,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     try {
       const modalState = await buildTaskCommandModalState(task);
       if (modalState.projects.length === 0) {
-        toast.error(
+        notify.error(
           t(
             'implement.taskCommandNoProjects',
             'No repository is available for this task.'
@@ -933,7 +932,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         error instanceof Error
           ? error.message
           : t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     }
   };
 
@@ -959,7 +958,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       }
 
       if (result.status === 'completed') {
-        toast.success(
+        notify.success(
           t('implement.taskCommandRunSuccess', 'Commands completed'),
           {
             description: t(
@@ -967,15 +966,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               '{{count}} subprojects executed successfully.',
               { count: result.completedCount }
             ),
-            notification: {
-              category: 'task_run_completed',
-            },
+            category: 'task_run_completed',
           }
         );
         return;
       }
 
-      toast.info(
+      notify.info(
         t('implement.taskCommandRunCancelled', 'Run cancelled'),
         {
           description: result.currentProjectName
@@ -995,7 +992,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         error instanceof Error
           ? error.message
           : t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     }
   };
 
@@ -1555,7 +1552,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   ? taskCommandModal.taskId
                   : null;
                 setTaskCommandModal(null);
-                toast.success(
+                notify.success(
                   t('project.projectSettings', 'Paramètres du projet'),
                   {
                     description: t(
@@ -1576,7 +1573,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                   error instanceof Error
                     ? error.message
                     : t('common.error', 'An error occurred');
-                toast.error(message);
+                notify.error(message);
               } finally {
                 setIsSavingTaskCommands(false);
               }

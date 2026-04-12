@@ -21,7 +21,7 @@ import type {
 } from '../../types';
 import { cn } from '../../utils/cn';
 import { devLogger } from '../../utils/devLogger';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 import {
   buildProjectSetupPrompts,
   getProjectSetupAction,
@@ -259,7 +259,7 @@ export const ProjectGitFlowModal: React.FC = () => {
           migrationSummary: preview.migrationSummary,
         });
         if (!preview.canApply) {
-          toast.error(
+          notify.error(
             preview.blockingReasons.map(getBlockingReasonMessage).join(' ')
           );
           return;
@@ -275,7 +275,7 @@ export const ProjectGitFlowModal: React.FC = () => {
         targetReadOnly,
         confirmedMigration: false,
       });
-      toast.success(
+      notify.success(
         project.userReadOnly
           ? t('projects.projectNowEditable', '{{projectName}} is editable again.', {
               projectName: project.name,
@@ -293,7 +293,7 @@ export const ProjectGitFlowModal: React.FC = () => {
         details: normalized.details ?? null,
       });
       const message = normalized.message || t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsAccessSaving(false);
     }
@@ -310,7 +310,7 @@ export const ProjectGitFlowModal: React.FC = () => {
       continueProjectSetupFlow(detection);
     } catch (error) {
       const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsAccessSaving(false);
     }
@@ -334,7 +334,7 @@ export const ProjectGitFlowModal: React.FC = () => {
         targetReadOnly: true,
         confirmedMigration: true,
       });
-      toast.success(
+      notify.success(
         t('projects.projectNowReadOnly', '{{projectName}} is now read-only.', {
           projectName: project.name,
         })
@@ -348,7 +348,7 @@ export const ProjectGitFlowModal: React.FC = () => {
         details: normalized.details ?? null,
       });
       const message = normalized.message || t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsAccessSaving(false);
     }
@@ -400,7 +400,7 @@ export const ProjectGitFlowModal: React.FC = () => {
       );
 
       if (result.detection.setupState === 'ready') {
-        toast.success(
+        notify.success(
           t('projects.projectGitPrepared', 'Git is ready for {{projectName}}.', {
             projectName: project.name,
           })
@@ -408,7 +408,7 @@ export const ProjectGitFlowModal: React.FC = () => {
       }
     } catch (error) {
       const message = toServiceError(error).message || t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsAccessSaving(false);
     }
@@ -443,7 +443,7 @@ export const ProjectGitFlowModal: React.FC = () => {
       }
     } catch (error) {
       const message = toServiceError(error).message || t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsAccessSaving(false);
     }
@@ -458,7 +458,7 @@ export const ProjectGitFlowModal: React.FC = () => {
     try {
       await updateProjectGitFlow(projectId, resolveProjectGitFlowSettings(settings));
       setSaveSuccess(true);
-      toast.success(
+      notify.success(
         t('projects.gitFlowSaved', 'GitFlow settings updated for {{projectName}}.', {
           projectName: project.name,
         })
@@ -466,7 +466,7 @@ export const ProjectGitFlowModal: React.FC = () => {
       window.setTimeout(() => setSaveSuccess(false), 2500);
     } catch (error) {
       const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsSaving(false);
     }

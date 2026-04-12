@@ -41,6 +41,7 @@ describe('notificationCenterUtils', () => {
         {
           id: '1',
           level: 'info',
+          variant: 'informational',
           title: 'Unread',
           createdAt: '2026-03-20T12:00:00.000Z',
           readAt: null,
@@ -48,6 +49,7 @@ describe('notificationCenterUtils', () => {
         {
           id: '2',
           level: 'error',
+          variant: 'informational',
           title: 'Read',
           createdAt: '2026-03-20T11:00:00.000Z',
           readAt: '2026-03-20T11:05:00.000Z',

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 import { useAppStore } from '../../stores/useAppStore';
 import { hasUnreadNotifications, useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
 import { toServiceError } from '../../services/contracts/errors';
@@ -150,9 +150,9 @@ export const Footer: React.FC = () => {
     lastMacroConflictActionRef.current = context;
     setShowConflictModal(true);
     if (Date.now() - lastConflictToastAtRef.current < 12000) return;
-    toast.error(t('footer.sync.macroConflictDetected', '@macro conflict detected'), {
+    notify.error(t('footer.sync.macroConflictDetected', '@macro conflict detected'), {
       description: t('footer.sync.macroConflictGenericDescription', '@macro has unresolved conflicts. Resolve them, then retry the same sync step.'),
-      notification: { category: 'git_sync_attention_required' },
+      category: 'git_sync_attention_required',
     });
     lastConflictToastAtRef.current = Date.now();
   }, [t]);
@@ -270,16 +270,17 @@ export const Footer: React.FC = () => {
       const description = describeMacroResultForToast('fetch', result);
       const hasErrors = result?.state === 'failed' || result?.state === 'conflict';
       if (hasErrors) {
-        toast.error(t('footer.sync.macroCommitFailed', '@macro commit failed'), {
+        notify.error(t('footer.sync.macroCommitFailed', '@macro commit failed'), {
           description,
-          notification: { category: 'git_sync_attention_required' },
+          category: 'git_sync_attention_required',
         });
       } else {
-        toast.success(t('footer.sync.macroCommitComplete', '@macro commit complete'), {
+        notify.success(t('footer.sync.macroCommitComplete', '@macro commit complete'), {
           description,
-          notification: {
-            category: result?.state === 'pending' ? 'git_sync_attention_required' : 'git_sync_completed',
-          },
+          category:
+            result?.state === 'pending'
+              ? 'git_sync_attention_required'
+              : 'git_sync_completed',
         });
       }
     } finally {
@@ -323,15 +324,27 @@ export const Footer: React.FC = () => {
         }]
         : undefined;
       if (hasErrors) {
-        toast.error(t(`footer.sync.${action}Incomplete`, `${action} incomplete`), { description, notification: { category: 'git_sync_attention_required' } });
-      } else if (hasPending) {
-        toast.info(t(`footer.sync.${action}Pending`, `${action} requires attention`), {
+        notify.error(t(`footer.sync.${action}Incomplete`, `${action} incomplete`), {
+          description,
+          category: 'git_sync_attention_required',
+        });
+      } else if (hasPending && pendingActions && pendingActions.length > 0) {
+        notify.actionRequired(t(`footer.sync.${action}Pending`, `${action} requires attention`), {
           description,
           actions: pendingActions,
-          notification: { category: 'git_sync_attention_required' },
+          tone: 'info',
+          category: 'git_sync_attention_required',
+        });
+      } else if (hasPending) {
+        notify.info(t(`footer.sync.${action}Pending`, `${action} requires attention`), {
+          description,
+          category: 'git_sync_attention_required',
         });
       } else {
-        toast.success(t(`footer.sync.${action}Complete`, `${action} complete`), { description, notification: { category: 'git_sync_completed' } });
+        notify.success(t(`footer.sync.${action}Complete`, `${action} complete`), {
+          description,
+          category: 'git_sync_completed',
+        });
       }
     } finally {
       await refreshFooterStatus({ ensureMacro: action === 'fetch' });
@@ -366,10 +379,12 @@ export const Footer: React.FC = () => {
     }));
     try {
       await openConflictAssistant(buildMacroConflictAssistantPrompt({ repositories }));
-      toast.success(t('footer.sync.aiConflictAssistantStarted', 'AI conflict assistant started'));
+      notify.success(t('footer.sync.aiConflictAssistantStarted', 'AI conflict assistant started'));
       setShowConflictModal(false);
     } catch (error) {
-      toast.error(t('footer.sync.aiConflictAssistantStartFailed', 'Failed to start AI assistant'), { description: toServiceError(error).message });
+      notify.error(t('footer.sync.aiConflictAssistantStartFailed', 'Failed to start AI assistant'), {
+        description: toServiceError(error).message,
+      });
     }
   };
 
