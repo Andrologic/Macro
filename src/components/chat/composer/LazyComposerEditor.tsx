@@ -170,7 +170,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
           }}
           className={cn(
             'flex-1 min-w-[100px] w-full resize-none bg-transparent border-0 outline-none text-sm text-foreground',
-            'min-h-[32px] max-h-[120px] overflow-y-auto py-1 px-1',
+            'min-h-[32px] max-h-[120px] overflow-y-auto px-1 py-1 leading-5',
             !editable && 'opacity-50 cursor-not-allowed',
             className
           )}
