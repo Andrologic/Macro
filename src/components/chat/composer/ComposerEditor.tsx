@@ -51,6 +51,15 @@ const composerTheme = {
   paragraph: 'composer-editor-paragraph',
 };
 
+const initializeComposerState = () => {
+  const root = $getRoot();
+  if (root.getFirstChild() !== null) {
+    return;
+  }
+
+  root.append($createParagraphNode());
+};
+
 // ------ Inner component that accesses the editor ------
 
 const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
@@ -224,15 +233,15 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
               data-shortcut-chat-input="true"
               className={cn(
                 'flex-1 min-w-[100px] bg-transparent border-0 outline-none text-sm text-foreground',
-                'min-h-[32px] max-h-[120px] overflow-y-auto py-1 px-1',
-                '[&_.composer-editor-paragraph]:m-0',
+                'min-h-[32px] max-h-[120px] overflow-y-auto px-1 py-1 leading-5',
+                '[&_.composer-editor-paragraph]:m-0 [&_.composer-editor-paragraph]:min-h-[1.25rem]',
                 !editable && 'opacity-50 cursor-not-allowed',
                 className
               )}
             />
           }
           placeholder={
-            <div className="pointer-events-none absolute top-0 left-0 px-1 py-1 text-sm text-muted-foreground select-none">
+            <div className="pointer-events-none absolute top-0 left-0 px-1 py-1 text-sm leading-5 text-muted-foreground select-none">
               {placeholder}
             </div>
           }
@@ -260,6 +269,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       namespace: 'MacroComposer',
       theme: composerTheme,
       nodes: [MentionNode],
+      editorState: initializeComposerState,
       onError: (error: Error) => {
         console.error('[ComposerEditor]', error);
       },
