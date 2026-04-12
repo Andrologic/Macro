@@ -18,6 +18,11 @@ export interface DesktopNotificationInput {
   notificationKey?: string | null;
 }
 
+interface DesktopNotificationDispatchOptions {
+  ignoreForeground?: boolean;
+  ignoreDeduplication?: boolean;
+}
+
 type DesktopNotificationListener = () => void;
 
 let status: DesktopNotificationPermissionStatus = 'unknown';
@@ -166,19 +171,24 @@ const ensurePermissionGranted = async (): Promise<boolean> => {
 };
 
 const dispatchDesktopNotification = async (
-  input: DesktopNotificationInput
+  input: DesktopNotificationInput,
+  options: DesktopNotificationDispatchOptions = {}
 ): Promise<boolean> => {
   if (!isSupportedRuntime()) {
     setStatus('unsupported');
     return false;
   }
 
-  if (isAppForeground()) {
+  if (!options.ignoreForeground && isAppForeground()) {
     return false;
   }
 
   const notificationKey = normalizeDesktopNotificationKey(input.notificationKey);
-  if (notificationKey && emittedKeysWhileBackgrounded.has(notificationKey)) {
+  if (
+    !options.ignoreDeduplication &&
+    notificationKey &&
+    emittedKeysWhileBackgrounded.has(notificationKey)
+  ) {
     return false;
   }
 
@@ -194,7 +204,7 @@ const dispatchDesktopNotification = async (
         : { title: input.title };
     await Promise.resolve(sendNotification(payload));
 
-    if (notificationKey) {
+    if (notificationKey && !options.ignoreDeduplication) {
       emittedKeysWhileBackgrounded.add(notificationKey);
     }
     return true;
@@ -280,6 +290,16 @@ export const maybeSendDesktopNotification = async (
 ): Promise<boolean> => {
   await initializeDesktopNotifications();
   return dispatchDesktopNotification(input);
+};
+
+export const sendDesktopNotificationPreview = async (
+  input: DesktopNotificationInput
+): Promise<boolean> => {
+  await initializeDesktopNotifications();
+  return dispatchDesktopNotification(input, {
+    ignoreForeground: true,
+    ignoreDeduplication: true,
+  });
 };
 
 export const __testables = {
