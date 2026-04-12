@@ -1,13 +1,16 @@
 import { create } from 'zustand';
 import { PREF_KEYS, savePreference } from '../services/preferences';
+import {
+  type NotificationVariant,
+  type NotificationTemplateSnapshot,
+} from '../components/ui/notifications';
+import type { NotificationCategory } from '../services/notificationChannels';
 
 export type NotificationLevel = 'info' | 'warning' | 'error';
 
-export interface NotificationCenterItemInput {
+export interface NotificationCenterItemInput extends NotificationTemplateSnapshot {
   id: string;
   level: NotificationLevel;
-  title: string;
-  description?: string | null;
   createdAt: string;
   readAt?: string | null;
 }
@@ -15,6 +18,8 @@ export interface NotificationCenterItemInput {
 export interface NotificationCenterItem {
   id: string;
   level: NotificationLevel;
+  variant: NotificationVariant;
+  category?: NotificationCategory;
   title: string;
   description?: string;
   createdAt: string;
@@ -36,6 +41,16 @@ export const NOTIFICATION_CENTER_STORAGE_KEY = `macro_${PREF_KEYS.NOTIFICATION_C
 
 const isNotificationLevel = (value: unknown): value is NotificationLevel =>
   value === 'info' || value === 'warning' || value === 'error';
+
+const isNotificationVariant = (value: unknown): value is NotificationVariant =>
+  value === 'informational' || value === 'actionable';
+
+const isNotificationCategory = (value: unknown): value is NotificationCategory =>
+  value === 'task_attention_required' ||
+  value === 'task_run_completed' ||
+  value === 'task_completed' ||
+  value === 'git_sync_completed' ||
+  value === 'git_sync_attention_required';
 
 const isValidIsoDate = (value: unknown): value is string => {
   if (typeof value !== 'string' || !value.trim()) return false;
@@ -73,11 +88,19 @@ const toNotificationCenterItem = (
     typeof item.description === 'string' && item.description.trim()
       ? item.description.trim()
       : undefined;
+  const variant = isNotificationVariant(item.variant)
+    ? item.variant
+    : 'informational';
+  const category = isNotificationCategory(item.category)
+    ? item.category
+    : undefined;
   const readAt = isValidIsoDate(item.readAt) ? item.readAt : null;
 
   return {
     id: item.id.trim(),
     level: item.level,
+    variant,
+    category,
     title: item.title.trim(),
     description,
     createdAt: item.createdAt,

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import ChatZone from '../chat/ChatZone';
 import { PanelResizer } from '../layout/PanelResizer';
 import { Icon } from '../ui/Icon';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import { useTerminalStore } from '../../stores/useTerminalStore';
 import { useAppStore } from '../../stores/useAppStore';
@@ -130,7 +130,7 @@ export const ImplementCenter: React.FC = () => {
     }).catch((error) => {
       const message =
         error instanceof Error ? error.message : t('common.error', 'An error occurred');
-      toast.error(message);
+      notify.error(message);
     });
   }, [
     createManualTab,

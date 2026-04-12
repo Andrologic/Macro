@@ -21,7 +21,7 @@ import { useTaskStore } from '../../stores/useTaskStore';
 import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { CodeViewer } from '../ui/CodeViewer';
 import { Icon } from '../ui/Icon';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 
 interface PlanReviewModalProps {
@@ -244,7 +244,7 @@ export const PlanReviewModal: React.FC<PlanReviewModalProps> = ({
         planTitle: review.plan.title,
         repositories: blockedRepositories,
       }));
-      toast.success(t('implement.aiConflictAssistantStarted', 'AI conflict assistant started'), {
+      notify.success(t('implement.aiConflictAssistantStarted', 'AI conflict assistant started'), {
         description: t(
           'implement.planFinalizationAssistantDescription',
           'Opened an Implement review conversation and posted the plan finalization blockers.'

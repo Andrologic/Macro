@@ -29,6 +29,7 @@ import {
   Code2,
   Layers,
   AlertCircle,
+  CircleX,
   TriangleAlert,
   Clock,
   MoreHorizontal,
@@ -128,6 +129,7 @@ export type IconName =
   | 'code'
   | 'layers'
   | 'alert-circle'
+  | 'circle-x'
   | 'triangle-alert'
   | 'clock'
   | 'more-horizontal'
@@ -233,6 +235,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'code': Code2,
   'layers': Layers,
   'alert-circle': AlertCircle,
+  'circle-x': CircleX,
   'triangle-alert': TriangleAlert,
   'clock': Clock,
   'more-horizontal': MoreHorizontal,

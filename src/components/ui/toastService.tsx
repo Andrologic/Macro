@@ -15,7 +15,15 @@ import {
   type NotificationLevel,
 } from '../../stores/useNotificationCenterStore';
 import { cn } from '../../utils/cn';
-import { Button } from './Button';
+import {
+  ActionableNotificationTemplate,
+  InformationalNotificationTemplate,
+  type ActionableNotificationInput,
+  type InformationalNotificationInput,
+  type NotificationTemplateActionSpec,
+  type NotificationTone,
+  type NotificationVariant,
+} from './notifications';
 
 const NOTIFICATIONS_DISABLED_RESULT = 'notifications-disabled';
 const MAX_NOTIFICATION_ACTIONS = 2;
@@ -25,24 +33,26 @@ type ToastMessage = Parameters<typeof sonnerToast>[0];
 type SonnerToastArgs = Parameters<typeof sonnerToast>;
 type SonnerCustomToastArgs = Parameters<typeof sonnerToast.custom>;
 type ToastId = string | number;
-type EmittableNotificationLevel = NotificationLevel | 'success';
 type NotificationToastMethod = (
   message: ToastMessage,
   options?: NotificationOptions
 ) => ToastId | typeof NOTIFICATIONS_DISABLED_RESULT;
+type NotifyInformationalMethod = (
+  title: string,
+  options?: Omit<InformationalNotificationInput, 'title'>
+) => ToastId | typeof NOTIFICATIONS_DISABLED_RESULT;
+type NotifyActionableMethod = (
+  title: string,
+  options: Omit<ActionableNotificationInput, 'title'>
+) => ToastId | typeof NOTIFICATIONS_DISABLED_RESULT;
 
-export interface NotificationActionSpec {
-  label: string;
-  variant?: 'primary' | 'secondary';
-  onClick: () => void | Promise<void>;
-  dismissOnSuccess?: boolean;
-}
+export type NotificationActionSpec = NotificationTemplateActionSpec;
 
 export interface NotificationOptions extends ExternalToast {
   actions?: NotificationActionSpec[];
   notificationKey?: string;
   notification?: {
-    category: NotificationCategory;
+    category?: NotificationCategory;
     title?: string;
     body?: string;
   };
@@ -53,6 +63,11 @@ interface TrackableToastContent {
   description?: string;
 }
 
+interface PersistableNotificationContent extends TrackableToastContent {
+  variant: NotificationVariant;
+  category?: NotificationCategory;
+}
+
 interface NormalizedNotificationActionSpec {
   label: string;
   variant: 'primary' | 'secondary';
@@ -61,20 +76,45 @@ interface NormalizedNotificationActionSpec {
 }
 
 interface ActionableNotificationToastBodyProps {
-  level: EmittableNotificationLevel;
+  tone: NotificationTone;
   title: ReactNode;
   description?: ReactNode;
   actions: NormalizedNotificationActionSpec[];
   pendingActionIndex: number | null;
   onActionClick: (index: number) => void;
+  interactive?: boolean;
+  snapshotLabel?: string;
+  onDismiss?: () => void;
 }
 
 interface ActionableNotificationToastProps {
-  level: EmittableNotificationLevel;
+  tone: NotificationTone;
   toastId: ToastId;
   title: ReactNode;
   description?: ReactNode;
   actions: NormalizedNotificationActionSpec[];
+  showDismissButton?: boolean;
+}
+
+interface InformationalNotificationToastBodyProps {
+  tone: NotificationTone;
+  title: string;
+  description?: string;
+  onDismiss?: () => void;
+}
+
+interface TemplatedNotificationPayload {
+  tone: NotificationTone;
+  variant: NotificationVariant;
+  title: string;
+  description?: string;
+  category?: NotificationCategory;
+  actions?: NormalizedNotificationActionSpec[];
+  notificationKey?: string;
+  desktopTitle?: string;
+  desktopBody?: string;
+  duration?: number;
+  closeButton?: boolean;
 }
 
 let generatedNotificationCounter = 0;
@@ -157,6 +197,39 @@ const toSonnerToastOptions = (
   };
 };
 
+const toCustomToastOptions = (
+  options: NotificationOptions | undefined,
+  toastId: ToastId
+): ExternalToast => {
+  const baseOptions = toSonnerToastOptions(options, toastId);
+  const {
+    description: _description,
+    closeButton: _closeButton,
+    ...customOptions
+  } = baseOptions;
+
+  return customOptions;
+};
+
+const toTemplatedSonnerToastOptions = (
+  options: NotificationOptions | undefined,
+  toastId: ToastId
+): ExternalToast => {
+  const baseOptions = toCustomToastOptions(options, toastId);
+
+  return {
+    ...baseOptions,
+    className: cn('bg-transparent border-0 shadow-none p-0', baseOptions.className),
+    style: {
+      background: 'transparent',
+      border: 'none',
+      boxShadow: 'none',
+      padding: 0,
+      ...(baseOptions.style ?? {}),
+    },
+  };
+};
+
 const resolveToastNode = (value: unknown): ReactNode => {
   if (typeof value === 'function') {
     return (value as () => ReactNode)();
@@ -233,6 +306,25 @@ export const toTrackableToastContent = (
   };
 };
 
+const toPersistableToastContent = (
+  message?: ToastMessage,
+  data?: NotificationOptions
+): PersistableNotificationContent | null => {
+  const baseContent = toTrackableToastContent(message, data);
+  if (!baseContent) {
+    return null;
+  }
+
+  return {
+    ...baseContent,
+    variant:
+      normalizeNotificationActions(data?.actions).length > 0
+        ? 'actionable'
+        : 'informational',
+    category: data?.notification?.category,
+  };
+};
+
 const resolveDesktopNotificationContent = (
   message?: ToastMessage,
   options?: NotificationOptions
@@ -255,7 +347,7 @@ const resolveDesktopNotificationContent = (
 const persistNotification = (
   level: NotificationLevel,
   notificationId: string,
-  content: TrackableToastContent | null
+  content: PersistableNotificationContent | null
 ): void => {
   if (!content) {
     return;
@@ -267,6 +359,8 @@ const persistNotification = (
   useNotificationCenterStore.getState().upsertItem({
     id: notificationId,
     level,
+    variant: content.variant,
+    category: content.category,
     title: content.title,
     description: content.description,
     createdAt,
@@ -274,7 +368,7 @@ const persistNotification = (
   });
 };
 
-const getLevelMethod = (level: EmittableNotificationLevel) => {
+const getLevelMethod = (level: NotificationTone) => {
   switch (level) {
     case 'success':
       return sonnerToast.success;
@@ -287,6 +381,18 @@ const getLevelMethod = (level: EmittableNotificationLevel) => {
     default:
       return sonnerToast;
   }
+};
+
+const toNotificationLevel = (tone: Exclude<NotificationTone, 'success'>): NotificationLevel => {
+  if (tone === 'warning') {
+    return 'warning';
+  }
+
+  if (tone === 'error') {
+    return 'error';
+  }
+
+  return 'info';
 };
 
 export const normalizeNotificationActions = (
@@ -328,14 +434,120 @@ const emitDesktopNotification = (
   });
 };
 
+function InformationalNotificationToastBody({
+  tone,
+  title,
+  description,
+  onDismiss,
+}: InformationalNotificationToastBodyProps) {
+  return (
+    <InformationalNotificationTemplate
+      tone={tone}
+      title={title}
+      description={description}
+      onDismiss={onDismiss}
+    />
+  );
+}
+
+function ActionableNotificationToastBody({
+  tone,
+  title,
+  description,
+  actions,
+  pendingActionIndex,
+  onActionClick,
+  interactive = true,
+  snapshotLabel,
+  onDismiss,
+}: ActionableNotificationToastBodyProps) {
+  return (
+    <ActionableNotificationTemplate
+      tone={tone}
+      title={title}
+      description={description}
+      actions={actions}
+      interactive={interactive}
+      pendingActionIndex={pendingActionIndex}
+      onActionClick={onActionClick}
+      snapshotLabel={snapshotLabel}
+      onDismiss={onDismiss}
+    />
+  );
+}
+
+export const executeNotificationAction = async (
+  action: NormalizedNotificationActionSpec,
+  toastId: ToastId,
+  onError: (message: string) => void = (message) => {
+    emitTemplatedNotification({
+      tone: 'error',
+      variant: 'informational',
+      title: message,
+    });
+  }
+): Promise<boolean> => {
+  try {
+    await action.onClick();
+    if (action.dismissOnSuccess) {
+      sonnerToast.dismiss(toastId);
+    }
+    return true;
+  } catch (error) {
+    onError(getNotificationActionErrorMessage(error));
+    return false;
+  }
+};
+
+function ActionableNotificationToast({
+  tone,
+  toastId,
+  title,
+  description,
+  actions,
+  showDismissButton = true,
+}: ActionableNotificationToastProps) {
+  const [pendingActionIndex, setPendingActionIndex] = useState<number | null>(null);
+
+  const handleActionClick = (actionIndex: number) => {
+    if (pendingActionIndex !== null) {
+      return;
+    }
+
+    const action = actions[actionIndex];
+    if (!action) {
+      return;
+    }
+
+    setPendingActionIndex(actionIndex);
+
+    void executeNotificationAction(action, toastId).finally(() => {
+      setPendingActionIndex(null);
+    });
+  };
+
+  return (
+    <ActionableNotificationToastBody
+      tone={tone}
+      title={title}
+      description={description}
+      actions={actions}
+      pendingActionIndex={pendingActionIndex}
+      onActionClick={handleActionClick}
+      onDismiss={showDismissButton ? () => sonnerToast.dismiss(toastId) : undefined}
+    />
+  );
+}
+
 const emitToastChannel = (
-  level: EmittableNotificationLevel,
+  level: NotificationTone,
   message: ToastMessage,
   toastId: ToastId,
   options?: NotificationOptions
 ): ToastId => {
-  const sonnerOptions = toSonnerToastOptions(options, toastId);
+  const sonnerOptions = toCustomToastOptions(options, toastId);
   const actions = normalizeNotificationActions(options?.actions);
+  const showDismissButton = options?.closeButton !== false;
 
   if (actions.length === 0) {
     return getLevelMethod(level)(message, sonnerOptions);
@@ -344,11 +556,12 @@ const emitToastChannel = (
   return sonnerToast.custom(
     (currentToastId) => (
       <ActionableNotificationToast
-        level={level}
+        tone={level}
         toastId={currentToastId}
         title={resolveToastNode(message)}
         description={resolveToastNode(options?.description)}
         actions={actions}
+        showDismissButton={showDismissButton}
       />
     ),
     sonnerOptions
@@ -356,7 +569,7 @@ const emitToastChannel = (
 };
 
 const emitNotification = (
-  level: EmittableNotificationLevel,
+  level: NotificationTone,
   message: ToastMessage,
   options: NotificationOptions | undefined,
   tracked: boolean
@@ -374,7 +587,7 @@ const emitNotification = (
   if (toastEnabled) {
     result = emitToastChannel(level, message, toastId, options);
     if (tracked && level !== 'success') {
-      persistNotification(level, historyId, toTrackableToastContent(message, options));
+      persistNotification(level as NotificationLevel, historyId, toPersistableToastContent(message, options));
     }
   }
 
@@ -406,106 +619,116 @@ function callVisibleToast<TArgs extends unknown[], TResult>(
   return method(...args);
 }
 
-export const executeNotificationAction = async (
-  action: NormalizedNotificationActionSpec,
+const buildTemplatedNotificationOptions = (
+  payload: TemplatedNotificationPayload
+): NotificationOptions => ({
+  description: payload.description,
+  notificationKey: payload.notificationKey,
+  duration: payload.duration,
+  closeButton: payload.closeButton,
+  notification:
+    payload.category || payload.desktopTitle || payload.desktopBody
+      ? {
+          ...(payload.category ? { category: payload.category } : {}),
+          ...(payload.desktopTitle ? { title: payload.desktopTitle } : {}),
+          ...(payload.desktopBody ? { body: payload.desktopBody } : {}),
+        }
+      : undefined,
+});
+
+const emitTemplatedToastChannel = (
+  payload: TemplatedNotificationPayload,
   toastId: ToastId,
-  onError: (message: string) => void = (message) => {
-    emitNotification('error', message, undefined, true);
+  options: NotificationOptions
+): ToastId =>
+  sonnerToast.custom(
+    (currentToastId) =>
+      payload.variant === 'actionable' ? (
+        <ActionableNotificationToast
+          tone={payload.tone}
+          toastId={currentToastId}
+          title={payload.title}
+          description={payload.description}
+          actions={payload.actions ?? []}
+        />
+      ) : (
+        <InformationalNotificationToastBody
+          tone={payload.tone}
+          title={payload.title}
+          description={payload.description}
+          onDismiss={
+            payload.closeButton !== false
+              ? () => sonnerToast.dismiss(currentToastId)
+              : undefined
+          }
+        />
+      ),
+    toTemplatedSonnerToastOptions(options, toastId)
+  );
+
+const emitTemplatedNotification = (
+  payload: TemplatedNotificationPayload
+): ToastId | typeof NOTIFICATIONS_DISABLED_RESULT => {
+  const options = buildTemplatedNotificationOptions(payload);
+  const toastEnabled = isToastEnabledForNotification(options);
+  const desktopEnabled = isDesktopEnabledForNotification(options);
+
+  if (!toastEnabled && !desktopEnabled) {
+    return NOTIFICATIONS_DISABLED_RESULT;
   }
-): Promise<boolean> => {
-  try {
-    await action.onClick();
-    if (action.dismissOnSuccess) {
-      sonnerToast.dismiss(toastId);
+
+  const { toastId, historyId } = resolveToastIdentity(options);
+  let result: ToastId = historyId;
+
+  if (toastEnabled) {
+    result = emitTemplatedToastChannel(payload, toastId, options);
+    if (payload.tone !== 'success') {
+      persistNotification(toNotificationLevel(payload.tone), historyId, {
+        title: payload.title,
+        description: payload.description,
+        variant: payload.variant,
+        category: payload.category,
+      });
     }
-    return true;
-  } catch (error) {
-    onError(getNotificationActionErrorMessage(error));
-    return false;
   }
+
+  emitDesktopNotification(payload.title, historyId, options);
+  return result;
 };
 
-function ActionableNotificationToastBody({
-  level,
+const buildInformationalPayload = (
+  tone: NotificationTone,
+  title: string,
+  options?: Omit<InformationalNotificationInput, 'title'>
+): TemplatedNotificationPayload => ({
+  tone,
+  variant: 'informational',
   title,
-  description,
-  actions,
-  pendingActionIndex,
-  onActionClick,
-}: ActionableNotificationToastBodyProps) {
-  return (
-    <div
-      className={cn(
-        'w-full min-w-0 rounded-lg border p-3 text-foreground shadow-lg',
-        level === 'success' && 'border-emerald-500/30 bg-emerald-500/10',
-        level === 'warning' && 'border-amber-500/30 bg-amber-500/10',
-        level === 'error' && 'border-red-500/30 bg-red-500/10',
-        level === 'info' && 'border-blue-500/30 bg-blue-500/10'
-      )}
-    >
-      <div className="min-w-0">
-        <div className="text-sm font-medium break-words">{title}</div>
-        {description ? (
-          <div className="mt-1 text-xs text-muted-foreground break-words">{description}</div>
-        ) : null}
-      </div>
+  description: options?.description,
+  category: options?.category,
+  notificationKey: options?.notificationKey,
+  desktopTitle: options?.desktopTitle,
+  desktopBody: options?.desktopBody,
+  duration: options?.duration,
+  closeButton: options?.closeButton,
+});
 
-      <div className="mt-3 flex flex-col gap-2">
-        {actions.map((action, index) => (
-          <Button
-            key={`${action.label}-${index}`}
-            size="sm"
-            variant={action.variant}
-            className="w-full justify-center"
-            disabled={pendingActionIndex !== null}
-            isLoading={pendingActionIndex === index}
-            onClick={() => onActionClick(index)}
-          >
-            {action.label}
-          </Button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ActionableNotificationToast({
-  level,
-  toastId,
+const buildActionablePayload = (
+  title: string,
+  options: Omit<ActionableNotificationInput, 'title'>
+): TemplatedNotificationPayload => ({
+  tone: options.tone ?? 'warning',
+  variant: 'actionable',
   title,
-  description,
-  actions,
-}: ActionableNotificationToastProps) {
-  const [pendingActionIndex, setPendingActionIndex] = useState<number | null>(null);
-
-  const handleActionClick = (actionIndex: number) => {
-    if (pendingActionIndex !== null) {
-      return;
-    }
-
-    const action = actions[actionIndex];
-    if (!action) {
-      return;
-    }
-
-    setPendingActionIndex(actionIndex);
-
-    void executeNotificationAction(action, toastId).finally(() => {
-      setPendingActionIndex(null);
-    });
-  };
-
-  return (
-    <ActionableNotificationToastBody
-      level={level}
-      title={title}
-      description={description}
-      actions={actions}
-      pendingActionIndex={pendingActionIndex}
-      onActionClick={handleActionClick}
-    />
-  );
-}
+  description: options.description,
+  category: options.category,
+  actions: normalizeNotificationActions(options.actions),
+  notificationKey: options.notificationKey,
+  desktopTitle: options.desktopTitle,
+  desktopBody: options.desktopBody,
+  duration: options.duration,
+  closeButton: options.closeButton,
+});
 
 export const toast = Object.assign(
   ((...args: SonnerToastArgs) =>
@@ -540,8 +763,23 @@ export const toast = Object.assign(
   }
 );
 
+export const notify = {
+  info: ((title: string, options?: Omit<InformationalNotificationInput, 'title'>) =>
+    emitTemplatedNotification(buildInformationalPayload('info', title, options))) as NotifyInformationalMethod,
+  success: ((title: string, options?: Omit<InformationalNotificationInput, 'title'>) =>
+    emitTemplatedNotification(buildInformationalPayload('success', title, options))) as NotifyInformationalMethod,
+  warning: ((title: string, options?: Omit<InformationalNotificationInput, 'title'>) =>
+    emitTemplatedNotification(buildInformationalPayload('warning', title, options))) as NotifyInformationalMethod,
+  error: ((title: string, options?: Omit<InformationalNotificationInput, 'title'>) =>
+    emitTemplatedNotification(buildInformationalPayload('error', title, options))) as NotifyInformationalMethod,
+  actionRequired: ((title: string, options: Omit<ActionableNotificationInput, 'title'>) =>
+    emitTemplatedNotification(buildActionablePayload(title, options))) as NotifyActionableMethod,
+  dismiss: sonnerToast.dismiss,
+};
+
 export const __testables = {
   ActionableNotificationToastBody,
+  InformationalNotificationToastBody,
   executeNotificationAction,
   getNotificationChannelMode,
   normalizeNotificationActions,

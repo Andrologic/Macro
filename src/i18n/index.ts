@@ -9,7 +9,7 @@ import {
   type SupportedLanguage,
 } from "./languages";
 import { baseResources, loadTranslation } from "./resources";
-import { toast } from "../components/ui/toastService";
+import { notify } from "../components/ui/toastService";
 
 const syncDocumentLanguage = (language: string | null | undefined) => {
   if (typeof document === "undefined") {
@@ -98,7 +98,7 @@ export async function changeLanguage(lang: SupportedLanguage): Promise<void> {
 
   try {
     const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
-    toast.success(i18n.t("toast.languageChanged", { language: languageName }));
+    notify.success(i18n.t("notify.languageChanged", { language: languageName }));
   } catch {
     // Toast not available.
   }
