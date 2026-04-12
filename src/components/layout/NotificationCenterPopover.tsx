@@ -1,9 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { useNotificationCenterStore, type NotificationCenterItem } from '../../stores/useNotificationCenterStore';
-import { cn } from '../../utils/cn';
+import { useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
 import { Icon } from '../ui/Icon';
+import {
+  ActionableNotificationTemplate,
+  InformationalNotificationTemplate,
+} from '../ui/notifications';
 import {
   calculateNotificationCenterPosition,
   formatNotificationRelativeTime,
@@ -15,30 +18,6 @@ interface NotificationCenterPopoverProps {
   anchorRef: React.RefObject<HTMLElement | null>;
   onClose: () => void;
 }
-
-const getNotificationItemTone = (item: NotificationCenterItem) => {
-  if (item.level === 'error') {
-    return {
-      icon: 'alert-circle' as const,
-      iconClass: 'text-destructive',
-      bubbleClass: 'border-destructive/30 bg-card',
-    };
-  }
-
-  if (item.level === 'warning') {
-    return {
-      icon: 'triangle-alert' as const,
-      iconClass: 'text-foreground/85',
-      bubbleClass: 'border-border bg-secondary',
-    };
-  }
-
-  return {
-    icon: 'circle-dot' as const,
-    iconClass: 'text-primary',
-    bubbleClass: 'border-border bg-card',
-  };
-};
 
 export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps> = ({
   isOpen,
@@ -192,41 +171,14 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
             </div>
           </div>
         ) : (
-          <div className="space-y-2">
-            {items.map((item) => {
-              const tone = getNotificationItemTone(item);
-
-              return (
-                <div
-                  key={item.id}
-                  className="group flex items-start gap-3 rounded-lg border border-border bg-card px-3 py-3 transition-colors hover:bg-secondary"
-                >
-                  <div
-                    className={cn(
-                      'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border',
-                      tone.bubbleClass
-                    )}
-                  >
-                    <Icon name={tone.icon} size={14} className={tone.iconClass} />
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-start gap-2">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium leading-5 text-foreground">
-                          {item.title}
-                        </p>
-                        {item.description && (
-                          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                            {item.description}
-                          </p>
-                        )}
-                      </div>
-
-                      <span className="shrink-0 pt-0.5 text-[11px] text-muted-foreground">
+            <div className="space-y-2">
+              {items.map((item) => {
+                return (
+                  <div key={item.id} className="group space-y-1.5 rounded-xl px-1 py-1">
+                    <div className="flex items-center justify-between gap-3 px-1">
+                      <span className="min-w-0 truncate text-[11px] text-muted-foreground">
                         {formatNotificationRelativeTime(item.createdAt, now)}
                       </span>
-
                       <button
                         type="button"
                         className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -237,12 +189,30 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
                         <Icon name="x" size={12} />
                       </button>
                     </div>
+
+                    {item.variant === 'actionable' ? (
+                      <ActionableNotificationTemplate
+                        tone={item.level}
+                        title={item.title}
+                        description={item.description}
+                        interactive={false}
+                        snapshotLabel={t(
+                          'notifications.actionRequired',
+                          'Action required'
+                        )}
+                      />
+                    ) : (
+                      <InformationalNotificationTemplate
+                        tone={item.level}
+                        title={item.title}
+                        description={item.description}
+                      />
+                    )}
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          )}
       </div>
     </div>,
     document.body

@@ -27,7 +27,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { PlanFormModal } from './PlanFormModal';
 import { PlanReviewModal } from '../plan/PlanReviewModal';
@@ -159,7 +159,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     });
     setError(error.message);
     if (options?.toastOnError !== false) {
-      toast.error(error.message);
+      notify.error(error.message);
     }
     return true;
   };
@@ -254,7 +254,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (retry) {
         await retry();
       }
-      toast.success(
+      notify.success(
         strategy === 'oldest'
           ? t('architect.planSelector.replicaRepairOldest', 'Plan metadata repaired from the oldest replica.')
           : t('architect.planSelector.replicaRepairNewest', 'Plan metadata repaired from the newest replica.')
@@ -265,7 +265,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         t('architect.planSelector.errorRepairReplica', 'Failed to repair plan metadata.')
       );
       setError(message);
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsRepairingReplica(false);
     }
@@ -416,7 +416,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           'No editable repository is available for this global project.'
         );
         setError(message);
-        toast.error(message);
+        notify.error(message);
         return;
       }
 
@@ -457,7 +457,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         t('architect.planSelector.errorOperationFailed', 'Operation failed.')
       );
       setError(message);
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -507,7 +507,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     try {
       await archiveArchitectPlan(targetBranch, plan.id);
       const planDisplayName = getArchitectPlanDisplayName(plan);
-      toast.success(
+      notify.success(
         t('architect.planSelector.toastPlanArchived', {
           title: planDisplayName,
           defaultValue: `Plan "${planDisplayName}" archived`,
@@ -541,7 +541,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         t('architect.planSelector.errorArchivePlan', 'Failed to archive plan.')
       );
       setError(message);
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -555,7 +555,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         'Archive the plan before deleting it.'
       );
       setError(message);
-      toast.error(message);
+      notify.error(message);
       setPlanToDelete(null);
       return;
     }
@@ -573,7 +573,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         planId: deletedPlanId,
         deletedWorktreeKeys: cleanup.deletedWorktreeKeys,
       });
-      toast.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
+      notify.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
       await refreshPlanSelectorAfterMutation({
         mutation: {
           type: 'delete',
@@ -609,7 +609,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         t('architect.planSelector.errorDeletePlan', 'Failed to delete plan.')
       );
       setError(message);
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsDeleting(false);
       if (!keepDeleteDialogOpen) {
@@ -624,7 +624,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     try {
       await restoreArchitectPlan(targetBranch, plan.id);
       const planDisplayName = getArchitectPlanDisplayName(plan);
-      toast.success(
+      notify.success(
         t('architect.planSelector.toastPlanRestored', {
           title: planDisplayName,
           defaultValue: `Plan "${planDisplayName}" restored`,
@@ -640,7 +640,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         t('architect.planSelector.errorRestorePlan', 'Failed to restore plan.')
       );
       setError(message);
-      toast.error(message);
+      notify.error(message);
     } finally {
       setIsLoading(false);
     }

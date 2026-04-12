@@ -10,7 +10,7 @@ import { Button } from '../../../ui/Button';
 import { Input } from '../../../ui/Input';
 import { Switch } from '../../../ui/Switch';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
-import { toast } from '../../../ui/toastService';
+import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
 import type { ProviderConfig } from '../../../../types';
 
@@ -206,9 +206,9 @@ export const ProvidersSettings: React.FC = () => {
       if (!value) return;
       try {
         await navigator.clipboard.writeText(value);
-        toast.success(successMessage);
+        notify.success(successMessage);
       } catch (error) {
-        toast.error(getErrorMessage(error, 'Failed to copy'));
+        notify.error(getErrorMessage(error, 'Failed to copy'));
       }
     },
     []
@@ -451,7 +451,7 @@ export const ProvidersSettings: React.FC = () => {
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
         });
-        toast.success(t('providers.created', 'Provider created'));
+        notify.success(t('providers.created', 'Provider created'));
       } else {
         const apiKeyUpdate =
           editingProvider.apiKeyTouched
@@ -465,13 +465,13 @@ export const ProvidersSettings: React.FC = () => {
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
         });
-        toast.success(t('providers.updated', 'Provider updated'));
+        notify.success(t('providers.updated', 'Provider updated'));
       }
       setEditingProvider(null);
       setIsCreating(false);
     } catch (error) {
       console.error('Failed to save provider:', error);
-      toast.error(t('errors.saveFailed', 'Failed to save provider'));
+      notify.error(t('errors.saveFailed', 'Failed to save provider'));
     } finally {
       setSaving(false);
     }
@@ -484,11 +484,11 @@ export const ProvidersSettings: React.FC = () => {
     setTestResult(null);
     try {
       if (isCreating) {
-        toast.error(t('providers.testSaveFirst', 'Please save the provider before testing.'));
+        notify.error(t('providers.testSaveFirst', 'Please save the provider before testing.'));
         return;
       }
       if (editingProvider.apiKeyTouched) {
-        toast.error(t('providers.testSaveFirst', 'Please save the provider before testing.'));
+        notify.error(t('providers.testSaveFirst', 'Please save the provider before testing.'));
         return;
       }
       const response = await testConnection(editingProvider.id);
@@ -501,7 +501,7 @@ export const ProvidersSettings: React.FC = () => {
       setTestResult({
         id: editingProvider.id || 'new',
         success: false,
-        message: t('toast.connectionFailed', 'Connection failed'),
+        message: t('notify.connectionFailed', 'Connection failed'),
       });
     } finally {
       setTestingId(null);
@@ -513,7 +513,7 @@ export const ProvidersSettings: React.FC = () => {
     await deleteProviderConfig(editingProvider.id);
     setEditingProvider(null);
     setIsDeleteConfirmOpen(false);
-    toast.success(t('providers.deleted', 'Provider deleted'));
+    notify.success(t('providers.deleted', 'Provider deleted'));
   };
 
   const handleRevealApiKey = async () => {
@@ -544,7 +544,7 @@ export const ProvidersSettings: React.FC = () => {
       );
       setShowApiKey(true);
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Failed to reveal the stored API key.'));
+      notify.error(getErrorMessage(error, 'Failed to reveal the stored API key.'));
     } finally {
       setRevealingProviderId(null);
     }
@@ -982,7 +982,7 @@ export const ProvidersSettings: React.FC = () => {
                         onClick={async () => {
                           try {
                             await startCopilotRuntimeDownload(provider.id);
-                            toast.success(
+                            notify.success(
                               t(
                                 'providers.copilot.runtimeDownloaded',
                                 'GitHub Copilot runtime is ready'
@@ -997,7 +997,7 @@ export const ProvidersSettings: React.FC = () => {
                               )
                             );
                             if (message !== 'GitHub Copilot runtime download was cancelled.') {
-                              toast.error(message);
+                              notify.error(message);
                             }
                           }
                         }}
@@ -1019,7 +1019,7 @@ export const ProvidersSettings: React.FC = () => {
                         onClick={async () => {
                           try {
                             await startCopilotAuth(provider.id);
-                            toast.success(
+                            notify.success(
                               t('providers.copilotLinked', 'GitHub Copilot linked')
                             );
                           } catch (error) {
@@ -1031,7 +1031,7 @@ export const ProvidersSettings: React.FC = () => {
                               )
                             );
                             if (message !== 'GitHub Copilot login was cancelled.') {
-                              toast.error(message);
+                              notify.error(message);
                             }
                           }
                         }}
@@ -1045,9 +1045,9 @@ export const ProvidersSettings: React.FC = () => {
                         onClick={async () => {
                           try {
                             await startChatGptAuth(provider.id);
-                            toast.success(t('providers.chatgptLinked', 'ChatGPT linked'));
+                            notify.success(t('providers.chatgptLinked', 'ChatGPT linked'));
                           } catch (error) {
-                            toast.error(
+                            notify.error(
                               getErrorMessage(
                                 error,
                                 t('providers.failedConnectChatGpt', 'Failed to connect with ChatGPT')
@@ -1079,13 +1079,13 @@ export const ProvidersSettings: React.FC = () => {
                         onClick={async () => {
                           try {
                             await disconnectProviderAuth(provider.id);
-                            toast.success(
+                            notify.success(
                               isCopilot
                                 ? t('providers.copilotDisconnected', 'GitHub Copilot disconnected')
                                 : t('providers.chatgptDisconnected', 'ChatGPT disconnected')
                             );
                           } catch (error) {
-                            toast.error(
+                            notify.error(
                               getErrorMessage(
                                 error,
                                 t('providers.failedDisconnect', 'Failed to disconnect')

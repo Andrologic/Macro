@@ -61,15 +61,21 @@ const sonnerToastMock = Object.assign(
   }
 );
 
+const SonnerToasterMock = mock((_props?: unknown) => null);
+
 mock.module('sonner', () => ({
   toast: sonnerToastMock,
-  Toaster: () => null,
+  Toaster: SonnerToasterMock,
 }));
 
 const maybeSendDesktopNotificationMock = mock(async (_input?: unknown) => true);
 
 mock.module('../../services/desktopNotifications', () => ({
   maybeSendDesktopNotification: maybeSendDesktopNotificationMock,
+  sendDesktopNotificationPreview: maybeSendDesktopNotificationMock,
+  getDesktopNotificationStatus: () => 'granted' as const,
+  initializeDesktopNotifications: async () => undefined,
+  subscribeDesktopNotificationStatus: () => () => undefined,
 }));
 
 const defaultNotificationChannelModes: NotificationChannelModes = {
@@ -107,7 +113,8 @@ mock.module('../../stores/useAppStore', () => ({
   useAppStore,
 }));
 
-const { toast, __testables } = await import('./toastService');
+const { Toaster } = await import('./Toaster');
+const { toast, notify, __testables } = await import('./toastService');
 const { useAuthStore } = await import('../../stores/useAuthStore');
 const { useNotificationCenterStore } = await import('../../stores/useNotificationCenterStore');
 
@@ -125,15 +132,17 @@ const buildUser = (notifications: boolean): User => ({
   updated_at: '2026-03-20T12:00:00.000Z',
 });
 
-const renderLastActionableToast = (): string => {
-  const renderActionableToast =
-    sonnerToastMock.custom.mock.calls.at(-1)?.[0] as ((id: string | number) => unknown) | undefined;
+const renderCustomToastAt = (index = -1): string => {
+  const renderToast =
+    sonnerToastMock.custom.mock.calls.at(index)?.[0] as
+      | ((id: string | number) => unknown)
+      | undefined;
 
-  if (!renderActionableToast) {
+  if (!renderToast) {
     throw new Error('Expected a custom toast render function.');
   }
 
-  return renderToStaticMarkup(renderActionableToast('actionable-toast') as never);
+  return renderToStaticMarkup(renderToast('actionable-toast') as never);
 };
 
 describe('toast wrapper', () => {
@@ -179,8 +188,32 @@ describe('toast wrapper', () => {
     });
     sonnerToastMock.dismiss.mockReset();
     sonnerToastMock.dismiss.mockImplementation((_id?: unknown) => 'dismissed-id');
+    SonnerToasterMock.mockReset();
+    SonnerToasterMock.mockImplementation((_props?: unknown) => null);
     maybeSendDesktopNotificationMock.mockReset();
     maybeSendDesktopNotificationMock.mockImplementation(async (_input?: unknown) => true);
+  });
+
+  it('mounts Sonner with the scoped toaster class used for stacked height rules', () => {
+    renderToStaticMarkup(Toaster() as never);
+
+    expect(SonnerToasterMock).toHaveBeenCalledTimes(1);
+    expect(SonnerToasterMock.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        className: 'macro-toaster',
+        position: 'bottom-right',
+        expand: false,
+        toastOptions: expect.objectContaining({
+          classNames: expect.objectContaining({
+            toast: expect.stringContaining('macro-toast'),
+            info: 'macro-toast-info',
+            warning: 'macro-toast-warning',
+            error: 'macro-toast-error',
+            success: 'macro-toast-success',
+          }),
+        }),
+      })
+    );
   });
 
   it('stores tracked info, warning, and error toasts in the notification center', () => {
@@ -197,6 +230,76 @@ describe('toast wrapper', () => {
     expect(sonnerToastMock.warning).toHaveBeenCalledTimes(1);
     expect(sonnerToastMock.error).toHaveBeenCalledTimes(1);
     expect(sonnerToastMock.custom).not.toHaveBeenCalled();
+  });
+
+  it('renders notify informational helpers through the shared template path', () => {
+    notify.info('Info title', { description: 'More details' });
+    notify.success('Success title');
+    notify.warning('Warning title');
+    notify.error('Error title', { description: 'Needs attention' });
+
+    expect(sonnerToastMock.custom).toHaveBeenCalledTimes(4);
+    expect(sonnerToastMock.info).not.toHaveBeenCalled();
+    expect(sonnerToastMock.success).not.toHaveBeenCalled();
+    expect(sonnerToastMock.warning).not.toHaveBeenCalled();
+    expect(sonnerToastMock.error).not.toHaveBeenCalled();
+
+    const infoMarkup = renderCustomToastAt(0);
+    const errorMarkup = renderCustomToastAt(-1);
+    expect(infoMarkup).toContain('data-notification-surface="true"');
+    expect(infoMarkup).toContain('Dismiss notification');
+    expect(infoMarkup).toContain('Info title');
+    expect(errorMarkup).toContain('Error title');
+    expect(errorMarkup).toContain('Needs attention');
+
+    expect(useNotificationCenterStore.getState().items).toEqual([
+      expect.objectContaining({
+        level: 'error',
+        variant: 'informational',
+        title: 'Error title',
+      }),
+      expect.objectContaining({
+        level: 'warning',
+        variant: 'informational',
+        title: 'Warning title',
+      }),
+      expect.objectContaining({
+        level: 'info',
+        variant: 'informational',
+        title: 'Info title',
+        description: 'More details',
+      }),
+    ]);
+  });
+
+  it('does not pass Sonner description chrome into custom template toasts', () => {
+    notify.info('Info title', {
+      description: 'More details',
+      closeButton: true,
+    });
+    toast.warning('Base branch missing', {
+      description: 'Choose what to do next.',
+      closeButton: true,
+      actions: [
+        {
+          label: 'Create',
+          onClick: () => undefined,
+        },
+      ],
+    });
+
+    expect(sonnerToastMock.custom).toHaveBeenCalledTimes(2);
+    const informationalOptions = sonnerToastMock.custom.mock.calls[0]?.[1] as
+      | Record<string, unknown>
+      | undefined;
+    const actionableOptions = sonnerToastMock.custom.mock.calls[1]?.[1] as
+      | Record<string, unknown>
+      | undefined;
+
+    expect(informationalOptions?.description).toBeUndefined();
+    expect(informationalOptions?.closeButton).toBeUndefined();
+    expect(actionableOptions?.description).toBeUndefined();
+    expect(actionableOptions?.closeButton).toBeUndefined();
   });
 
   it('renders actionable notifications through the shared custom toast path', () => {
@@ -218,7 +321,7 @@ describe('toast wrapper', () => {
     expect(sonnerToastMock.warning).not.toHaveBeenCalled();
     expect(sonnerToastMock.custom).toHaveBeenCalledTimes(1);
 
-    const markup = renderLastActionableToast();
+    const markup = renderCustomToastAt();
     expect(markup).toContain('Base branch missing');
     expect(markup).toContain('Choose what to do next.');
     expect(markup).toContain('Create');
@@ -227,9 +330,60 @@ describe('toast wrapper', () => {
     expect(useNotificationCenterStore.getState().items).toHaveLength(1);
     expect(useNotificationCenterStore.getState().items[0]).toMatchObject({
       level: 'warning',
+      variant: 'actionable',
       title: 'Base branch missing',
       description: 'Choose what to do next.',
     });
+  });
+
+  it('renders notify actionable helpers through the shared action template path', () => {
+    notify.actionRequired('Base branch missing', {
+      tone: 'warning',
+      description: 'Choose what to do next.',
+      category: 'task_attention_required',
+      actions: [
+        {
+          label: 'Create',
+          onClick: () => undefined,
+        },
+        {
+          label: 'Settings',
+          variant: 'secondary',
+          onClick: () => undefined,
+        },
+      ],
+    });
+
+    expect(sonnerToastMock.custom).toHaveBeenCalledTimes(1);
+    expect(sonnerToastMock.warning).not.toHaveBeenCalled();
+
+    const markup = renderCustomToastAt();
+    expect(markup).toContain('Base branch missing');
+    expect(markup).toContain('Dismiss notification');
+    expect(markup).toContain('Create');
+    expect(markup).toContain('Settings');
+
+    expect(useNotificationCenterStore.getState().items[0]).toMatchObject({
+      level: 'warning',
+      variant: 'actionable',
+      category: 'task_attention_required',
+      title: 'Base branch missing',
+    });
+    expect(maybeSendDesktopNotificationMock).toHaveBeenCalledWith({
+      title: 'Base branch missing',
+      body: 'Choose what to do next.',
+      notificationKey: expect.any(String),
+    });
+  });
+
+  it('can hide the custom dismiss button when closeButton is false', () => {
+    notify.info('Hidden dismiss', {
+      description: 'No dismiss affordance',
+      closeButton: false,
+    });
+
+    const markup = renderCustomToastAt();
+    expect(markup).not.toContain('Dismiss notification');
   });
 
   it('clamps actionable notifications to at most two buttons', () => {
@@ -241,7 +395,7 @@ describe('toast wrapper', () => {
       ],
     });
 
-    const markup = renderLastActionableToast();
+    const markup = renderCustomToastAt();
     expect(markup).toContain('First');
     expect(markup).toContain('Second');
     expect(markup).not.toContain('Third');
@@ -282,6 +436,22 @@ describe('toast wrapper', () => {
 
     expect(useNotificationCenterStore.getState().items).toEqual([]);
     expect(sonnerToastMock.success).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps desktop notification overrides from the notify payload', () => {
+    notify.error('Fallback title', {
+      description: 'Fallback body',
+      category: 'git_sync_attention_required',
+      desktopTitle: 'Desktop title',
+      desktopBody: 'Desktop body',
+      notificationKey: 'macro:failed:1',
+    });
+
+    expect(maybeSendDesktopNotificationMock).toHaveBeenCalledWith({
+      title: 'Desktop title',
+      body: 'Desktop body',
+      notificationKey: 'macro:failed:1',
+    });
   });
 
   it('routes categorized notifications to the desktop channel only', () => {
@@ -475,12 +645,11 @@ describe('toast wrapper', () => {
 
     await expect(__testables.executeNotificationAction(action, 'toast-1')).resolves.toBe(false);
 
-    expect(sonnerToastMock.error).toHaveBeenCalledWith(
-      'Action failed',
-      expect.objectContaining({ id: expect.any(String) })
-    );
+    expect(sonnerToastMock.custom).toHaveBeenCalledTimes(1);
+    expect(renderCustomToastAt()).toContain('Action failed');
     expect(useNotificationCenterStore.getState().items[0]).toMatchObject({
       level: 'error',
+      variant: 'informational',
       title: 'Action failed',
     });
   });
@@ -500,7 +669,7 @@ describe('toast wrapper', () => {
 
     const markup = renderToStaticMarkup(
       __testables.ActionableNotificationToastBody({
-        level: 'warning',
+        tone: 'warning',
         title: 'Base branch missing',
         description: 'Choose what to do next.',
         actions,

@@ -4,7 +4,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
-import { toast } from '../ui/toastService';
+import { notify } from '../ui/toastService';
 
 export const AccountModal: React.FC = () => {
   const { t, i18n } = useTranslation();
@@ -16,11 +16,11 @@ export const AccountModal: React.FC = () => {
   const handleLogout = async () => {
     try {
       await logout();
-      toast.success(t('toast.loggedOut'));
+      notify.success(t('notify.loggedOut'));
       closeAccount();
     } catch (error) {
       console.error('Failed to logout:', error);
-      toast.error(t('errors.logoutFailed'));
+      notify.error(t('errors.logoutFailed'));
     }
   };
 
