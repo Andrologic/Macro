@@ -390,6 +390,76 @@
       "toast": "Toast",
       "desktop": "Escritorio",
       "both": "Toast + Escritorio"
+    },
+    "notificationsDebug": {
+      "sectionTitle": "Debug",
+      "title": "Blueprints de notificaciones",
+      "description": "Usa este panel solo de depuración para ajustar los dos blueprints compartidos de notificaciones que usa Macro.",
+      "desktopHint": "Las vistas previas de escritorio omiten la restricción habitual de primer plano para que puedas validar notificaciones del sistema sin enviar la app al fondo.",
+      "runtimeStatus": "Estado actual del runtime de escritorio",
+      "clearCenter": "Vaciar centro ({{count}})",
+      "clearCenterResult": "Centro de notificaciones vaciado.",
+      "labels": {
+        "informational": "Blueprint informativo",
+        "actionable": "Blueprint accionable"
+      },
+      "informationalDescription": "Previsualiza la plantilla compartida no accionable con tonos de información, éxito, advertencia y error.",
+      "actionableDescription": "Previsualiza la plantilla compartida accionable con una o dos acciones simuladas y tonos coherentes.",
+      "actionableDesktopHint": "Los blueprints accionables se validan solo dentro de la app. Las notificaciones de escritorio no renderizan los botones personalizados de Macro.",
+      "fields": {
+        "tone": "Tono",
+        "title": "Título",
+        "description": "Descripción",
+        "actions": "Acciones",
+        "primaryAction": "Acción principal",
+        "primaryVariant": "Variante principal",
+        "primaryDismissOnSuccess": "Cerrar tras éxito principal",
+        "primaryDismissDescription": "Cierra el toast y elimina la entrada del centro tras una acción principal correcta.",
+        "secondaryAction": "Acción secundaria",
+        "secondaryVariant": "Variante secundaria",
+        "secondaryDismissOnSuccess": "Cerrar tras éxito secundario",
+        "secondaryDismissDescription": "Cierra el toast y elimina la entrada del centro tras una acción secundaria correcta."
+      },
+      "tones": {
+        "info": "Información",
+        "success": "Éxito",
+        "warning": "Advertencia",
+        "error": "Error"
+      },
+      "variants": {
+        "primary": "Principal",
+        "secondary": "Secundaria"
+      },
+      "channels": {
+        "inApp": "En la app",
+        "desktop": "Escritorio",
+        "allChannels": "Todos los canales"
+      },
+      "summary": {
+        "inAppSent": "{{label}}: vista previa en la app enviada.",
+        "inAppBlocked": "{{label}}: la vista previa en la app fue bloqueada por la configuración actual de notificaciones.",
+        "desktopSent": "{{label}}: vista previa de escritorio enviada.",
+        "desktopBlocked": "{{label}}: la vista previa de escritorio no pudo enviarse con el runtime o el estado de permisos actual.",
+        "allChannels": "{{label}}: en la app {{inAppStatus}}, escritorio {{desktopStatus}}.",
+        "ok": "ok",
+        "blocked": "bloqueado"
+      },
+      "defaults": {
+        "informational": {
+          "title": "Indexación en segundo plano completada",
+          "description": "Todo está actualizado."
+        },
+        "actionable": {
+          "title": "Falta la rama base",
+          "description": "Elige qué hacer a continuación para continuar con seguridad.",
+          "actions": {
+            "primary": "Acción principal",
+            "secondary": "Acción secundaria",
+            "create": "Crear",
+            "openSettings": "Abrir ajustes"
+          }
+        }
+      }
     }
   },
   "project": {
@@ -1170,10 +1240,13 @@
   },
   "notifications": {
     "centerTitle": "Notificaciones",
-    "openCenter": "Notificaciones abiertas",
+    "openCenter": "Abrir notificaciones",
     "closeCenter": "Cerrar notificaciones",
     "clearAll": "Borrar todo",
+    "dismiss": "Descartar notificación",
     "remove": "Eliminar notificación",
+    "actionRequired": "Acción requerida",
+    "actionError": "Se produjo un error",
     "emptyTitle": "Sin notificaciones",
     "emptySubtitle": "Aquí aparecen notificaciones de información, advertencias y errores.",
     "allRead": "todos atrapados",

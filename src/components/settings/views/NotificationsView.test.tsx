@@ -97,7 +97,22 @@ const loadNotificationsView = async (devMode: boolean) => {
 
   mock.module('react-i18next', () => ({
     useTranslation: () => ({
-      t: (_key: string, fallback?: string) => fallback ?? _key,
+      t: (
+        _key: string,
+        fallback?: string,
+        options?: Record<string, string | number>
+      ) => {
+        const template = fallback ?? _key;
+        if (!options) {
+          return template;
+        }
+
+        return Object.entries(options).reduce(
+          (result, [name, value]) =>
+            result.replaceAll(`{{${name}}}`, String(value)),
+          template
+        );
+      },
     }),
   }));
 
