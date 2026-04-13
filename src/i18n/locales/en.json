@@ -1177,7 +1177,13 @@
     "emptyTitle": "No notifications",
     "emptySubtitle": "Info, warning, and error notifications appear here.",
     "allRead": "All caught up",
-    "unreadCount": "{{count}} unread"
+    "unreadCount": "{{count}} unread",
+    "group": {
+      "lessThanMinute": "Less than a minute ago",
+      "thisHour": "This hour",
+      "today": "Today",
+      "yesterday": "Yesterday"
+    }
   },
   "models": {
     "noProviders": "No providers configured yet. Add a provider first.",

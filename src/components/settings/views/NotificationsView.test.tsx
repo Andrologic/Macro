@@ -33,7 +33,6 @@ const emitActionableNotificationBlueprintMock = mock(async (_draft: unknown, _ch
   inAppSent: true,
   desktopSent: true,
 }));
-const simulateNotificationBlueprintActionMock = mock(async () => undefined);
 const initializeDesktopNotificationsMock = mock(async () => undefined);
 
 let importCounter = 0;
@@ -239,30 +238,34 @@ const loadNotificationsView = async (devMode: boolean) => {
       tone: 'warning',
       title: 'Base branch missing',
       description: 'Choose what to do next to continue safely.',
-      actionCount: 2,
-      primaryActionLabel: 'Create',
-      secondaryActionLabel: 'Open settings',
+      actions: [
+        {
+          label: 'Create',
+          variant: 'primary',
+          dismissOnSuccess: true,
+        },
+        {
+          label: 'Open settings',
+          variant: 'secondary',
+          dismissOnSuccess: true,
+        },
+      ],
     },
     emitInformationalNotificationBlueprint: (...args: [unknown, unknown]) =>
       emitInformationalNotificationBlueprintMock(...args),
     emitActionableNotificationBlueprint: (...args: [unknown, unknown]) =>
       emitActionableNotificationBlueprintMock(...args),
     getActionableNotificationBlueprintPreviewActions: (draft: {
-      actionCount: 1 | 2;
-      primaryActionLabel: string;
-      secondaryActionLabel: string;
+      actions: Array<{
+        label: string;
+        variant: 'primary' | 'secondary';
+      }>;
     }) => [
-      { label: draft.primaryActionLabel || 'Primary action', variant: 'primary' as const },
-      ...(draft.actionCount === 2
-        ? [
-            {
-              label: draft.secondaryActionLabel || 'Secondary action',
-              variant: 'secondary' as const,
-            },
-          ]
-        : []),
+      ...draft.actions.map((action) => ({
+        label: action.label || 'Action',
+        variant: action.variant,
+      })),
     ],
-    simulateNotificationBlueprintAction: () => simulateNotificationBlueprintActionMock(),
   }));
 
   importCounter += 1;
@@ -293,7 +296,6 @@ describe('NotificationsView', () => {
     setNotificationChannelModeMock.mockClear();
     emitInformationalNotificationBlueprintMock.mockClear();
     emitActionableNotificationBlueprintMock.mockClear();
-    simulateNotificationBlueprintActionMock.mockClear();
     initializeDesktopNotificationsMock.mockClear();
     controlHandlers.clear();
     useNotificationCenterStore.setState({
@@ -425,6 +427,7 @@ describe('NotificationsView', () => {
       await updateMockControl('actionable-blueprint-title', 'Needs attention');
       await updateMockControl('actionable-blueprint-action-count', '1');
       await updateMockControl('actionable-blueprint-primary-action', 'Retry now');
+      await updateMockControl('actionable-blueprint-primary-variant', 'secondary');
     });
 
     const informationalAllButton = container?.querySelector(
@@ -457,12 +460,35 @@ describe('NotificationsView', () => {
         tone: 'warning',
         title: 'Needs attention',
         description: 'Choose what to do next to continue safely.',
-        actionCount: 1,
-        primaryActionLabel: 'Retry now',
-        secondaryActionLabel: 'Open settings',
+        actions: [
+          {
+            label: 'Retry now',
+            variant: 'secondary',
+            dismissOnSuccess: true,
+          },
+        ],
       },
       'in_app'
     );
+  });
+
+  it('disables actionable desktop-only controls because desktop previews cannot validate custom buttons', async () => {
+    const { NotificationsView } = await loadNotificationsView(true);
+
+    await act(async () => {
+      root?.render(<NotificationsView />);
+      await Promise.resolve();
+    });
+
+    const actionableDesktopButton = container?.querySelector(
+      '[data-testid="actionable-blueprint-desktop"]'
+    ) as HTMLButtonElement | null;
+    const actionableAllButton = container?.querySelector(
+      '[data-testid="actionable-blueprint-all"]'
+    ) as HTMLButtonElement | null;
+
+    expect(actionableDesktopButton?.disabled).toBe(true);
+    expect(actionableAllButton?.disabled).toBe(true);
   });
 
   it('clears the notification center from the debug section', async () => {

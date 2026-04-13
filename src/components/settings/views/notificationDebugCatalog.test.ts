@@ -73,9 +73,18 @@ describe('notificationDebugCatalog', () => {
       tone: 'warning',
       title: 'Base branch missing',
       description: 'Choose what to do next to continue safely.',
-      actionCount: 2,
-      primaryActionLabel: 'Create',
-      secondaryActionLabel: 'Open settings',
+      actions: [
+        {
+          label: 'Create',
+          variant: 'primary',
+          dismissOnSuccess: true,
+        },
+        {
+          label: 'Open settings',
+          variant: 'secondary',
+          dismissOnSuccess: true,
+        },
+      ],
     });
   });
 
@@ -114,9 +123,13 @@ describe('notificationDebugCatalog', () => {
       tone: 'warning',
       title: 'Base branch missing',
       description: 'Choose what to do next.',
-      actionCount: 1,
-      primaryActionLabel: 'Create',
-      secondaryActionLabel: 'Ignored',
+      actions: [
+        {
+          label: 'Create',
+          variant: 'primary',
+          dismissOnSuccess: true,
+        },
+      ],
     });
 
     expect(previewActions).toEqual([
@@ -132,9 +145,18 @@ describe('notificationDebugCatalog', () => {
           tone: 'warning',
           title: 'Base branch missing',
           description: 'Choose what to do next.',
-          actionCount: 2,
-          primaryActionLabel: 'Create',
-          secondaryActionLabel: 'Open settings',
+          actions: [
+            {
+              label: 'Create',
+              variant: 'primary',
+              dismissOnSuccess: true,
+            },
+            {
+              label: 'Open settings',
+              variant: 'secondary',
+              dismissOnSuccess: false,
+            },
+          ],
         },
         'in_app'
       )
@@ -148,14 +170,22 @@ describe('notificationDebugCatalog', () => {
       expect.objectContaining({
         tone: 'warning',
         actions: [
-          expect.objectContaining({ label: 'Create', variant: 'primary' }),
-          expect.objectContaining({ label: 'Open settings', variant: 'secondary' }),
+          expect.objectContaining({
+            label: 'Create',
+            variant: 'primary',
+            dismissOnSuccess: true,
+          }),
+          expect.objectContaining({
+            label: 'Open settings',
+            variant: 'secondary',
+            dismissOnSuccess: false,
+          }),
         ],
       })
     );
   });
 
-  it('emits desktop previews for both blueprints through the dedicated desktop helper', async () => {
+  it('emits desktop previews only for the informational blueprint', async () => {
     const {
       emitActionableNotificationBlueprint,
       emitInformationalNotificationBlueprint,
@@ -181,15 +211,24 @@ describe('notificationDebugCatalog', () => {
           tone: 'info',
           title: 'Git sync needs one more action',
           description: 'A follow-up action is still required.',
-          actionCount: 2,
-          primaryActionLabel: 'Save @macro',
-          secondaryActionLabel: 'Review status',
+          actions: [
+            {
+              label: 'Save @macro',
+              variant: 'primary',
+              dismissOnSuccess: true,
+            },
+            {
+              label: 'Review status',
+              variant: 'secondary',
+              dismissOnSuccess: true,
+            },
+          ],
         },
         'all'
       )
     ).resolves.toEqual({
       inAppSent: true,
-      desktopSent: true,
+      desktopSent: false,
     });
 
     expect(sendDesktopNotificationPreviewMock).toHaveBeenNthCalledWith(1, {
@@ -197,10 +236,6 @@ describe('notificationDebugCatalog', () => {
       body: 'Resolve the conflict before retrying the operation.',
       notificationKey: 'debug-blueprint:informational',
     });
-    expect(sendDesktopNotificationPreviewMock).toHaveBeenNthCalledWith(2, {
-      title: 'Git sync needs one more action',
-      body: 'A follow-up action is still required.',
-      notificationKey: 'debug-blueprint:actionable',
-    });
+    expect(sendDesktopNotificationPreviewMock).toHaveBeenCalledTimes(1);
   });
 });

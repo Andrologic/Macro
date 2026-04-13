@@ -19,6 +19,7 @@ interface ActionableNotificationTemplateProps {
   description?: ReactNode;
   actions?: ActionableNotificationTemplateAction[];
   interactive?: boolean;
+  actionsDisabled?: boolean;
   pendingActionIndex?: number | null;
   onActionClick?: (index: number) => void;
   snapshotLabel?: string;
@@ -32,6 +33,7 @@ export function ActionableNotificationTemplate({
   description,
   actions = [],
   interactive = true,
+  actionsDisabled = false,
   pendingActionIndex = null,
   onActionClick,
   snapshotLabel,
@@ -47,7 +49,7 @@ export function ActionableNotificationTemplate({
             size="sm"
             variant={action.variant}
             className="w-full justify-center"
-            disabled={pendingActionIndex !== null}
+            disabled={actionsDisabled || pendingActionIndex !== null}
             isLoading={pendingActionIndex === index}
             onClick={() => onActionClick?.(index)}
           >
