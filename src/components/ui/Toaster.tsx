@@ -8,6 +8,9 @@ import {
   TOAST_BATCH_DURATION_MS,
 } from './toastBatchController';
 
+const COMPACT_VISIBLE_TOASTS = 3;
+const EXPANDED_VISIBLE_TOASTS = 99;
+
 /**
  * Toaster component to be placed at the app root.
  * Uses CSS variables from the theme for consistent styling.
@@ -15,16 +18,15 @@ import {
 export function Toaster() {
   const toasterRef = useRef<HTMLElement | null>(null);
   const [isHovered, setIsHovered] = useState(false);
-  const [hasFocusWithin, setHasFocusWithin] = useState(false);
   const toastBatch = useSyncExternalStore(
     subscribeToToastBatch,
     getToastBatchSnapshot,
     getToastBatchSnapshot
   );
-  const isExpanded = isHovered || hasFocusWithin;
+  const isExpanded = isHovered;
   const visibleToasts = isExpanded
-    ? Math.max(3, toastBatch.activeToastIds.length)
-    : 3;
+    ? EXPANDED_VISIBLE_TOASTS
+    : COMPACT_VISIBLE_TOASTS;
 
   useEffect(() => {
     const toasterNode = toasterRef.current;
@@ -40,29 +42,12 @@ export function Toaster() {
       setIsHovered(false);
     };
 
-    const handleFocusIn = () => {
-      setHasFocusWithin(true);
-    };
-
-    const handleFocusOut = (event: FocusEvent) => {
-      const nextTarget = event.relatedTarget as Node | null;
-      if (nextTarget && toasterNode.contains(nextTarget)) {
-        return;
-      }
-
-      setHasFocusWithin(false);
-    };
-
     toasterNode.addEventListener('mouseenter', handleMouseEnter);
     toasterNode.addEventListener('mouseleave', handleMouseLeave);
-    toasterNode.addEventListener('focusin', handleFocusIn);
-    toasterNode.addEventListener('focusout', handleFocusOut);
 
     return () => {
       toasterNode.removeEventListener('mouseenter', handleMouseEnter);
       toasterNode.removeEventListener('mouseleave', handleMouseLeave);
-      toasterNode.removeEventListener('focusin', handleFocusIn);
-      toasterNode.removeEventListener('focusout', handleFocusOut);
     };
   }, []);
 
