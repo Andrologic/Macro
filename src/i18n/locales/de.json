@@ -1177,7 +1177,13 @@
     "emptyTitle": "Keine Benachrichtigungen",
     "emptySubtitle": "Hier erscheinen Info-, Warn- und Fehlermeldungen.",
     "allRead": "Alles eingeholt",
-    "unreadCount": "{{count}} ungelesen"
+    "unreadCount": "{{count}} ungelesen",
+    "group": {
+      "lessThanMinute": "Vor weniger als einer Minute",
+      "thisHour": "Diese Stunde",
+      "today": "Heute",
+      "yesterday": "Gestern"
+    }
   },
   "models": {
     "noProviders": "Es sind noch keine Provider konfiguriert. Füge zuerst einen Provider hinzu.",

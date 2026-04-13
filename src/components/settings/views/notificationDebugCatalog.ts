@@ -18,9 +18,13 @@ export interface ActionableNotificationBlueprintDraft {
   tone: 'info' | 'warning' | 'error';
   title: string;
   description: string;
-  actionCount: 1 | 2;
-  primaryActionLabel: string;
-  secondaryActionLabel: string;
+  actions: ActionableNotificationBlueprintActionDraft[];
+}
+
+export interface ActionableNotificationBlueprintActionDraft {
+  label: string;
+  variant: 'primary' | 'secondary';
+  dismissOnSuccess: boolean;
 }
 
 export interface ActionableNotificationBlueprintPreviewAction {
@@ -40,9 +44,18 @@ export const DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT: ActionableNotifica
   tone: 'warning',
   title: 'Base branch missing',
   description: 'Choose what to do next to continue safely.',
-  actionCount: 2,
-  primaryActionLabel: 'Create',
-  secondaryActionLabel: 'Open settings',
+  actions: [
+    {
+      label: 'Create',
+      variant: 'primary',
+      dismissOnSuccess: true,
+    },
+    {
+      label: 'Open settings',
+      variant: 'secondary',
+      dismissOnSuccess: true,
+    },
+  ],
 };
 
 const wait = async (durationMs: number): Promise<void> => {
@@ -89,29 +102,25 @@ export const simulateNotificationBlueprintAction = async (): Promise<void> => {
 export const getActionableNotificationBlueprintPreviewActions = (
   draft: ActionableNotificationBlueprintDraft
 ): ActionableNotificationBlueprintPreviewAction[] => {
-  const actions: ActionableNotificationBlueprintPreviewAction[] = [
-    {
-      label: normalizeActionLabel(draft.primaryActionLabel, 'Primary action'),
-      variant: 'primary',
-    },
-  ];
-
-  if (draft.actionCount === 2) {
-    actions.push({
-      label: normalizeActionLabel(draft.secondaryActionLabel, 'Secondary action'),
-      variant: 'secondary',
-    });
-  }
-
-  return actions;
+  return draft.actions.slice(0, 2).map((action, index) => ({
+    label: normalizeActionLabel(
+      action.label,
+      index === 0 ? 'Primary action' : 'Secondary action'
+    ),
+    variant: action.variant === 'secondary' ? 'secondary' : 'primary',
+  }));
 };
 
 const createActionableNotificationBlueprintActions = (
   draft: ActionableNotificationBlueprintDraft
 ): NotificationActionSpec[] =>
-  getActionableNotificationBlueprintPreviewActions(draft).map((action) => ({
-    ...action,
-    dismissOnSuccess: true,
+  draft.actions.slice(0, 2).map((action, index) => ({
+    label: normalizeActionLabel(
+      action.label,
+      index === 0 ? 'Primary action' : 'Secondary action'
+    ),
+    variant: action.variant === 'secondary' ? 'secondary' : 'primary',
+    dismissOnSuccess: action.dismissOnSuccess !== false,
     onClick: async () => {
       await simulateNotificationBlueprintAction();
     },
@@ -164,7 +173,7 @@ export const emitActionableNotificationBlueprint = async (
   channel: NotificationBlueprintChannel
 ): Promise<NotificationBlueprintEmitResult> => {
   let inAppSent = false;
-  let desktopSent = false;
+  const desktopSent = false;
 
   if (channel !== 'desktop') {
     const result = notify.actionRequired(draft.title, {
@@ -174,14 +183,6 @@ export const emitActionableNotificationBlueprint = async (
     });
 
     inAppSent = result !== 'notifications-disabled';
-  }
-
-  if (channel !== 'in_app') {
-    desktopSent = await emitDesktopBlueprintPreview(
-      'actionable',
-      draft.title,
-      draft.description
-    );
   }
 
   return {

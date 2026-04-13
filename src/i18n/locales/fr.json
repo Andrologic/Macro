@@ -1177,7 +1177,13 @@
     "emptyTitle": "Aucune notification",
     "emptySubtitle": "Les notifications d’informations, d’avertissements et d’erreurs apparaissent ici.",
     "allRead": "Tous rattrapés",
-    "unreadCount": "{{count}} non lu"
+    "unreadCount": "{{count}} non lu",
+    "group": {
+      "lessThanMinute": "Il y a moins d’une minute",
+      "thisHour": "Cette heure-ci",
+      "today": "Aujourd’hui",
+      "yesterday": "Hier"
+    }
   },
   "models": {
     "noProviders": "Aucun provider configuré pour l'instant. Ajoutez d'abord un provider.",

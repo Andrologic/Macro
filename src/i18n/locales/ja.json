@@ -1177,7 +1177,13 @@
     "emptyTitle": "通知はありません",
     "emptySubtitle": "情報、警告、エラー通知がここに表示されます。",
     "allRead": "全部追いついた",
-    "unreadCount": "{{count}}未読"
+    "unreadCount": "{{count}}未読",
+    "group": {
+      "lessThanMinute": "1分未満前",
+      "thisHour": "この1時間",
+      "today": "今日",
+      "yesterday": "昨日"
+    }
   },
   "models": {
     "noProviders": "まだプロバイダーが設定されていません。先にプロバイダーを追加してください。",
