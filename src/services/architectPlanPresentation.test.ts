@@ -70,5 +70,7 @@ describe('architectPlanPresentation', () => {
         { label: 'something else' },
       ])
     ).toBe('new plan 3');
+    expect(getNextDefaultNewPlanLabel([])).toBe('new plan');
+    expect(getNextDefaultNewPlanLabel([{ label: 'new plan' }])).toBe('new plan 2');
   });
 });

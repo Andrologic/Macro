@@ -1,5 +1,5 @@
 import {
-  getArchitectPlanProjectIds,
+  isArchitectPlanVisibleForScope,
   type ArchitectPlanSummary,
 } from '../../services/architectPlanService';
 
@@ -18,12 +18,7 @@ export interface PlanSelectorRefreshState {
 export const isPlanVisibleForSelection = (
   plan: ArchitectPlanSummary,
   scopedProjectIds: string[]
-): boolean => {
-  if (scopedProjectIds.length === 0) return true;
-  const scopedProjectIdSet = new Set(scopedProjectIds);
-  const planProjectIds = getArchitectPlanProjectIds(plan);
-  return planProjectIds.length === 0 || planProjectIds.some((projectId) => scopedProjectIdSet.has(projectId));
-};
+): boolean => isArchitectPlanVisibleForScope(plan, scopedProjectIds);
 
 export const filterPlansForDisplay = (
   plans: ArchitectPlanSummary[],
@@ -38,18 +33,44 @@ export const filterPlansForDisplay = (
     return showArchived ? plan.status === 'archived' : plan.status !== 'archived' && plan.status !== 'deleted';
   });
 
+const comparePlanSelectionPriority = (
+  left: ArchitectPlanSummary,
+  right: ArchitectPlanSummary
+): number => {
+  const leftUpdatedAt = new Date(left.updatedAt).getTime();
+  const rightUpdatedAt = new Date(right.updatedAt).getTime();
+  if (leftUpdatedAt !== rightUpdatedAt) {
+    return rightUpdatedAt - leftUpdatedAt;
+  }
+
+  const leftCreatedAt = new Date(left.createdAt).getTime();
+  const rightCreatedAt = new Date(right.createdAt).getTime();
+  if (leftCreatedAt !== rightCreatedAt) {
+    return rightCreatedAt - leftCreatedAt;
+  }
+
+  return left.id.localeCompare(right.id);
+};
+
 export const computePlanSelectorRefreshState = (params: {
   plans: ArchitectPlanSummary[];
   scopedProjectIds: string[];
   showArchived: boolean;
   preferredActivePlanId?: string | null;
+  currentActivePlanId?: string | null;
   mutation?: PlanSelectorMutationCheck;
 }): PlanSelectorRefreshState => {
-  const visiblePlans = filterPlansForDisplay(params.plans, params.scopedProjectIds, params.showArchived);
+  const visiblePlans = filterPlansForDisplay(
+    params.plans,
+    params.scopedProjectIds,
+    params.showArchived
+  ).sort(comparePlanSelectionPriority);
   const nextActivePlanId =
     params.preferredActivePlanId && visiblePlans.some((plan) => plan.id === params.preferredActivePlanId)
       ? params.preferredActivePlanId
-      : visiblePlans[0]?.id ?? null;
+      : params.currentActivePlanId && visiblePlans.some((plan) => plan.id === params.currentActivePlanId)
+        ? params.currentActivePlanId
+        : visiblePlans[0]?.id ?? null;
 
   const targetPlan = params.mutation
     ? params.plans.find((plan) => plan.id === params.mutation?.planId) || null

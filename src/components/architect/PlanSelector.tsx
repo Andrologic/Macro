@@ -2,11 +2,11 @@
 import { useTranslation } from 'react-i18next';
 import {
   archiveArchitectPlan,
-  createArchitectPlan,
   getArchitectPlan,
   getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
+  isArchitectPlanVisibleForScope,
   isArchitectPlanReplicaDivergenceError,
   listArchitectPlans,
   repairArchitectPlanReplicas,
@@ -34,7 +34,6 @@ import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { cn } from '../../utils/cn';
 import { formatDate } from '../../i18n/format';
 import {
-  DEFAULT_NEW_PLAN_LABEL,
   getArchitectPlanDisplayName,
   getArchitectPlanEditableName,
   getArchitectPlanPrimaryName,
@@ -226,6 +225,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       scopedProjectIds,
       showArchived,
       preferredActivePlanId: activeArchitectPlanId || refreshed.activePlanId,
+      currentActivePlanId: activePlanId || activeArchitectPlanId,
       mutation: params.mutation,
     });
 
@@ -281,6 +281,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         scopedProjectIds,
         showArchived,
         preferredActivePlanId: activeArchitectPlanId || fullResult.activePlanId,
+        currentActivePlanId: activePlanId || activeArchitectPlanId,
       });
       setPlans(refreshState.visiblePlans);
       setActivePlanId(refreshState.nextActivePlanId);
@@ -296,14 +297,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             appStore.selectedGroupId,
             appStore.selectedProjectId
           );
-          const currentScopedProjectIdSet = new Set(currentScopedProjectIds);
-          const planProjectIds = getArchitectPlanProjectIds(plan);
-          const isPlanAlreadyInScope =
-            currentScopedProjectIdSet.size > 0 &&
-            (planProjectIds.length === 0 ||
-              planProjectIds.some((projectId) => currentScopedProjectIdSet.has(projectId)));
+          const isPlanAlreadyInScope = isArchitectPlanVisibleForScope(plan, currentScopedProjectIds);
           if (planProjectId && !isPlanAlreadyInScope) {
-            await appStore.switchProjectContext(planProjectId);
+            await appStore.switchProjectContext(planProjectId, {
+              restoreProjectContext: false,
+              ensureAutoPlan: false,
+            });
           }
 
           setPlanNodes(plan.nodes || []);
@@ -362,14 +361,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         appStore.selectedGroupId,
         appStore.selectedProjectId
       );
-      const currentScopedProjectIdSet = new Set(currentScopedProjectIds);
-      const planProjectIds = getArchitectPlanProjectIds(plan);
-      const isPlanAlreadyInScope =
-        currentScopedProjectIdSet.size > 0 &&
-        (planProjectIds.length === 0 ||
-          planProjectIds.some((projectId) => currentScopedProjectIdSet.has(projectId)));
+      const isPlanAlreadyInScope = isArchitectPlanVisibleForScope(plan, currentScopedProjectIds);
       if (planProjectId && !isPlanAlreadyInScope) {
-        await appStore.switchProjectContext(planProjectId);
+        await appStore.switchProjectContext(planProjectId, {
+          restoreProjectContext: false,
+          ensureAutoPlan: false,
+        });
       }
 
       setActivePlanId(planId);
@@ -420,34 +417,17 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         return;
       }
 
-      const existingBlankPlan = await ensureScopedBlankPlan({
+      const ensuredBlankPlan = await ensureScopedBlankPlan({
         branchName: targetBranch,
         scopedProjectIds: scopedActionableProjectIds,
         contextProjectIds,
+        trigger: 'explicit_create',
       });
-      if (existingBlankPlan) {
+      if (ensuredBlankPlan) {
         await loadPlans(false);
-        await activatePlan(existingBlankPlan.id);
+        await activatePlan(ensuredBlankPlan.id);
         return;
       }
-
-      const created = await createArchitectPlan({
-        branchName: targetBranch,
-        label: DEFAULT_NEW_PLAN_LABEL,
-        projectId: scopedActionableProjectIds[0] || undefined,
-        projectIds: scopedActionableProjectIds.length > 0 ? scopedActionableProjectIds : undefined,
-        contextProjectIds,
-        targetBranchesByProjectId: Object.fromEntries(
-          scopedActionableProjectIds.map((projectId) => [
-            projectId,
-            getProjectById(projectId)?.gitFlowSettings?.baseBranch || targetBranch,
-          ])
-        ),
-        status: 'draft',
-        setActive: true,
-      });
-      await loadPlans(false);
-      await activatePlan(created.id);
     } catch (err) {
       if (openReplicaRepair(err, () => handleCreatePlan())) {
         return;

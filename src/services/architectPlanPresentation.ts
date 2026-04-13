@@ -32,12 +32,18 @@ export const getDefaultNewPlanLabelNumber = (value?: string | null): number | nu
 export const getNextDefaultNewPlanLabel = (
   plans: Array<Pick<ArchitectPlanPresentationShape, 'label'>>
 ): string => {
-  const maxNumber = plans.reduce((currentMax, plan) => {
-    const value = getDefaultNewPlanLabelNumber(plan.label);
-    return value !== null && Number.isFinite(value) ? Math.max(currentMax, value) : currentMax;
-  }, 0);
+  const numbers = plans
+    .map((plan) => getDefaultNewPlanLabelNumber(plan.label))
+    .filter((value): value is number => value !== null && Number.isFinite(value));
 
-  return `${DEFAULT_NEW_PLAN_LABEL} ${maxNumber + 1}`;
+  if (numbers.length === 0) {
+    return DEFAULT_NEW_PLAN_LABEL;
+  }
+
+  const maxNumber = numbers.reduce((currentMax, value) => Math.max(currentMax, value), 0);
+  return maxNumber <= 0
+    ? `${DEFAULT_NEW_PLAN_LABEL} 2`
+    : `${DEFAULT_NEW_PLAN_LABEL} ${maxNumber + 1}`;
 };
 
 export const isCanonicalArchitectPlan = (plan: ArchitectPlanPresentationShape): boolean => {
