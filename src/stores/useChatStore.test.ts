@@ -242,7 +242,7 @@ const architectPlans = new Map<string, ArchitectPlanRecord>();
 const architectPlanMessages = new Map<string, Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: string }>>();
 let tauriAvailable = false;
 let gitBranchesByRepo: Record<string, { local: Array<{ name: string; is_head: boolean; commit: string }>; remote: Array<{ name: string; is_head: boolean; commit: string }>; current: string | null }> = {};
-let chatSnapshotConversations: Array<{
+type ChatSnapshotConversationRecord = {
   id: string;
   title: string;
   description: string | null;
@@ -253,7 +253,8 @@ let chatSnapshotConversations: Array<{
   last_message: string | null;
   message_count: number;
   updated_at: string;
-}> = [];
+};
+let chatSnapshotConversations: ChatSnapshotConversationRecord[] = [];
 let chatSnapshotMessages: Array<{
   id: string;
   conversation_id: string;
@@ -531,6 +532,22 @@ const createConversation = (id: string, projectId = 'project-1'): Conversation =
   is_unread: false,
 });
 
+const createChatSnapshotConversation = (
+  id: string,
+  overrides: Partial<ChatSnapshotConversationRecord> = {}
+): ChatSnapshotConversationRecord => ({
+  id,
+  title: overrides.title ?? `Conversation ${id}`,
+  description: overrides.description ?? '',
+  scope_mode: overrides.scope_mode ?? 'Architect',
+  task_id: overrides.task_id ?? null,
+  group_id: overrides.group_id ?? 'group-1',
+  project_id: overrides.project_id ?? 'project-1',
+  last_message: overrides.last_message ?? '',
+  message_count: overrides.message_count ?? 0,
+  updated_at: overrides.updated_at ?? '2026-03-19T00:00:00.000Z',
+});
+
 const createPlan = (overrides: Partial<ArchitectPlanRecord> = {}): ArchitectPlanRecord => ({
   id: 'plan-1',
   slug: 'plan-1',
@@ -548,6 +565,161 @@ const createPlan = (overrides: Partial<ArchitectPlanRecord> = {}): ArchitectPlan
   predictedBranches: [],
   ...overrides,
 });
+
+type ArchitectScenarioPlanKind =
+  | 'blank'
+  | 'started'
+  | 'legacy_unscoped'
+  | 'renamed_blank'
+  | 'scoped_multi_project';
+
+const createScenarioPlan = (
+  kind: ArchitectScenarioPlanKind,
+  overrides: Partial<ArchitectPlanRecord> = {}
+): ArchitectPlanRecord => {
+  switch (kind) {
+    case 'blank':
+      return createPlan({
+        label: 'new plan',
+        description: '',
+        status: 'draft',
+        nodes: [],
+        predictedBranches: [],
+        ...overrides,
+      });
+    case 'started':
+      return createPlan({
+        label: 'Checkout refresh',
+        description: 'Started planning',
+        status: 'draft',
+        ...overrides,
+      });
+    case 'legacy_unscoped':
+      return createPlan({
+        label: 'new plan',
+        description: '',
+        projectId: undefined,
+        projectIds: [],
+        nodes: [],
+        predictedBranches: [],
+        ...overrides,
+      });
+    case 'renamed_blank':
+      return createPlan({
+        label: 'Research scratchpad',
+        description: '',
+        status: 'draft',
+        nodes: [],
+        predictedBranches: [],
+        ...overrides,
+      });
+    case 'scoped_multi_project':
+      return createPlan({
+        label: 'Checkout refresh',
+        projectId: 'project-2',
+        projectIds: ['project-2'],
+        status: 'draft',
+        ...overrides,
+      });
+    default:
+      return createPlan(overrides);
+  }
+};
+
+const createTranscriptEntry = (
+  overrides: Partial<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: string }> = {}
+) => ({
+  id: overrides.id ?? 'm-1',
+  role: overrides.role ?? 'assistant',
+  content: overrides.content ?? 'Architect transcript entry',
+  createdAt: overrides.createdAt ?? '2026-03-19T00:01:00.000Z',
+});
+
+const createChatMessageRecord = (
+  overrides: Partial<{
+    id: string;
+    conversation_id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    created_at: string;
+  }> = {}
+) => ({
+  id: overrides.id ?? 'm-1',
+  conversation_id: overrides.conversation_id ?? 'plan-conv',
+  role: overrides.role ?? 'assistant',
+  content: overrides.content ?? 'Architect transcript entry',
+  created_at: overrides.created_at ?? '2026-03-19T00:01:00.000Z',
+});
+
+const createIdleChatStoreState = (overrides: Record<string, unknown> = {}) => ({
+  conversations: [],
+  messages: [],
+  selectedConversationId: null,
+  selectedConversationIdsByMode: {},
+  isLoading: false,
+  isStreaming: false,
+  lastError: null,
+  abortController: null,
+  messageImagesByMessageId: {},
+  composerContextRefs: [],
+  ...overrides,
+});
+
+const createArchitectStoreState = (params: {
+  conversations?: Conversation[];
+  messages?: Array<Record<string, unknown>>;
+  selectedConversationId?: string | null;
+  selectedConversationIdsByMode?: Record<string, string>;
+} = {}) =>
+  createIdleChatStoreState({
+    conversations: params.conversations ?? [createConversation('plan-conv')],
+    messages: params.messages ?? [],
+    selectedConversationId: params.selectedConversationId ?? 'plan-conv',
+    selectedConversationIdsByMode: params.selectedConversationIdsByMode ?? { Architect: 'plan-conv' },
+  });
+
+const setArchitectStoreState = (
+  useChatStore: { setState: (state: Record<string, unknown>) => void },
+  params: Parameters<typeof createArchitectStoreState>[0] = {}
+) => {
+  useChatStore.setState(createArchitectStoreState(params));
+};
+
+const getLatestArchitectToolHandler = () => {
+  const lastCall = ((streamChatMock as unknown as {
+    mock: { calls: Array<Array<unknown>> };
+  }).mock.calls.at(-1)?.[0] ?? null) as {
+    onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<string | void>;
+  } | null;
+  expect(lastCall?.onToolCall).toBeDefined();
+  return lastCall?.onToolCall!;
+};
+
+const sendArchitectMessageAndGetToolHandler = async (
+  useChatStore: Awaited<ReturnType<typeof loadChatStore>>['useChatStore'],
+  params: {
+    conversationId?: string;
+    content: string;
+  }
+) => {
+  await useChatStore.getState().sendMessage({
+    conversationId: params.conversationId ?? 'plan-conv',
+    content: params.content,
+  });
+  return getLatestArchitectToolHandler();
+};
+
+const expectArchitectSelection = (
+  useChatStore: Awaited<ReturnType<typeof loadChatStore>>['useChatStore'],
+  params: {
+    planId: string;
+    conversationId: string;
+  }
+) => {
+  expect(appState.activeArchitectPlanId).toBe(params.planId);
+  expect(useChatStore.getState().selectedConversationId).toBe(params.conversationId);
+  expect(useChatStore.getState().selectedConversationIdsByMode.Architect).toBe(params.conversationId);
+};
 
 const createManualFeatureTask = (overrides: Record<string, unknown> = {}) => ({
   id: 'manual-task-1',
@@ -1018,30 +1190,18 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.activePlanContext = { targetBranch: 'develop' };
 
     chatSnapshotConversations = [
-      {
-        id: 'project-architect-conversation',
+      createChatSnapshotConversation('project-architect-conversation', {
         title: 'Architect - Macro',
-        description: '',
-        scope_mode: 'Architect',
-        task_id: null,
-        group_id: 'group-1',
-        project_id: 'project-1',
         last_message: 'fallback',
         message_count: 1,
         updated_at: '2026-03-19T00:03:00.000Z',
-      },
-      {
-        id: 'plan-conv',
+      }),
+      createChatSnapshotConversation('plan-conv', {
         title: 'Checkout refresh',
-        description: '',
-        scope_mode: 'Architect',
-        task_id: null,
-        group_id: 'group-1',
-        project_id: 'project-1',
         last_message: 'latest',
         message_count: 2,
         updated_at: '2026-03-19T00:04:00.000Z',
-      },
+      }),
     ];
     chatSnapshotMessages = [
       {
@@ -1071,6 +1231,131 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       useChatStore.getState().getConversationMessages('plan-conv').map((message: { id: string }) => message.id)
     ).toEqual(['m-1', 'm-2']);
     expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the active plan conversation while initialize switches project scope for the active plan', async () => {
+    tauriAvailable = true;
+
+    const plan = createScenarioPlan('scoped_multi_project', {
+      id: 'plan-cross-project',
+      conversationId: 'plan-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+    appState.selectedProjectId = 'project-1';
+
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('project-architect-conversation', {
+        description: '',
+        title: 'Architect - Web',
+        last_message: 'fallback',
+        message_count: 1,
+        updated_at: '2026-03-19T00:03:00.000Z',
+      }),
+      createChatSnapshotConversation('project-2-architect-fallback', {
+        description: '',
+        project_id: 'project-2',
+        title: 'Architect - API',
+        last_message: 'other fallback',
+        message_count: 1,
+        updated_at: '2026-03-19T00:05:00.000Z',
+      }),
+      createChatSnapshotConversation('plan-conv', {
+        description: '',
+        project_id: 'project-2',
+        title: 'Checkout refresh',
+        last_message: 'latest',
+        message_count: 2,
+        updated_at: '2026-03-19T00:04:00.000Z',
+      }),
+    ];
+    chatSnapshotMessages = [
+      createChatMessageRecord({
+        id: 'm-1',
+        conversation_id: 'plan-conv',
+        role: 'user',
+        content: 'First question',
+      }),
+      createChatMessageRecord({
+        id: 'm-2',
+        conversation_id: 'plan-conv',
+        role: 'assistant',
+        content: 'Second answer',
+        created_at: '2026-03-19T00:02:00.000Z',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+
+    expect(appState.switchProjectContext).toHaveBeenCalledWith('project-2', {
+      restoreProjectContext: false,
+      ensureAutoPlan: false,
+    });
+    expectArchitectSelection(useChatStore, {
+      planId: plan.id,
+      conversationId: 'plan-conv',
+    });
+    expect(
+      useChatStore.getState().getConversationMessages('plan-conv').map((message: { id: string }) => message.id)
+    ).toEqual(['m-1', 'm-2']);
+  });
+
+  it('reuses the dedicated plan conversation after splitting a shared architect conversation once', async () => {
+    const originalNow = Date.now;
+    Date.now = () => 1773900000001;
+
+    try {
+      const plan = createScenarioPlan('blank', {
+        id: 'plan-shared',
+        conversationId: 'shared-conv',
+      });
+      architectPlans.set(plan.id, plan);
+      architectPlanMessages.set(plan.id, [
+        createTranscriptEntry({
+          id: 'm-1',
+          content: 'Shared transcripts should move.',
+          createdAt: '2026-03-19T00:03:00.000Z',
+        }),
+      ]);
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(
+        createIdleChatStoreState({
+          conversations: [createConversation('shared-conv')],
+        })
+      );
+
+      const first = await useChatStore.getState().ensureArchitectConversationForPlan({
+        plan,
+        targetBranch: 'develop',
+        fallbackProjectId: 'project-1',
+        fallbackGroupId: 'group-1',
+        sharedConversation: true,
+      });
+
+      updateArchitectPlanMock.mockClear();
+      const updatedPlan = architectPlans.get(plan.id)!;
+      const second = await useChatStore.getState().ensureArchitectConversationForPlan({
+        plan: updatedPlan,
+        targetBranch: 'develop',
+        fallbackProjectId: 'project-1',
+        fallbackGroupId: 'group-1',
+      });
+
+      expect(first.createdConversation).toBe(true);
+      expect(second).toEqual({
+        conversationId: first.conversationId,
+        restoredTranscript: false,
+        createdConversation: false,
+      });
+      expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+      expect(useChatStore.getState().conversations.filter((conversation: Conversation) => conversation.id === first.conversationId)).toHaveLength(1);
+      expect(useChatStore.getState().selectedConversationId).toBe(first.conversationId);
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   it('renames an auto-created canonical plan after the first message', async () => {
@@ -1177,6 +1462,60 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().selectedConversationId).toBe('plan-conv');
   });
 
+  it('keeps the active plan and conversation on plan updates even when blank sibling drafts exist', async () => {
+    const activePlan = createScenarioPlan('scoped_multi_project', {
+      id: 'started-plan',
+      conversationId: 'plan-conv',
+      description: 'Started planning',
+    });
+    const blankSibling = createScenarioPlan('renamed_blank', {
+      id: 'blank-sibling',
+      conversationId: 'blank-conv',
+      projectId: 'project-2',
+      projectIds: ['project-2'],
+    });
+    architectPlans.set(activePlan.id, activePlan);
+    architectPlans.set(blankSibling.id, blankSibling);
+    appState.activeArchitectPlanId = activePlan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+    appState.selectedProjectId = 'project-1';
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [
+        createConversation('plan-conv'),
+        createConversation('blank-conv', 'project-2'),
+        {
+          ...createConversation('project-2-architect-fallback', 'project-2'),
+          title: 'Architect - API',
+        },
+      ],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Refresh the active plan context.',
+    });
+
+    await onToolCall('plan_update', {
+      plan_id: activePlan.id,
+      description: 'Updated scope',
+    });
+
+    expect(appState.switchProjectContext).toHaveBeenCalledWith('project-2', {
+      restoreProjectContext: false,
+      ensureAutoPlan: false,
+    });
+    expectArchitectSelection(useChatStore, {
+      planId: activePlan.id,
+      conversationId: 'plan-conv',
+    });
+    expect((updateArchitectPlanMock as unknown as {
+      mock: { calls: Array<Array<Record<string, unknown>>> };
+    }).mock.calls.every((call) => call[0]?.planId === activePlan.id)).toBe(true);
+    expect(architectPlans.get(blankSibling.id)?.label).toBe(blankSibling.label);
+  });
+
   it('does not pass label metadata during strategy generation unless explicitly requested', async () => {
     const plan = createPlan({
       id: 'plan-1',
@@ -1225,6 +1564,49 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     expect('label' in lastCall).toBe(false);
     expect('title' in lastCall).toBe(false);
+  });
+
+  it('keeps the active plan and conversation stable during strategy generation with blank sibling drafts', async () => {
+    const activePlan = createScenarioPlan('started', {
+      id: 'started-plan',
+      conversationId: 'plan-conv',
+    });
+    const blankSibling = createScenarioPlan('blank', {
+      id: 'blank-sibling',
+      conversationId: 'blank-conv',
+      label: 'new plan 2',
+    });
+    architectPlans.set(activePlan.id, activePlan);
+    architectPlans.set(blankSibling.id, blankSibling);
+    appState.activeArchitectPlanId = activePlan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv'), createConversation('blank-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Generate the strategy.',
+    });
+    updateArchitectPlanMock.mockClear();
+
+    await onToolCall('strategy_generate', {
+      nodes: [{ title: 'Implement checkout' }],
+    });
+
+    const lastCall = ((updateArchitectPlanMock as unknown as {
+      mock: { calls: Array<Array<Record<string, unknown>>> };
+    }).mock.calls.at(-1)?.[0] ?? {}) as Record<string, unknown>;
+
+    expectArchitectSelection(useChatStore, {
+      planId: activePlan.id,
+      conversationId: 'plan-conv',
+    });
+    expect('label' in lastCall).toBe(false);
+    expect('title' in lastCall).toBe(false);
+    expect(architectPlans.get(blankSibling.id)?.label).toBe('new plan 2');
   });
 
   it('does not pass label metadata during strategy updates unless explicitly requested', async () => {
@@ -1276,6 +1658,49 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     expect('label' in lastCall).toBe(false);
     expect('title' in lastCall).toBe(false);
+  });
+
+  it('keeps the active plan and conversation stable during strategy updates with blank sibling drafts', async () => {
+    const activePlan = createScenarioPlan('started', {
+      id: 'started-plan',
+      conversationId: 'plan-conv',
+    });
+    const blankSibling = createScenarioPlan('renamed_blank', {
+      id: 'blank-sibling',
+      conversationId: 'blank-conv',
+    });
+    architectPlans.set(activePlan.id, activePlan);
+    architectPlans.set(blankSibling.id, blankSibling);
+    appState.activeArchitectPlanId = activePlan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv'), createConversation('blank-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Update the strategy.',
+    });
+    updateArchitectPlanMock.mockClear();
+
+    await onToolCall('strategy_update', {
+      replace: true,
+      nodes: [{ title: 'Implement checkout' }],
+    });
+
+    const lastCall = ((updateArchitectPlanMock as unknown as {
+      mock: { calls: Array<Array<Record<string, unknown>>> };
+    }).mock.calls.at(-1)?.[0] ?? {}) as Record<string, unknown>;
+
+    expectArchitectSelection(useChatStore, {
+      planId: activePlan.id,
+      conversationId: 'plan-conv',
+    });
+    expect('label' in lastCall).toBe(false);
+    expect('title' in lastCall).toBe(false);
+    expect(architectPlans.get(blankSibling.id)?.label).toBe(blankSibling.label);
   });
 
   it('launches Architect conversations with the plan explorer internal profile', async () => {

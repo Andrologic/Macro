@@ -4760,8 +4760,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     };
 
-    const appState = useAppStore.getState();
-    const { mode, selectedGroupId, selectedProjectId, selectedTaskId } =
+    let appState = useAppStore.getState();
+    let { mode, selectedGroupId, selectedProjectId, selectedTaskId } =
       appState;
     let state = get();
 
@@ -4776,6 +4776,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
         if (!isCurrentRequest()) return null;
         if (activePlan && activePlan.status !== "deleted") {
+          const scopedProjectIds = getScopedProjectIds(
+            appState.projectGroups,
+            appState.selectedGroupId,
+            appState.selectedProjectId,
+          );
+          const isPlanAlreadyInScope = isArchitectPlanVisibleForScope(
+            activePlan,
+            scopedProjectIds,
+          );
+          const planProjectId = resolvePlanProjectContextId(
+            activePlan,
+            appState.selectedProjectId,
+          );
+          if (planProjectId && !isPlanAlreadyInScope) {
+            await appState.switchProjectContext(planProjectId, {
+              restoreProjectContext: false,
+              ensureAutoPlan: false,
+            });
+            if (!isCurrentRequest()) return null;
+            appState = useAppStore.getState();
+            ({ mode, selectedGroupId, selectedProjectId, selectedTaskId } =
+              appState);
+          }
           const conversationId = activePlan.conversationId;
           let hasSharedConversation = false;
           if (conversationId) {

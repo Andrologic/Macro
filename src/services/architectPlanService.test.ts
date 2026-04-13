@@ -43,6 +43,7 @@ interface LoadArchitectPlanServiceOptions {
 const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {}) => {
   mock.restore();
   const tauriModule = () => ({
+    aiGetDevProviderOverrides: async () => null,
     isTauriAvailable: () => options.tauriAvailable === true,
     workspaceGetActiveRoot: async () => options.workspaceRoot ?? '/repos/web',
     fsReadFileWithOptions: async (params: { path: string; workspacePath?: string | null }) => {
@@ -115,7 +116,9 @@ describe('architectPlanService', () => {
   beforeEach(async () => {
     storage = createLocalStorageMock();
     (globalThis as { window?: unknown }).window = {
+      addEventListener: () => undefined,
       localStorage: storage,
+      removeEventListener: () => undefined,
     };
     (globalThis as { localStorage?: unknown }).localStorage = storage;
     service = await loadArchitectPlanService();
@@ -212,6 +215,35 @@ describe('architectPlanService', () => {
         status: 'archived',
       })
     ).rejects.toThrow('Rename the plan before archiving it.');
+  });
+
+  it('allows archiving and deleting a renamed canonical plan', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000011-renamed',
+      label: 'new plan',
+    });
+
+    const renamed = await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      label: 'Architecture scratchpad',
+    });
+
+    expect(renamed.label).toBe('Architecture scratchpad');
+
+    const archived = await service.archiveArchitectPlan(branchName, created.id);
+    expect(archived.status).toBe('archived');
+
+    await expect(
+      service.deleteArchitectPlan({
+        branchName,
+        planId: created.id,
+      })
+    ).resolves.toBeUndefined();
+
+    const reloaded = await service.getArchitectPlan(branchName, created.id);
+    expect(reloaded?.status).toBe('deleted');
   });
 
   it('allows explicitly expanding expected project ids on update', async () => {
