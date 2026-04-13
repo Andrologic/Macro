@@ -24,13 +24,18 @@ import {
   type NotificationTone,
   type NotificationVariant,
 } from './notifications';
+import {
+  clearToastBatch,
+  registerToastInBatch,
+  setToastBatchExpiryHandler,
+  unregisterToastFromBatch,
+} from './toastBatchController';
 
 const NOTIFICATIONS_DISABLED_RESULT = 'notifications-disabled';
 const MAX_NOTIFICATION_ACTIONS = 2;
 const DEFAULT_NOTIFICATION_ACTION_ERROR_MESSAGE = 'An error occurred';
 
 type ToastMessage = Parameters<typeof sonnerToast>[0];
-type SonnerToastArgs = Parameters<typeof sonnerToast>;
 type SonnerCustomToastArgs = Parameters<typeof sonnerToast.custom>;
 type ToastId = string | number;
 type NotificationToastMethod = (
@@ -119,6 +124,12 @@ interface TemplatedNotificationPayload {
 
 let generatedNotificationCounter = 0;
 
+setToastBatchExpiryHandler((toastIds) => {
+  toastIds.forEach((toastId) => {
+    sonnerToast.dismiss(toastId);
+  });
+});
+
 const uncategorizedNotificationsEnabled = (): boolean =>
   useAuthStore.getState().user?.preferences.notifications !== false;
 
@@ -197,11 +208,40 @@ const toSonnerToastOptions = (
   };
 };
 
-const toCustomToastOptions = (
+const chainToastHandler = <TArgs extends unknown[]>(
+  first: ((...args: TArgs) => void) | undefined,
+  second: ((...args: TArgs) => void) | undefined
+): ((...args: TArgs) => void) | undefined => {
+  if (!first && !second) {
+    return undefined;
+  }
+
+  return (...args: TArgs) => {
+    first?.(...args);
+    second?.(...args);
+  };
+};
+
+const toBatchManagedToastOptions = (
   options: NotificationOptions | undefined,
   toastId: ToastId
 ): ExternalToast => {
   const baseOptions = toSonnerToastOptions(options, toastId);
+
+  return {
+    ...baseOptions,
+    duration: Infinity,
+    onDismiss: chainToastHandler(baseOptions.onDismiss, () => {
+      unregisterToastFromBatch(toastId);
+    }),
+  };
+};
+
+const toCustomToastOptions = (
+  options: NotificationOptions | undefined,
+  toastId: ToastId
+): ExternalToast => {
+  const baseOptions = toBatchManagedToastOptions(options, toastId);
   const {
     description: _description,
     closeButton: _closeButton,
@@ -585,6 +625,7 @@ const emitNotification = (
   let result: ToastId = historyId;
 
   if (toastEnabled) {
+    registerToastInBatch(toastId);
     result = emitToastChannel(level, message, toastId, options);
     if (tracked && level !== 'success') {
       persistNotification(level as NotificationLevel, historyId, toPersistableToastContent(message, options));
@@ -605,19 +646,22 @@ const emitVisibleToast = (
   }
 
   const { toastId } = resolveToastIdentity(options);
-  return method(message, toSonnerToastOptions(options, toastId));
+  registerToastInBatch(toastId);
+  return method(message, toBatchManagedToastOptions(options, toastId));
 };
 
-function callVisibleToast<TArgs extends unknown[], TResult>(
-  method: (...args: TArgs) => TResult,
-  ...args: TArgs
-): TResult | typeof NOTIFICATIONS_DISABLED_RESULT {
+const emitVisibleCustomToast = (
+  renderToast: SonnerCustomToastArgs[0],
+  options?: NotificationOptions
+): ToastId | typeof NOTIFICATIONS_DISABLED_RESULT => {
   if (!uncategorizedNotificationsEnabled()) {
     return NOTIFICATIONS_DISABLED_RESULT;
   }
 
-  return method(...args);
-}
+  const { toastId } = resolveToastIdentity(options);
+  registerToastInBatch(toastId);
+  return sonnerToast.custom(renderToast, toBatchManagedToastOptions(options, toastId));
+};
 
 const buildTemplatedNotificationOptions = (
   payload: TemplatedNotificationPayload
@@ -681,6 +725,7 @@ const emitTemplatedNotification = (
   let result: ToastId = historyId;
 
   if (toastEnabled) {
+    registerToastInBatch(toastId);
     result = emitTemplatedToastChannel(payload, toastId, options);
     if (payload.tone !== 'success') {
       persistNotification(toNotificationLevel(payload.tone), historyId, {
@@ -731,8 +776,8 @@ const buildActionablePayload = (
 });
 
 export const toast = Object.assign(
-  ((...args: SonnerToastArgs) =>
-    callVisibleToast(sonnerToast, ...args)) as typeof sonnerToast,
+  ((message: ToastMessage, options?: NotificationOptions) =>
+    emitVisibleToast(sonnerToast, message, options)) as typeof sonnerToast,
   {
     success: ((message: ToastMessage, options?: NotificationOptions) =>
       options?.notification
@@ -744,12 +789,12 @@ export const toast = Object.assign(
       emitNotification('warning', message, options, true),
     error: (message: ToastMessage, options?: NotificationOptions) =>
       emitNotification('error', message, options, true),
-    message: (...args: SonnerToastArgs) =>
-      callVisibleToast(sonnerToast.message, ...args),
-    loading: (...args: SonnerToastArgs) =>
-      callVisibleToast(sonnerToast.loading, ...args),
-    custom: (...args: SonnerCustomToastArgs) =>
-      callVisibleToast(sonnerToast.custom, ...args),
+    message: ((message: ToastMessage, options?: NotificationOptions) =>
+      emitVisibleToast(sonnerToast.message, message, options)) as typeof sonnerToast.message,
+    loading: ((message: ToastMessage, options?: NotificationOptions) =>
+      emitVisibleToast(sonnerToast.loading, message, options)) as typeof sonnerToast.loading,
+    custom: ((renderToast: SonnerCustomToastArgs[0], options?: NotificationOptions) =>
+      emitVisibleCustomToast(renderToast, options)) as typeof sonnerToast.custom,
     promise: (promiseInput: Promise<unknown> | (() => Promise<unknown>), data?: unknown) => {
       if (!uncategorizedNotificationsEnabled()) {
         return NOTIFICATIONS_DISABLED_RESULT as ReturnType<typeof sonnerToast.promise>;
@@ -757,7 +802,15 @@ export const toast = Object.assign(
 
       return sonnerToast.promise(promiseInput, data as never);
     },
-    dismiss: sonnerToast.dismiss,
+    dismiss: ((toastId?: ToastId) => {
+      if (toastId === undefined) {
+        clearToastBatch();
+        return sonnerToast.dismiss();
+      }
+
+      unregisterToastFromBatch(toastId);
+      return sonnerToast.dismiss(toastId);
+    }) as typeof sonnerToast.dismiss,
     getHistory: sonnerToast.getHistory,
     getToasts: sonnerToast.getToasts,
   }
@@ -774,7 +827,7 @@ export const notify = {
     emitTemplatedNotification(buildInformationalPayload('error', title, options))) as NotifyInformationalMethod,
   actionRequired: ((title: string, options: Omit<ActionableNotificationInput, 'title'>) =>
     emitTemplatedNotification(buildActionablePayload(title, options))) as NotifyActionableMethod,
-  dismiss: sonnerToast.dismiss,
+  dismiss: toast.dismiss,
 };
 
 export const __testables = {

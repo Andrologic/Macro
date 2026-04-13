@@ -1,18 +1,94 @@
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Toaster as SonnerToaster } from 'sonner';
+import {
+  getToastBatchSnapshot,
+  pauseToastBatchTimer,
+  resumeToastBatchTimer,
+  subscribeToToastBatch,
+  TOAST_BATCH_DURATION_MS,
+} from './toastBatchController';
 
 /**
  * Toaster component to be placed at the app root.
  * Uses CSS variables from the theme for consistent styling.
  */
 export function Toaster() {
+  const toasterRef = useRef<HTMLElement | null>(null);
+  const [isHovered, setIsHovered] = useState(false);
+  const [hasFocusWithin, setHasFocusWithin] = useState(false);
+  const toastBatch = useSyncExternalStore(
+    subscribeToToastBatch,
+    getToastBatchSnapshot,
+    getToastBatchSnapshot
+  );
+  const isExpanded = isHovered || hasFocusWithin;
+  const visibleToasts = isExpanded
+    ? Math.max(3, toastBatch.activeToastIds.length)
+    : 3;
+
+  useEffect(() => {
+    const toasterNode = toasterRef.current;
+    if (!toasterNode) {
+      return;
+    }
+
+    const handleMouseEnter = () => {
+      setIsHovered(true);
+    };
+
+    const handleMouseLeave = () => {
+      setIsHovered(false);
+    };
+
+    const handleFocusIn = () => {
+      setHasFocusWithin(true);
+    };
+
+    const handleFocusOut = (event: FocusEvent) => {
+      const nextTarget = event.relatedTarget as Node | null;
+      if (nextTarget && toasterNode.contains(nextTarget)) {
+        return;
+      }
+
+      setHasFocusWithin(false);
+    };
+
+    toasterNode.addEventListener('mouseenter', handleMouseEnter);
+    toasterNode.addEventListener('mouseleave', handleMouseLeave);
+    toasterNode.addEventListener('focusin', handleFocusIn);
+    toasterNode.addEventListener('focusout', handleFocusOut);
+
+    return () => {
+      toasterNode.removeEventListener('mouseenter', handleMouseEnter);
+      toasterNode.removeEventListener('mouseleave', handleMouseLeave);
+      toasterNode.removeEventListener('focusin', handleFocusIn);
+      toasterNode.removeEventListener('focusout', handleFocusOut);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (toastBatch.activeToastIds.length === 0) {
+      return;
+    }
+
+    if (isExpanded) {
+      pauseToastBatchTimer();
+      return;
+    }
+
+    resumeToastBatchTimer();
+  }, [isExpanded, toastBatch.activeToastIds.length]);
+
   return (
     <SonnerToaster
+      ref={toasterRef}
       className="macro-toaster"
       position="bottom-right"
-      expand={false}
+      expand={isExpanded}
       richColors
       closeButton
-      duration={4000}
+      duration={TOAST_BATCH_DURATION_MS}
+      visibleToasts={visibleToasts}
       toastOptions={{
         style: {
           background: 'hsl(var(--card))',
