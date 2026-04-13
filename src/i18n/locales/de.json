@@ -390,6 +390,76 @@
       "toast": "Toast",
       "desktop": "Desktop",
       "both": "Toast + Desktop"
+    },
+    "notificationsDebug": {
+      "sectionTitle": "Debug",
+      "title": "Benachrichtigungs-Blueprints",
+      "description": "Verwenden Sie dieses reine Debug-Panel, um die zwei gemeinsamen Benachrichtigungs-Blueprints von Macro anzupassen.",
+      "desktopHint": "Desktop-Vorschauen umgehen die normale Vordergrundbeschränkung, damit Sie OS-Benachrichtigungen prüfen können, ohne die App in den Hintergrund zu schicken.",
+      "runtimeStatus": "Aktueller Desktop-Laufzeitstatus",
+      "clearCenter": "Zentrum leeren ({{count}})",
+      "clearCenterResult": "Benachrichtigungszentrum geleert.",
+      "labels": {
+        "informational": "Informativer Blueprint",
+        "actionable": "Interaktiver Blueprint"
+      },
+      "informationalDescription": "Zeigt die gemeinsame nicht-interaktive Benachrichtigungsvorlage für Info-, Erfolgs-, Warn- und Fehlertöne an.",
+      "actionableDescription": "Zeigt die gemeinsame interaktive Vorlage mit einer oder zwei simulierten Aktionen und passenden Tönen an.",
+      "actionableDesktopHint": "Interaktive Blueprints werden nur in der App validiert. Desktop-Benachrichtigungen rendern keine benutzerdefinierten Macro-Schaltflächen.",
+      "fields": {
+        "tone": "Ton",
+        "title": "Titel",
+        "description": "Beschreibung",
+        "actions": "Aktionen",
+        "primaryAction": "Primäre Aktion",
+        "primaryVariant": "Primäre Variante",
+        "primaryDismissOnSuccess": "Bei primärem Erfolg schließen",
+        "primaryDismissDescription": "Schließt den Toast und entfernt den Eintrag aus dem Zentrum nach einer erfolgreichen primären Aktion.",
+        "secondaryAction": "Sekundäre Aktion",
+        "secondaryVariant": "Sekundäre Variante",
+        "secondaryDismissOnSuccess": "Bei sekundärem Erfolg schließen",
+        "secondaryDismissDescription": "Schließt den Toast und entfernt den Eintrag aus dem Zentrum nach einer erfolgreichen sekundären Aktion."
+      },
+      "tones": {
+        "info": "Info",
+        "success": "Erfolg",
+        "warning": "Warnung",
+        "error": "Fehler"
+      },
+      "variants": {
+        "primary": "Primär",
+        "secondary": "Sekundär"
+      },
+      "channels": {
+        "inApp": "In-App",
+        "desktop": "Desktop",
+        "allChannels": "Alle Kanäle"
+      },
+      "summary": {
+        "inAppSent": "{{label}}: In-App-Vorschau gesendet.",
+        "inAppBlocked": "{{label}}: Die In-App-Vorschau wurde durch die aktuellen Benachrichtigungseinstellungen blockiert.",
+        "desktopSent": "{{label}}: Desktop-Vorschau gesendet.",
+        "desktopBlocked": "{{label}}: Die Desktop-Vorschau konnte mit dem aktuellen Laufzeit- oder Berechtigungsstatus nicht gesendet werden.",
+        "allChannels": "{{label}}: In-App {{inAppStatus}}, Desktop {{desktopStatus}}.",
+        "ok": "ok",
+        "blocked": "blockiert"
+      },
+      "defaults": {
+        "informational": {
+          "title": "Hintergrundindexierung abgeschlossen",
+          "description": "Alles ist auf dem neuesten Stand."
+        },
+        "actionable": {
+          "title": "Basis-Branch fehlt",
+          "description": "Wählen Sie den nächsten Schritt, um sicher fortzufahren.",
+          "actions": {
+            "primary": "Primäre Aktion",
+            "secondary": "Sekundäre Aktion",
+            "create": "Erstellen",
+            "openSettings": "Einstellungen öffnen"
+          }
+        }
+      }
     }
   },
   "project": {
@@ -1173,7 +1243,10 @@
     "openCenter": "Benachrichtigungen öffnen",
     "closeCenter": "Benachrichtigungen schließen",
     "clearAll": "Alles löschen",
+    "dismiss": "Benachrichtigung schließen",
     "remove": "Benachrichtigung entfernen",
+    "actionRequired": "Aktion erforderlich",
+    "actionError": "Ein Fehler ist aufgetreten",
     "emptyTitle": "Keine Benachrichtigungen",
     "emptySubtitle": "Hier erscheinen Info-, Warn- und Fehlermeldungen.",
     "allRead": "Alles eingeholt",

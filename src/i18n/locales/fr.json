@@ -390,6 +390,76 @@
       "toast": "Toast",
       "desktop": "Bureau",
       "both": "Toast + Bureau"
+    },
+    "notificationsDebug": {
+      "sectionTitle": "Debug",
+      "title": "Blueprints de notification",
+      "description": "Utilisez ce panneau de debug pour ajuster les deux blueprints de notification partagés de Macro.",
+      "desktopHint": "Les aperçus desktop contournent la restriction normale de premier plan afin de valider les notifications système sans mettre l'application en arrière-plan.",
+      "runtimeStatus": "État actuel du runtime desktop",
+      "clearCenter": "Vider le centre ({{count}})",
+      "clearCenterResult": "Centre de notifications vidé.",
+      "labels": {
+        "informational": "Blueprint informatif",
+        "actionable": "Blueprint actionnable"
+      },
+      "informationalDescription": "Prévisualise le template partagé non actionnable avec les tons info, succès, avertissement et erreur.",
+      "actionableDescription": "Prévisualise le template partagé actionnable avec une ou deux actions simulées et les tons correspondants.",
+      "actionableDesktopHint": "Les blueprints actionnables se valident uniquement dans l'application. Les notifications desktop n'affichent pas les boutons personnalisés de Macro.",
+      "fields": {
+        "tone": "Ton",
+        "title": "Titre",
+        "description": "Description",
+        "actions": "Actions",
+        "primaryAction": "Action principale",
+        "primaryVariant": "Variante principale",
+        "primaryDismissOnSuccess": "Fermer après succès principal",
+        "primaryDismissDescription": "Ferme le toast et retire l'entrée du centre après une action principale réussie.",
+        "secondaryAction": "Action secondaire",
+        "secondaryVariant": "Variante secondaire",
+        "secondaryDismissOnSuccess": "Fermer après succès secondaire",
+        "secondaryDismissDescription": "Ferme le toast et retire l'entrée du centre après une action secondaire réussie."
+      },
+      "tones": {
+        "info": "Info",
+        "success": "Succès",
+        "warning": "Avertissement",
+        "error": "Erreur"
+      },
+      "variants": {
+        "primary": "Principale",
+        "secondary": "Secondaire"
+      },
+      "channels": {
+        "inApp": "Dans l'application",
+        "desktop": "Desktop",
+        "allChannels": "Tous les canaux"
+      },
+      "summary": {
+        "inAppSent": "{{label}} : aperçu in-app envoyé.",
+        "inAppBlocked": "{{label}} : l’aperçu in-app a été bloqué par les réglages actuels de notification.",
+        "desktopSent": "{{label}} : aperçu desktop envoyé.",
+        "desktopBlocked": "{{label}} : l’aperçu desktop n’a pas pu être envoyé avec le runtime ou l’état de permission actuel.",
+        "allChannels": "{{label}} : in-app {{inAppStatus}}, desktop {{desktopStatus}}.",
+        "ok": "ok",
+        "blocked": "bloqué"
+      },
+      "defaults": {
+        "informational": {
+          "title": "Indexation en arrière-plan terminée",
+          "description": "Tout est à jour."
+        },
+        "actionable": {
+          "title": "Branche de base manquante",
+          "description": "Choisissez la suite pour continuer en toute sécurité.",
+          "actions": {
+            "primary": "Action principale",
+            "secondary": "Action secondaire",
+            "create": "Créer",
+            "openSettings": "Ouvrir les réglages"
+          }
+        }
+      }
     }
   },
   "project": {
@@ -1173,7 +1243,10 @@
     "openCenter": "Ouvrir les notifications",
     "closeCenter": "Fermer les notifications",
     "clearAll": "Tout effacer",
+    "dismiss": "Fermer la notification",
     "remove": "Supprimer la notification",
+    "actionRequired": "Action requise",
+    "actionError": "Une erreur est survenue",
     "emptyTitle": "Aucune notification",
     "emptySubtitle": "Les notifications d’informations, d’avertissements et d’erreurs apparaissent ici.",
     "allRead": "Tous rattrapés",
