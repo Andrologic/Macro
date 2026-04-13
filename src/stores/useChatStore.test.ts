@@ -73,7 +73,7 @@ const appState = {
   setPlanNodes: (_nodes: unknown[]) => undefined,
   setPredictedBranches: (_branches: unknown[]) => undefined,
   setActivePlanContext: (_context: unknown) => undefined,
-  switchProjectContext: async (_projectId: string) => undefined,
+  switchProjectContext: mock(async (_projectId: string, _options?: unknown) => undefined),
 };
 
 const providerState = {
@@ -461,6 +461,17 @@ const registerUseChatStoreMocks = () => {
     getArchitectPlanChatMessages: getArchitectPlanChatMessagesMock,
     getArchitectPlanProjectIds: (plan: ArchitectPlanRecord) =>
       Array.from(new Set([plan.projectId, ...(plan.projectIds ?? [])].filter(Boolean))) as string[],
+    isArchitectPlanVisibleForScope: (plan: ArchitectPlanRecord, scopedProjectIds: string[]) => {
+      if (scopedProjectIds.length === 0) {
+        return true;
+      }
+      const projectIds = Array.from(new Set([plan.projectId, ...(plan.projectIds ?? [])].filter(Boolean))) as string[];
+      if (projectIds.length === 0) {
+        return false;
+      }
+      const scopedProjectIdSet = new Set(scopedProjectIds);
+      return projectIds.some((projectId) => scopedProjectIdSet.has(projectId));
+    },
     getArchitectPlanNeeds: mock(async () => []),
     getGitFlowBaseBranch: () => 'develop',
     listArchitectPlans: listArchitectPlansMock,
@@ -657,6 +668,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     deleteConversationsMock.mockClear();
     importMessagesMock.mockClear();
     toolsStoreState.loadSettings.mockClear();
+    appState.switchProjectContext.mockClear();
   });
 
   afterEach(async () => {
@@ -1112,6 +1124,158 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'Refresh checkout state and cart recovery.'
     );
     expect(useChatStore.getState().conversations[0]?.title).toBe('Plan - Checkout refresh - 1710000000000');
+  });
+
+  it('hydrates the active plan after a tool update without triggering implicit auto-plan on project switch', async () => {
+    const plan = createPlan({
+      id: 'plan-1',
+      conversationId: 'plan-conv',
+      projectId: 'project-2',
+      projectIds: ['project-2'],
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+    appState.selectedProjectId = 'project-1';
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('plan-conv')],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'plan-conv',
+      content: 'Refresh the plan context.',
+    });
+
+    const onToolCall = (((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0]) as {
+      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<string | void>;
+    } | undefined)?.onToolCall;
+
+    expect(onToolCall).toBeDefined();
+    await onToolCall?.('plan_update', {
+      plan_id: plan.id,
+      description: 'Updated scope',
+    });
+
+    expect(appState.switchProjectContext).toHaveBeenCalledWith('project-2', {
+      restoreProjectContext: false,
+      ensureAutoPlan: false,
+    });
+    expect(appState.activeArchitectPlanId).toBe(plan.id);
+    expect(useChatStore.getState().selectedConversationId).toBe('plan-conv');
+  });
+
+  it('does not pass label metadata during strategy generation unless explicitly requested', async () => {
+    const plan = createPlan({
+      id: 'plan-1',
+      slug: 'plan-1',
+      title: 'plan-1',
+      label: 'Checkout refresh',
+      conversationId: 'plan-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('plan-conv')],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'plan-conv',
+      content: 'Generate the strategy.',
+    });
+    updateArchitectPlanMock.mockClear();
+
+    const onToolCall = (((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0]) as {
+      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<string | void>;
+    } | undefined)?.onToolCall;
+
+    await onToolCall?.('strategy_generate', {
+      nodes: [{ title: 'Implement checkout' }],
+    });
+
+    const lastCall = ((updateArchitectPlanMock as unknown as {
+      mock: { calls: Array<Array<Record<string, unknown>>> };
+    }).mock.calls.at(-1)?.[0] ?? {}) as Record<string, unknown>;
+
+    expect('label' in lastCall).toBe(false);
+    expect('title' in lastCall).toBe(false);
+  });
+
+  it('does not pass label metadata during strategy updates unless explicitly requested', async () => {
+    const plan = createPlan({
+      id: 'plan-1',
+      slug: 'plan-1',
+      title: 'plan-1',
+      label: 'Checkout refresh',
+      conversationId: 'plan-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('plan-conv')],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'plan-conv',
+      content: 'Update the strategy.',
+    });
+    updateArchitectPlanMock.mockClear();
+
+    const onToolCall = (((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0]) as {
+      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<string | void>;
+    } | undefined)?.onToolCall;
+
+    await onToolCall?.('strategy_update', {
+      replace: true,
+      nodes: [{ title: 'Implement checkout' }],
+    });
+
+    const lastCall = ((updateArchitectPlanMock as unknown as {
+      mock: { calls: Array<Array<Record<string, unknown>>> };
+    }).mock.calls.at(-1)?.[0] ?? {}) as Record<string, unknown>;
+
+    expect('label' in lastCall).toBe(false);
+    expect('title' in lastCall).toBe(false);
   });
 
   it('launches Architect conversations with the plan explorer internal profile', async () => {

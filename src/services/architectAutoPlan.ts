@@ -15,6 +15,7 @@ import {
   DEFAULT_NEW_PLAN_LABEL,
   getNextDefaultNewPlanLabel,
   getArchitectPlanEditableName,
+  isDefaultNewPlanFamilyLabel,
   isDefaultNewPlanBaseLabel,
   isCanonicalArchitectPlan,
 } from './architectPlanPresentation';
@@ -29,6 +30,7 @@ const architectAutoPlanService = createArchitectAutoPlanService({
   getArchitectPlanProjectIds,
   getNextDefaultNewPlanLabel,
   isCanonicalArchitectPlan,
+  isDefaultNewPlanFamilyLabel,
   isDefaultNewPlanBaseLabel,
   listArchitectPlans,
   getTargetBranchesByProjectId: (projectIds) => {
@@ -50,5 +52,6 @@ const architectAutoPlanService = createArchitectAutoPlanService({
 });
 
 export const isArchitectPlanBlankDraft = architectAutoPlanService.isArchitectPlanBlankDraft;
+export const isReusableBlankDraft = architectAutoPlanService.isReusableBlankDraft;
 export const ensureScopedBlankPlan = architectAutoPlanService.ensureScopedBlankPlan;
 export const ensureProjectGroupPlan = architectAutoPlanService.ensureProjectGroupPlan;

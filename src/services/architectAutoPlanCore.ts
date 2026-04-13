@@ -1,5 +1,11 @@
 import type { Need } from '../types';
-import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
+import {
+  isArchitectPlanVisibleForScope,
+  type ArchitectPlanRecord,
+  type ArchitectPlanSummary,
+} from './architectPlanService';
+
+export type ArchitectAutoPlanTrigger = 'implicit_resume' | 'explicit_create';
 
 export interface ArchitectAutoPlanDependencies {
   DEFAULT_NEW_PLAN_LABEL: string;
@@ -22,6 +28,7 @@ export interface ArchitectAutoPlanDependencies {
   ) => string[];
   getNextDefaultNewPlanLabel: (plans: ArchitectPlanSummary[]) => string;
   isCanonicalArchitectPlan: (plan: ArchitectPlanSummary) => boolean;
+  isDefaultNewPlanFamilyLabel: (value?: string | null) => boolean;
   isDefaultNewPlanBaseLabel: (value?: string | null) => boolean;
   listArchitectPlans: (
     branchName: string,
@@ -48,6 +55,18 @@ export interface EnsureProjectGroupPlanResult {
   needs: Need[];
 }
 
+interface ResolvedBlankPlanResult {
+  action: 'reused_blank' | 'expanded_blank';
+  plan: ArchitectPlanRecord;
+}
+
+interface ScopedBlankPlanParams {
+  branchName: string;
+  scopedProjectIds: string[];
+  contextProjectIds?: string[];
+  trigger?: ArchitectAutoPlanTrigger;
+}
+
 const trimToNull = (value?: string | null): string | null => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed.length > 0 ? trimmed : null;
@@ -69,35 +88,21 @@ const coversScope = (projectIds: string[], scopedProjectIds: string[]): boolean 
 };
 
 export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependencies) => {
-  const isDraftPlaceholderCandidate = (plan: ArchitectPlanSummary): boolean => {
-    if (plan.status !== 'draft') {
-      return false;
-    }
-
-    const editableName = deps.getArchitectPlanEditableName(plan);
-    return deps.isDefaultNewPlanBaseLabel(editableName) || (deps.isCanonicalArchitectPlan(plan) && !editableName);
-  };
-
-  const isPlanVisibleForScope = (
-    plan: Pick<ArchitectPlanSummary, 'projectId' | 'projectIds' | 'expectedProjectIds'>,
-    scopedProjectIds: string[]
-  ): boolean => {
-    if (scopedProjectIds.length === 0) return true;
-    const scopedProjectIdSet = new Set(scopedProjectIds);
-    const planProjectIds = deps.getArchitectPlanProjectIds(plan);
-    return planProjectIds.length === 0 || planProjectIds.some((projectId) => scopedProjectIdSet.has(projectId));
-  };
+  const belongsToPlaceholderFamily = (plan: ArchitectPlanSummary): boolean =>
+    plan.status === 'draft' &&
+    deps.isCanonicalArchitectPlan(plan) &&
+    deps.isDefaultNewPlanFamilyLabel(deps.getArchitectPlanEditableName(plan));
 
   const listScopedPlans = async (branchName: string, scopedProjectIds: string[]) => {
     const fullResult = await deps.listArchitectPlans(branchName, true, true);
-    const scopedPlans = fullResult.plans.filter((plan) => isPlanVisibleForScope(plan, scopedProjectIds));
+    const scopedPlans = fullResult.plans.filter((plan) => isArchitectPlanVisibleForScope(plan, scopedProjectIds));
     return {
       fullResult,
       scopedPlans,
     };
   };
 
-  const isArchitectPlanBlankDraft = (
+  const isReusableBlankDraft = (
     plan: Pick<ArchitectPlanRecord, 'status' | 'description' | 'nodes' | 'predictedBranches'>,
     needs: Need[],
     chatMessages: Array<unknown>
@@ -109,25 +114,55 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
     needs.length === 0 &&
     chatMessages.length === 0;
 
-  const ensureScopedBlankPlan = async (params: {
+  const compareBlankDraftPriority = (
+    left: Pick<ArchitectPlanSummary, 'id' | 'createdAt' | 'updatedAt'>,
+    right: Pick<ArchitectPlanSummary, 'id' | 'createdAt' | 'updatedAt'>,
+    preferredPlanId?: string | null
+  ): number => {
+    const leftIsPreferred = preferredPlanId === left.id;
+    const rightIsPreferred = preferredPlanId === right.id;
+    if (leftIsPreferred !== rightIsPreferred) {
+      return leftIsPreferred ? -1 : 1;
+    }
+
+    const leftTime = new Date(left.updatedAt).getTime();
+    const rightTime = new Date(right.updatedAt).getTime();
+    if (leftTime !== rightTime) {
+      return rightTime - leftTime;
+    }
+
+    const leftCreatedAt = new Date(left.createdAt).getTime();
+    const rightCreatedAt = new Date(right.createdAt).getTime();
+    if (leftCreatedAt !== rightCreatedAt) {
+      return rightCreatedAt - leftCreatedAt;
+    }
+
+    return left.id.localeCompare(right.id);
+  };
+
+  const inspectVisiblePlans = async (params: {
     branchName: string;
-    scopedProjectIds: string[];
-    contextProjectIds?: string[];
-  }): Promise<ArchitectPlanRecord | null> => {
-    const fullResult = await listScopedPlans(params.branchName, params.scopedProjectIds);
-    const draftCandidates = fullResult.scopedPlans.filter(isDraftPlaceholderCandidate);
-    const nextLabels = [...fullResult.scopedPlans];
+    visiblePlans: ArchitectPlanSummary[];
+    preferredPlanId?: string | null;
+  }): Promise<{
+    blankCandidates: Array<{
+      summary: ArchitectPlanSummary;
+      plan: ArchitectPlanRecord;
+    }>;
+    hasNonBlankVisiblePlan: boolean;
+  }> => {
     const blankCandidates: Array<{
       summary: ArchitectPlanSummary;
       plan: ArchitectPlanRecord;
     }> = [];
+    let hasNonBlankVisiblePlan = false;
 
-    let blankPlan: {
-      summary: ArchitectPlanSummary;
-      plan: ArchitectPlanRecord;
-    } | null = null;
+    for (const candidate of params.visiblePlans) {
+      if (candidate.status !== 'draft') {
+        hasNonBlankVisiblePlan = true;
+        continue;
+      }
 
-    for (const candidate of draftCandidates) {
       const plan = await deps.getArchitectPlan(params.branchName, candidate.id);
       if (!plan || plan.status === 'deleted') {
         continue;
@@ -138,139 +173,168 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
         deps.getArchitectPlanChatMessages(params.branchName, candidate.id),
       ]);
 
-      if (isArchitectPlanBlankDraft(plan, needs, chatMessages)) {
-        const blankCandidate = { summary: candidate, plan };
-        blankCandidates.push(blankCandidate);
-        if (
-          !blankPlan ||
-          new Date(candidate.updatedAt).getTime() > new Date(blankPlan.summary.updatedAt).getTime()
-        ) {
-          blankPlan = blankCandidate;
-        }
-        continue;
+      if (isReusableBlankDraft(plan, needs, chatMessages)) {
+        blankCandidates.push({ summary: candidate, plan });
+      } else {
+        hasNonBlankVisiblePlan = true;
       }
-
-      const nextLabel = deps.getNextDefaultNewPlanLabel(nextLabels);
-      await deps.updateArchitectPlan({
-        branchName: params.branchName,
-        planId: candidate.id,
-        label: nextLabel,
-      });
-      nextLabels.push({
-        ...candidate,
-        label: nextLabel,
-      });
     }
 
-    if (!blankPlan) {
+    blankCandidates.sort((left, right) =>
+      compareBlankDraftPriority(left.summary, right.summary, params.preferredPlanId)
+    );
+
+    return {
+      blankCandidates,
+      hasNonBlankVisiblePlan,
+    };
+  };
+
+  const synchronizeBlankPlanToScope = async (
+    reusableBlankPlan: ArchitectPlanRecord,
+    params: Pick<ScopedBlankPlanParams, 'branchName' | 'scopedProjectIds' | 'contextProjectIds'>
+  ): Promise<ResolvedBlankPlanResult> => {
+    const mergedProjectIds = mergeProjectIds(
+      reusableBlankPlan.projectIds,
+      reusableBlankPlan.expectedProjectIds,
+      params.scopedProjectIds
+    );
+    const mergedContextProjectIds = mergeProjectIds(
+      reusableBlankPlan.contextProjectIds,
+      params.contextProjectIds
+    );
+
+    if (
+      !coversScope(reusableBlankPlan.projectIds || [], params.scopedProjectIds) ||
+      !coversScope(
+        reusableBlankPlan.expectedProjectIds || reusableBlankPlan.projectIds || [],
+        params.scopedProjectIds
+      ) ||
+      !coversScope(reusableBlankPlan.contextProjectIds || [], params.contextProjectIds || [])
+    ) {
+      const expandedPlan = await deps.updateArchitectPlan({
+        branchName: params.branchName,
+        planId: reusableBlankPlan.id,
+        projectIds: mergedProjectIds,
+        contextProjectIds: mergedContextProjectIds,
+        expectedProjectIds: mergedProjectIds,
+        targetBranchesByProjectId: deps.getTargetBranchesByProjectId?.(mergedProjectIds),
+      });
+      return {
+        action: 'expanded_blank',
+        plan: expandedPlan,
+      };
+    }
+
+    return {
+      action: 'reused_blank',
+      plan: reusableBlankPlan,
+    };
+  };
+
+  const resolveScopedBlankPlan = async (
+    params: ScopedBlankPlanParams & {
+      visiblePlans: ArchitectPlanSummary[];
+      preferredPlanId?: string | null;
+    }
+  ): Promise<ResolvedBlankPlanResult | null> => {
+    const inspectedPlans = await inspectVisiblePlans({
+      branchName: params.branchName,
+      visiblePlans: params.visiblePlans,
+      preferredPlanId: params.preferredPlanId,
+    });
+    const reusableBlankPlan = inspectedPlans.blankCandidates[0]?.plan ?? null;
+    if (!reusableBlankPlan) {
       return null;
     }
 
-    for (const candidate of blankCandidates) {
-      if (candidate.summary.id === blankPlan.summary.id) {
-        continue;
-      }
-
-      const nextLabel = deps.getNextDefaultNewPlanLabel(nextLabels);
-      await deps.updateArchitectPlan({
-        branchName: params.branchName,
-        planId: candidate.summary.id,
-        label: nextLabel,
-      });
-      nextLabels.push({
-        ...candidate.summary,
-        label: nextLabel,
-      });
-    }
-
-    if (!deps.isDefaultNewPlanBaseLabel(blankPlan.plan.label)) {
-      return deps.updateArchitectPlan({
-        branchName: params.branchName,
-        planId: blankPlan.plan.id,
-        label: deps.DEFAULT_NEW_PLAN_LABEL,
-      });
-    }
-
-    return blankPlan.plan;
+    return synchronizeBlankPlanToScope(reusableBlankPlan, params);
   };
 
-  const ensureProjectGroupPlan = async (params: {
-    branchName: string;
-    scopedProjectIds: string[];
-    contextProjectIds?: string[];
-  }): Promise<EnsureProjectGroupPlanResult | null> => {
+  const getPlaceholderLabelForNewPlan = (plans: ArchitectPlanSummary[]): string => {
+    const activePlaceholderPlans = plans.filter(
+      (plan) => plan.status !== 'deleted' && belongsToPlaceholderFamily(plan)
+    );
+    const baseLabelTaken = activePlaceholderPlans.some((plan) =>
+      deps.isDefaultNewPlanBaseLabel(deps.getArchitectPlanEditableName(plan))
+    );
+
+    return baseLabelTaken
+      ? deps.getNextDefaultNewPlanLabel(activePlaceholderPlans)
+      : deps.DEFAULT_NEW_PLAN_LABEL;
+  };
+
+  const ensureScopedBlankPlan = async (params: ScopedBlankPlanParams): Promise<ArchitectPlanRecord | null> => {
     if (params.scopedProjectIds.length === 0) {
       return null;
     }
 
-    const { scopedPlans } = await listScopedPlans(params.branchName, params.scopedProjectIds);
+    const trigger = params.trigger ?? 'implicit_resume';
+    const { fullResult, scopedPlans } = await listScopedPlans(params.branchName, params.scopedProjectIds);
     const visiblePlans = scopedPlans.filter((plan) => plan.status !== 'archived' && plan.status !== 'deleted');
-    const blankPlan = await ensureScopedBlankPlan(params);
+    const resolvedBlankPlan = await resolveScopedBlankPlan({
+      ...params,
+      visiblePlans,
+      preferredPlanId: fullResult.activePlanId,
+    });
+    if (resolvedBlankPlan) {
+      return resolvedBlankPlan.plan;
+    }
 
-    if (blankPlan) {
-      const refreshedScopedPlans = (await listScopedPlans(params.branchName, params.scopedProjectIds)).scopedPlans;
-      const refreshedVisiblePlans = refreshedScopedPlans.filter(
-        (plan) => plan.status !== 'archived' && plan.status !== 'deleted'
-      );
-      const hasNonPlaceholderVisiblePlan = refreshedVisiblePlans.some(
-        (plan) => plan.id !== blankPlan.id && !isDraftPlaceholderCandidate(plan)
-      );
-      if (hasNonPlaceholderVisiblePlan) {
+    if (trigger !== 'explicit_create') {
+      return null;
+    }
+
+    return deps.createArchitectPlan({
+      branchName: params.branchName,
+      label: getPlaceholderLabelForNewPlan(scopedPlans),
+      projectId: params.scopedProjectIds[0] || undefined,
+      projectIds: params.scopedProjectIds,
+      contextProjectIds: params.contextProjectIds,
+      targetBranchesByProjectId: deps.getTargetBranchesByProjectId?.(params.scopedProjectIds),
+      status: 'draft',
+      setActive: true,
+    });
+  };
+
+  const ensureProjectGroupPlan = async (params: ScopedBlankPlanParams): Promise<EnsureProjectGroupPlanResult | null> => {
+    if (params.scopedProjectIds.length === 0) {
+      return null;
+    }
+
+    const trigger = params.trigger ?? 'implicit_resume';
+    const { fullResult, scopedPlans } = await listScopedPlans(params.branchName, params.scopedProjectIds);
+    const visiblePlans = scopedPlans.filter((plan) => plan.status !== 'archived' && plan.status !== 'deleted');
+    const inspectedPlans = await inspectVisiblePlans({
+      branchName: params.branchName,
+      visiblePlans,
+      preferredPlanId: fullResult.activePlanId,
+    });
+    const reusableBlankPlan = inspectedPlans.blankCandidates[0]?.plan ?? null;
+
+    if (reusableBlankPlan) {
+      if (trigger === 'implicit_resume' && inspectedPlans.hasNonBlankVisiblePlan) {
         return null;
       }
 
-      const mergedProjectIds = mergeProjectIds(
-        blankPlan.projectIds,
-        blankPlan.expectedProjectIds,
-        params.scopedProjectIds
-      );
-      const mergedContextProjectIds = mergeProjectIds(
-        blankPlan.contextProjectIds,
-        params.contextProjectIds
-      );
-
-      if (!coversScope(mergedProjectIds, params.scopedProjectIds)) {
-        return null;
-      }
-
-      if (
-        !coversScope(blankPlan.projectIds || [], params.scopedProjectIds) ||
-        !coversScope(blankPlan.expectedProjectIds || blankPlan.projectIds || [], params.scopedProjectIds) ||
-        !coversScope(blankPlan.contextProjectIds || [], params.contextProjectIds || [])
-      ) {
-        const expandedPlan = await deps.updateArchitectPlan({
-          branchName: params.branchName,
-          planId: blankPlan.id,
-          projectIds: mergedProjectIds,
-          contextProjectIds: mergedContextProjectIds,
-          expectedProjectIds: mergedProjectIds,
-          targetBranchesByProjectId: deps.getTargetBranchesByProjectId?.(mergedProjectIds),
-          setActive: true,
-        });
-        const needs = await deps.getArchitectPlanNeeds(params.branchName, expandedPlan.id);
-        return {
-          action: 'expanded_blank',
-          plan: expandedPlan,
-          needs,
-        };
-      }
-
+      const resolvedBlankPlan = await synchronizeBlankPlanToScope(reusableBlankPlan, params);
+      const blankPlan = resolvedBlankPlan.plan;
       await deps.setActiveArchitectPlan(params.branchName, blankPlan.id);
       const needs = await deps.getArchitectPlanNeeds(params.branchName, blankPlan.id);
       return {
-        action: 'reused_blank',
+        action: resolvedBlankPlan.action,
         plan: blankPlan,
         needs,
       };
     }
 
-    if (visiblePlans.length > 0) {
+    if (trigger !== 'explicit_create' && visiblePlans.length > 0) {
       return null;
     }
 
     const createdPlan = await deps.createArchitectPlan({
       branchName: params.branchName,
-      label: deps.DEFAULT_NEW_PLAN_LABEL,
+      label: getPlaceholderLabelForNewPlan(scopedPlans),
       projectId: params.scopedProjectIds[0] || undefined,
       projectIds: params.scopedProjectIds,
       contextProjectIds: params.contextProjectIds,
@@ -289,6 +353,7 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
   return {
     ensureProjectGroupPlan,
     ensureScopedBlankPlan,
-    isArchitectPlanBlankDraft,
+    isArchitectPlanBlankDraft: isReusableBlankDraft,
+    isReusableBlankDraft,
   };
 };
