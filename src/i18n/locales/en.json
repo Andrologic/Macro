@@ -344,7 +344,7 @@
       "sectionTitle": "Debug",
       "title": "Notification blueprints",
       "description": "Use this debug-only panel to tune the two shared notification blueprints used across Macro.",
-      "desktopHint": "Desktop previews bypass the usual foreground restriction so you can validate OS notifications without backgrounding the app.",
+      "desktopHint": "Desktop previews are a best-effort smoke test. On macOS, previews may not appear while Macro is in the foreground; the reliable path is desktop notifications when the app is in the background.",
       "runtimeStatus": "Current desktop runtime status",
       "clearCenter": "Clear center ({{count}})",
       "clearCenterResult": "Notification center cleared.",
