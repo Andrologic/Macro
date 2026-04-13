@@ -36,6 +36,7 @@ import {
   getArchitectPlan,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
+  isArchitectPlanVisibleForScope,
   planMatchesProjectId,
   resolveTargetBranch,
 } from "../services/architectPlanService";
@@ -555,6 +556,9 @@ const ensureAutoPlanForSelection = async (input: {
   }
 
   const appState = useAppStore.getState();
+  if (appState.mode !== "Architect") {
+    return;
+  }
   const scopedProjectIds = getScopedProjectIds(
     appState.projectGroups,
     input.groupId,
@@ -574,10 +578,34 @@ const ensureAutoPlanForSelection = async (input: {
     return;
   }
 
+  if (appState.activeArchitectPlanId) {
+    try {
+      const targetBranch = resolveTargetBranch(
+        appState.activePlanContext?.targetBranch || getGitFlowBaseBranch(),
+      );
+      const activePlan = await getArchitectPlan(
+        targetBranch,
+        appState.activeArchitectPlanId,
+      );
+      if (activePlan && activePlan.status !== "deleted") {
+        const isActivePlanVisibleForScope = isArchitectPlanVisibleForScope(
+          activePlan,
+          actionableProjectIds,
+        );
+        if (isActivePlanVisibleForScope) {
+          return;
+        }
+      }
+    } catch {
+      // Ignore lookup failures and continue with implicit auto-plan resolution.
+    }
+  }
+
   const ensuredPlan = await ensureProjectGroupPlan({
     branchName: getGitFlowBaseBranch(),
     scopedProjectIds: actionableProjectIds,
     contextProjectIds: readOnlyProjectIds,
+    trigger: "implicit_resume",
   });
   if (!ensuredPlan) {
     return;
@@ -733,7 +761,10 @@ interface AppStore {
     conflictFiles?: string[];
     repositories?: MetadataSyncRepositoryStatus[];
   }) => void;
-  switchProjectContext: (projectId: string | null) => Promise<void>;
+  switchProjectContext: (
+    projectId: string | null,
+    options?: SwitchProjectContextOptions,
+  ) => Promise<void>;
   setPlanNodes: (nodes: PlanNode[]) => void;
   setPredictedBranches: (branches: PredictedBranch[]) => void;
   setActiveArchitectPlanId: (planId: string | null) => void;
@@ -772,6 +803,11 @@ interface CreateProjectData {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: ProjectGitFlowSettings;
+}
+
+interface SwitchProjectContextOptions {
+  restoreProjectContext?: boolean;
+  ensureAutoPlan?: boolean;
 }
 
 interface ProjectRegistrySnapshot {
@@ -1054,9 +1090,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     });
   },
 
-  switchProjectContext: async (projectId) => {
+  switchProjectContext: async (projectId, options) => {
     const requestId = ++projectSwitchRequestId;
     const previous = get();
+    const restoreProjectContextOnSwitch =
+      options?.restoreProjectContext !== false;
+    const ensureAutoPlanOnSwitch = options?.ensureAutoPlan !== false;
     const nextProjectId =
       projectId && previous.getProjectById(projectId) ? projectId : null;
     const nextGroupId = nextProjectId
@@ -1153,10 +1192,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
           selectedProjectId: nextProjectId,
           mode: get().mode,
         });
-        await ensureAutoPlanForSelection({
-          groupId: nextGroupId,
-          projectId: nextProjectId,
-        });
+        if (ensureAutoPlanOnSwitch) {
+          await ensureAutoPlanForSelection({
+            groupId: nextGroupId,
+            projectId: nextProjectId,
+          });
+        }
         return;
       }
 
@@ -1199,14 +1240,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       if (requestId !== projectSwitchRequestId) return;
 
-      if (nextGroupId && get().projectSwitchPolicy === "resume_per_project") {
+      if (
+        restoreProjectContextOnSwitch &&
+        nextGroupId &&
+        get().projectSwitchPolicy === "resume_per_project"
+      ) {
         await restoreProjectContext(nextGroupId, nextProjectId);
       }
 
-      await ensureAutoPlanForSelection({
-        groupId: nextGroupId,
-        projectId: nextProjectId,
-      });
+      if (ensureAutoPlanOnSwitch) {
+        await ensureAutoPlanForSelection({
+          groupId: nextGroupId,
+          projectId: nextProjectId,
+        });
+      }
     } catch (error) {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });

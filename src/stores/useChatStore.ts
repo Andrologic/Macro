@@ -51,6 +51,7 @@ import {
   getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
+  isArchitectPlanVisibleForScope,
   listArchitectPlans,
   resolvePlanProjectContextId,
   resolveTargetBranch,
@@ -1699,14 +1700,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         appStore.selectedGroupId,
         appStore.selectedProjectId,
       );
-      const isPlanAlreadyInScope =
-        scopedProjectIds.length > 0 &&
-        (getArchitectPlanProjectIds(plan).length === 0 ||
-          getArchitectPlanProjectIds(plan).some((projectId) =>
-            scopedProjectIds.includes(projectId),
-          ));
+      const isPlanAlreadyInScope = isArchitectPlanVisibleForScope(plan, scopedProjectIds);
       if (planProjectId && !isPlanAlreadyInScope) {
-        await appStore.switchProjectContext(planProjectId);
+        await appStore.switchProjectContext(planProjectId, {
+          restoreProjectContext: false,
+          ensureAutoPlan: false,
+        });
       }
       appStore.setActiveArchitectPlanId(plan.id);
       appStore.setPlanNodes(plan.nodes || []);
@@ -2541,9 +2540,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await updateArchitectPlan({
         branchName: targetBranch,
         planId: activePlanId,
-        ...(isCanonicalArchitectPlan(activePlan)
-          ? { label: activePlan.label }
-          : { title: activePlan.title }),
         description: activePlan.description,
         status: activePlan.status,
         nodes: strategy.planNodes,
@@ -2581,9 +2577,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await updateArchitectPlan({
         branchName: targetBranch,
         planId: activePlanId,
-        ...(isCanonicalArchitectPlan(activePlan)
-          ? { label: activePlan.label }
-          : { title: activePlan.title }),
         description: activePlan.description,
         status: activePlan.status,
         nodes: [],

@@ -11,8 +11,8 @@ const buildPlanSummary = (
   description: overrides.description ?? '',
   status: overrides.status ?? 'draft',
   targetBranch: overrides.targetBranch ?? 'develop',
-  projectId: overrides.projectId ?? 'web',
-  projectIds: overrides.projectIds ?? ['web'],
+  projectId: 'projectId' in overrides ? overrides.projectId : 'web',
+  projectIds: 'projectIds' in overrides ? overrides.projectIds : ['web'],
   createdAt: overrides.createdAt ?? '2026-03-19T10:00:00.000Z',
   updatedAt: overrides.updatedAt ?? '2026-03-19T10:00:00.000Z',
   nodeCount: overrides.nodeCount ?? 0,
@@ -104,5 +104,50 @@ describe('planSelectorState', () => {
     expect(refreshState.targetPlan).toBeNull();
     expect(refreshState.mutationApplied).toBe(true);
     expect(refreshState.nextActivePlanId).toBe('plan-b');
+  });
+
+  it('falls back to the most recently updated visible plan when no preferred plan is available', () => {
+    const refreshState = computePlanSelectorRefreshState({
+      plans: [
+        buildPlanSummary({ id: 'plan-a', status: 'validated', updatedAt: '2026-03-19T09:00:00.000Z' }),
+        buildPlanSummary({ id: 'plan-b', status: 'draft', updatedAt: '2026-03-19T12:00:00.000Z' }),
+        buildPlanSummary({ id: 'plan-c', status: 'draft', updatedAt: '2026-03-19T11:00:00.000Z' }),
+      ],
+      scopedProjectIds: ['web'],
+      showArchived: false,
+      preferredActivePlanId: 'missing-plan',
+    });
+
+    expect(refreshState.visiblePlans.map((plan) => plan.id)).toEqual(['plan-b', 'plan-c', 'plan-a']);
+    expect(refreshState.nextActivePlanId).toBe('plan-b');
+  });
+
+  it('hides unscoped legacy plans when a project scope is selected', () => {
+    const refreshState = computePlanSelectorRefreshState({
+      plans: [
+        buildPlanSummary({ id: 'legacy-unscoped', projectId: undefined, projectIds: [], expectedProjectIds: [] }),
+        buildPlanSummary({ id: 'scoped-plan', projectIds: ['web'], expectedProjectIds: ['web'] }),
+      ],
+      scopedProjectIds: ['web'],
+      showArchived: false,
+      preferredActivePlanId: 'legacy-unscoped',
+    });
+
+    expect(refreshState.visiblePlans.map((plan) => plan.id)).toEqual(['scoped-plan']);
+    expect(refreshState.nextActivePlanId).toBe('scoped-plan');
+  });
+
+  it('keeps unscoped legacy plans visible only when there is no selected project scope', () => {
+    const refreshState = computePlanSelectorRefreshState({
+      plans: [
+        buildPlanSummary({ id: 'legacy-unscoped', projectId: undefined, projectIds: [], expectedProjectIds: [] }),
+      ],
+      scopedProjectIds: [],
+      showArchived: false,
+      preferredActivePlanId: 'legacy-unscoped',
+    });
+
+    expect(refreshState.visiblePlans.map((plan) => plan.id)).toEqual(['legacy-unscoped']);
+    expect(refreshState.nextActivePlanId).toBe('legacy-unscoped');
   });
 });
