@@ -1,3 +1,4 @@
+import i18n from '../../../i18n';
 import { sendDesktopNotificationPreview } from '../../../services/desktopNotifications';
 import { notify, type NotificationActionSpec } from '../../ui/toastService';
 
@@ -34,24 +35,51 @@ export interface ActionableNotificationBlueprintPreviewAction {
 
 export const DEBUG_NOTIFICATION_BLUEPRINT_ACTION_DELAY_MS = 320;
 
+const getPrimaryActionLabel = (): string =>
+  i18n.t('settings.notificationsDebug.defaults.actionable.actions.primary', 'Primary action');
+
+const getSecondaryActionLabel = (): string =>
+  i18n.t(
+    'settings.notificationsDebug.defaults.actionable.actions.secondary',
+    'Secondary action'
+  );
+
 export const DEFAULT_INFORMATIONAL_NOTIFICATION_BLUEPRINT_DRAFT: InformationalNotificationBlueprintDraft = {
   tone: 'info',
-  title: 'Background indexing finished',
-  description: 'Everything is up to date.',
+  title: i18n.t(
+    'settings.notificationsDebug.defaults.informational.title',
+    'Background indexing finished'
+  ),
+  description: i18n.t(
+    'settings.notificationsDebug.defaults.informational.description',
+    'Everything is up to date.'
+  ),
 };
 
 export const DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT: ActionableNotificationBlueprintDraft = {
   tone: 'warning',
-  title: 'Base branch missing',
-  description: 'Choose what to do next to continue safely.',
+  title: i18n.t(
+    'settings.notificationsDebug.defaults.actionable.title',
+    'Base branch missing'
+  ),
+  description: i18n.t(
+    'settings.notificationsDebug.defaults.actionable.description',
+    'Choose what to do next to continue safely.'
+  ),
   actions: [
     {
-      label: 'Create',
+      label: i18n.t(
+        'settings.notificationsDebug.defaults.actionable.actions.create',
+        'Create'
+      ),
       variant: 'primary',
       dismissOnSuccess: true,
     },
     {
-      label: 'Open settings',
+      label: i18n.t(
+        'settings.notificationsDebug.defaults.actionable.actions.openSettings',
+        'Open settings'
+      ),
       variant: 'secondary',
       dismissOnSuccess: true,
     },
@@ -105,7 +133,7 @@ export const getActionableNotificationBlueprintPreviewActions = (
   return draft.actions.slice(0, 2).map((action, index) => ({
     label: normalizeActionLabel(
       action.label,
-      index === 0 ? 'Primary action' : 'Secondary action'
+      index === 0 ? getPrimaryActionLabel() : getSecondaryActionLabel()
     ),
     variant: action.variant === 'secondary' ? 'secondary' : 'primary',
   }));
@@ -117,7 +145,7 @@ const createActionableNotificationBlueprintActions = (
   draft.actions.slice(0, 2).map((action, index) => ({
     label: normalizeActionLabel(
       action.label,
-      index === 0 ? 'Primary action' : 'Secondary action'
+      index === 0 ? getPrimaryActionLabel() : getSecondaryActionLabel()
     ),
     variant: action.variant === 'secondary' ? 'secondary' : 'primary',
     dismissOnSuccess: action.dismissOnSuccess !== false,

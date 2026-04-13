@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import i18n from '../../../i18n';
 import { cn } from '../../../utils/cn';
 import { Icon, type IconName } from '../Icon';
 import type { NotificationTone } from './types';
@@ -46,6 +47,7 @@ export function NotificationSurface({
   onDismiss,
 }: NotificationSurfaceProps) {
   const presentation = TONE_PRESENTATION[tone];
+  const dismissLabel = i18n.t('notifications.dismiss', 'Dismiss notification');
 
   return (
     <div
@@ -58,8 +60,8 @@ export function NotificationSurface({
       {onDismiss ? (
         <button
           type="button"
-          aria-label="Dismiss notification"
-          title="Dismiss notification"
+          aria-label={dismissLabel}
+          title={dismissLabel}
           onClick={onDismiss}
           className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/75 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
