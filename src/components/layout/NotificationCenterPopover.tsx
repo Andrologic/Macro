@@ -7,9 +7,11 @@ import {
   ActionableNotificationTemplate,
   InformationalNotificationTemplate,
 } from '../ui/notifications';
+import { executeRegisteredNotificationAction } from '../ui/toastService';
 import {
   calculateNotificationCenterPosition,
   formatNotificationRelativeTime,
+  groupNotificationCenterItemsByDate,
   type NotificationCenterPosition,
 } from './notificationCenterUtils';
 
@@ -24,13 +26,26 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
   anchorRef,
   onClose,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const items = useNotificationCenterStore((state) => state.items);
   const clearAll = useNotificationCenterStore((state) => state.clearAll);
   const removeItem = useNotificationCenterStore((state) => state.removeItem);
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<NotificationCenterPosition | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const groupedItems = groupNotificationCenterItemsByDate(items, {
+    now,
+    locale: i18n.language,
+    labels: {
+      lessThanMinute: t(
+        'notifications.group.lessThanMinute',
+        'Less than a minute ago'
+      ),
+      thisHour: t('notifications.group.thisHour', 'This hour'),
+      today: t('notifications.group.today', 'Today'),
+      yesterday: t('notifications.group.yesterday', 'Yesterday'),
+    },
+  });
 
   useEffect(() => {
     if (!isOpen) {
@@ -171,46 +186,66 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
             </div>
           </div>
         ) : (
-            <div className="space-y-2">
-              {items.map((item) => {
-                return (
-                  <div key={item.id} className="group space-y-1.5 rounded-xl px-1 py-1">
-                    <div className="flex items-center justify-between gap-3 px-1">
-                      <span className="min-w-0 truncate text-[11px] text-muted-foreground">
-                        {formatNotificationRelativeTime(item.createdAt, now)}
-                      </span>
-                      <button
-                        type="button"
-                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                        aria-label={t('notifications.remove', 'Remove notification')}
-                        title={t('notifications.remove', 'Remove notification')}
-                        onClick={() => removeItem(item.id)}
-                      >
-                        <Icon name="x" size={12} />
-                      </button>
-                    </div>
-
-                    {item.variant === 'actionable' ? (
-                      <ActionableNotificationTemplate
-                        tone={item.level}
-                        title={item.title}
-                        description={item.description}
-                        interactive={false}
-                        snapshotLabel={t(
-                          'notifications.actionRequired',
-                          'Action required'
-                        )}
-                      />
-                    ) : (
-                      <InformationalNotificationTemplate
-                        tone={item.level}
-                        title={item.title}
-                        description={item.description}
-                      />
-                    )}
+            <div className="space-y-4">
+              {groupedItems.map((group) => (
+                <section
+                  key={group.id}
+                  className="space-y-2"
+                  data-testid={`notification-group-${group.id}`}
+                >
+                  <div className="px-1">
+                    <h3 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {group.label}
+                    </h3>
                   </div>
-                );
-              })}
+
+                  <div className="space-y-2">
+                    {group.items.map((item) => (
+                      <div key={item.id} className="group space-y-1.5 rounded-xl px-1 py-1">
+                        <div className="flex items-center justify-between gap-3 px-1">
+                          <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+                            {formatNotificationRelativeTime(item.createdAt, now)}
+                          </span>
+                          <button
+                            type="button"
+                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                            aria-label={t('notifications.remove', 'Remove notification')}
+                            title={t('notifications.remove', 'Remove notification')}
+                            onClick={() => removeItem(item.id)}
+                          >
+                            <Icon name="x" size={12} />
+                          </button>
+                        </div>
+
+                        {item.variant === 'actionable' ? (
+                          <ActionableNotificationTemplate
+                            tone={item.level}
+                            title={item.title}
+                            description={item.description}
+                            actions={item.sessionActions}
+                            interactive={Boolean(item.sessionActions?.length)}
+                            pendingActionIndex={item.pendingActionIndex ?? null}
+                            onActionClick={(actionIndex) => {
+                              void executeRegisteredNotificationAction(item.id, actionIndex);
+                            }}
+                            snapshotLabel={
+                              item.sessionActions?.length
+                                ? undefined
+                                : t('notifications.actionRequired', 'Action required')
+                            }
+                          />
+                        ) : (
+                          <InformationalNotificationTemplate
+                            tone={item.level}
+                            title={item.title}
+                            description={item.description}
+                          />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ))}
             </div>
           )}
       </div>

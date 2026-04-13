@@ -1,18 +1,30 @@
 import { create } from 'zustand';
 import { PREF_KEYS, savePreference } from '../services/preferences';
 import {
+  type NotificationActionButtonVariant,
   type NotificationVariant,
   type NotificationTemplateSnapshot,
 } from '../components/ui/notifications';
 import type { NotificationCategory } from '../services/notificationChannels';
 
 export type NotificationLevel = 'info' | 'warning' | 'error';
+export type NotificationCenterToastId = string | number;
+
+export interface NotificationCenterSessionAction {
+  label: string;
+  variant: NotificationActionButtonVariant;
+  dismissOnSuccess: boolean;
+  onClick: () => void | Promise<void>;
+}
 
 export interface NotificationCenterItemInput extends NotificationTemplateSnapshot {
   id: string;
   level: NotificationLevel;
   createdAt: string;
   readAt?: string | null;
+  sessionActions?: NotificationCenterSessionAction[];
+  sessionToastId?: NotificationCenterToastId | null;
+  pendingActionIndex?: number | null;
 }
 
 export interface NotificationCenterItem {
@@ -24,6 +36,9 @@ export interface NotificationCenterItem {
   description?: string;
   createdAt: string;
   readAt: string | null;
+  sessionActions?: NotificationCenterSessionAction[];
+  sessionToastId?: NotificationCenterToastId | null;
+  pendingActionIndex?: number | null;
 }
 
 interface NotificationCenterStore {
@@ -31,6 +46,7 @@ interface NotificationCenterStore {
   isCenterOpen: boolean;
   setCenterOpen: (open: boolean) => void;
   upsertItem: (item: NotificationCenterItemInput) => void;
+  setItemPendingAction: (id: string, pendingActionIndex: number | null) => void;
   removeItem: (id: string) => void;
   clearAll: () => void;
   markAllRead: () => void;
@@ -45,6 +61,11 @@ const isNotificationLevel = (value: unknown): value is NotificationLevel =>
 const isNotificationVariant = (value: unknown): value is NotificationVariant =>
   value === 'informational' || value === 'actionable';
 
+const isNotificationActionButtonVariant = (
+  value: unknown
+): value is NotificationActionButtonVariant =>
+  value === 'primary' || value === 'secondary';
+
 const isNotificationCategory = (value: unknown): value is NotificationCategory =>
   value === 'task_attention_required' ||
   value === 'task_run_completed' ||
@@ -55,6 +76,46 @@ const isNotificationCategory = (value: unknown): value is NotificationCategory =
 const isValidIsoDate = (value: unknown): value is string => {
   if (typeof value !== 'string' || !value.trim()) return false;
   return Number.isFinite(new Date(value).getTime());
+};
+
+const isNotificationCenterToastId = (
+  value: unknown
+): value is NotificationCenterToastId =>
+  typeof value === 'string' || typeof value === 'number';
+
+const toNotificationCenterSessionActions = (
+  value: unknown
+): NotificationCenterSessionAction[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const actions = value.flatMap((entry): NotificationCenterSessionAction[] => {
+    if (!entry || typeof entry !== 'object') {
+      return [];
+    }
+
+    const action = entry as Partial<NotificationCenterSessionAction>;
+    if (
+      typeof action.label !== 'string' ||
+      !action.label.trim() ||
+      !isNotificationActionButtonVariant(action.variant) ||
+      typeof action.onClick !== 'function'
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        label: action.label.trim(),
+        variant: action.variant,
+        dismissOnSuccess: action.dismissOnSuccess !== false,
+        onClick: action.onClick,
+      },
+    ];
+  });
+
+  return actions.length > 0 ? actions : undefined;
 };
 
 const getLocalStorage = (): Storage | null => {
@@ -95,6 +156,27 @@ const toNotificationCenterItem = (
     ? item.category
     : undefined;
   const readAt = isValidIsoDate(item.readAt) ? item.readAt : null;
+  const sessionActions =
+    variant === 'actionable'
+      ? toNotificationCenterSessionActions(
+          (item as Partial<NotificationCenterItemInput>).sessionActions
+        )
+      : undefined;
+  const sessionToastId =
+    variant === 'actionable' &&
+    isNotificationCenterToastId(
+      (item as Partial<NotificationCenterItemInput>).sessionToastId
+    )
+      ? (item as Partial<NotificationCenterItemInput>).sessionToastId
+      : null;
+  const pendingActionIndex =
+    sessionActions &&
+    typeof (item as Partial<NotificationCenterItemInput>).pendingActionIndex === 'number' &&
+    Number.isInteger((item as Partial<NotificationCenterItemInput>).pendingActionIndex) &&
+    (item as Partial<NotificationCenterItemInput>).pendingActionIndex! >= 0 &&
+    (item as Partial<NotificationCenterItemInput>).pendingActionIndex! < sessionActions.length
+      ? (item as Partial<NotificationCenterItemInput>).pendingActionIndex
+      : null;
 
   return {
     id: item.id.trim(),
@@ -105,6 +187,9 @@ const toNotificationCenterItem = (
     description,
     createdAt: item.createdAt,
     readAt,
+    ...(sessionActions ? { sessionActions } : {}),
+    ...(sessionToastId !== null ? { sessionToastId } : {}),
+    ...(pendingActionIndex !== null ? { pendingActionIndex } : {}),
   };
 };
 
@@ -143,8 +228,18 @@ export const readNotificationCenterItemsFromStorage = (): NotificationCenterItem
 export const hasUnreadNotifications = (items: NotificationCenterItem[]): boolean =>
   items.some((item) => item.readAt === null);
 
+const toPersistedNotificationCenterItem = ({
+  sessionActions: _sessionActions,
+  sessionToastId: _sessionToastId,
+  pendingActionIndex: _pendingActionIndex,
+  ...item
+}: NotificationCenterItem): NotificationCenterItemInput => item;
+
 const persistNotificationCenterItems = (items: NotificationCenterItem[]): void => {
-  void savePreference(PREF_KEYS.NOTIFICATION_CENTER_ITEMS, items);
+  void savePreference(
+    PREF_KEYS.NOTIFICATION_CENTER_ITEMS,
+    items.map(toPersistedNotificationCenterItem)
+  );
 };
 
 const markNotificationItemsRead = (
@@ -199,12 +294,84 @@ export const useNotificationCenterStore = create<NotificationCenterStore>((set, 
       return;
     }
 
+    const existingItem = get().items.find((currentItem) => currentItem.id === normalizedItem.id);
+    const nextItem: NotificationCenterItem =
+      normalizedItem.variant === 'actionable'
+        ? {
+            ...normalizedItem,
+            ...(normalizedItem.sessionActions
+              ? { sessionActions: normalizedItem.sessionActions }
+              : existingItem?.sessionActions
+                ? { sessionActions: existingItem.sessionActions }
+                : {}),
+            ...(normalizedItem.sessionToastId !== undefined
+              ? normalizedItem.sessionToastId !== null
+                ? { sessionToastId: normalizedItem.sessionToastId }
+                : {}
+              : existingItem?.sessionToastId !== undefined &&
+                  existingItem.sessionToastId !== null
+                ? { sessionToastId: existingItem.sessionToastId }
+                : {}),
+            ...((normalizedItem.pendingActionIndex ?? null) !== null
+              ? { pendingActionIndex: normalizedItem.pendingActionIndex }
+              : existingItem?.pendingActionIndex !== undefined &&
+                  existingItem.pendingActionIndex !== null
+                ? { pendingActionIndex: existingItem.pendingActionIndex }
+                : {}),
+          }
+        : normalizedItem;
+
     const nextItems = [
-      normalizedItem,
+      nextItem,
       ...get().items.filter((existingItem) => existingItem.id !== normalizedItem.id),
     ]
       .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
       .slice(0, NOTIFICATION_CENTER_MAX_ITEMS);
+
+    set({ items: nextItems });
+    persistNotificationCenterItems(nextItems);
+  },
+
+  setItemPendingAction: (id, pendingActionIndex) => {
+    const currentItems = get().items;
+    let didChange = false;
+
+    const nextItems = currentItems.map((item) => {
+      if (item.id !== id) {
+        return item;
+      }
+
+      if (!item.sessionActions || item.sessionActions.length === 0) {
+        return item;
+      }
+
+      const nextPendingActionIndex =
+        typeof pendingActionIndex === 'number' &&
+        pendingActionIndex >= 0 &&
+        pendingActionIndex < item.sessionActions.length
+          ? pendingActionIndex
+          : null;
+
+      if ((item.pendingActionIndex ?? null) === nextPendingActionIndex) {
+        return item;
+      }
+
+      didChange = true;
+
+      if (nextPendingActionIndex === null) {
+        const { pendingActionIndex: _pendingActionIndex, ...rest } = item;
+        return rest;
+      }
+
+      return {
+        ...item,
+        pendingActionIndex: nextPendingActionIndex,
+      };
+    });
+
+    if (!didChange) {
+      return;
+    }
 
     set({ items: nextItems });
     persistNotificationCenterItems(nextItems);

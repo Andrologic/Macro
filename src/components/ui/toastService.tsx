@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { toast as sonnerToast, type ExternalToast } from 'sonner';
 import { maybeSendDesktopNotification } from '../../services/desktopNotifications';
 import {
@@ -13,6 +13,7 @@ import { useAuthStore } from '../../stores/useAuthStore';
 import {
   useNotificationCenterStore,
   type NotificationLevel,
+  type NotificationCenterSessionAction,
 } from '../../stores/useNotificationCenterStore';
 import { cn } from '../../utils/cn';
 import {
@@ -71,6 +72,8 @@ interface TrackableToastContent {
 interface PersistableNotificationContent extends TrackableToastContent {
   variant: NotificationVariant;
   category?: NotificationCategory;
+  sessionActions?: NotificationCenterSessionAction[];
+  sessionToastId?: ToastId;
 }
 
 interface NormalizedNotificationActionSpec {
@@ -93,6 +96,7 @@ interface ActionableNotificationToastBodyProps {
 }
 
 interface ActionableNotificationToastProps {
+  notificationId: string;
   tone: NotificationTone;
   toastId: ToastId;
   title: ReactNode;
@@ -128,6 +132,17 @@ setToastBatchExpiryHandler((toastIds) => {
   toastIds.forEach((toastId) => {
     sonnerToast.dismiss(toastId);
   });
+});
+
+const dismissAllVisibleToasts = (): void => {
+  clearToastBatch();
+  sonnerToast.dismiss();
+};
+
+useNotificationCenterStore.subscribe((state, previousState) => {
+  if (!previousState.isCenterOpen && state.isCenterOpen) {
+    dismissAllVisibleToasts();
+  }
 });
 
 const uncategorizedNotificationsEnabled = (): boolean =>
@@ -348,20 +363,26 @@ export const toTrackableToastContent = (
 
 const toPersistableToastContent = (
   message?: ToastMessage,
-  data?: NotificationOptions
+  data?: NotificationOptions,
+  toastId?: ToastId
 ): PersistableNotificationContent | null => {
   const baseContent = toTrackableToastContent(message, data);
   if (!baseContent) {
     return null;
   }
 
+  const actions = normalizeNotificationActions(data?.actions);
+
   return {
     ...baseContent,
-    variant:
-      normalizeNotificationActions(data?.actions).length > 0
-        ? 'actionable'
-        : 'informational',
+    variant: actions.length > 0 ? 'actionable' : 'informational',
     category: data?.notification?.category,
+    ...(actions.length > 0
+      ? {
+          sessionActions: toSessionNotificationActions(actions),
+          ...(toastId !== undefined ? { sessionToastId: toastId } : {}),
+        }
+      : {}),
   };
 };
 
@@ -405,6 +426,8 @@ const persistNotification = (
     description: content.description,
     createdAt,
     readAt,
+    ...(content.sessionActions ? { sessionActions: content.sessionActions } : {}),
+    ...(content.sessionToastId !== undefined ? { sessionToastId: content.sessionToastId } : {}),
   });
 };
 
@@ -434,6 +457,18 @@ const toNotificationLevel = (tone: Exclude<NotificationTone, 'success'>): Notifi
 
   return 'info';
 };
+
+const toSessionNotificationActions = (
+  actions: NormalizedNotificationActionSpec[]
+): NotificationCenterSessionAction[] | undefined =>
+  actions.length > 0
+    ? actions.map((action) => ({
+        label: action.label,
+        variant: action.variant,
+        dismissOnSuccess: action.dismissOnSuccess,
+        onClick: action.onClick,
+      }))
+    : undefined;
 
 export const normalizeNotificationActions = (
   actions?: NotificationActionSpec[]
@@ -473,6 +508,11 @@ const emitDesktopNotification = (
     notificationKey: resolveNotificationKey(options?.notificationKey) ?? historyId,
   });
 };
+
+const getNotificationCenterActionEntry = (notificationId: string) =>
+  useNotificationCenterStore
+    .getState()
+    .items.find((item) => item.id === notificationId && item.variant === 'actionable');
 
 function InformationalNotificationToastBody({
   tone,
@@ -518,7 +558,7 @@ function ActionableNotificationToastBody({
 
 export const executeNotificationAction = async (
   action: NormalizedNotificationActionSpec,
-  toastId: ToastId,
+  toastId: ToastId | null,
   onError: (message: string) => void = (message) => {
     emitTemplatedNotification({
       tone: 'error',
@@ -529,7 +569,7 @@ export const executeNotificationAction = async (
 ): Promise<boolean> => {
   try {
     await action.onClick();
-    if (action.dismissOnSuccess) {
+    if (action.dismissOnSuccess && toastId !== null) {
       sonnerToast.dismiss(toastId);
     }
     return true;
@@ -539,7 +579,44 @@ export const executeNotificationAction = async (
   }
 };
 
+export const executeRegisteredNotificationAction = async (
+  notificationId: string,
+  actionIndex: number,
+  onError?: (message: string) => void
+): Promise<boolean> => {
+  const store = useNotificationCenterStore.getState();
+  const item = store.items.find(
+    (candidate) => candidate.id === notificationId && candidate.variant === 'actionable'
+  );
+  const action = item?.sessionActions?.[actionIndex];
+
+  if (!item || !action) {
+    return false;
+  }
+
+  if ((item.pendingActionIndex ?? null) !== null) {
+    return false;
+  }
+
+  store.setItemPendingAction(notificationId, actionIndex);
+
+  const succeeded = await executeNotificationAction(
+    action,
+    item.sessionToastId ?? null,
+    onError
+  );
+
+  if (succeeded && action.dismissOnSuccess) {
+    useNotificationCenterStore.getState().removeItem(notificationId);
+    return true;
+  }
+
+  useNotificationCenterStore.getState().setItemPendingAction(notificationId, null);
+  return succeeded;
+};
+
 function ActionableNotificationToast({
+  notificationId,
   tone,
   toastId,
   title,
@@ -547,23 +624,28 @@ function ActionableNotificationToast({
   actions,
   showDismissButton = true,
 }: ActionableNotificationToastProps) {
-  const [pendingActionIndex, setPendingActionIndex] = useState<number | null>(null);
+  const actionableItem = useNotificationCenterStore((state) =>
+    state.items.find((item) => item.id === notificationId && item.variant === 'actionable')
+  );
+  const pendingActionIndex = actionableItem?.pendingActionIndex ?? null;
+  const interactiveActions = actionableItem?.sessionActions ?? actions;
 
   const handleActionClick = (actionIndex: number) => {
     if (pendingActionIndex !== null) {
       return;
     }
 
-    const action = actions[actionIndex];
+    const action = interactiveActions[actionIndex];
     if (!action) {
       return;
     }
 
-    setPendingActionIndex(actionIndex);
+    if (getNotificationCenterActionEntry(notificationId)?.sessionActions?.length) {
+      void executeRegisteredNotificationAction(notificationId, actionIndex);
+      return;
+    }
 
-    void executeNotificationAction(action, toastId).finally(() => {
-      setPendingActionIndex(null);
-    });
+    void executeNotificationAction(action, toastId);
   };
 
   return (
@@ -571,7 +653,7 @@ function ActionableNotificationToast({
       tone={tone}
       title={title}
       description={description}
-      actions={actions}
+      actions={interactiveActions}
       pendingActionIndex={pendingActionIndex}
       onActionClick={handleActionClick}
       onDismiss={showDismissButton ? () => sonnerToast.dismiss(toastId) : undefined}
@@ -582,6 +664,7 @@ function ActionableNotificationToast({
 const emitToastChannel = (
   level: NotificationTone,
   message: ToastMessage,
+  notificationId: string,
   toastId: ToastId,
   options?: NotificationOptions
 ): ToastId => {
@@ -596,6 +679,7 @@ const emitToastChannel = (
   return sonnerToast.custom(
     (currentToastId) => (
       <ActionableNotificationToast
+        notificationId={notificationId}
         tone={level}
         toastId={currentToastId}
         title={resolveToastNode(message)}
@@ -626,9 +710,13 @@ const emitNotification = (
 
   if (toastEnabled) {
     registerToastInBatch(toastId);
-    result = emitToastChannel(level, message, toastId, options);
+    result = emitToastChannel(level, message, historyId, toastId, options);
     if (tracked && level !== 'success') {
-      persistNotification(level as NotificationLevel, historyId, toPersistableToastContent(message, options));
+      persistNotification(
+        level as NotificationLevel,
+        historyId,
+        toPersistableToastContent(message, options, toastId)
+      );
     }
   }
 
@@ -689,6 +777,7 @@ const emitTemplatedToastChannel = (
     (currentToastId) =>
       payload.variant === 'actionable' ? (
         <ActionableNotificationToast
+          notificationId={String(resolveNotificationKey(options.notificationKey) ?? toastId)}
           tone={payload.tone}
           toastId={currentToastId}
           title={payload.title}
@@ -733,6 +822,12 @@ const emitTemplatedNotification = (
         description: payload.description,
         variant: payload.variant,
         category: payload.category,
+        ...(payload.variant === 'actionable' && payload.actions?.length
+          ? {
+              sessionActions: toSessionNotificationActions(payload.actions),
+              sessionToastId: toastId,
+            }
+          : {}),
       });
     }
   }
@@ -804,8 +899,8 @@ export const toast = Object.assign(
     },
     dismiss: ((toastId?: ToastId) => {
       if (toastId === undefined) {
-        clearToastBatch();
-        return sonnerToast.dismiss();
+        dismissAllVisibleToasts();
+        return;
       }
 
       unregisterToastFromBatch(toastId);
@@ -834,6 +929,7 @@ export const __testables = {
   ActionableNotificationToastBody,
   InformationalNotificationToastBody,
   executeNotificationAction,
+  executeRegisteredNotificationAction,
   getNotificationChannelMode,
   normalizeNotificationActions,
   resolveDesktopNotificationContent,

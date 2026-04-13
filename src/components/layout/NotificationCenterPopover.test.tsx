@@ -4,13 +4,25 @@ import { createRoot, type Root } from 'react-dom/client';
 import { useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
 
 let importCounter = 0;
+const executeRegisteredNotificationActionMock = mock(
+  async (_notificationId: string, _actionIndex: number) => true
+);
 
 const loadNotificationCenterPopover = async () => {
   mock.restore();
   mock.module('react-i18next', () => ({
     useTranslation: () => ({
       t: (_key: string, fallback?: string) => fallback ?? _key,
+      i18n: {
+        language: 'en-US',
+      },
     }),
+  }));
+  mock.module('../ui/toastService', () => ({
+    executeRegisteredNotificationAction: (
+      notificationId: string,
+      actionIndex: number
+    ) => executeRegisteredNotificationActionMock(notificationId, actionIndex),
   }));
 
   importCounter += 1;
@@ -43,10 +55,28 @@ describe('NotificationCenterPopover', () => {
           description: 'Choose what to do next.',
           createdAt: '2026-04-12T10:00:00.000Z',
           readAt: null,
+          sessionActions: [
+            {
+              label: 'Create',
+              variant: 'primary',
+              dismissOnSuccess: true,
+              onClick: async () => undefined,
+            },
+            {
+              label: 'Open settings',
+              variant: 'secondary',
+              dismissOnSuccess: false,
+              onClick: async () => undefined,
+            },
+          ],
         },
       ],
       isCenterOpen: false,
     });
+    executeRegisteredNotificationActionMock.mockReset();
+    executeRegisteredNotificationActionMock.mockImplementation(
+      async (_notificationId: string, _actionIndex: number) => true
+    );
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -77,7 +107,7 @@ describe('NotificationCenterPopover', () => {
     mock.restore();
   });
 
-  it('renders shared templates and snapshots actionable items without live actions', async () => {
+  it('renders shared templates and interactive actionable items when session actions are available', async () => {
     const { NotificationCenterPopover } = await loadNotificationCenterPopover();
 
     await act(async () => {
@@ -95,6 +125,130 @@ describe('NotificationCenterPopover', () => {
     expect(surfaces).toHaveLength(2);
     expect(document.body.textContent).toContain('Background indexing finished');
     expect(document.body.textContent).toContain('Base branch missing');
+    expect(document.body.textContent).toContain('Create');
+    expect(document.body.textContent).toContain('Open settings');
+    expect(document.body.textContent).toContain('Yesterday');
+
+    const createButton = Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Create'
+    );
+    expect(createButton).toBeDefined();
+
+    await act(async () => {
+      createButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(executeRegisteredNotificationActionMock).toHaveBeenCalledWith(
+      'action-item',
+      0
+    );
+  });
+
+  it('falls back to a snapshot label when an actionable item was restored without session actions', async () => {
+    const { NotificationCenterPopover } = await loadNotificationCenterPopover();
+
+    useNotificationCenterStore.setState({
+      items: [
+        {
+          id: 'action-item',
+          level: 'warning',
+          variant: 'actionable',
+          title: 'Restored actionable',
+          description: 'This item came from storage.',
+          createdAt: '2026-04-12T10:00:00.000Z',
+          readAt: null,
+        },
+      ],
+      isCenterOpen: false,
+    });
+
+    await act(async () => {
+      root?.render(
+        <NotificationCenterPopover
+          isOpen
+          anchorRef={{ current: anchor }}
+          onClose={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
     expect(document.body.textContent).toContain('Action required');
+    expect(document.body.textContent).not.toContain('Create');
+  });
+
+  it('renders separate date groups for recent, today, yesterday, and older notifications', async () => {
+    const { NotificationCenterPopover } = await loadNotificationCenterPopover();
+
+    useNotificationCenterStore.setState({
+      items: [
+        {
+          id: 'just-now',
+          level: 'info',
+          variant: 'informational',
+          title: 'Just now',
+          createdAt: '2026-04-13T12:29:45.000Z',
+          readAt: null,
+        },
+        {
+          id: 'this-hour',
+          level: 'info',
+          variant: 'informational',
+          title: 'This hour',
+          createdAt: '2026-04-13T12:05:00.000Z',
+          readAt: null,
+        },
+        {
+          id: 'today',
+          level: 'info',
+          variant: 'informational',
+          title: 'Earlier today',
+          createdAt: '2026-04-13T09:00:00.000Z',
+          readAt: null,
+        },
+        {
+          id: 'yesterday',
+          level: 'warning',
+          variant: 'informational',
+          title: 'Yesterday item',
+          createdAt: '2026-04-12T10:00:00.000Z',
+          readAt: null,
+        },
+        {
+          id: 'older',
+          level: 'error',
+          variant: 'informational',
+          title: 'Older item',
+          createdAt: '2026-04-10T10:00:00.000Z',
+          readAt: null,
+        },
+      ],
+      isCenterOpen: false,
+    });
+
+    const originalDateNow = Date.now;
+    Date.now = () => new Date('2026-04-13T12:30:00.000Z').getTime();
+
+    try {
+      await act(async () => {
+        root?.render(
+          <NotificationCenterPopover
+            isOpen
+            anchorRef={{ current: anchor }}
+            onClose={() => undefined}
+          />
+        );
+        await Promise.resolve();
+      });
+    } finally {
+      Date.now = originalDateNow;
+    }
+
+    expect(document.body.textContent).toContain('Less than a minute ago');
+    expect(document.body.textContent).toContain('This hour');
+    expect(document.body.textContent).toContain('Today');
+    expect(document.body.textContent).toContain('Yesterday');
+    expect(document.body.textContent).toContain('April 10');
   });
 });

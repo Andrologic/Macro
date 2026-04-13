@@ -520,6 +520,21 @@ describe('toast wrapper', () => {
       variant: 'actionable',
       title: 'Base branch missing',
       description: 'Choose what to do next.',
+      sessionToastId: expect.any(String),
+      sessionActions: [
+        expect.objectContaining({
+          label: 'Create',
+          variant: 'primary',
+          dismissOnSuccess: true,
+          onClick: expect.any(Function),
+        }),
+        expect.objectContaining({
+          label: 'Settings',
+          variant: 'secondary',
+          dismissOnSuccess: true,
+          onClick: expect.any(Function),
+        }),
+      ],
     });
   });
 
@@ -555,6 +570,18 @@ describe('toast wrapper', () => {
       variant: 'actionable',
       category: 'task_attention_required',
       title: 'Base branch missing',
+      sessionActions: [
+        expect.objectContaining({
+          label: 'Create',
+          variant: 'primary',
+          dismissOnSuccess: true,
+        }),
+        expect.objectContaining({
+          label: 'Settings',
+          variant: 'secondary',
+          dismissOnSuccess: true,
+        }),
+      ],
     });
     expect(getToastBatchSnapshot().activeToastIds).toHaveLength(1);
     expect(maybeSendDesktopNotificationMock).toHaveBeenCalledWith({
@@ -705,6 +732,23 @@ describe('toast wrapper', () => {
     });
   });
 
+  it('dismisses all visible toasts when the notification center opens', () => {
+    notify.info('Visible info', {
+      description: 'Tracked in center',
+    });
+    notify.warning('Visible warning', {
+      description: 'Also visible',
+    });
+
+    expect(getToastBatchSnapshot().activeToastIds).toHaveLength(2);
+
+    useNotificationCenterStore.getState().setCenterOpen(true);
+
+    expect(sonnerToastMock.dismiss).toHaveBeenCalledWith();
+    expect(getToastBatchSnapshot().activeToastIds).toEqual([]);
+    expect(useNotificationCenterStore.getState().isCenterOpen).toBe(true);
+  });
+
   it('allows categorized toast delivery even when uncategorized in-app notifications are disabled', () => {
     useAuthStore.setState({
       user: buildUser(false),
@@ -806,6 +850,89 @@ describe('toast wrapper', () => {
 
     expect(onClick).toHaveBeenCalledTimes(1);
     expect(sonnerToastMock.dismiss).toHaveBeenCalledWith('toast-1');
+  });
+
+  it('executes registered actionable center actions with shared loading state and removal on success', async () => {
+    const onClick = mock(async () => undefined);
+    useNotificationCenterStore.setState({
+      items: [
+        {
+          id: 'center-action',
+          level: 'warning',
+          variant: 'actionable',
+          title: 'Needs attention',
+          createdAt: '2026-04-12T10:00:00.000Z',
+          readAt: null,
+          sessionToastId: 'toast-center-action',
+          sessionActions: [
+            {
+              label: 'Create',
+              variant: 'primary',
+              dismissOnSuccess: true,
+              onClick,
+            },
+          ],
+        },
+      ],
+      isCenterOpen: false,
+    });
+
+    const executionPromise = __testables.executeRegisteredNotificationAction(
+      'center-action',
+      0
+    );
+
+    expect(
+      useNotificationCenterStore.getState().items[0]?.pendingActionIndex
+    ).toBe(0);
+
+    await expect(executionPromise).resolves.toBe(true);
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(sonnerToastMock.dismiss).toHaveBeenCalledWith('toast-center-action');
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+  });
+
+  it('keeps registered actionable center entries when dismissOnSuccess is false', async () => {
+    const onClick = mock(async () => undefined);
+    useNotificationCenterStore.setState({
+      items: [
+        {
+          id: 'center-keep-open',
+          level: 'warning',
+          variant: 'actionable',
+          title: 'Needs attention',
+          createdAt: '2026-04-12T10:00:00.000Z',
+          readAt: null,
+          sessionActions: [
+            {
+              label: 'Review',
+              variant: 'secondary',
+              dismissOnSuccess: false,
+              onClick,
+            },
+          ],
+        },
+      ],
+      isCenterOpen: false,
+    });
+
+    await expect(
+      __testables.executeRegisteredNotificationAction('center-keep-open', 0)
+    ).resolves.toBe(true);
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(sonnerToastMock.dismiss).not.toHaveBeenCalled();
+    expect(useNotificationCenterStore.getState().items[0]).toMatchObject({
+      id: 'center-keep-open',
+      sessionActions: [
+        expect.objectContaining({
+          label: 'Review',
+          dismissOnSuccess: false,
+        }),
+      ],
+    });
+    expect(useNotificationCenterStore.getState().items[0]?.pendingActionIndex).toBeUndefined();
   });
 
   it('keeps the toast open when dismissOnSuccess is false', async () => {
