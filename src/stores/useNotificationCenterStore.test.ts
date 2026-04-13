@@ -210,6 +210,62 @@ describe('useNotificationCenterStore', () => {
     });
   });
 
+  it('keeps actionable session actions in memory while stripping them from persistence', () => {
+    const store = notificationStore.useNotificationCenterStore.getState();
+    const action = async () => undefined;
+
+    store.upsertItem(
+      createNotificationItem(8, {
+        id: 'actionable-item',
+        level: 'warning',
+        variant: 'actionable',
+        title: 'Needs attention',
+        sessionActions: [
+          {
+            label: 'Create',
+            variant: 'primary',
+            dismissOnSuccess: true,
+            onClick: action,
+          },
+        ],
+        sessionToastId: 'toast-actionable',
+        pendingActionIndex: 0,
+      })
+    );
+
+    expect(notificationStore.useNotificationCenterStore.getState().items[0]).toMatchObject({
+      id: 'actionable-item',
+      sessionToastId: 'toast-actionable',
+      pendingActionIndex: 0,
+      sessionActions: [
+        expect.objectContaining({
+          label: 'Create',
+          variant: 'primary',
+          dismissOnSuccess: true,
+          onClick: action,
+        }),
+      ],
+    });
+
+    const persistedRaw = localStorageMock.getItem(
+      notificationStore.NOTIFICATION_CENTER_STORAGE_KEY
+    );
+    expect(persistedRaw).not.toBeNull();
+    expect(persistedRaw).not.toContain('sessionActions');
+    expect(persistedRaw).not.toContain('toast-actionable');
+
+    expect(notificationStore.readNotificationCenterItemsFromStorage()).toEqual([
+      {
+        id: 'actionable-item',
+        level: 'warning',
+        variant: 'actionable',
+        title: 'Needs attention',
+        createdAt: '2026-03-20T12:00:08.000Z',
+        readAt: null,
+      },
+    ]);
+  });
+
   it('replaces an existing item when the same id is upserted again', () => {
     const store = notificationStore.useNotificationCenterStore.getState();
 

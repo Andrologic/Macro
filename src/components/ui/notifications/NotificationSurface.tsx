@@ -67,21 +67,28 @@ export function NotificationSurface({
         </button>
       ) : null}
 
-      <div data-notification-surface-content="true" className="flex items-start gap-3">
+      <div
+        data-notification-surface-content="true"
+        className={cn('flex gap-3', description ? 'items-start' : 'items-center')}
+      >
         <div
           className={cn(
-            'mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-background shadow-inner'
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-background shadow-inner',
+            description && 'mt-0.5'
           )}
         >
           <Icon name={presentation.icon} size={16} className={presentation.iconClassName} />
         </div>
 
-        <div className="min-w-0 flex-1">
-          <div className={cn('text-sm font-semibold leading-5 text-foreground break-words', onDismiss && 'pr-8')}>
+        <div className={cn('min-w-0 flex-1', !description && 'flex min-h-9 items-center')}>
+          <div
+            data-notification-title="true"
+            className={cn('text-sm font-semibold leading-5 text-foreground break-words', onDismiss && 'pr-8')}
+          >
             {title}
           </div>
           {description ? (
-            <div className="mt-1 text-xs leading-relaxed text-muted-foreground break-words">
+            <div data-notification-description="true" className="mt-1 text-xs leading-relaxed text-muted-foreground break-words">
               {description}
             </div>
           ) : null}

@@ -37,7 +37,7 @@ import {
   emitActionableNotificationBlueprint,
   emitInformationalNotificationBlueprint,
   getActionableNotificationBlueprintPreviewActions,
-  simulateNotificationBlueprintAction,
+  type ActionableNotificationBlueprintActionDraft,
   type ActionableNotificationBlueprintDraft,
   type InformationalNotificationBlueprintDraft,
   type NotificationBlueprintChannel,
@@ -92,9 +92,10 @@ export const NotificationsView: React.FC = () => {
   const [actionableDraft, setActionableDraft] =
     useState<ActionableNotificationBlueprintDraft>(() => ({
       ...DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT,
+      actions: DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT.actions.map((action) => ({
+        ...action,
+      })),
     }));
-  const [actionablePreviewPendingActionIndex, setActionablePreviewPendingActionIndex] =
-    useState<number | null>(null);
 
   useEffect(() => {
     void initializeDesktopNotifications();
@@ -192,6 +193,56 @@ export const NotificationsView: React.FC = () => {
     []
   );
 
+  const updateActionableDraftActionCount = useCallback((actionCount: 1 | 2) => {
+    setActionableDraft((current) => {
+      if (actionCount === current.actions.length) {
+        return current;
+      }
+
+      if (actionCount < current.actions.length) {
+        return {
+          ...current,
+          actions: current.actions.slice(0, actionCount),
+        };
+      }
+
+      const nextActions = [...current.actions];
+      const defaultAction =
+        DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT.actions[nextActions.length] ?? {
+          label: nextActions.length === 0 ? 'Primary action' : 'Secondary action',
+          variant: nextActions.length === 0 ? 'primary' : 'secondary',
+          dismissOnSuccess: true,
+        };
+
+      nextActions.push({ ...defaultAction });
+
+      return {
+        ...current,
+        actions: nextActions,
+      };
+    });
+  }, []);
+
+  const updateActionableDraftAction = useCallback(
+    (
+      actionIndex: number,
+      patch: Partial<ActionableNotificationBlueprintActionDraft>
+    ) => {
+      setActionableDraft((current) => ({
+        ...current,
+        actions: current.actions.map((action, index) =>
+          index === actionIndex
+            ? {
+                ...action,
+                ...patch,
+              }
+            : action
+        ),
+      }));
+    },
+    []
+  );
+
   const handleInformationalBlueprintEmit = useCallback(
     async (channel: NotificationBlueprintChannel) => {
       await runDebugAction(`informational:${channel}`, async () => {
@@ -216,20 +267,6 @@ export const NotificationsView: React.FC = () => {
       });
     },
     [actionableDraft, runDebugAction]
-  );
-
-  const handleActionablePreviewAction = useCallback(
-    (index: number) => {
-      if (actionablePreviewPendingActionIndex !== null) {
-        return;
-      }
-
-      setActionablePreviewPendingActionIndex(index);
-      void simulateNotificationBlueprintAction().finally(() => {
-        setActionablePreviewPendingActionIndex(null);
-      });
-    },
-    [actionablePreviewPendingActionIndex]
   );
 
   const handleClearNotificationCenter = useCallback(async () => {
@@ -528,8 +565,7 @@ export const NotificationsView: React.FC = () => {
                     title={actionableDraft.title}
                     description={actionableDraft.description || undefined}
                     actions={actionablePreviewActions}
-                    pendingActionIndex={actionablePreviewPendingActionIndex}
-                    onActionClick={handleActionablePreviewAction}
+                    actionsDisabled
                     className="w-full"
                   />
                 </div>
@@ -573,17 +609,16 @@ export const NotificationsView: React.FC = () => {
                     <Select
                       id="actionable-blueprint-action-count"
                       data-testid="actionable-blueprint-action-count"
-                      value={String(actionableDraft.actionCount)}
+                      value={String(actionableDraft.actions.length)}
                       onChange={(event) =>
-                        updateActionableDraft({
-                          actionCount: event.target.value === '2' ? 2 : 1,
-                        })
+                        updateActionableDraftActionCount(
+                          event.target.value === '2' ? 2 : 1
+                        )
                       }
                       onInput={(event) =>
-                        updateActionableDraft({
-                          actionCount:
-                            (event.target as HTMLSelectElement).value === '2' ? 2 : 1,
-                        })
+                        updateActionableDraftActionCount(
+                          (event.target as HTMLSelectElement).value === '2' ? 2 : 1
+                        )
                       }
                     >
                       <option value="1">1</option>
@@ -647,46 +682,146 @@ export const NotificationsView: React.FC = () => {
                     <Input
                       id="actionable-blueprint-primary-action"
                       data-testid="actionable-blueprint-primary-action"
-                      value={actionableDraft.primaryActionLabel}
+                      value={actionableDraft.actions[0]?.label ?? ''}
                       onChange={(event) =>
-                        updateActionableDraft({
-                          primaryActionLabel: event.target.value,
-                        })
+                        updateActionableDraftAction(0, { label: event.target.value })
                       }
                       onInput={(event) =>
-                        updateActionableDraft({
-                          primaryActionLabel: (event.target as HTMLInputElement).value,
+                        updateActionableDraftAction(0, {
+                          label: (event.target as HTMLInputElement).value,
                         })
                       }
                     />
                   </div>
 
-                  {actionableDraft.actionCount === 2 && (
-                    <div className="space-y-1">
-                      <label
-                        htmlFor="actionable-blueprint-secondary-action"
-                        className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
-                      >
-                        Secondary action
-                      </label>
-                      <Input
-                        id="actionable-blueprint-secondary-action"
-                        data-testid="actionable-blueprint-secondary-action"
-                        value={actionableDraft.secondaryActionLabel}
-                        onChange={(event) =>
-                          updateActionableDraft({
-                            secondaryActionLabel: event.target.value,
-                          })
-                        }
-                        onInput={(event) =>
-                          updateActionableDraft({
-                            secondaryActionLabel: (event.target as HTMLInputElement).value,
-                          })
-                        }
-                      />
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="actionable-blueprint-primary-variant"
+                      className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                    >
+                      Primary variant
+                    </label>
+                    <Select
+                      id="actionable-blueprint-primary-variant"
+                      data-testid="actionable-blueprint-primary-variant"
+                      value={actionableDraft.actions[0]?.variant ?? 'primary'}
+                      onChange={(event) =>
+                        updateActionableDraftAction(0, {
+                          variant:
+                            event.target.value === 'secondary' ? 'secondary' : 'primary',
+                        })
+                      }
+                      onInput={(event) =>
+                        updateActionableDraftAction(0, {
+                          variant:
+                            (event.target as HTMLSelectElement).value === 'secondary'
+                              ? 'secondary'
+                              : 'primary',
+                        })
+                      }
+                    >
+                      <option value="primary">primary</option>
+                      <option value="secondary">secondary</option>
+                    </Select>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/40 px-3 py-2 sm:col-span-2">
+                    <div className="space-y-0.5">
+                      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        Primary dismiss on success
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Close the toast and remove the center item after a successful primary action.
+                      </p>
                     </div>
+                    <Switch
+                      checked={actionableDraft.actions[0]?.dismissOnSuccess !== false}
+                      onCheckedChange={(checked) =>
+                        updateActionableDraftAction(0, { dismissOnSuccess: checked })
+                      }
+                    />
+                  </div>
+
+                  {actionableDraft.actions.length === 2 && (
+                    <>
+                      <div className="space-y-1">
+                        <label
+                          htmlFor="actionable-blueprint-secondary-action"
+                          className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                        >
+                          Secondary action
+                        </label>
+                        <Input
+                          id="actionable-blueprint-secondary-action"
+                          data-testid="actionable-blueprint-secondary-action"
+                          value={actionableDraft.actions[1]?.label ?? ''}
+                          onChange={(event) =>
+                            updateActionableDraftAction(1, { label: event.target.value })
+                          }
+                          onInput={(event) =>
+                            updateActionableDraftAction(1, {
+                              label: (event.target as HTMLInputElement).value,
+                            })
+                          }
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label
+                          htmlFor="actionable-blueprint-secondary-variant"
+                          className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                        >
+                          Secondary variant
+                        </label>
+                        <Select
+                          id="actionable-blueprint-secondary-variant"
+                          data-testid="actionable-blueprint-secondary-variant"
+                          value={actionableDraft.actions[1]?.variant ?? 'secondary'}
+                          onChange={(event) =>
+                            updateActionableDraftAction(1, {
+                              variant:
+                                event.target.value === 'secondary'
+                                  ? 'secondary'
+                                  : 'primary',
+                            })
+                          }
+                          onInput={(event) =>
+                            updateActionableDraftAction(1, {
+                              variant:
+                                (event.target as HTMLSelectElement).value === 'secondary'
+                                  ? 'secondary'
+                                  : 'primary',
+                            })
+                          }
+                        >
+                          <option value="primary">primary</option>
+                          <option value="secondary">secondary</option>
+                        </Select>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/40 px-3 py-2 sm:col-span-2">
+                        <div className="space-y-0.5">
+                          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            Secondary dismiss on success
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Close the toast and remove the center item after a successful secondary action.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={actionableDraft.actions[1]?.dismissOnSuccess !== false}
+                          onCheckedChange={(checked) =>
+                            updateActionableDraftAction(1, { dismissOnSuccess: checked })
+                          }
+                        />
+                      </div>
+                    </>
                   )}
                 </div>
+
+                <p className="text-xs text-muted-foreground">
+                  Actionable blueprints are validated in-app only. Desktop notifications do not render Macro&apos;s custom buttons.
+                </p>
 
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -703,9 +838,7 @@ export const NotificationsView: React.FC = () => {
                     size="sm"
                     variant="secondary"
                     data-testid="actionable-blueprint-desktop"
-                    isLoading={pendingDebugActionId === 'actionable:desktop'}
-                    disabled={pendingDebugActionId !== null}
-                    onClick={() => void handleActionableBlueprintEmit('desktop')}
+                    disabled
                   >
                     Desktop
                   </Button>
@@ -713,9 +846,7 @@ export const NotificationsView: React.FC = () => {
                     size="sm"
                     variant="primary"
                     data-testid="actionable-blueprint-all"
-                    isLoading={pendingDebugActionId === 'actionable:all'}
-                    disabled={pendingDebugActionId !== null}
-                    onClick={() => void handleActionableBlueprintEmit('all')}
+                    disabled
                   >
                     All channels
                   </Button>

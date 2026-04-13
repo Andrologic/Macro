@@ -98,7 +98,7 @@ export async function changeLanguage(lang: SupportedLanguage): Promise<void> {
 
   try {
     const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
-    notify.success(i18n.t("notify.languageChanged", { language: languageName }));
+    notify.success(i18n.t("toast.languageChanged", { language: languageName }));
   } catch {
     // Toast not available.
   }

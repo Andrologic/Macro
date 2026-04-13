@@ -52,4 +52,16 @@ describe('notification templates', () => {
     expect(snapshotMarkup).toContain('Action required');
     expect(snapshotMarkup).not.toContain('<button');
   });
+
+  it('centers the title vertically when no description is provided', () => {
+    const markup = renderToStaticMarkup(
+      <InformationalNotificationTemplate
+        tone="success"
+        title="Theme saved"
+      />
+    );
+
+    expect(markup).toContain('items-center');
+    expect(markup).toContain('min-h-9');
+  });
 });

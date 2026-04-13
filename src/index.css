@@ -176,6 +176,8 @@
   }
 
   [data-sonner-toaster].macro-toaster [data-sonner-toast] {
+    -webkit-user-select: none;
+    user-select: none;
     transition:
       transform 420ms cubic-bezier(0.16, 1, 0.3, 1),
       opacity 220ms ease,
@@ -359,6 +361,8 @@
   }
 
   [data-sonner-toaster].macro-toaster [data-title].macro-toast-title {
+    -webkit-user-select: text;
+    user-select: text;
     font-size: 0.875rem;
     font-weight: 600;
     line-height: 1.35;
@@ -366,9 +370,17 @@
   }
 
   [data-sonner-toaster].macro-toaster [data-description].macro-toast-description {
+    -webkit-user-select: text;
+    user-select: text;
     font-size: 0.8125rem;
     line-height: 1.5;
     color: rgb(var(--muted-foreground) / 0.96);
+  }
+
+  [data-sonner-toaster].macro-toaster [data-notification-title='true'],
+  [data-sonner-toaster].macro-toaster [data-notification-description='true'] {
+    -webkit-user-select: text;
+    user-select: text;
   }
 
   [data-sonner-toaster].macro-toaster [data-icon].macro-toast-icon {
