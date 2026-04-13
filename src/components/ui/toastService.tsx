@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { toast as sonnerToast, type ExternalToast } from 'sonner';
+import i18n from '../../i18n';
 import { maybeSendDesktopNotification } from '../../services/desktopNotifications';
 import {
   DEFAULT_NOTIFICATION_CHANNEL_MODES,
@@ -34,7 +35,6 @@ import {
 
 const NOTIFICATIONS_DISABLED_RESULT = 'notifications-disabled';
 const MAX_NOTIFICATION_ACTIONS = 2;
-const DEFAULT_NOTIFICATION_ACTION_ERROR_MESSAGE = 'An error occurred';
 
 type ToastMessage = Parameters<typeof sonnerToast>[0];
 type SonnerCustomToastArgs = Parameters<typeof sonnerToast.custom>;
@@ -302,7 +302,7 @@ const getNotificationActionErrorMessage = (error: unknown): string => {
     return error;
   }
 
-  return DEFAULT_NOTIFICATION_ACTION_ERROR_MESSAGE;
+  return i18n.t('notifications.actionError', 'An error occurred');
 };
 
 const getNotificationChannelMode = (options?: NotificationOptions) => {

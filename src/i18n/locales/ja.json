@@ -390,6 +390,76 @@
       "toast": "トースト",
       "desktop": "デスクトップ",
       "both": "トースト + デスクトップ"
+    },
+    "notificationsDebug": {
+      "sectionTitle": "Debug",
+      "title": "通知ブループリント",
+      "description": "このデバッグ専用パネルで、Macro 全体で使う 2 つの共有通知ブループリントを調整できます。",
+      "desktopHint": "デスクトッププレビューは通常のフォアグラウンド制限を回避するため、アプリをバックグラウンドにしなくても OS 通知を確認できます。",
+      "runtimeStatus": "現在のデスクトップ実行状態",
+      "clearCenter": "センターをクリア ({{count}})",
+      "clearCenterResult": "通知センターをクリアしました。",
+      "labels": {
+        "informational": "情報ブループリント",
+        "actionable": "アクション付きブループリント"
+      },
+      "informationalDescription": "info、success、warning、error の各トーンで共有の非アクション通知テンプレートを確認します。",
+      "actionableDescription": "1 つまたは 2 つの疑似アクションと対応するトーンで共有アクション通知テンプレートを確認します。",
+      "actionableDesktopHint": "アクション付きブループリントはアプリ内でのみ検証できます。デスクトップ通知では Macro のカスタムボタンは表示されません。",
+      "fields": {
+        "tone": "トーン",
+        "title": "タイトル",
+        "description": "説明",
+        "actions": "アクション数",
+        "primaryAction": "主アクション",
+        "primaryVariant": "主バリアント",
+        "primaryDismissOnSuccess": "主アクション成功時に閉じる",
+        "primaryDismissDescription": "主アクションが成功したら、トーストを閉じて通知センター項目を削除します。",
+        "secondaryAction": "副アクション",
+        "secondaryVariant": "副バリアント",
+        "secondaryDismissOnSuccess": "副アクション成功時に閉じる",
+        "secondaryDismissDescription": "副アクションが成功したら、トーストを閉じて通知センター項目を削除します。"
+      },
+      "tones": {
+        "info": "情報",
+        "success": "成功",
+        "warning": "警告",
+        "error": "エラー"
+      },
+      "variants": {
+        "primary": "主要",
+        "secondary": "副次"
+      },
+      "channels": {
+        "inApp": "アプリ内",
+        "desktop": "デスクトップ",
+        "allChannels": "すべてのチャネル"
+      },
+      "summary": {
+        "inAppSent": "{{label}}: アプリ内プレビューを送信しました。",
+        "inAppBlocked": "{{label}}: 現在の通知設定によりアプリ内プレビューはブロックされました。",
+        "desktopSent": "{{label}}: デスクトッププレビューを送信しました。",
+        "desktopBlocked": "{{label}}: 現在の実行環境または権限状態ではデスクトッププレビューを送信できませんでした。",
+        "allChannels": "{{label}}: アプリ内 {{inAppStatus}}、デスクトップ {{desktopStatus}}。",
+        "ok": "ok",
+        "blocked": "ブロック"
+      },
+      "defaults": {
+        "informational": {
+          "title": "バックグラウンドのインデックス作成が完了しました",
+          "description": "すべて最新です。"
+        },
+        "actionable": {
+          "title": "ベースブランチが見つかりません",
+          "description": "安全に続行するため、次の操作を選択してください。",
+          "actions": {
+            "primary": "主アクション",
+            "secondary": "副アクション",
+            "create": "作成",
+            "openSettings": "設定を開く"
+          }
+        }
+      }
     }
   },
   "project": {
@@ -1173,7 +1243,10 @@
     "openCenter": "通知を開く",
     "closeCenter": "通知を閉じる",
     "clearAll": "すべてクリア",
+    "dismiss": "通知を閉じる",
     "remove": "通知を削除する",
+    "actionRequired": "対応が必要です",
+    "actionError": "エラーが発生しました",
     "emptyTitle": "通知はありません",
     "emptySubtitle": "情報、警告、エラー通知がここに表示されます。",
     "allRead": "全部追いついた",

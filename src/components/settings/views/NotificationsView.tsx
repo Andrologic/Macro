@@ -48,25 +48,50 @@ const DEBUG_BLUEPRINT_FRAME_CLASS_NAME =
   'flex min-h-[220px] items-start rounded-xl border border-border/60 bg-background/60 p-4';
 
 const summarizeBlueprintResult = (
+  t: (key: string, fallback: string, options?: Record<string, unknown>) => string,
   label: string,
   channel: NotificationBlueprintChannel,
   result: NotificationBlueprintEmitResult
 ): string => {
   if (channel === 'in_app') {
     return result.inAppSent
-      ? `${label}: in-app preview emitted.`
-      : `${label}: in-app preview was blocked by the current notification settings.`;
+      ? t('settings.notificationsDebug.summary.inAppSent', '{{label}}: in-app preview emitted.', {
+          label,
+        })
+      : t(
+          'settings.notificationsDebug.summary.inAppBlocked',
+          '{{label}}: in-app preview was blocked by the current notification settings.',
+          { label }
+        );
   }
 
   if (channel === 'desktop') {
     return result.desktopSent
-      ? `${label}: desktop preview sent.`
-      : `${label}: desktop preview could not be sent with the current runtime or permission state.`;
+      ? t(
+          'settings.notificationsDebug.summary.desktopSent',
+          '{{label}}: desktop preview sent.',
+          { label }
+        )
+      : t(
+          'settings.notificationsDebug.summary.desktopBlocked',
+          '{{label}}: desktop preview could not be sent with the current runtime or permission state.',
+          { label }
+        );
   }
 
-  return `${label}: in-app ${result.inAppSent ? 'ok' : 'blocked'}, desktop ${
-    result.desktopSent ? 'ok' : 'blocked'
-  }.`;
+  return t(
+    'settings.notificationsDebug.summary.allChannels',
+    '{{label}}: in-app {{inAppStatus}}, desktop {{desktopStatus}}.',
+    {
+      label,
+      inAppStatus: result.inAppSent
+        ? t('settings.notificationsDebug.summary.ok', 'ok')
+        : t('settings.notificationsDebug.summary.blocked', 'blocked'),
+      desktopStatus: result.desktopSent
+        ? t('settings.notificationsDebug.summary.ok', 'ok')
+        : t('settings.notificationsDebug.summary.blocked', 'blocked'),
+    }
+  );
 };
 
 export const NotificationsView: React.FC = () => {
@@ -209,7 +234,16 @@ export const NotificationsView: React.FC = () => {
       const nextActions = [...current.actions];
       const defaultAction =
         DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT.actions[nextActions.length] ?? {
-          label: nextActions.length === 0 ? 'Primary action' : 'Secondary action',
+          label:
+            nextActions.length === 0
+              ? t(
+                  'settings.notificationsDebug.defaults.actionable.actions.primary',
+                  'Primary action'
+                )
+              : t(
+                  'settings.notificationsDebug.defaults.actionable.actions.secondary',
+                  'Secondary action'
+                ),
           variant: nextActions.length === 0 ? 'primary' : 'secondary',
           dismissOnSuccess: true,
         };
@@ -250,10 +284,18 @@ export const NotificationsView: React.FC = () => {
           informationalDraft,
           channel
         );
-        return summarizeBlueprintResult('Informational blueprint', channel, result);
+        return summarizeBlueprintResult(
+          t,
+          t(
+            'settings.notificationsDebug.labels.informational',
+            'Informational blueprint'
+          ),
+          channel,
+          result
+        );
       });
     },
-    [informationalDraft, runDebugAction]
+    [informationalDraft, runDebugAction, t]
   );
 
   const handleActionableBlueprintEmit = useCallback(
@@ -263,18 +305,26 @@ export const NotificationsView: React.FC = () => {
           actionableDraft,
           channel
         );
-        return summarizeBlueprintResult('Actionable blueprint', channel, result);
+        return summarizeBlueprintResult(
+          t,
+          t('settings.notificationsDebug.labels.actionable', 'Actionable blueprint'),
+          channel,
+          result
+        );
       });
     },
-    [actionableDraft, runDebugAction]
+    [actionableDraft, runDebugAction, t]
   );
 
   const handleClearNotificationCenter = useCallback(async () => {
     await runDebugAction('clear:center', async () => {
       clearNotificationCenter();
-      return 'Notification center cleared.';
+      return t(
+        'settings.notificationsDebug.clearCenterResult',
+        'Notification center cleared.'
+      );
     });
-  }, [clearNotificationCenter, runDebugAction]);
+  }, [clearNotificationCenter, runDebugAction, t]);
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -368,22 +418,32 @@ export const NotificationsView: React.FC = () => {
       {isDevelopmentBuild && (
         <section className="space-y-4" data-testid="notifications-debug-section">
           <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-            Debug
+            {t('settings.notificationsDebug.sectionTitle', 'Debug')}
           </h4>
 
           <div className="space-y-4 rounded-xl border border-border/50 bg-card/40 p-4">
             <div className="space-y-1">
               <label className="text-sm font-medium text-foreground">
-                Notification blueprints
+                {t('settings.notificationsDebug.title', 'Notification blueprints')}
               </label>
               <p className="text-xs text-muted-foreground">
-                Use this debug-only panel to tune the two shared notification blueprints used across Macro.
+                {t(
+                  'settings.notificationsDebug.description',
+                  'Use this debug-only panel to tune the two shared notification blueprints used across Macro.'
+                )}
               </p>
               <p className="text-xs text-muted-foreground">
-                Desktop previews bypass the usual foreground restriction so you can validate OS notifications without backgrounding the app.
+                {t(
+                  'settings.notificationsDebug.desktopHint',
+                  'Desktop previews bypass the usual foreground restriction so you can validate OS notifications without backgrounding the app.'
+                )}
               </p>
               <p className="text-xs text-muted-foreground">
-                Current desktop runtime status:{' '}
+                {t(
+                  'settings.notificationsDebug.runtimeStatus',
+                  'Current desktop runtime status'
+                )}
+                :{' '}
                 <span className={desktopRuntimeToneClass}>{desktopRuntimeLabel}</span>
               </p>
             </div>
@@ -402,7 +462,9 @@ export const NotificationsView: React.FC = () => {
                 disabled={pendingDebugActionId !== null}
                 onClick={() => void handleClearNotificationCenter()}
               >
-                Clear center ({notificationCenterItems.length})
+                {t('settings.notificationsDebug.clearCenter', 'Clear center ({{count}})', {
+                  count: notificationCenterItems.length,
+                })}
               </Button>
             </div>
 
@@ -413,10 +475,16 @@ export const NotificationsView: React.FC = () => {
               >
                 <div className="space-y-1">
                   <div className="text-sm font-medium text-foreground">
-                    Informational blueprint
+                    {t(
+                      'settings.notificationsDebug.labels.informational',
+                      'Informational blueprint'
+                    )}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Preview the shared non-actionable notification template across info, success, warning, and error tones.
+                    {t(
+                      'settings.notificationsDebug.informationalDescription',
+                      'Preview the shared non-actionable notification template across info, success, warning, and error tones.'
+                    )}
                   </p>
                 </div>
 
@@ -438,7 +506,7 @@ export const NotificationsView: React.FC = () => {
                       htmlFor="informational-blueprint-tone"
                       className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                     >
-                      Tone
+                      {t('settings.notificationsDebug.fields.tone', 'Tone')}
                     </label>
                     <Select
                       id="informational-blueprint-tone"
@@ -455,10 +523,18 @@ export const NotificationsView: React.FC = () => {
                         })
                       }
                     >
-                      <option value="info">info</option>
-                      <option value="success">success</option>
-                      <option value="warning">warning</option>
-                      <option value="error">error</option>
+                      <option value="info">
+                        {t('settings.notificationsDebug.tones.info', 'info')}
+                      </option>
+                      <option value="success">
+                        {t('settings.notificationsDebug.tones.success', 'success')}
+                      </option>
+                      <option value="warning">
+                        {t('settings.notificationsDebug.tones.warning', 'warning')}
+                      </option>
+                      <option value="error">
+                        {t('settings.notificationsDebug.tones.error', 'error')}
+                      </option>
                     </Select>
                   </div>
 
@@ -467,7 +543,7 @@ export const NotificationsView: React.FC = () => {
                       htmlFor="informational-blueprint-title"
                       className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                     >
-                      Title
+                      {t('settings.notificationsDebug.fields.title', 'Title')}
                     </label>
                     <Input
                       id="informational-blueprint-title"
@@ -489,7 +565,10 @@ export const NotificationsView: React.FC = () => {
                       htmlFor="informational-blueprint-description"
                       className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                     >
-                      Description
+                      {t(
+                        'settings.notificationsDebug.fields.description',
+                        'Description'
+                      )}
                     </label>
                     <Textarea
                       id="informational-blueprint-description"
@@ -518,7 +597,7 @@ export const NotificationsView: React.FC = () => {
                     disabled={pendingDebugActionId !== null}
                     onClick={() => void handleInformationalBlueprintEmit('in_app')}
                   >
-                    In-app
+                    {t('settings.notificationsDebug.channels.inApp', 'In-app')}
                   </Button>
                   <Button
                     size="sm"
@@ -528,7 +607,7 @@ export const NotificationsView: React.FC = () => {
                     disabled={pendingDebugActionId !== null}
                     onClick={() => void handleInformationalBlueprintEmit('desktop')}
                   >
-                    Desktop
+                    {t('settings.notificationsDebug.channels.desktop', 'Desktop')}
                   </Button>
                   <Button
                     size="sm"
@@ -538,7 +617,10 @@ export const NotificationsView: React.FC = () => {
                     disabled={pendingDebugActionId !== null}
                     onClick={() => void handleInformationalBlueprintEmit('all')}
                   >
-                    All channels
+                    {t(
+                      'settings.notificationsDebug.channels.allChannels',
+                      'All channels'
+                    )}
                   </Button>
                 </div>
               </div>
@@ -549,10 +631,16 @@ export const NotificationsView: React.FC = () => {
               >
                 <div className="space-y-1">
                   <div className="text-sm font-medium text-foreground">
-                    Actionable blueprint
+                    {t(
+                      'settings.notificationsDebug.labels.actionable',
+                      'Actionable blueprint'
+                    )}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Preview the shared actionable template with one or two simulated actions and matching tones.
+                    {t(
+                      'settings.notificationsDebug.actionableDescription',
+                      'Preview the shared actionable template with one or two simulated actions and matching tones.'
+                    )}
                   </p>
                 </div>
 
@@ -576,7 +664,7 @@ export const NotificationsView: React.FC = () => {
                       htmlFor="actionable-blueprint-tone"
                       className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                     >
-                      Tone
+                      {t('settings.notificationsDebug.fields.tone', 'Tone')}
                     </label>
                     <Select
                       id="actionable-blueprint-tone"
@@ -593,9 +681,15 @@ export const NotificationsView: React.FC = () => {
                         })
                       }
                     >
-                      <option value="info">info</option>
-                      <option value="warning">warning</option>
-                      <option value="error">error</option>
+                      <option value="info">
+                        {t('settings.notificationsDebug.tones.info', 'info')}
+                      </option>
+                      <option value="warning">
+                        {t('settings.notificationsDebug.tones.warning', 'warning')}
+                      </option>
+                      <option value="error">
+                        {t('settings.notificationsDebug.tones.error', 'error')}
+                      </option>
                     </Select>
                   </div>
 
@@ -604,7 +698,7 @@ export const NotificationsView: React.FC = () => {
                       htmlFor="actionable-blueprint-action-count"
                       className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                     >
-                      Actions
+                      {t('settings.notificationsDebug.fields.actions', 'Actions')}
                     </label>
                     <Select
                       id="actionable-blueprint-action-count"
@@ -631,7 +725,7 @@ export const NotificationsView: React.FC = () => {
                       htmlFor="actionable-blueprint-title"
                       className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                     >
-                      Title
+                      {t('settings.notificationsDebug.fields.title', 'Title')}
                     </label>
                     <Input
                       id="actionable-blueprint-title"
@@ -653,7 +747,10 @@ export const NotificationsView: React.FC = () => {
                       htmlFor="actionable-blueprint-description"
                       className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                     >
-                      Description
+                      {t(
+                        'settings.notificationsDebug.fields.description',
+                        'Description'
+                      )}
                     </label>
                     <Textarea
                       id="actionable-blueprint-description"
@@ -677,7 +774,10 @@ export const NotificationsView: React.FC = () => {
                       htmlFor="actionable-blueprint-primary-action"
                       className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                     >
-                      Primary action
+                      {t(
+                        'settings.notificationsDebug.fields.primaryAction',
+                        'Primary action'
+                      )}
                     </label>
                     <Input
                       id="actionable-blueprint-primary-action"
@@ -699,7 +799,10 @@ export const NotificationsView: React.FC = () => {
                       htmlFor="actionable-blueprint-primary-variant"
                       className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                     >
-                      Primary variant
+                      {t(
+                        'settings.notificationsDebug.fields.primaryVariant',
+                        'Primary variant'
+                      )}
                     </label>
                     <Select
                       id="actionable-blueprint-primary-variant"
@@ -720,18 +823,31 @@ export const NotificationsView: React.FC = () => {
                         })
                       }
                     >
-                      <option value="primary">primary</option>
-                      <option value="secondary">secondary</option>
+                      <option value="primary">
+                        {t('settings.notificationsDebug.variants.primary', 'primary')}
+                      </option>
+                      <option value="secondary">
+                        {t(
+                          'settings.notificationsDebug.variants.secondary',
+                          'secondary'
+                        )}
+                      </option>
                     </Select>
                   </div>
 
                   <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/40 px-3 py-2 sm:col-span-2">
                     <div className="space-y-0.5">
-                      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                        Primary dismiss on success
+                          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        {t(
+                          'settings.notificationsDebug.fields.primaryDismissOnSuccess',
+                          'Primary dismiss on success'
+                        )}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Close the toast and remove the center item after a successful primary action.
+                        {t(
+                          'settings.notificationsDebug.fields.primaryDismissDescription',
+                          'Close the toast and remove the center item after a successful primary action.'
+                        )}
                       </p>
                     </div>
                     <Switch
@@ -749,7 +865,10 @@ export const NotificationsView: React.FC = () => {
                           htmlFor="actionable-blueprint-secondary-action"
                           className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                         >
-                          Secondary action
+                          {t(
+                            'settings.notificationsDebug.fields.secondaryAction',
+                            'Secondary action'
+                          )}
                         </label>
                         <Input
                           id="actionable-blueprint-secondary-action"
@@ -771,7 +890,10 @@ export const NotificationsView: React.FC = () => {
                           htmlFor="actionable-blueprint-secondary-variant"
                           className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
                         >
-                          Secondary variant
+                          {t(
+                            'settings.notificationsDebug.fields.secondaryVariant',
+                            'Secondary variant'
+                          )}
                         </label>
                         <Select
                           id="actionable-blueprint-secondary-variant"
@@ -794,18 +916,31 @@ export const NotificationsView: React.FC = () => {
                             })
                           }
                         >
-                          <option value="primary">primary</option>
-                          <option value="secondary">secondary</option>
+                          <option value="primary">
+                            {t('settings.notificationsDebug.variants.primary', 'primary')}
+                          </option>
+                          <option value="secondary">
+                            {t(
+                              'settings.notificationsDebug.variants.secondary',
+                              'secondary'
+                            )}
+                          </option>
                         </Select>
                       </div>
 
                       <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/40 px-3 py-2 sm:col-span-2">
                         <div className="space-y-0.5">
                           <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                            Secondary dismiss on success
+                            {t(
+                              'settings.notificationsDebug.fields.secondaryDismissOnSuccess',
+                              'Secondary dismiss on success'
+                            )}
                           </div>
                           <p className="text-xs text-muted-foreground">
-                            Close the toast and remove the center item after a successful secondary action.
+                            {t(
+                              'settings.notificationsDebug.fields.secondaryDismissDescription',
+                              'Close the toast and remove the center item after a successful secondary action.'
+                            )}
                           </p>
                         </div>
                         <Switch
@@ -820,7 +955,10 @@ export const NotificationsView: React.FC = () => {
                 </div>
 
                 <p className="text-xs text-muted-foreground">
-                  Actionable blueprints are validated in-app only. Desktop notifications do not render Macro&apos;s custom buttons.
+                  {t(
+                    'settings.notificationsDebug.actionableDesktopHint',
+                    "Actionable blueprints are validated in-app only. Desktop notifications do not render Macro's custom buttons."
+                  )}
                 </p>
 
                 <div className="flex flex-wrap gap-2">
@@ -832,7 +970,7 @@ export const NotificationsView: React.FC = () => {
                     disabled={pendingDebugActionId !== null}
                     onClick={() => void handleActionableBlueprintEmit('in_app')}
                   >
-                    In-app
+                    {t('settings.notificationsDebug.channels.inApp', 'In-app')}
                   </Button>
                   <Button
                     size="sm"
@@ -840,7 +978,7 @@ export const NotificationsView: React.FC = () => {
                     data-testid="actionable-blueprint-desktop"
                     disabled
                   >
-                    Desktop
+                    {t('settings.notificationsDebug.channels.desktop', 'Desktop')}
                   </Button>
                   <Button
                     size="sm"
@@ -848,7 +986,10 @@ export const NotificationsView: React.FC = () => {
                     data-testid="actionable-blueprint-all"
                     disabled
                   >
-                    All channels
+                    {t(
+                      'settings.notificationsDebug.channels.allChannels',
+                      'All channels'
+                    )}
                   </Button>
                 </div>
               </div>

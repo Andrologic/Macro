@@ -340,6 +340,76 @@
       "desktop": "Desktop",
       "both": "Toast + Desktop"
     },
+    "notificationsDebug": {
+      "sectionTitle": "Debug",
+      "title": "Notification blueprints",
+      "description": "Use this debug-only panel to tune the two shared notification blueprints used across Macro.",
+      "desktopHint": "Desktop previews bypass the usual foreground restriction so you can validate OS notifications without backgrounding the app.",
+      "runtimeStatus": "Current desktop runtime status",
+      "clearCenter": "Clear center ({{count}})",
+      "clearCenterResult": "Notification center cleared.",
+      "labels": {
+        "informational": "Informational blueprint",
+        "actionable": "Actionable blueprint"
+      },
+      "informationalDescription": "Preview the shared non-actionable notification template across info, success, warning, and error tones.",
+      "actionableDescription": "Preview the shared actionable template with one or two simulated actions and matching tones.",
+      "actionableDesktopHint": "Actionable blueprints are validated in-app only. Desktop notifications do not render Macro's custom buttons.",
+      "fields": {
+        "tone": "Tone",
+        "title": "Title",
+        "description": "Description",
+        "actions": "Actions",
+        "primaryAction": "Primary action",
+        "primaryVariant": "Primary variant",
+        "primaryDismissOnSuccess": "Primary dismiss on success",
+        "primaryDismissDescription": "Close the toast and remove the center item after a successful primary action.",
+        "secondaryAction": "Secondary action",
+        "secondaryVariant": "Secondary variant",
+        "secondaryDismissOnSuccess": "Secondary dismiss on success",
+        "secondaryDismissDescription": "Close the toast and remove the center item after a successful secondary action."
+      },
+      "tones": {
+        "info": "Info",
+        "success": "Success",
+        "warning": "Warning",
+        "error": "Error"
+      },
+      "variants": {
+        "primary": "Primary",
+        "secondary": "Secondary"
+      },
+      "channels": {
+        "inApp": "In-app",
+        "desktop": "Desktop",
+        "allChannels": "All channels"
+      },
+      "summary": {
+        "inAppSent": "{{label}}: in-app preview emitted.",
+        "inAppBlocked": "{{label}}: in-app preview was blocked by the current notification settings.",
+        "desktopSent": "{{label}}: desktop preview sent.",
+        "desktopBlocked": "{{label}}: desktop preview could not be sent with the current runtime or permission state.",
+        "allChannels": "{{label}}: in-app {{inAppStatus}}, desktop {{desktopStatus}}.",
+        "ok": "ok",
+        "blocked": "blocked"
+      },
+      "defaults": {
+        "informational": {
+          "title": "Background indexing finished",
+          "description": "Everything is up to date."
+        },
+        "actionable": {
+          "title": "Base branch missing",
+          "description": "Choose what to do next to continue safely.",
+          "actions": {
+            "primary": "Primary action",
+            "secondary": "Secondary action",
+            "create": "Create",
+            "openSettings": "Open settings"
+          }
+        }
+      }
+    },
     "analytics": "Analytics",
     "analytics_desc": "Share anonymous usage data to help improve Macro",
     "projectContextPolicy": "Project context memory",
@@ -1173,7 +1243,10 @@
     "openCenter": "Open notifications",
     "closeCenter": "Close notifications",
     "clearAll": "Clear all",
+    "dismiss": "Dismiss notification",
     "remove": "Remove notification",
+    "actionRequired": "Action required",
+    "actionError": "An error occurred",
     "emptyTitle": "No notifications",
     "emptySubtitle": "Info, warning, and error notifications appear here.",
     "allRead": "All caught up",
