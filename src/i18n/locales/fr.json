@@ -395,7 +395,7 @@
       "sectionTitle": "Debug",
       "title": "Blueprints de notification",
       "description": "Utilisez ce panneau de debug pour ajuster les deux blueprints de notification partagés de Macro.",
-      "desktopHint": "Les aperçus desktop contournent la restriction normale de premier plan afin de valider les notifications système sans mettre l'application en arrière-plan.",
+      "desktopHint": "Les aperçus desktop sont un smoke test best-effort. Sur macOS, ils peuvent ne pas apparaître tant que Macro reste au premier plan ; le chemin fiable reste les notifications desktop quand l’application est en arrière-plan.",
       "runtimeStatus": "État actuel du runtime desktop",
       "clearCenter": "Vider le centre ({{count}})",
       "clearCenterResult": "Centre de notifications vidé.",

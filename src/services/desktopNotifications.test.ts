@@ -228,7 +228,43 @@ describe('desktopNotifications service', () => {
     expect(sendNotificationMock).toHaveBeenCalledTimes(1);
   });
 
+  it('sends macOS background notifications through the notification plugin', async () => {
+    installDomStubs('MacIntel');
+    await desktopNotifications.initializeDesktopNotifications();
+    documentFocused = false;
+    windowTarget.emit('blur');
+
+    await expect(
+      desktopNotifications.maybeSendDesktopNotification({
+        title: 'Native macOS alert',
+        body: 'Shown with a native command',
+      })
+    ).resolves.toBe(true);
+
+    expect(sendNotificationMock).toHaveBeenCalledWith({
+      title: 'Native macOS alert',
+      body: 'Shown with a native command',
+    });
+  });
+
   it('allows debug previews while the app is foregrounded', async () => {
+    await expect(
+      desktopNotifications.sendDesktopNotificationPreview({
+        title: 'Preview alert',
+        body: 'Shown from debug tools',
+        notificationKey: 'preview:test',
+      })
+    ).resolves.toBe(true);
+
+    expect(sendNotificationMock).toHaveBeenCalledWith({
+      title: 'Preview alert',
+      body: 'Shown from debug tools',
+    });
+  });
+
+  it('routes macOS debug previews through the notification plugin', async () => {
+    installDomStubs('MacIntel');
+
     await expect(
       desktopNotifications.sendDesktopNotificationPreview({
         title: 'Preview alert',

@@ -135,7 +135,7 @@ export const NotificationsView: React.FC = () => {
 
   useEffect(() => {
     void initializeDesktopNotifications();
-  }, []);
+  }, [t]);
 
   const inAppNotificationsEnabled = user?.preferences.notifications !== false;
   const desktopRuntimeLabel = desktopNotificationStatus === 'granted'
@@ -266,7 +266,7 @@ export const NotificationsView: React.FC = () => {
         actions: nextActions,
       };
     });
-  }, []);
+  }, [t]);
 
   const updateActionableDraftAction = useCallback(
     (
@@ -447,7 +447,7 @@ export const NotificationsView: React.FC = () => {
                 <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
                   {t(
                     'settings.notificationsDebug.desktopHint',
-                    'Desktop previews bypass the usual foreground restriction so you can validate OS notifications without backgrounding the app.'
+                    'Desktop previews are a best-effort smoke test. On macOS, previews may not appear while Macro is in the foreground; the reliable path is desktop notifications when the app is in the background.'
                   )}
                 </p>
               </div>
