@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
@@ -82,11 +83,49 @@ const readyStatusOrder: Record<TaskStatus, number> = {
   Completed: 6,
 };
 
-const REPOSITORY_CHIP_STATE_CLASSES: Record<ReviewRepositoryUiState, string> = {
-  pending_review: 'border-amber-500/20 bg-amber-500/10 text-amber-500',
-  ready_to_commit: 'border-sky-500/20 bg-sky-500/10 text-sky-400',
-  committed: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-500',
-  no_changes: 'border-border bg-muted/60 text-muted-foreground',
+interface TaskMenuPosition {
+  top: number;
+  left: number;
+}
+
+const TASK_MENU_WIDTH = 176;
+const TASK_MENU_GAP = 6;
+const TASK_MENU_VIEWPORT_PADDING = 12;
+const TASK_MENU_ITEM_HEIGHT = 34;
+const TASK_MENU_VERTICAL_PADDING = 8;
+
+const getTaskMenuPosition = (
+  trigger: HTMLElement | null,
+  actionCount: number
+): TaskMenuPosition => {
+  if (!trigger) {
+    return {
+      top: TASK_MENU_VIEWPORT_PADDING,
+      left: TASK_MENU_VIEWPORT_PADDING,
+    };
+  }
+
+  const rect = trigger.getBoundingClientRect();
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const estimatedMenuHeight = actionCount * TASK_MENU_ITEM_HEIGHT + TASK_MENU_VERTICAL_PADDING;
+  const preferredLeft = rect.right - TASK_MENU_WIDTH;
+  const left = Math.min(
+    Math.max(TASK_MENU_VIEWPORT_PADDING, preferredLeft),
+    viewportWidth - TASK_MENU_WIDTH - TASK_MENU_VIEWPORT_PADDING
+  );
+  const wouldOverflowBottom =
+    rect.bottom + TASK_MENU_GAP + estimatedMenuHeight >
+    viewportHeight - TASK_MENU_VIEWPORT_PADDING;
+  const preferredTop = wouldOverflowBottom
+    ? rect.top - estimatedMenuHeight - TASK_MENU_GAP
+    : rect.bottom + TASK_MENU_GAP;
+  const top = Math.min(
+    Math.max(TASK_MENU_VIEWPORT_PADDING, preferredTop),
+    viewportHeight - estimatedMenuHeight - TASK_MENU_VIEWPORT_PADDING
+  );
+
+  return { top, left };
 };
 
 interface MultiRepoTaskPresentation {
@@ -123,7 +162,6 @@ interface TaskItemProps {
   task: ImplementTask;
   isSelected: boolean;
   planLabel: string;
-  multiRepoPresentation: MultiRepoTaskPresentation | null;
   isAssistantRunning: boolean;
   taskCommandRunStatus: 'running' | 'cancelling' | null;
   canRunTaskCommands: boolean;
@@ -139,7 +177,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
   task,
   isSelected,
   planLabel,
-  multiRepoPresentation,
   isAssistantRunning,
   taskCommandRunStatus,
   canRunTaskCommands,
@@ -152,6 +189,9 @@ const TaskItem: React.FC<TaskItemProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<TaskMenuPosition | null>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const taskMenuRef = useRef<HTMLDivElement>(null);
   const isDraft = task.draft === true;
   const showPlanLabel = task.task_source === 'architect' && planLabel.trim().length > 0;
   const isAwaitingUserReply = !isDraft && !isAssistantRunning && task.status === 'AwaitingResponse';
@@ -176,6 +216,46 @@ const TaskItem: React.FC<TaskItemProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showMenu]);
 
+  useEffect(() => {
+    if (!showMenu) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+
+      if (
+        taskMenuRef.current?.contains(target) ||
+        menuButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+
+      setShowMenu(false);
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [showMenu]);
+
+  useEffect(() => {
+    if (!showMenu) {
+      setMenuPosition(null);
+      return;
+    }
+
+    const updatePosition = () => {
+      setMenuPosition(getTaskMenuPosition(menuButtonRef.current, actions.length));
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [actions.length, showMenu]);
+
   return (
     <div
       role="button"
@@ -188,7 +268,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         }
       }}
       className={cn(
-        'relative h-[112px] w-full overflow-hidden rounded-xl border text-left transition-all duration-200 group cursor-pointer',
+        'relative h-[112px] w-full overflow-visible rounded-xl border text-left transition-all duration-200 group cursor-pointer',
         isSelected
           ? 'border-primary/30 bg-primary/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
           : isAssistantRunning
@@ -200,10 +280,17 @@ const TaskItem: React.FC<TaskItemProps> = ({
     >
       <div className="grid h-full grid-rows-[auto,1fr,auto] px-4 py-2">
         <button
+          ref={menuButtonRef}
           type="button"
           onClick={(event) => {
             event.stopPropagation();
-            setShowMenu((current) => !current);
+            const nextValue = !showMenu;
+            setMenuPosition(
+              nextValue
+                ? getTaskMenuPosition(event.currentTarget, actions.length)
+                : null
+            );
+            setShowMenu(nextValue);
           }}
           onMouseDown={(event) => event.stopPropagation()}
           className="absolute right-2 top-2.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -248,47 +335,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
               <span className="truncate">{planLabel}</span>
             </div>
           )}
-        </div>
-
-        <div className="mt-1 flex min-h-[28px] items-end justify-between gap-2">
-          <div className="min-w-0 flex flex-1 flex-col justify-center gap-1 pb-0.5 pr-7">
-            {!isDraft && task.branch_name && (
-              <div className="inline-flex h-[18px] items-center gap-1.5 text-xs leading-none text-muted-foreground">
-                <Icon name="git-branch" size={10} />
-                <span className="truncate leading-none">{task.branch_name}</span>
-              </div>
-            )}
-
-            {multiRepoPresentation && (
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-                  <Icon name="folder" size={10} />
-                  {t('implement.multiProjectTask', '{{count}} repositories', {
-                    count: multiRepoPresentation.repositories.length,
-                  })}
-                </span>
-                <div className="flex min-w-0 flex-wrap gap-1">
-                  {multiRepoPresentation.repositories.slice(0, 2).map((repository) => (
-                    <span
-                      key={repository.id}
-                      title={repository.title}
-                      className={cn(
-                        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]',
-                        repository.state
-                          ? REPOSITORY_CHIP_STATE_CLASSES[repository.state]
-                          : 'border-border bg-muted/40 text-muted-foreground'
-                      )}
-                    >
-                      <span>{repository.label}</span>
-                      {repository.isCurrent && (
-                        <span className="text-primary">{t('implement.currentRepository', 'Current')}</span>
-                      )}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
         </div>
 
         {taskCommandRunStatus ? (
@@ -340,20 +386,26 @@ const TaskItem: React.FC<TaskItemProps> = ({
         )}
       </div>
 
-      {showMenu && (
-        <>
+      {showMenu && menuPosition && typeof document !== 'undefined'
+        ? createPortal(
           <div
-            className="fixed inset-0 z-40"
-            onClick={() => setShowMenu(false)}
-          />
-          <div
-            className="absolute right-2 top-10 z-50 min-w-40 rounded-lg border border-border bg-card py-1 shadow-lg"
+            ref={taskMenuRef}
+            role="menu"
+            aria-label={t('implement.taskActions', 'Task actions')}
+            style={{
+              position: 'fixed',
+              top: `${menuPosition.top}px`,
+              left: `${menuPosition.left}px`,
+              width: `${TASK_MENU_WIDTH}px`,
+            }}
+            className="z-[12010] overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             {actions.map((action) => (
               <button
                 key={action.key}
                 type="button"
+                role="menuitem"
                 onClick={(event) => {
                   event.stopPropagation();
                   if (action.disabled) {
@@ -368,7 +420,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                   'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm',
                   action.destructive
                     ? 'text-red-500 hover:bg-red-500/10'
-                    : 'text-foreground hover:bg-accent',
+                    : 'text-popover-foreground hover:bg-accent',
                   action.disabled && 'cursor-not-allowed opacity-50 hover:bg-transparent'
                 )}
               >
@@ -376,9 +428,10 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 <span>{action.label}</span>
               </button>
             ))}
-          </div>
-        </>
-      )}
+          </div>,
+          document.body
+        )
+        : null}
     </div>
   );
 };
@@ -1503,7 +1556,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         task={row.task}
                         isSelected={selectedTaskId === row.task.id}
                         planLabel={getTaskPlanLabel(row.task)}
-                        multiRepoPresentation={row.multiRepoPresentation}
                         isAssistantRunning={streamingTaskId === row.task.id}
                         taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
                         canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
