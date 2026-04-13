@@ -284,7 +284,95 @@ describe('toast wrapper', () => {
     expect(SonnerToasterMock.mock.calls.at(-1)?.[0]).toEqual(
       expect.objectContaining({
         expand: true,
-        visibleToasts: 4,
+        visibleToasts: 99,
+      })
+    );
+    expect(getToastBatchSnapshot().isPaused).toBe(true);
+
+    await act(async () => {
+      toasterNode?.dispatchEvent(new Event('mouseleave', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(SonnerToasterMock.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        expand: false,
+        visibleToasts: 3,
+      })
+    );
+    expect(getToastBatchSnapshot().isPaused).toBe(false);
+  });
+
+  it('keeps expanded visibleToasts stable while a toast is dismissed from the middle of the batch', async () => {
+    await act(async () => {
+      root?.render(createElement(Toaster));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      registerToastInBatch('toast-a');
+      registerToastInBatch('toast-b');
+      registerToastInBatch('toast-c');
+      registerToastInBatch('toast-d');
+      registerToastInBatch('toast-e');
+      await Promise.resolve();
+    });
+
+    const toasterNode = document.querySelector('[data-testid="sonner-toaster-mock"]');
+    expect(toasterNode).not.toBeNull();
+
+    await act(async () => {
+      toasterNode?.dispatchEvent(new Event('mouseenter', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(SonnerToasterMock.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        expand: true,
+        visibleToasts: 99,
+      })
+    );
+
+    await act(async () => {
+      toast.dismiss('toast-c');
+      await Promise.resolve();
+    });
+
+    expect(SonnerToasterMock.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        expand: true,
+        visibleToasts: 99,
+      })
+    );
+  });
+
+  it('collapses immediately when hover leaves even if the toaster kept focus', async () => {
+    await act(async () => {
+      root?.render(createElement(Toaster));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      registerToastInBatch('toast-a');
+      registerToastInBatch('toast-b');
+      registerToastInBatch('toast-c');
+      registerToastInBatch('toast-d');
+      await Promise.resolve();
+    });
+
+    const toasterNode = document.querySelector('[data-testid="sonner-toaster-mock"]');
+    expect(toasterNode).not.toBeNull();
+
+    await act(async () => {
+      toasterNode?.dispatchEvent(new Event('mouseenter', { bubbles: true }));
+      toasterNode?.dispatchEvent(new Event('focusin', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(SonnerToasterMock.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        expand: true,
+        visibleToasts: 99,
       })
     );
     expect(getToastBatchSnapshot().isPaused).toBe(true);
