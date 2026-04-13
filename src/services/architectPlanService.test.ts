@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
+import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -32,17 +33,45 @@ const createLocalStorageMock = (): LocalStorageMock => {
 const branchName = 'develop';
 let importCounter = 0;
 
-const registerArchitectPlanMocks = () => {
+interface LoadArchitectPlanServiceOptions {
+  tauriAvailable?: boolean;
+  filesByWorkspacePath?: Record<string, Record<string, string>>;
+  registrySnapshot?: ValidProjectRegistrySnapshot;
+  workspaceRoot?: string;
+}
+
+const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {}) => {
   mock.restore();
   const tauriModule = () => ({
-    isTauriAvailable: () => false,
+    isTauriAvailable: () => options.tauriAvailable === true,
+    workspaceGetActiveRoot: async () => options.workspaceRoot ?? '/repos/web',
+    fsReadFileWithOptions: async (params: { path: string; workspacePath?: string | null }) => {
+      const workspacePath = params.workspacePath ?? '';
+      const content = options.filesByWorkspacePath?.[workspacePath]?.[params.path];
+      if (typeof content !== 'string') {
+        throw new Error(`Missing mocked file for ${workspacePath}:${params.path}`);
+      }
+      return { content };
+    },
   });
   mock.module('./tauriIpc', tauriModule);
   mock.module('./tauriIpc.ts', tauriModule);
+
+  if (options.registrySnapshot) {
+    const snapshot = options.registrySnapshot;
+    const validProjectRegistryModule = () => ({
+      isSyntheticProjectId: (value?: string | null) => Boolean(value && value.startsWith('session-project-')),
+      loadValidProjectRegistrySnapshot: async () => snapshot,
+      normalizeProjectRegistryPath: (value?: string | null) =>
+        value ? value.trim().replace(/\\/g, '/').replace(/\/+$/, '') || null : null,
+    });
+    mock.module('./validProjectRegistry', validProjectRegistryModule);
+    mock.module('./validProjectRegistry.ts', validProjectRegistryModule);
+  }
 };
 
-const loadArchitectPlanService = async () => {
-  registerArchitectPlanMocks();
+const loadArchitectPlanService = async (options?: LoadArchitectPlanServiceOptions) => {
+  registerArchitectPlanMocks(options);
   importCounter += 1;
   return import(`./architectPlanService.ts?local-test=${importCounter}`);
 };
@@ -285,5 +314,89 @@ describe('architectPlanService', () => {
     const listed = await service.listArchitectPlans(branchName, true, true);
     expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === legacyPlan.id)?.slug).toBe('checkout');
     expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === canonicalPlan.id)?.slug).toBe('1710000000020');
+  });
+
+  it('returns no aggregated active plan when metadata scopes disagree on the active plan id', async () => {
+    const registrySnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: null,
+      scopedProjectIds: [],
+      actionableProjectIds: ['web', 'api'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['web', 'api']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['web', 'api'],
+      validProjectIdSet: new Set(['web', 'api']),
+      repoPathByProjectId: new Map([
+        ['web', '/repos/web'],
+        ['api', '/repos/api'],
+      ]),
+      hasRegisteredProjects: true,
+    };
+
+    const buildSummary = (id: string, projectId: string): ArchitectPlanSummary => ({
+      id,
+      slug: id,
+      title: id,
+      label: id,
+      description: '',
+      status: 'draft',
+      targetBranch: branchName,
+      projectId,
+      projectIds: [projectId],
+      createdAt: '2026-03-19T00:00:00.000Z',
+      updatedAt: '2026-03-19T00:00:00.000Z',
+      nodeCount: 0,
+    });
+
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/web',
+      registrySnapshot,
+      filesByWorkspacePath: {
+        '/repos/web': {
+          'branches/develop/plans/index.json': JSON.stringify({
+            version: 3,
+            activePlanId: 'plan-a',
+            plans: [buildSummary('plan-a', 'web')],
+            reservedPlanSlugs: ['plan-a'],
+          }),
+        },
+        '/repos/api': {
+          'branches/develop/plans/index.json': JSON.stringify({
+            version: 3,
+            activePlanId: 'plan-b',
+            plans: [buildSummary('plan-b', 'api')],
+            reservedPlanSlugs: ['plan-b'],
+          }),
+        },
+      },
+    });
+
+    const listed = await service.listArchitectPlans(branchName, true, true);
+
+    expect(listed.activePlanId).toBeNull();
+  });
+
+  it('does not treat unscoped legacy plans as visible inside a selected project scope', () => {
+    const legacyUnscopedPlan: ArchitectPlanSummary = {
+      id: 'legacy-unscoped',
+      slug: 'legacy-unscoped',
+      title: 'legacy-unscoped',
+      label: 'new plan',
+      description: '',
+      status: 'draft',
+      targetBranch: branchName,
+      projectId: undefined,
+      projectIds: [],
+      expectedProjectIds: [],
+      createdAt: '2026-03-19T00:00:00.000Z',
+      updatedAt: '2026-03-19T00:00:00.000Z',
+      nodeCount: 0,
+    };
+
+    expect(service.isArchitectPlanVisibleForScope(legacyUnscopedPlan, ['web'])).toBe(false);
+    expect(service.isArchitectPlanVisibleForScope(legacyUnscopedPlan, [])).toBe(true);
+    expect(service.planMatchesProjectId(legacyUnscopedPlan, 'web')).toBe(false);
   });
 });

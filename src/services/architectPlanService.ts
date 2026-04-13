@@ -378,6 +378,23 @@ export const getArchitectPlanProjectIds = (plan: ArchitectPlanProjectRef): strin
     normalizeProjectIds(plan.projectIds, plan.projectId)
   );
 
+export const isArchitectPlanVisibleForScope = (
+  plan: ArchitectPlanProjectRef,
+  scopedProjectIds: string[]
+): boolean => {
+  if (scopedProjectIds.length === 0) {
+    return true;
+  }
+
+  const planProjectIds = getArchitectPlanProjectIds(plan);
+  if (planProjectIds.length === 0) {
+    return false;
+  }
+
+  const scopedProjectIdSet = new Set(scopedProjectIds);
+  return planProjectIds.some((projectId) => scopedProjectIdSet.has(projectId));
+};
+
 export const getArchitectPlanTargetBranchesByProjectId = (
   plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'targetBranch'> & {
     targetBranchesByProjectId?: Record<string, string>;
@@ -416,8 +433,7 @@ export const planMatchesProjectId = (
   selectedProjectId: string | null
 ): boolean => {
   if (!selectedProjectId) return true;
-  const projectIds = getArchitectPlanProjectIds(plan);
-  return projectIds.length === 0 || projectIds.includes(selectedProjectId);
+  return isArchitectPlanVisibleForScope(plan, [selectedProjectId]);
 };
 
 export const resolvePlanProjectContextId = (
@@ -2056,9 +2072,17 @@ const readAggregatedIndex = async (
     }
   }
 
+  const activePlanIds = Array.from(
+    new Set(
+      indexes
+        .map(({ index }) => index.activePlanId)
+        .filter((planId): planId is string => Boolean(planId))
+    )
+  );
+
   return {
     version: 3,
-    activePlanId: indexes.map(({ index }) => index.activePlanId).find((planId) => Boolean(planId)) || null,
+    activePlanId: activePlanIds.length === 1 ? activePlanIds[0] : null,
     plans: Array.from(plansById.values()).map((entries) => mergePlanSummaries(entries, resolvedRegistrySnapshot)),
     reservedPlanSlugs: Array.from(
       new Set(indexes.flatMap(({ index }) => index.reservedPlanSlugs.map((slug) => slugifyPlanTitle(slug))))

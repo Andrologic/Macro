@@ -4,6 +4,7 @@ import {
   getArchitectPlanEditableName,
   getNextDefaultNewPlanLabel,
   isCanonicalArchitectPlan,
+  isDefaultNewPlanFamilyLabel,
   isDefaultNewPlanBaseLabel,
 } from './architectPlanPresentation';
 import { createArchitectAutoPlanService } from './architectAutoPlanCore';
@@ -77,11 +78,13 @@ const createArchitectAutoPlanHarness = () => {
     projectId?: string;
     projectIds?: string[];
     contextProjectIds?: string[];
+    createdAt?: string;
+    updatedAt?: string;
     status?: ArchitectPlanRecord['status'];
     setActive?: boolean;
   }) => {
     const id = params.planId ?? `plan-${plans.size + 1}`;
-    const now = new Date().toISOString();
+    const now = params.updatedAt ?? params.createdAt ?? new Date().toISOString();
     const projectIds = params.projectIds ?? (params.projectId ? [params.projectId] : []);
     const plan: ArchitectPlanRecord = {
       id,
@@ -96,8 +99,8 @@ const createArchitectAutoPlanHarness = () => {
       projectIds: projectIds.length > 0 ? [...projectIds] : undefined,
       contextProjectIds: params.contextProjectIds ? [...params.contextProjectIds] : undefined,
       expectedProjectIds: projectIds.length > 0 ? [...projectIds] : undefined,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: params.createdAt ?? now,
+      updatedAt: params.updatedAt ?? now,
       nodes: [],
       predictedBranches: [],
     };
@@ -126,6 +129,7 @@ const createArchitectAutoPlanHarness = () => {
     projectIds?: string[];
     contextProjectIds?: string[];
     expectedProjectIds?: string[];
+    updatedAt?: string;
     setActive?: boolean;
   }) => {
     const existing = plans.get(params.planId);
@@ -149,7 +153,7 @@ const createArchitectAutoPlanHarness = () => {
           : existing.projectIds
             ? [...existing.projectIds]
             : undefined,
-      updatedAt: new Date().toISOString(),
+      updatedAt: params.updatedAt ?? new Date().toISOString(),
     };
     if (updated.projectIds?.length) {
       updated.projectId = updated.projectIds[0];
@@ -185,11 +189,28 @@ const createArchitectAutoPlanHarness = () => {
       getArchitectPlanProjectIds,
       getNextDefaultNewPlanLabel,
       isCanonicalArchitectPlan,
+      isDefaultNewPlanFamilyLabel,
       isDefaultNewPlanBaseLabel,
       listArchitectPlans,
       setActiveArchitectPlan,
       updateArchitectPlan,
     }).ensureProjectGroupPlan,
+    ensureScopedBlankPlan: createArchitectAutoPlanService({
+      DEFAULT_NEW_PLAN_LABEL,
+      createArchitectPlan,
+      getArchitectPlan,
+      getArchitectPlanChatMessages,
+      getArchitectPlanEditableName,
+      getArchitectPlanNeeds,
+      getArchitectPlanProjectIds,
+      getNextDefaultNewPlanLabel,
+      isCanonicalArchitectPlan,
+      isDefaultNewPlanFamilyLabel,
+      isDefaultNewPlanBaseLabel,
+      listArchitectPlans,
+      setActiveArchitectPlan,
+      updateArchitectPlan,
+    }).ensureScopedBlankPlan,
   };
 };
 
@@ -327,5 +348,283 @@ describe('architectAutoPlan', () => {
     const reloaded = await getArchitectPlan(branchName, created.id);
     expect(reloaded?.projectIds).toEqual(['web']);
     expect(reloaded?.expectedProjectIds).toEqual(['web']);
+    expect(reloaded?.label).toBe('new plan');
+  });
+
+  it('does not reuse an unscoped legacy blank draft from another selected project scope', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
+    await createArchitectPlan({
+      branchName,
+      planId: 'legacy-unscoped',
+      label: 'new plan',
+      status: 'draft',
+      setActive: true,
+    });
+
+    const ensured = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['web'],
+      trigger: 'explicit_create',
+    });
+
+    expect(ensured).not.toBeNull();
+    expect(ensured?.id).not.toBe('legacy-unscoped');
+    expect(ensured?.projectIds).toEqual(['web']);
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans).toHaveLength(2);
+  });
+
+  it('reuses a renamed blank draft during implicit resume when only blank duplicates are visible', async () => {
+    const { createArchitectPlan, ensureProjectGroupPlan } = createArchitectAutoPlanHarness();
+    const activeBlank = await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan-active',
+      label: 'research scratchpad',
+      projectIds: ['web'],
+      status: 'draft',
+      setActive: true,
+    });
+    await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan-newer',
+      label: 'new plan 2',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-02T00:00:00.000Z',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+    });
+
+    const ensured = await ensureProjectGroupPlan({
+      branchName,
+      scopedProjectIds: ['web'],
+      trigger: 'implicit_resume',
+    });
+
+    expect(ensured).not.toBeNull();
+    expect(ensured?.action).toBe('reused_blank');
+    expect(ensured?.plan.id).toBe(activeBlank.id);
+  });
+
+  it('does not implicitly resume a blank draft when a real non-blank plan is visible in the scope', async () => {
+    const { createArchitectPlan, ensureProjectGroupPlan, updateArchitectPlan } = createArchitectAutoPlanHarness();
+    await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan',
+      label: 'research scratchpad',
+      projectIds: ['web'],
+      status: 'draft',
+      setActive: true,
+    });
+    const startedPlan = await createArchitectPlan({
+      branchName,
+      planId: 'started-plan',
+      label: 'new plan 2',
+      projectIds: ['web'],
+      status: 'draft',
+    });
+    await updateArchitectPlan({
+      branchName,
+      planId: startedPlan.id,
+      description: 'Started planning',
+    });
+
+    const ensured = await ensureProjectGroupPlan({
+      branchName,
+      scopedProjectIds: ['web'],
+      trigger: 'implicit_resume',
+    });
+
+    expect(ensured).toBeNull();
+  });
+
+  it('creates a new explicit placeholder without renaming a started new plan', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans, getArchitectPlan, updateArchitectPlan } =
+      createArchitectAutoPlanHarness();
+    const created = await createArchitectPlan({
+      branchName,
+      planId: 'started-plan',
+      label: 'new plan',
+      projectIds: ['web'],
+      status: 'draft',
+      setActive: true,
+    });
+
+    await updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      description: 'Started planning',
+    });
+
+    const ensured = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['web'],
+      trigger: 'explicit_create',
+    });
+
+    expect(ensured).not.toBeNull();
+    expect(ensured?.id).not.toBe(created.id);
+    expect(ensured?.label).toBe('new plan 2');
+
+    const reloadedOriginal = await getArchitectPlan(branchName, created.id);
+    expect(reloadedOriginal?.label).toBe('new plan');
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans.map((plan) => plan.label)).toEqual(['new plan', 'new plan 2']);
+  });
+
+  it('reuses a manually renamed blank draft during explicit create', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
+    const created = await createArchitectPlan({
+      branchName,
+      planId: 'renamed-blank-plan',
+      label: 'architecture scratchpad',
+      projectIds: ['web'],
+      status: 'draft',
+      setActive: true,
+    });
+
+    const ensured = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['web'],
+      trigger: 'explicit_create',
+    });
+
+    expect(ensured?.id).toBe(created.id);
+    expect(ensured?.label).toBe('architecture scratchpad');
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans).toHaveLength(1);
+  });
+
+  it('expands a reusable blank draft during explicit create instead of creating a second plan', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans, getArchitectPlan } =
+      createArchitectAutoPlanHarness();
+    const created = await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan-custom-label',
+      label: 'architecture scratchpad',
+      projectIds: ['web'],
+      contextProjectIds: ['docs'],
+      status: 'draft',
+      setActive: true,
+    });
+
+    const ensured = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['web', 'api'],
+      contextProjectIds: ['docs', 'storybook'],
+      trigger: 'explicit_create',
+    });
+
+    expect(ensured?.id).toBe(created.id);
+    expect(ensured?.projectIds).toEqual(['web', 'api']);
+    expect(ensured?.expectedProjectIds).toEqual(['web', 'api']);
+    expect(ensured?.contextProjectIds).toEqual(['docs', 'storybook']);
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans).toHaveLength(1);
+
+    const reloaded = await getArchitectPlan(branchName, created.id);
+    expect(reloaded?.projectIds).toEqual(['web', 'api']);
+    expect(reloaded?.contextProjectIds).toEqual(['docs', 'storybook']);
+  });
+
+  it('reuses an existing blank numbered placeholder as-is during explicit create', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
+    const created = await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan-2',
+      label: 'new plan 2',
+      projectIds: ['web'],
+      status: 'draft',
+      setActive: true,
+    });
+
+    const ensured = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['web'],
+      trigger: 'explicit_create',
+    });
+
+    expect(ensured?.id).toBe(created.id);
+    expect(ensured?.label).toBe('new plan 2');
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans).toHaveLength(1);
+    expect(listed.plans[0]?.label).toBe('new plan 2');
+  });
+
+  it('prefers the active blank draft over newer blank duplicates during explicit create', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
+    const activeBlank = await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan-active',
+      label: 'research scratchpad',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      setActive: true,
+    });
+    await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan-newer',
+      label: 'new plan 2',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-02T00:00:00.000Z',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+    });
+
+    const ensured = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['web'],
+      trigger: 'explicit_create',
+    });
+
+    expect(ensured?.id).toBe(activeBlank.id);
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans).toHaveLength(2);
+  });
+
+  it('falls back to the most recent blank draft when no active blank is set', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
+    await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan-older',
+      label: 'research scratchpad',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const newerBlank = await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan-newer',
+      label: 'new plan 2',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-03T00:00:00.000Z',
+      updatedAt: '2026-01-04T00:00:00.000Z',
+    });
+
+    const ensured = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['web'],
+      trigger: 'explicit_create',
+    });
+
+    expect(ensured?.id).toBe(newerBlank.id);
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans).toHaveLength(2);
+  });
+
+  it('returns new plan 2 as the next numbered placeholder after a single base label', () => {
+    expect(getNextDefaultNewPlanLabel([{ label: 'new plan' } as Pick<ArchitectPlanSummary, 'label'>])).toBe(
+      'new plan 2'
+    );
   });
 });
