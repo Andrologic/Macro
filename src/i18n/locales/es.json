@@ -395,7 +395,7 @@
       "sectionTitle": "Debug",
       "title": "Blueprints de notificaciones",
       "description": "Usa este panel solo de depuración para ajustar los dos blueprints compartidos de notificaciones que usa Macro.",
-      "desktopHint": "Las vistas previas de escritorio omiten la restricción habitual de primer plano para que puedas validar notificaciones del sistema sin enviar la app al fondo.",
+      "desktopHint": "Las vistas previas de escritorio son una prueba best-effort. En macOS, puede que no aparezcan mientras Macro esté en primer plano; la ruta fiable sigue siendo la notificación de escritorio cuando la app está en segundo plano.",
       "runtimeStatus": "Estado actual del runtime de escritorio",
       "clearCenter": "Vaciar centro ({{count}})",
       "clearCenterResult": "Centro de notificaciones vaciado.",

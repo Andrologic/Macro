@@ -395,7 +395,7 @@
       "sectionTitle": "Debug",
       "title": "Benachrichtigungs-Blueprints",
       "description": "Verwenden Sie dieses reine Debug-Panel, um die zwei gemeinsamen Benachrichtigungs-Blueprints von Macro anzupassen.",
-      "desktopHint": "Desktop-Vorschauen umgehen die normale Vordergrundbeschränkung, damit Sie OS-Benachrichtigungen prüfen können, ohne die App in den Hintergrund zu schicken.",
+      "desktopHint": "Desktop-Vorschauen sind nur ein Best-Effort-Smoke-Test. Unter macOS erscheinen sie möglicherweise nicht, solange Macro im Vordergrund ist; verlässlich sind Desktop-Benachrichtigungen, wenn die App im Hintergrund ist.",
       "runtimeStatus": "Aktueller Desktop-Laufzeitstatus",
       "clearCenter": "Zentrum leeren ({{count}})",
       "clearCenterResult": "Benachrichtigungszentrum geleert.",
