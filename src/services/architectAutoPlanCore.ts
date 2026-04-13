@@ -7,6 +7,8 @@ import {
 
 export type ArchitectAutoPlanTrigger = 'implicit_resume' | 'explicit_create';
 
+type ArchitectPlanNamingShape = Pick<ArchitectPlanSummary, 'id' | 'slug' | 'title' | 'label'>;
+
 export interface ArchitectAutoPlanDependencies {
   DEFAULT_NEW_PLAN_LABEL: string;
   createArchitectPlan: (params: {
@@ -21,13 +23,13 @@ export interface ArchitectAutoPlanDependencies {
   }) => Promise<ArchitectPlanRecord>;
   getArchitectPlan: (branchName: string, planId: string) => Promise<ArchitectPlanRecord | null>;
   getArchitectPlanChatMessages: (branchName: string, planId: string) => Promise<Array<unknown>>;
-  getArchitectPlanEditableName: (plan: ArchitectPlanSummary) => string;
+  getArchitectPlanEditableName: (plan: ArchitectPlanNamingShape) => string;
   getArchitectPlanNeeds: (branchName: string, planId: string) => Promise<Need[]>;
   getArchitectPlanProjectIds: (
     plan: Pick<ArchitectPlanSummary, 'projectId' | 'projectIds' | 'expectedProjectIds'>
   ) => string[];
   getNextDefaultNewPlanLabel: (plans: ArchitectPlanSummary[]) => string;
-  isCanonicalArchitectPlan: (plan: ArchitectPlanSummary) => boolean;
+  isCanonicalArchitectPlan: (plan: ArchitectPlanNamingShape) => boolean;
   isDefaultNewPlanFamilyLabel: (value?: string | null) => boolean;
   isDefaultNewPlanBaseLabel: (value?: string | null) => boolean;
   listArchitectPlans: (
@@ -54,6 +56,8 @@ export interface EnsureProjectGroupPlanResult {
   plan: ArchitectPlanRecord;
   needs: Need[];
 }
+
+type PlaceholderCandidatePlan = ArchitectPlanNamingShape & Pick<ArchitectPlanSummary, 'status'>;
 
 interface ResolvedBlankPlanResult {
   action: 'reused_blank' | 'expanded_blank';
@@ -88,7 +92,7 @@ const coversScope = (projectIds: string[], scopedProjectIds: string[]): boolean 
 };
 
 export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependencies) => {
-  const belongsToPlaceholderFamily = (plan: ArchitectPlanSummary): boolean =>
+  const belongsToPlaceholderFamily = (plan: PlaceholderCandidatePlan): boolean =>
     plan.status === 'draft' &&
     deps.isCanonicalArchitectPlan(plan) &&
     deps.isDefaultNewPlanFamilyLabel(deps.getArchitectPlanEditableName(plan));
@@ -103,11 +107,14 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
   };
 
   const isReusableBlankDraft = (
-    plan: Pick<ArchitectPlanRecord, 'status' | 'description' | 'nodes' | 'predictedBranches'>,
+    plan: Pick<
+      ArchitectPlanRecord,
+      'id' | 'slug' | 'title' | 'label' | 'status' | 'description' | 'nodes' | 'predictedBranches'
+    >,
     needs: Need[],
     chatMessages: Array<unknown>
   ): boolean =>
-    plan.status === 'draft' &&
+    belongsToPlaceholderFamily(plan) &&
     !trimToNull(plan.description) &&
     (plan.nodes?.length || 0) === 0 &&
     (plan.predictedBranches?.length || 0) === 0 &&

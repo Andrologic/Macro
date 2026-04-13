@@ -375,11 +375,11 @@ describe('architectAutoPlan', () => {
     expect(listed.plans).toHaveLength(2);
   });
 
-  it('reuses a renamed blank draft during implicit resume when only blank duplicates are visible', async () => {
+  it('does not implicitly resume placeholder blanks when a renamed empty draft is visible in the scope', async () => {
     const { createArchitectPlan, ensureProjectGroupPlan } = createArchitectAutoPlanHarness();
-    const activeBlank = await createArchitectPlan({
+    await createArchitectPlan({
       branchName,
-      planId: 'blank-plan-active',
+      planId: 'renamed-empty-plan',
       label: 'research scratchpad',
       projectIds: ['web'],
       status: 'draft',
@@ -401,9 +401,7 @@ describe('architectAutoPlan', () => {
       trigger: 'implicit_resume',
     });
 
-    expect(ensured).not.toBeNull();
-    expect(ensured?.action).toBe('reused_blank');
-    expect(ensured?.plan.id).toBe(activeBlank.id);
+    expect(ensured).toBeNull();
   });
 
   it('does not implicitly resume a blank draft when a real non-blank plan is visible in the scope', async () => {
@@ -411,7 +409,7 @@ describe('architectAutoPlan', () => {
     await createArchitectPlan({
       branchName,
       planId: 'blank-plan',
-      label: 'research scratchpad',
+      label: 'new plan',
       projectIds: ['web'],
       status: 'draft',
       setActive: true,
@@ -473,8 +471,9 @@ describe('architectAutoPlan', () => {
     expect(listed.plans.map((plan) => plan.label)).toEqual(['new plan', 'new plan 2']);
   });
 
-  it('reuses a manually renamed blank draft during explicit create', async () => {
-    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
+  it('creates a new placeholder instead of reusing a renamed empty draft during explicit create', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans, getArchitectPlan } =
+      createArchitectAutoPlanHarness();
     const created = await createArchitectPlan({
       branchName,
       planId: 'renamed-blank-plan',
@@ -490,11 +489,15 @@ describe('architectAutoPlan', () => {
       trigger: 'explicit_create',
     });
 
-    expect(ensured?.id).toBe(created.id);
-    expect(ensured?.label).toBe('architecture scratchpad');
+    expect(ensured).not.toBeNull();
+    expect(ensured?.id).not.toBe(created.id);
+    expect(ensured?.label).toBe('new plan');
+
+    const reloadedOriginal = await getArchitectPlan(branchName, created.id);
+    expect(reloadedOriginal?.label).toBe('architecture scratchpad');
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans).toHaveLength(1);
+    expect(listed.plans).toHaveLength(2);
   });
 
   it('expands a reusable blank draft during explicit create instead of creating a second plan', async () => {
@@ -503,7 +506,7 @@ describe('architectAutoPlan', () => {
     const created = await createArchitectPlan({
       branchName,
       planId: 'blank-plan-custom-label',
-      label: 'architecture scratchpad',
+      label: 'new plan',
       projectIds: ['web'],
       contextProjectIds: ['docs'],
       status: 'draft',
@@ -560,7 +563,7 @@ describe('architectAutoPlan', () => {
     const activeBlank = await createArchitectPlan({
       branchName,
       planId: 'blank-plan-active',
-      label: 'research scratchpad',
+      label: 'new plan',
       projectIds: ['web'],
       status: 'draft',
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -594,7 +597,7 @@ describe('architectAutoPlan', () => {
     await createArchitectPlan({
       branchName,
       planId: 'blank-plan-older',
-      label: 'research scratchpad',
+      label: 'new plan',
       projectIds: ['web'],
       status: 'draft',
       createdAt: '2026-01-01T00:00:00.000Z',
