@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { act, createElement, forwardRef } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { User } from '../../types';
 import type { NotificationChannelModes } from '../../services/notificationChannels';
@@ -61,11 +63,17 @@ const sonnerToastMock = Object.assign(
   }
 );
 
-const SonnerToasterMock = mock((_props?: unknown) => null);
+const SonnerToasterMock = mock((_props?: unknown) => undefined);
 
 mock.module('sonner', () => ({
   toast: sonnerToastMock,
-  Toaster: SonnerToasterMock,
+  Toaster: forwardRef<HTMLElement, Record<string, unknown>>(function SonnerToasterTestDouble(
+    props,
+    ref
+  ) {
+    SonnerToasterMock(props);
+    return createElement('section', { ref, 'data-testid': 'sonner-toaster-mock' });
+  }),
 }));
 
 const maybeSendDesktopNotificationMock = mock(async (_input?: unknown) => true);
@@ -115,6 +123,12 @@ mock.module('../../stores/useAppStore', () => ({
 
 const { Toaster } = await import('./Toaster');
 const { toast, notify, __testables } = await import('./toastService');
+const {
+  TOAST_BATCH_DURATION_MS,
+  clearToastBatch,
+  getToastBatchSnapshot,
+  registerToastInBatch,
+} = await import('./toastBatchController');
 const { useAuthStore } = await import('../../stores/useAuthStore');
 const { useNotificationCenterStore } = await import('../../stores/useNotificationCenterStore');
 
@@ -146,8 +160,12 @@ const renderCustomToastAt = (index = -1): string => {
 };
 
 describe('toast wrapper', () => {
+  let container: HTMLDivElement | null = null;
+  let root: Root | null = null;
+
   beforeEach(() => {
     localStorageMock.clear();
+    clearToastBatch();
     useNotificationCenterStore.setState({
       items: [],
       isCenterOpen: false,
@@ -189,13 +207,29 @@ describe('toast wrapper', () => {
     sonnerToastMock.dismiss.mockReset();
     sonnerToastMock.dismiss.mockImplementation((_id?: unknown) => 'dismissed-id');
     SonnerToasterMock.mockReset();
-    SonnerToasterMock.mockImplementation((_props?: unknown) => null);
+    SonnerToasterMock.mockImplementation((_props?: unknown) => undefined);
     maybeSendDesktopNotificationMock.mockReset();
     maybeSendDesktopNotificationMock.mockImplementation(async (_input?: unknown) => true);
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      clearToastBatch();
+      root?.unmount();
+      await Promise.resolve();
+    });
+
+    container?.remove();
+    container = null;
+    root = null;
   });
 
   it('mounts Sonner with the scoped toaster class used for stacked height rules', () => {
-    renderToStaticMarkup(Toaster() as never);
+    renderToStaticMarkup(createElement(Toaster));
 
     expect(SonnerToasterMock).toHaveBeenCalledTimes(1);
     expect(SonnerToasterMock.mock.calls[0]?.[0]).toEqual(
@@ -203,6 +237,8 @@ describe('toast wrapper', () => {
         className: 'macro-toaster',
         position: 'bottom-right',
         expand: false,
+        duration: TOAST_BATCH_DURATION_MS,
+        visibleToasts: 3,
         toastOptions: expect.objectContaining({
           classNames: expect.objectContaining({
             toast: expect.stringContaining('macro-toast'),
@@ -214,6 +250,57 @@ describe('toast wrapper', () => {
         }),
       })
     );
+  });
+
+  it('expands to reveal all active toasts and pauses the shared batch while hovered', async () => {
+    await act(async () => {
+      root?.render(createElement(Toaster));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      registerToastInBatch('toast-a');
+      registerToastInBatch('toast-b');
+      registerToastInBatch('toast-c');
+      registerToastInBatch('toast-d');
+      await Promise.resolve();
+    });
+
+    expect(SonnerToasterMock.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        expand: false,
+        visibleToasts: 3,
+      })
+    );
+
+    const toasterNode = document.querySelector('[data-testid="sonner-toaster-mock"]');
+    expect(toasterNode).not.toBeNull();
+
+    await act(async () => {
+      toasterNode?.dispatchEvent(new Event('mouseenter', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(SonnerToasterMock.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        expand: true,
+        visibleToasts: 4,
+      })
+    );
+    expect(getToastBatchSnapshot().isPaused).toBe(true);
+
+    await act(async () => {
+      toasterNode?.dispatchEvent(new Event('mouseleave', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(SonnerToasterMock.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        expand: false,
+        visibleToasts: 3,
+      })
+    );
+    expect(getToastBatchSnapshot().isPaused).toBe(false);
   });
 
   it('stores tracked info, warning, and error toasts in the notification center', () => {
@@ -229,6 +316,14 @@ describe('toast wrapper', () => {
     expect(sonnerToastMock.info).toHaveBeenCalledTimes(1);
     expect(sonnerToastMock.warning).toHaveBeenCalledTimes(1);
     expect(sonnerToastMock.error).toHaveBeenCalledTimes(1);
+    expect(sonnerToastMock.info).toHaveBeenCalledWith(
+      'Info title',
+      expect.objectContaining({
+        duration: Infinity,
+        onDismiss: expect.any(Function),
+      })
+    );
+    expect(getToastBatchSnapshot().activeToastIds).toHaveLength(3);
     expect(sonnerToastMock.custom).not.toHaveBeenCalled();
   });
 
@@ -298,8 +393,12 @@ describe('toast wrapper', () => {
 
     expect(informationalOptions?.description).toBeUndefined();
     expect(informationalOptions?.closeButton).toBeUndefined();
+    expect(informationalOptions?.duration).toBe(Infinity);
+    expect(typeof informationalOptions?.onDismiss).toBe('function');
     expect(actionableOptions?.description).toBeUndefined();
     expect(actionableOptions?.closeButton).toBeUndefined();
+    expect(actionableOptions?.duration).toBe(Infinity);
+    expect(typeof actionableOptions?.onDismiss).toBe('function');
   });
 
   it('renders actionable notifications through the shared custom toast path', () => {
@@ -369,6 +468,7 @@ describe('toast wrapper', () => {
       category: 'task_attention_required',
       title: 'Base branch missing',
     });
+    expect(getToastBatchSnapshot().activeToastIds).toHaveLength(1);
     expect(maybeSendDesktopNotificationMock).toHaveBeenCalledWith({
       title: 'Base branch missing',
       body: 'Choose what to do next.',
@@ -470,6 +570,7 @@ describe('toast wrapper', () => {
     expect(result).not.toBe('notifications-disabled');
     expect(sonnerToastMock.success).not.toHaveBeenCalled();
     expect(useNotificationCenterStore.getState().items).toEqual([]);
+    expect(getToastBatchSnapshot().activeToastIds).toEqual([]);
     expect(maybeSendDesktopNotificationMock).toHaveBeenCalledWith({
       title: 'Commands completed',
       body: '3 repositories executed successfully.',
