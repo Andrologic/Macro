@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   getFocusedProjectIdForGroup,
+  getRepositoryScopedProjectIds,
   resolveExplicitProjectIdForGroup,
 } from './globalProjects';
 
@@ -39,5 +40,31 @@ describe('globalProjects', () => {
 
   it('still falls back to the first subproject when a view needs a concrete focus', () => {
     expect(getFocusedProjectIdForGroup(projectGroups, 'group-main', null)).toBe('project-web');
+  });
+
+  it('returns every subproject in the group for repository panels when no repo is focused', () => {
+    expect(getRepositoryScopedProjectIds(projectGroups, 'group-main', null)).toEqual([
+      'project-web',
+      'project-api',
+    ]);
+  });
+
+  it('narrows repository panels to the focused subproject when it belongs to the group', () => {
+    expect(getRepositoryScopedProjectIds(projectGroups, 'group-main', 'project-api')).toEqual([
+      'project-api',
+    ]);
+  });
+
+  it('falls back to the focused project when no global project is selected', () => {
+    expect(getRepositoryScopedProjectIds(projectGroups, null, 'project-web')).toEqual([
+      'project-web',
+    ]);
+  });
+
+  it('ignores an out-of-group focused project for repository panels and keeps the group scope', () => {
+    expect(getRepositoryScopedProjectIds(projectGroups, 'group-main', 'project-other')).toEqual([
+      'project-web',
+      'project-api',
+    ]);
   });
 });

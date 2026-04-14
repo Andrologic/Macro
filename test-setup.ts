@@ -16,6 +16,12 @@ const assignGlobal = (key: string, value: unknown) => {
 };
 
 const installDomGlobals = () => {
+  class ResizeObserverMock {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+
   assignGlobal('window', windowInstance);
   assignGlobal('document', windowInstance.document);
   assignGlobal('navigator', windowInstance.navigator);
@@ -36,6 +42,7 @@ const installDomGlobals = () => {
   assignGlobal('Blob', windowInstance.Blob);
   assignGlobal('File', windowInstance.File);
   assignGlobal('Image', windowInstance.Image);
+  assignGlobal('ResizeObserver', ResizeObserverMock);
 };
 
 installDomGlobals();
