@@ -3052,6 +3052,94 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
+  it('navigates between questionnaire steps while preserving existing answers and drafts', async () => {
+    appState.mode = 'Chat';
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        {
+          id: 'assistant-questionnaire',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Need two clarifications.',
+          timestamp: '2026-04-14T10:00:00.000Z',
+          questionnaire: {
+            intro: 'Need two clarifications.',
+            source: 'tool',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+                free_text_placeholder: 'Custom scope',
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                choices: ['Safe', 'Moderate', 'Aggressive'],
+                free_text_placeholder: 'Custom risk',
+              },
+            ],
+          },
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {
+        'chat-conv': {
+          assistantMessageId: 'assistant-questionnaire',
+          currentStepIndex: 0,
+          answersByStepId: {
+            scope: 'Balanced',
+          },
+          draftTextByStepId: {
+            risk: 'Stay below one day of rework',
+          },
+        },
+      },
+      composerContextRefs: [],
+    });
+
+    useChatStore.getState().setActiveQuestionnaireStep('chat-conv', 1);
+
+    expect(useChatStore.getState().getActiveQuestionnaire('chat-conv')).toMatchObject({
+      currentStepIndex: 1,
+      currentStep: {
+        id: 'risk',
+      },
+      answersByStepId: {
+        scope: 'Balanced',
+      },
+      draftTextByStepId: {
+        risk: 'Stay below one day of rework',
+      },
+    });
+
+    useChatStore.getState().setActiveQuestionnaireStep('chat-conv', 0);
+
+    expect(useChatStore.getState().getActiveQuestionnaire('chat-conv')).toMatchObject({
+      currentStepIndex: 0,
+      currentStep: {
+        id: 'scope',
+      },
+      answersByStepId: {
+        scope: 'Balanced',
+      },
+      draftTextByStepId: {
+        risk: 'Stay below one day of rework',
+      },
+    });
+  });
+
   it('replaces an edited questionnaire response, trims later messages, and restarts the chat from the updated answer', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';

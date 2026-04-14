@@ -458,6 +458,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     questionnaireDraftsByConversationId,
     startQuestionnaireResponseEdit,
     cancelQuestionnaireSession,
+    setActiveQuestionnaireStep,
     setActiveQuestionnaireDraftText,
     recordActiveQuestionnaireAnswer,
     submitActiveQuestionnaire,
@@ -484,6 +485,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
     startQuestionnaireResponseEdit: state.startQuestionnaireResponseEdit,
     cancelQuestionnaireSession: state.cancelQuestionnaireSession,
+    setActiveQuestionnaireStep: state.setActiveQuestionnaireStep,
     setActiveQuestionnaireDraftText: state.setActiveQuestionnaireDraftText,
     recordActiveQuestionnaireAnswer: state.recordActiveQuestionnaireAnswer,
     submitActiveQuestionnaire: state.submitActiveQuestionnaire,
@@ -551,6 +553,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const activeQuestionnaireSubmitValue = activeQuestionnaireDraftText.trim().length > 0
     ? activeQuestionnaireDraftText
     : activeQuestionnaireCurrentAnswer;
+  const activeQuestionnaireHasPreviousStep = Boolean(
+    activeQuestionnaire && activeQuestionnaire.currentStepIndex > 0
+  );
+  const activeQuestionnaireHasNextStep = Boolean(
+    activeQuestionnaire &&
+      activeQuestionnaire.currentStepIndex < activeQuestionnaire.totalSteps - 1
+  );
 
   const isConversationPending =
     hydrationStatus === 'idle' ||
@@ -1068,6 +1077,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     await handleQuestionnaireAnswer(activeQuestionnaireSubmitValue);
   };
 
+  const handleQuestionnaireStepChange = (stepIndex: number) => {
+    if (!activeQuestionnaire || isBusySending || isConversationPending) return;
+    setActiveQuestionnaireStep(activeQuestionnaire.conversationId, stepIndex);
+  };
+
   const handleGenerateStrategy = async () => {
     if (mode !== 'Architect' || !activeArchitectPlanId || isBusySending || isConversationPending) return;
     if (!hasExistingStrategy && activePlanNeedsCount === 0) return;
@@ -1508,13 +1522,61 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 className="rounded-xl border border-border bg-card/80 p-2 shadow-sm"
               >
                 <div className="space-y-3 rounded-[0.9rem] border border-border/60 bg-background/30 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-background/60">
-                        <Icon name="message-circle" size={15} className="text-primary/80" />
+                  <div className="flex flex-wrap items-center justify-between gap-2.5">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-background/60">
+                        <Icon name="message-circle" size={14} className="text-primary/80" />
                       </span>
-                      <div className="flex min-w-0 items-center h-9">
-                        <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                      <div className="flex min-w-0 items-center gap-2.5 h-8">
+                        <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                          {t('chat.questionnaireLabel', 'Question')}
+                        </div>
+                        <div
+                          data-testid="questionnaire-step-counter-shell"
+                          className="inline-flex items-center gap-0 rounded-full border border-border/60 bg-background/45 px-[2px] py-[2px]"
+                        >
+                          {activeQuestionnaire.totalSteps > 1 && (
+                            <button
+                              type="button"
+                              data-testid="questionnaire-step-nav-prev"
+                              onClick={() =>
+                                handleQuestionnaireStepChange(
+                                  activeQuestionnaire.currentStepIndex - 1
+                                )
+                              }
+                            disabled={isBusySending || !activeQuestionnaireHasPreviousStep}
+                            title={t('chat.questionnairePreviousStep', 'Question precedente')}
+                            aria-label={t('chat.questionnairePreviousStep', 'Question precedente')}
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground/75 transition-colors hover:bg-accent/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-25"
+                          >
+                            <Icon name="chevron-left" size={12} />
+                          </button>
+                        )}
+                        <div
+                          data-testid="questionnaire-step-counter"
+                          className="px-1 text-center text-[11px] font-medium tabular-nums text-muted-foreground"
+                        >
+                          {`${activeQuestionnaire.currentStepIndex + 1}/${activeQuestionnaire.totalSteps}`}
+                        </div>
+                          {activeQuestionnaire.totalSteps > 1 && (
+                            <button
+                              type="button"
+                              data-testid="questionnaire-step-nav-next"
+                              onClick={() =>
+                                handleQuestionnaireStepChange(
+                                  activeQuestionnaire.currentStepIndex + 1
+                                )
+                              }
+                            disabled={isBusySending || !activeQuestionnaireHasNextStep}
+                            title={t('chat.questionnairePeekNextStep', 'Question suivante')}
+                            aria-label={t('chat.questionnairePeekNextStep', 'Question suivante')}
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground/75 transition-colors hover:bg-accent/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-25"
+                          >
+                            <Icon name="chevron-right" size={12} />
+                          </button>
+                        )}
+                        </div>
+                        <div className="sr-only">
                           {t('chat.questionnaireProgress', 'Question {{current}}/{{total}}', {
                             current: activeQuestionnaire.currentStepIndex + 1,
                             total: activeQuestionnaire.totalSteps,

@@ -629,6 +629,10 @@ interface ChatStore {
   ) => ConversationQuestionnaireState | null;
   startQuestionnaireResponseEdit: (messageId: string) => boolean;
   cancelQuestionnaireSession: (conversationId: string) => void;
+  setActiveQuestionnaireStep: (
+    conversationId: string,
+    stepIndex: number,
+  ) => void;
   setActiveQuestionnaireDraftText: (
     conversationId: string,
     value: string,
@@ -6259,6 +6263,43 @@ export const useChatStore = create<ChatStore>((set, get) => {
           [conversationId],
         );
         saveQuestionnaireDraftsToStorage(nextDrafts);
+        return {
+          questionnaireDraftsByConversationId: nextDrafts,
+        };
+      }),
+
+    setActiveQuestionnaireStep: (conversationId, stepIndex) =>
+      set((state) => {
+        const activeQuestionnaire = resolveConversationQuestionnaireFromState(
+          state,
+          conversationId,
+        );
+        if (!activeQuestionnaire) {
+          return state;
+        }
+
+        const boundedStepIndex = Math.min(
+          Math.max(stepIndex, 0),
+          activeQuestionnaire.totalSteps - 1,
+        );
+        if (boundedStepIndex === activeQuestionnaire.currentStepIndex) {
+          return state;
+        }
+
+        const nextDrafts = setQuestionnaireDraftForConversation(
+          state.questionnaireDraftsByConversationId,
+          conversationId,
+          {
+            mode: activeQuestionnaire.mode,
+            assistantMessageId: activeQuestionnaire.assistantMessageId,
+            responseMessageId: activeQuestionnaire.responseMessageId,
+            currentStepIndex: boundedStepIndex,
+            answersByStepId: { ...activeQuestionnaire.answersByStepId },
+            draftTextByStepId: { ...activeQuestionnaire.draftTextByStepId },
+          },
+        );
+        saveQuestionnaireDraftsToStorage(nextDrafts);
+
         return {
           questionnaireDraftsByConversationId: nextDrafts,
         };
