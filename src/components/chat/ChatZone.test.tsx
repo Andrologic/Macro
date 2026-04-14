@@ -34,6 +34,7 @@ type MockMessage = {
   };
   questionnaire?: {
     intro?: string;
+    source?: 'tool' | 'legacy_quick_replies';
     questions: Array<{
       id: string;
       prompt: string;
@@ -54,13 +55,17 @@ type MockChatState = {
   questionnaireDraftsByConversationId: Record<
     string,
     {
+      mode?: 'pending_reply' | 'editing_response';
       assistantMessageId: string;
+      responseMessageId?: string;
       currentStepIndex: number;
       answersByStepId: Record<string, string>;
       draftTextByStepId: Record<string, string>;
     }
   >;
   getActiveQuestionnaire: ReturnType<typeof mock>;
+  startQuestionnaireResponseEdit: ReturnType<typeof mock>;
+  cancelQuestionnaireSession: ReturnType<typeof mock>;
   setActiveQuestionnaireDraftText: ReturnType<typeof mock>;
   recordActiveQuestionnaireAnswer: ReturnType<typeof mock>;
   submitActiveQuestionnaire: ReturnType<typeof mock>;
@@ -347,6 +352,8 @@ const resetState = () => {
       chatState.messages.filter((message) => message.conversation_id === conversationId),
     questionnaireDraftsByConversationId: {},
     getActiveQuestionnaire: mock(() => null),
+    startQuestionnaireResponseEdit: mock(() => false),
+    cancelQuestionnaireSession: mock(() => undefined),
     setActiveQuestionnaireDraftText: mock(() => undefined),
     recordActiveQuestionnaireAnswer: mock(() => ({ completed: true, state: null })),
     submitActiveQuestionnaire: mock(async () => ({ status: 'sent' })),
@@ -745,5 +752,178 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Reponses au questionnaire');
     expect(requireContainer().textContent).toContain('Which scope should I use?');
     expect(requireContainer().textContent).toContain('Stay below one day of rework');
+  });
+
+  it('reopens questionnaire responses in the footer instead of inline editing', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'assistant-questionnaire',
+          role: 'assistant',
+          content: 'Need two clarifications.',
+          questionnaire: {
+            intro: 'Need two clarifications.',
+            source: 'tool',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                choices: ['Safe', 'Moderate', 'Aggressive'],
+                free_text_placeholder: 'Custom answer',
+              },
+            ],
+          },
+        }),
+        buildMessage({
+          id: 'user-questionnaire',
+          role: 'user',
+          content:
+            'Which scope should I use?: Balanced\nHow risky can the change be?: Stay below one day of rework',
+          questionnaire_response_summary: {
+            assistantMessageId: 'assistant-questionnaire',
+            source: 'tool',
+            originToolCallId: 'call_question',
+            items: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                answer: 'Balanced',
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                answer: 'Stay below one day of rework',
+              },
+            ],
+          },
+        }),
+      ],
+      startQuestionnaireResponseEdit: mock((messageId: string) => {
+        chatState.questionnaireDraftsByConversationId = {
+          'conv-1': {
+            mode: 'editing_response',
+            assistantMessageId: 'assistant-questionnaire',
+            responseMessageId: messageId,
+            currentStepIndex: 0,
+            answersByStepId: {
+              scope: 'Balanced',
+              risk: 'Stay below one day of rework',
+            },
+            draftTextByStepId: {
+              risk: 'Stay below one day of rework',
+            },
+          },
+        };
+        useChatStore.emit();
+        return true;
+      }),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const editButton = requireContainer().querySelector('button[title="common.edit"]');
+    expect(editButton).not.toBeNull();
+
+    await act(async () => {
+      editButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+    });
+
+    expect(chatState.startQuestionnaireResponseEdit).toHaveBeenCalledWith('user-questionnaire');
+    expect(requireContainer().querySelector('[data-testid="questionnaire-footer"]')).not.toBeNull();
+    expect(requireContainer().querySelector('textarea')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).toBeNull();
+
+    const balancedButton = Array.from(requireContainer().querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Balanced'
+    );
+    expect(balancedButton?.className).toContain('border-primary/50');
+  });
+
+  it('cancels questionnaire response editing without touching the message history', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'assistant-questionnaire',
+          role: 'assistant',
+          content: 'Need one clarification.',
+          questionnaire: {
+            source: 'tool',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+            ],
+          },
+        }),
+        buildMessage({
+          id: 'user-questionnaire',
+          role: 'user',
+          content: 'Which scope should I use?: Balanced',
+          questionnaire_response_summary: {
+            assistantMessageId: 'assistant-questionnaire',
+            source: 'tool',
+            originToolCallId: 'call_question',
+            items: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                answer: 'Balanced',
+              },
+            ],
+          },
+        }),
+      ],
+      questionnaireDraftsByConversationId: {
+        'conv-1': {
+          mode: 'editing_response',
+          assistantMessageId: 'assistant-questionnaire',
+          responseMessageId: 'user-questionnaire',
+          currentStepIndex: 0,
+          answersByStepId: {
+            scope: 'Balanced',
+          },
+          draftTextByStepId: {},
+        },
+      },
+      cancelQuestionnaireSession: mock((conversationId: string) => {
+        const nextDrafts = { ...chatState.questionnaireDraftsByConversationId };
+        delete nextDrafts[conversationId];
+        chatState = {
+          ...chatState,
+          questionnaireDraftsByConversationId: nextDrafts,
+        };
+        useChatStore.emit();
+      }),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const cancelButton = Array.from(requireContainer().querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Annuler'
+    );
+    expect(cancelButton).not.toBeNull();
+
+    await act(async () => {
+      cancelButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+    });
+
+    expect(chatState.cancelQuestionnaireSession).toHaveBeenCalledWith('conv-1');
+    expect(requireContainer().querySelector('[data-testid="questionnaire-footer"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).not.toBeNull();
+    expect(chatState.editMessage).not.toHaveBeenCalled();
+    expect(chatState.submitActiveQuestionnaire).not.toHaveBeenCalled();
   });
 });

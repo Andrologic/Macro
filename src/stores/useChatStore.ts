@@ -12,6 +12,7 @@ import {
   PlanNodeStatus,
   PlanNodeType,
   PredictedBranch,
+  QuestionnairePayload,
   ReasoningEffort,
   ToolTrace,
 } from "../types";
@@ -99,11 +100,8 @@ import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } f
 import { resolveProjectExecutionContext } from "../services/projectExecutionContext";
 import { parseMessageQuickReplies } from "../services/chatQuickReplies";
 import {
-  buildQuestionnaireFunctionCallOutputItem,
+  buildQuestionnaireResponseArtifacts,
   buildQuestionnaireHiddenContextBlock,
-  buildQuestionnaireResponseHiddenContextBlock,
-  buildQuestionnaireResponseSummary,
-  buildQuestionnaireResponseVisibleContent,
   DEFAULT_QUESTIONNAIRE_INTRO,
   parseAssistantQuestionnaireState,
   parseUserQuestionnaireResponseState,
@@ -474,7 +472,12 @@ const loadQuestionnaireDraftsFromStorage = (): Record<
         return (
           value &&
           typeof value === "object" &&
+          (value.mode === undefined ||
+            value.mode === "pending_reply" ||
+            value.mode === "editing_response") &&
           typeof value.assistantMessageId === "string" &&
+          (value.responseMessageId === undefined ||
+            typeof value.responseMessageId === "string") &&
           typeof value.currentStepIndex === "number" &&
           value.answersByStepId &&
           typeof value.answersByStepId === "object" &&
@@ -624,6 +627,8 @@ interface ChatStore {
   getActiveQuestionnaire: (
     conversationId: string,
   ) => ConversationQuestionnaireState | null;
+  startQuestionnaireResponseEdit: (messageId: string) => boolean;
+  cancelQuestionnaireSession: (conversationId: string) => void;
   setActiveQuestionnaireDraftText: (
     conversationId: string,
     value: string,
@@ -645,7 +650,16 @@ interface ChatStore {
     providerInputItems?: unknown[];
   }) => Promise<ChatSendResult>;
   stopStreaming: () => void;
-  editMessage: (messageId: string, newContent: string) => Promise<void>;
+  editMessage: (
+    messageId: string,
+    newContent: string,
+    options?: {
+      hiddenContext?: string;
+      providerInputItems?: unknown[];
+      replaceStructuredFields?: boolean;
+      clearQuestionnaireSession?: boolean;
+    },
+  ) => Promise<void>;
   setMessageImages: (
     messageId: string,
     images: MessageImageAttachment[],
@@ -4271,6 +4285,322 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return normalized;
   };
 
+  const buildQuestionnaireResponseProviderInputItems = (
+    source: QuestionnairePayload["source"],
+    visibleContent: string,
+    functionCallOutputItem?: unknown,
+  ): unknown[] =>
+    source === "tool"
+      ? [
+          ...(functionCallOutputItem ? [functionCallOutputItem] : []),
+          ...buildProviderInputItemsFromContent("user", visibleContent),
+        ]
+      : buildProviderInputItemsFromContent("user", visibleContent);
+
+  const replaceUserMessagePresentationLocally = (params: {
+    messageId: string;
+    content: string;
+    hiddenContext?: string;
+    providerInputItems?: unknown[];
+  }) => {
+    const presentation = buildUserMessagePresentation(
+      params.content,
+      params.hiddenContext,
+    );
+
+    set((state) => {
+      const targetIndex =
+        typeof state.messageIndexById[params.messageId] === "number"
+          ? state.messageIndexById[params.messageId]
+          : state.messages.findIndex((message) => message.id === params.messageId);
+      if (typeof targetIndex !== "number") {
+        return state;
+      }
+
+      const currentMessage = state.messages[targetIndex];
+      if (!currentMessage || currentMessage.role !== "user") {
+        return state;
+      }
+
+      const updatedMessage: ChatMessage = {
+        ...currentMessage,
+        content: presentation.content,
+        hidden_context: params.hiddenContext,
+        provider_input_items: cloneProviderInputItems(
+          params.providerInputItems,
+        ),
+        questionnaire_response_summary:
+          presentation.questionnaire_response_summary,
+      };
+      const updatedMessages = [...state.messages];
+      updatedMessages[targetIndex] = updatedMessage;
+      const { messagesByConversationId, messageIndexById } =
+        buildMessageState(updatedMessages);
+      const updatedConversationMessages =
+        messagesByConversationId[updatedMessage.conversation_id] ?? [];
+      const conversationMeta = {
+        message_count: updatedConversationMessages.length,
+        last_message:
+          updatedConversationMessages[updatedConversationMessages.length - 1]
+            ?.content ?? "",
+        updated_at: new Date().toISOString(),
+      };
+
+      return {
+        messages: updatedMessages,
+        messagesByConversationId,
+        messageIndexById,
+        conversations: state.conversations.map((conv) =>
+          conv.id === updatedMessage.conversation_id
+            ? { ...conv, ...conversationMeta }
+            : conv,
+        ),
+      };
+    });
+  };
+
+  const persistEditedUserMessage = async (params: {
+    messageId: string;
+    content: string;
+    hiddenContext?: string;
+    providerInputItems?: unknown[];
+    replaceStructuredFields?: boolean;
+  }) => {
+    const currentMessage = get().messages.find(
+      (message) => message.id === params.messageId,
+    );
+    if (!currentMessage) {
+      return;
+    }
+
+    const nextHiddenContext = params.replaceStructuredFields
+      ? params.hiddenContext
+      : currentMessage.hidden_context;
+    const nextProviderInputItems = params.replaceStructuredFields
+      ? cloneProviderInputItems(params.providerInputItems)
+      : currentMessage.provider_input_items;
+
+    if (params.replaceStructuredFields) {
+      replaceUserMessagePresentationLocally({
+        messageId: params.messageId,
+        content: params.content,
+        hiddenContext: nextHiddenContext,
+        providerInputItems: nextProviderInputItems,
+      });
+    } else {
+      get().updateMessageContent(params.messageId, params.content);
+    }
+
+    const persistedMessage =
+      get().messages.find((message) => message.id === params.messageId) ??
+      currentMessage;
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+
+    try {
+      await tauriIpc.updateMessage(params.messageId, params.content, {
+        toolTraces: persistedMessage.tool_traces,
+        hiddenContext: nextHiddenContext,
+        providerInputItems: nextProviderInputItems,
+        providerTurnState: persistedMessage.provider_turn_state,
+      });
+    } catch (error) {
+      console.error("Failed to persist edited message:", error);
+    }
+  };
+
+  const trimConversationAfterMessage = async (params: {
+    conversationId: string;
+    messageId: string;
+    clearQuestionnaireSession?: boolean;
+    updatedMessage?: ChatMessage;
+  }) => {
+    if (tauriIpc.isTauriAvailable()) {
+      tauriIpc
+        .deleteMessagesAfter(params.conversationId, params.messageId)
+        .catch(console.error);
+    }
+
+    set((current) => {
+      const currentMessages = params.updatedMessage
+        ? current.messages.map((message) =>
+            message.id === params.updatedMessage!.id
+              ? params.updatedMessage!
+              : message,
+          )
+        : current.messages;
+      const conversationMessages = currentMessages
+        .filter(
+          (message) => message.conversation_id === params.conversationId,
+        )
+        .sort(
+          (a, b) =>
+            new Date(a.timestamp).getTime() -
+            new Date(b.timestamp).getTime(),
+        );
+
+      const targetIndex = conversationMessages.findIndex(
+        (message) => message.id === params.messageId,
+      );
+      if (targetIndex === -1) {
+        return current;
+      }
+
+      const allowedIds = new Set(
+        conversationMessages
+          .slice(0, targetIndex + 1)
+          .map((message) => message.id),
+      );
+
+      const trimmedMessages = currentMessages.filter((message) =>
+        message.conversation_id === params.conversationId
+          ? allowedIds.has(message.id)
+          : true,
+      );
+
+      const conversationMeta = recalcConversation(
+        params.conversationId,
+        trimmedMessages,
+      );
+
+      const conversations = current.conversations.map((conv) =>
+        conv.id === params.conversationId
+          ? { ...conv, ...conversationMeta }
+          : conv,
+      );
+
+      const keptConversationMessageIds = new Set(
+        trimmedMessages
+          .filter(
+            (message) => message.conversation_id === params.conversationId,
+          )
+          .map((message) => message.id),
+      );
+      const nextImages = { ...current.messageImagesByMessageId };
+      Object.keys(nextImages).forEach((messageIdKey) => {
+        const message = trimmedMessages.find((m) => m.id === messageIdKey);
+        if (
+          !message ||
+          (message.conversation_id === params.conversationId &&
+            !keptConversationMessageIds.has(messageIdKey))
+        ) {
+          delete nextImages[messageIdKey];
+        }
+      });
+      saveMessageImagesToStorage(nextImages);
+
+      const nextQuestionnaireDrafts = params.clearQuestionnaireSession
+        ? clearQuestionnaireDraftsForConversations(
+            current.questionnaireDraftsByConversationId,
+            [params.conversationId],
+          )
+        : current.questionnaireDraftsByConversationId;
+      if (params.clearQuestionnaireSession) {
+        saveQuestionnaireDraftsToStorage(nextQuestionnaireDrafts);
+      }
+
+      return {
+        ...buildMessageState(trimmedMessages),
+        conversations,
+        messageImagesByMessageId: nextImages,
+        questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
+        lastError: null,
+      };
+    });
+
+    const keptConversationMessageIds = get()
+      .messages.filter(
+        (message) => message.conversation_id === params.conversationId,
+      )
+      .map((message) => message.id);
+    useCitationsStore
+      .getState()
+      .pruneConversationSourceCitations(
+        params.conversationId,
+        keptConversationMessageIds,
+      );
+
+    const currentOrderedMessages = getOrderedConversationMessages(
+      params.conversationId,
+    );
+    const existingCompactionState = await getConversationCompactionState(
+      params.conversationId,
+    );
+    if (
+      invalidateCompactionFromMessage(
+        existingCompactionState,
+        currentOrderedMessages,
+        params.messageId,
+      )
+    ) {
+      await deleteConversationCompactionState(params.conversationId);
+    }
+  };
+
+  const restartAssistantFromEditedMessage = async (params: {
+    messageId: string;
+    conversationId: string;
+    taskId: string;
+    userContent: string;
+    modeAtSend: AppMode;
+    providerId: string;
+    modelId: string;
+    reasoningEffort?: ReasoningEffort | null;
+    providerConfig: NonNullable<
+      ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
+    >;
+  }) => {
+    const assistantMessage: ChatMessage = {
+      id: `msg-${Date.now()}-assistant`,
+      task_id: params.taskId,
+      conversation_id: params.conversationId,
+      role: "assistant",
+      content: "",
+      tool_traces: [],
+      timestamp: new Date().toISOString(),
+    };
+
+    get().addMessage(assistantMessage);
+
+    try {
+      const streamLaunch = await prepareAssistantStreamLaunch({
+        conversationId: params.conversationId,
+        replyToMessageId: params.messageId,
+        userContent: params.userContent,
+        resolvedTaskId: params.taskId ?? "",
+        modeAtSend: params.modeAtSend,
+        providerId: params.providerId,
+        modelId: params.modelId,
+        reasoningEffort: params.reasoningEffort,
+        providerConfig: params.providerConfig,
+      });
+
+      startAssistantStream({
+        assistantMessage,
+        conversationId: params.conversationId,
+        modeAtSend: params.modeAtSend,
+        resolvedTaskId: params.taskId ?? "",
+        selectedProviderId: params.providerId,
+        selectedModelId: params.modelId,
+        selectedReasoningEffort: params.reasoningEffort,
+        providerConfig: params.providerConfig,
+        internalAgentProfile: streamLaunch.internalAgentProfile,
+        messagesForRequest: streamLaunch.messagesForRequest,
+        executionContext: streamLaunch.executionContext,
+        fileToolContext: streamLaunch.fileToolContext,
+        allowedToolIds: streamLaunch.allowedToolIds,
+        guidedToolRetry: streamLaunch.guidedToolRetry,
+        showToolTraces: streamLaunch.showToolTraces,
+        enableWebSearch: streamLaunch.enableWebSearch,
+        enableWebFetch: streamLaunch.enableWebFetch,
+        webSearchOptions: streamLaunch.webSearchOptions,
+      });
+    } catch (error) {
+      applyAssistantLaunchError(assistantMessage.id, error);
+    }
+  };
+
   const refreshBackgroundCompaction = async (params: {
     conversationId: string;
     providerId: string;
@@ -5332,14 +5662,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 updatedMessage.hidden_context,
               )
             : null;
+        const userPresentation =
+          updatedMessage.role === "user"
+            ? buildUserMessagePresentation(
+                content,
+                updatedMessage.hidden_context,
+              )
+            : null;
 
         const updatedMessages = [...state.messages];
         updatedMessages[targetIndex] = {
           ...updatedMessage,
-          content: assistantPresentation?.content ?? content,
+          content:
+            assistantPresentation?.content ??
+            userPresentation?.content ??
+            content,
           choices: assistantPresentation?.choices,
           allow_free_response: assistantPresentation?.allow_free_response,
           questionnaire: assistantPresentation?.questionnaire,
+          questionnaire_response_summary:
+            userPresentation?.questionnaire_response_summary,
         };
 
         const updatedConversationMessages = getConversationMessagesFromState(
@@ -5349,10 +5691,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
           message.id === messageId
             ? {
                 ...message,
-                content: assistantPresentation?.content ?? content,
+                content:
+                  assistantPresentation?.content ??
+                  userPresentation?.content ??
+                  content,
                 choices: assistantPresentation?.choices,
                 allow_free_response: assistantPresentation?.allow_free_response,
                 questionnaire: assistantPresentation?.questionnaire,
+                questionnaire_response_summary:
+                  userPresentation?.questionnaire_response_summary,
               }
             : message,
         );
@@ -5398,6 +5745,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 patch.hidden_context ?? currentMessage.hidden_context,
               )
             : null;
+        const userPresentation =
+          currentMessage.role === "user"
+            ? buildUserMessagePresentation(
+                currentMessage.content,
+                patch.hidden_context ?? currentMessage.hidden_context,
+              )
+            : null;
         updatedMessages[targetIndex] = {
           ...currentMessage,
           ...patch,
@@ -5407,6 +5761,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 choices: assistantPresentation.choices,
                 allow_free_response: assistantPresentation.allow_free_response,
                 questionnaire: assistantPresentation.questionnaire,
+              }
+            : {}),
+          ...(userPresentation
+            ? {
+                content: userPresentation.content,
+                questionnaire_response_summary:
+                  userPresentation.questionnaire_response_summary,
               }
             : {}),
         };
@@ -5839,6 +6200,70 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return resolveConversationQuestionnaireFromState(get(), conversationId);
     },
 
+    startQuestionnaireResponseEdit: (messageId) => {
+      const state = get();
+      const targetMessage = state.messages.find(
+        (message) => message.id === messageId,
+      );
+      if (
+        !targetMessage ||
+        targetMessage.role !== "user" ||
+        !targetMessage.questionnaire_response_summary
+      ) {
+        return false;
+      }
+
+      const draft: ConversationQuestionnaireDraft = {
+        mode: "editing_response",
+        assistantMessageId:
+          targetMessage.questionnaire_response_summary.assistantMessageId,
+        responseMessageId: targetMessage.id,
+        currentStepIndex: 0,
+        answersByStepId: Object.fromEntries(
+          targetMessage.questionnaire_response_summary.items.map((item) => [
+            item.id,
+            item.answer,
+          ]),
+        ),
+        draftTextByStepId: {},
+      };
+      const resolved = resolveActiveConversationQuestionnaire(
+        targetMessage.conversation_id,
+        getConversationMessagesFromState(state, targetMessage.conversation_id),
+        draft,
+      );
+      if (!resolved || resolved.mode !== "editing_response") {
+        return false;
+      }
+
+      const nextDrafts = setQuestionnaireDraftForConversation(
+        state.questionnaireDraftsByConversationId,
+        targetMessage.conversation_id,
+        {
+          ...draft,
+          answersByStepId: { ...resolved.answersByStepId },
+          draftTextByStepId: { ...resolved.draftTextByStepId },
+        },
+      );
+      saveQuestionnaireDraftsToStorage(nextDrafts);
+      set({
+        questionnaireDraftsByConversationId: nextDrafts,
+      });
+      return true;
+    },
+
+    cancelQuestionnaireSession: (conversationId) =>
+      set((state) => {
+        const nextDrafts = clearQuestionnaireDraftsForConversations(
+          state.questionnaireDraftsByConversationId,
+          [conversationId],
+        );
+        saveQuestionnaireDraftsToStorage(nextDrafts);
+        return {
+          questionnaireDraftsByConversationId: nextDrafts,
+        };
+      }),
+
     setActiveQuestionnaireDraftText: (conversationId, value) =>
       set((state) => {
         const activeQuestionnaire = resolveConversationQuestionnaireFromState(
@@ -5853,7 +6278,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           state.questionnaireDraftsByConversationId,
           conversationId,
           {
+            mode: activeQuestionnaire.mode,
             assistantMessageId: activeQuestionnaire.assistantMessageId,
+            responseMessageId: activeQuestionnaire.responseMessageId,
             currentStepIndex: activeQuestionnaire.currentStepIndex,
             answersByStepId: { ...activeQuestionnaire.answersByStepId },
             draftTextByStepId: {
@@ -5893,7 +6320,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           state.questionnaireDraftsByConversationId,
           conversationId,
           {
+            mode: activeQuestionnaire.mode,
             assistantMessageId: activeQuestionnaire.assistantMessageId,
+            responseMessageId: activeQuestionnaire.responseMessageId,
             currentStepIndex: activeQuestionnaire.isLastStep
               ? activeQuestionnaire.currentStepIndex
               : activeQuestionnaire.currentStepIndex + 1,
@@ -5947,7 +6376,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
 
-      const questionnaireResponseSummary = buildQuestionnaireResponseSummary(
+      const responseArtifacts = buildQuestionnaireResponseArtifacts(
         activeQuestionnaire.assistantMessageId,
         activeQuestionnaire.questionnaire,
         activeQuestionnaire.answersByStepId,
@@ -5955,29 +6384,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
           originToolCallId: activeQuestionnaire.originToolCallId,
         },
       );
-      const content = buildQuestionnaireResponseVisibleContent(
-        questionnaireResponseSummary,
+      const providerInputItems = buildQuestionnaireResponseProviderInputItems(
+        activeQuestionnaire.questionnaire.source,
+        responseArtifacts.visibleContent,
+        responseArtifacts.functionCallOutputItem,
       );
-      const hiddenContext = buildQuestionnaireResponseHiddenContextBlock(
-        questionnaireResponseSummary,
-      );
-      const questionnaireFunctionCallOutput =
-        buildQuestionnaireFunctionCallOutputItem(questionnaireResponseSummary);
-      const providerInputItems = [
-        ...(questionnaireFunctionCallOutput
-          ? [questionnaireFunctionCallOutput]
-          : []),
-        ...buildProviderInputItemsFromContent("user", content),
-      ];
+
+      if (
+        activeQuestionnaire.mode === "editing_response" &&
+        activeQuestionnaire.responseMessageId
+      ) {
+        await get().editMessage(
+          activeQuestionnaire.responseMessageId,
+          responseArtifacts.visibleContent,
+          {
+            hiddenContext: responseArtifacts.hiddenContext,
+            providerInputItems,
+            replaceStructuredFields: true,
+            clearQuestionnaireSession: true,
+          },
+        );
+        return null;
+      }
+
       const result = await get().sendMessage({
         conversationId,
-        content,
+        content: responseArtifacts.visibleContent,
         taskId: activeQuestionnaire.taskId,
-        hiddenContext,
-        providerInputItems:
-          activeQuestionnaire.questionnaire.source === "tool"
-            ? providerInputItems
-            : buildProviderInputItemsFromContent("user", content),
+        hiddenContext: responseArtifacts.hiddenContext,
+        providerInputItems,
       });
 
       set((state) => {
@@ -6216,7 +6651,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     },
 
-    editMessage: async (messageId, newContent) => {
+    editMessage: async (messageId, newContent, options) => {
       const {
         selectedProviderId,
         selectedModelId,
@@ -6266,152 +6701,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       }
 
-      if (tauriIpc.isTauriAvailable()) {
-        tauriIpc
-          .deleteMessagesAfter(conversationId, messageId)
-          .catch(console.error);
-      }
+      await persistEditedUserMessage({
+        messageId,
+        content: newContent,
+        hiddenContext: options?.hiddenContext,
+        providerInputItems: options?.providerInputItems,
+        replaceStructuredFields: options?.replaceStructuredFields,
+      });
+      const updatedTargetMessage =
+        get().messages.find((message) => message.id === messageId) ?? target;
 
-      set((current) => {
-        const updatedMessages = current.messages.map((message) =>
-          message.id === messageId
-            ? { ...message, content: newContent }
-            : message,
-        );
-
-        const conversationMessages = updatedMessages
-          .filter((message) => message.conversation_id === conversationId)
-          .sort(
-            (a, b) =>
-              new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-          );
-
-        const targetIndex = conversationMessages.findIndex(
-          (message) => message.id === messageId,
-        );
-
-        const allowedIds = new Set(
-          conversationMessages
-            .slice(0, targetIndex + 1)
-            .map((message) => message.id),
-        );
-
-        const trimmedMessages = updatedMessages.filter((message) =>
-          message.conversation_id === conversationId
-            ? allowedIds.has(message.id)
-            : true,
-        );
-
-        const conversationMeta = recalcConversation(
-          conversationId,
-          trimmedMessages,
-        );
-
-        const conversations = current.conversations.map((conv) =>
-          conv.id === conversationId ? { ...conv, ...conversationMeta } : conv,
-        );
-
-        const keptConversationMessageIds = new Set(
-          trimmedMessages
-            .filter((message) => message.conversation_id === conversationId)
-            .map((message) => message.id),
-        );
-        const nextImages = { ...current.messageImagesByMessageId };
-        Object.keys(nextImages).forEach((messageIdKey) => {
-          const message = trimmedMessages.find((m) => m.id === messageIdKey);
-          if (
-            !message ||
-            (message.conversation_id === conversationId &&
-              !keptConversationMessageIds.has(messageIdKey))
-          ) {
-            delete nextImages[messageIdKey];
-          }
-        });
-        saveMessageImagesToStorage(nextImages);
-
-        return {
-          ...buildMessageState(trimmedMessages),
-          conversations,
-          messageImagesByMessageId: nextImages,
-          lastError: null,
-        };
+      await trimConversationAfterMessage({
+        conversationId,
+        messageId,
+        clearQuestionnaireSession: options?.clearQuestionnaireSession,
+        updatedMessage: updatedTargetMessage,
       });
 
-      // Keep manual context, but drop source passages produced by assistant messages that were trimmed.
-      const keptConversationMessageIds = get()
-        .messages.filter(
-          (message) => message.conversation_id === conversationId,
-        )
-        .map((message) => message.id);
-      useCitationsStore
-        .getState()
-        .pruneConversationSourceCitations(
-          conversationId,
-          keptConversationMessageIds,
-        );
-
-      const currentOrderedMessages =
-        getOrderedConversationMessages(conversationId);
-      const existingCompactionState =
-        await getConversationCompactionState(conversationId);
-      if (
-        invalidateCompactionFromMessage(
-          existingCompactionState,
-          currentOrderedMessages,
-          messageId,
-        )
-      ) {
-        await deleteConversationCompactionState(conversationId);
-      }
-
-      const assistantMessage: ChatMessage = {
-        id: `msg-${Date.now()}-assistant`,
-        task_id: target.task_id,
-        conversation_id: conversationId,
-        role: "assistant",
-        content: "",
-        tool_traces: [],
-        timestamp: new Date().toISOString(),
-      };
-
-      get().addMessage(assistantMessage);
-
-      try {
-        const streamLaunch = await prepareAssistantStreamLaunch({
-          conversationId,
-          replyToMessageId: messageId,
-          userContent: newContent,
-          resolvedTaskId: target.task_id ?? "",
-          modeAtSend: modeAtEdit,
-          providerId: selectedProviderId,
-          modelId: selectedModelId,
-          reasoningEffort: selectedReasoningEffort,
-          providerConfig: providerConfigForUse,
-        });
-
-        startAssistantStream({
-          assistantMessage,
-          conversationId,
-          modeAtSend: modeAtEdit,
-          resolvedTaskId: target.task_id ?? "",
-          selectedProviderId,
-          selectedModelId,
-          selectedReasoningEffort,
-          providerConfig: providerConfigForUse,
-          internalAgentProfile: streamLaunch.internalAgentProfile,
-          messagesForRequest: streamLaunch.messagesForRequest,
-          executionContext: streamLaunch.executionContext,
-          fileToolContext: streamLaunch.fileToolContext,
-          allowedToolIds: streamLaunch.allowedToolIds,
-          guidedToolRetry: streamLaunch.guidedToolRetry,
-          showToolTraces: streamLaunch.showToolTraces,
-          enableWebSearch: streamLaunch.enableWebSearch,
-          enableWebFetch: streamLaunch.enableWebFetch,
-          webSearchOptions: streamLaunch.webSearchOptions,
-        });
-      } catch (error) {
-        applyAssistantLaunchError(assistantMessage.id, error);
-      }
+      await restartAssistantFromEditedMessage({
+        messageId,
+        conversationId,
+        taskId: target.task_id ?? "",
+        userContent: newContent,
+        modeAtSend: modeAtEdit,
+        providerId: selectedProviderId,
+        modelId: selectedModelId,
+        reasoningEffort: selectedReasoningEffort,
+        providerConfig: providerConfigForUse,
+      });
     },
 
     initialize: async () => {
