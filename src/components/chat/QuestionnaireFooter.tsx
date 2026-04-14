@@ -46,7 +46,7 @@ export const QuestionnaireFooter: React.FC<QuestionnaireFooterProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-2.5">
           <div className="flex min-w-0 items-center gap-2">
             <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-background/60">
-              <Icon name="message-circle" size={14} className="text-primary/80" />
+              <Icon name="message-circle-question" size={14} className="text-primary/80" />
             </span>
             <div className="flex min-w-0 items-center gap-2.5 h-8">
               <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
