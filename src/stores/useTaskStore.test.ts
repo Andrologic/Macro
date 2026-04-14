@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   buildPlanFinalizationFailureState,
   buildPlanFinalizationRefreshState,
@@ -8,6 +8,38 @@ import {
 import { getAutoLaunchCandidateTask, type ImplementTask } from './useTaskStore';
 
 const { clearPlanRuntimeStateSnapshot } = await import('./planRuntimeState');
+
+let isolatedTaskStoreImportCounter = 0;
+let updateStandaloneTaskStatusImpl: ((params: { taskId: string; status: string }) => Promise<void>) | null = null;
+const workspaceUpdateStandaloneTaskStatusMock = mock(
+  async (params: { taskId: string; status: string }) => {
+    if (!updateStandaloneTaskStatusImpl) {
+      return;
+    }
+    await updateStandaloneTaskStatusImpl(params);
+  }
+);
+
+mock.module('../services/tauriIpc', () => ({
+  isTauriAvailable: () => true,
+  workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
+}));
+
+mock.module('../services/tauriIpc.ts', () => ({
+  isTauriAvailable: () => true,
+  workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
+}));
+
+const loadIsolatedTaskStore = async () => {
+  isolatedTaskStoreImportCounter += 1;
+  return import(`./useTaskStore.ts?optimistic=${isolatedTaskStoreImportCounter}`);
+};
+
+const invokeDeferredResolver = (resolver: (() => void) | null) => {
+  if (typeof resolver === 'function') {
+    resolver();
+  }
+};
 
 const blockedRepository = {
   id: 'api::/repos/api',
@@ -160,6 +192,19 @@ const buildTask = (overrides: Partial<ImplementTask> = {}): ImplementTask => ({
   ...overrides,
 });
 
+const buildStandaloneTask = (
+  overrides: Partial<ImplementTask> = {},
+): ImplementTask =>
+  buildTask({
+    task_source: 'standalone',
+    plan_id: undefined,
+    plan_title: undefined,
+    plan_status: undefined,
+    plan_target_branch: undefined,
+    standalone_kind: 'legacy',
+    ...overrides,
+  });
+
 describe('getAutoLaunchCandidateTask', () => {
   it('returns the first eligible task for the plan using task queue ordering', () => {
     const candidate = getAutoLaunchCandidateTask([
@@ -181,5 +226,79 @@ describe('getAutoLaunchCandidateTask', () => {
     ], 'plan-1', ['project-1']);
 
     expect(candidate?.id).toBe('scoped');
+  });
+});
+
+describe('useTaskStore optimistic AwaitingResponse transitions', () => {
+  beforeEach(() => {
+    workspaceUpdateStandaloneTaskStatusMock.mockClear();
+    updateStandaloneTaskStatusImpl = null;
+  });
+
+  it('applies AwaitingResponse locally before standalone persistence completes', async () => {
+    let resolvePersistence: (() => void) | null = null;
+    updateStandaloneTaskStatusImpl = async () =>
+      await new Promise<void>((resolve) => {
+        resolvePersistence = resolve;
+      });
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refreshFromPlanMock = mock(async () => undefined);
+
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({ status: 'InProgress' })],
+      refreshFromPlan: refreshFromPlanMock,
+      lastError: null,
+    });
+
+    const transitionPromise = useTaskStore
+      .getState()
+      .markTaskAwaitingResponse('task-1');
+
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe(
+      'AwaitingResponse',
+    );
+
+    expect(resolvePersistence).toBeDefined();
+    invokeDeferredResolver(resolvePersistence);
+    await transitionPromise;
+
+    expect(workspaceUpdateStandaloneTaskStatusMock).toHaveBeenCalledWith({
+      taskId: 'task-1',
+      status: 'AwaitingResponse',
+    });
+    expect(refreshFromPlanMock).toHaveBeenCalledTimes(1);
+    expect(useTaskStore.getState().lastError).toBeNull();
+  });
+
+  it('rolls back AwaitingResponse locally when standalone persistence fails', async () => {
+    updateStandaloneTaskStatusImpl = async () => {
+      throw new Error('Persistence failed');
+    };
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refreshFromPlanMock = mock(async () => undefined);
+
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({ status: 'InProgress' })],
+      refreshFromPlan: refreshFromPlanMock,
+      lastError: null,
+    });
+
+    const transitionPromise = useTaskStore
+      .getState()
+      .markTaskAwaitingResponse('task-1');
+
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe(
+      'AwaitingResponse',
+    );
+
+    await transitionPromise;
+
+    expect(refreshFromPlanMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe(
+      'InProgress',
+    );
+    expect(useTaskStore.getState().lastError).toBe('Persistence failed');
   });
 });

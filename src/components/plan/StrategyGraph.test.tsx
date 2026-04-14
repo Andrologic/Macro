@@ -41,6 +41,18 @@ describe('StrategyGraph', () => {
   let root: Root | null = null;
 
   const seedStores = (taskStatus: TaskStatus, options?: { isStreaming?: boolean }) => {
+    const conversationRuntimeById = options?.isStreaming
+      ? {
+          'conversation-1': {
+            phase: 'streaming' as const,
+            sessionId: 'session-1',
+            assistantMessageId: 'assistant-1',
+            abortController: null,
+            lastError: null,
+          },
+        }
+      : {};
+
     useAppStore.setState({
       ...useAppStore.getState(),
       selectedGroupId: 'group-1',
@@ -97,6 +109,7 @@ describe('StrategyGraph', () => {
           task_id: 'task-1',
         },
       ] as never,
+      conversationRuntimeById: conversationRuntimeById as never,
       isStreaming: options?.isStreaming ?? false,
       selectedConversationId: 'conversation-1',
     });
@@ -144,9 +157,15 @@ describe('StrategyGraph', () => {
       await flushRender();
     });
 
-    expect(
-      document.body.querySelector('[data-task-status-indicator-state="awaiting_response"]')
-    ).not.toBeNull();
+    const indicator = document.body.querySelector(
+      '[data-task-status-indicator-state="awaiting_response"]'
+    );
+
+    expect(indicator).not.toBeNull();
+    expect(indicator?.getAttribute('data-task-status-indicator-layout')).toBe('graph');
+    expect(indicator?.getAttribute('data-task-status-indicator-pulse')).toBe('awaiting_response');
+    expect(indicator?.querySelectorAll('.task-status-awaiting-response__halo').length).toBe(1);
+    expect(indicator?.parentElement?.className).toContain('text-amber-500');
   });
 
   it('renders a spinner when the linked task is streaming', async () => {

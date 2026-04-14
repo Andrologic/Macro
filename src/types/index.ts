@@ -494,6 +494,20 @@ export interface ConversationQuestionnaireState {
   isLastStep: boolean;
 }
 
+export type ConversationExecutionPhase =
+  | 'idle'
+  | 'preparing'
+  | 'streaming'
+  | 'error';
+
+export interface ConversationRuntimeState {
+  phase: ConversationExecutionPhase;
+  sessionId: string | null;
+  assistantMessageId?: string | null;
+  abortController?: AbortController | null;
+  lastError?: string | null;
+}
+
 export interface ChatMessage {
   id: string;
   task_id: string;

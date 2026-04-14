@@ -564,6 +564,25 @@ const updateStandaloneTaskStatuses = (
   });
 };
 
+const applyTaskStatusLocally = (
+  tasks: CatalogedImplementTask[],
+  task: CatalogedImplementTask,
+  status: TaskStatus
+): CatalogedImplementTask[] => {
+  if (task.task_source === 'standalone') {
+    return updateStandaloneTaskStatuses(tasks, task.id, status);
+  }
+
+  return tasks.map((candidate) =>
+    candidate.id === task.id
+      ? {
+          ...candidate,
+          status,
+        }
+      : candidate
+  );
+};
+
 const applyPredictedBranchLifecycle = (
   tasks: CatalogedImplementTask[],
   predictedBranches: ReturnType<typeof useAppStore.getState>['predictedBranches'],
@@ -622,6 +641,11 @@ interface PreparedTaskExecutionTarget extends TaskExecutionTarget {
   worktreePath: string;
 }
 
+interface OptimisticTaskStatusSnapshot {
+  task: CatalogedImplementTask;
+  previousPredictedBranches: ReturnType<typeof useAppStore.getState>['predictedBranches'] | null;
+}
+
 const ensureTaskExecutionTargetsReady = async (
   task: CatalogedImplementTask,
   branchWorktrees: Record<string, string>
@@ -669,6 +693,21 @@ const ensureTaskExecutionTargetsReady = async (
     createdWorktrees,
     preparedTargets,
   };
+};
+
+const shouldApplyOptimisticTaskStatus = (
+  task: CatalogedImplementTask,
+  nextStatus: TaskStatus
+): boolean => {
+  if (nextStatus !== 'AwaitingResponse') {
+    return false;
+  }
+
+  if (task.task_source !== 'standalone') {
+    return true;
+  }
+
+  return tauriIpc.isTauriAvailable();
 };
 
 interface TaskStore {
@@ -736,63 +775,63 @@ const persistTaskStatusToArchitectPlan = async (
   task: CatalogedImplementTask,
   status: TaskStatus,
   setError: (message: string | null) => void
-): Promise<void> => {
-  if (task.task_source !== 'architect' || !task.plan_id) {
-    return;
-  }
-
-  const targetBranch = resolveTargetBranch(task.plan_target_branch || getGitFlowBaseBranch());
-  const plan = await getArchitectPlan(targetBranch, task.plan_id);
-  if (!plan || plan.status === 'deleted') {
-    setError(
-      tTask('implement.errors.unknownTaskPlan', 'Cannot update plan metadata for task {{taskId}}.', {
-        taskId: task.id,
-      })
-    );
-    return;
-  }
-
-  const nextNodeStatus = mapTaskStatusToNodeStatus(status);
-  const nextPlanNodes = (plan.nodes || []).map((node) =>
-    node.id === task.id ? { ...node, status: nextNodeStatus } : node
-  );
-  const currentPlanTasks = deriveImplementTasksFromStrategy({
-    planId: plan.id,
-    nodes: plan.nodes || [],
-    predictedBranches: plan.predictedBranches || [],
-    targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
-  }).tasks;
-  const nextPredictedBranches = applyPredictedBranchLifecycle(
-    currentPlanTasks.map((currentTask) => ({
-      ...currentTask,
-      task_source: 'architect',
-      plan_title: plan.title,
-      plan_status: plan.status,
-      plan_target_branch: plan.targetBranch,
-      draft: false,
-      standalone_kind: 'legacy',
-      base_branch: null,
-      feature_slug: null,
-      conversation_id: null,
-      archived_at: null,
-      archive_reason: null,
-      merged_at: null,
-    })),
-    plan.predictedBranches || [],
-    task.id,
-    status
-  );
-  const strategy = deriveImplementTasksFromStrategy({
-    planId: plan.id,
-    nodes: nextPlanNodes,
-    predictedBranches: nextPredictedBranches,
-    targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
-  });
-  const nextPlanStatus = plan.status === 'validated' && status !== 'Pending'
-    ? 'in_progress'
-    : plan.status;
-
+): Promise<boolean> => {
   try {
+    if (task.task_source !== 'architect' || !task.plan_id) {
+      return false;
+    }
+
+    const targetBranch = resolveTargetBranch(task.plan_target_branch || getGitFlowBaseBranch());
+    const plan = await getArchitectPlan(targetBranch, task.plan_id);
+    if (!plan || plan.status === 'deleted') {
+      setError(
+        tTask('implement.errors.unknownTaskPlan', 'Cannot update plan metadata for task {{taskId}}.', {
+          taskId: task.id,
+        })
+      );
+      return false;
+    }
+
+    const nextNodeStatus = mapTaskStatusToNodeStatus(status);
+    const nextPlanNodes = (plan.nodes || []).map((node) =>
+      node.id === task.id ? { ...node, status: nextNodeStatus } : node
+    );
+    const currentPlanTasks = deriveImplementTasksFromStrategy({
+      planId: plan.id,
+      nodes: plan.nodes || [],
+      predictedBranches: plan.predictedBranches || [],
+      targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
+    }).tasks;
+    const nextPredictedBranches = applyPredictedBranchLifecycle(
+      currentPlanTasks.map((currentTask) => ({
+        ...currentTask,
+        task_source: 'architect',
+        plan_title: plan.title,
+        plan_status: plan.status,
+        plan_target_branch: plan.targetBranch,
+        draft: false,
+        standalone_kind: 'legacy',
+        base_branch: null,
+        feature_slug: null,
+        conversation_id: null,
+        archived_at: null,
+        archive_reason: null,
+        merged_at: null,
+      })),
+      plan.predictedBranches || [],
+      task.id,
+      status
+    );
+    const strategy = deriveImplementTasksFromStrategy({
+      planId: plan.id,
+      nodes: nextPlanNodes,
+      predictedBranches: nextPredictedBranches,
+      targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
+    });
+    const nextPlanStatus = plan.status === 'validated' && status !== 'Pending'
+      ? 'in_progress'
+      : plan.status;
+
     await updateArchitectPlan({
       branchName: targetBranch,
       planId: plan.id,
@@ -812,10 +851,17 @@ const persistTaskStatusToArchitectPlan = async (
         });
       }
     }
-    await useTaskStore.getState().refreshFromPlan();
+    try {
+      await useTaskStore.getState().refreshFromPlan();
+    } catch (error) {
+      const normalized = toServiceError(error);
+      setError(normalized.message);
+    }
+    return true;
   } catch (error) {
     const normalized = toServiceError(error);
     setError(normalized.message);
+    return false;
   }
 };
 
@@ -2165,7 +2211,75 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       return;
     }
 
+    const applyOptimisticTaskStatus = (): OptimisticTaskStatusSnapshot | null => {
+      if (!shouldApplyOptimisticTaskStatus(currentTask, status)) {
+        return null;
+      }
+
+      const appState = useAppStore.getState();
+      const previousPredictedBranches =
+        currentTask.task_source === 'architect' &&
+        currentTask.plan_id &&
+        appState.activeArchitectPlanId === currentTask.plan_id
+          ? appState.predictedBranches
+          : null;
+      const nextTasks = applyTaskStatusLocally(get().tasks, currentTask, status);
+
+      set({
+        tasks: nextTasks,
+        lastError: null,
+      });
+
+      if (previousPredictedBranches) {
+        appState.setPredictedBranches(
+          applyPredictedBranchLifecycle(
+            nextTasks,
+            previousPredictedBranches,
+            currentTask.id,
+            status
+          )
+        );
+      }
+
+      return {
+        task: currentTask,
+        previousPredictedBranches,
+      };
+    };
+
+    const rollbackOptimisticTaskStatus = (
+      snapshot: OptimisticTaskStatusSnapshot | null,
+      errorMessage: string
+    ) => {
+      if (!snapshot) {
+        set({ lastError: errorMessage });
+        return;
+      }
+
+      set((state) => ({
+        tasks: applyTaskStatusLocally(
+          state.tasks,
+          snapshot.task,
+          snapshot.task.status
+        ),
+        lastError: errorMessage,
+      }));
+
+      if (
+        snapshot.previousPredictedBranches &&
+        snapshot.task.plan_id &&
+        useAppStore.getState().activeArchitectPlanId === snapshot.task.plan_id
+      ) {
+        useAppStore
+          .getState()
+          .setPredictedBranches(snapshot.previousPredictedBranches);
+      }
+    };
+
+    const optimisticTaskStatus = applyOptimisticTaskStatus();
+
     if (currentTask.task_source === 'standalone') {
+      let persisted = false;
       try {
         if (!tauriIpc.isTauriAvailable()) {
           set({
@@ -2179,20 +2293,35 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
           taskId,
           status,
         });
+        persisted = true;
         await get().refreshFromPlan();
         await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
           set({ lastError: message });
         });
       } catch (error) {
         const normalized = toServiceError(error);
-        set({ lastError: normalized.message });
+        if (!persisted) {
+          rollbackOptimisticTaskStatus(optimisticTaskStatus, normalized.message);
+        } else {
+          set({ lastError: normalized.message });
+        }
       }
       return;
     }
 
-    await persistTaskStatusToArchitectPlan(currentTask, status, (message) => {
+    const persisted = await persistTaskStatusToArchitectPlan(currentTask, status, (message) => {
       set({ lastError: message });
     });
+
+    if (!persisted) {
+      rollbackOptimisticTaskStatus(
+        optimisticTaskStatus,
+        get().lastError ||
+          tTask('implement.errors.unknownTaskPlan', 'Cannot update task {{taskId}}.', {
+            taskId,
+          })
+      );
+    }
   },
 
   clearPlanRuntimeState: ({ planId, deletedWorktreeKeys }) => {

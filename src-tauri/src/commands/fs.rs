@@ -229,6 +229,19 @@ pub async fn write_file_internal(
 
     // Check if file already exists
     let created = !validated_path.exists();
+    if !created {
+        let existing_bytes = tokio::fs::read(&validated_path)
+            .await
+            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+        if existing_bytes == content_bytes {
+            return Ok(WriteResultDto {
+                path: validated_path.to_string_lossy().to_string(),
+                bytes_written: 0,
+                created: false,
+                skipped: true,
+            });
+        }
+    }
 
     // Get parent directory
     let parent = validated_path
@@ -277,6 +290,7 @@ pub async fn write_file_internal(
         path: validated_path.to_string_lossy().to_string(),
         bytes_written: content_bytes.len() as u64,
         created,
+        skipped: false,
     })
 }
 
@@ -1227,6 +1241,7 @@ mod tests {
         assert!(result.is_ok());
         let dto = result.unwrap();
         assert!(dto.created);
+        assert!(!dto.skipped);
         let written = fs::read_to_string(workspace.path().join("new.txt")).unwrap();
         assert_eq!(written, "hello");
     }
@@ -1258,8 +1273,42 @@ mod tests {
         assert!(result.is_ok());
         let dto = result.unwrap();
         assert!(!dto.created);
+        assert!(!dto.skipped);
         let written = fs::read_to_string(workspace.path().join("file.txt")).unwrap();
         assert_eq!(written, "second");
+    }
+
+    #[tokio::test]
+    async fn test_write_identical_file_skips_write() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+
+        write_file_internal(
+            &workspace_path,
+            "same.txt".to_string(),
+            "content".to_string(),
+            Some(true),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let result = write_file_internal(
+            &workspace_path,
+            "same.txt".to_string(),
+            "content".to_string(),
+            Some(true),
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let dto = result.unwrap();
+        assert!(!dto.created);
+        assert!(dto.skipped);
+        assert_eq!(dto.bytes_written, 0);
+        let written = fs::read_to_string(workspace.path().join("same.txt")).unwrap();
+        assert_eq!(written, "content");
     }
 
     #[tokio::test]
@@ -1277,6 +1326,7 @@ mod tests {
         .await;
 
         assert!(result.is_ok());
+        assert!(!result.unwrap().skipped);
         let written = fs::read_to_string(workspace.path().join("a/b/c.txt")).unwrap();
         assert_eq!(written, "content");
     }
