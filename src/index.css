@@ -614,14 +614,13 @@
     will-change: transform, opacity;
   }
 
-  .task-status-awaiting-response__halo {
-    animation: taskAwaitingHaloBreath 1.9s cubic-bezier(0.3, 0, 0.22, 1) infinite;
+  .task-status-awaiting-response__wave {
+    animation: taskAwaitingWavePropagate 1.7s cubic-bezier(0.16, 0.72, 0.28, 1) infinite;
     transform-origin: center;
-    opacity: var(--task-status-halo-rest-opacity, 0.24);
-    transform: scale(var(--task-status-halo-rest-scale, 0.93));
-    filter: blur(var(--task-status-halo-rest-blur, 6px));
-    box-shadow: 0 0 var(--task-status-halo-glow, 12px) currentColor;
-    will-change: transform, opacity, filter, box-shadow;
+    opacity: 0;
+    transform: scale(var(--task-status-wave-start-scale, 0.32));
+    border: 0;
+    will-change: transform, opacity;
   }
 }
 
@@ -658,29 +657,26 @@
   }
 }
 
-@keyframes taskAwaitingHaloBreath {
-  0%,
-  100% {
-    opacity: var(--task-status-halo-rest-opacity, 0.24);
-    transform: scale(var(--task-status-halo-rest-scale, 0.93));
-    filter: blur(var(--task-status-halo-rest-blur, 6px));
-    box-shadow: 0 0 calc(var(--task-status-halo-glow, 12px) * 0.75) currentColor;
+@keyframes taskAwaitingWavePropagate {
+  0% {
+    opacity: var(--task-status-wave-start-opacity, 0.78);
+    transform: scale(var(--task-status-wave-start-scale, 0.32));
   }
-  55% {
-    opacity: var(--task-status-halo-peak-opacity, 0.5);
-    transform: scale(var(--task-status-halo-peak-scale, 1.08));
-    filter: blur(var(--task-status-halo-peak-blur, 10px));
-    box-shadow: 0 0 var(--task-status-halo-glow, 12px) currentColor;
+  58% {
+    opacity: var(--task-status-wave-mid-opacity, 0.18);
+    transform: scale(var(--task-status-wave-mid-scale, 0.68));
+  }
+  100% {
+    opacity: 0;
+    transform: scale(var(--task-status-wave-end-scale, 1));
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .task-status-awaiting-response__halo {
+  .task-status-awaiting-response__wave {
     animation: none;
-    opacity: var(--task-status-halo-rest-opacity, 0.24);
-    transform: scale(1);
-    filter: blur(var(--task-status-halo-rest-blur, 6px));
-    box-shadow: 0 0 calc(var(--task-status-halo-glow, 12px) * 0.75) currentColor;
+    opacity: 0.24;
+    transform: scale(var(--task-status-wave-mid-scale, 0.68));
   }
 }
 
