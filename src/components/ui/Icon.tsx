@@ -122,6 +122,7 @@ export type IconName =
   | 'terminal'
   | 'message-square'
   | 'message-circle'
+  | 'message-circle-question'
   | 'bell'
   | 'check'
   | 'x'
@@ -204,6 +205,31 @@ interface IconProps {
   style?: React.CSSProperties;
 }
 
+const MessageCircleQuestionIcon: React.FC<{
+  size?: number | string;
+  className?: string;
+  style?: React.CSSProperties;
+}> = ({ size = 16, className, style }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    style={style}
+    aria-hidden="true"
+  >
+    <path d="M8.5 18.2 4 21v-5.2A7.9 7.9 0 0 1 3 12c0-4.4 4-8 9-8s9 3.6 9 8-4 8-9 8c-1.2 0-2.4-.2-3.5-.6Z" />
+    <path d="M10.2 9.4a2 2 0 1 1 3.7 1c-.5.9-1.5 1.3-1.9 2.1-.2.4-.3.8-.3 1.2" />
+    <path d="M11.7 16.8h.1" />
+  </svg>
+);
+
 const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; className?: string; style?: React.CSSProperties }>> = {
   'chevron-right': ChevronRight,
   'chevron-down': ChevronDown,
@@ -228,6 +254,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'terminal': Terminal,
   'message-square': MessageSquare,
   'message-circle': MessageCircle,
+  'message-circle-question': MessageCircleQuestionIcon,
   'bell': Bell,
   'check': Check,
   'x': X,
