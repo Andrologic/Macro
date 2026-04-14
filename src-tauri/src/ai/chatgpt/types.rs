@@ -110,6 +110,8 @@ pub struct AiStreamDoneEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_input_items: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_turn_state: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_traces: Option<Vec<AiToolTrace>>,

@@ -443,6 +443,53 @@ export interface ChatGptProviderTurnState {
 
 export type ProviderTurnState = ChatGptProviderTurnState;
 
+export interface QuestionStep {
+  id: string;
+  prompt: string;
+  choices: [string, string, string];
+  free_text_placeholder?: string;
+}
+
+export interface QuestionnairePayload {
+  intro?: string;
+  questions: QuestionStep[];
+  source?: 'tool' | 'legacy_quick_replies';
+}
+
+export interface QuestionnaireResponseSummaryItem {
+  id: string;
+  prompt: string;
+  answer: string;
+}
+
+export interface QuestionnaireResponseSummary {
+  assistantMessageId: string;
+  source?: QuestionnairePayload['source'];
+  originToolCallId?: string;
+  items: QuestionnaireResponseSummaryItem[];
+}
+
+export interface ConversationQuestionnaireDraft {
+  assistantMessageId: string;
+  currentStepIndex: number;
+  answersByStepId: Record<string, string>;
+  draftTextByStepId: Record<string, string>;
+}
+
+export interface ConversationQuestionnaireState {
+  conversationId: string;
+  taskId: string | null;
+  assistantMessageId: string;
+  originToolCallId?: string;
+  questionnaire: QuestionnairePayload;
+  currentStepIndex: number;
+  currentStep: QuestionStep;
+  answersByStepId: Record<string, string>;
+  draftTextByStepId: Record<string, string>;
+  totalSteps: number;
+  isLastStep: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   task_id: string;
@@ -453,6 +500,8 @@ export interface ChatMessage {
   code_diff?: CodeDiff;
   choices?: AIChoice[];
   allow_free_response?: boolean;
+  questionnaire?: QuestionnairePayload;
+  questionnaire_response_summary?: QuestionnaireResponseSummary;
   tool_traces?: ToolTrace[];
   hidden_context?: string;
   provider_input_items?: unknown[];

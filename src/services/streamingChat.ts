@@ -98,6 +98,20 @@ export interface StreamCompletionResult {
   providerTurnState?: ProviderTurnState;
 }
 
+export interface ToolResultResolution {
+  kind: 'result';
+  result: string;
+}
+
+export interface ToolInterruptResolution {
+  kind: 'interrupt';
+  result: string;
+  visibleContent: string;
+  hiddenContext?: string;
+}
+
+export type ToolCallResolution = ToolResultResolution | ToolInterruptResolution;
+
 export interface StreamingChatOptions {
   conversationId?: string;
   mode?: AppMode;
@@ -121,7 +135,11 @@ export interface StreamingChatOptions {
   onToolCall?: (
     toolName: string,
     args: Record<string, unknown>
-  ) => Promise<string | void> | string | void;
+  ) =>
+    | Promise<ToolCallResolution | string | void>
+    | ToolCallResolution
+    | string
+    | void;
   onToolResult?: (toolName: string, result: string) => void;
   fileToolContext?: Array<{
     title: string;
@@ -269,6 +287,11 @@ const formatToolTraceDetail = (toolName: string, args: Record<string, unknown>):
     return typeof args.title === 'string' ? args.title.trim() : undefined;
   }
 
+  if (toolName === 'question') {
+    const questions = Array.isArray(args.questions) ? args.questions.length : 0;
+    return questions > 0 ? `${questions} question${questions > 1 ? 's' : ''}` : undefined;
+  }
+
   return undefined;
 };
 
@@ -365,6 +388,15 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
         hiddenContextBlocks.push(block);
       }
     },
+    addHiddenContextBlock(block: string | undefined) {
+      const normalized = block?.trim();
+      if (normalized) {
+        hiddenContextBlocks.push(normalized);
+      }
+    },
+    replaceVisibleContent(content: string) {
+      visibleContent = content;
+    },
     buildResult(): StreamCompletionResult {
       markRunningToolTracesDone();
       const hiddenContext = hiddenContextBlocks.join('\n\n').trim();
@@ -380,6 +412,7 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
 // Tool definitions for the LLM
 const WEB_SEARCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_search'));
 const WEB_FETCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_fetch'));
+const QUESTION_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('question'));
 const MARK_SOURCE_PASSAGE_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('mark_source_passage')
 );
@@ -775,6 +808,25 @@ const compactToolResultForChatGptModelContext = (
   return `${truncateMiddle(result, contentBudget)}${truncationNotice}`;
 };
 
+const isToolInterruptResolution = (
+  value: ToolCallResolution | undefined,
+): value is ToolInterruptResolution => value?.kind === 'interrupt';
+
+const normalizeToolCallResolution = (
+  value: ToolCallResolution | string | void,
+): ToolCallResolution | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  if (typeof value === 'string') {
+    return {
+      kind: 'result',
+      result: value,
+    };
+  }
+  return value;
+};
+
 export const __testables = {
   applyReasoningToChatCompletionsRequest,
   buildFunctionCallOutputProviderInputItem,
@@ -789,6 +841,8 @@ export const __testables = {
   hasMeaningfulVisibleAssistantText,
   isEmptyTerminalChatGptTurn,
   isReasoningUnsupportedError,
+  isToolInterruptResolution,
+  normalizeToolCallResolution,
   shouldRetryArchitectPostToolResponse,
   shouldRetryMissingRequiredTool,
   summarizeProviderTextPresence,
@@ -826,6 +880,7 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('edit')) tools.push(EDIT_WORKSPACE_TOOL);
   if (allowedTools.has('glob')) tools.push(GLOB_WORKSPACE_TOOL);
   if (allowedTools.has('grep')) tools.push(GREP_WORKSPACE_TOOL);
+  if (allowedTools.has('question')) tools.push(QUESTION_TOOL);
   if (allowedTools.has('read_file')) tools.push(READ_FILE_TOOL);
   if (allowedTools.has('mark_source_passage')) tools.push(MARK_SOURCE_PASSAGE_TOOL);
   if (allowedTools.has('read_sources')) tools.push(READ_SOURCES_TOOL);
@@ -938,12 +993,14 @@ const streamNativeTurnViaTauri = async (params: {
               params.signal.removeEventListener('abort', signalHandler);
             }
             const providerInputItems = event.payload.provider_input_items ?? undefined;
-            const providerTurnState = params.providerType === 'chatgpt'
-              ? buildChatGptProviderTurnState(
-                event.payload.response_id,
-                event.payload.output_items,
-              )
-              : undefined;
+            const providerTurnState =
+              event.payload.provider_turn_state ??
+              (params.providerType === 'chatgpt'
+                ? buildChatGptProviderTurnState(
+                  event.payload.response_id,
+                  event.payload.output_items,
+                )
+                : undefined);
             const derivedOutputText =
               extractVisibleTextFromProviderInputItems(providerInputItems) ||
               extractVisibleTextFromProviderInputItems(event.payload.output_items ?? undefined);
@@ -1008,43 +1065,24 @@ const streamNativeTurnViaTauri = async (params: {
   });
 };
 
-const streamChatGptTurn = async (params: {
-  providerId: string;
-  modelId: string;
-  reasoningEffort?: ReasoningEffort | null;
-  conversationId?: string | null;
-  messages: StreamMessage[];
-  tools: unknown[];
-  allowedToolIds?: string[];
-  workspacePath?: string | null;
-  defaultWorkspacePath?: string | null;
-  projectMounts?: ProjectMount[];
-  virtualRootEnabled?: boolean;
-  focusedProjectId?: string | null;
-  signal?: AbortSignal;
-  onDelta: (delta: string) => void;
-}): Promise<StreamingTurnResult> =>
-  streamNativeTurnViaTauri({
-    providerId: params.providerId,
-    providerType: 'chatgpt',
-    modelId: params.modelId,
-    reasoningEffort: params.reasoningEffort,
-    conversationId: params.conversationId,
-    messages: params.messages,
-    tools: params.tools,
-    allowedToolIds: params.allowedToolIds,
-    workspacePath: params.workspacePath,
-    defaultWorkspacePath: params.defaultWorkspacePath,
-    projectMounts: params.projectMounts,
-    virtualRootEnabled: params.virtualRootEnabled,
-    focusedProjectId: params.focusedProjectId,
-    signal: params.signal,
-    onDelta: params.onDelta,
-  });
+const buildNativeProviderTurnContent = (
+  providerType: 'chatgpt' | 'copilot',
+  turnResult: StreamingTurnResult,
+  streamedTurnContent: string
+): string =>
+  providerType === 'chatgpt'
+    ? buildChatGptVisibleTurnContent(
+      turnResult.content || streamedTurnContent,
+      turnResult.reasoningSummary
+    )
+    : turnResult.content || streamedTurnContent;
 
-const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Promise<void> => {
+const streamChatViaNativeToolCallingProvider = async (
+  options: StreamingChatOptions & { providerType: 'chatgpt' | 'copilot' }
+): Promise<void> => {
   const {
     providerId,
+    providerType,
     modelId,
     messages,
     onToken,
@@ -1119,8 +1157,9 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
 
       const shouldBufferTurnOutput = enforceGuidedToolRetry;
       let streamedTurnContent = '';
-      const turnResult = await streamChatGptTurn({
+      const turnResult = await streamNativeTurnViaTauri({
         providerId,
+        providerType,
         modelId,
         reasoningEffort: options.reasoningEffort,
         conversationId: options.conversationId,
@@ -1141,9 +1180,10 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
         },
       });
 
-      const turnContent = buildChatGptVisibleTurnContent(
-        turnResult.content || streamedTurnContent,
-        turnResult.reasoningSummary
+      const turnContent = buildNativeProviderTurnContent(
+        providerType,
+        turnResult,
+        streamedTurnContent
       );
       const validToolCalls = getValidToolCalls(turnResult.toolCalls);
       latestProviderTurnState = turnResult.providerTurnState ?? latestProviderTurnState;
@@ -1232,13 +1272,20 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
             stage: 'final-empty',
           });
         }
-        if (isEmptyTerminalChatGptTurn(turnContent, validToolCalls)) {
+        if (
+          providerType === 'chatgpt' &&
+          isEmptyTerminalChatGptTurn(turnContent, validToolCalls)
+        ) {
           throw new Error('Reponse ChatGPT vide apres execution des outils.');
         }
         break;
       }
 
       const toolResults: ToolResult[] = [];
+      let interruptResolution: ToolInterruptResolution | null = null;
+      const questionToolCallCount = validToolCalls.filter(
+        (toolCall) => toolCall.function.name === 'question'
+      ).length;
 
       for (const toolCall of validToolCalls) {
         const toolName = toolCall.function.name;
@@ -1259,8 +1306,29 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
             continue;
           }
 
-          const customResult = await onToolCall?.(toolName, args);
-          customToolResult = typeof customResult === 'string' ? customResult : undefined;
+          if (toolName === 'question' && questionToolCallCount > 1) {
+            toolResult =
+              'Error executing tool question: only one question tool call is allowed per assistant turn.';
+            onToolResult?.(toolName, toolResult);
+            toolResults.push({
+              tool_call_id: toolCall.id,
+              content: toolResult,
+              tool_name: toolName,
+            });
+            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+            continue;
+          }
+
+          const customResult = normalizeToolCallResolution(
+            await onToolCall?.(toolName, args)
+          );
+          if (isToolInterruptResolution(customResult)) {
+            interruptResolution = customResult;
+            customToolResult = customResult.result;
+            streamAccumulator.addHiddenContextBlock(customResult.hiddenContext);
+          } else if (customResult?.kind === 'result') {
+            customToolResult = customResult.result;
+          }
 
           if (showToolTraces) {
             streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
@@ -1436,6 +1504,20 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
           content: toolResult,
           tool_name: toolName,
         });
+
+        if (interruptResolution) {
+          break;
+        }
+      }
+
+      if (interruptResolution) {
+        streamAccumulator.replaceVisibleContent(interruptResolution.visibleContent);
+        onComplete({
+          ...streamAccumulator.buildResult(),
+          providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
+          providerTurnState: latestProviderTurnState,
+        });
+        return;
       }
 
       if (toolResults.length > 0) {
@@ -1503,41 +1585,17 @@ const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Prom
   }
 };
 
+const streamChatViaChatGptProvider = async (options: StreamingChatOptions): Promise<void> =>
+  streamChatViaNativeToolCallingProvider({
+    ...options,
+    providerType: 'chatgpt',
+  });
+
 const streamChatViaCopilotProvider = async (options: StreamingChatOptions): Promise<void> => {
-  try {
-    const turn = await streamNativeTurnViaTauri({
-      conversationId: options.conversationId,
-      providerId: options.providerId,
-      providerType: 'copilot',
-      modelId: options.modelId,
-      reasoningEffort: options.reasoningEffort,
-      messages: options.messages,
-      tools: [],
-      allowedToolIds: options.allowedToolIds,
-      workspacePath: options.workspacePath,
-      defaultWorkspacePath: options.defaultWorkspacePath,
-      projectMounts: options.projectMounts,
-      virtualRootEnabled: options.virtualRootEnabled,
-      focusedProjectId: options.focusedProjectId,
-      signal: options.signal,
-      onDelta: options.onToken,
-    });
-
-    if (turn.toolTraces) {
-      options.onToolTracesUpdate?.(turn.toolTraces);
-    }
-
-    options.onComplete({
-      visibleContent: turn.content,
-      toolTraces: turn.toolTraces ?? [],
-      hiddenContext: turn.hiddenContext,
-      providerInputItems: turn.providerInputItems,
-      providerTurnState: turn.providerTurnState,
-    });
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    options.onError(err);
-  }
+  return streamChatViaNativeToolCallingProvider({
+    ...options,
+    providerType: 'copilot',
+  });
 };
 
 export async function streamChat(options: StreamingChatOptions): Promise<void> {
@@ -1904,6 +1962,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
       if (validToolCalls.length > 0) {
         const toolResults: ToolResult[] = [];
+        let interruptResolution: ToolInterruptResolution | null = null;
+        const questionToolCallCount = validToolCalls.filter(
+          (toolCall) => toolCall.function.name === 'question'
+        ).length;
 
         for (const toolCall of validToolCalls) {
           const toolName = toolCall.function.name;
@@ -1927,8 +1989,28 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               continue;
             }
 
-            const customResult = await onToolCall?.(toolName, args);
-            customToolResult = typeof customResult === 'string' ? customResult : undefined;
+            if (toolName === 'question' && questionToolCallCount > 1) {
+              toolResult =
+                'Error executing tool question: only one question tool call is allowed per assistant turn.';
+              onToolResult?.(toolName, toolResult);
+              toolResults.push({
+                tool_call_id: toolCall.id,
+                content: toolResult,
+              });
+              streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+              continue;
+            }
+
+            const customResult = normalizeToolCallResolution(
+              await onToolCall?.(toolName, args)
+            );
+            if (isToolInterruptResolution(customResult)) {
+              interruptResolution = customResult;
+              customToolResult = customResult.result;
+              streamAccumulator.addHiddenContextBlock(customResult.hiddenContext);
+            } else if (customResult?.kind === 'result') {
+              customToolResult = customResult.result;
+            }
 
             if (showToolTraces) {
               streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
@@ -2113,6 +2195,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             tool_call_id: toolCall.id,
             content: toolResult,
           });
+
+          if (interruptResolution) {
+            break;
+          }
+        }
+
+        if (interruptResolution) {
+          streamAccumulator.replaceVisibleContent(interruptResolution.visibleContent);
+          onComplete(streamAccumulator.buildResult());
+          return;
         }
 
         // If we have tool results, make a follow-up request to get the final response
