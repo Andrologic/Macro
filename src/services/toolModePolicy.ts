@@ -56,13 +56,9 @@ const ALL_WORKSPACE_TOOLS = [
 ] as const;
 
 const ARCHITECT_PLAN_TOOLS = [
-  "plan_create",
   "plan_list",
   "plan_get",
   "plan_update",
-  "plan_delete",
-  "plan_restore",
-  "plan_set_active",
   "strategy_get",
   "strategy_update",
   "strategy_delete",

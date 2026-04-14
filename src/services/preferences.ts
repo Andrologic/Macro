@@ -47,7 +47,6 @@ export const PREF_KEYS = {
   PROMPT_PLAN_EXPLORER: "promptPlanExplorer",
   PROMPT_TASK_REVIEWER: "promptTaskReviewer",
   PROMPT_REPO_AUDITOR: "promptRepoAuditor",
-  IMPLEMENT_EXECUTION_MODE: "implementExecutionMode",
   IMPLEMENT_DIFF_PRESENTATION_MODE: "implementDiffPresentationMode",
   NOTIFICATION_CHANNEL_MODES: "notificationChannelModes",
   ARCHITECT_GIT_BASE_BRANCH: "architectGitBaseBranch",
@@ -212,7 +211,6 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.PROMPT_PLAN_EXPLORER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_PLAN_EXPLORER],
   [PREF_KEYS.PROMPT_TASK_REVIEWER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_TASK_REVIEWER],
   [PREF_KEYS.PROMPT_REPO_AUDITOR]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_REPO_AUDITOR],
-  [PREF_KEYS.IMPLEMENT_EXECUTION_MODE]: "semi_auto",
   [PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE]: "focused",
   [PREF_KEYS.NOTIFICATION_CHANNEL_MODES]: DEFAULT_NOTIFICATION_CHANNEL_MODES,
   [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'develop',
@@ -244,6 +242,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
 let storeInstance: Store | null = null;
 let initPromise: Promise<Store> | null = null;
 const debouncedSaveTimers = new Map<PrefKey, ReturnType<typeof setTimeout>>();
+const LEGACY_IMPLEMENT_EXECUTION_MODE_KEY = "implementExecutionMode";
 
 /**
  * Check if running in Tauri environment
@@ -270,6 +269,24 @@ async function getStore(): Promise<Store | null> {
 
   storeInstance = await initPromise;
   return storeInstance;
+}
+
+const removePersistedPreferenceKey = async (key: string): Promise<void> => {
+  localStorage.removeItem(`macro_${key}`);
+
+  try {
+    const store = await getStore();
+    if (store) {
+      await store.delete(key);
+      await store.save();
+    }
+  } catch (error) {
+    console.error(`Failed to remove preference ${key}:`, error);
+  }
+};
+
+export async function purgeLegacyImplementExecutionModePreference(): Promise<void> {
+  await removePersistedPreferenceKey(LEGACY_IMPLEMENT_EXECUTION_MODE_KEY);
 }
 
 /**

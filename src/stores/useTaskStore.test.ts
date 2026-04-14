@@ -5,9 +5,10 @@ import {
   buildPlanFinalizationSuccessState,
   toBlockedPlanFinalizationState,
 } from './taskStorePlanFinalizationState';
-import { getAutoLaunchCandidateTask, type ImplementTask } from './useTaskStore';
+import { getPlanActivationCandidateTask, type ImplementTask } from './useTaskStore';
 
 const { clearPlanRuntimeStateSnapshot } = await import('./planRuntimeState');
+const actualTauriIpc = await import('../services/tauriIpc');
 
 let isolatedTaskStoreImportCounter = 0;
 let updateStandaloneTaskStatusImpl: ((params: { taskId: string; status: string }) => Promise<void>) | null = null;
@@ -21,11 +22,13 @@ const workspaceUpdateStandaloneTaskStatusMock = mock(
 );
 
 mock.module('../services/tauriIpc', () => ({
+  ...actualTauriIpc,
   isTauriAvailable: () => true,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
 }));
 
 mock.module('../services/tauriIpc.ts', () => ({
+  ...actualTauriIpc,
   isTauriAvailable: () => true,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
 }));
@@ -205,9 +208,9 @@ const buildStandaloneTask = (
     ...overrides,
   });
 
-describe('getAutoLaunchCandidateTask', () => {
+describe('getPlanActivationCandidateTask', () => {
   it('returns the first eligible task for the plan using task queue ordering', () => {
-    const candidate = getAutoLaunchCandidateTask([
+    const candidate = getPlanActivationCandidateTask([
       buildTask({ id: 'completed', status: 'Completed', sequence_index: 0 }),
       buildTask({ id: 'failed', status: 'Failed', sequence_index: 1 }),
       buildTask({ id: 'in-progress', status: 'InProgress', sequence_index: 4 }),
@@ -218,7 +221,7 @@ describe('getAutoLaunchCandidateTask', () => {
   });
 
   it('prefers tasks inside the current scope and ignores in-review or draft tasks', () => {
-    const candidate = getAutoLaunchCandidateTask([
+    const candidate = getPlanActivationCandidateTask([
       buildTask({ id: 'other-project', project_id: 'project-2', project_ids: ['project-2'], sequence_index: 0 }),
       buildTask({ id: 'draft', draft: true, sequence_index: 1 }),
       buildTask({ id: 'review', status: 'InReview', sequence_index: 2 }),

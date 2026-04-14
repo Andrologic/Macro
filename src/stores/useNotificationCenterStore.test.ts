@@ -37,6 +37,7 @@ Object.defineProperty(globalThis, 'localStorage', {
 });
 
 let importCounter = 0;
+const actualPreferences = await import('../services/preferences');
 
 const createNotificationItem = (
   index: number,
@@ -53,9 +54,7 @@ const createNotificationItem = (
 
 const loadNotificationCenterStore = async () => {
   mock.module('../services/preferences', () => ({
-    PREF_KEYS: {
-      NOTIFICATION_CENTER_ITEMS: 'notificationCenterItems',
-    },
+    ...actualPreferences,
     savePreference: async (key: string, value: unknown) => {
       localStorageMock.setItem(`macro_${key}`, JSON.stringify(value));
     },

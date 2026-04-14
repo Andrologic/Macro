@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 let streamingChatImportCounter = 0;
+const actualTauriIpc = await import('./tauriIpc');
 
 const loadStreamingChat = async (
   fetchImpl?: ReturnType<typeof mock>,
@@ -40,6 +41,7 @@ const loadStreamingChat = async (
     },
   }));
   const tauriIpcMock = {
+    ...actualTauriIpc,
     isTauriAvailable: () => options?.forceTauriAvailable ?? false,
     aiStreamChat: async (params: {
       requestId: string;

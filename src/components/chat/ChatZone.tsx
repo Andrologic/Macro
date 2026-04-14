@@ -377,9 +377,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     mode,
     agentType,
     setAgentType,
-    pendingAutoLaunchPlanId,
-    pendingAutoLaunchTaskId,
-    clearPendingAutoLaunch,
     selectedGroupId,
     selectedProjectId,
     selectedTaskId,
@@ -391,9 +388,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     mode: state.mode,
     agentType: state.agentType,
     setAgentType: state.setAgentType,
-    pendingAutoLaunchPlanId: state.pendingAutoLaunchPlanId,
-    pendingAutoLaunchTaskId: state.pendingAutoLaunchTaskId,
-    clearPendingAutoLaunch: state.clearPendingAutoLaunch,
     selectedGroupId: state.selectedGroupId,
     selectedProjectId: state.selectedProjectId,
     selectedTaskId: state.selectedTaskId,
@@ -620,14 +614,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isImplementComposerLocked ||
     isImplementTaskSelectionMissing ||
     Boolean(activeQuestionnaire);
-  const isAutoLaunchArmedForSelection = Boolean(
-    mode === 'Implement' &&
-      pendingAutoLaunchPlanId &&
-      pendingAutoLaunchTaskId &&
-      selectedTask &&
-      selectedTask.id === pendingAutoLaunchTaskId &&
-      selectedTask.plan_id === pendingAutoLaunchPlanId
-  );
 
   const selectedGlobalProject = useMemo(
     () => getGlobalProjectById(projectGroups, selectedGroupId),
@@ -735,7 +721,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const pendingConversationJumpRef = useRef<string | null>(null);
   const executionKickoffByConversationRef = useRef<Record<string, boolean>>({});
   const startingExecutionRef = useRef(false);
-  const attemptedAutoLaunchTaskIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (selectedConversationId && selectedConversationId !== previousConversationIdRef.current) {
@@ -781,15 +766,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     t,
   ]);
 
-  useEffect(() => {
-    if (pendingAutoLaunchTaskId !== attemptedAutoLaunchTaskIdRef.current) {
-      attemptedAutoLaunchTaskIdRef.current = null;
-    }
-  }, [pendingAutoLaunchTaskId]);
-
   const handleStartExecution = useCallback(async (params?: {
     notesOverride?: string;
-    trigger?: 'manual' | 'auto';
   }): Promise<boolean> => {
     if (mode !== 'Implement' || !selectedTask || isBusySending || isConversationPending) return false;
     if (selectedTask.draft) return false;
@@ -831,12 +809,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         content,
         taskId: selectedTask.id,
       });
-      if (selectedTask.id === pendingAutoLaunchTaskId) {
-        clearPendingAutoLaunch({
-          planId: selectedTask.plan_id,
-          taskId: selectedTask.id,
-        });
-      }
       return true;
     } catch (error) {
       if (conversationId) {
@@ -847,39 +819,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       startingExecutionRef.current = false;
     }
   }, [
-    clearPendingAutoLaunch,
     ensureConversation,
     isConversationPending,
     isBusySending,
     kickoffNotes,
     mode,
-    pendingAutoLaunchTaskId,
     selectedModelId,
     selectedProviderId,
     selectedTask,
     selectedTaskProjectSummary,
     sendMessage,
     startTask,
-  ]);
-
-  useEffect(() => {
-    if (!isAutoLaunchArmedForSelection) return;
-    if (!canStartImplementExecution) return;
-    if (isBusySending || isConversationPending) return;
-    if (!selectedProviderId || !selectedModelId) return;
-    if (attemptedAutoLaunchTaskIdRef.current === pendingAutoLaunchTaskId) return;
-    attemptedAutoLaunchTaskIdRef.current = pendingAutoLaunchTaskId;
-    void handleStartExecution({ trigger: 'auto' }).catch(() => undefined);
-  }, [
-    canStartImplementExecution,
-    isAutoLaunchArmedForSelection,
-    isConversationPending,
-    isBusySending,
-    pendingAutoLaunchTaskId,
-    selectedProviderId,
-    selectedModelId,
-    selectedTask?.id,
-    handleStartExecution,
   ]);
 
   const readClipboardImage = (file: File): Promise<{ dataUrl: string; width?: number; height?: number }> => {
@@ -1457,7 +1407,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   </div>
                   <button
                     type="button"
-                    onClick={() => void handleStartExecution({ trigger: 'manual' }).catch(() => undefined)}
+                    onClick={() => void handleStartExecution().catch(() => undefined)}
                     disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId || isBusySending}
                     className={cn(
                       'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors shrink-0',
@@ -1467,9 +1417,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     )}
                   >
                     <Icon name="play" size={14} />
-                    {isAutoLaunchArmedForSelection
-                      ? t('implement.executionStartingAuto', 'Auto-start armed')
-                      : t('implement.startExecution', 'Start execution')}
+                    {t('implement.startExecution', 'Start execution')}
                   </button>
                 </div>
                 <textarea
@@ -1478,7 +1426,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   rows={3}
                   placeholder={t('implement.executionNotesPlaceholder', 'Optional guidance for this task kickoff')}
                   className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary/50"
-                  disabled={isAutoLaunchArmedForSelection}
                 />
               </div>
             )}
