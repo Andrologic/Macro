@@ -34,6 +34,21 @@ export const mockInternalTools: Tool[] = [
       internal: false,
     },
   },
+  {
+    id: 'question',
+    name: 'Question',
+    category: 'ai',
+    status: 'enabled',
+    description: 'Ask the user a structured blocking question with guided answers',
+    icon: 'message-circle-question',
+    config: {
+      enabled: true,
+      visible: true,
+      chatMode: true,
+      internal: true,
+      locked: false,
+    },
+  },
   // File reading tool
   {
     id: 'read_file',

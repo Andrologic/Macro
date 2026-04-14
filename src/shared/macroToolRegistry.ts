@@ -31,6 +31,7 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "mark_source_passage",
   "read_sources",
   "edit_source_passage",
+  "question",
   "read_file",
   "web_fetch",
   "list",
@@ -92,6 +93,53 @@ export const MACRO_TOOL_REGISTRY = [
     },
     required: ["url"],
   }),
+  objectTool(
+    "question",
+    "Ask the user for a blocking structured clarification. Use at most one question tool call per assistant turn, and include 1 to 5 sequential questions with exactly 3 suggested choices each.",
+    {
+      type: "object",
+      properties: {
+        intro: {
+          type: "string",
+          description:
+            "Optional short intro shown above the questionnaire in the chat footer.",
+        },
+        questions: {
+          type: "array",
+          description:
+            "Sequential questions to ask the user. Each question must provide exactly 3 suggested choices.",
+          items: {
+            type: "object",
+            properties: {
+              id: {
+                type: "string",
+                description: "Stable identifier for this question.",
+              },
+              prompt: {
+                type: "string",
+                description: "Question text shown to the user.",
+              },
+              choices: {
+                type: "array",
+                description:
+                  "Exactly 3 suggested answers ordered by preference.",
+                items: {
+                  type: "string",
+                },
+              },
+              free_text_placeholder: {
+                type: "string",
+                description:
+                  "Optional placeholder for the inline free-text answer field.",
+              },
+            },
+            required: ["id", "prompt", "choices"],
+          },
+        },
+      },
+      required: ["questions"],
+    },
+  ),
   objectTool(
     "mark_source_passage",
     'Store important source passages. Use kind="interesting" for notable excerpts and kind="used" for excerpts directly used in the final answer.',
