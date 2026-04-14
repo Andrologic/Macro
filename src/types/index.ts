@@ -470,7 +470,9 @@ export interface QuestionnaireResponseSummary {
 }
 
 export interface ConversationQuestionnaireDraft {
+  mode?: 'pending_reply' | 'editing_response';
   assistantMessageId: string;
+  responseMessageId?: string;
   currentStepIndex: number;
   answersByStepId: Record<string, string>;
   draftTextByStepId: Record<string, string>;
@@ -479,7 +481,9 @@ export interface ConversationQuestionnaireDraft {
 export interface ConversationQuestionnaireState {
   conversationId: string;
   taskId: string | null;
+  mode: 'pending_reply' | 'editing_response';
   assistantMessageId: string;
+  responseMessageId?: string;
   originToolCallId?: string;
   questionnaire: QuestionnairePayload;
   currentStepIndex: number;
