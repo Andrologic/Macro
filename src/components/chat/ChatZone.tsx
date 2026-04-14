@@ -18,10 +18,13 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
+import { Button } from '../ui/Button';
 import { getFocusedProjectForGroup, getGlobalProjectById } from '../../services/globalProjects';
 import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
+import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
+import { Input } from '../ui/Input';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
 
 interface ChatZoneProps {
@@ -78,7 +81,6 @@ interface ChatMessageRowProps {
   onCopy: (content: string, messageId: string) => Promise<void>;
   onEditStart: (messageId: string, content: string) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
-  onChoiceClick: (choiceText: string, taskId?: string) => Promise<void>;
 }
 
 const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
@@ -103,12 +105,13 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   onCopy,
   onEditStart,
   onRegenerate,
-  onChoiceClick,
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item;
   const messageIndex = virtualMessage.index;
   const visibleImages = isEditing ? editingImages : messageImages;
+  const questionnaireResponseSummary = message.questionnaire_response_summary;
+  const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
 
   return (
     <div
@@ -135,7 +138,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
           className={cn(
             'relative rounded-lg group',
             message.role === 'user'
-              ? 'bg-muted/80 border border-border/50'
+              ? isQuestionnaireResponseMessage
+                ? 'bg-transparent border-0'
+                : 'bg-muted/80 border border-border/50'
               : 'bg-transparent border-0',
             isEditing
               ? 'p-2'
@@ -204,6 +209,39 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   toolTraces={showToolTraces ? message.tool_traces : undefined}
                   isStreaming={isStreaming && messageIndex === currentMessagesLength - 1}
                 />
+              ) : questionnaireResponseSummary ? (
+                <div
+                  data-testid="questionnaire-response-summary"
+                  className="space-y-3.5"
+                >
+                  <div className="flex items-center gap-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                    <Icon name="message-circle" size={13} className="shrink-0 text-primary/75" />
+                    <span className="truncate">
+                      {t('chat.questionnaireResponseSummaryTitle', 'Reponses au questionnaire')}
+                    </span>
+                  </div>
+                  <div className="space-y-3">
+                    {questionnaireResponseSummary.items.map((item, index) => (
+                      <div
+                        key={item.id}
+                        className={cn(
+                          'relative pl-4',
+                          index > 0 && 'pt-3'
+                        )}
+                      >
+                        <span className="absolute left-0 top-0 h-full w-px bg-border/55" aria-hidden="true" />
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                            {item.prompt}
+                          </p>
+                          <p className="mt-1.5 break-words text-sm leading-6 text-foreground">
+                            {item.answer}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               ) : (
                 message.content.split('\n').map((line, i) => (
                   <p key={i} className="mb-2 last:mb-0 break-words">
@@ -292,23 +330,6 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
               </button>
             </div>
           )}
-
-          {message.choices && (
-            <div className="mt-4 space-y-2">
-              {message.choices.map((choice) => (
-                <button
-                  key={choice.id}
-                  type="button"
-                  onClick={() => void onChoiceClick(choice.text, message.task_id ?? undefined)}
-                  className="w-full text-left px-4 py-3 rounded-lg bg-card/50 border border-border hover:border-primary/50 hover:bg-card transition-all duration-200"
-                >
-                  <span className="text-sm text-muted-foreground font-mono">
-                    {choice.text}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       </div>
     </div>
@@ -361,13 +382,9 @@ const buildImplementKickoffPrompt = (params: {
     'Start with a concise context summary so the developer immediately understands what needs to be done.',
     'Then propose an ordered execution plan.',
     'If critical information is missing, stop and ask blocking questions before coding.',
-    'When you ask a blocking question, append a quick-reply block in this exact format with exactly 3 options:',
-    '[quick-replies]',
-    '- First option',
-    '- Second option',
-    '- Third option',
-    '[/quick-replies]',
-    'Allow free-form answers outside those quick replies when useful.',
+    'Use the question tool for blocking structured clarifications.',
+    'When you use it, make a single question tool call in the turn, include 1 to 5 sequential questions, and provide exactly 3 suggested choices per question.',
+    'Use the optional intro for short context, keep each prompt concrete, and wait for the user questionnaire response before continuing.',
     '',
     'TASK CONTEXT',
     `- Title: ${params.title}`,
@@ -438,6 +455,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getMessageImages,
     setMessageImages,
     composerContextRefs,
+    questionnaireDraftsByConversationId,
+    setActiveQuestionnaireDraftText,
+    recordActiveQuestionnaireAnswer,
+    submitActiveQuestionnaire,
   } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     messages: state.messages,
@@ -458,6 +479,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getMessageImages: state.getMessageImages,
     setMessageImages: state.setMessageImages,
     composerContextRefs: state.composerContextRefs,
+    questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
+    setActiveQuestionnaireDraftText: state.setActiveQuestionnaireDraftText,
+    recordActiveQuestionnaireAnswer: state.recordActiveQuestionnaireAnswer,
+    submitActiveQuestionnaire: state.submitActiveQuestionnaire,
   })));
   const { mark: markPerformance } = usePerformanceMonitor();
 
@@ -495,6 +520,23 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         : EMPTY_RENDER_MESSAGES,
     [messages, messagesByConversationId, selectedConversationId]
   );
+  const activeQuestionnaireDraft = selectedConversationId
+    ? questionnaireDraftsByConversationId[selectedConversationId]
+    : undefined;
+  const activeQuestionnaire = useMemo(
+    () =>
+      selectedConversationId
+        ? resolveActiveConversationQuestionnaire(
+            selectedConversationId,
+            currentMessages,
+            activeQuestionnaireDraft
+          )
+        : null,
+    [activeQuestionnaireDraft, currentMessages, selectedConversationId]
+  );
+  const activeQuestionnaireDraftText = activeQuestionnaire
+    ? activeQuestionnaire.draftTextByStepId[activeQuestionnaire.currentStep.id] ?? ''
+    : '';
 
   const isConversationPending =
     hydrationStatus === 'idle' ||
@@ -580,7 +622,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isComposerDisabled =
     isConversationPending ||
     isImplementComposerLocked ||
-    isImplementTaskSelectionMissing;
+    isImplementTaskSelectionMissing ||
+    Boolean(activeQuestionnaire);
   const isAutoLaunchArmedForSelection = Boolean(
     mode === 'Implement' &&
       pendingAutoLaunchPlanId &&
@@ -966,7 +1009,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleSend = async () => {
-    if (isComposerDisabled) return;
+    if (isComposerDisabled || activeQuestionnaire) return;
     const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
     const conversationId = await ensureConversation();
@@ -991,22 +1034,24 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   };
 
-  const handleChoiceClick = async (choiceText: string, taskId?: string) => {
-    if (isBusySending || isConversationPending) return;
-    const conversationId = await ensureConversation();
-    if (!conversationId) return;
+  const handleQuestionnaireAnswer = async (answer: string) => {
+    if (!selectedConversationId || isBusySending || isConversationPending) return;
+    const recorded = recordActiveQuestionnaireAnswer(
+      selectedConversationId,
+      answer,
+    );
+    if (!recorded?.completed) {
+      return;
+    }
     try {
-      await sendMessage({
-        conversationId,
-        content: choiceText,
-        taskId:
-          mode === 'Implement'
-            ? taskId ?? implementTaskIdForSend
-            : taskId ?? selectedTask?.id ?? null,
-      });
+      await submitActiveQuestionnaire(selectedConversationId);
     } catch {
       // The store exposes the visible error state.
     }
+  };
+
+  const handleQuestionnaireSubmit = async () => {
+    await handleQuestionnaireAnswer(activeQuestionnaireDraftText);
   };
 
   const handleGenerateStrategy = async () => {
@@ -1060,6 +1105,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const canSend =
+    !activeQuestionnaire &&
     !isConversationPending &&
     (Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0);
 
@@ -1220,7 +1266,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onCopy={handleCopy}
                     onEditStart={handleEditStart}
                     onRegenerate={handleRegenerate}
-                    onChoiceClick={handleChoiceClick}
                   />
                 );
               })}
@@ -1268,7 +1313,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3">
           <div className="w-full max-w-3xl mx-auto space-y-3">
-            {composerImages.length > 0 && (
+            {!activeQuestionnaire && composerImages.length > 0 && (
               <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-card/60 p-2">
                 {composerImages.map((image) => (
                   <div key={image.id} className="relative w-16 h-16 rounded-md border border-border overflow-hidden bg-muted/30">
@@ -1424,43 +1469,140 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               </div>
             )}
 
-            <div
-              className="flex items-center gap-2 bg-card/80 border border-border rounded-xl px-2 py-1.5"
-              onPasteCapture={handleComposerPaste}
-            >
-              <Suspense fallback={<ComposerFallbackStatus />}>
-                <LazyComposerEditor
-                  ref={composerEditorRef}
-                  editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
-                  placeholder={
-                    isConversationPending
-                      ? t('chat.loadingConversation', 'Restoring conversation...')
-                      : isImplementTaskSelectionMissing
-                      ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
-                      : isImplementComposerLocked
-                      ? t('implement.startExecutionFirst', 'Start execution to begin the task conversation')
-                      : !selectedProviderId || !selectedModelId
-                      ? t('chat.selectProvider')
-                      : t('chat.typeMessage')
-                  }
-                  onTextChange={(text) => {
-                    if (lastError) {
-                      clearLastError();
+            {activeQuestionnaire ? (
+              <div
+                data-testid="questionnaire-footer"
+                className="rounded-xl border border-border bg-card/80 p-2 shadow-sm"
+              >
+                <div className="space-y-3 rounded-[0.9rem] border border-border/60 bg-background/30 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-background/60">
+                        <Icon name="message-circle" size={15} className="text-primary/80" />
+                      </span>
+                      <div className="flex min-w-0 items-center h-9">
+                        <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                          {t('chat.questionnaireProgress', 'Question {{current}}/{{total}}', {
+                            current: activeQuestionnaire.currentStepIndex + 1,
+                            total: activeQuestionnaire.totalSteps,
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                    <span className="inline-flex items-center rounded-full border border-border/70 bg-background/50 px-2.5 py-1 text-[11px] text-muted-foreground">
+                      {t('chat.questionnaireFreeTextHint', 'Choose one option or answer freely')}
+                    </span>
+                  </div>
+
+                  <div
+                    key={`${activeQuestionnaire.assistantMessageId}-${activeQuestionnaire.currentStepIndex}-${activeQuestionnaire.currentStep.id}`}
+                    data-testid="questionnaire-step-panel"
+                    className="questionnaire-step-enter space-y-3"
+                  >
+                    <div className="px-1 pt-1 pb-0.5">
+                      <p className="text-[1.02rem] font-semibold leading-7 text-foreground text-balance">
+                        {activeQuestionnaire.currentStep.prompt}
+                      </p>
+                    </div>
+
+                    <div
+                      data-testid="questionnaire-choice-list"
+                      className="flex flex-col gap-2"
+                    >
+                      {activeQuestionnaire.currentStep.choices.map((choice) => (
+                        <Button
+                          key={choice}
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => void handleQuestionnaireAnswer(choice)}
+                          disabled={isBusySending}
+                          className={cn(
+                            'h-auto min-h-[52px] w-full justify-start rounded-xl border px-3 py-3 text-left text-sm whitespace-normal',
+                            isBusySending
+                              ? 'border-border bg-muted/40 text-muted-foreground'
+                              : 'border-border/70 bg-background/45 text-foreground hover:border-primary/40 hover:bg-accent/60'
+                          )}
+                        >
+                          {choice}
+                        </Button>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                      <Input
+                        type="text"
+                        value={activeQuestionnaireDraftText}
+                        onChange={(event) => setActiveQuestionnaireDraftText(
+                          activeQuestionnaire.conversationId,
+                          event.target.value,
+                        )}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            void handleQuestionnaireSubmit();
+                          }
+                        }}
+                        placeholder={
+                          activeQuestionnaire.currentStep.free_text_placeholder ||
+                          t('chat.questionnaireFreeTextPlaceholder', 'Or type your own answer')
+                        }
+                        disabled={isBusySending}
+                        className="h-11 flex-1 border-border/70 bg-background/60"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => void handleQuestionnaireSubmit()}
+                        disabled={isBusySending || activeQuestionnaireDraftText.trim().length === 0}
+                        className="h-11 shrink-0 rounded-xl px-4"
+                      >
+                        {activeQuestionnaire.isLastStep
+                          ? t('chat.questionnaireSubmit', 'Envoyer')
+                          : t('chat.questionnaireNext', 'Suivant')}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div
+                className="flex items-center gap-2 bg-card/80 border border-border rounded-xl px-2 py-1.5"
+                onPasteCapture={handleComposerPaste}
+              >
+                <Suspense fallback={<ComposerFallbackStatus />}>
+                  <LazyComposerEditor
+                    ref={composerEditorRef}
+                    editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
+                    placeholder={
+                      isConversationPending
+                        ? t('chat.loadingConversation', 'Restoring conversation...')
+                        : isImplementTaskSelectionMissing
+                        ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
+                        : isImplementComposerLocked
+                        ? t('implement.startExecutionFirst', 'Start execution to begin the task conversation')
+                        : !selectedProviderId || !selectedModelId
+                        ? t('chat.selectProvider')
+                        : t('chat.typeMessage')
                     }
-                    setInputValue(text);
-                    if (promptHistoryIndex !== null) {
-                      setPromptHistoryIndex(null);
+                    onTextChange={(text) => {
+                      if (lastError) {
+                        clearLastError();
+                      }
+                      setInputValue(text);
+                      if (promptHistoryIndex !== null) {
+                        setPromptHistoryIndex(null);
+                      }
+                    }}
+                    onSend={handleSend}
+                    onPromptHistory={
+                      promptHistoryNavigationMode === 'contextual_arrows'
+                        ? navigatePromptHistory
+                        : undefined
                     }
-                  }}
-                  onSend={handleSend}
-                  onPromptHistory={
-                    promptHistoryNavigationMode === 'contextual_arrows'
-                      ? navigatePromptHistory
-                      : undefined
-                  }
-                />
-              </Suspense>
-            {isStreaming ? (
+                  />
+                </Suspense>
+              {isStreaming ? (
                 <button
                   onClick={stopStreaming}
                   className="rounded-lg bg-red-500 hover:bg-red-600 text-white px-3 h-9 flex items-center gap-2"
@@ -1486,7 +1628,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   )}
                 </button>
               )}
-            </div>
+              </div>
+            )}
           </div>
         </footer>
       </div>

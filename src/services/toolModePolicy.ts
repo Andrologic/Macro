@@ -9,6 +9,7 @@ const BASE_SOURCE_TOOLS = [
   "mark_source_passage",
   "read_sources",
   "edit_source_passage",
+  "question",
   "read_file",
   "web_search",
   "web_fetch",
@@ -17,6 +18,7 @@ const BASE_SOURCE_TOOLS = [
 const WORKSPACE_READ_TOOLS = ["list", "read", "glob", "grep"] as const;
 const WORKSPACE_WRITE_TOOLS = ["write", "edit", "apply_patch"] as const;
 const CHAT_SAFE_TOOLS = [
+  "question",
   "read_sources",
   "read_file",
   "web_search",
@@ -54,9 +56,13 @@ const ALL_WORKSPACE_TOOLS = [
 ] as const;
 
 const ARCHITECT_PLAN_TOOLS = [
+  "plan_create",
   "plan_list",
   "plan_get",
   "plan_update",
+  "plan_delete",
+  "plan_restore",
+  "plan_set_active",
   "strategy_get",
   "strategy_update",
   "strategy_delete",

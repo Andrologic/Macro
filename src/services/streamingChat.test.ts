@@ -2,25 +2,99 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 let streamingChatImportCounter = 0;
 
-const loadStreamingChat = async () => {
+const loadStreamingChat = async (
+  fetchImpl?: ReturnType<typeof mock>,
+  options?: {
+    invokeImpl?: ReturnType<typeof mock>;
+    listenImpl?: ReturnType<typeof mock>;
+    forceTauriAvailable?: boolean;
+  }
+) => {
   mock.restore();
+  const invokeImpl = options?.invokeImpl ?? mock(async () => undefined);
+  const actualCore = await import('@tauri-apps/api/core');
+  const actualEvent = await import('@tauri-apps/api/event');
+  const actualHttp = await import('@tauri-apps/plugin-http');
   mock.module('@tauri-apps/api/core', () => ({
-    invoke: mock(async () => undefined),
+    ...actualCore,
+    invoke: invokeImpl,
   }));
   mock.module('@tauri-apps/api/event', () => ({
-    listen: mock(async () => () => undefined),
+    ...actualEvent,
+    listen: options?.listenImpl ?? mock(async () => () => undefined),
   }));
   mock.module('@tauri-apps/plugin-http', () => ({
-    fetch: mock(async () => {
-      throw new Error('HTTP fetch should not be called in streamingChat unit tests.');
-    }),
+    ...actualHttp,
+    fetch:
+      fetchImpl ??
+      mock(async () => {
+        throw new Error('HTTP fetch should not be called in streamingChat unit tests.');
+      }),
   }));
   mock.module('../stores/useProviderStore', () => ({
+    providerHasCredentials: () => true,
     useProviderStore: {
       getState: () => ({
         markReasoningUnsupportedForModel: () => undefined,
       }),
     },
+  }));
+  const tauriIpcMock = {
+    isTauriAvailable: () => options?.forceTauriAvailable ?? false,
+    aiStreamChat: async (params: {
+      requestId: string;
+      providerId: string;
+      modelId: string;
+      reasoningEffort?: string | null;
+      conversationId?: string | null;
+      messages: unknown[];
+      tools?: unknown[];
+      toolChoice?: string;
+      parallelToolCalls?: boolean;
+      workspacePath?: string | null;
+      defaultWorkspacePath?: string | null;
+      projectMounts?: Array<{
+        projectId: string;
+        mountName: string;
+        workspacePath?: string | null;
+        displayName: string;
+      }>;
+      virtualRootEnabled?: boolean | null;
+      focusedProjectId?: string | null;
+      allowedToolIds?: string[];
+    }) =>
+      invokeImpl('ai_stream_chat', {
+        request: {
+          request_id: params.requestId,
+          provider_id: params.providerId,
+          model_id: params.modelId,
+          reasoning_effort: params.reasoningEffort ?? null,
+          conversation_id: params.conversationId ?? null,
+          messages: params.messages,
+          tools: params.tools ?? [],
+          tool_choice: params.toolChoice ?? 'auto',
+          parallel_tool_calls: params.parallelToolCalls ?? false,
+          workspace_path: params.workspacePath ?? null,
+          default_workspace_path: params.defaultWorkspacePath ?? null,
+          project_mounts: (params.projectMounts ?? []).map((mount) => ({
+            project_id: mount.projectId,
+            mount_name: mount.mountName,
+            workspace_path: mount.workspacePath ?? null,
+            display_name: mount.displayName,
+          })),
+          virtual_root_enabled: params.virtualRootEnabled ?? null,
+          focused_project_id: params.focusedProjectId ?? null,
+          allowed_tool_ids: params.allowedToolIds ?? [],
+        },
+    }),
+    aiCancelStream: async (requestId: string) =>
+      invokeImpl('ai_cancel_stream', { requestId }),
+  };
+  mock.module('./tauriIpc', () => tauriIpcMock);
+  mock.module('../services/tauriIpc', () => tauriIpcMock);
+  mock.module('./architectChat', () => ({
+    ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT:
+      'After using tools, provide a concise recap to the user.',
   }));
 
   streamingChatImportCounter += 1;
@@ -359,6 +433,274 @@ describe('streamingChat tool rendering helpers', () => {
     expect(__testables.isReasoningUnsupportedError('Unknown parameter: reasoning_effort')).toBe(true);
     expect(__testables.isReasoningUnsupportedError('Unsupported value for reasoning')).toBe(true);
     expect(__testables.isReasoningUnsupportedError('Request failed: 500')).toBe(false);
+  });
+
+  it('interrupts the turn immediately when the question tool is invoked', async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = mock(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_question","type":"function","function":{"name":"question","arguments":"{\\"intro\\":\\"Need two clarifications.\\",\\"questions\\":[{\\"id\\":\\"scope\\",\\"prompt\\":\\"Which scope?\\",\\"choices\\":[\\"Minimal\\",\\"Balanced\\",\\"Large\\"]}]}"}}]}}]}\n\n'
+            )
+          );
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      }),
+      text: async () => '',
+      json: async () => ({}),
+    }));
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onToolCall = mock(async () => ({
+      kind: 'interrupt' as const,
+      result: 'Questionnaire queued for the user.',
+      visibleContent: 'Need two clarifications.',
+      hiddenContext:
+        '<questionnaire_context>\n' +
+        '{"intro":"Need two clarifications.","questions":[{"id":"scope","prompt":"Which scope?","choices":["Minimal","Balanced","Large"]}]}\n' +
+        '</questionnaire_context>',
+    }));
+    const onComplete = mock(() => undefined);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://example.com',
+      modelId: 'gpt-4.1',
+      messages: [
+        {
+          role: 'user',
+          content: 'Help me continue.',
+        },
+      ],
+      allowedToolIds: ['question'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Need two clarifications.',
+        hiddenContext: expect.stringContaining('<questionnaire_context>'),
+      })
+    );
+  });
+
+  it('retries once when question is required but the first turn answers in plain text', async () => {
+    const encoder = new TextEncoder();
+    let requestCount = 0;
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      requestCount += 1;
+
+      if (requestCount === 1) {
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"choices":[{"delta":{"content":"Je peux t aider a choisir."}}]}\n\n'
+                )
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+          text: async () => '',
+          json: async () => ({}),
+        };
+      }
+
+      const parsedBody = JSON.parse(init?.body ?? '{}') as {
+        messages?: Array<{ role?: string; content?: string }>;
+      };
+      expect(parsedBody.messages?.some((message) =>
+        message.role === 'system' &&
+        String(message.content).includes('explicitly asked you to use the question tool')
+      )).toBe(true);
+
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_question","type":"function","function":{"name":"question","arguments":"{\\"intro\\":\\"Need one choice.\\",\\"questions\\":[{\\"id\\":\\"color\\",\\"prompt\\":\\"Which color?\\",\\"choices\\":[\\"Red\\",\\"Blue\\",\\"Green\\"]}]}"}}]}}]}\n\n'
+              )
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onToolCall = mock(async () => ({
+      kind: 'interrupt' as const,
+      result: 'Questionnaire queued for the user.',
+      visibleContent: 'Need one choice.',
+      hiddenContext:
+        '<questionnaire_context>\n' +
+        '{"intro":"Need one choice.","questions":[{"id":"color","prompt":"Which color?","choices":["Red","Blue","Green"]}]}\n' +
+        '</questionnaire_context>',
+    }));
+    const onComplete = mock(() => undefined);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://example.com',
+      modelId: 'gpt-4.1',
+      messages: [
+        {
+          role: 'user',
+          content: 'Utilise l outil question pour choisir ma couleur preferee.',
+        },
+      ],
+      allowedToolIds: ['question'],
+      guidedToolRetry: {
+        requiredToolNames: ['question'],
+        retrySystemPrompt:
+          'The user explicitly asked you to use the question tool. Emit exactly one question tool call.',
+        maxRetries: 1,
+      },
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Need one choice.',
+      })
+    );
+  });
+
+  it('passes native tools to Copilot and resolves question tool interruptions', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(eventName, handler);
+      return () => {
+        listeners.delete(eventName);
+      };
+    });
+    const invokeMock = mock(async (command: string, payload?: unknown) => {
+      if (command === 'ai_stream_chat') {
+        const request = (payload as { request: { request_id: string } }).request;
+        queueMicrotask(() => {
+          listeners.get('ai:done')?.({
+            payload: {
+              request_id: request.request_id,
+              output_text: '',
+              tool_calls: [
+                {
+                  id: 'call_question',
+                  type: 'function',
+                  function: {
+                    name: 'question',
+                    arguments:
+                      '{"intro":"Need one choice.","questions":[{"id":"color","prompt":"Which color?","choices":["Red","Blue","Green"]}]}',
+                  },
+                },
+              ],
+              provider_input_items: [
+                {
+                  type: 'function_call',
+                  call_id: 'call_question',
+                  name: 'question',
+                  arguments:
+                    '{"intro":"Need one choice.","questions":[{"id":"color","prompt":"Which color?","choices":["Red","Blue","Green"]}]}',
+                },
+              ],
+              provider_turn_state: {
+                provider: 'copilot',
+                endpoint_flavor: 'chat',
+                stored_item_refs: [],
+                provider_items_digest: 'digest-1',
+              },
+            },
+          });
+        });
+      }
+
+      return undefined;
+    });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      invokeImpl: invokeMock,
+      listenImpl: listenMock,
+      forceTauriAvailable: true,
+    });
+    const onToolCall = mock(async () => ({
+      kind: 'interrupt' as const,
+      result: 'Questionnaire queued for the user.',
+      visibleContent: 'Need one choice.',
+      hiddenContext:
+        '<questionnaire_context>\n' +
+        '{"intro":"Need one choice.","questions":[{"id":"color","prompt":"Which color?","choices":["Red","Blue","Green"]}]}\n' +
+        '</questionnaire_context>',
+    }));
+    const onComplete = mock(() => undefined);
+
+    await streamChat({
+      conversationId: 'conv-1',
+      providerId: 'copilot',
+      providerType: 'copilot',
+      baseUrl: 'copilot://cli',
+      modelId: 'gpt-5',
+      messages: [
+        {
+          role: 'user',
+          content: 'Utilise l outil question pour m aider a choisir une couleur.',
+        },
+      ],
+      allowedToolIds: ['question'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall,
+    });
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    const invokePayload = (invokeMock.mock.calls[0]?.[1] ?? {}) as {
+      request?: {
+        tools?: Array<{ function?: { name?: string } }>;
+      };
+    };
+    expect(invokePayload.request?.tools?.map((tool) => tool.function?.name)).toContain('question');
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Need one choice.',
+        hiddenContext: expect.stringContaining('<questionnaire_context>'),
+        providerTurnState: expect.objectContaining({
+          provider: 'copilot',
+        }),
+      })
+    );
   });
 
 });
