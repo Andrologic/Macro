@@ -403,6 +403,8 @@ const gitBranchListMock = mock(async (repoPath: string) => (
 ));
 const deleteConversationMock = mock(async (_conversationId: string) => undefined);
 const deleteConversationsMock = mock(async (_conversationIds: string[]) => undefined);
+const updateMessageMock = mock(async () => undefined);
+const deleteMessagesAfterMock = mock(async () => undefined);
 const importMessagesMock = mock(
   async (
     conversationId: string,
@@ -466,6 +468,7 @@ const registerUseChatStoreMocks = () => {
         citations: [],
         getConversationContextCitations: () => [],
         getConversationSourceCitations: () => [],
+        pruneConversationSourceCitations: () => undefined,
       }),
     },
   }));
@@ -586,7 +589,8 @@ const registerUseChatStoreMocks = () => {
     getChatSnapshot: getChatSnapshotMock,
     importMessages: importMessagesMock,
     getToolModePolicy: getToolModePolicyMock,
-    updateMessage: mock(async () => undefined),
+    updateMessage: updateMessageMock,
+    deleteMessagesAfter: deleteMessagesAfterMock,
     updateConversationDetails: updateConversationDetailsMock,
   }));
 
@@ -979,6 +983,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     gitBranchListMock.mockClear();
     deleteConversationMock.mockClear();
     deleteConversationsMock.mockClear();
+    updateMessageMock.mockClear();
+    deleteMessagesAfterMock.mockClear();
     importMessagesMock.mockClear();
     toolsStoreState.loadSettings.mockClear();
     toolsStoreState.getEnabledChatToolIds = () => ['read_file', 'web_search', 'web_fetch', 'question'];
@@ -2919,6 +2925,330 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ).toBeUndefined();
   });
 
+  it('reopens, cancels, and restores questionnaire response edits from the original summary', async () => {
+    appState.mode = 'Chat';
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        {
+          id: 'assistant-questionnaire',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Need two clarifications.',
+          timestamp: '2026-04-14T10:00:00.000Z',
+          provider_input_items: [
+            {
+              type: 'function_call',
+              call_id: 'call_question',
+              name: 'question',
+              arguments:
+                '{"intro":"Need two clarifications.","questions":[{"id":"scope","prompt":"Which scope should I use?","choices":["Minimal","Balanced","Large"]},{"id":"risk","prompt":"How risky can the change be?","choices":["Safe","Moderate","Aggressive"],"free_text_placeholder":"Custom answer"}]}',
+            },
+          ],
+          questionnaire: {
+            intro: 'Need two clarifications.',
+            source: 'tool',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                choices: ['Safe', 'Moderate', 'Aggressive'],
+                free_text_placeholder: 'Custom answer',
+              },
+            ],
+          },
+        },
+        {
+          id: 'user-questionnaire',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user',
+          content:
+            'Which scope should I use?: Balanced\nHow risky can the change be?: Stay below one day of rework',
+          timestamp: '2026-04-14T10:01:00.000Z',
+          questionnaire_response_summary: {
+            assistantMessageId: 'assistant-questionnaire',
+            source: 'tool',
+            originToolCallId: 'call_question',
+            items: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                answer: 'Balanced',
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                answer: 'Stay below one day of rework',
+              },
+            ],
+          },
+        },
+        {
+          id: 'assistant-after',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Thanks, I can continue.',
+          timestamp: '2026-04-14T10:02:00.000Z',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    expect(
+      useChatStore.getState().startQuestionnaireResponseEdit('user-questionnaire'),
+    ).toBe(true);
+    expect(useChatStore.getState().getActiveQuestionnaire('chat-conv')).toMatchObject({
+      mode: 'editing_response',
+      responseMessageId: 'user-questionnaire',
+      currentStepIndex: 0,
+      answersByStepId: {
+        scope: 'Balanced',
+        risk: 'Stay below one day of rework',
+      },
+    });
+
+    useChatStore
+      .getState()
+      .recordActiveQuestionnaireAnswer('chat-conv', 'Large');
+    useChatStore
+      .getState()
+      .setActiveQuestionnaireDraftText('chat-conv', 'Use two-day budget');
+    useChatStore.getState().cancelQuestionnaireSession('chat-conv');
+
+    expect(useChatStore.getState().getActiveQuestionnaire('chat-conv')).toBeNull();
+
+    expect(
+      useChatStore.getState().startQuestionnaireResponseEdit('user-questionnaire'),
+    ).toBe(true);
+    expect(useChatStore.getState().getActiveQuestionnaire('chat-conv')).toMatchObject({
+      mode: 'editing_response',
+      currentStepIndex: 0,
+      answersByStepId: {
+        scope: 'Balanced',
+        risk: 'Stay below one day of rework',
+      },
+      draftTextByStepId: {
+        risk: 'Stay below one day of rework',
+      },
+    });
+  });
+
+  it('replaces an edited questionnaire response, trims later messages, and restarts the chat from the updated answer', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        {
+          id: 'assistant-questionnaire',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Need two clarifications.',
+          timestamp: '2026-04-14T10:00:00.000Z',
+          provider_input_items: [
+            {
+              type: 'function_call',
+              call_id: 'call_question',
+              name: 'question',
+              arguments:
+                '{"intro":"Need two clarifications.","questions":[{"id":"scope","prompt":"Which scope should I use?","choices":["Minimal","Balanced","Large"]},{"id":"risk","prompt":"How risky can the change be?","choices":["Safe","Moderate","Aggressive"],"free_text_placeholder":"Custom answer"}]}',
+            },
+          ],
+          questionnaire: {
+            intro: 'Need two clarifications.',
+            source: 'tool',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                choices: ['Safe', 'Moderate', 'Aggressive'],
+                free_text_placeholder: 'Custom answer',
+              },
+            ],
+          },
+        },
+        {
+          id: 'user-questionnaire',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user',
+          content:
+            'Which scope should I use?: Balanced\nHow risky can the change be?: Stay below one day of rework',
+          timestamp: '2026-04-14T10:01:00.000Z',
+          questionnaire_response_summary: {
+            assistantMessageId: 'assistant-questionnaire',
+            source: 'tool',
+            originToolCallId: 'call_question',
+            items: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                answer: 'Balanced',
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                answer: 'Stay below one day of rework',
+              },
+            ],
+          },
+          provider_input_items: [
+            {
+              type: 'function_call_output',
+              call_id: 'call_question',
+              output:
+                'Questionnaire responses:\n- Which scope should I use?: Balanced\n- How risky can the change be?: Stay below one day of rework',
+            },
+            {
+              type: 'message',
+              role: 'user',
+              content: [
+                {
+                  type: 'input_text',
+                  text:
+                    'Which scope should I use?: Balanced\nHow risky can the change be?: Stay below one day of rework',
+                },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'assistant-after',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Thanks, I can continue.',
+          timestamp: '2026-04-14T10:02:00.000Z',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    expect(
+      useChatStore.getState().startQuestionnaireResponseEdit('user-questionnaire'),
+    ).toBe(true);
+    useChatStore
+      .getState()
+      .recordActiveQuestionnaireAnswer('chat-conv', 'Large');
+    expect(useChatStore.getState().getActiveQuestionnaire('chat-conv')).toMatchObject({
+      mode: 'editing_response',
+      responseMessageId: 'user-questionnaire',
+      currentStepIndex: 1,
+      answersByStepId: {
+        scope: 'Large',
+        risk: 'Stay below one day of rework',
+      },
+    });
+
+    await useChatStore.getState().submitActiveQuestionnaire('chat-conv');
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const conversationMessages = useChatStore.getState().getConversationMessages('chat-conv');
+    const updatedUserMessage = conversationMessages.find(
+      (message: { id: string }) => message.id === 'user-questionnaire'
+    );
+    expect(updatedUserMessage?.questionnaire_response_summary).toEqual({
+      assistantMessageId: 'assistant-questionnaire',
+      source: 'tool',
+      originToolCallId: 'call_question',
+      items: [
+        {
+          id: 'scope',
+          prompt: 'Which scope should I use?',
+          answer: 'Large',
+        },
+        {
+          id: 'risk',
+          prompt: 'How risky can the change be?',
+          answer: 'Stay below one day of rework',
+        },
+      ],
+    });
+    expect(updatedUserMessage?.content).toBe(
+      'Which scope should I use?: Large\nHow risky can the change be?: Stay below one day of rework',
+    );
+    expect(
+      conversationMessages.some((message: { id: string }) => message.id === 'assistant-after')
+    ).toBe(false);
+    expect(useChatStore.getState().questionnaireDraftsByConversationId['chat-conv']).toBeUndefined();
+
+    expect(updateMessageMock).toHaveBeenCalledWith(
+      'user-questionnaire',
+      'Which scope should I use?: Large\nHow risky can the change be?: Stay below one day of rework',
+      expect.objectContaining({
+        hiddenContext: expect.stringContaining('<questionnaire_response_context>'),
+        providerInputItems: [
+          {
+            type: 'function_call_output',
+            call_id: 'call_question',
+            output:
+              'Questionnaire responses:\n- Which scope should I use?: Large\n- How risky can the change be?: Stay below one day of rework',
+          },
+          {
+            type: 'message',
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text:
+                  'Which scope should I use?: Large\nHow risky can the change be?: Stay below one day of rework',
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(deleteMessagesAfterMock).toHaveBeenCalledWith('chat-conv', 'user-questionnaire');
+    expect(streamChatMock).toHaveBeenCalledTimes(1);
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(streamOptions.messages.some((message) =>
+      message.role === 'user' &&
+      message.content ===
+        'Which scope should I use?: Large\nHow risky can the change be?: Stay below one day of rework'
+    )).toBe(true);
+  });
+
   it('submits legacy quick-reply questionnaires without fabricating a function call output', async () => {
     appState.mode = 'Chat';
 
@@ -2993,6 +3323,141 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         ],
       },
     ]);
+  });
+
+  it('keeps edited legacy questionnaire responses free of function_call_output items', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        {
+          id: 'assistant-questionnaire',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Need one decision.',
+          timestamp: '2026-04-14T10:00:00.000Z',
+          questionnaire: {
+            intro: 'Need one decision.',
+            source: 'legacy_quick_replies',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+            ],
+          },
+        },
+        {
+          id: 'user-questionnaire',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user',
+          content: 'Which scope should I use?: Balanced',
+          timestamp: '2026-04-14T10:01:00.000Z',
+          questionnaire_response_summary: {
+            assistantMessageId: 'assistant-questionnaire',
+            source: 'legacy_quick_replies',
+            items: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                answer: 'Balanced',
+              },
+            ],
+          },
+          provider_input_items: [
+            {
+              type: 'message',
+              role: 'user',
+              content: [
+                {
+                  type: 'input_text',
+                  text: 'Which scope should I use?: Balanced',
+                },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'assistant-after',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Thanks, I can continue.',
+          timestamp: '2026-04-14T10:02:00.000Z',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    expect(
+      useChatStore.getState().startQuestionnaireResponseEdit('user-questionnaire'),
+    ).toBe(true);
+    useChatStore
+      .getState()
+      .recordActiveQuestionnaireAnswer('chat-conv', 'Large');
+    expect(useChatStore.getState().getActiveQuestionnaire('chat-conv')).toMatchObject({
+      mode: 'editing_response',
+      responseMessageId: 'user-questionnaire',
+      currentStepIndex: 0,
+      answersByStepId: {
+        scope: 'Large',
+      },
+    });
+
+    await useChatStore.getState().submitActiveQuestionnaire('chat-conv');
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const updatedUserMessage = useChatStore
+      .getState()
+      .getConversationMessages('chat-conv')
+      .find((message: { id: string }) => message.id === 'user-questionnaire');
+
+    expect(updatedUserMessage?.provider_input_items).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: 'Which scope should I use?: Large',
+          },
+        ],
+      },
+    ]);
+    expect(updateMessageMock).toHaveBeenCalledWith(
+      'user-questionnaire',
+      'Which scope should I use?: Large',
+      expect.objectContaining({
+        providerInputItems: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: 'Which scope should I use?: Large',
+              },
+            ],
+          },
+        ],
+      }),
+    );
   });
 
   it('commits the first Implement reply on an existing awaiting-response thread before the stream completes', async () => {
