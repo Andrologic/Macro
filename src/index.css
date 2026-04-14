@@ -620,6 +620,15 @@
     opacity: 0;
     transform: scale(var(--task-status-wave-start-scale, 0.32));
     border: 0;
+    background:
+      radial-gradient(
+        circle,
+        color-mix(in srgb, currentColor 82%, transparent) 0%,
+        color-mix(in srgb, currentColor 58%, transparent) 42%,
+        color-mix(in srgb, currentColor 26%, transparent) 72%,
+        transparent 100%
+      );
+    filter: saturate(1.22) brightness(1.14);
     will-change: transform, opacity;
   }
 }
@@ -675,7 +684,7 @@
 @media (prefers-reduced-motion: reduce) {
   .task-status-awaiting-response__wave {
     animation: none;
-    opacity: 0.24;
+    opacity: 0.38;
     transform: scale(var(--task-status-wave-mid-scale, 0.68));
   }
 }

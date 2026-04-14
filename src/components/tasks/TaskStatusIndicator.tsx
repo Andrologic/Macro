@@ -35,10 +35,10 @@ const getAwaitingResponseLayoutMetrics = (
         frameSize,
         waveSize: frameSize,
         waveStartScale: 0.2,
-        waveMidScale: 0.62,
-        waveEndScale: 1.02,
-        waveStartOpacity: 0.3,
-        waveMidOpacity: 0.12,
+        waveMidScale: 0.68,
+        waveEndScale: 1.16,
+        waveStartOpacity: 0.56,
+        waveMidOpacity: 0.24,
       };
     }
     case 'graph': {
@@ -47,10 +47,10 @@ const getAwaitingResponseLayoutMetrics = (
         frameSize,
         waveSize: frameSize,
         waveStartScale: 0.22,
-        waveMidScale: 0.64,
-        waveEndScale: 1,
-        waveStartOpacity: 0.28,
-        waveMidOpacity: 0.11,
+        waveMidScale: 0.7,
+        waveEndScale: 1.12,
+        waveStartOpacity: 0.5,
+        waveMidOpacity: 0.22,
       };
     }
     case 'compact':
@@ -60,10 +60,10 @@ const getAwaitingResponseLayoutMetrics = (
         frameSize,
         waveSize: frameSize,
         waveStartScale: 0.28,
-        waveMidScale: 0.66,
-        waveEndScale: 0.98,
-        waveStartOpacity: 0.24,
-        waveMidOpacity: 0.1,
+        waveMidScale: 0.72,
+        waveEndScale: 1.08,
+        waveStartOpacity: 0.44,
+        waveMidOpacity: 0.18,
       };
     }
   }
