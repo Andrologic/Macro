@@ -119,6 +119,7 @@ const ALL_INTERNAL_TOOL_IDS = [
   'read_file',
   'web_search',
   'web_fetch',
+  'question',
   'list',
   'read',
   'write',
@@ -162,7 +163,8 @@ const toolsStoreState = {
     ALL_INTERNAL_TOOL_IDS.map((toolId) => [toolId, { id: toolId }])
   ) as Record<string, { id: string }>,
   isToolEnabled: (_toolId: string) => true,
-  getEnabledChatToolIds: () => ['read_file', 'web_search', 'web_fetch'],
+  isChatToolEnabled: (_toolId: string) => true,
+  getEnabledChatToolIds: () => ['read_file', 'web_search', 'web_fetch', 'question'],
   loadSettings: mock(async () => undefined),
 };
 
@@ -303,6 +305,88 @@ const sendChatNonStreamingMock = mock(
     })
 );
 const streamChatMock = mock(async () => ({ usage: null }));
+const getToolModePolicyMock = mock(async (mode: AppMode) => {
+  if (mode === 'Chat') {
+    return {
+      allowed_tool_ids: ['question', 'read_sources', 'read_file', 'web_search', 'web_fetch'],
+      enforce_macro_only_writes: false,
+    };
+  }
+
+  if (mode === 'Architect') {
+    return {
+      allowed_tool_ids: [
+        'mark_source_passage',
+        'read_sources',
+        'edit_source_passage',
+        'question',
+        'read_file',
+        'web_search',
+        'web_fetch',
+        'list',
+        'read',
+        'glob',
+        'grep',
+        'write',
+        'edit',
+        'apply_patch',
+        'git_status',
+        'git_log',
+        'git_branch_list',
+        'git_diff',
+        'git_get_tree',
+        'need_add',
+        'strategy_generate',
+        'plan_create',
+        'plan_list',
+        'plan_get',
+        'plan_update',
+        'plan_delete',
+        'plan_restore',
+        'plan_set_active',
+        'strategy_get',
+        'strategy_update',
+        'strategy_delete',
+      ],
+      enforce_macro_only_writes: true,
+    };
+  }
+
+  return {
+    allowed_tool_ids: [
+      'mark_source_passage',
+      'read_sources',
+      'edit_source_passage',
+      'question',
+      'read_file',
+      'web_search',
+      'web_fetch',
+      'list',
+      'read',
+      'glob',
+      'grep',
+      'write',
+      'edit',
+      'apply_patch',
+      'git_status',
+      'git_log',
+      'git_branch_list',
+      'git_diff',
+      'git_get_tree',
+      'git_add',
+      'git_commit',
+      'git_checkout',
+      'git_merge',
+      'git_reset',
+      'git_stash',
+      'terminal_create_session',
+      'terminal_run',
+      'terminal_read',
+      'terminal_kill',
+    ],
+    enforce_macro_only_writes: false,
+  };
+});
 
 const getLocalProjectContextStateMock = mock(async (_groupId: string) => ({
   architectConversationId: 'project-architect-conversation',
@@ -441,6 +525,58 @@ const registerUseChatStoreMocks = () => {
 
   mock.module('../services/tauriIpc', () => ({
     isTauriAvailable: () => tauriAvailable,
+    aiStreamChat: async (params: {
+      requestId: string;
+      providerId: string;
+      modelId: string;
+      reasoningEffort?: string | null;
+      conversationId?: string | null;
+      messages: unknown[];
+      tools?: unknown[];
+      toolChoice?: string;
+      parallelToolCalls?: boolean;
+      workspacePath?: string | null;
+      defaultWorkspacePath?: string | null;
+      projectMounts?: Array<{
+        projectId: string;
+        mountName: string;
+        workspacePath?: string | null;
+        displayName: string;
+      }>;
+      virtualRootEnabled?: boolean | null;
+      focusedProjectId?: string | null;
+      allowedToolIds?: string[];
+    }) => {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return invoke('ai_stream_chat', {
+        request: {
+          request_id: params.requestId,
+          provider_id: params.providerId,
+          model_id: params.modelId,
+          reasoning_effort: params.reasoningEffort ?? null,
+          conversation_id: params.conversationId ?? null,
+          messages: params.messages,
+          tools: params.tools ?? [],
+          tool_choice: params.toolChoice ?? 'auto',
+          parallel_tool_calls: params.parallelToolCalls ?? false,
+          workspace_path: params.workspacePath ?? null,
+          default_workspace_path: params.defaultWorkspacePath ?? null,
+          project_mounts: (params.projectMounts ?? []).map((mount) => ({
+            project_id: mount.projectId,
+            mount_name: mount.mountName,
+            workspace_path: mount.workspacePath ?? null,
+            display_name: mount.displayName,
+          })),
+          virtual_root_enabled: params.virtualRootEnabled ?? null,
+          focused_project_id: params.focusedProjectId ?? null,
+          allowed_tool_ids: params.allowedToolIds ?? [],
+        },
+      });
+    },
+    aiCancelStream: async (requestId: string) => {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return invoke('ai_cancel_stream', { requestId });
+    },
     createMessage: mock(async () => {
       throw new Error('unavailable');
     }),
@@ -449,6 +585,7 @@ const registerUseChatStoreMocks = () => {
     gitBranchList: gitBranchListMock,
     getChatSnapshot: getChatSnapshotMock,
     importMessages: importMessagesMock,
+    getToolModePolicy: getToolModePolicyMock,
     updateMessage: mock(async () => undefined),
     updateConversationDetails: updateConversationDetailsMock,
   }));
@@ -689,10 +826,13 @@ const getLatestArchitectToolHandler = () => {
   const lastCall = ((streamChatMock as unknown as {
     mock: { calls: Array<Array<unknown>> };
   }).mock.calls.at(-1)?.[0] ?? null) as {
-    onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<string | void>;
+    onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
   } | null;
   expect(lastCall?.onToolCall).toBeDefined();
-  return lastCall?.onToolCall!;
+  if (!lastCall?.onToolCall) {
+    throw new Error('Expected Architect tool handler');
+  }
+  return lastCall.onToolCall;
 };
 
 const sendArchitectMessageAndGetToolHandler = async (
@@ -831,6 +971,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     updateArchitectPlanMock.mockClear();
     streamChatMock.mockClear();
     sendChatNonStreamingMock.mockClear();
+    getToolModePolicyMock.mockClear();
     getLocalProjectContextStateMock.mockClear();
     syncArchitectPlanChatFromConversationMock.mockClear();
     getChatSnapshotMock.mockClear();
@@ -840,6 +981,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     deleteConversationsMock.mockClear();
     importMessagesMock.mockClear();
     toolsStoreState.loadSettings.mockClear();
+    toolsStoreState.getEnabledChatToolIds = () => ['read_file', 'web_search', 'web_fetch', 'question'];
     appState.switchProjectContext.mockClear();
   });
 
@@ -1445,7 +1587,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const onToolCall = (((streamChatMock as unknown as {
       mock: { calls: Array<Array<unknown>> };
     }).mock.calls[0]?.[0]) as {
-      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<string | void>;
+      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
     } | undefined)?.onToolCall;
 
     expect(onToolCall).toBeDefined();
@@ -1551,7 +1693,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const onToolCall = (((streamChatMock as unknown as {
       mock: { calls: Array<Array<unknown>> };
     }).mock.calls[0]?.[0]) as {
-      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<string | void>;
+      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
     } | undefined)?.onToolCall;
 
     await onToolCall?.('strategy_generate', {
@@ -1644,7 +1786,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const onToolCall = (((streamChatMock as unknown as {
       mock: { calls: Array<Array<unknown>> };
     }).mock.calls[0]?.[0]) as {
-      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<string | void>;
+      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
     } | undefined)?.onToolCall;
 
     await onToolCall?.('strategy_update', {
@@ -1746,6 +1888,166 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(String(streamOptions.messages[0]?.content)).toContain(
       'Custom PLAN_EXPLORER prompt for tests.'
     );
+  });
+
+  it('uses the backend tool policy in Chat mode and keeps question available when enabled', async () => {
+    tauriAvailable = true;
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    getToolModePolicyMock.mockResolvedValueOnce({
+      allowed_tool_ids: ['question', 'read_file', 'web_search'],
+      enforce_macro_only_writes: false,
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Pose-moi des questions pour cadrer le besoin.',
+    });
+
+    expect(getToolModePolicyMock).toHaveBeenCalledWith('Chat');
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      allowedToolIds: string[];
+    };
+    expect(streamOptions.allowedToolIds).toContain('question');
+  });
+
+  it('adds a guided retry when the user explicitly asks to use the question tool', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content:
+        "Pose moi des questions pour choisir ma couleur preferee, utilise l'outil Question.",
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      guidedToolRetry?: {
+        requiredToolNames: string[];
+        retrySystemPrompt: string;
+      };
+    };
+    expect(streamOptions.guidedToolRetry?.requiredToolNames).toEqual(['question']);
+    expect(streamOptions.guidedToolRetry?.retrySystemPrompt).toContain(
+      'explicitly asked you to use the question tool',
+    );
+  });
+
+  it('does not force the question tool retry when question is disabled in chat tools', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    toolsStoreState.getEnabledChatToolIds = () => ['read_file', 'web_search', 'web_fetch'];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content:
+        "Pose moi des questions pour choisir ma couleur preferee, utilise l'outil Question.",
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      guidedToolRetry?: {
+        requiredToolNames: string[];
+      };
+      allowedToolIds: string[];
+    };
+    expect(streamOptions.allowedToolIds).not.toContain('question');
+    expect(streamOptions.guidedToolRetry).toBeUndefined();
   });
 
   it('reuses the same implement conversation for the selected task', async () => {
@@ -2275,6 +2577,144 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
+  it('returns an interruptive resolution for the question tool', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [
+      createManualFeatureTask({
+        draft: false,
+        status: 'Pending',
+        branch_name: 'feature/quick-export',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
+          task_id: 'manual-task-1',
+          title: 'Quick export',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'manual-conv',
+      content: 'Continue.',
+      taskId: 'manual-task-1',
+    });
+
+    const onToolCall = (((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0]) as {
+      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+    } | undefined)?.onToolCall;
+
+    const result = await onToolCall?.('question', {
+      intro: 'Need one blocking choice.',
+      questions: [
+        {
+          id: 'scope',
+          prompt: 'Which scope should I use?',
+          choices: ['Minimal', 'Balanced', 'Large'],
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      kind: 'interrupt',
+      visibleContent: 'Need one blocking choice.',
+    });
+    expect(
+      (result as { hiddenContext?: string } | undefined)?.hiddenContext,
+    ).toContain('<questionnaire_context>');
+  });
+
+  it('moves an implement task to awaiting response when the assistant reply contains a structured questionnaire', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [
+      createManualFeatureTask({
+        draft: false,
+        title: 'Quick export',
+        status: 'Pending',
+        feature_slug: 'quick-export',
+        assigned_branch: 'feature/quick-export',
+        branch_name: 'feature/quick-export',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
+          task_id: 'manual-task-1',
+          title: 'Quick export',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'manual-conv',
+      content: 'Implémente l’export CSV.',
+      taskId: 'manual-task-1',
+    });
+    const onComplete = (((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0]) as {
+      onComplete?: (result: {
+        visibleContent: string;
+        toolTraces: unknown[];
+        hiddenContext?: unknown;
+        usage: null;
+      }) => void;
+    } | undefined)?.onComplete;
+    onComplete?.({
+      visibleContent: 'Need one blocking choice.',
+      toolTraces: [],
+      hiddenContext:
+        '<questionnaire_context>\n' +
+        '{"intro":"Need one blocking choice.","questions":[{"id":"scope","prompt":"Which scope should I use?","choices":["Minimal","Balanced","Large"]}]}\n' +
+        '</questionnaire_context>',
+      usage: null,
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(taskStoreState.markTaskAwaitingResponse).toHaveBeenCalledWith('manual-task-1');
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages('manual-conv')
+        .find((message: { role: string }) => message.role === 'assistant')?.questionnaire?.questions
+        .length
+    ).toBe(1);
+  });
+
   it('keeps an implement task in progress when the assistant reply has malformed quick replies', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
@@ -2349,6 +2789,210 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
       status: 'InProgress',
     });
+  });
+
+  it('tracks questionnaire progress locally, stores a structured summary, and resolves the question tool output on submit', async () => {
+    appState.mode = 'Chat';
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        {
+          id: 'assistant-questionnaire',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Need two clarifications.',
+          timestamp: '2026-04-14T10:00:00.000Z',
+          provider_input_items: [
+            {
+              type: 'function_call',
+              call_id: 'call_question',
+              name: 'question',
+              arguments:
+                '{"intro":"Need two clarifications.","questions":[{"id":"scope","prompt":"Which scope should I use?","choices":["Minimal","Balanced","Large"]},{"id":"risk","prompt":"How risky can the change be?","choices":["Safe","Moderate","Aggressive"],"free_text_placeholder":"Custom answer"}]}',
+            },
+          ],
+          questionnaire: {
+            intro: 'Need two clarifications.',
+            source: 'tool',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                choices: ['Safe', 'Moderate', 'Aggressive'],
+                free_text_placeholder: 'Custom answer',
+              },
+            ],
+          },
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    const initialQuestionnaire = useChatStore
+      .getState()
+      .getActiveQuestionnaire('chat-conv');
+    expect(initialQuestionnaire?.currentStep.id).toBe('scope');
+
+    const firstStep = useChatStore
+      .getState()
+      .recordActiveQuestionnaireAnswer('chat-conv', 'Balanced');
+    expect(firstStep?.completed).toBe(false);
+    expect(
+      useChatStore.getState().getActiveQuestionnaire('chat-conv')?.currentStep.id,
+    ).toBe('risk');
+
+    useChatStore
+      .getState()
+      .setActiveQuestionnaireDraftText('chat-conv', 'Stay below one day of rework');
+    const secondStep = useChatStore
+      .getState()
+      .recordActiveQuestionnaireAnswer(
+        'chat-conv',
+        'Stay below one day of rework',
+      );
+    expect(secondStep?.completed).toBe(true);
+
+    await useChatStore.getState().submitActiveQuestionnaire('chat-conv');
+
+    const userMessages = useChatStore
+      .getState()
+      .getConversationMessages('chat-conv')
+      .filter((message: { role: string }) => message.role === 'user');
+    expect(userMessages.at(-1)?.content).toBe(
+      'Which scope should I use?: Balanced\nHow risky can the change be?: Stay below one day of rework',
+    );
+    expect(userMessages.at(-1)?.questionnaire_response_summary).toEqual({
+      assistantMessageId: 'assistant-questionnaire',
+      source: 'tool',
+      originToolCallId: 'call_question',
+      items: [
+        {
+          id: 'scope',
+          prompt: 'Which scope should I use?',
+          answer: 'Balanced',
+        },
+        {
+          id: 'risk',
+          prompt: 'How risky can the change be?',
+          answer: 'Stay below one day of rework',
+        },
+      ],
+    });
+    expect(userMessages.at(-1)?.provider_input_items).toEqual([
+      {
+        type: 'function_call_output',
+        call_id: 'call_question',
+        output:
+          'Questionnaire responses:\n- Which scope should I use?: Balanced\n- How risky can the change be?: Stay below one day of rework',
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text:
+              'Which scope should I use?: Balanced\nHow risky can the change be?: Stay below one day of rework',
+          },
+        ],
+      },
+    ]);
+    expect(
+      useChatStore.getState().questionnaireDraftsByConversationId['chat-conv'],
+    ).toBeUndefined();
+  });
+
+  it('submits legacy quick-reply questionnaires without fabricating a function call output', async () => {
+    appState.mode = 'Chat';
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        {
+          id: 'assistant-questionnaire',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Need one decision.',
+          timestamp: '2026-04-14T10:00:00.000Z',
+          questionnaire: {
+            intro: 'Need one decision.',
+            source: 'legacy_quick_replies',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+            ],
+          },
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    useChatStore
+      .getState()
+      .recordActiveQuestionnaireAnswer('chat-conv', 'Balanced');
+
+    await useChatStore.getState().submitActiveQuestionnaire('chat-conv');
+
+    const userMessage = useChatStore
+      .getState()
+      .getConversationMessages('chat-conv')
+      .filter((message: { role: string }) => message.role === 'user')
+      .at(-1);
+
+    expect(userMessage?.questionnaire_response_summary).toEqual({
+      assistantMessageId: 'assistant-questionnaire',
+      source: 'legacy_quick_replies',
+      items: [
+        {
+          id: 'scope',
+          prompt: 'Which scope should I use?',
+          answer: 'Balanced',
+        },
+      ],
+    });
+    expect(userMessage?.provider_input_items).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: 'Which scope should I use?: Balanced',
+          },
+        ],
+      },
+    ]);
   });
 
   it('commits the first Implement reply on an existing awaiting-response thread before the stream completes', async () => {

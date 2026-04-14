@@ -417,6 +417,7 @@ export interface AiStreamDoneEvent {
   response_id?: string | null;
   output_items?: unknown[] | null;
   provider_input_items?: unknown[] | null;
+  provider_turn_state?: ProviderTurnState | null;
   reasoning_summary?: string | null;
   tool_traces?: ToolTrace[] | null;
   hidden_context?: string | null;

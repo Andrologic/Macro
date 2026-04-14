@@ -18,6 +18,7 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "mark_source_passage",
         "read_sources",
         "edit_source_passage",
+        "question",
         "read_file",
         "web_search",
         "web_fetch",
@@ -67,7 +68,13 @@ fn normalize_architect_tool_id(tool_id: &str) -> &str {
 }
 
 fn chat_allowed_tool_ids() -> &'static [&'static str] {
-    &["read_sources", "read_file", "web_search", "web_fetch"]
+    &[
+        "question",
+        "read_sources",
+        "read_file",
+        "web_search",
+        "web_fetch",
+    ]
 }
 
 fn implement_allowed_tool_ids() -> &'static [&'static str] {
@@ -75,6 +82,7 @@ fn implement_allowed_tool_ids() -> &'static [&'static str] {
         "mark_source_passage",
         "read_sources",
         "edit_source_passage",
+        "question",
         "read_file",
         "web_search",
         "web_fetch",
@@ -252,5 +260,28 @@ pub fn validate_tool_execution(
         allowed: true,
         reason: None,
         enforce_macro_only_writes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_mode_policy;
+
+    #[test]
+    fn chat_policy_exposes_question_tool() {
+        let policy = get_mode_policy("Chat");
+        assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+    }
+
+    #[test]
+    fn architect_policy_exposes_question_tool() {
+        let policy = get_mode_policy("Architect");
+        assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+    }
+
+    #[test]
+    fn implement_policy_exposes_question_tool() {
+        let policy = get_mode_policy("Implement");
+        assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
     }
 }
