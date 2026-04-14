@@ -66,6 +66,7 @@ type MockChatState = {
   getActiveQuestionnaire: ReturnType<typeof mock>;
   startQuestionnaireResponseEdit: ReturnType<typeof mock>;
   cancelQuestionnaireSession: ReturnType<typeof mock>;
+  setActiveQuestionnaireStep: ReturnType<typeof mock>;
   setActiveQuestionnaireDraftText: ReturnType<typeof mock>;
   recordActiveQuestionnaireAnswer: ReturnType<typeof mock>;
   submitActiveQuestionnaire: ReturnType<typeof mock>;
@@ -354,6 +355,7 @@ const resetState = () => {
     getActiveQuestionnaire: mock(() => null),
     startQuestionnaireResponseEdit: mock(() => false),
     cancelQuestionnaireSession: mock(() => undefined),
+    setActiveQuestionnaireStep: mock(() => undefined),
     setActiveQuestionnaireDraftText: mock(() => undefined),
     recordActiveQuestionnaireAnswer: mock(() => ({ completed: true, state: null })),
     submitActiveQuestionnaire: mock(async () => ({ status: 'sent' })),
@@ -712,6 +714,129 @@ describe('ChatZone', () => {
         .querySelector('[data-testid="questionnaire-step-panel"]')
         ?.className
     ).toContain('questionnaire-step-enter');
+  });
+
+  it('lets the user navigate forward and backward between questionnaire steps', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Need two decisions.',
+          questionnaire: {
+            intro: 'Need two decisions.',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                choices: ['Safe', 'Moderate', 'Aggressive'],
+              },
+            ],
+          },
+        }),
+      ],
+      setActiveQuestionnaireStep: mock((_conversationId: string, stepIndex: number) => {
+        chatState = {
+          ...chatState,
+          questionnaireDraftsByConversationId: {
+            ...chatState.questionnaireDraftsByConversationId,
+            'conv-1': {
+              assistantMessageId: 'msg-assistant-1',
+              currentStepIndex: stepIndex,
+              answersByStepId: {},
+              draftTextByStepId: {},
+            },
+          },
+        };
+        useChatStore.emit();
+      }),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('Which scope should I use?');
+
+    const nextButton = requireContainer().querySelector(
+      '[data-testid="questionnaire-step-nav-next"]'
+    ) as HTMLButtonElement | null;
+    expect(nextButton).not.toBeNull();
+
+    await act(async () => {
+      nextButton?.click();
+    });
+
+    expect(chatState.setActiveQuestionnaireStep).toHaveBeenCalledWith('conv-1', 1);
+    expect(requireContainer().textContent).toContain('How risky can the change be?');
+    expect(requireContainer().textContent).toContain('Aggressive');
+    expect(requireContainer().textContent).not.toContain('Which scope should I use?');
+
+    const previousButton = requireContainer().querySelector(
+      '[data-testid="questionnaire-step-nav-prev"]'
+    ) as HTMLButtonElement | null;
+    expect(previousButton).not.toBeNull();
+
+    await act(async () => {
+      previousButton?.click();
+    });
+
+    expect(chatState.setActiveQuestionnaireStep).toHaveBeenCalledWith('conv-1', 0);
+    expect(requireContainer().textContent).toContain('Which scope should I use?');
+    expect(requireContainer().textContent).toContain('Balanced');
+    expect(requireContainer().textContent).not.toContain('How risky can the change be?');
+    expect(chatState.submitActiveQuestionnaire).not.toHaveBeenCalled();
+  });
+
+  it('renders compact step arrows around the questionnaire progress', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Need two decisions.',
+          questionnaire: {
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                choices: ['Safe', 'Moderate', 'Aggressive'],
+              },
+            ],
+          },
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const footer = requireContainer().querySelector('[data-testid="questionnaire-footer"]');
+    const previousButton = requireContainer().querySelector('[data-testid="questionnaire-step-nav-prev"]');
+    const nextButton = requireContainer().querySelector('[data-testid="questionnaire-step-nav-next"]');
+    const counterShell = requireContainer().querySelector('[data-testid="questionnaire-step-counter-shell"]');
+    const counter = requireContainer().querySelector('[data-testid="questionnaire-step-counter"]');
+
+    expect(footer?.textContent).toContain('Question');
+    expect(counter?.textContent).toBe('1/2');
+    expect(counterShell).not.toBeNull();
+    expect(previousButton).not.toBeNull();
+    expect(nextButton).not.toBeNull();
+    expect(footer?.textContent).not.toContain('Voir la suite');
+    expect(footer?.textContent).not.toContain('Retour');
   });
 
   it('renders questionnaire response summaries with the dedicated user bubble layout', async () => {
