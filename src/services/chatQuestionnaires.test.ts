@@ -146,6 +146,102 @@ describe("chatQuestionnaires", () => {
     ).toContain("How risky can the change be?: Stay under one day of rework");
   });
 
+  it("reconstructs an editing session from a questionnaire response summary", () => {
+    const questionnaire = validateQuestionToolArgs({
+      intro: "Need two clarifications.",
+      questions: [
+        {
+          id: "scope",
+          prompt: "Which scope should I use?",
+          choices: ["Minimal", "Balanced", "Large"],
+        },
+        {
+          id: "risk",
+          prompt: "How risky can the change be?",
+          choices: ["Safe", "Moderate", "Aggressive"],
+          free_text_placeholder: "Custom answer",
+        },
+      ],
+    });
+    const messages: ChatMessage[] = [
+      {
+        id: "assistant-1",
+        task_id: "task-1",
+        conversation_id: "conv-1",
+        role: "assistant",
+        content: "Need two clarifications.",
+        timestamp: "2026-04-14T10:00:00.000Z",
+        provider_input_items: [
+          {
+            type: "function_call",
+            call_id: "call_question",
+            name: "question",
+            arguments:
+              '{"intro":"Need two clarifications.","questions":[{"id":"scope","prompt":"Which scope should I use?","choices":["Minimal","Balanced","Large"]},{"id":"risk","prompt":"How risky can the change be?","choices":["Safe","Moderate","Aggressive"],"free_text_placeholder":"Custom answer"}]}',
+          },
+        ],
+        questionnaire,
+      },
+      {
+        id: "user-1",
+        task_id: "task-1",
+        conversation_id: "conv-1",
+        role: "user",
+        content:
+          "Which scope should I use?: Balanced\nHow risky can the change be?: Stay under one day of rework",
+        timestamp: "2026-04-14T10:01:00.000Z",
+        questionnaire_response_summary: {
+          assistantMessageId: "assistant-1",
+          source: "tool",
+          originToolCallId: "call_question",
+          items: [
+            {
+              id: "scope",
+              prompt: "Which scope should I use?",
+              answer: "Balanced",
+            },
+            {
+              id: "risk",
+              prompt: "How risky can the change be?",
+              answer: "Stay under one day of rework",
+            },
+          ],
+        },
+      },
+      {
+        id: "assistant-2",
+        task_id: "task-1",
+        conversation_id: "conv-1",
+        role: "assistant",
+        content: "Thanks, I can continue.",
+        timestamp: "2026-04-14T10:02:00.000Z",
+      },
+    ];
+
+    const state = resolveActiveConversationQuestionnaire("conv-1", messages, {
+      mode: "editing_response",
+      assistantMessageId: "assistant-1",
+      responseMessageId: "user-1",
+      currentStepIndex: 0,
+      answersByStepId: {
+        scope: "Balanced",
+        risk: "Stay under one day of rework",
+      },
+      draftTextByStepId: {},
+    });
+
+    expect(state?.mode).toBe("editing_response");
+    expect(state?.responseMessageId).toBe("user-1");
+    expect(state?.currentStep.id).toBe("scope");
+    expect(state?.answersByStepId).toEqual({
+      scope: "Balanced",
+      risk: "Stay under one day of rework",
+    });
+    expect(state?.draftTextByStepId).toEqual({
+      risk: "Stay under one day of rework",
+    });
+  });
+
   it("builds a questionnaire response summary payload and tool output item", () => {
     const questionnaire = validateQuestionToolArgs({
       intro: "Need two clarifications.",

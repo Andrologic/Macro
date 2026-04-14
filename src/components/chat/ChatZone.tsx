@@ -79,7 +79,7 @@ interface ChatMessageRowProps {
   onEditCancel: () => void;
   onEditSave: () => void;
   onCopy: (content: string, messageId: string) => Promise<void>;
-  onEditStart: (messageId: string, content: string) => void;
+  onEditStart: (message: ChatMessage) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
 }
 
@@ -288,7 +288,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                 />
               </button>
               <button
-                onClick={() => onEditStart(message.id, message.content)}
+                onClick={() => onEditStart(message)}
                 className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
                 title={t('common.edit')}
               >
@@ -456,6 +456,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setMessageImages,
     composerContextRefs,
     questionnaireDraftsByConversationId,
+    startQuestionnaireResponseEdit,
+    cancelQuestionnaireSession,
     setActiveQuestionnaireDraftText,
     recordActiveQuestionnaireAnswer,
     submitActiveQuestionnaire,
@@ -480,6 +482,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setMessageImages: state.setMessageImages,
     composerContextRefs: state.composerContextRefs,
     questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
+    startQuestionnaireResponseEdit: state.startQuestionnaireResponseEdit,
+    cancelQuestionnaireSession: state.cancelQuestionnaireSession,
     setActiveQuestionnaireDraftText: state.setActiveQuestionnaireDraftText,
     recordActiveQuestionnaireAnswer: state.recordActiveQuestionnaireAnswer,
     submitActiveQuestionnaire: state.submitActiveQuestionnaire,
@@ -537,6 +541,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const activeQuestionnaireDraftText = activeQuestionnaire
     ? activeQuestionnaire.draftTextByStepId[activeQuestionnaire.currentStep.id] ?? ''
     : '';
+  const activeQuestionnaireCurrentAnswer = activeQuestionnaire
+    ? activeQuestionnaire.answersByStepId[activeQuestionnaire.currentStep.id] ?? ''
+    : '';
+  const activeQuestionnaireSelectedChoice =
+    activeQuestionnaire && activeQuestionnaireDraftText.trim().length === 0
+      ? activeQuestionnaireCurrentAnswer
+      : '';
+  const activeQuestionnaireSubmitValue = activeQuestionnaireDraftText.trim().length > 0
+    ? activeQuestionnaireDraftText
+    : activeQuestionnaireCurrentAnswer;
 
   const isConversationPending =
     hydrationStatus === 'idle' ||
@@ -1051,7 +1065,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleQuestionnaireSubmit = async () => {
-    await handleQuestionnaireAnswer(activeQuestionnaireDraftText);
+    await handleQuestionnaireAnswer(activeQuestionnaireSubmitValue);
   };
 
   const handleGenerateStrategy = async () => {
@@ -1071,7 +1085,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   };
 
-  const handleEditStart = (messageId: string, content: string) => {
+  const handleEditStart = (message: ChatMessage) => {
+    if (message.questionnaire_response_summary) {
+      const opened = startQuestionnaireResponseEdit(message.id);
+      if (opened) {
+        setEditingMessageId(null);
+        setEditingValue('');
+        setEditingImages([]);
+        return;
+      }
+    }
+
+    const content = message.content;
+    const messageId = message.id;
     setEditingMessageId(messageId);
     setEditingValue(content);
     setEditingImages(getMessageImages(messageId));
@@ -1081,6 +1107,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setEditingMessageId(null);
     setEditingValue('');
     setEditingImages([]);
+  };
+
+  const handleQuestionnaireCancel = () => {
+    if (!activeQuestionnaire) {
+      return;
+    }
+    cancelQuestionnaireSession(activeQuestionnaire.conversationId);
   };
 
   const handleEditSave = async () => {
@@ -1509,7 +1542,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       data-testid="questionnaire-choice-list"
                       className="flex flex-col gap-2"
                     >
-                      {activeQuestionnaire.currentStep.choices.map((choice) => (
+                      {activeQuestionnaire.currentStep.choices.map((choice) => {
+                        const isSelected = activeQuestionnaireSelectedChoice === choice;
+                        return (
                         <Button
                           key={choice}
                           type="button"
@@ -1521,12 +1556,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                             'h-auto min-h-[52px] w-full justify-start rounded-xl border px-3 py-3 text-left text-sm whitespace-normal',
                             isBusySending
                               ? 'border-border bg-muted/40 text-muted-foreground'
-                              : 'border-border/70 bg-background/45 text-foreground hover:border-primary/40 hover:bg-accent/60'
+                              : isSelected
+                                ? 'border-primary/50 bg-primary/10 text-foreground'
+                                : 'border-border/70 bg-background/45 text-foreground hover:border-primary/40 hover:bg-accent/60'
                           )}
                         >
                           {choice}
                         </Button>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     <div className="flex flex-col gap-2 md:flex-row md:items-center">
@@ -1550,11 +1588,26 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         disabled={isBusySending}
                         className="h-11 flex-1 border-border/70 bg-background/60"
                       />
+                      {activeQuestionnaire.mode === 'editing_response' && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleQuestionnaireCancel}
+                          disabled={isBusySending}
+                          className="h-11 shrink-0 rounded-xl border border-border/70 px-4"
+                        >
+                          {t('common.cancel', 'Annuler')}
+                        </Button>
+                      )}
                       <Button
                         type="button"
                         size="sm"
                         onClick={() => void handleQuestionnaireSubmit()}
-                        disabled={isBusySending || activeQuestionnaireDraftText.trim().length === 0}
+                        disabled={
+                          isBusySending ||
+                          activeQuestionnaireSubmitValue.trim().length === 0
+                        }
                         className="h-11 shrink-0 rounded-xl px-4"
                       >
                         {activeQuestionnaire.isLastStep

@@ -29,6 +29,17 @@ export interface ParsedUserQuestionnaireResponseState {
   questionnaireResponseSummary?: QuestionnaireResponseSummary;
 }
 
+interface QuestionnaireResponseEditSeed {
+  conversationId: string;
+  taskId: string | null;
+  assistantMessageId: string;
+  responseMessageId: string;
+  originToolCallId?: string;
+  questionnaire: QuestionnairePayload;
+  answersByStepId: Record<string, string>;
+  draftTextByStepId: Record<string, string>;
+}
+
 const normalizeNonEmptyString = (value: unknown): string | null => {
   if (typeof value !== "string") {
     return null;
@@ -310,6 +321,13 @@ export const buildQuestionnaireResponseVisibleContent = (
 ): string =>
   summary.items.map((item) => `${item.prompt}: ${item.answer}`).join("\n");
 
+export interface QuestionnaireResponseArtifacts {
+  summary: QuestionnaireResponseSummary;
+  visibleContent: string;
+  hiddenContext: string;
+  functionCallOutputItem?: unknown;
+}
+
 export const buildQuestionnaireResponseToolOutput = (
   summary: QuestionnaireResponseSummary,
 ): string => {
@@ -331,6 +349,29 @@ export const buildQuestionnaireFunctionCallOutputItem = (
     type: "function_call_output",
     call_id: summary.originToolCallId,
     output: buildQuestionnaireResponseToolOutput(summary),
+  };
+};
+
+export const buildQuestionnaireResponseArtifacts = (
+  assistantMessageId: string,
+  payload: QuestionnairePayload,
+  answersByStepId: Record<string, string>,
+  options?: {
+    originToolCallId?: string;
+  },
+): QuestionnaireResponseArtifacts => {
+  const summary = buildQuestionnaireResponseSummary(
+    assistantMessageId,
+    payload,
+    answersByStepId,
+    options,
+  );
+
+  return {
+    summary,
+    visibleContent: buildQuestionnaireResponseVisibleContent(summary),
+    hiddenContext: buildQuestionnaireResponseHiddenContextBlock(summary),
+    functionCallOutputItem: buildQuestionnaireFunctionCallOutputItem(summary),
   };
 };
 
@@ -360,11 +401,139 @@ export const extractQuestionToolCallIdFromProviderInputItems = (
   return undefined;
 };
 
+const buildAnswersByStepIdFromSummary = (
+  questionnaire: QuestionnairePayload,
+  summary: QuestionnaireResponseSummary,
+): Record<string, string> => {
+  const answersById = new Map(
+    summary.items.map((item) => [item.id, item.answer] as const),
+  );
+  const answersByPrompt = new Map(
+    summary.items.map((item) => [item.prompt, item.answer] as const),
+  );
+
+  return Object.fromEntries(
+    questionnaire.questions.flatMap((question) => {
+      const answer =
+        normalizeNonEmptyString(answersById.get(question.id)) ??
+        normalizeNonEmptyString(answersByPrompt.get(question.prompt));
+      return answer ? [[question.id, answer]] : [];
+    }),
+  );
+};
+
+const buildDraftTextByStepIdFromAnswers = (
+  questionnaire: QuestionnairePayload,
+  answersByStepId: Record<string, string>,
+): Record<string, string> =>
+  Object.fromEntries(
+    questionnaire.questions.flatMap((question) => {
+      const answer = normalizeNonEmptyString(answersByStepId[question.id]);
+      if (!answer || question.choices.includes(answer as (typeof question.choices)[number])) {
+        return [];
+      }
+      return [[question.id, answer]];
+    }),
+  );
+
+const resolveQuestionnaireResponseEditSeed = (
+  conversationId: string,
+  messages: ChatMessage[],
+  responseMessageId: string,
+): QuestionnaireResponseEditSeed | null => {
+  const responseMessage = messages.find(
+    (message) =>
+      message.id === responseMessageId &&
+      message.role === "user" &&
+      Boolean(message.questionnaire_response_summary),
+  );
+  const summary = responseMessage?.questionnaire_response_summary;
+  if (!responseMessage || !summary) {
+    return null;
+  }
+
+  const assistantMessage = messages.find(
+    (message) =>
+      message.id === summary.assistantMessageId &&
+      message.role === "assistant" &&
+      Boolean(message.questionnaire),
+  );
+  if (!assistantMessage?.questionnaire) {
+    return null;
+  }
+
+  const answersByStepId = buildAnswersByStepIdFromSummary(
+    assistantMessage.questionnaire,
+    summary,
+  );
+
+  return {
+    conversationId,
+    taskId: assistantMessage.task_id || null,
+    assistantMessageId: assistantMessage.id,
+    responseMessageId: responseMessage.id,
+    originToolCallId:
+      summary.originToolCallId ??
+      extractQuestionToolCallIdFromProviderInputItems(
+        assistantMessage.provider_input_items,
+      ),
+    questionnaire: assistantMessage.questionnaire,
+    answersByStepId,
+    draftTextByStepId: buildDraftTextByStepIdFromAnswers(
+      assistantMessage.questionnaire,
+      answersByStepId,
+    ),
+  };
+};
+
 export const resolveActiveConversationQuestionnaire = (
   conversationId: string,
   messages: ChatMessage[],
   draft?: ConversationQuestionnaireDraft,
 ): ConversationQuestionnaireState | null => {
+  if (
+    draft?.mode === "editing_response" &&
+    typeof draft.responseMessageId === "string" &&
+    draft.responseMessageId.trim().length > 0
+  ) {
+    const seed = resolveQuestionnaireResponseEditSeed(
+      conversationId,
+      messages,
+      draft.responseMessageId,
+    );
+    if (seed) {
+      const questionCount = seed.questionnaire.questions.length;
+      if (questionCount > 0) {
+        const currentStepIndex = Math.min(
+          Math.max(draft.currentStepIndex ?? 0, 0),
+          questionCount - 1,
+        );
+        const currentStep = seed.questionnaire.questions[currentStepIndex]!;
+        return {
+          conversationId: seed.conversationId,
+          taskId: seed.taskId,
+          mode: "editing_response",
+          assistantMessageId: seed.assistantMessageId,
+          responseMessageId: seed.responseMessageId,
+          originToolCallId: seed.originToolCallId,
+          questionnaire: seed.questionnaire,
+          currentStepIndex,
+          currentStep,
+          answersByStepId: {
+            ...seed.answersByStepId,
+            ...draft.answersByStepId,
+          },
+          draftTextByStepId: {
+            ...seed.draftTextByStepId,
+            ...draft.draftTextByStepId,
+          },
+          totalSteps: questionCount,
+          isLastStep: currentStepIndex === questionCount - 1,
+        };
+      }
+    }
+  }
+
   let activeQuestionnaireMessage: ChatMessage | null = null;
   let sawUserReplyAfterQuestionnaire = false;
 
@@ -404,6 +573,7 @@ export const resolveActiveConversationQuestionnaire = (
   return {
     conversationId,
     taskId: activeQuestionnaireMessage.task_id || null,
+    mode: "pending_reply",
     assistantMessageId: activeQuestionnaireMessage.id,
     originToolCallId: extractQuestionToolCallIdFromProviderInputItems(
       activeQuestionnaireMessage.provider_input_items,
