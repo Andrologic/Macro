@@ -77,11 +77,16 @@ describe('FileChangesPanel', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
   let setReviewedStateMock: ReturnType<typeof mock>;
+  let loadCurrentChangesMock: ReturnType<typeof mock>;
 
-  const seedStores = (repository: ReviewRepositoryState) => {
+  const seedStores = (
+    repository: ReviewRepositoryState,
+    options: { loadState?: 'ready' | 'out_of_scope'; loadMessage?: string | null } = {}
+  ) => {
     useAppStore.setState({
       ...useAppStore.getState(),
       selectedGroupId: 'group-1',
+      selectedProjectId: null,
       selectedTaskId: 'task-1',
       getProjectById: () => ({
         id: 'project-1',
@@ -118,18 +123,22 @@ describe('FileChangesPanel', () => {
       finishTask: mock(async () => undefined),
     });
 
+    loadCurrentChangesMock = mock(async () => undefined);
     useFileChangesStore.setState({
       ...useFileChangesStore.getState(),
-      repositories: [repository],
-      selectedRepositoryId: repository.id,
-      reviewSummary: buildReviewTaskSummary([repository], repository.id),
-      currentTaskLoadState: 'ready',
-      currentTaskLoadMessage: null,
+      repositories: options.loadState === 'out_of_scope' ? [] : [repository],
+      selectedRepositoryId: options.loadState === 'out_of_scope' ? null : repository.id,
+      reviewSummary: options.loadState === 'out_of_scope'
+        ? buildReviewTaskSummary([], null)
+        : buildReviewTaskSummary([repository], repository.id),
+      currentTaskLoadState: options.loadState ?? 'ready',
+      currentTaskLoadMessage: options.loadMessage ?? null,
       isLoading: false,
       isCommitting: false,
       isDiffModalOpen: false,
       lastError: null,
-      loadCurrentChanges: mock(async () => undefined),
+      executionRecords: {},
+      loadCurrentChanges: loadCurrentChangesMock,
       resetReviewState: mock(() => undefined),
       selectRepository: mock(() => undefined),
       openDiffModal: mock(() => undefined),
@@ -147,6 +156,7 @@ describe('FileChangesPanel', () => {
 
   beforeEach(() => {
     setReviewedStateMock = mock(() => undefined);
+    loadCurrentChangesMock = mock(async () => undefined);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -208,5 +218,60 @@ describe('FileChangesPanel', () => {
 
     expect(invalidateButtons.length).toBeGreaterThan(0);
     expect(revertButtons).toHaveLength(0);
+  });
+
+  it('renders the scoped empty-state message when the task is outside the current repository scope', async () => {
+    seedStores(buildRepository(false), {
+      loadState: 'out_of_scope',
+      loadMessage: 'This task has no changes in Project One.',
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('This task has no changes in Project One.');
+    expect(document.body.textContent).not.toContain('No pending file changes for this task yet.');
+  });
+
+  it('reloads repository changes when the focused subproject changes', async () => {
+    seedStores(buildRepository(false));
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    loadCurrentChangesMock.mockClear();
+
+    await act(async () => {
+      useAppStore.setState({
+        ...useAppStore.getState(),
+        selectedProjectId: 'project-1',
+      });
+      await flushRender();
+    });
+
+    expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads changes when only a focused subproject is selected', async () => {
+    seedStores(buildRepository(false));
+    loadCurrentChangesMock.mockClear();
+
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      selectedGroupId: null,
+      selectedProjectId: 'project-1',
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).not.toContain('Select a project to view changes');
   });
 });

@@ -31,6 +31,10 @@ import {
   saveTaskProjectCommandDrafts,
 } from '../../services/taskProjectCommands';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
+import {
+  resolveStreamingTaskId,
+  resolveTaskStatusIndicatorState,
+} from '../../services/taskStatusPresentation';
 import { Icon, IconName } from '../ui/Icon';
 import { Select } from '../ui/Select';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -38,6 +42,7 @@ import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
 import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { TaskProjectCommandsModal } from './TaskProjectCommandsModal';
+import { TaskStatusIndicator } from './TaskStatusIndicator';
 import type { TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
 
@@ -63,14 +68,14 @@ type TaskListRow =
 const ALL_PLANS_FILTER = '__all__';
 const STANDALONE_FILTER = '__standalone__';
 
-const statusConfig: Record<TaskStatus, { icon: IconName; color: string; bgColor: string }> = {
-  Pending: { icon: 'circle', color: 'text-muted-foreground', bgColor: 'bg-muted' },
-  InProgress: { icon: 'loader', color: 'text-amber-500', bgColor: 'bg-amber-500/10' },
-  AwaitingResponse: { icon: 'message-circle', color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
-  InReview: { icon: 'search', color: 'text-sky-400', bgColor: 'bg-sky-500/10' },
-  Completed: { icon: 'check-circle', color: 'text-emerald-500', bgColor: 'bg-emerald-500/10' },
-  Failed: { icon: 'alert-circle', color: 'text-red-400', bgColor: 'bg-red-500/10' },
-  Blocked: { icon: 'lock', color: 'text-orange-400', bgColor: 'bg-orange-500/10' },
+const statusConfig: Record<TaskStatus, { color: string; bgColor: string }> = {
+  Pending: { color: 'text-muted-foreground', bgColor: 'bg-muted' },
+  InProgress: { color: 'text-amber-500', bgColor: 'bg-amber-500/10' },
+  AwaitingResponse: { color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
+  InReview: { color: 'text-sky-400', bgColor: 'bg-sky-500/10' },
+  Completed: { color: 'text-emerald-500', bgColor: 'bg-emerald-500/10' },
+  Failed: { color: 'text-red-400', bgColor: 'bg-red-500/10' },
+  Blocked: { color: 'text-orange-400', bgColor: 'bg-orange-500/10' },
 };
 
 const readyStatusOrder: Record<TaskStatus, number> = {
@@ -196,8 +201,9 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const showPlanLabel = task.task_source === 'architect' && planLabel.trim().length > 0;
   const isAwaitingUserReply = !isDraft && !isAssistantRunning && task.status === 'AwaitingResponse';
   const status = isAssistantRunning
-    ? { icon: 'loader' as IconName, color: 'text-amber-500', bgColor: 'bg-amber-500/10' }
+    ? { color: 'text-amber-500', bgColor: 'bg-amber-500/10' }
     : statusConfig[task.status] || statusConfig.Pending;
+  const indicatorState = resolveTaskStatusIndicatorState(task.status, isAssistantRunning);
   const lockTooltip = task.is_blocked
     ? t('implement.blockedBy', 'Blocked by: {{tasks}}', {
       tasks: task.blocked_by.join(', '),
@@ -302,10 +308,11 @@ const TaskItem: React.FC<TaskItemProps> = ({
         <div className="flex items-center gap-2.5">
           <div className="relative shrink-0 group/lock">
             <div className={cn('flex h-8 w-8 items-center justify-center rounded-lg', status.bgColor)}>
-              <Icon
-                name={status.icon}
+              <TaskStatusIndicator
+                state={indicatorState}
                 size={14}
-                className={cn(status.color, isAssistantRunning && 'animate-spin')}
+                dotSize={8}
+                className={status.color}
               />
             </div>
             {task.is_blocked && task.blocked_by.length > 0 && (
@@ -1307,16 +1314,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const completedCount = progressTasks.filter((task) => task.status === 'Completed').length;
   const totalCount = progressTasks.length;
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
-  const streamingTaskId = useMemo(() => {
-    if (!isStreaming || !selectedConversationId) {
-      return null;
-    }
-
-    return (
-      conversations.find((conversation) => conversation.id === selectedConversationId)?.task_id ??
-      null
-    );
-  }, [conversations, isStreaming, selectedConversationId]);
+  const streamingTaskId = useMemo(
+    () =>
+      resolveStreamingTaskId({
+        conversations,
+        isStreaming,
+        selectedConversationId,
+      }),
+    [conversations, isStreaming, selectedConversationId]
+  );
 
   if (!selectedGroupId) {
     return (

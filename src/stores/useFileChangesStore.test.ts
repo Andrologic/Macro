@@ -4,6 +4,7 @@ import { toBranchWorktreeKey } from '../services/implementTaskDerivation';
 
 const repoAPath = 'C:/repos/project-a';
 const repoBPath = 'C:/repos/project-b';
+const repoCPath = 'C:/repos/project-c';
 const worktreeAPath = 'C:/worktrees/project-a-feature';
 const worktreeBPath = 'C:/worktrees/project-b-feature';
 const worktreeKeyA = toBranchWorktreeKey('project-a', 'feature/task-a');
@@ -13,6 +14,22 @@ const repositoryIdA = `project-a::${worktreeKeyA}`;
 const repositoryIdB = `project-b::${worktreeKeyB}`;
 const changeIdA = `${repositoryIdA}::src/main.ts`;
 const changeIdB = `${repositoryIdB}::README.md`;
+
+const makeProject = (id: string, name: string, path: string) => ({
+  id,
+  name,
+  mountName: id,
+  path,
+  created_at: '2026-04-13T00:00:00.000Z',
+  status: 'active' as const,
+  metadata: {
+    description: '',
+    tags: [],
+    team_members: [],
+    api_contracts: [],
+    dependencies: [],
+  },
+});
 
 const initialOriginalFiles: Record<string, Record<string, string>> = {
   [worktreeAPath]: {
@@ -301,13 +318,32 @@ const taskStoreState = {
 };
 
 const appStoreState = {
-  selectedProjectId: null,
-  selectedGroupId: 'group-1',
-  selectedTaskId: 'task-1',
-  projectGroups: [],
+  selectedProjectId: null as string | null,
+  selectedGroupId: 'group-1' as string | null,
+  selectedTaskId: 'task-1' as string | null,
+  projectGroups: [
+    {
+      id: 'group-1',
+      name: 'Group 1',
+      isOpen: true,
+      projects: [
+        makeProject('project-a', 'Project A', repoAPath),
+        makeProject('project-b', 'Project B', repoBPath),
+      ],
+    },
+    {
+      id: 'group-2',
+      name: 'Group 2',
+      isOpen: true,
+      projects: [
+        makeProject('project-c', 'Project C', repoCPath),
+      ],
+    },
+  ],
   getProjectById: (projectId: string) => {
     if (projectId === 'project-a') return { id: 'project-a', name: 'Project A', path: repoAPath };
     if (projectId === 'project-b') return { id: 'project-b', name: 'Project B', path: repoBPath };
+    if (projectId === 'project-c') return { id: 'project-c', name: 'Project C', path: repoCPath };
     return undefined;
   },
 };
@@ -330,6 +366,8 @@ describe('useFileChangesStore', () => {
       'task-3': 'InReview',
       'task-4': 'Pending',
     };
+    appStoreState.selectedGroupId = 'group-1';
+    appStoreState.selectedProjectId = null;
     appStoreState.selectedTaskId = 'task-1';
 
     gitStatusMock.mockClear();
@@ -375,6 +413,51 @@ describe('useFileChangesStore', () => {
     expect(reviewSummary.repositoryCount).toBe(2);
     expect(reviewSummary.nextAction).toBe('review_repository');
     expect(reviewSummary.currentRepositoryId).toBe(repositoryIdA);
+  });
+
+  it('narrows loaded repositories to the selected subproject scope', async () => {
+    appStoreState.selectedProjectId = 'project-b';
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const { repositories, reviewSummary, selectedRepositoryId } = useFileChangesStore.getState();
+    expect(repositories).toHaveLength(1);
+    expect(repositories[0]?.projectId).toBe('project-b');
+    expect(reviewSummary.repositoryCount).toBe(1);
+    expect(selectedRepositoryId).toBe(repositoryIdB);
+    expect(gitStatusMock.mock.calls.map((call) => call[0])).toEqual([worktreeBPath]);
+  });
+
+  it('marks the task as out of scope when the selected global project has no matching repositories', async () => {
+    appStoreState.selectedGroupId = 'group-2';
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.currentTaskId).toBe('task-1');
+    expect(nextState.currentTaskLoadState).toBe('out_of_scope');
+    expect(nextState.currentTaskLoadMessage).toBe('This task has no changes in Group 2.');
+    expect(nextState.repositories).toHaveLength(0);
+    expect(nextState.reviewSummary.repositoryCount).toBe(0);
+    expect(gitStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('recomputes the scoped repository selection when the focused subproject changes on the same task', async () => {
+    appStoreState.selectedProjectId = 'project-a';
+    const store = useFileChangesStore.getState();
+
+    await store.loadCurrentChanges();
+    expect(useFileChangesStore.getState().selectedRepositoryId).toBe(repositoryIdA);
+
+    appStoreState.selectedProjectId = 'project-b';
+    await store.loadCurrentChanges();
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.currentTaskId).toBe('task-1');
+    expect(nextState.repositories).toHaveLength(1);
+    expect(nextState.repositories[0]?.projectId).toBe('project-b');
+    expect(nextState.selectedRepositoryId).toBe(repositoryIdB);
+    expect(nextState.reviewSummary.currentRepositoryId).toBe(repositoryIdB);
   });
 
   it('reads repository changes from the task worktrees and reloads external edits', async () => {
@@ -687,5 +770,21 @@ describe('useFileChangesStore', () => {
     expect(secondCommit.taskStatus).toBe('InProgress');
     expect(setTaskStatusMock).toHaveBeenCalledTimes(1);
     expect(setTaskStatusMock).toHaveBeenCalledWith('task-1', 'InProgress');
+  });
+
+  it('does not advance the task out of validation when only the focused subproject is resolved', async () => {
+    appStoreState.selectedProjectId = 'project-a';
+    const store = useFileChangesStore.getState();
+
+    await store.loadCurrentChanges();
+    store.markAsReviewed(repositoryIdA, changeIdA);
+
+    const result = await store.commitReviewedChanges(
+      repositoryIdA,
+      'feat: commit project a'
+    );
+
+    expect(result.taskStatus).toBe('InReview');
+    expect(setTaskStatusMock).not.toHaveBeenCalled();
   });
 });

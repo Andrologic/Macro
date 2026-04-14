@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { getAutoLaunchCandidateTask, useTaskStore } from '../../stores/useTaskStore';
@@ -7,10 +8,17 @@ import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/archit
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { getScopedProjectIds } from '../../services/globalProjects';
 import { normalizeNodeProjectIds } from '../../services/implementTaskDerivation';
+import {
+  mapPlanNodeStatusToTaskStatus,
+  resolvePlanNodeStatusIndicatorState,
+  resolveStreamingTaskId,
+  type TaskStatusIndicatorState,
+} from '../../services/taskStatusPresentation';
 import { notify } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
+import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
 import { cn } from '../../utils/cn';
-import type { PlanNode, PlanNodeStatus } from '../../types';
+import type { PlanNode, PlanNodeStatus, TaskStatus } from '../../types';
 
 interface StrategyGraphProps {
   className?: string;
@@ -23,27 +31,24 @@ interface StrategyGraphProps {
  * Contains complex SVG rendering that benefits from code splitting
  */
 
-type VisualNodeStatus = PlanNodeStatus | 'ai-running';
-
-const statusColors: Record<VisualNodeStatus, string> = {
-  'pending': 'text-muted-foreground',
-  'in-progress': 'text-amber-500',
-  'ai-running': 'text-blue-500',
-  'completed': 'text-emerald-500',
-  'blocked': 'text-red-500',
+const taskStatusColors: Record<TaskStatus, string> = {
+  Pending: 'text-muted-foreground',
+  InProgress: 'text-amber-500',
+  AwaitingResponse: 'text-blue-500',
+  InReview: 'text-sky-500',
+  Completed: 'text-white',
+  Failed: 'text-red-500',
+  Blocked: 'text-red-500',
 };
 
-const statusBgColors: Record<VisualNodeStatus, string> = {
-  'pending': 'bg-muted',
-  'in-progress': 'bg-amber-500',
-  'ai-running': 'bg-blue-500',
-  'completed': 'bg-emerald-500',
-  'blocked': 'bg-red-500',
-};
-
-const resolveVisualStatus = (status: PlanNodeStatus, isAiStreaming: boolean): VisualNodeStatus => {
-  if (status === 'in-progress' && isAiStreaming) return 'ai-running';
-  return status;
+const taskStatusBgColors: Record<TaskStatus, string> = {
+  Pending: 'bg-muted',
+  InProgress: 'bg-amber-500/20',
+  AwaitingResponse: 'bg-blue-500/20',
+  InReview: 'bg-sky-500/20',
+  Completed: 'bg-emerald-500',
+  Failed: 'bg-red-500/20',
+  Blocked: 'bg-red-500/20',
 };
 
 const NODE_RADIUS = 16;
@@ -143,7 +148,14 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     armPendingAutoLaunch,
     clearPendingAutoLaunch,
   } = useAppStore();
-  const isAiStreaming = useChatStore((state) => state.isStreaming);
+  const { conversations, isStreaming, selectedConversationId } = useChatStore(
+    useShallow((state) => ({
+      conversations: state.conversations,
+      isStreaming: state.isStreaming,
+      selectedConversationId: state.selectedConversationId,
+    }))
+  );
+  const tasks = useTaskStore((state) => state.tasks);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
   const [viewMode, setViewMode] = useState<'graph' | 'branches'>('graph');
@@ -164,6 +176,19 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     originX: 0,
     originY: 0,
   });
+  const streamingTaskId = useMemo(
+    () =>
+      resolveStreamingTaskId({
+        conversations,
+        isStreaming,
+        selectedConversationId,
+      }),
+    [conversations, isStreaming, selectedConversationId]
+  );
+  const taskStatusById = useMemo(
+    () => new Map(tasks.map((task) => [task.id, task.status])),
+    [tasks]
+  );
 
   const targetBranch = useMemo(() => {
     if (activePlanContext?.targetBranch) {
@@ -386,18 +411,39 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     };
   }, [selectedGroupId, selectedProjectId, projectGroups, planNodes, containerWidth]);
 
-  const getStatusIconName = (status: VisualNodeStatus) => {
-    switch (status) {
-      case 'completed': return 'check';
-      case 'in-progress': return 'loader';
-      case 'ai-running': return 'loader';
-      case 'blocked': return 'lock';
-      default: return 'circle';
-    }
-  };
+  const getNodeTaskStatus = useCallback(
+    (nodeId: string, nodeStatus: PlanNodeStatus): TaskStatus =>
+      taskStatusById.get(nodeId) ?? mapPlanNodeStatusToTaskStatus(nodeStatus),
+    [taskStatusById]
+  );
+  const getNodeIndicatorState = useCallback(
+    (node: Pick<PlanNode, 'id' | 'status'>): TaskStatusIndicatorState =>
+      resolvePlanNodeStatusIndicatorState({
+        nodeStatus: node.status,
+        taskStatus: taskStatusById.get(node.id) ?? null,
+        isAssistantRunning: streamingTaskId === node.id,
+      }),
+    [streamingTaskId, taskStatusById]
+  );
+  const getNodeStatusTone = useCallback(
+    (node: Pick<PlanNode, 'id' | 'status'>) => {
+      if (streamingTaskId === node.id) {
+        return {
+          color: 'text-blue-500',
+          bgColor: 'bg-blue-500/20',
+        };
+      }
 
+      const taskStatus = getNodeTaskStatus(node.id, node.status);
+      return {
+        color: taskStatusColors[taskStatus],
+        bgColor: taskStatusBgColors[taskStatus],
+      };
+    },
+    [getNodeTaskStatus, streamingTaskId]
+  );
   const hoveredNodeData = layoutData.nodes.find(n => n.id === hoveredNodeId);
-  const hoveredVisualStatus = hoveredNodeData ? resolveVisualStatus(hoveredNodeData.status, isAiStreaming) : null;
+  const hoveredNodeTone = hoveredNodeData ? getNodeStatusTone(hoveredNodeData) : null;
   const scopedNodeIdSet = useMemo(() => new Set(layoutData.nodes.map((node) => node.id)), [layoutData.nodes]);
   const scopedNodeById = useMemo(
     () => new Map(layoutData.nodes.map((node) => [node.id, node])),
@@ -736,7 +782,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       })}
 
       {layoutData.nodes.map((node) => {
-        const visualStatus = resolveVisualStatus(node.status, isAiStreaming);
+        const visualStatus = getNodeIndicatorState(node);
+        const visualTone = getNodeStatusTone(node);
         const isHovered = hoveredNodeId === node.id;
         const isRelated = hoveredNodeData && (
           hoveredNodeData.dependencies?.includes(node.id) ||
@@ -783,12 +830,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
             >
               <div className={cn(
                 'w-full h-full rounded-full flex items-center justify-center',
-                statusColors[visualStatus]
+                visualTone.color
               )}>
-                <Icon
-                  name={getStatusIconName(visualStatus)}
+                <TaskStatusIndicator
+                  state={visualStatus}
                   size={14}
-                  className={visualStatus === 'in-progress' || visualStatus === 'ai-running' ? 'animate-spin' : ''}
+                  dotSize={8}
                 />
               </div>
             </foreignObject>
@@ -947,7 +994,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                   <h3 className="font-semibold text-sm leading-tight text-popover-foreground">
                     {hoveredNodeData.title}
                   </h3>
-                  <div className={cn('shrink-0 w-2 h-2 rounded-full mt-1.5', hoveredVisualStatus ? statusBgColors[hoveredVisualStatus] : 'bg-muted')} />
+                  <div
+                    className={cn(
+                      'shrink-0 w-2 h-2 rounded-full mt-1.5',
+                      hoveredNodeTone?.bgColor || 'bg-muted'
+                    )}
+                  />
                 </div>
 
                 <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
@@ -1054,7 +1106,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
                   <div className="bg-muted/10 border-t border-border/50 divide-y divide-border/50">
                     {branch.tasks.map((task, taskIndex) => {
-                      const visualStatus = resolveVisualStatus(task.status, isAiStreaming);
+                      const visualStatus = getNodeIndicatorState(task);
+                      const visualTone = getNodeStatusTone(task);
                       return (
                         <div key={task.id} className="px-3 py-2">
                           <div className="flex items-center justify-between gap-2">
@@ -1071,16 +1124,13 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                               )}
                               <div className={cn(
                                 'w-4 h-4 rounded-full flex items-center justify-center',
-                                visualStatus === 'pending' && 'bg-muted/80 text-muted-foreground',
-                                visualStatus === 'in-progress' && 'bg-amber-500/20 text-amber-500',
-                                visualStatus === 'ai-running' && 'bg-blue-500/20 text-blue-500',
-                                visualStatus === 'completed' && 'bg-emerald-500 text-white',
-                                visualStatus === 'blocked' && 'bg-red-500/20 text-red-500'
+                                visualTone.bgColor,
+                                visualTone.color
                               )}>
-                                <Icon
-                                  name={getStatusIconName(visualStatus)}
+                                <TaskStatusIndicator
+                                  state={visualStatus}
                                   size={9}
-                                  className={visualStatus === 'in-progress' || visualStatus === 'ai-running' ? 'animate-spin' : ''}
+                                  dotSize={5}
                                 />
                               </div>
                             </div>
