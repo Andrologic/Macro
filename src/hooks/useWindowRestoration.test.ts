@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 let loadPreferencesMock: ReturnType<typeof mock>;
 let showMainWindowMock: ReturnType<typeof mock>;
@@ -21,20 +21,11 @@ let chromeState: {
 };
 let invocationOrder: string[];
 let importCounter = 0;
+const actualPreferences = await import('../services/preferences');
 
 const registerWindowRestorationMocks = () => {
-  mock.restore();
-
   mock.module('../services/preferences', () => ({
-    PREF_KEYS: {
-      WINDOW_WIDTH: 'windowWidth',
-      WINDOW_HEIGHT: 'windowHeight',
-      WINDOW_X: 'windowX',
-      WINDOW_Y: 'windowY',
-      IS_MAXIMIZED: 'isMaximized',
-      NATIVE_MACOS_TITLEBAR_BG: 'nativeMacosTitlebarBg',
-      NATIVE_MACOS_TITLEBAR_THEME: 'nativeMacosTitlebarTheme',
-    },
+    ...actualPreferences,
     loadPreferences: (...args: unknown[]) => loadPreferencesMock(...args),
     savePreference: () => Promise.resolve(),
   }));
@@ -133,14 +124,6 @@ describe('ensureWindowRestoredOnce', () => {
     windowSetThemeMock = mock(async () => {
       invocationOrder.push('theme');
     });
-  });
-
-  afterEach(() => {
-    mock.restore();
-  });
-
-  afterAll(() => {
-    mock.restore();
   });
 
   it('applies the native macOS theme snapshot before showing the window', async () => {

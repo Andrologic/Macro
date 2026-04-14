@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
-import { getAutoLaunchCandidateTask, useTaskStore } from '../../stores/useTaskStore';
+import { getPlanActivationCandidateTask, useTaskStore } from '../../stores/useTaskStore';
 import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/architectPlanService';
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { getScopedProjectIds } from '../../services/globalProjects';
@@ -144,9 +144,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     setPlanNodes,
     setPredictedBranches,
     setMode,
-    implementExecutionMode,
-    armPendingAutoLaunch,
-    clearPendingAutoLaunch,
   } = useAppStore();
   const { conversations, conversationRuntimeById } = useChatStore(
     useShallow((state) => ({
@@ -214,22 +211,15 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       await useTaskStore.getState().refreshFromPlan();
 
       const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
-      const autoLaunchTask = getAutoLaunchCandidateTask(
+      const activationCandidateTask = getPlanActivationCandidateTask(
         useTaskStore.getState().tasks,
         plan.id,
         scopedProjectIds
       );
 
       setMode('Implement');
-      if (autoLaunchTask) {
-        await useTaskStore.getState().activateTask(autoLaunchTask.id);
-        if (implementExecutionMode === 'full_auto') {
-          armPendingAutoLaunch(plan.id, autoLaunchTask.id);
-        } else {
-          clearPendingAutoLaunch();
-        }
-      } else {
-        clearPendingAutoLaunch();
+      if (activationCandidateTask) {
+        await useTaskStore.getState().activateTask(activationCandidateTask.id);
       }
 
       const createdCount = (provision.createdPlanBranch ? 1 : 0) + provision.createdFeatureBranches.length;

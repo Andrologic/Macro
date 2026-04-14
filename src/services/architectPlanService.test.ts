@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+const actualTauriIpc = await import('./tauriIpc');
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
 import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
 
@@ -43,6 +44,7 @@ interface LoadArchitectPlanServiceOptions {
 const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {}) => {
   mock.restore();
   const tauriModule = () => ({
+    ...actualTauriIpc,
     aiGetDevProviderOverrides: async () => null,
     isTauriAvailable: () => options.tauriAvailable === true,
     workspaceGetActiveRoot: async () => options.workspaceRoot ?? '/repos/web',

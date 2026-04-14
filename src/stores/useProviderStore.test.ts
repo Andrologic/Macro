@@ -64,12 +64,15 @@ const probeProviderReachabilityMock = mock(async () => ({
   source: 'models_endpoint',
   models: [],
 }));
+const actualPreferences = await import('../services/preferences');
+const actualTauriIpc = await import('../services/tauriIpc');
 
 const loadProviderStore = async () => {
   mock.module('@tauri-apps/api/event', () => ({
     listen: async () => () => undefined,
   }));
   mock.module('../services/tauriIpc', () => ({
+    ...actualTauriIpc,
     isTauriAvailable: () => true,
     listProviderConfigs: listProviderConfigsMock,
     revealProviderApiKey: revealProviderApiKeyMock,
@@ -101,10 +104,7 @@ const loadProviderStore = async () => {
     findProviderConfig: () => undefined,
   }));
   mock.module('../services/preferences', () => ({
-    PREF_KEYS: {
-      AI_CONTEXT_SELECTIONS: 'ai_context_selections',
-    },
-    PREF_DEFAULTS: {},
+    ...actualPreferences,
     loadPreference: async () => null,
     savePreference: async () => undefined,
   }));
@@ -122,7 +122,6 @@ const loadProviderStore = async () => {
 
 describe('useProviderStore secret resolution', () => {
   beforeEach(() => {
-    mock.restore();
     listProviderConfigsMock.mockClear();
     revealProviderApiKeyMock.mockClear();
     updateProviderConfigMock.mockClear();

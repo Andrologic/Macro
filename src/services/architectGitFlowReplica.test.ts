@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+const actualTauriIpc = await import('./tauriIpc');
 
 type MockAppState = {
   selectedGroupId: string | null;
@@ -221,6 +222,7 @@ const registerModuleMocks = () => {
   mock.restore();
 
   mock.module('./tauriIpc', () => ({
+    ...actualTauriIpc,
     isTauriAvailable: () => true,
     workspaceGetActiveRoot: async () => '/repos/web',
     fsReadFileWithOptions: async ({

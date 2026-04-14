@@ -92,7 +92,7 @@ Etat a consolider :
 
 Etat attendu :
 - file de taches claire, filtrable et fiable
-- execution semi-auto et full-auto bien definies
+- demarrage manuel des taches clair et fiable
 - questions IA rapides a traiter
 - review de fin de tache ergonomique
 - commits et integration bien verrouilles
@@ -110,7 +110,6 @@ Etat deja consolide :
 
 Etat a consolider :
 - UX de la review et de l'edition ciblee
-- mode semi-auto vs full-auto
 - questions IA a reponses rapides reellement branchees
 - articulation claire entre review de tache, commit, validation finale de plan et merge
 - comportement global du mode quand plusieurs plans et plusieurs projets sont actifs en meme temps
@@ -255,8 +254,7 @@ Objectif :
 - rendre l'IA capable d'avancer longtemps sans degrader la qualite de supervision
 
 Chantiers :
-- mode semi-auto bien borne
-- mode full-auto bien borne
+- demarrage manuel des taches bien borne
 - questions IA a choix rapides
 - gestion claire des points de blocage
 - execution test/build observable et interpretable
@@ -372,8 +370,7 @@ Prochaine tranche recommandee apres merge :
 ### Phase 4 - Automatisation et supervision
 
 Livrables :
-- mode semi-auto abouti
-- mode full-auto borne
+- demarrage manuel des taches abouti
 - notifications desktop
 - systeme de questions/reponses rapides
 
@@ -408,7 +405,7 @@ Critere de sortie :
 
 Les sujets suivants doivent rester visibles tant qu'ils ne sont pas totalement figes :
 
-- niveau exact d'autonomie acceptable en mode full-auto
+- niveau exact d'autonomie acceptable dans le mode Implement
 - UX precise de la review et de l'edition manuelle
 - politique exacte de merge automatique
 - modelisation definitive des taches hors plan
