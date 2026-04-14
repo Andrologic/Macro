@@ -703,4 +703,62 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
+  it('tracks active streaming sessions independently and cancels only the targeted one', async () => {
+    const fetchMock = mock(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start() {
+          // Keep the stream open until the runtime cancels it.
+        },
+      }),
+      text: async () => '',
+      json: async () => ({}),
+    }));
+    const { __testables, cancelStream, streamChat } = await loadStreamingChat(fetchMock);
+
+    void streamChat({
+      sessionId: 'session-a',
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://example.com',
+      modelId: 'gpt-4.1',
+      messages: [{ role: 'user', content: 'A' }],
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+    void streamChat({
+      sessionId: 'session-b',
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://example.com',
+      modelId: 'gpt-4.1',
+      messages: [{ role: 'user', content: 'B' }],
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(__testables.getActiveStreamingSessionIds().sort()).toEqual([
+      'session-a',
+      'session-b',
+    ]);
+
+    cancelStream('session-a');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(__testables.getActiveStreamingSessionIds()).toEqual(['session-b']);
+
+    cancelStream();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(__testables.getActiveStreamingSessionIds()).toEqual([]);
+  });
+
 });

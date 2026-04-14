@@ -11,6 +11,8 @@ import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import { formatDate } from '../../i18n/format';
 import type { Conversation } from '../../types';
+import { resolveRunningConversationIds } from '../../services/taskStatusPresentation';
+import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
 import {
   areConversationIdSetsEqual,
   filterConversationsByQuery,
@@ -31,6 +33,7 @@ interface ConversationArchiveProps {
 interface ConversationItemProps {
   conversation: Conversation;
   isCurrentConversation: boolean;
+  isRunning: boolean;
   isChecked: boolean;
   isPinned: boolean;
   isMultiSelectMode: boolean;
@@ -88,6 +91,7 @@ const removeConversationIdsFromSet = (
 const ConversationItem: React.FC<ConversationItemProps> = ({
   conversation,
   isCurrentConversation,
+  isRunning,
   isChecked,
   isPinned,
   isMultiSelectMode,
@@ -203,6 +207,13 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-medium text-foreground truncate">{conversation.title}</h3>
+              {isRunning && (
+                <TaskStatusIndicator
+                  state="running"
+                  size={11}
+                  className="shrink-0 text-amber-500"
+                />
+              )}
               {conversation.is_unread && <span className="w-2 h-2 rounded-full bg-primary shrink-0" />}
               {isPinned && <Icon name="pin" size={10} className="text-primary shrink-0" />}
             </div>
@@ -343,12 +354,14 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   const { t } = useTranslation();
   const {
     conversations,
+    conversationRuntimeById,
     selectedConversationId,
     selectConversation,
     createConversation,
     deleteChatConversations,
   } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
+    conversationRuntimeById: state.conversationRuntimeById,
     selectedConversationId: state.selectedConversationId,
     selectConversation: state.selectConversation,
     createConversation: state.createConversation,
@@ -410,6 +423,10 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   const chatConversations = useMemo(
     () => getChatOnlyConversations(conversations),
     [conversations]
+  );
+  const runningConversationIds = useMemo(
+    () => resolveRunningConversationIds(conversationRuntimeById),
+    [conversationRuntimeById]
   );
   const chatConversationIds = useMemo(
     () => chatConversations.map((conversation) => conversation.id),
@@ -817,6 +834,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                         <ConversationItem
                           conversation={row.conversation}
                           isCurrentConversation={selectedConversationId === row.conversation.id}
+                          isRunning={runningConversationIds.has(row.conversation.id)}
                           isChecked={selectedIds.has(row.conversation.id)}
                           isPinned={row.isPinned}
                           isMultiSelectMode={isMultiSelectMode}

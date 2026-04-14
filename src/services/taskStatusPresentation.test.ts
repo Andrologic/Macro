@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   mapPlanNodeStatusToTaskStatus,
   resolvePlanNodeStatusIndicatorState,
-  resolveStreamingTaskId,
+  resolveRunningTaskIds,
   resolveTaskStatusIndicatorState,
 } from './taskStatusPresentation';
 
@@ -22,21 +22,26 @@ describe('taskStatusPresentation', () => {
   });
 
   it('forces the running state only for the streamed task', () => {
-    const streamingTaskId = resolveStreamingTaskId({
+    const runningTaskIds = resolveRunningTaskIds({
       conversations: [
         { id: 'conversation-1', task_id: 'task-1' },
         { id: 'conversation-2', task_id: 'task-2' },
       ],
-      isStreaming: true,
-      selectedConversationId: 'conversation-1',
+      conversationRuntimeById: {
+        'conversation-1': {
+          phase: 'streaming',
+          sessionId: 'session-1',
+        },
+      },
     });
 
-    expect(streamingTaskId).toBe('task-1');
+    expect(runningTaskIds.has('task-1')).toBe(true);
+    expect(runningTaskIds.has('task-2')).toBe(false);
     expect(
-      resolveTaskStatusIndicatorState('AwaitingResponse', streamingTaskId === 'task-1')
+      resolveTaskStatusIndicatorState('AwaitingResponse', runningTaskIds.has('task-1'))
     ).toBe('running');
     expect(
-      resolveTaskStatusIndicatorState('AwaitingResponse', streamingTaskId === 'task-2')
+      resolveTaskStatusIndicatorState('AwaitingResponse', runningTaskIds.has('task-2'))
     ).toBe('awaiting_response');
   });
 
