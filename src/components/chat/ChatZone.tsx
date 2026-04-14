@@ -18,14 +18,14 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
-import { Button } from '../ui/Button';
 import { getFocusedProjectForGroup, getGlobalProjectById } from '../../services/globalProjects';
 import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
-import { Input } from '../ui/Input';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
+import { QuestionnaireFooter } from './QuestionnaireFooter';
+import { QuestionnaireResponseSummary } from './QuestionnaireResponseSummary';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
@@ -59,8 +59,7 @@ interface RenderedMessageItem {
 interface ChatMessageRowProps {
   virtualMessage: RenderedMessageItem;
   measureElement: (el: HTMLElement | null) => void;
-  currentMessagesLength: number;
-  isStreaming: boolean;
+  streamingAssistantMessageId: string | null;
   showToolTraces: boolean;
   isEditing: boolean;
   editingValue: string;
@@ -86,8 +85,7 @@ interface ChatMessageRowProps {
 const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   virtualMessage,
   measureElement,
-  currentMessagesLength,
-  isStreaming,
+  streamingAssistantMessageId,
   showToolTraces,
   isEditing,
   editingValue,
@@ -112,6 +110,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   const visibleImages = isEditing ? editingImages : messageImages;
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
+  const isStreamingMessage = streamingAssistantMessageId === message.id;
 
   return (
     <div
@@ -207,41 +206,10 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                 <MarkdownRenderer
                   content={message.content}
                   toolTraces={showToolTraces ? message.tool_traces : undefined}
-                  isStreaming={isStreaming && messageIndex === currentMessagesLength - 1}
+                  isStreaming={isStreamingMessage}
                 />
               ) : questionnaireResponseSummary ? (
-                <div
-                  data-testid="questionnaire-response-summary"
-                  className="space-y-3.5"
-                >
-                  <div className="flex items-center gap-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                    <Icon name="message-circle" size={13} className="shrink-0 text-primary/75" />
-                    <span className="truncate">
-                      {t('chat.questionnaireResponseSummaryTitle', 'Reponses au questionnaire')}
-                    </span>
-                  </div>
-                  <div className="space-y-3">
-                    {questionnaireResponseSummary.items.map((item, index) => (
-                      <div
-                        key={item.id}
-                        className={cn(
-                          'relative pl-4',
-                          index > 0 && 'pt-3'
-                        )}
-                      >
-                        <span className="absolute left-0 top-0 h-full w-px bg-border/55" aria-hidden="true" />
-                        <div className="min-w-0">
-                          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-                            {item.prompt}
-                          </p>
-                          <p className="mt-1.5 break-words text-sm leading-6 text-foreground">
-                            {item.answer}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
               ) : (
                 message.content.split('\n').map((line, i) => (
                   <p key={i} className="mb-2 last:mb-0 break-words">
@@ -265,7 +233,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   ))}
                 </div>
               )}
-              {isStreaming && message.role === 'assistant' && messageIndex === currentMessagesLength - 1 && (
+              {isStreamingMessage && message.role === 'assistant' && (
                 <span className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1" />
               )}
             </div>
@@ -347,9 +315,8 @@ const MemoizedChatMessageRow = React.memo(
     prev.messageImages === next.messageImages &&
     prev.isCopied === next.isCopied &&
     prev.isHighlighted === next.isHighlighted &&
-    prev.isStreaming === next.isStreaming &&
-    prev.showToolTraces === next.showToolTraces &&
-    prev.currentMessagesLength === next.currentMessagesLength
+    prev.streamingAssistantMessageId === next.streamingAssistantMessageId &&
+    prev.showToolTraces === next.showToolTraces
 );
 
 /**
@@ -439,18 +406,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     conversations,
     messages,
     selectedConversationId,
+    selectedConversationRuntime,
     messagesByConversationId,
     createConversation,
     ensureConversationForCurrentMode,
     hydrationStatus,
     restoreStatus,
-    isLoading,
-    isStreaming,
-    sendState,
     lastError,
     stopStreaming,
     sendMessage,
     clearLastError,
+    clearConversationRuntimeError,
     editMessage,
     getMessageImages,
     setMessageImages,
@@ -466,18 +432,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     conversations: state.conversations,
     messages: state.messages,
     selectedConversationId: state.selectedConversationId,
+    selectedConversationRuntime: state.selectedConversationId
+      ? state.getConversationRuntime(state.selectedConversationId)
+      : state.getConversationRuntime(''),
     messagesByConversationId: state.messagesByConversationId ?? {},
     createConversation: state.createConversation,
     ensureConversationForCurrentMode: state.ensureConversationForCurrentMode,
     hydrationStatus: state.hydrationStatus,
     restoreStatus: state.restoreStatus,
-    isLoading: state.isLoading,
-    isStreaming: state.isStreaming,
-    sendState: state.sendState,
     lastError: state.lastError,
     stopStreaming: state.stopStreaming,
     sendMessage: state.sendMessage,
     clearLastError: state.clearLastError,
+    clearConversationRuntimeError: state.clearConversationRuntimeError,
     editMessage: state.editMessage,
     getMessageImages: state.getMessageImages,
     setMessageImages: state.setMessageImages,
@@ -566,8 +533,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     hydrationStatus === 'hydrating' ||
     restoreStatus === 'idle' ||
     restoreStatus === 'resolving';
-  const isPreparingSend = sendState === 'preparing';
-  const isBusySending = isLoading || isStreaming || isPreparingSend;
+  const isStreaming = selectedConversationRuntime.phase === 'streaming';
+  const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
+  const isBusySending = isStreaming || isPreparingSend;
+  const visibleError = selectedConversationRuntime.lastError ?? lastError;
+  const streamingAssistantMessageId =
+    selectedConversationRuntime.phase === 'streaming'
+      ? selectedConversationRuntime.assistantMessageId ?? null
+      : null;
 
   const promptHistory = useMemo(() => {
     return currentMessages
@@ -1007,7 +980,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const removeComposerImage = (imageId: string) => {
-    if (lastError) {
+    if (visibleError) {
+      clearConversationRuntimeError(selectedConversationId ?? '');
       clearLastError();
     }
     setComposerImages((prev) => prev.filter((image) => image.id !== imageId));
@@ -1294,8 +1268,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     key={message.id}
                     virtualMessage={virtualMessage}
                     measureElement={measureMessageElement}
-                    currentMessagesLength={currentMessages.length}
-                    isStreaming={isStreaming}
+                    streamingAssistantMessageId={streamingAssistantMessageId}
                     showToolTraces
                     isEditing={isEditing}
                     editingValue={editingValue}
@@ -1510,176 +1483,32 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               </div>
             )}
 
-            {lastError && (
+            {visibleError && (
               <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-                {lastError}
+                {visibleError}
               </div>
             )}
 
             {activeQuestionnaire ? (
-              <div
-                data-testid="questionnaire-footer"
-                className="rounded-xl border border-border bg-card/80 p-2 shadow-sm"
-              >
-                <div className="space-y-3 rounded-[0.9rem] border border-border/60 bg-background/30 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2.5">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-background/60">
-                        <Icon name="message-circle" size={14} className="text-primary/80" />
-                      </span>
-                      <div className="flex min-w-0 items-center gap-2.5 h-8">
-                        <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                          {t('chat.questionnaireLabel', 'Question')}
-                        </div>
-                        <div
-                          data-testid="questionnaire-step-counter-shell"
-                          className="inline-flex items-center gap-0 rounded-full border border-border/60 bg-background/45 px-[2px] py-[2px]"
-                        >
-                          {activeQuestionnaire.totalSteps > 1 && (
-                            <button
-                              type="button"
-                              data-testid="questionnaire-step-nav-prev"
-                              onClick={() =>
-                                handleQuestionnaireStepChange(
-                                  activeQuestionnaire.currentStepIndex - 1
-                                )
-                              }
-                            disabled={isBusySending || !activeQuestionnaireHasPreviousStep}
-                            title={t('chat.questionnairePreviousStep', 'Question precedente')}
-                            aria-label={t('chat.questionnairePreviousStep', 'Question precedente')}
-                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground/75 transition-colors hover:bg-accent/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-25"
-                          >
-                            <Icon name="chevron-left" size={12} />
-                          </button>
-                        )}
-                        <div
-                          data-testid="questionnaire-step-counter"
-                          className="px-1 text-center text-[11px] font-medium tabular-nums text-muted-foreground"
-                        >
-                          {`${activeQuestionnaire.currentStepIndex + 1}/${activeQuestionnaire.totalSteps}`}
-                        </div>
-                          {activeQuestionnaire.totalSteps > 1 && (
-                            <button
-                              type="button"
-                              data-testid="questionnaire-step-nav-next"
-                              onClick={() =>
-                                handleQuestionnaireStepChange(
-                                  activeQuestionnaire.currentStepIndex + 1
-                                )
-                              }
-                            disabled={isBusySending || !activeQuestionnaireHasNextStep}
-                            title={t('chat.questionnairePeekNextStep', 'Question suivante')}
-                            aria-label={t('chat.questionnairePeekNextStep', 'Question suivante')}
-                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground/75 transition-colors hover:bg-accent/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-25"
-                          >
-                            <Icon name="chevron-right" size={12} />
-                          </button>
-                        )}
-                        </div>
-                        <div className="sr-only">
-                          {t('chat.questionnaireProgress', 'Question {{current}}/{{total}}', {
-                            current: activeQuestionnaire.currentStepIndex + 1,
-                            total: activeQuestionnaire.totalSteps,
-                          })}
-                        </div>
-                      </div>
-                    </div>
-                    <span className="inline-flex items-center rounded-full border border-border/70 bg-background/50 px-2.5 py-1 text-[11px] text-muted-foreground">
-                      {t('chat.questionnaireFreeTextHint', 'Choose one option or answer freely')}
-                    </span>
-                  </div>
-
-                  <div
-                    key={`${activeQuestionnaire.assistantMessageId}-${activeQuestionnaire.currentStepIndex}-${activeQuestionnaire.currentStep.id}`}
-                    data-testid="questionnaire-step-panel"
-                    className="questionnaire-step-enter space-y-3"
-                  >
-                    <div className="px-1 pt-1 pb-0.5">
-                      <p className="text-[1.02rem] font-semibold leading-7 text-foreground text-balance">
-                        {activeQuestionnaire.currentStep.prompt}
-                      </p>
-                    </div>
-
-                    <div
-                      data-testid="questionnaire-choice-list"
-                      className="flex flex-col gap-2"
-                    >
-                      {activeQuestionnaire.currentStep.choices.map((choice) => {
-                        const isSelected = activeQuestionnaireSelectedChoice === choice;
-                        return (
-                        <Button
-                          key={choice}
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => void handleQuestionnaireAnswer(choice)}
-                          disabled={isBusySending}
-                          className={cn(
-                            'h-auto min-h-[52px] w-full justify-start rounded-xl border px-3 py-3 text-left text-sm whitespace-normal',
-                            isBusySending
-                              ? 'border-border bg-muted/40 text-muted-foreground'
-                              : isSelected
-                                ? 'border-primary/50 bg-primary/10 text-foreground'
-                                : 'border-border/70 bg-background/45 text-foreground hover:border-primary/40 hover:bg-accent/60'
-                          )}
-                        >
-                          {choice}
-                        </Button>
-                        );
-                      })}
-                    </div>
-
-                    <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                      <Input
-                        type="text"
-                        value={activeQuestionnaireDraftText}
-                        onChange={(event) => setActiveQuestionnaireDraftText(
-                          activeQuestionnaire.conversationId,
-                          event.target.value,
-                        )}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault();
-                            void handleQuestionnaireSubmit();
-                          }
-                        }}
-                        placeholder={
-                          activeQuestionnaire.currentStep.free_text_placeholder ||
-                          t('chat.questionnaireFreeTextPlaceholder', 'Or type your own answer')
-                        }
-                        disabled={isBusySending}
-                        className="h-11 flex-1 border-border/70 bg-background/60"
-                      />
-                      {activeQuestionnaire.mode === 'editing_response' && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={handleQuestionnaireCancel}
-                          disabled={isBusySending}
-                          className="h-11 shrink-0 rounded-xl border border-border/70 px-4"
-                        >
-                          {t('common.cancel', 'Annuler')}
-                        </Button>
-                      )}
-                      <Button
-                        type="button"
-                        size="sm"
-                        onClick={() => void handleQuestionnaireSubmit()}
-                        disabled={
-                          isBusySending ||
-                          activeQuestionnaireSubmitValue.trim().length === 0
-                        }
-                        className="h-11 shrink-0 rounded-xl px-4"
-                      >
-                        {activeQuestionnaire.isLastStep
-                          ? t('chat.questionnaireSubmit', 'Envoyer')
-                          : t('chat.questionnaireNext', 'Suivant')}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <QuestionnaireFooter
+                activeQuestionnaire={activeQuestionnaire}
+                draftText={activeQuestionnaireDraftText}
+                selectedChoice={activeQuestionnaireSelectedChoice}
+                submitValue={activeQuestionnaireSubmitValue}
+                hasPreviousStep={activeQuestionnaireHasPreviousStep}
+                hasNextStep={activeQuestionnaireHasNextStep}
+                isBusySending={isBusySending}
+                onAnswer={handleQuestionnaireAnswer}
+                onSubmit={handleQuestionnaireSubmit}
+                onStepChange={handleQuestionnaireStepChange}
+                onDraftTextChange={(value) =>
+                  setActiveQuestionnaireDraftText(
+                    activeQuestionnaire.conversationId,
+                    value,
+                  )
+                }
+                onCancel={handleQuestionnaireCancel}
+              />
             ) : (
               <div
                 className="flex items-center gap-2 bg-card/80 border border-border rounded-xl px-2 py-1.5"
@@ -1701,7 +1530,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         : t('chat.typeMessage')
                     }
                     onTextChange={(text) => {
-                      if (lastError) {
+                      if (visibleError) {
+                        clearConversationRuntimeError(selectedConversationId ?? '');
                         clearLastError();
                       }
                       setInputValue(text);

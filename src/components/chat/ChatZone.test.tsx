@@ -49,6 +49,12 @@ type MockChatState = {
   messages: MockMessage[];
   selectedConversationId: string | null;
   messagesByConversationId?: Record<string, MockMessage[]>;
+  getConversationRuntime: (conversationId: string) => {
+    phase: 'idle' | 'preparing' | 'streaming' | 'error';
+    sessionId: string | null;
+    assistantMessageId?: string | null;
+    lastError?: string | null;
+  };
   createConversation: ReturnType<typeof mock>;
   ensureConversationForCurrentMode: ReturnType<typeof mock>;
   getConversationMessages: (conversationId: string) => MockMessage[];
@@ -79,6 +85,7 @@ type MockChatState = {
   stopStreaming: ReturnType<typeof mock>;
   sendMessage: ReturnType<typeof mock>;
   clearLastError: ReturnType<typeof mock>;
+  clearConversationRuntimeError: ReturnType<typeof mock>;
   editMessage: ReturnType<typeof mock>;
   getMessageImages: ReturnType<typeof mock>;
   setMessageImages: ReturnType<typeof mock>;
@@ -133,13 +140,16 @@ type TaskState = {
   startTask: ReturnType<typeof mock>;
 };
 
-const createStoreHook = <T,>(getSnapshot: () => T) => {
+const createStoreHook = <T extends object,>(
+  getSnapshot: () => T,
+  setSnapshot: (nextState: T) => void,
+) => {
   const listeners = new Set<() => void>();
   const subscribe = (listener: () => void) => {
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
-    };
+      };
   };
 
   const hook = ((selector?: (state: T) => unknown) => {
@@ -148,12 +158,29 @@ const createStoreHook = <T,>(getSnapshot: () => T) => {
   }) as ((selector?: (state: T) => unknown) => unknown) & {
     emit: () => void;
     getState: () => T;
+    setState: (
+      nextStateOrUpdater: Partial<T> | T | ((state: T) => Partial<T> | T),
+      replace?: boolean
+    ) => void;
+    subscribe: typeof subscribe;
   };
 
   hook.getState = getSnapshot;
   hook.emit = () => {
     listeners.forEach((listener) => listener());
   };
+  hook.setState = (nextStateOrUpdater, replace = false) => {
+    const currentState = getSnapshot();
+    const nextState =
+      typeof nextStateOrUpdater === 'function'
+        ? nextStateOrUpdater(currentState)
+        : nextStateOrUpdater;
+    setSnapshot(
+      (replace ? nextState : { ...currentState, ...nextState }) as T
+    );
+    hook.emit();
+  };
+  hook.subscribe = subscribe;
   return hook;
 };
 
@@ -164,12 +191,52 @@ let needsState: NeedsState;
 let shortcutsState: ShortcutsState;
 let taskState: TaskState;
 
-const useAppStore = createStoreHook(() => appState);
-const useChatStore = createStoreHook(() => chatState);
-const useProviderStore = createStoreHook(() => providerState);
-const useNeedsStore = createStoreHook(() => needsState);
-const useShortcutsStore = createStoreHook(() => shortcutsState);
-const useTaskStore = createStoreHook(() => taskState);
+const getMockConversationRuntime = (
+  state: MockChatState,
+  conversationId: string,
+): ReturnType<MockChatState['getConversationRuntime']> => {
+  const isSelectedConversation = state.selectedConversationId === conversationId;
+  const phase: 'idle' | 'preparing' | 'streaming' | 'error' = isSelectedConversation
+    ? state.sendState === 'streaming' || state.isStreaming
+      ? 'streaming'
+      : state.sendState === 'preparing'
+        ? 'preparing'
+        : state.sendState === 'error' || Boolean(state.lastError)
+          ? 'error'
+          : 'idle'
+    : 'idle';
+  const latestAssistantMessage = [...state.messages]
+    .reverse()
+    .find((message: MockMessage) => message.role === 'assistant');
+
+  return {
+    phase,
+    sessionId: phase === 'idle' ? null : `session-${conversationId || 'unknown'}`,
+    assistantMessageId: phase === 'streaming'
+      ? latestAssistantMessage?.id ?? null
+      : null,
+    lastError: phase === 'error' ? state.lastError : null,
+  };
+};
+
+const useAppStore = createStoreHook(() => appState, (nextState) => {
+  appState = nextState;
+});
+const useChatStore = createStoreHook(() => chatState, (nextState) => {
+  chatState = nextState;
+});
+const useProviderStore = createStoreHook(() => providerState, (nextState) => {
+  providerState = nextState;
+});
+const useNeedsStore = createStoreHook(() => needsState, (nextState) => {
+  needsState = nextState;
+});
+const useShortcutsStore = createStoreHook(() => shortcutsState, (nextState) => {
+  shortcutsState = nextState;
+});
+const useTaskStore = createStoreHook(() => taskState, (nextState) => {
+  taskState = nextState;
+});
 
 const translationMock = {
   t: (key: string, fallbackOrOptions?: string | { defaultValue?: string }, maybeOptions?: { defaultValue?: string }) => {
@@ -347,6 +414,8 @@ const resetState = () => {
     conversations: [buildConversation()],
     messages: [],
     selectedConversationId: 'conv-1',
+    getConversationRuntime: (conversationId: string) =>
+      getMockConversationRuntime(chatState, conversationId),
     createConversation: mock(async () => buildConversation()),
     ensureConversationForCurrentMode: mock(async () => 'conv-1'),
     getConversationMessages: (conversationId: string) =>
@@ -368,6 +437,7 @@ const resetState = () => {
     stopStreaming: mock(() => undefined),
     sendMessage: mock(async () => ({ status: 'sent' })),
     clearLastError: mock(() => undefined),
+    clearConversationRuntimeError: mock(() => undefined),
     editMessage: mock(async () => undefined),
     getMessageImages: mock(() => []),
     setMessageImages: mock(() => undefined),

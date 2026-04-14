@@ -19,45 +19,117 @@ import type { AppMode, ProjectMount, ProviderTurnState, ReasoningEffort, ToolTra
 import { devLogger } from '../utils/devLogger';
 import { useProviderStore } from '../stores/useProviderStore';
 
-// Global references to active streaming resources for cancellation
-let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-let currentStream: ReadableStream<Uint8Array> | null = null;
-let currentTauriRequestId: string | null = null;
-let currentTauriUnlisteners: UnlistenFn[] = [];
+interface ActiveStreamResources {
+  reader: ReadableStreamDefaultReader<Uint8Array> | null;
+  stream: ReadableStream<Uint8Array> | null;
+  tauriRequestId: string | null;
+  tauriUnlisteners: UnlistenFn[];
+}
+
+const DEFAULT_STREAM_SESSION_ID = '__default__';
+const activeStreamResourcesBySessionId = new Map<string, ActiveStreamResources>();
+
+const getStreamSessionId = (sessionId?: string): string =>
+  sessionId && sessionId.trim().length > 0 ? sessionId : DEFAULT_STREAM_SESSION_ID;
+
+const getOrCreateActiveStreamResources = (sessionId?: string): ActiveStreamResources => {
+  const resolvedSessionId = getStreamSessionId(sessionId);
+  const existing = activeStreamResourcesBySessionId.get(resolvedSessionId);
+  if (existing) {
+    return existing;
+  }
+
+  const created: ActiveStreamResources = {
+    reader: null,
+    stream: null,
+    tauriRequestId: null,
+    tauriUnlisteners: [],
+  };
+  activeStreamResourcesBySessionId.set(resolvedSessionId, created);
+  return created;
+};
+
+const cleanupStreamListeners = (resources: ActiveStreamResources) => {
+  if (resources.tauriUnlisteners.length === 0) {
+    return;
+  }
+
+  resources.tauriUnlisteners.forEach((unlisten) => {
+    try {
+      unlisten();
+    } catch {
+      // Ignore listener cleanup errors
+    }
+  });
+  resources.tauriUnlisteners = [];
+};
+
+const pruneActiveStreamResources = (sessionId?: string) => {
+  const resolvedSessionId = getStreamSessionId(sessionId);
+  const resources = activeStreamResourcesBySessionId.get(resolvedSessionId);
+  if (!resources) {
+    return;
+  }
+
+  if (
+    resources.reader === null &&
+    resources.stream === null &&
+    resources.tauriRequestId === null &&
+    resources.tauriUnlisteners.length === 0
+  ) {
+    activeStreamResourcesBySessionId.delete(resolvedSessionId);
+  }
+};
 
 /**
  * Cancel the currently active stream
  */
-export function cancelStream(): void {
-  if (currentReader) {
-    currentReader.cancel().catch(() => {
-      // Ignore errors during cancel
-    });
-    currentReader = null;
-  }
-  if (currentStream) {
-    currentStream.cancel().catch(() => {
-      // Ignore errors during cancel
-    });
-    currentStream = null;
-  }
-  if (currentTauriRequestId && tauriIpc.isTauriAvailable()) {
-    void tauriIpc.aiCancelStream(currentTauriRequestId).catch(() => {
-      // Ignore backend cancel failures
-    });
-  }
-  currentTauriRequestId = null;
-  if (currentTauriUnlisteners.length > 0) {
-    currentTauriUnlisteners.forEach((unlisten) => {
-      try {
-        unlisten();
-      } catch {
-        // Ignore listener cleanup errors
-      }
-    });
-    currentTauriUnlisteners = [];
-  }
+export function cancelStream(sessionId?: string): void {
+  const sessionIds = sessionId
+    ? [getStreamSessionId(sessionId)]
+    : Array.from(activeStreamResourcesBySessionId.keys());
+
+  sessionIds.forEach((activeSessionId) => {
+    const resources = activeStreamResourcesBySessionId.get(activeSessionId);
+    if (!resources) {
+      return;
+    }
+
+    if (resources.reader) {
+      resources.reader.cancel().catch(() => {
+        // Ignore errors during cancel
+      });
+      resources.reader = null;
+    }
+    if (resources.stream) {
+      resources.stream.cancel().catch(() => {
+        // Ignore errors during cancel
+      });
+      resources.stream = null;
+    }
+    if (resources.tauriRequestId && tauriIpc.isTauriAvailable()) {
+      void tauriIpc.aiCancelStream(resources.tauriRequestId).catch(() => {
+        // Ignore backend cancel failures
+      });
+    }
+    resources.tauriRequestId = null;
+    cleanupStreamListeners(resources);
+    pruneActiveStreamResources(activeSessionId);
+  });
 }
+
+const clearTauriListeners = (sessionId?: string) => {
+  const resources = activeStreamResourcesBySessionId.get(getStreamSessionId(sessionId));
+  if (!resources) {
+    return;
+  }
+
+  cleanupStreamListeners(resources);
+  pruneActiveStreamResources(sessionId);
+};
+
+const getActiveStreamingSessionIds = (): string[] =>
+  Array.from(activeStreamResourcesBySessionId.keys());
 
 export interface StreamMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -113,6 +185,7 @@ export interface ToolInterruptResolution {
 export type ToolCallResolution = ToolResultResolution | ToolInterruptResolution;
 
 export interface StreamingChatOptions {
+  sessionId?: string;
   conversationId?: string;
   mode?: AppMode;
   internalAgentProfile?: InternalAgentProfile | null;
@@ -478,19 +551,6 @@ const createStreamingRequestId = () => {
   return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 };
 
-const clearTauriListeners = () => {
-  if (currentTauriUnlisteners.length > 0) {
-    currentTauriUnlisteners.forEach((unlisten) => {
-      try {
-        unlisten();
-      } catch {
-        // Ignore listener cleanup errors
-      }
-    });
-    currentTauriUnlisteners = [];
-  }
-};
-
 interface StreamingTurnResult {
   content: string;
   toolCalls: ToolCall[];
@@ -837,6 +897,7 @@ export const __testables = {
   compactToolResultForChatGptModelContext,
   createStreamAccumulator,
   formatToolTraceDetail,
+  getActiveStreamingSessionIds,
   getMissingChatGptVisibleTurnSuffix,
   hasMeaningfulVisibleAssistantText,
   isEmptyTerminalChatGptTurn,
@@ -925,6 +986,7 @@ const collectAllowedTools = (params: {
 };
 
 const streamNativeTurnViaTauri = async (params: {
+  sessionId?: string;
   providerId: string;
   providerType: string;
   modelId: string;
@@ -945,10 +1007,10 @@ const streamNativeTurnViaTauri = async (params: {
     throw new Error(`${params.providerType} provider requires the desktop backend.`);
   }
 
-  clearTauriListeners();
-
+  const sessionId = getStreamSessionId(params.sessionId);
+  const resources = getOrCreateActiveStreamResources(sessionId);
   const requestId = createStreamingRequestId();
-  currentTauriRequestId = requestId;
+  resources.tauriRequestId = requestId;
 
   let fullContent = '';
 
@@ -958,8 +1020,12 @@ const streamNativeTurnViaTauri = async (params: {
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      clearTauriListeners();
-      currentTauriRequestId = null;
+      clearTauriListeners(sessionId);
+      const activeResources = activeStreamResourcesBySessionId.get(sessionId);
+      if (activeResources && activeResources.tauriRequestId === requestId) {
+        activeResources.tauriRequestId = null;
+        pruneActiveStreamResources(sessionId);
+      }
       fn();
     };
 
@@ -1025,7 +1091,7 @@ const streamNativeTurnViaTauri = async (params: {
           }),
         ]);
 
-        currentTauriUnlisteners = unlisteners;
+        resources.tauriUnlisteners = unlisteners;
 
         await tauriIpc.aiStreamChat({
           requestId,
@@ -1058,6 +1124,11 @@ const streamNativeTurnViaTauri = async (params: {
       } catch (error) {
         if (params.signal) {
           params.signal.removeEventListener('abort', signalHandler);
+        }
+        const activeResources = activeStreamResourcesBySessionId.get(sessionId);
+        if (activeResources && activeResources.tauriRequestId === requestId) {
+          activeResources.tauriRequestId = null;
+          clearTauriListeners(sessionId);
         }
         finish(() => reject(error instanceof Error ? error : new Error(String(error))));
       }
@@ -1158,6 +1229,7 @@ const streamChatViaNativeToolCallingProvider = async (
       const shouldBufferTurnOutput = enforceGuidedToolRetry;
       let streamedTurnContent = '';
       const turnResult = await streamNativeTurnViaTauri({
+        sessionId: options.sessionId,
         providerId,
         providerType,
         modelId,
@@ -1580,8 +1652,14 @@ const streamChatViaNativeToolCallingProvider = async (
     const err = error instanceof Error ? error : new Error(String(error));
     onError(err);
   } finally {
-    clearTauriListeners();
-    currentTauriRequestId = null;
+    clearTauriListeners(options.sessionId);
+    const activeResources = activeStreamResourcesBySessionId.get(
+      getStreamSessionId(options.sessionId)
+    );
+    if (activeResources) {
+      activeResources.tauriRequestId = null;
+      pruneActiveStreamResources(options.sessionId);
+    }
   }
 };
 
@@ -1629,6 +1707,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     showToolTraces = false,
     // Note: signal is not used with Tauri HTTP plugin - AbortController support is limited
   } = options;
+  const sessionId = getStreamSessionId(options.sessionId);
+  const activeResources = getOrCreateActiveStreamResources(sessionId);
 
   const allowedTools = new Set(allowedToolIds ?? []);
   const streamAccumulator = createStreamAccumulator({
@@ -1777,9 +1857,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       }
 
       // Store references for cancellation
-      currentStream = response.body;
-      const reader = currentStream.getReader();
-      currentReader = reader;
+      activeResources.stream = response.body;
+      const reader = activeResources.stream.getReader();
+      activeResources.reader = reader;
       const decoder = new TextDecoder();
       let buffer = '';
       let isThinking = false;
@@ -2291,13 +2371,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     onComplete(streamAccumulator.buildResult());
   } catch (error) {
     // Cleanup on error
-    if (currentReader) {
-      currentReader = null;
-    }
-    if (currentStream) {
-      currentStream = null;
-    }
+    activeResources.reader = null;
+    activeResources.stream = null;
     if (error instanceof Error && error.name === 'AbortError') {
+      pruneActiveStreamResources(sessionId);
       onComplete(streamAccumulator.buildResult());
       return;
     }
@@ -2315,8 +2392,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     onError(err);
   } finally {
     // Always cleanup references to prevent memory leaks
-    currentReader = null;
-    currentStream = null;
+    activeResources.reader = null;
+    activeResources.stream = null;
+    pruneActiveStreamResources(sessionId);
   }
 }
 
@@ -2339,6 +2417,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
   if (providerType === 'chatgpt' || providerType === 'copilot') {
     try {
       const turn = await streamNativeTurnViaTauri({
+        sessionId: options.sessionId,
         conversationId: options.conversationId,
         providerId,
         providerType,

@@ -1,4 +1,4 @@
-import { useRef, useEffect, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
+import { useRef, useEffect, useImperativeHandle, forwardRef, useMemo, type CSSProperties } from 'react';
 import { MergeView } from '@codemirror/merge';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
@@ -171,10 +171,13 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   const syncingRef = useRef<'a' | 'b' | null>(null);
   const lastScrollTopRef = useRef({ a: 0, b: 0 });
   const isApplyingExternalUpdateRef = useRef(false);
-  const collapseUnchanged =
-    presentationMode === 'focused'
-      ? { margin: 3, minSize: 4 }
-      : undefined;
+  const collapseUnchanged = useMemo(
+    () =>
+      presentationMode === 'focused'
+        ? { margin: 3, minSize: 4 }
+        : undefined,
+    [presentationMode]
+  );
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -399,7 +402,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       mergeView.destroy();
       mergeViewRef.current = null;
     };
-  }, [editable, resolvedLanguage, resolvedLocale, resolvedOverflowMode, revertControls, themeContext?.theme, unchangedLinesPhrase]);
+  }, [collapseUnchanged, editable, resolvedLanguage, resolvedLocale, resolvedOverflowMode, revertControls, themeContext?.theme, unchangedLinesPhrase]);
 
   useEffect(() => {
     const mergeView = mergeViewRef.current;

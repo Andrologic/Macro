@@ -76,6 +76,8 @@ pub struct WriteResultDto {
     pub bytes_written: u64,
     /// Whether the file was created (true) or overwritten (false)
     pub created: bool,
+    /// Whether the write was skipped because the content was identical
+    pub skipped: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

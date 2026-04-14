@@ -488,7 +488,7 @@ const restoreProjectContext = async (
         });
 
         const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
-        useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
+        useNeedsStore.getState().hydrateNeedsForPlan(plan.id, needs);
       }
     } catch {
       restoredPlanId = null;
@@ -544,7 +544,7 @@ const hydrateArchitectPlanInStore = async (input: {
     planNodes: plan.nodes || [],
     predictedBranches: plan.predictedBranches || [],
   });
-  useNeedsStore.getState().replaceNeedsForPlan(plan.id, input.needs);
+  useNeedsStore.getState().hydrateNeedsForPlan(plan.id, input.needs);
 };
 
 const ensureAutoPlanForSelection = async (input: {

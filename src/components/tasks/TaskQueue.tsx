@@ -32,7 +32,7 @@ import {
 } from '../../services/taskProjectCommands';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import {
-  resolveStreamingTaskId,
+  resolveRunningTaskIds,
   resolveTaskStatusIndicatorState,
 } from '../../services/taskStatusPresentation';
 import { Icon, IconName } from '../ui/Icon';
@@ -71,7 +71,7 @@ const STANDALONE_FILTER = '__standalone__';
 const statusConfig: Record<TaskStatus, { color: string; bgColor: string }> = {
   Pending: { color: 'text-muted-foreground', bgColor: 'bg-muted' },
   InProgress: { color: 'text-amber-500', bgColor: 'bg-amber-500/10' },
-  AwaitingResponse: { color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
+  AwaitingResponse: { color: 'text-amber-500', bgColor: 'bg-amber-500/10' },
   InReview: { color: 'text-sky-400', bgColor: 'bg-sky-500/10' },
   Completed: { color: 'text-emerald-500', bgColor: 'bg-emerald-500/10' },
   Failed: { color: 'text-red-400', bgColor: 'bg-red-500/10' },
@@ -197,9 +197,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const [menuPosition, setMenuPosition] = useState<TaskMenuPosition | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const taskMenuRef = useRef<HTMLDivElement>(null);
-  const isDraft = task.draft === true;
   const showPlanLabel = task.task_source === 'architect' && planLabel.trim().length > 0;
-  const isAwaitingUserReply = !isDraft && !isAssistantRunning && task.status === 'AwaitingResponse';
   const status = isAssistantRunning
     ? { color: 'text-amber-500', bgColor: 'bg-amber-500/10' }
     : statusConfig[task.status] || statusConfig.Pending;
@@ -277,11 +275,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         'relative h-[112px] w-full overflow-visible rounded-xl border text-left transition-all duration-200 group cursor-pointer',
         isSelected
           ? 'border-primary/30 bg-primary/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
-          : isAssistantRunning
-            ? 'border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10'
-          : isAwaitingUserReply
-              ? 'border-blue-500/30 bg-blue-500/5 hover:bg-blue-500/10'
-              : 'border-border/70 bg-card/70 hover:border-primary/20 hover:bg-accent/30'
+          : 'border-border/70 bg-card/70 hover:border-primary/20 hover:bg-accent/30'
       )}
     >
       <div className="grid h-full grid-rows-[auto,1fr,auto] px-4 py-2">
@@ -310,6 +304,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
             <div className={cn('flex h-8 w-8 items-center justify-center rounded-lg', status.bgColor)}>
               <TaskStatusIndicator
                 state={indicatorState}
+                layout="card"
                 size={14}
                 dotSize={8}
                 className={status.color}
@@ -468,14 +463,12 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const {
     createConversation,
     conversations,
-    isStreaming,
-    selectedConversationId,
+    conversationRuntimeById,
     selectConversation,
   } = useChatStore(useShallow((state) => ({
     createConversation: state.createConversation,
     conversations: state.conversations,
-    isStreaming: state.isStreaming,
-    selectedConversationId: state.selectedConversationId,
+    conversationRuntimeById: state.conversationRuntimeById,
     selectConversation: state.selectConversation,
   })));
   const {
@@ -1314,14 +1307,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const completedCount = progressTasks.filter((task) => task.status === 'Completed').length;
   const totalCount = progressTasks.length;
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
-  const streamingTaskId = useMemo(
+  const runningTaskIds = useMemo(
     () =>
-      resolveStreamingTaskId({
+      resolveRunningTaskIds({
         conversations,
-        isStreaming,
-        selectedConversationId,
+        conversationRuntimeById,
       }),
-    [conversations, isStreaming, selectedConversationId]
+    [conversationRuntimeById, conversations]
   );
 
   if (!selectedGroupId) {
@@ -1562,7 +1554,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         task={row.task}
                         isSelected={selectedTaskId === row.task.id}
                         planLabel={getTaskPlanLabel(row.task)}
-                        isAssistantRunning={streamingTaskId === row.task.id}
+                        isAssistantRunning={runningTaskIds.has(row.task.id)}
                         taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
                         canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
                         runTaskCommandsTitle={getRunTaskCommandsTitle(row.task)}

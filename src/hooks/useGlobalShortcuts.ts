@@ -13,7 +13,14 @@ export const useGlobalShortcuts = (): void => {
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const settingsOpen = useAppStore((state) => state.settingsOpen);
   const mode = useAppStore((state) => state.mode);
-  const isStreaming = useChatStore((state) => state.isStreaming);
+  const isStreaming = useChatStore((state) => {
+    const selectedConversationId = state.selectedConversationId;
+    if (!selectedConversationId) {
+      return false;
+    }
+
+    return state.getConversationRuntime(selectedConversationId).phase === 'streaming';
+  });
 
   useEffect(() => {
     const executeShortcut = (shortcutId: string): boolean => {
@@ -54,7 +61,12 @@ export const useGlobalShortcuts = (): void => {
           providerState.cycleModel();
           return true;
         case 'chat.stopStreaming':
-          if (!chatState.isStreaming) return false;
+          if (!chatState.selectedConversationId) return false;
+          if (
+            chatState.getConversationRuntime(chatState.selectedConversationId).phase !== 'streaming'
+          ) {
+            return false;
+          }
           chatState.stopStreaming();
           return true;
         case 'chat.focusInput': {

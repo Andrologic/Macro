@@ -26,6 +26,30 @@ const persistPlanNeeds = (planId: string | null | undefined, needs: Need[]): voi
   void saveArchitectPlanNeeds(targetBranch, planId, needs.filter((need) => need.planId === planId));
 };
 
+const normalizeNeedsForPlan = (
+  planId: string,
+  needs: Need[],
+  fallbackGroupId?: string | null
+): Need[] =>
+  needs.map((need) => ({
+    ...need,
+    planId,
+    groupId: need.groupId ?? fallbackGroupId ?? undefined,
+  }));
+
+const applyNeedsForPlan = (
+  state: Pick<NeedsState, 'needs' | 'selectedNeedId'>,
+  planId: string,
+  normalizedNeeds: Need[]
+) => {
+  const others = state.needs.filter((need) => need.planId !== planId);
+  const selectedStillExists = normalizedNeeds.some((need) => need.id === state.selectedNeedId);
+  return {
+    needs: [...others, ...normalizedNeeds],
+    selectedNeedId: selectedStillExists ? state.selectedNeedId : null,
+  };
+};
+
 interface NeedsState {
   needs: Need[];
   selectedNeedId: string | null;
@@ -36,6 +60,7 @@ interface NeedsState {
   deleteNeed: (id: string) => void;
   selectNeed: (id: string | null) => void;
   clearNeeds: () => void;
+  hydrateNeedsForPlan: (planId: string, needs: Need[]) => void;
   replaceNeedsForPlan: (planId: string, needs: Need[]) => void;
   getNeedsForPlan: (planId: string) => Need[];
   getActivePlanNeeds: () => Need[];
@@ -110,20 +135,17 @@ export const useNeedsStore = create<NeedsState>((set, get) => ({
     set({ needs: [], selectedNeedId: null });
   },
 
+  hydrateNeedsForPlan: (planId, nextNeeds) => {
+    const selectedGroupId = useAppStore.getState().selectedGroupId;
+    const normalizedNeeds = normalizeNeedsForPlan(planId, nextNeeds, selectedGroupId);
+    set((state) => applyNeedsForPlan(state, planId, normalizedNeeds));
+  },
+
   replaceNeedsForPlan: (planId, nextNeeds) => {
     const selectedGroupId = useAppStore.getState().selectedGroupId;
-    const normalizedNeeds = nextNeeds.map((need) => ({
-      ...need,
-      planId,
-      groupId: need.groupId ?? selectedGroupId ?? undefined,
-    }));
+    const normalizedNeeds = normalizeNeedsForPlan(planId, nextNeeds, selectedGroupId);
     set((state) => {
-      const others = state.needs.filter((need) => need.planId !== planId);
-      const selectedStillExists = normalizedNeeds.some((need) => need.id === state.selectedNeedId);
-      return {
-        needs: [...others, ...normalizedNeeds],
-        selectedNeedId: selectedStillExists ? state.selectedNeedId : null,
-      };
+      return applyNeedsForPlan(state, planId, normalizedNeeds);
     });
     persistPlanNeeds(planId, normalizedNeeds);
   },

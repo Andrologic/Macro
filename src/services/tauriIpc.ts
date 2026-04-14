@@ -608,6 +608,7 @@ export interface FsWriteResultDto {
   path: string;
   bytes_written: number;
   created: boolean;
+  skipped: boolean;
 }
 
 export interface WorkspaceBootstrapDto {
