@@ -123,6 +123,28 @@ export const getScopedProjectIds = (
   return [];
 };
 
+export const getRepositoryScopedProjectIds = (
+  groups: ProjectGroup[],
+  groupId: string | null | undefined,
+  projectId: string | null | undefined
+): string[] => {
+  const groupProjects = getSubProjectsForGroup(groups, groupId);
+  if (groupProjects.length > 0) {
+    const groupProjectIds = new Set(groupProjects.map((project) => project.id));
+    if (projectId && groupProjectIds.has(projectId)) {
+      return [projectId];
+    }
+
+    return groupProjects.map((project) => project.id);
+  }
+
+  if (projectId) {
+    return [projectId];
+  }
+
+  return [];
+};
+
 export const getScopedActionableProjectIds = (
   groups: ProjectGroup[],
   groupId: string | null | undefined,

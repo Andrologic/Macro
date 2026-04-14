@@ -12,6 +12,9 @@ import {
   type ReviewRepositorySummary,
   type ReviewRepositoryUiState,
 } from '../../services/implementMultiRepoSummary';
+import {
+  areAllFileChangesRepositoriesResolved,
+} from '../../services/fileChangesReviewScope';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
@@ -341,7 +344,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const { t } = useTranslation();
   const translate: TranslateFn = (key, fallback, options) =>
     String(t(key, { defaultValue: fallback, ...(options || {}) }));
-  const { selectedGroupId, selectedTaskId, getProjectById } = useAppStore();
+  const { selectedGroupId, selectedProjectId, selectedTaskId, getProjectById } = useAppStore();
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
   );
@@ -372,6 +375,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     isLoading,
     isCommitting,
     lastError,
+    executionRecords,
     loadCurrentChanges,
     resetReviewState,
     selectRepository,
@@ -384,9 +388,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     setCommitMessageDraft,
     getOverallStats,
   } = useFileChangesStore();
+  const hasRepositoryScope = Boolean(selectedGroupId || selectedProjectId);
 
   useEffect(() => {
-    if (!selectedGroupId || !selectedTaskId) {
+    if (!hasRepositoryScope || !selectedTaskId) {
       resetReviewState();
       return;
     }
@@ -398,14 +403,16 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     currentTask?.status,
     isDiffModalOpen,
     loadCurrentChanges,
+    hasRepositoryScope,
     resetReviewState,
     selectedGroupId,
+    selectedProjectId,
     selectedTaskId,
     selectedTaskWorktreeKey,
   ]);
 
   useEffect(() => {
-    if (!selectedGroupId || !selectedTaskId) {
+    if (!hasRepositoryScope || !selectedTaskId) {
       return;
     }
     if (isDiffModalOpen) {
@@ -470,7 +477,15 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         window.clearTimeout(timeoutId);
       }
     };
-  }, [isCommitting, isDiffModalOpen, loadCurrentChanges, selectedGroupId, selectedTaskId]);
+  }, [
+    hasRepositoryScope,
+    isCommitting,
+    isDiffModalOpen,
+    loadCurrentChanges,
+    selectedGroupId,
+    selectedProjectId,
+    selectedTaskId,
+  ]);
 
   useEffect(() => {
     if (repositories.length === 0) return;
@@ -500,14 +515,26 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const hasAnyChangesToValidate = repositories.some(
     (repository) => repository.stats.total > 0 && repository.commitState !== 'committed'
   );
+  const allTaskRepositoriesResolved = Boolean(
+    currentTask &&
+      areAllFileChangesRepositoriesResolved({
+        task: currentTask,
+        repositories,
+        executionRecords,
+        fallbackRepositoryIds: repositories.map((repository) => repository.id),
+      })
+  );
+  const hasTaskCommittedRepositories =
+    reviewSummary.hasCommittedRepositories || Object.keys(executionRecords).length > 0;
   const canFinishTask =
     !isCommitting &&
     currentTask !== null &&
     !currentTask.draft &&
     currentTask.status !== 'Completed' &&
+    allTaskRepositoriesResolved &&
     reviewSummary.stateCounts.pending_review === 0 &&
     reviewSummary.stateCounts.ready_to_commit === 0 &&
-    reviewSummary.hasCommittedRepositories;
+    hasTaskCommittedRepositories;
   const nextValidationRepositoryId =
     (selectedRepositoryId && repositorySummaryById.get(selectedRepositoryId)?.state === 'pending_review'
       ? selectedRepositoryId
@@ -538,6 +565,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     lastError || '',
     translate
   );
+  const outOfScopeMessage = currentTaskLoadState === 'out_of_scope'
+    ? currentTaskLoadMessage
+    : null;
   const mappingError = currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree'
     ? currentTaskLoadMessage
     : null;
@@ -619,7 +649,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     revert: t('implement.revertAction', 'Revert'),
   };
 
-  if (!selectedGroupId) {
+  if (!hasRepositoryScope) {
     return (
       <aside
         className={cn(
@@ -630,7 +660,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         <div className="text-center px-6">
           <Icon name="folder-git-2" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
           <p className="text-muted-foreground text-sm">
-            {t('implement.selectProject', 'Select a global project to view changes')}
+            {t('implement.selectProject', 'Select a project to view changes')}
           </p>
         </div>
       </aside>
@@ -692,12 +722,17 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             {mappingError}
           </div>
         )}
+        {!isLoading && !mappingError && !displayError && outOfScopeMessage && (
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+            {outOfScopeMessage}
+          </div>
+        )}
         {!isLoading && displayError && (
           <div className="px-4 py-8 text-center text-sm text-destructive">
             {displayError}
           </div>
         )}
-        {!isLoading && !mappingError && !displayError && repositories.length === 0 && (
+        {!isLoading && !mappingError && !displayError && !outOfScopeMessage && repositories.length === 0 && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('implement.noPendingChanges', 'No pending file changes for this task yet.')}
           </div>

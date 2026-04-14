@@ -4,8 +4,13 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { TaskStatus } from '../../types';
 import { Icon } from '../ui/Icon';
+import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
 import { Select } from '../ui/Select';
 import { cn } from '../../utils/cn';
+import {
+  resolveStreamingTaskId,
+  resolveTaskStatusIndicatorState,
+} from '../../services/taskStatusPresentation';
 
 type TaskSortOption = 'updated' | 'created' | 'status';
 
@@ -13,22 +18,37 @@ interface TaskListViewProps {
   projectId: string;
 }
 
-const statusColors: Record<TaskStatus, string> = {
-  Pending: 'bg-muted/50 text-muted-foreground border-border',
-  InProgress: 'bg-primary/10 text-primary border-primary/20',
-  AwaitingResponse: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
-  InReview: 'bg-sky-500/10 text-sky-500 border-sky-500/20',
-  Completed: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
-  Failed: 'bg-red-500/10 text-red-500 border-red-500/20',
-  Blocked: 'bg-orange-500/10 text-orange-500 border-orange-500/20',
+const indicatorColors: Record<TaskStatus, string> = {
+  Pending: 'text-muted-foreground',
+  InProgress: 'text-primary',
+  AwaitingResponse: 'text-amber-500',
+  InReview: 'text-sky-500',
+  Completed: 'text-emerald-500',
+  Failed: 'text-red-500',
+  Blocked: 'text-orange-500',
 };
 
 export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
   const { t } = useTranslation();
   const { currentPlan, setSelectedTask } = useAppStore();
-  const { selectedConversationId, selectConversation, getConversationByTask } =
+  const {
+    conversations,
+    isStreaming,
+    selectedConversationId,
+    selectConversation,
+    getConversationByTask,
+  } =
     useChatStore();
   const [sortOption, setSortOption] = useState<TaskSortOption>('updated');
+  const streamingTaskId = useMemo(
+    () =>
+      resolveStreamingTaskId({
+        conversations,
+        isStreaming,
+        selectedConversationId,
+      }),
+    [conversations, isStreaming, selectedConversationId]
+  );
 
   // Filter tasks by project
   const projectTasks = useMemo(() => {
@@ -113,6 +133,14 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
             {sortedTasks.map((task) => {
               const conversation = getTaskConversation(task.id);
               const isSelected = conversation?.id === selectedConversationId;
+              const isAssistantRunning = streamingTaskId === task.id;
+              const indicatorState = resolveTaskStatusIndicatorState(
+                task.status,
+                isAssistantRunning
+              );
+              const indicatorColor = isAssistantRunning
+                ? 'text-primary'
+                : indicatorColors[task.status];
 
               return (
                 <button
@@ -127,11 +155,11 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
                 >
                   <div className="flex items-start gap-3">
                     {/* Status indicator */}
-                    <div
-                      className={cn(
-                        'mt-0.5 w-2 h-2 rounded-full shrink-0',
-                        statusColors[task.status].split(' ')[0]
-                      )}
+                    <TaskStatusIndicator
+                      state={indicatorState}
+                      size={10}
+                      dotSize={8}
+                      className={cn('mt-0.5 shrink-0', indicatorColor)}
                     />
 
                     {/* Content */}

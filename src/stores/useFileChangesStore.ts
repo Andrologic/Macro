@@ -3,16 +3,21 @@ import i18n from '../i18n';
 import { parseUnifiedDiff, type ParsedDiffHunk } from '../services/gitDiffParser';
 import * as tauriIpc from '../services/tauriIpc';
 import { useTaskStore, type TaskCompletionRepositoryRecord } from './useTaskStore';
-import type { TaskExecutionTarget, TaskStatus } from '../types';
+import type { ProjectGroup, TaskExecutionTarget, TaskStatus } from '../types';
 import {
   EMPTY_REVIEW_TASK_SUMMARY,
   buildReviewTaskSummary,
   selectReviewRepositoryId,
   type ReviewTaskSummary,
 } from '../services/implementMultiRepoSummary';
-import { toBranchWorktreeKey } from '../services/implementTaskDerivation';
 import { useAppStore } from './useAppStore';
 import { getGitFlowBaseBranch } from '../services/architectPlanService';
+import {
+  areAllFileChangesRepositoriesResolved,
+  buildFileChangesRepositoryId,
+  getFileChangesExecutionTargets,
+} from '../services/fileChangesReviewScope';
+import { getGlobalProjectById, getRepositoryScopedProjectIds } from '../services/globalProjects';
 
 export type DiffPresentationMode = 'focused' | 'full';
 export type FileChangeContextMode = DiffPresentationMode;
@@ -21,6 +26,7 @@ export type FileChangesTaskLoadState =
   | 'idle'
   | 'loading'
   | 'ready'
+  | 'out_of_scope'
   | 'awaiting_worktree'
   | 'invalid_mapping';
 
@@ -114,6 +120,7 @@ const EMPTY_STATS: ReviewRepositoryStats = {
 
 interface FileChangesProjectRef {
   path?: string | null;
+  name?: string | null;
 }
 
 interface FileChangesTaskLike {
@@ -142,7 +149,10 @@ type FileChangesTauriDeps = Pick<
 };
 
 interface FileChangesAppState {
+  selectedGroupId: string | null;
+  selectedProjectId: string | null;
   selectedTaskId: string | null;
+  projectGroups: ProjectGroup[];
   getProjectById: (projectId: string) => FileChangesProjectRef | null | undefined;
 }
 
@@ -270,9 +280,6 @@ export const resolveChangeFilePath = (repoPath: string, relativePath: string): s
 const tChanges = (key: string, fallback: string, options?: Record<string, unknown>): string =>
   i18n.t(key, { defaultValue: fallback, ...(options || {}) });
 
-const buildRepositoryId = (target: TaskExecutionTarget): string =>
-  `${target.projectId}::${target.worktreeKey}`;
-
 const normalizeBranchName = (value?: string | null): string => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed || 'work';
@@ -332,24 +339,28 @@ const syncActiveReviewRepository = (
   });
 };
 
-const getExecutionTargets = (
+const getScopedExecutionTargets = (
   deps: FileChangesStoreDependencies,
   task: FileChangesTaskLike
 ): TaskExecutionTarget[] => {
-  if (task.execution_targets?.length) {
-    return task.execution_targets;
+  const executionTargets = getFileChangesExecutionTargets(
+    task,
+    deps.getGitFlowBaseBranch
+  );
+  const appState = deps.getAppState();
+  const shouldFilterByScope = Boolean(appState.selectedGroupId || appState.selectedProjectId);
+
+  if (!shouldFilterByScope) {
+    return executionTargets;
   }
 
-  if (!task.project_id) {
-    return [];
-  }
-
-  return [{
-    projectId: task.project_id,
-    branchName: task.assigned_branch,
-    worktreeKey: toBranchWorktreeKey(task.project_id, task.assigned_branch),
-    planBranchName: task.task_source === 'standalone' ? deps.getGitFlowBaseBranch() : undefined,
-  }];
+  const scopedProjectIds = getRepositoryScopedProjectIds(
+    appState.projectGroups,
+    appState.selectedGroupId,
+    appState.selectedProjectId
+  );
+  const scopedProjectIdSet = new Set(scopedProjectIds);
+  return executionTargets.filter((target) => scopedProjectIdSet.has(target.projectId));
 };
 
 const resolveSelectedTask = (deps: FileChangesStoreDependencies): FileChangesTaskLike | null => {
@@ -413,6 +424,67 @@ const buildAwaitingWorktreeMessage = (task: FileChangesTaskLike): string => {
   return buildFirstChangesMessage();
 };
 
+const buildOutOfScopeMessage = (deps: FileChangesStoreDependencies): string => {
+  const appState = deps.getAppState();
+  const selectedGroup = getGlobalProjectById(
+    appState.projectGroups,
+    appState.selectedGroupId
+  );
+  const selectedProject = appState.selectedProjectId
+    ? appState.getProjectById(appState.selectedProjectId)
+    : null;
+  const selectedProjectInGroup =
+    Boolean(selectedGroup) &&
+    Boolean(
+      appState.selectedProjectId &&
+      selectedGroup?.subProjectIds.includes(appState.selectedProjectId)
+    );
+
+  if (selectedProjectInGroup) {
+    return tChanges(
+      'implement.taskOutsideSelectedSubprojectScope',
+      'This task has no changes in {{project}}.',
+      {
+        project: selectedProject?.name || tChanges(
+          'implement.selectedSubproject',
+          'the selected subproject'
+        ),
+      }
+    );
+  }
+
+  if (selectedGroup) {
+    return tChanges(
+      'implement.taskOutsideSelectedGlobalProjectScope',
+      'This task has no changes in {{project}}.',
+      {
+        project: selectedGroup.name || tChanges(
+          'implement.selectedGlobalProject',
+          'the selected global project'
+        ),
+      }
+    );
+  }
+
+  if (selectedProject) {
+    return tChanges(
+      'implement.taskOutsideSelectedSubprojectScope',
+      'This task has no changes in {{project}}.',
+      {
+        project: selectedProject.name || tChanges(
+          'implement.selectedSubproject',
+          'the selected subproject'
+        ),
+      }
+    );
+  }
+
+  return tChanges(
+    'implement.taskOutsideCurrentRepositoryScope',
+    'This task has no changes in the current repository scope.'
+  );
+};
+
 const shouldTreatMissingWorktreeAsPending = (task: FileChangesTaskLike): boolean =>
   task.status === 'Pending' ||
   task.status === 'Blocked' ||
@@ -472,7 +544,7 @@ const loadRepositoryState = async (params: {
     );
   }
 
-  const repositoryId = buildRepositoryId(target);
+  const repositoryId = buildFileChangesRepositoryId(target);
   const status = await deps.tauri.gitStatus(worktreePath);
   const candidates = [
     ...status.staged_files,
@@ -827,8 +899,30 @@ export const createFileChangesStore = (
     }
 
     try {
-      const executionTargets = getExecutionTargets(deps, task);
-      const unresolvedTargets = executionTargets.filter(
+      const executionTargets = getFileChangesExecutionTargets(
+        task,
+        deps.getGitFlowBaseBranch
+      );
+      const scopedExecutionTargets = getScopedExecutionTargets(deps, task);
+
+      if (executionTargets.length > 0 && scopedExecutionTargets.length === 0) {
+        if (isStaleRequest(nextLoadRequestId, task.id)) {
+          return;
+        }
+
+        set({
+          ...resetLoadState,
+          currentTaskId: task.id,
+          currentTaskLoadState: 'out_of_scope',
+          currentTaskLoadMessage: buildOutOfScopeMessage(deps),
+          isLoading: false,
+          lastError: null,
+          executionRecords,
+        });
+        return;
+      }
+
+      const unresolvedTargets = scopedExecutionTargets.filter(
         (target) => !resolveRepositoryWorktreePath(deps, target, task)
       );
 
@@ -854,8 +948,8 @@ export const createFileChangesStore = (
       }
 
       const repositories = await Promise.all(
-        executionTargets.map((target) => {
-          const repositoryId = buildRepositoryId(target);
+        scopedExecutionTargets.map((target) => {
+          const repositoryId = buildFileChangesRepositoryId(target);
           return loadRepositoryState({
             deps,
             task,
@@ -1415,9 +1509,15 @@ export const createFileChangesStore = (
         nextExecutionRecords[currentRepository.id] ||
         buildCompletionRepositoryRecord(deps, currentRepository)
       );
-      const allRepositoriesResolved = nextRepositories.every((currentRepository) =>
-        currentRepository.commitState === 'committed' || currentRepository.commitState === 'no_changes'
-      );
+      const allRepositoriesResolved = areAllFileChangesRepositoriesResolved({
+        task,
+        repositories: nextRepositories,
+        executionRecords: nextExecutionRecords,
+        fallbackRepositoryIds: nextRepositories.map(
+          (currentRepository) => currentRepository.id
+        ),
+        getGitFlowBaseBranch: deps.getGitFlowBaseBranch,
+      });
 
       let taskCompleted = false;
       let taskStatus: TaskStatus | null = deps.getTaskState().getTaskById(task.id)?.status ?? null;
