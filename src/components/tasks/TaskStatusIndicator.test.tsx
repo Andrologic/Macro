@@ -51,10 +51,10 @@ describe('TaskStatusIndicator', () => {
 
     expect(indicator).not.toBeNull();
     expect(indicator?.getAttribute('data-task-status-indicator-layout')).toBe('compact');
-    expect(indicator?.querySelector('.task-status-awaiting-response__halo')).toBeNull();
+    expect(indicator?.querySelector('.task-status-awaiting-response__wave')).toBeNull();
   });
 
-  it('renders a continuous pulse halo for awaiting response', async () => {
+  it('renders a single expanding wave for awaiting response', async () => {
     await act(async () => {
       root?.render(
         <TaskStatusIndicator
@@ -73,7 +73,7 @@ describe('TaskStatusIndicator', () => {
     expect(indicator).not.toBeNull();
     expect(indicator?.getAttribute('data-task-status-indicator-layout')).toBe('card');
     expect(indicator?.getAttribute('data-task-status-indicator-pulse')).toBe('awaiting_response');
-    expect(indicator?.querySelectorAll('.task-status-awaiting-response__halo').length).toBe(1);
+    expect(indicator?.querySelectorAll('.task-status-awaiting-response__wave').length).toBe(1);
     expect(indicator?.className).toContain('text-amber-500');
   });
 

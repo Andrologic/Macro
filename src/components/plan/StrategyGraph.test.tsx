@@ -164,7 +164,7 @@ describe('StrategyGraph', () => {
     expect(indicator).not.toBeNull();
     expect(indicator?.getAttribute('data-task-status-indicator-layout')).toBe('graph');
     expect(indicator?.getAttribute('data-task-status-indicator-pulse')).toBe('awaiting_response');
-    expect(indicator?.querySelectorAll('.task-status-awaiting-response__halo').length).toBe(1);
+    expect(indicator?.querySelectorAll('.task-status-awaiting-response__wave').length).toBe(1);
     expect(indicator?.parentElement?.className).toContain('text-amber-500');
   });
 
