@@ -14,22 +14,13 @@ interface TaskStatusIndicatorProps {
 }
 
 interface AwaitingResponseLayoutMetrics {
-  frameWidth: number;
-  frameHeight: number;
-  haloWidth: number;
-  haloHeight: number;
-  baseWidth: number;
-  baseHeight: number;
-  baseOpacity: number;
-  baseBlur: number;
-  baseGlow: number;
-  haloRestOpacity: number;
-  haloPeakOpacity: number;
-  haloRestScale: number;
-  haloPeakScale: number;
-  haloRestBlur: number;
-  haloPeakBlur: number;
-  haloGlow: number;
+  frameSize: number;
+  waveSize: number;
+  waveStartScale: number;
+  waveMidScale: number;
+  waveEndScale: number;
+  waveStartOpacity: number;
+  waveMidOpacity: number;
 }
 
 const getAwaitingResponseLayoutMetrics = (
@@ -39,68 +30,40 @@ const getAwaitingResponseLayoutMetrics = (
 ): AwaitingResponseLayoutMetrics => {
   switch (layout) {
     case 'card': {
-      const frameWidth = Math.max(size + 12, dotSize + 18);
-      const frameHeight = Math.max(size + 10, dotSize + 14);
+      const frameSize = Math.max(size + 12, dotSize + 18);
       return {
-        frameWidth,
-        frameHeight,
-        haloWidth: frameWidth,
-        haloHeight: frameHeight - 1,
-        baseWidth: frameWidth - 4,
-        baseHeight: frameHeight - 4,
-        baseOpacity: 0.2,
-        baseBlur: 7.5,
-        baseGlow: 14,
-        haloRestOpacity: 0.34,
-        haloPeakOpacity: 0.62,
-        haloRestScale: 0.93,
-        haloPeakScale: 1.08,
-        haloRestBlur: 9,
-        haloPeakBlur: 15,
-        haloGlow: 20,
+        frameSize,
+        waveSize: frameSize,
+        waveStartScale: 0.2,
+        waveMidScale: 0.62,
+        waveEndScale: 1.02,
+        waveStartOpacity: 0.3,
+        waveMidOpacity: 0.12,
       };
     }
     case 'graph': {
       const frameSize = Math.max(size + 8, dotSize + 12);
       return {
-        frameWidth: frameSize,
-        frameHeight: frameSize,
-        haloWidth: frameSize - 1,
-        haloHeight: frameSize - 1,
-        baseWidth: frameSize - 4,
-        baseHeight: frameSize - 4,
-        baseOpacity: 0.18,
-        baseBlur: 6,
-        baseGlow: 10,
-        haloRestOpacity: 0.3,
-        haloPeakOpacity: 0.54,
-        haloRestScale: 0.92,
-        haloPeakScale: 1.09,
-        haloRestBlur: 7.5,
-        haloPeakBlur: 11,
-        haloGlow: 14,
+        frameSize,
+        waveSize: frameSize,
+        waveStartScale: 0.22,
+        waveMidScale: 0.64,
+        waveEndScale: 1,
+        waveStartOpacity: 0.28,
+        waveMidOpacity: 0.11,
       };
     }
     case 'compact':
     default: {
       const frameSize = Math.max(size + 5, dotSize + 9);
       return {
-        frameWidth: frameSize,
-        frameHeight: frameSize,
-        haloWidth: frameSize - 1,
-        haloHeight: frameSize - 1,
-        baseWidth: frameSize - 3,
-        baseHeight: frameSize - 3,
-        baseOpacity: 0.16,
-        baseBlur: 4.5,
-        baseGlow: 7,
-        haloRestOpacity: 0.26,
-        haloPeakOpacity: 0.46,
-        haloRestScale: 0.93,
-        haloPeakScale: 1.08,
-        haloRestBlur: 5.5,
-        haloPeakBlur: 8.5,
-        haloGlow: 10,
+        frameSize,
+        waveSize: frameSize,
+        waveStartScale: 0.28,
+        waveMidScale: 0.66,
+        waveEndScale: 0.98,
+        waveStartOpacity: 0.24,
+        waveMidOpacity: 0.1,
       };
     }
   }
@@ -151,13 +114,11 @@ export const TaskStatusIndicator: React.FC<TaskStatusIndicatorProps> = ({
   if (state === 'awaiting_response') {
     const metrics = getAwaitingResponseLayoutMetrics(layout, size, dotSize);
     const pulseVars = {
-      '--task-status-halo-rest-opacity': String(metrics.haloRestOpacity),
-      '--task-status-halo-peak-opacity': String(metrics.haloPeakOpacity),
-      '--task-status-halo-rest-scale': String(metrics.haloRestScale),
-      '--task-status-halo-peak-scale': String(metrics.haloPeakScale),
-      '--task-status-halo-rest-blur': `${metrics.haloRestBlur}px`,
-      '--task-status-halo-peak-blur': `${metrics.haloPeakBlur}px`,
-      '--task-status-halo-glow': `${metrics.haloGlow}px`,
+      '--task-status-wave-start-scale': String(metrics.waveStartScale),
+      '--task-status-wave-mid-scale': String(metrics.waveMidScale),
+      '--task-status-wave-end-scale': String(metrics.waveEndScale),
+      '--task-status-wave-start-opacity': String(metrics.waveStartOpacity),
+      '--task-status-wave-mid-opacity': String(metrics.waveMidOpacity),
     } as React.CSSProperties;
 
     return (
@@ -171,24 +132,17 @@ export const TaskStatusIndicator: React.FC<TaskStatusIndicatorProps> = ({
           aria-hidden="true"
           className="relative inline-flex items-center justify-center overflow-visible"
           style={{
-            width: metrics.frameWidth,
-            height: metrics.frameHeight,
+            width: metrics.frameSize,
+            height: metrics.frameSize,
             ...pulseVars,
           }}
         >
           <span
-            className="absolute rounded-full bg-current"
+            className="task-status-awaiting-response__wave absolute rounded-full bg-current"
             style={{
-              width: metrics.baseWidth,
-              height: metrics.baseHeight,
-              opacity: metrics.baseOpacity,
-              filter: `blur(${metrics.baseBlur}px)`,
-              boxShadow: `0 0 ${metrics.baseGlow}px currentColor`,
+              width: metrics.waveSize,
+              height: metrics.waveSize,
             }}
-          />
-          <span
-            className="task-status-awaiting-response__halo absolute rounded-full bg-current"
-            style={{ width: metrics.haloWidth, height: metrics.haloHeight }}
           />
           <span
             className="relative block rounded-full bg-current"
