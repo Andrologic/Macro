@@ -6,7 +6,6 @@ import {
   AppMode,
   AgentType,
   CodeOverflowMode,
-  ImplementExecutionMode,
   Plan,
   ProjectGroup,
   Project,
@@ -43,6 +42,7 @@ import {
 import { taskMatchesProjectId } from "../services/implementTaskCatalog";
 import {
   loadPreference,
+  purgeLegacyImplementExecutionModePreference,
   savePreference,
   savePreferenceDebounced,
   PREF_KEYS,
@@ -686,10 +686,7 @@ interface AppStore {
   projectSwitchPolicy: ProjectSwitchPolicy;
   isProjectSwitching: boolean;
   metadataAutoPush: boolean;
-  implementExecutionMode: ImplementExecutionMode;
   notificationChannelModes: NotificationChannelModes;
-  pendingAutoLaunchPlanId: string | null;
-  pendingAutoLaunchTaskId: string | null;
   metadataSyncState: MetadataSyncState;
   metadataSyncError: string | null;
   metadataSyncReason: MacroSyncReason | null;
@@ -743,16 +740,10 @@ interface AppStore {
   setCodeOverflowMode: (mode: CodeOverflowMode) => void;
   setProjectSwitchPolicy: (policy: ProjectSwitchPolicy) => Promise<void>;
   setMetadataAutoPush: (enabled: boolean) => void;
-  setImplementExecutionMode: (mode: ImplementExecutionMode) => void;
   setNotificationChannelMode: (
     category: NotificationCategory,
     mode: NotificationChannelMode,
   ) => void;
-  armPendingAutoLaunch: (planId: string, taskId: string) => void;
-  clearPendingAutoLaunch: (params?: {
-    planId?: string | null;
-    taskId?: string | null;
-  }) => void;
   setMetadataSyncStatus: (params: {
     state: MetadataSyncState;
     error?: string | null;
@@ -891,10 +882,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   projectSwitchPolicy: "resume_per_project",
   isProjectSwitching: false,
   metadataAutoPush: false,
-  implementExecutionMode: "semi_auto",
   notificationChannelModes: DEFAULT_NOTIFICATION_CHANNEL_MODES,
-  pendingAutoLaunchPlanId: null,
-  pendingAutoLaunchTaskId: null,
   metadataSyncState: "clean",
   metadataSyncError: null,
   metadataSyncReason: null,
@@ -911,15 +899,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   predictedBranches: [],
 
   setMode: (mode) => {
-    set({
-      mode,
-      ...(mode === "Implement"
-        ? {}
-        : {
-            pendingAutoLaunchPlanId: null,
-            pendingAutoLaunchTaskId: null,
-          }),
-    });
+    set({ mode });
     void savePreference(PREF_KEYS.LAST_ACTIVE_MODE, mode);
     const { selectedGroupId, selectedProjectId } = get();
     void persistSessionContext({
@@ -975,8 +955,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
       selectedGroupId: groupId,
       selectedProjectId: nextFocusProjectId,
       selectedTaskId: null,
-      pendingAutoLaunchPlanId: null,
-      pendingAutoLaunchTaskId: null,
       activeArchitectPlanId: null,
       activePlanContext: null,
       planNodes: [],
@@ -1020,21 +998,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
     void savePreference(PREF_KEYS.METADATA_AUTO_PUSH, enabled);
   },
 
-  setImplementExecutionMode: (mode) => {
-    const normalized: ImplementExecutionMode =
-      mode === "full_auto" ? "full_auto" : "semi_auto";
-    set({
-      implementExecutionMode: normalized,
-      ...(normalized === "full_auto"
-        ? {}
-        : {
-            pendingAutoLaunchPlanId: null,
-            pendingAutoLaunchTaskId: null,
-          }),
-    });
-    void savePreference(PREF_KEYS.IMPLEMENT_EXECUTION_MODE, normalized);
-  },
-
   setNotificationChannelMode: (category, mode) => {
     const normalizedMode = sanitizeNotificationChannelMode(category, mode);
     set((state) => {
@@ -1044,31 +1007,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
       };
       void savePreference(PREF_KEYS.NOTIFICATION_CHANNEL_MODES, nextModes);
       return { notificationChannelModes: nextModes };
-    });
-  },
-
-  armPendingAutoLaunch: (planId, taskId) => {
-    set({
-      pendingAutoLaunchPlanId: planId,
-      pendingAutoLaunchTaskId: taskId,
-    });
-  },
-
-  clearPendingAutoLaunch: (params) => {
-    set((state) => {
-      if (params?.planId && state.pendingAutoLaunchPlanId !== params.planId) {
-        return {};
-      }
-      if (params?.taskId && state.pendingAutoLaunchTaskId !== params.taskId) {
-        return {};
-      }
-      if (!state.pendingAutoLaunchPlanId && !state.pendingAutoLaunchTaskId) {
-        return {};
-      }
-      return {
-        pendingAutoLaunchPlanId: null,
-        pendingAutoLaunchTaskId: null,
-      };
     });
   },
 
@@ -1163,8 +1101,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
         set({
           selectedGroupId: nextGroupId,
           selectedProjectId: nextProjectId,
-          pendingAutoLaunchPlanId: null,
-          pendingAutoLaunchTaskId: null,
           recentProjects: nextRecentProjects,
           macroEnabledProjects: nextMacroEnabledProjects,
         });
@@ -1205,8 +1141,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedGroupId: nextGroupId,
         selectedProjectId: nextProjectId,
         selectedTaskId: null,
-        pendingAutoLaunchPlanId: null,
-        pendingAutoLaunchTaskId: null,
         activeArchitectPlanId: null,
         activePlanContext: null,
         planNodes: [],
@@ -1265,15 +1199,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   setSelectedTask: (taskId) =>
-    set((state) => ({
+    set({
       selectedTaskId: taskId,
-      ...(taskId && state.pendingAutoLaunchTaskId === taskId
-        ? {}
-        : {
-            pendingAutoLaunchPlanId: null,
-            pendingAutoLaunchTaskId: null,
-          }),
-    })),
+    }),
 
   setEnabledModes: (modes) => set({ enabledModes: modes }),
 
@@ -3033,6 +2961,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     try {
       logProjectRegistryAction("started", { action: "initialize" });
+      await purgeLegacyImplementExecutionModePreference();
       // Load persisted panel preferences
       const [
         leftWidth,
@@ -3050,7 +2979,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
         recentProjects,
         macroEnabledProjects,
         metadataAutoPush,
-        implementExecutionMode,
         notificationChannelModes,
         storedProjectSwitchPolicy,
         sessionContext,
@@ -3070,9 +2998,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
         loadPreference<RememberedProject[]>(PREF_KEYS.RECENT_PROJECTS),
         loadPreference<RememberedProject[]>(PREF_KEYS.MACRO_ENABLED_PROJECTS),
         loadPreference<boolean>(PREF_KEYS.METADATA_AUTO_PUSH),
-        loadPreference<ImplementExecutionMode>(
-          PREF_KEYS.IMPLEMENT_EXECUTION_MODE,
-        ),
         loadPreference<NotificationChannelModes>(
           PREF_KEYS.NOTIFICATION_CHANNEL_MODES,
         ),
@@ -3085,8 +3010,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const normalizedZoomLevel = clampUiZoomLevel(uiZoomLevel);
       const normalizedCodeOverflowMode =
         normalizeCodeOverflowMode(codeOverflowMode);
-      const normalizedImplementExecutionMode: ImplementExecutionMode =
-        implementExecutionMode === "full_auto" ? "full_auto" : "semi_auto";
 
       const prunedRecentProjects =
         pruneLegacyRememberedProjects(recentProjects);
@@ -3255,7 +3178,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
         uiZoomLevel: normalizedZoomLevel,
         codeOverflowMode: normalizedCodeOverflowMode,
         metadataAutoPush,
-        implementExecutionMode: normalizedImplementExecutionMode,
         notificationChannelModes: sanitizeNotificationChannelModes(
           notificationChannelModes,
         ),

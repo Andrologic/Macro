@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+const actualTauriIpc = await import('./tauriIpc');
 
 type MockProject = {
   id: string;
@@ -161,6 +162,7 @@ const registerArchitectPlanMocks = () => {
   mock.restore();
 
   const tauriModule = () => ({
+    ...actualTauriIpc,
     isTauriAvailable: () => true,
     workspaceGetActiveRoot: async () => '/repos/web',
     fsReadFileWithOptions: async ({
@@ -291,8 +293,8 @@ describe('architectPlanService replicas', () => {
     expect(apiManifest.expectedProjectIds).toEqual(['web', 'api']);
     expect(webManifest.revision).toBe(1);
     expect(apiManifest.revision).toBe(1);
-    expect(webChat).toBe('');
-    expect(apiChat).toBe('');
+    expect(webChat).toBeNull();
+    expect(apiChat).toBeNull();
   });
 
   it('auto-heals synthetic session project ids without reporting missing replicas', async () => {

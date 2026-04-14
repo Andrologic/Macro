@@ -96,9 +96,6 @@ type AppStoreState = {
   mode: AppMode;
   agentType: string;
   setAgentType: ReturnType<typeof mock>;
-  pendingAutoLaunchPlanId: string | null;
-  pendingAutoLaunchTaskId: string | null;
-  clearPendingAutoLaunch: ReturnType<typeof mock>;
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   selectedTaskId: string | null;
@@ -398,9 +395,6 @@ const resetState = () => {
     mode: 'Chat',
     agentType: 'default',
     setAgentType: mock(() => undefined),
-    pendingAutoLaunchPlanId: null,
-    pendingAutoLaunchTaskId: null,
-    clearPendingAutoLaunch: mock(() => undefined),
     selectedGroupId: null,
     selectedProjectId: null,
     selectedTaskId: null,
@@ -597,6 +591,43 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-testid="provider-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="model-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
+  });
+
+  it('keeps implement kickoff manual when a task is selected with an empty conversation', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('Task briefing');
+    expect(requireContainer().textContent).toContain('Start execution');
+    expect(taskState.startTask).not.toHaveBeenCalled();
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
   });
 
   it('renders the active questionnaire in the footer and hides the standard composer', async () => {

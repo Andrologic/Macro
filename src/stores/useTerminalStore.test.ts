@@ -256,12 +256,15 @@ const resolveProjectExecutionContextMock = mock(
     },
   })
 );
+const actualPreferences = await import('../services/preferences');
+const actualTauriIpc = await import('../services/tauriIpc');
 
 mock.module('@tauri-apps/api/event', () => ({
   listen: listenMock,
 }));
 
 mock.module('../services/tauriIpc', () => ({
+  ...actualTauriIpc,
   isTauriAvailable: () => true,
   terminalListTabs: terminalListTabsMock,
   terminalCreateTab: terminalCreateTabMock,
@@ -271,11 +274,7 @@ mock.module('../services/tauriIpc', () => ({
 }));
 
 mock.module('../services/preferences', () => ({
-  PREF_KEYS: {
-    TERMINAL_PANEL_HEIGHT: 'terminalPanelHeight',
-    TERMINAL_ACTIVE_TAB_ID: 'terminalActiveTabId',
-    TERMINAL_LAST_MANUAL_PROJECT_BY_TASK: 'terminalLastManualProjectByTask',
-  },
+  ...actualPreferences,
   loadPreference: loadPreferenceMock,
   savePreference: savePreferenceMock,
 }));
@@ -655,4 +654,3 @@ describe('useTerminalStore', () => {
     });
   });
 });
-

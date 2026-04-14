@@ -16,7 +16,6 @@ export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement' | 'Chat';
 export type ConversationScopeMode = AppMode;
 export type AgentType = 'build' | 'plan';
-export type ImplementExecutionMode = 'semi_auto' | 'full_auto';
 
 // Plan Node types for dependency graph
 export type PlanNodeStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
