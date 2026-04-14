@@ -192,6 +192,7 @@ const fsWriteFileMock = mock(async ({ path, content }: { path: string; content: 
     path: normalized,
     bytes_written: content.length,
     created: false,
+    skipped: false,
   };
 });
 

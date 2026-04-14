@@ -26,6 +26,18 @@ describe('TaskListView', () => {
   let conversationsData: Array<Record<string, unknown>> = [];
 
   const seedStores = (taskStatus: TaskStatus, options?: { isStreaming?: boolean }) => {
+    const conversationRuntimeById = options?.isStreaming
+      ? {
+          'conversation-1': {
+            phase: 'streaming' as const,
+            sessionId: 'session-1',
+            assistantMessageId: 'assistant-1',
+            abortController: null,
+            lastError: null,
+          },
+        }
+      : {};
+
     setSelectedTaskMock = mock(() => undefined);
     selectConversationMock = mock(() => undefined);
     conversationsData = [
@@ -59,6 +71,7 @@ describe('TaskListView', () => {
     useChatStore.setState({
       ...useChatStore.getState(),
       conversations: conversationsData as never,
+      conversationRuntimeById: conversationRuntimeById as never,
       isStreaming: options?.isStreaming ?? false,
       selectedConversationId: 'conversation-1',
       selectConversation: selectConversationMock,
@@ -107,9 +120,15 @@ describe('TaskListView', () => {
       await flushRender();
     });
 
-    expect(
-      document.body.querySelector('[data-task-status-indicator-state="awaiting_response"]')
-    ).not.toBeNull();
+    const indicator = document.body.querySelector(
+      '[data-task-status-indicator-state="awaiting_response"]'
+    );
+
+    expect(indicator).not.toBeNull();
+    expect(indicator?.getAttribute('data-task-status-indicator-layout')).toBe('compact');
+    expect(indicator?.getAttribute('data-task-status-indicator-pulse')).toBe('awaiting_response');
+    expect(indicator?.querySelectorAll('.task-status-awaiting-response__halo').length).toBe(1);
+    expect(indicator?.className).toContain('text-amber-500');
   });
 
   it('renders a spinner for the task that is currently streaming', async () => {

@@ -769,6 +769,8 @@ const stableSortObject = (value: unknown): unknown => {
 
 const stableSerialize = (value: unknown): string => JSON.stringify(stableSortObject(value));
 
+const areSerializedContentsEqual = (left: string, right: string): boolean => left === right;
+
 const buildPlanContentHashes = (
   plan: ArchitectPlanRecord,
   needs: Need[],
@@ -1270,6 +1272,32 @@ const stripPlanReplicaMetadata = (plan: ArchitectPlanRecord): ArchitectPlanRecor
   hasReplicaDivergence: undefined,
 });
 
+const buildComparablePlanSnapshot = (plan: ArchitectPlanRecord): unknown => ({
+  ...stripPlanReplicaMetadata(plan),
+  updatedAt: undefined,
+  revision: undefined,
+});
+
+const areArchitectPlansSemanticallyEqual = (
+  left: ArchitectPlanRecord,
+  right: ArchitectPlanRecord
+): boolean =>
+  stableSerialize(buildComparablePlanSnapshot(left)) ===
+  stableSerialize(buildComparablePlanSnapshot(right));
+
+const normalizeNeedsForPersistence = (planId: string, needs: Need[]): Need[] => {
+  const safeId = sanitizeId(planId);
+  return needs.map((need) => ({ ...need, planId: safeId }));
+};
+
+const arePlanNeedsEquivalent = (left: Need[], right: Need[]): boolean =>
+  stableSerialize(left) === stableSerialize(right);
+
+const arePlanChatMessagesEquivalent = (
+  left: ArchitectPlanChatMessage[],
+  right: ArchitectPlanChatMessage[]
+): boolean => areSerializedContentsEqual(toJsonLines(left), toJsonLines(right));
+
 const filterComparableReplicaFiles = (files: Record<string, string>): Record<string, string> =>
   Object.fromEntries(
     Object.entries(files).filter(([relativePath]) =>
@@ -1325,14 +1353,11 @@ const syncPlanTaskMetadataAtScope = async (
 
   await Promise.all(
     normalizedPlan.nodes.map((node) =>
-      tauriIpc.fsWriteFile({
-        path: getTaskPlannedPath(normalizedBranch, normalizedPlan.id, node.id),
-        content: buildTaskPlannedMarkdown(normalizedPlan, node),
-        createDirs: true,
-        allowOutsideWorkspace: false,
-        workspaceScope: METADATA_WORKSPACE_SCOPE,
-        workspacePath: scope.workspacePath,
-      })
+      writeTextFileAtScope(
+        scope,
+        getTaskPlannedPath(normalizedBranch, normalizedPlan.id, node.id),
+        buildTaskPlannedMarkdown(normalizedPlan, node)
+      )
     )
   );
 };
@@ -1359,16 +1384,22 @@ const writeJsonFileAtScope = async (
   scope: ArchitectMetadataScope,
   path: string,
   value: unknown
-): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return;
+): Promise<boolean> => {
+  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return false;
+  const content = JSON.stringify(value, null, 2);
+  const existing = await readTextFileAtScope(scope, path);
+  if (typeof existing === 'string' && areSerializedContentsEqual(existing, content)) {
+    return false;
+  }
   await tauriIpc.fsWriteFile({
     path,
-    content: JSON.stringify(value, null, 2),
+    content,
     createDirs: true,
     allowOutsideWorkspace: false,
     workspaceScope: METADATA_WORKSPACE_SCOPE,
     workspacePath: scope.workspacePath,
   });
+  return true;
 };
 
 const readTextFileAtScope = async (
@@ -1393,8 +1424,12 @@ const writeTextFileAtScope = async (
   scope: ArchitectMetadataScope,
   path: string,
   content: string
-): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return;
+): Promise<boolean> => {
+  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return false;
+  const existing = await readTextFileAtScope(scope, path);
+  if (typeof existing === 'string' && areSerializedContentsEqual(existing, content)) {
+    return false;
+  }
   await tauriIpc.fsWriteFile({
     path,
     content,
@@ -1403,6 +1438,7 @@ const writeTextFileAtScope = async (
     workspaceScope: METADATA_WORKSPACE_SCOPE,
     workspacePath: scope.workspacePath,
   });
+  return true;
 };
 
 const readLocalIndex = (branchName: string): ArchitectPlanIndex => {
@@ -1431,11 +1467,6 @@ const readLocalIndex = (branchName: string): ArchitectPlanIndex => {
   } catch {
     return emptyIndex();
   }
-};
-
-const writeLocalIndex = (branchName: string, value: ArchitectPlanIndex): void => {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(localIndexKey(branchName), JSON.stringify(value));
 };
 
 const readLocalPlan = (branchName: string, planId: string): ArchitectPlanRecord | null => {
@@ -1472,20 +1503,31 @@ const readLocalPlanChat = (branchName: string, planId: string): ArchitectPlanCha
   }
 };
 
-const writeLocalPlan = (branchName: string, plan: ArchitectPlanRecord): void => {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(localPlanKey(branchName, plan.id), JSON.stringify(plan));
+const writeLocalValueIfChanged = (key: string, value: string): boolean => {
+  if (typeof window === 'undefined') return false;
+  const existing = window.localStorage.getItem(key);
+  if (existing === value) {
+    return false;
+  }
+  window.localStorage.setItem(key, value);
+  return true;
 };
 
-const writeLocalPlanNeeds = (branchName: string, planId: string, needs: Need[]): void => {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(localPlanNeedsKey(branchName, planId), JSON.stringify(needs));
-};
+const writeLocalPlan = (branchName: string, plan: ArchitectPlanRecord): boolean =>
+  writeLocalValueIfChanged(localPlanKey(branchName, plan.id), JSON.stringify(plan));
 
-const writeLocalPlanChat = (branchName: string, planId: string, messages: ArchitectPlanChatMessage[]): void => {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(localPlanChatKey(branchName, planId), toJsonLines(messages));
-};
+const writeLocalPlanNeeds = (branchName: string, planId: string, needs: Need[]): boolean =>
+  writeLocalValueIfChanged(localPlanNeedsKey(branchName, planId), JSON.stringify(needs));
+
+const writeLocalPlanChat = (
+  branchName: string,
+  planId: string,
+  messages: ArchitectPlanChatMessage[]
+): boolean =>
+  writeLocalValueIfChanged(localPlanChatKey(branchName, planId), toJsonLines(messages));
+
+const writeLocalIndex = (branchName: string, value: ArchitectPlanIndex): boolean =>
+  writeLocalValueIfChanged(localIndexKey(branchName), JSON.stringify(value));
 
 const deleteLocalPlan = (branchName: string, planId: string): void => {
   if (typeof window === 'undefined') return;
@@ -1561,14 +1603,13 @@ const writeIndexAtScope = async (
   scope: ArchitectMetadataScope,
   branchName: string,
   index: ArchitectPlanIndex
-): Promise<void> => {
+): Promise<boolean> => {
   const normalized = normalizeBranchName(branchName);
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
-    writeLocalIndex(normalized, index);
-    return;
+    return writeLocalIndex(normalized, index);
   }
 
-  await writeJsonFileAtScope(scope, getIndexPath(normalized), index);
+  return writeJsonFileAtScope(scope, getIndexPath(normalized), index);
 };
 
 const normalizePlanRecordForBranch = (
@@ -1738,7 +1779,11 @@ const writePlanAtScope = async (
   scope: ArchitectMetadataScope,
   branchName: string,
   plan: ArchitectPlanRecord,
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+  options?: {
+    needs?: Need[];
+    chatMessages?: ArchitectPlanChatMessage[];
+  }
 ): Promise<void> => {
   const normalized = normalizeBranchName(branchName);
   const sanitizedPlanResult = sanitizeArchitectPlanRecord(
@@ -1769,18 +1814,10 @@ const writePlanAtScope = async (
 
   const safeId = sanitizeId(normalizedPlan.id);
   await writeJsonFileAtScope(scope, getPlanJsonPath(normalized, safeId), normalizedPlan);
-  await tauriIpc.fsWriteFile({
-    path: getPlanMarkdownPath(normalized, safeId),
-    content: buildPlanMarkdown(normalizedPlan),
-    createDirs: true,
-    allowOutsideWorkspace: false,
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
-    workspacePath: scope.workspacePath,
-  });
+  await writeTextFileAtScope(scope, getPlanMarkdownPath(normalized, safeId), buildPlanMarkdown(normalizedPlan));
   await syncPlanTaskMetadataAtScope(scope, normalized, normalizedPlan);
-  const needs = await readPlanNeedsAtScope(scope, normalized, safeId);
-  const chatMessages = await readPlanChatAtScope(scope, normalized, safeId);
-  await writeTextFileAtScope(scope, getPlanChatPath(normalized, safeId), toJsonLines(chatMessages));
+  const needs = options?.needs ?? await readPlanNeedsAtScope(scope, normalized, safeId);
+  const chatMessages = options?.chatMessages ?? await readPlanChatAtScope(scope, normalized, safeId);
   const manifest = await buildPlanManifest({
     plan: normalizedPlan,
     needs,
@@ -1795,16 +1832,22 @@ const writePlanNeedsAtScope = async (
   branchName: string,
   planId: string,
   needs: Need[],
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+  options?: {
+    skipManifest?: boolean;
+  }
 ): Promise<void> => {
   const normalized = normalizeBranchName(branchName);
   const safeId = sanitizeId(planId);
-  const normalizedNeeds = needs.map((need) => ({ ...need, planId: safeId }));
+  const normalizedNeeds = normalizeNeedsForPersistence(safeId, needs);
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
     writeLocalPlanNeeds(normalized, safeId, normalizedNeeds);
     return;
   }
   await writeJsonFileAtScope(scope, getPlanNeedsPath(normalized, safeId), normalizedNeeds);
+  if (options?.skipManifest) {
+    return;
+  }
   const planResult = await readPlanAtScopeWithDiagnostics(scope, normalized, safeId, registrySnapshot);
   if (planResult.plan) {
     const chatMessages = await readPlanChatAtScope(scope, normalized, safeId);
@@ -1823,7 +1866,10 @@ const writePlanChatAtScope = async (
   branchName: string,
   planId: string,
   messages: ArchitectPlanChatMessage[],
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+  options?: {
+    skipManifest?: boolean;
+  }
 ): Promise<void> => {
   const normalized = normalizeBranchName(branchName);
   const safeId = sanitizeId(planId);
@@ -1833,6 +1879,9 @@ const writePlanChatAtScope = async (
   }
 
   await writeTextFileAtScope(scope, getPlanChatPath(normalized, safeId), toJsonLines(messages));
+  if (options?.skipManifest) {
+    return;
+  }
   const planResult = await readPlanAtScopeWithDiagnostics(scope, normalized, safeId, registrySnapshot);
   if (planResult.plan) {
     const needs = await readPlanNeedsAtScope(scope, normalized, safeId);
@@ -2710,7 +2759,7 @@ export const updateArchitectPlan = async (input: {
     projectIds
   );
 
-  const nextResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
+  const candidateResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...existing,
     slug: existing.slug,
     title: isCanonicalPlan ? existing.title : input.title?.trim() || existing.title,
@@ -2733,6 +2782,60 @@ export const updateArchitectPlan = async (input: {
     expectedProjectIds,
     nodes: nextNodes,
     predictedBranches: nextPredictedBranches,
+    updatedAt: existing.updatedAt,
+    revision: existing.revision,
+  }, registrySnapshot, {
+    logContext: 'plan_update',
+  });
+  if (!candidateResult.plan) {
+    throw new Error(`Plan not found: ${safeId}`);
+  }
+  const candidate = candidateResult.plan;
+
+  const targetScopes = await ensurePlanScopes(candidate.expectedProjectIds || candidate.projectIds || [], registrySnapshot);
+  const existingScopes = dedupeScopes([
+    ...replicaSet.expectedScopes,
+    ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
+  ]);
+  const targetScopeKeys = new Set(targetScopes.map((scope) => scope.scopeKey));
+  const existingScopeKeys = new Set(existingScopes.map((scope) => scope.scopeKey));
+  const removedScopes = existingScopes.filter((scope) => !targetScopeKeys.has(scope.scopeKey));
+  const writeScopes = dedupeScopes([
+    ...targetScopes,
+    ...existingScopes.filter((scope) => targetScopeKeys.has(scope.scopeKey)),
+  ]);
+  const hasScopeChanges =
+    targetScopes.length !== existingScopes.length ||
+    targetScopes.some((scope) => !existingScopeKeys.has(scope.scopeKey));
+  const hasSemanticChange = !areArchitectPlansSemanticallyEqual(existing, candidate);
+  let shouldActivate = input.setActive === true;
+  if (shouldActivate) {
+    const activationStates = await Promise.all(
+      targetScopes.map(async (scope) => {
+        const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
+        const exists = index.plans.some((plan) => plan.id === safeId && plan.status !== 'deleted');
+        return exists && index.activePlanId !== safeId;
+      })
+    );
+    shouldActivate = activationStates.some(Boolean);
+  }
+  if (!hasSemanticChange && !hasScopeChanges && !shouldActivate) {
+    return existing;
+  }
+
+  if (!hasSemanticChange && !hasScopeChanges && shouldActivate) {
+    await Promise.all(
+      targetScopes.map((scope) =>
+        upsertPlanInScopeIndex(scope, normalizedBranch, existing, {
+          setActive: true,
+        }, registrySnapshot)
+      )
+    );
+    return existing;
+  }
+
+  const nextResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
+    ...candidate,
     updatedAt: new Date().toISOString(),
     revision: (existing.revision || 1) + 1,
   }, registrySnapshot, {
@@ -2743,24 +2846,12 @@ export const updateArchitectPlan = async (input: {
   }
   const next = nextResult.plan;
 
-  const targetScopes = await ensurePlanScopes(next.expectedProjectIds || next.projectIds || [], registrySnapshot);
-  const existingScopes = dedupeScopes([
-    ...replicaSet.expectedScopes,
-    ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
-  ]);
-  const targetScopeKeys = new Set(targetScopes.map((scope) => scope.scopeKey));
-  const removedScopes = existingScopes.filter((scope) => !targetScopeKeys.has(scope.scopeKey));
-  const writeScopes = dedupeScopes([
-    ...targetScopes,
-    ...existingScopes.filter((scope) => targetScopeKeys.has(scope.scopeKey)),
-  ]);
-
   await Promise.all(
     writeScopes.map(async (scope) => {
       await writePlanAtScope(scope, normalizedBranch, next, registrySnapshot);
       await writePlanNeedsAtScope(scope, normalizedBranch, next.id, replicaSet.canonical.needs, registrySnapshot);
       await upsertPlanInScopeIndex(scope, normalizedBranch, next, {
-        setActive: input.setActive === true,
+        setActive: shouldActivate,
       }, registrySnapshot);
     })
   );
@@ -2795,7 +2886,7 @@ export const setActiveArchitectPlan = async (branchName: string, planId: string)
     dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
       const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
       const exists = index.plans.some((plan) => plan.id === safeId && plan.status !== 'deleted');
-      if (!exists) {
+      if (!exists || index.activePlanId === safeId) {
         return;
       }
       await writeIndexAtScope(scope, normalizedBranch, {
@@ -2971,6 +3062,14 @@ export const saveArchitectPlanChatMessages = async (
     throw new Error(`Plan not found: ${sanitizeId(planId)}`);
   }
   assertPlanReplicaSetWritable(replicaSet, 'save chat transcript');
+  const nextMessages = messages.map((message) => ({ ...message }));
+  const persistedMessages =
+    replicaSet.canonical.scope.source === 'local'
+      ? await readPlanChatAtScope(replicaSet.canonical.scope, normalizedBranch, sanitizeId(planId))
+      : parseJsonLines(replicaSet.canonical.files['chat.jsonl'] || '');
+  if (arePlanChatMessagesEquivalent(persistedMessages, nextMessages)) {
+    return;
+  }
   const nextPlan = {
     ...replicaSet.canonical.plan,
     updatedAt: new Date().toISOString(),
@@ -2978,8 +3077,13 @@ export const saveArchitectPlanChatMessages = async (
   };
   await Promise.all(
     dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
-      await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot);
-      await writePlanChatAtScope(scope, normalizedBranch, planId, messages, registrySnapshot);
+      await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot, {
+        needs: replicaSet.canonical.needs,
+        chatMessages: nextMessages,
+      });
+      await writePlanChatAtScope(scope, normalizedBranch, planId, nextMessages, registrySnapshot, {
+        skipManifest: true,
+      });
       await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, undefined, registrySnapshot);
     })
   );
@@ -3008,6 +3112,9 @@ export const syncArchitectPlanChatFromConversation = async (params: {
 
   const conversationId = params.conversationId ?? replicaSet.canonical.plan.conversationId ?? null;
   if (!conversationId) {
+    if (arePlanChatMessagesEquivalent(parseJsonLines(replicaSet.canonical.files['chat.jsonl'] || ''), [])) {
+      return;
+    }
     await saveArchitectPlanChatMessages(normalizedBranch, params.planId, []);
     return;
   }
@@ -3021,6 +3128,11 @@ export const syncArchitectPlanChatFromConversation = async (params: {
       content: message.content,
       createdAt: message.created_at,
     }));
+
+  const persistedMessages = parseJsonLines(replicaSet.canonical.files['chat.jsonl'] || '');
+  if (arePlanChatMessagesEquivalent(persistedMessages, transcript)) {
+    return;
+  }
 
   await saveArchitectPlanChatMessages(normalizedBranch, params.planId, transcript);
 };
@@ -3036,6 +3148,10 @@ export const saveArchitectPlanNeeds = async (branchName: string, planId: string,
     throw new Error(`Plan not found: ${sanitizeId(planId)}`);
   }
   assertPlanReplicaSetWritable(replicaSet, 'save needs');
+  const normalizedNeeds = normalizeNeedsForPersistence(sanitizeId(planId), needs);
+  if (arePlanNeedsEquivalent(replicaSet.canonical.needs, normalizedNeeds)) {
+    return;
+  }
   const nextPlan = {
     ...replicaSet.canonical.plan,
     updatedAt: new Date().toISOString(),
@@ -3043,8 +3159,13 @@ export const saveArchitectPlanNeeds = async (branchName: string, planId: string,
   };
   await Promise.all(
     dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
-      await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot);
-      await writePlanNeedsAtScope(scope, normalizedBranch, planId, needs, registrySnapshot);
+      await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot, {
+        needs: normalizedNeeds,
+        chatMessages: parseJsonLines(replicaSet.canonical.files['chat.jsonl'] || ''),
+      });
+      await writePlanNeedsAtScope(scope, normalizedBranch, planId, normalizedNeeds, registrySnapshot, {
+        skipManifest: true,
+      });
       await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, undefined, registrySnapshot);
     })
   );

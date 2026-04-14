@@ -8,7 +8,7 @@ import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
 import { Select } from '../ui/Select';
 import { cn } from '../../utils/cn';
 import {
-  resolveStreamingTaskId,
+  resolveRunningTaskIds,
   resolveTaskStatusIndicatorState,
 } from '../../services/taskStatusPresentation';
 
@@ -33,21 +33,20 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
   const { currentPlan, setSelectedTask } = useAppStore();
   const {
     conversations,
-    isStreaming,
+    conversationRuntimeById,
     selectedConversationId,
     selectConversation,
     getConversationByTask,
   } =
     useChatStore();
   const [sortOption, setSortOption] = useState<TaskSortOption>('updated');
-  const streamingTaskId = useMemo(
+  const runningTaskIds = useMemo(
     () =>
-      resolveStreamingTaskId({
+      resolveRunningTaskIds({
         conversations,
-        isStreaming,
-        selectedConversationId,
+        conversationRuntimeById,
       }),
-    [conversations, isStreaming, selectedConversationId]
+    [conversationRuntimeById, conversations]
   );
 
   // Filter tasks by project
@@ -133,13 +132,13 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
             {sortedTasks.map((task) => {
               const conversation = getTaskConversation(task.id);
               const isSelected = conversation?.id === selectedConversationId;
-              const isAssistantRunning = streamingTaskId === task.id;
+              const isAssistantRunning = runningTaskIds.has(task.id);
               const indicatorState = resolveTaskStatusIndicatorState(
                 task.status,
                 isAssistantRunning
               );
               const indicatorColor = isAssistantRunning
-                ? 'text-primary'
+                ? 'text-amber-500'
                 : indicatorColors[task.status];
 
               return (
@@ -157,6 +156,7 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
                     {/* Status indicator */}
                     <TaskStatusIndicator
                       state={indicatorState}
+                      layout="compact"
                       size={10}
                       dotSize={8}
                       className={cn('mt-0.5 shrink-0', indicatorColor)}

@@ -11,7 +11,7 @@ import { normalizeNodeProjectIds } from '../../services/implementTaskDerivation'
 import {
   mapPlanNodeStatusToTaskStatus,
   resolvePlanNodeStatusIndicatorState,
-  resolveStreamingTaskId,
+  resolveRunningTaskIds,
   type TaskStatusIndicatorState,
 } from '../../services/taskStatusPresentation';
 import { notify } from '../ui/toastService';
@@ -34,7 +34,7 @@ interface StrategyGraphProps {
 const taskStatusColors: Record<TaskStatus, string> = {
   Pending: 'text-muted-foreground',
   InProgress: 'text-amber-500',
-  AwaitingResponse: 'text-blue-500',
+  AwaitingResponse: 'text-amber-500',
   InReview: 'text-sky-500',
   Completed: 'text-white',
   Failed: 'text-red-500',
@@ -44,7 +44,7 @@ const taskStatusColors: Record<TaskStatus, string> = {
 const taskStatusBgColors: Record<TaskStatus, string> = {
   Pending: 'bg-muted',
   InProgress: 'bg-amber-500/20',
-  AwaitingResponse: 'bg-blue-500/20',
+  AwaitingResponse: 'bg-amber-500/20',
   InReview: 'bg-sky-500/20',
   Completed: 'bg-emerald-500',
   Failed: 'bg-red-500/20',
@@ -148,11 +148,10 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     armPendingAutoLaunch,
     clearPendingAutoLaunch,
   } = useAppStore();
-  const { conversations, isStreaming, selectedConversationId } = useChatStore(
+  const { conversations, conversationRuntimeById } = useChatStore(
     useShallow((state) => ({
       conversations: state.conversations,
-      isStreaming: state.isStreaming,
-      selectedConversationId: state.selectedConversationId,
+      conversationRuntimeById: state.conversationRuntimeById,
     }))
   );
   const tasks = useTaskStore((state) => state.tasks);
@@ -176,14 +175,13 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     originX: 0,
     originY: 0,
   });
-  const streamingTaskId = useMemo(
+  const runningTaskIds = useMemo(
     () =>
-      resolveStreamingTaskId({
+      resolveRunningTaskIds({
         conversations,
-        isStreaming,
-        selectedConversationId,
+        conversationRuntimeById,
       }),
-    [conversations, isStreaming, selectedConversationId]
+    [conversationRuntimeById, conversations]
   );
   const taskStatusById = useMemo(
     () => new Map(tasks.map((task) => [task.id, task.status])),
@@ -421,16 +419,16 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       resolvePlanNodeStatusIndicatorState({
         nodeStatus: node.status,
         taskStatus: taskStatusById.get(node.id) ?? null,
-        isAssistantRunning: streamingTaskId === node.id,
+        isAssistantRunning: runningTaskIds.has(node.id),
       }),
-    [streamingTaskId, taskStatusById]
+    [runningTaskIds, taskStatusById]
   );
   const getNodeStatusTone = useCallback(
     (node: Pick<PlanNode, 'id' | 'status'>) => {
-      if (streamingTaskId === node.id) {
+      if (runningTaskIds.has(node.id)) {
         return {
-          color: 'text-blue-500',
-          bgColor: 'bg-blue-500/20',
+          color: 'text-amber-500',
+          bgColor: 'bg-amber-500/20',
         };
       }
 
@@ -440,7 +438,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         bgColor: taskStatusBgColors[taskStatus],
       };
     },
-    [getNodeTaskStatus, streamingTaskId]
+    [getNodeTaskStatus, runningTaskIds]
   );
   const hoveredNodeData = layoutData.nodes.find(n => n.id === hoveredNodeId);
   const hoveredNodeTone = hoveredNodeData ? getNodeStatusTone(hoveredNodeData) : null;
@@ -822,10 +820,10 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
             />
 
             <foreignObject
-              x={node.x - 10}
-              y={node.y - 10}
-              width="20"
-              height="20"
+              x={node.x - 13}
+              y={node.y - 13}
+              width="26"
+              height="26"
               className="pointer-events-none"
             >
               <div className={cn(
@@ -834,6 +832,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               )}>
                 <TaskStatusIndicator
                   state={visualStatus}
+                  layout="graph"
                   size={14}
                   dotSize={8}
                 />
@@ -1129,6 +1128,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                               )}>
                                 <TaskStatusIndicator
                                   state={visualStatus}
+                                  layout="compact"
                                   size={9}
                                   dotSize={5}
                                 />

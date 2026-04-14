@@ -1,4 +1,8 @@
-import type { PlanNodeStatus, TaskStatus } from '../types';
+import type {
+  ConversationRuntimeState,
+  PlanNodeStatus,
+  TaskStatus,
+} from '../types';
 
 export type TaskStatusIndicatorState =
   | 'idle_prompt'
@@ -9,27 +13,34 @@ export type TaskStatusIndicatorState =
   | 'failed'
   | 'blocked';
 
-interface ResolveStreamingTaskIdParams {
+interface ResolveRunningTaskIdsParams {
   conversations: Array<{
     id: string;
     task_id?: string | null;
   }>;
-  isStreaming: boolean;
-  selectedConversationId: string | null | undefined;
+  conversationRuntimeById: Record<string, ConversationRuntimeState | undefined>;
 }
 
-export const resolveStreamingTaskId = ({
-  conversations,
-  isStreaming,
-  selectedConversationId,
-}: ResolveStreamingTaskIdParams): string | null => {
-  if (!isStreaming || !selectedConversationId) {
-    return null;
-  }
+export const resolveRunningConversationIds = (
+  conversationRuntimeById: Record<string, ConversationRuntimeState | undefined>
+): Set<string> =>
+  new Set(
+    Object.entries(conversationRuntimeById)
+      .filter(([, runtime]) => runtime?.phase === 'streaming')
+      .map(([conversationId]) => conversationId)
+  );
 
-  return (
-    conversations.find((conversation) => conversation.id === selectedConversationId)?.task_id ??
-    null
+export const resolveRunningTaskIds = ({
+  conversations,
+  conversationRuntimeById,
+}: ResolveRunningTaskIdsParams): Set<string> => {
+  const runningConversationIds = resolveRunningConversationIds(conversationRuntimeById);
+
+  return new Set(
+    conversations
+      .filter((conversation) => runningConversationIds.has(conversation.id))
+      .map((conversation) => conversation.task_id)
+      .filter((taskId): taskId is string => typeof taskId === 'string' && taskId.trim().length > 0)
   );
 };
 

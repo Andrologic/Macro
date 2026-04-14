@@ -321,7 +321,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
           });
           const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
-          useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
+          useNeedsStore.getState().hydrateNeedsForPlan(plan.id, needs);
         }
       } else if (hydrateActive && !refreshState.nextActivePlanId) {
         clearActivePlanSelection();
@@ -387,7 +387,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
       });
       const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
-      useNeedsStore.getState().replaceNeedsForPlan(plan.id, needs);
+      useNeedsStore.getState().hydrateNeedsForPlan(plan.id, needs);
       setIsOpen(false);
     } catch (activationError) {
       if (openReplicaRepair(activationError, () => activatePlan(planId))) {

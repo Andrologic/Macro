@@ -176,6 +176,25 @@ const useProviderStoreMock = {
   subscribe: () => () => undefined,
 };
 
+const taskStoreSubscribers = new Set<
+  (
+    nextState: typeof taskStoreState,
+    previousState: typeof taskStoreState,
+  ) => void
+>();
+
+const emitTaskStoreUpdate = (previousTasks: Array<Record<string, unknown>>) => {
+  const previousState = {
+    ...taskStoreState,
+    tasks: previousTasks,
+  };
+  const nextState = {
+    ...taskStoreState,
+    tasks: taskStoreState.tasks,
+  };
+  taskStoreSubscribers.forEach((listener) => listener(nextState, previousState));
+};
+
 const taskStoreState = {
   tasks: [] as Array<Record<string, unknown>>,
   lastError: null as string | null,
@@ -190,6 +209,7 @@ const taskStoreState = {
     description: string;
     featureSlug: string;
   }) => {
+    const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.map((task) =>
       task.id === params.taskId
         ? {
@@ -204,8 +224,10 @@ const taskStoreState = {
           }
         : task
     );
+    emitTaskStoreUpdate(previousTasks);
   }),
   startTask: mock(async (taskId: string) => {
+    const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.map((task) =>
       task.id === taskId
         ? {
@@ -214,8 +236,10 @@ const taskStoreState = {
           }
         : task
     );
+    emitTaskStoreUpdate(previousTasks);
   }),
   markTaskAwaitingResponse: mock(async (taskId: string) => {
+    const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.map((task) =>
       task.id === taskId
         ? {
@@ -224,8 +248,10 @@ const taskStoreState = {
           }
         : task
     );
+    emitTaskStoreUpdate(previousTasks);
   }),
   retryTask: mock(async (taskId: string) => {
+    const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.map((task) =>
       task.id === taskId
         ? {
@@ -234,9 +260,12 @@ const taskStoreState = {
           }
         : task
     );
+    emitTaskStoreUpdate(previousTasks);
   }),
   deleteManualFeatureDraft: mock(async (taskId: string) => {
+    const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.filter((task) => task.id !== taskId);
+    emitTaskStoreUpdate(previousTasks);
   }),
 };
 
@@ -393,6 +422,7 @@ const getLocalProjectContextStateMock = mock(async (_groupId: string) => ({
   implementConversationId: null,
 }));
 const syncArchitectPlanChatFromConversationMock = mock(async () => undefined);
+const saveArchitectPlanNeedsMock = mock(async () => undefined);
 const getChatSnapshotMock = mock(async () => ({
   conversations: chatSnapshotConversations,
   messages: chatSnapshotMessages,
@@ -401,6 +431,30 @@ const updateConversationDetailsMock = mock(async () => undefined);
 const gitBranchListMock = mock(async (repoPath: string) => (
   gitBranchesByRepo[repoPath] ?? { local: [], remote: [], current: null }
 ));
+const dbGetConversationCompactionStateMock = mock(async () => null);
+const dbUpsertConversationCompactionStateMock = mock(async () => undefined);
+let dbMessageCounter = 0;
+const createMessageMock = mock(
+  async (
+    conversationId: string,
+    role: 'user' | 'assistant',
+    content: string,
+    options?: {
+      hiddenContext?: string;
+      providerInputItems?: unknown[];
+    }
+  ) => ({
+    id: `db-message-${++dbMessageCounter}`,
+    conversation_id: conversationId,
+    role,
+    content,
+    created_at: '2026-03-19T00:00:00.000Z',
+    hidden_context: options?.hiddenContext ?? null,
+    provider_input_items_json: options?.providerInputItems
+      ? JSON.stringify(options.providerInputItems)
+      : null,
+  })
+);
 const deleteConversationMock = mock(async (_conversationId: string) => undefined);
 const deleteConversationsMock = mock(async (_conversationIds: string[]) => undefined);
 const updateMessageMock = mock(async () => undefined);
@@ -415,29 +469,68 @@ const importMessagesMock = mock(
       conversation_id: conversationId,
     }))
 );
+const hydrateNeedsForPlanMock = mock(() => undefined);
+const replaceNeedsForPlanMock = mock(() => undefined);
 
 let importCounter = 0;
-let restoreCounter = 0;
 
-const SHARED_MODULE_RESTORES = [
-  ['../services/localProjectContext', '../services/localProjectContext.ts'],
-  ['../services/macroSyncService', '../services/macroSyncService.ts'],
-  ['../services/projectExecutionContext', '../services/projectExecutionContext.ts'],
-  ['../services/tauriIpc', '../services/tauriIpc.ts'],
-  ['../services/streamingChat', '../services/streamingChat.ts'],
-  ['../services/webSearchSettings', '../services/webSearchSettings.ts'],
-  ['../services/workspaceToolExecutor', '../services/workspaceToolExecutor.ts'],
-  ['../services/architectPlanService', '../services/architectPlanService.ts'],
-] as const satisfies ReadonlyArray<readonly [string, string]>;
+const createMockStoreHook = <TState extends object>(
+  getSnapshot: () => TState,
+  setSnapshot?: (
+    patch: Partial<TState> | ((snapshot: TState) => Partial<TState>)
+  ) => void
+) => {
+  const storeHook = (<TSelected = TState>(
+    selector?: (snapshot: TState) => TSelected
+  ) => (selector ? selector(getSnapshot()) : (getSnapshot() as unknown as TSelected))) as ((
+    selector?: <TSelected>(snapshot: TState) => TSelected
+  ) => TState) & {
+    getState: () => TState;
+    setState: (
+      patch: Partial<TState> | ((snapshot: TState) => Partial<TState>)
+    ) => void;
+    subscribe: (listener?: (...args: unknown[]) => void) => () => void;
+  };
 
-const restoreSharedModules = async () => {
-  mock.restore();
+  storeHook.getState = getSnapshot;
+  storeHook.setState =
+    setSnapshot ??
+    (() => {
+      return undefined;
+    });
+  storeHook.subscribe = () => () => undefined;
 
-  for (const [specifier, actualPath] of SHARED_MODULE_RESTORES) {
-    restoreCounter += 1;
-    const actualModule = await import(`${actualPath}?restore=${restoreCounter}`);
-    mock.module(specifier, () => actualModule);
+  return storeHook;
+};
+
+const useAppStoreMock = createMockStoreHook(
+  () => appState,
+  (patch) => {
+    Object.assign(appState, typeof patch === 'function' ? patch(appState) : patch);
   }
+);
+
+const useTaskStoreMock = createMockStoreHook(
+  () => taskStoreState,
+  (patch) => {
+    const nextState =
+      typeof patch === 'function' ? patch(taskStoreState) : patch;
+    Object.assign(taskStoreState, nextState);
+  }
+);
+
+useTaskStoreMock.subscribe = (
+  listener?: (
+    nextState: typeof taskStoreState,
+    previousState: typeof taskStoreState,
+  ) => void
+) => {
+  if (!listener) {
+    return () => undefined;
+  }
+
+  taskStoreSubscribers.add(listener);
+  return () => taskStoreSubscribers.delete(listener);
 };
 
 const registerUseChatStoreMocks = () => {
@@ -480,22 +573,19 @@ const registerUseChatStoreMocks = () => {
   }));
 
   mock.module('./useAppStore', () => ({
-    useAppStore: {
-      getState: () => appState,
-      subscribe: () => () => undefined,
-    },
+    useAppStore: useAppStoreMock,
   }));
 
   mock.module('./useTaskStore', () => ({
-    useTaskStore: {
-      getState: () => taskStoreState,
-    },
+    useTaskStore: useTaskStoreMock,
   }));
 
   mock.module('./useNeedsStore', () => ({
     useNeedsStore: {
       getState: () => ({
-        replaceNeedsForPlan: () => undefined,
+        addNeed: () => 'need-1',
+        hydrateNeedsForPlan: hydrateNeedsForPlanMock,
+        replaceNeedsForPlan: replaceNeedsForPlanMock,
       }),
     },
   }));
@@ -580,9 +670,9 @@ const registerUseChatStoreMocks = () => {
       const { invoke } = await import('@tauri-apps/api/core');
       return invoke('ai_cancel_stream', { requestId });
     },
-    createMessage: mock(async () => {
-      throw new Error('unavailable');
-    }),
+    createMessage: createMessageMock,
+    dbGetConversationCompactionState: dbGetConversationCompactionStateMock,
+    dbUpsertConversationCompactionState: dbUpsertConversationCompactionStateMock,
     deleteConversation: deleteConversationMock,
     deleteConversations: deleteConversationsMock,
     gitBranchList: gitBranchListMock,
@@ -594,7 +684,7 @@ const registerUseChatStoreMocks = () => {
     updateConversationDetails: updateConversationDetailsMock,
   }));
 
-  mock.module('../services/architectPlanService', () => ({
+  const architectPlanServiceModule = () => ({
     createArchitectPlan: mock(async () => {
       throw new Error('not implemented');
     }),
@@ -621,13 +711,15 @@ const registerUseChatStoreMocks = () => {
       plan.projectId ?? plan.projectIds?.[0] ?? fallbackProjectId ?? null,
     resolveTargetBranch: (branchName?: string | null) => branchName ?? 'develop',
     restoreArchitectPlan: mock(async () => undefined),
-    saveArchitectPlanNeeds: mock(async () => undefined),
+    saveArchitectPlanNeeds: saveArchitectPlanNeedsMock,
     setActiveArchitectPlan: mock(async () => undefined),
     syncArchitectPlanChatFromConversation: syncArchitectPlanChatFromConversationMock,
     toPlanIntegrationBranch: (planId: string) => `plan/${planId}`,
     toPlanScopedFeatureBranch: (planId: string, featureSlug: string) => `feature/${planId}/${featureSlug}`,
     updateArchitectPlan: updateArchitectPlanMock,
-  }));
+  });
+  mock.module('../services/architectPlanService', architectPlanServiceModule);
+  mock.module('../services/architectPlanService.ts', architectPlanServiceModule);
 
   mock.module('../services/localProjectContext', () => ({
     getLocalProjectContextState: getLocalProjectContextStateMock,
@@ -958,6 +1050,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     gitBranchesByRepo = {};
     taskStoreState.tasks = [];
     taskStoreState.currentTask = null;
+    taskStoreSubscribers.clear();
     taskStoreState.lastError = null;
     taskStoreState.refreshFromPlan.mockClear();
     taskStoreState.clearPlanRuntimeState.mockClear();
@@ -967,6 +1060,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.retryTask.mockClear();
     taskStoreState.deleteManualFeatureDraft.mockClear();
     tauriAvailable = false;
+    dbMessageCounter = 0;
     chatSnapshotConversations = [];
     chatSnapshotMessages = [];
     getArchitectPlanChatMessagesMock.mockClear();
@@ -978,20 +1072,26 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     getToolModePolicyMock.mockClear();
     getLocalProjectContextStateMock.mockClear();
     syncArchitectPlanChatFromConversationMock.mockClear();
+    saveArchitectPlanNeedsMock.mockClear();
     getChatSnapshotMock.mockClear();
     updateConversationDetailsMock.mockClear();
     gitBranchListMock.mockClear();
+    createMessageMock.mockClear();
+    dbGetConversationCompactionStateMock.mockClear();
+    dbUpsertConversationCompactionStateMock.mockClear();
     deleteConversationMock.mockClear();
     deleteConversationsMock.mockClear();
     updateMessageMock.mockClear();
     deleteMessagesAfterMock.mockClear();
     importMessagesMock.mockClear();
+    hydrateNeedsForPlanMock.mockClear();
+    replaceNeedsForPlanMock.mockClear();
     toolsStoreState.loadSettings.mockClear();
     toolsStoreState.getEnabledChatToolIds = () => ['read_file', 'web_search', 'web_fetch', 'question'];
     appState.switchProjectContext.mockClear();
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       writable: true,
@@ -1002,10 +1102,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       writable: true,
       value: originalLocalStorage,
     });
-    await restoreSharedModules();
+    mock.restore();
   });
 
-  afterAll(async () => {
+  afterAll(() => {
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       writable: true,
@@ -1016,7 +1116,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       writable: true,
       value: originalLocalStorage,
     });
-    await restoreSharedModules();
+    mock.restore();
   });
 
   it('restores a plan transcript into an existing empty conversation', async () => {
@@ -2648,6 +2748,89 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ).toContain('<questionnaire_context>');
   });
 
+  it('moves an implement task to awaiting response when a question tool interrupt completes the assistant turn', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [
+      createManualFeatureTask({
+        draft: false,
+        title: 'Quick export',
+        status: 'InProgress',
+        feature_slug: 'quick-export',
+        assigned_branch: 'feature/quick-export',
+        branch_name: 'feature/quick-export',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
+          task_id: 'manual-task-1',
+          title: 'Quick export',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'manual-conv',
+      content: 'Continue.',
+      taskId: 'manual-task-1',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? {}) as {
+      onComplete?: (result: {
+        visibleContent: string;
+        toolTraces: unknown[];
+        hiddenContext?: string;
+        usage: null;
+      }) => void;
+      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    const interruptResult = await streamOptions.onToolCall?.('question', {
+      intro: 'Need one blocking choice.',
+      questions: [
+        {
+          id: 'scope',
+          prompt: 'Which scope should I use?',
+          choices: ['Minimal', 'Balanced', 'Large'],
+        },
+      ],
+    });
+
+    streamOptions.onComplete?.({
+      visibleContent:
+        (interruptResult as { visibleContent?: string } | undefined)?.visibleContent ??
+        'Need one blocking choice.',
+      toolTraces: [],
+      hiddenContext: (interruptResult as { hiddenContext?: string } | undefined)?.hiddenContext,
+      usage: null,
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(taskStoreState.markTaskAwaitingResponse).toHaveBeenCalledWith('manual-task-1');
+    expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
+      status: 'AwaitingResponse',
+    });
+    expect(useChatStore.getState().getConversationRuntime('manual-conv').phase).toBe('idle');
+  });
+
   it('moves an implement task to awaiting response when the assistant reply contains a structured questionnaire', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
@@ -2719,6 +2902,76 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         .find((message: { role: string }) => message.role === 'assistant')?.questionnaire?.questions
         .length
     ).toBe(1);
+  });
+
+  it('reapplies AwaitingResponse after a task refresh when an implement questionnaire is still unresolved', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [
+      createManualFeatureTask({
+        draft: false,
+        title: 'Quick export',
+        status: 'InProgress',
+        feature_slug: 'quick-export',
+        assigned_branch: 'feature/quick-export',
+        branch_name: 'feature/quick-export',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
+          task_id: 'manual-task-1',
+          title: 'Quick export',
+        },
+      ],
+      messages: [
+        {
+          id: 'assistant-questionnaire',
+          task_id: 'manual-task-1',
+          conversation_id: 'manual-conv',
+          role: 'assistant',
+          content: 'Need one blocking choice.',
+          timestamp: '2026-04-14T10:00:00.000Z',
+          questionnaire: {
+            intro: 'Need one blocking choice.',
+            source: 'tool',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+            ],
+          },
+        },
+      ],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    taskStoreState.markTaskAwaitingResponse.mockClear();
+    const previousTasks = taskStoreState.tasks;
+    taskStoreState.tasks = taskStoreState.tasks.map((task) => ({ ...task }));
+    emitTaskStoreUpdate(previousTasks);
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(taskStoreState.markTaskAwaitingResponse).toHaveBeenCalledWith('manual-task-1');
+    expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
+      status: 'AwaitingResponse',
+    });
   });
 
   it('keeps an implement task in progress when the assistant reply has malformed quick replies', async () => {
@@ -3871,7 +4124,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         content: 'Deuxième envoi.',
         taskId: 'task-1',
       })
-    ).rejects.toThrow('A message is already being prepared.');
+    ).rejects.toThrow(
+      'This conversation is already running. Wait for it to finish before sending again.'
+    );
 
     expect(useChatStore.getState().getConversationMessages('implement-conv')).toHaveLength(0);
 
@@ -3893,6 +4148,83 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       { role: 'user', content: 'Premier envoi.' },
       { role: 'assistant', content: '' },
     ]);
+  });
+
+  it('keeps conversation runtimes independent across parallel chat streams and targeted stops', async () => {
+    appState.mode = 'Chat';
+
+    const activeStreams = new Map<string, () => void>();
+    (streamChatMock as unknown as {
+      mockImplementation: (
+        implementation: (options: {
+          conversationId?: string;
+          signal?: AbortSignal;
+          onComplete: (result: { visibleContent: string; toolTraces: [] }) => void;
+        }) => Promise<void>
+      ) => void;
+    }).mockImplementation(async (options) => {
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          options.onComplete({
+            visibleContent: '',
+            toolTraces: [],
+          });
+          resolve();
+        };
+
+        activeStreams.set(options.conversationId ?? 'unknown', finish);
+        options.signal?.addEventListener('abort', finish, { once: true });
+      });
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-1'),
+          scope_mode: 'Chat',
+          title: 'Chat 1',
+        },
+        {
+          ...createConversation('chat-2'),
+          scope_mode: 'Chat',
+          title: 'Chat 2',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-1',
+      selectedConversationIdsByMode: { Chat: 'chat-1' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-1',
+      content: 'Stream A',
+    });
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-2',
+      content: 'Stream B',
+    });
+
+    expect(useChatStore.getState().getConversationRuntime('chat-1').phase).toBe('streaming');
+    expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('streaming');
+
+    useChatStore.getState().stopConversationStream('chat-1');
+    await Promise.resolve();
+
+    expect(useChatStore.getState().getConversationRuntime('chat-1').phase).toBe('idle');
+    expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('streaming');
+
+    activeStreams.get('chat-2')?.();
+    await Promise.resolve();
+
+    expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('idle');
   });
 
   it('deletes multiple chat conversations in a single batch and recalculates selection once', async () => {

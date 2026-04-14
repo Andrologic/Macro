@@ -22,6 +22,20 @@ mock.module('../../hooks/useVirtualList', () => ({
     scrollToEnd: () => undefined,
     measureElement: () => undefined,
   }),
+  useVirtualMessages: (messages: unknown[]) => ({
+    parentRef: { current: null },
+    virtualItems: messages.map((item, index) => ({
+      index,
+      key: index,
+      size: 112,
+      start: index * 120,
+      item,
+    })),
+    totalSize: messages.length * 120,
+    scrollToIndex: () => undefined,
+    scrollToEnd: () => undefined,
+    measureElement: () => undefined,
+  }),
 }));
 
 const flushRender = async () => {
@@ -60,6 +74,18 @@ describe('TaskQueue', () => {
   let TaskQueueComponent: typeof import('./TaskQueue').TaskQueue;
 
   const seedStores = (taskStatus: TaskStatus, options?: { isStreaming?: boolean }) => {
+    const conversationRuntimeById = options?.isStreaming
+      ? {
+          'conversation-1': {
+            phase: 'streaming' as const,
+            sessionId: 'session-1',
+            assistantMessageId: 'assistant-1',
+            abortController: null,
+            lastError: null,
+          },
+        }
+      : {};
+
     useAppStore.setState({
       ...useAppStore.getState(),
       selectedGroupId: 'group-1',
@@ -113,6 +139,7 @@ describe('TaskQueue', () => {
           task_id: 'task-1',
         },
       ] as never,
+      conversationRuntimeById: conversationRuntimeById as never,
       isStreaming: options?.isStreaming ?? false,
       selectedConversationId: 'conversation-1',
     });
@@ -169,9 +196,18 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(
-      document.body.querySelector('[data-task-status-indicator-state="awaiting_response"]')
-    ).not.toBeNull();
+    const indicator = document.body.querySelector(
+      '[data-task-status-indicator-state="awaiting_response"]'
+    );
+    const taskCard = document.body.querySelector('[role="button"][tabindex="0"]');
+
+    expect(indicator).not.toBeNull();
+    expect(indicator?.getAttribute('data-task-status-indicator-layout')).toBe('card');
+    expect(indicator?.getAttribute('data-task-status-indicator-pulse')).toBe('awaiting_response');
+    expect(indicator?.querySelectorAll('.task-status-awaiting-response__halo').length).toBe(1);
+    expect(indicator?.className).toContain('text-amber-500');
+    expect(taskCard?.className).not.toContain('bg-blue-500/5');
+    expect(taskCard?.className).not.toContain('bg-amber-500/5');
   });
 
   it('renders a spinner only for the streamed task', async () => {
@@ -186,4 +222,5 @@ describe('TaskQueue', () => {
       document.body.querySelector('[data-task-status-indicator-state="running"]')
     ).not.toBeNull();
   });
+
 });

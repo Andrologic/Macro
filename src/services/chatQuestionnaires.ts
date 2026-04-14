@@ -321,6 +321,18 @@ export const buildQuestionnaireResponseVisibleContent = (
 ): string =>
   summary.items.map((item) => `${item.prompt}: ${item.answer}`).join("\n");
 
+export const buildQuestionnaireResponseProviderInputItems = (
+  source: QuestionnairePayload["source"],
+  visibleContentInputItems: unknown[],
+  functionCallOutputItem?: unknown,
+): unknown[] =>
+  source === "tool"
+    ? [
+        ...(functionCallOutputItem ? [functionCallOutputItem] : []),
+        ...visibleContentInputItems,
+      ]
+    : visibleContentInputItems;
+
 export interface QuestionnaireResponseArtifacts {
   summary: QuestionnaireResponseSummary;
   visibleContent: string;

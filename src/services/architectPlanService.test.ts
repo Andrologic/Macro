@@ -431,4 +431,75 @@ describe('architectPlanService', () => {
     expect(service.isArchitectPlanVisibleForScope(legacyUnscopedPlan, [])).toBe(true);
     expect(service.planMatchesProjectId(legacyUnscopedPlan, 'web')).toBe(false);
   });
+
+  it('does not bump revision when updating a plan with identical semantic content', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000990',
+      label: 'Plan stable',
+      description: 'Keep this plan unchanged.',
+    });
+
+    const updated = await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      label: 'Plan stable',
+      description: 'Keep this plan unchanged.',
+    });
+
+    expect(updated.updatedAt).toBe(created.updatedAt);
+    expect(updated.revision).toBe(created.revision);
+  });
+
+  it('does not bump revision when saving identical needs twice', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000991',
+    });
+    const needs = [
+      {
+        id: 'need-1',
+        planId: created.id,
+        title: 'Clarify economy',
+        description: 'Need a stable loop for resources.',
+        category: 'functional' as const,
+        status: 'identified' as const,
+        priority: 'high' as const,
+        tags: ['economy'],
+        createdAt: '2026-04-14T12:00:00.000Z',
+        updatedAt: '2026-04-14T12:00:00.000Z',
+      },
+    ];
+
+    await service.saveArchitectPlanNeeds(branchName, created.id, needs);
+    const afterFirstSave = await service.getArchitectPlan(branchName, created.id);
+    await service.saveArchitectPlanNeeds(branchName, created.id, needs);
+    const afterSecondSave = await service.getArchitectPlan(branchName, created.id);
+
+    expect(afterFirstSave?.updatedAt).toBe(afterSecondSave?.updatedAt);
+    expect(afterFirstSave?.revision).toBe(afterSecondSave?.revision);
+  });
+
+  it('does not bump revision when saving an identical chat transcript twice', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000992',
+    });
+    const transcript = [
+      {
+        id: 'msg-1',
+        role: 'assistant' as const,
+        content: 'Quel est le cadrage produit ?',
+        createdAt: '2026-04-14T12:05:00.000Z',
+      },
+    ];
+
+    await service.saveArchitectPlanChatMessages(branchName, created.id, transcript);
+    const afterFirstSave = await service.getArchitectPlan(branchName, created.id);
+    await service.saveArchitectPlanChatMessages(branchName, created.id, transcript);
+    const afterSecondSave = await service.getArchitectPlan(branchName, created.id);
+
+    expect(afterFirstSave?.updatedAt).toBe(afterSecondSave?.updatedAt);
+    expect(afterFirstSave?.revision).toBe(afterSecondSave?.revision);
+  });
 });
