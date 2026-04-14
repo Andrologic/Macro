@@ -25,6 +25,21 @@ const SUSPICIOUS_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   { pattern: /\betre\b/iu, replacement: 'être' },
 ];
 
+const isTechnicalCssLiteral = (literal: string): boolean => {
+  if (!literal.trim()) {
+    return false;
+  }
+
+  return (
+    literal.startsWith('--') ||
+    literal.includes('.cm-') ||
+    literal.includes('::') ||
+    literal.includes('&.') ||
+    literal.includes('>.') ||
+    literal.includes(' .cm-')
+  );
+};
+
 const collectSourceFiles = (directory: string): string[] => {
   const entries = readdirSync(directory, { withFileTypes: true });
   return entries.flatMap((entry) => {
@@ -81,6 +96,9 @@ describe('french hardcoded copy', () => {
         for (const match of line.matchAll(STRING_LITERAL_PATTERN)) {
           const literal = match[2];
           if (!literal || !/[A-Za-z]/.test(literal)) {
+            continue;
+          }
+          if (isTechnicalCssLiteral(literal)) {
             continue;
           }
 

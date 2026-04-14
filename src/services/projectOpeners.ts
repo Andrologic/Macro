@@ -21,6 +21,12 @@ export type {
 } from './projectOpenDefaults';
 export { getEmptyProjectOpenSelection, PROJECT_OPEN_ACTIONS } from './projectOpenDefaults';
 
+const {
+  isTauriAvailable: ipcIsTauriAvailable,
+  listExternalApps: ipcListExternalApps,
+  openExternalTarget: ipcOpenExternalTarget,
+} = tauriIpc;
+
 const APP_PREF_KEY_BY_ACTION: Record<ProjectOpenAction, typeof PREF_KEYS[keyof typeof PREF_KEYS]> = {
   editor: PREF_KEYS.PROJECT_OPEN_EDITOR_APP,
   terminal: PREF_KEYS.PROJECT_OPEN_TERMINAL_APP,
@@ -143,12 +149,12 @@ export const listProjectOpenApps = async (
 
   if (!appCatalogCache) {
     appCatalogCache = (async () => {
-      if (!tauriIpc.isTauriAvailable()) {
+      if (!ipcIsTauriAvailable()) {
         return sanitizeProjectOpenAppCatalog(getFallbackProjectOpenApps());
       }
 
       try {
-        return sanitizeProjectOpenAppCatalog(await tauriIpc.listExternalApps());
+        return sanitizeProjectOpenAppCatalog(await ipcListExternalApps());
       } catch {
         return sanitizeProjectOpenAppCatalog(getFallbackProjectOpenApps());
       }
@@ -234,7 +240,7 @@ export const openProjectInExternalApp = async (params: {
     return;
   }
 
-  await tauriIpc.openExternalTarget({
+  await ipcOpenExternalTarget({
     targetPath: params.targetPath,
     action: params.action,
     appId: resolvedAppId,

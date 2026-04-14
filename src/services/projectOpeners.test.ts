@@ -20,24 +20,27 @@ const listExternalAppsMock = mock(async () => ({
   ],
 }));
 
-mock.module('./preferences', () => ({
-  PREF_KEYS: {
-    PROJECT_OPEN_EDITOR_APP: 'projectOpenEditorApp',
-    PROJECT_OPEN_TERMINAL_APP: 'projectOpenTerminalApp',
-    PROJECT_OPEN_FILES_APP: 'projectOpenFilesApp',
-    PROJECT_OPEN_EDITOR_COMMAND: 'projectOpenEditorCommand',
-    PROJECT_OPEN_TERMINAL_COMMAND: 'projectOpenTerminalCommand',
-    PROJECT_OPEN_FILES_COMMAND: 'projectOpenFilesCommand',
-  },
-  loadPreference: loadPreferenceMock,
-  savePreference: savePreferenceMock,
-}));
+const actualPreferences = await import('./preferences');
+const actualTauriIpc = await import('./tauriIpc');
+let importCounter = 0;
 
-mock.module('./tauriIpc', () => ({
-  isTauriAvailable: () => true,
-  listExternalApps: listExternalAppsMock,
-  openExternalTarget: openExternalTargetMock,
-}));
+const loadProjectOpeners = async () => {
+  mock.module('./preferences', () => ({
+    ...actualPreferences,
+    loadPreference: loadPreferenceMock,
+    savePreference: savePreferenceMock,
+  }));
+
+  mock.module('./tauriIpc', () => ({
+    ...actualTauriIpc,
+    isTauriAvailable: () => true,
+    listExternalApps: listExternalAppsMock,
+    openExternalTarget: openExternalTargetMock,
+  }));
+
+  importCounter += 1;
+  return import(`./projectOpeners.ts?test=${importCounter}`);
+};
 
 describe('projectOpeners', () => {
   beforeEach(() => {
@@ -71,7 +74,7 @@ describe('projectOpeners', () => {
       return null;
     });
 
-    const { loadProjectOpenSettings } = await import('./projectOpeners');
+    const { loadProjectOpenSettings } = await loadProjectOpeners();
     const result = await loadProjectOpenSettings();
 
     expect(result.selectedAppIdsByAction.editor).toBe('vscode');
@@ -86,7 +89,7 @@ describe('projectOpeners', () => {
       return null;
     });
 
-    const { loadProjectOpenSettings, shouldRenderProjectOpenAction } = await import('./projectOpeners');
+    const { loadProjectOpenSettings, shouldRenderProjectOpenAction } = await loadProjectOpeners();
     const result = await loadProjectOpenSettings();
 
     expect(result.selectedAppIdsByAction.terminal).toBe('none');
@@ -94,7 +97,7 @@ describe('projectOpeners', () => {
   });
 
   it('opens with the selected app id', async () => {
-    const { openProjectInExternalApp } = await import('./projectOpeners');
+    const { openProjectInExternalApp } = await loadProjectOpeners();
 
     await openProjectInExternalApp({
       targetPath: '/workspace/api',

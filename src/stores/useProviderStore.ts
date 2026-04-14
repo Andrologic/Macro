@@ -13,6 +13,16 @@ import { AppMode } from '../types';
 import { useAppStore } from './useAppStore';
 import { getReasoningCapabilityForModel, getValidReasoningEffort } from '../services/reasoningCatalog';
 
+const {
+  isTauriAvailable: ipcIsTauriAvailable,
+  revealProviderApiKey: ipcRevealProviderApiKey,
+  listProviderConfigs: ipcListProviderConfigs,
+  listProviderModels: ipcListProviderModels,
+  getProviderSettings: ipcGetProviderSettings,
+  updateProviderConfig: ipcUpdateProviderConfig,
+  createProviderConfig: ipcCreateProviderConfig,
+} = tauriIpc;
+
 const isZeroPrice = (value?: string | null): boolean => {
   if (value === null || value === undefined) return false;
   const numeric = Number(value);
@@ -793,12 +803,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return config.apiKey?.trim() ? config.apiKey : undefined;
     }
 
-    if (!tauriIpc.isTauriAvailable()) {
+    if (!ipcIsTauriAvailable()) {
       return config.apiKey?.trim() ? config.apiKey : undefined;
     }
 
     try {
-      const apiKey = (await tauriIpc.revealProviderApiKey(providerId)) || undefined;
+      const apiKey = (await ipcRevealProviderApiKey(providerId)) || undefined;
       set((state) => ({
         providerConfigs: state.providerConfigs.map((provider) =>
           provider.id === providerId
@@ -823,9 +833,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     
     try {
-      if (tauriIpc.isTauriAvailable()) {
+      if (ipcIsTauriAvailable()) {
         const currentProviderConfigs = get().providerConfigs;
-        const configs = await tauriIpc.listProviderConfigs();
+        const configs = await ipcListProviderConfigs();
         const normalizedConfigs: ProviderConfig[] = configs.map(normalizeDbProviderConfig);
         const providerConfigs = mergeRuntimeProviderConfigState(
           await mergeLocalProviderConfig(normalizedConfigs),
@@ -967,10 +977,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   loadProviderModels: async (providerId: string) => {
     const { modelsByProvider, providerConfigs } = get();
     const providerType = providerConfigs.find((provider) => provider.id === providerId)?.providerType;
-    if (tauriIpc.isTauriAvailable()) {
+    if (ipcIsTauriAvailable()) {
       set({ isLoadingModels: true });
       try {
-        const models = await tauriIpc.listProviderModels(providerId);
+        const models = await ipcListProviderModels(providerId);
         const normalized = models.map((model) => normalizeDbModel(model, providerType));
         const selectedReasoningEffort = resolveSelectedReasoningEffort({
           providerId,
@@ -1581,9 +1591,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   loadProviderSettings: async (providerId: string) => {
-    if (tauriIpc.isTauriAvailable()) {
+    if (ipcIsTauriAvailable()) {
       try {
-        const settings = await tauriIpc.getProviderSettings(providerId);
+        const settings = await ipcGetProviderSettings(providerId);
         const normalized: ProviderSettings = {
           providerId: settings.provider_id,
           filterFreeModels: settings.filter_free_models,
@@ -1747,8 +1757,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           }
         : updates;
 
-      if (tauriIpc.isTauriAvailable()) {
-        await tauriIpc.updateProviderConfig({
+      if (ipcIsTauriAvailable()) {
+        await ipcUpdateProviderConfig({
           id,
           name: persistedUpdates.name,
           baseUrl: persistedUpdates.baseUrl,
@@ -1801,8 +1811,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   createProviderConfig: async (config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded'>) => {
     try {
-      if (tauriIpc.isTauriAvailable()) {
-        const created = await tauriIpc.createProviderConfig({
+      if (ipcIsTauriAvailable()) {
+        const created = await ipcCreateProviderConfig({
           name: config.name,
           providerType: config.providerType,
           baseUrl: config.baseUrl,

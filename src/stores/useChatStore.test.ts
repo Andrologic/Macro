@@ -1,6 +1,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { AppMode, Conversation, ProjectGroup } from '../types';
 import type { ArchitectPlanRecord } from '../services/architectPlanService';
+const actualTauriIpc = await import('../services/tauriIpc');
+const actualPreferences = await import('../services/preferences');
 
 interface LocalStorageMock {
   clear: () => void;
@@ -366,13 +368,9 @@ const getToolModePolicyMock = mock(async (mode: AppMode) => {
         'git_get_tree',
         'need_add',
         'strategy_generate',
-        'plan_create',
         'plan_list',
         'plan_get',
         'plan_update',
-        'plan_delete',
-        'plan_restore',
-        'plan_set_active',
         'strategy_get',
         'strategy_update',
         'strategy_delete',
@@ -616,7 +614,12 @@ const registerUseChatStoreMocks = () => {
     executeWorkspaceTool: mock(async () => undefined),
   }));
 
+  mock.module('../services/preferences', () => ({
+    ...actualPreferences,
+  }));
+
   mock.module('../services/tauriIpc', () => ({
+    ...actualTauriIpc,
     isTauriAvailable: () => tauriAvailable,
     aiStreamChat: async (params: {
       requestId: string;

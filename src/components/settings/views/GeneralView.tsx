@@ -23,8 +23,6 @@ export const GeneralView: React.FC = () => {
     const setProjectSwitchPolicy = useAppStore((state) => state.setProjectSwitchPolicy);
     const metadataAutoPush = useAppStore((state) => state.metadataAutoPush);
     const setMetadataAutoPush = useAppStore((state) => state.setMetadataAutoPush);
-    const implementExecutionMode = useAppStore((state) => state.implementExecutionMode);
-    const setImplementExecutionMode = useAppStore((state) => state.setImplementExecutionMode);
     const selectedLanguage = resolveSupportedLanguage(i18n.resolvedLanguage || i18n.language);
     const [projectOpenApps, setProjectOpenApps] = useState<ProjectOpenAppCatalog>({
         editor: [],
@@ -199,21 +197,6 @@ export const GeneralView: React.FC = () => {
                             </p>
                         </div>
                         <Switch checked={metadataAutoPush} onCheckedChange={setMetadataAutoPush} />
-                    </div>
-                    <div className="h-px bg-border/50" />
-                    <div className="flex items-center justify-between gap-4">
-                        <div className="space-y-1">
-                            <label className="text-sm font-medium text-foreground">
-                                {t('settings.autoLaunchAfterValidation', 'Auto-launch after validation')}
-                            </label>
-                            <p className="text-xs text-muted-foreground">
-                                {t('settings.autoLaunchAfterValidationDesc', 'Start task execution directly after plan validation.')}
-                            </p>
-                        </div>
-                        <Switch
-                            checked={implementExecutionMode === 'full_auto'}
-                            onCheckedChange={(checked) => setImplementExecutionMode(checked ? 'full_auto' : 'semi_auto')}
-                        />
                     </div>
                     <div className="h-px bg-border/50" />
                     <div className="space-y-4">

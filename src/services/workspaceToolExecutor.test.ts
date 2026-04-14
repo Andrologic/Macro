@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it, mock } from "bun:test";
+const actualTauriIpc = await import("./tauriIpc");
 
 type MockAppState = {
   selectedProjectId: string | null;
@@ -49,6 +50,7 @@ const registerWorkspaceToolExecutorMocks = (
   const tauriModule =
     (appState as { tauriModule?: Record<string, unknown> }).tauriModule || {};
   mock.module("./tauriIpc", () => ({
+    ...actualTauriIpc,
     isTauriAvailable: () => false,
     validateToolExecution: async () => ({ allowed: true }),
     executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",

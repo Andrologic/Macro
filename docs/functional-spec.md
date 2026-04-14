@@ -267,7 +267,7 @@ Le mode Implement doit supporter :
 - une review en fin de tache
 - une validation globale du plan avant merge du plan vers la branche de base
 
-Le mode Implement est semi-autonome par defaut, mais Macro doit permettre de configurer le niveau d'automatisation.
+Le mode Implement repose sur un demarrage manuel de l'execution des taches.
 
 ### 7.3 Mode Chat
 
@@ -582,27 +582,12 @@ Une tache ne peut pas etre consideree comme complete sans commit.
 
 ### 12.1 Conditions de demarrage
 
-Dans le mode Implement, l'execution des taches peut suivre deux comportements configurables :
-
-- mode semi-automatique
-- mode full-auto
-
-### 12.2 Mode semi-automatique
-
-Dans le mode semi-automatique :
+Dans le mode Implement :
 - les taches ne se lancent pas toutes seules
 - l'utilisateur declenche explicitement le debut de la tache
 - l'utilisateur peut fournir un prompt initial ou un cadrage complementaire avant l'execution
 
-### 12.3 Mode full-auto
-
-Dans le mode full-auto :
-- les taches peuvent demarrer automatiquement apres validation du plan ou des qu'elles deviennent prêtes
-- l'IA peut avancer sans attendre une instruction initiale sur chaque tache
-- l'IA s'arrete lorsqu'elle a besoin de l'utilisateur
-- la review utilisateur reste obligatoire avant commit final sauf si un reglage supplementaire d'auto-approbation est introduit
-
-### 12.4 Gestion des questions
+### 12.2 Gestion des questions
 
 Au debut d'une tache, l'IA peut :
 - poser des questions de clarification si necessaire
