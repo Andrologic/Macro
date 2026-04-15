@@ -3396,6 +3396,163 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
+  it('returns to the first unanswered questionnaire step before finishing', async () => {
+    appState.mode = 'Chat';
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        {
+          id: 'assistant-questionnaire',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Need three clarifications.',
+          timestamp: '2026-04-14T10:00:00.000Z',
+          questionnaire: {
+            intro: 'Need three clarifications.',
+            source: 'tool',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                choices: ['Safe', 'Moderate', 'Aggressive'],
+              },
+              {
+                id: 'timing',
+                prompt: 'How soon do you need it?',
+                choices: ['Today', 'This week', 'Later'],
+              },
+            ],
+          },
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {
+        'chat-conv': {
+          assistantMessageId: 'assistant-questionnaire',
+          currentStepIndex: 2,
+          answersByStepId: {
+            scope: 'Balanced',
+          },
+          draftTextByStepId: {},
+        },
+      },
+      composerContextRefs: [],
+    });
+
+    const result = useChatStore
+      .getState()
+      .recordActiveQuestionnaireAnswer('chat-conv', 'This week');
+
+    expect(result?.completed).toBe(false);
+    expect(useChatStore.getState().getActiveQuestionnaire('chat-conv')).toMatchObject({
+      currentStepIndex: 1,
+      currentStep: {
+        id: 'risk',
+      },
+      answersByStepId: {
+        scope: 'Balanced',
+        timing: 'This week',
+      },
+    });
+  });
+
+  it('repositions direct questionnaire submission to the first unanswered step', async () => {
+    appState.mode = 'Chat';
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        {
+          id: 'assistant-questionnaire',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Need three clarifications.',
+          timestamp: '2026-04-14T10:00:00.000Z',
+          questionnaire: {
+            intro: 'Need three clarifications.',
+            source: 'tool',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                choices: ['Safe', 'Moderate', 'Aggressive'],
+              },
+              {
+                id: 'timing',
+                prompt: 'How soon do you need it?',
+                choices: ['Today', 'This week', 'Later'],
+              },
+            ],
+          },
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {
+        'chat-conv': {
+          assistantMessageId: 'assistant-questionnaire',
+          currentStepIndex: 2,
+          answersByStepId: {
+            scope: 'Balanced',
+            timing: 'This week',
+          },
+          draftTextByStepId: {},
+        },
+      },
+      composerContextRefs: [],
+    });
+
+    const result = await useChatStore
+      .getState()
+      .submitActiveQuestionnaire('chat-conv');
+
+    expect(result).toBeNull();
+    expect(useChatStore.getState().getActiveQuestionnaire('chat-conv')).toMatchObject({
+      currentStepIndex: 1,
+      currentStep: {
+        id: 'risk',
+      },
+      answersByStepId: {
+        scope: 'Balanced',
+        timing: 'This week',
+      },
+    });
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages('chat-conv')
+        .filter((message: { role: string }) => message.role === 'user'),
+    ).toHaveLength(0);
+  });
+
   it('replaces an edited questionnaire response, trims later messages, and restarts the chat from the updated answer', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';
@@ -3513,7 +3670,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getActiveQuestionnaire('chat-conv')).toMatchObject({
       mode: 'editing_response',
       responseMessageId: 'user-questionnaire',
-      currentStepIndex: 1,
+      currentStepIndex: 0,
       answersByStepId: {
         scope: 'Large',
         risk: 'Stay below one day of rework',

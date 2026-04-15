@@ -186,6 +186,7 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
     ).not.toBeNull();
+    expect(document.body.querySelector('h2')?.parentElement?.className).toContain('pt-1');
   });
 
   it('renders a pulsing dot for awaiting response tasks without streaming', async () => {

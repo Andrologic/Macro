@@ -448,6 +448,16 @@ const buildDraftTextByStepIdFromAnswers = (
     }),
   );
 
+export const findFirstUnansweredQuestionStepIndex = (
+  questionnaire: QuestionnairePayload,
+  answersByStepId: Record<string, string>,
+): number | null => {
+  const unansweredIndex = questionnaire.questions.findIndex(
+    (question) => !normalizeNonEmptyString(answersByStepId[question.id]),
+  );
+  return unansweredIndex === -1 ? null : unansweredIndex;
+};
+
 const resolveQuestionnaireResponseEditSeed = (
   conversationId: string,
   messages: ChatMessage[],
