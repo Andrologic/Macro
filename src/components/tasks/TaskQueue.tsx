@@ -1534,7 +1534,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
                     {row.kind === 'section' ? (
-                      <div className="px-1 pb-1 flex items-center justify-between">
+                      <div className="flex items-center justify-between px-1 pb-1 pt-1">
                         <h2
                           className={cn(
                             'text-xs font-semibold uppercase tracking-wide',
