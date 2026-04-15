@@ -104,6 +104,7 @@ import {
   buildQuestionnaireResponseProviderInputItems,
   buildQuestionnaireHiddenContextBlock,
   DEFAULT_QUESTIONNAIRE_INTRO,
+  findFirstUnansweredQuestionStepIndex,
   parseAssistantQuestionnaireState,
   parseUserQuestionnaireResponseState,
   resolveActiveConversationQuestionnaire,
@@ -1072,6 +1073,24 @@ const clearQuestionnaireDraftsForConversations = (
   });
   return next;
 };
+
+const setActiveQuestionnaireDraftStep = (
+  draftsByConversationId: Record<string, ConversationQuestionnaireDraft>,
+  activeQuestionnaire: ConversationQuestionnaireState,
+  stepIndex: number,
+): Record<string, ConversationQuestionnaireDraft> =>
+  setQuestionnaireDraftForConversation(
+    draftsByConversationId,
+    activeQuestionnaire.conversationId,
+    {
+      mode: activeQuestionnaire.mode,
+      assistantMessageId: activeQuestionnaire.assistantMessageId,
+      responseMessageId: activeQuestionnaire.responseMessageId,
+      currentStepIndex: stepIndex,
+      answersByStepId: { ...activeQuestionnaire.answersByStepId },
+      draftTextByStepId: { ...activeQuestionnaire.draftTextByStepId },
+    },
+  );
 
 const getStrictTranscriptFingerprint = (
   message: TranscriptComparableMessage,
@@ -6632,17 +6651,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           return state;
         }
 
-        const nextDrafts = setQuestionnaireDraftForConversation(
+        const nextDrafts = setActiveQuestionnaireDraftStep(
           state.questionnaireDraftsByConversationId,
-          conversationId,
-          {
-            mode: activeQuestionnaire.mode,
-            assistantMessageId: activeQuestionnaire.assistantMessageId,
-            responseMessageId: activeQuestionnaire.responseMessageId,
-            currentStepIndex: boundedStepIndex,
-            answersByStepId: { ...activeQuestionnaire.answersByStepId },
-            draftTextByStepId: { ...activeQuestionnaire.draftTextByStepId },
-          },
+          activeQuestionnaire,
+          boundedStepIndex,
         );
         saveQuestionnaireDraftsToStorage(nextDrafts);
 
@@ -6703,6 +6715,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
           return state;
         }
 
+        const nextAnswersByStepId = {
+          ...activeQuestionnaire.answersByStepId,
+          [activeQuestionnaire.currentStep.id]: normalizedAnswer,
+        };
+        const nextDraftTextByStepId = Object.fromEntries(
+          Object.entries(activeQuestionnaire.draftTextByStepId).filter(
+            ([stepId]) => stepId !== activeQuestionnaire.currentStep.id,
+          ),
+        );
+        const nextUnansweredStepIndex = findFirstUnansweredQuestionStepIndex(
+          activeQuestionnaire.questionnaire,
+          nextAnswersByStepId,
+        );
+        const nextStepIndex =
+          nextUnansweredStepIndex === null
+            ? activeQuestionnaire.currentStepIndex
+            : activeQuestionnaire.isLastStep
+              ? nextUnansweredStepIndex
+              : activeQuestionnaire.currentStepIndex + 1;
+
         const nextDrafts = setQuestionnaireDraftForConversation(
           state.questionnaireDraftsByConversationId,
           conversationId,
@@ -6710,18 +6742,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             mode: activeQuestionnaire.mode,
             assistantMessageId: activeQuestionnaire.assistantMessageId,
             responseMessageId: activeQuestionnaire.responseMessageId,
-            currentStepIndex: activeQuestionnaire.isLastStep
-              ? activeQuestionnaire.currentStepIndex
-              : activeQuestionnaire.currentStepIndex + 1,
-            answersByStepId: {
-              ...activeQuestionnaire.answersByStepId,
-              [activeQuestionnaire.currentStep.id]: normalizedAnswer,
-            },
-            draftTextByStepId: Object.fromEntries(
-              Object.entries(activeQuestionnaire.draftTextByStepId).filter(
-                ([stepId]) => stepId !== activeQuestionnaire.currentStep.id,
-              ),
-            ),
+            currentStepIndex: nextStepIndex,
+            answersByStepId: nextAnswersByStepId,
+            draftTextByStepId: nextDraftTextByStepId,
           },
         );
         saveQuestionnaireDraftsToStorage(nextDrafts);
@@ -6732,7 +6755,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           nextDrafts[conversationId],
         );
         result = {
-          completed: activeQuestionnaire.isLastStep,
+          completed:
+            activeQuestionnaire.isLastStep && nextUnansweredStepIndex === null,
           state: nextState,
         };
 
@@ -6753,14 +6777,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return null;
       }
 
-      const allAnswered = activeQuestionnaire.questionnaire.questions.every(
-        (question) =>
-          Boolean(activeQuestionnaire.answersByStepId[question.id]?.trim()),
+      const firstUnansweredStepIndex = findFirstUnansweredQuestionStepIndex(
+        activeQuestionnaire.questionnaire,
+        activeQuestionnaire.answersByStepId,
       );
-      if (!allAnswered) {
-        throw buildSendError(
-          "Answer every questionnaire step before submitting.",
-        );
+      if (firstUnansweredStepIndex !== null) {
+        set((state) => {
+          const refreshedQuestionnaire = resolveConversationQuestionnaireFromState(
+            state,
+            conversationId,
+          );
+          if (!refreshedQuestionnaire) {
+            return state;
+          }
+
+          const nextDrafts = setActiveQuestionnaireDraftStep(
+            state.questionnaireDraftsByConversationId,
+            refreshedQuestionnaire,
+            firstUnansweredStepIndex,
+          );
+          saveQuestionnaireDraftsToStorage(nextDrafts);
+
+          return {
+            questionnaireDraftsByConversationId: nextDrafts,
+          };
+        });
+        return null;
       }
 
       const responseArtifacts = buildQuestionnaireResponseArtifacts(

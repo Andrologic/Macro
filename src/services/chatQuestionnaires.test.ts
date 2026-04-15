@@ -8,6 +8,7 @@ import {
   buildQuestionnaireResponseSummary,
   buildQuestionnaireResponseVisibleContent,
   extractQuestionToolCallIdFromProviderInputItems,
+  findFirstUnansweredQuestionStepIndex,
   parseAssistantQuestionnaireState,
   parseQuestionnairePayloadFromHiddenContext,
   parseQuestionnaireResponseSummaryFromHiddenContext,
@@ -291,5 +292,42 @@ describe("chatQuestionnaires", () => {
         },
       ]),
     ).toBe("call_question");
+  });
+
+  it("finds the first unanswered step in questionnaire order", () => {
+    const questionnaire = validateQuestionToolArgs({
+      intro: "Need three clarifications.",
+      questions: [
+        {
+          id: "scope",
+          prompt: "Which scope should I use?",
+          choices: ["Minimal", "Balanced", "Large"],
+        },
+        {
+          id: "risk",
+          prompt: "How risky can the change be?",
+          choices: ["Safe", "Moderate", "Aggressive"],
+        },
+        {
+          id: "timing",
+          prompt: "How soon do you need it?",
+          choices: ["Today", "This week", "Later"],
+        },
+      ],
+    });
+
+    expect(
+      findFirstUnansweredQuestionStepIndex(questionnaire, {
+        scope: "Balanced",
+        timing: "This week",
+      }),
+    ).toBe(1);
+    expect(
+      findFirstUnansweredQuestionStepIndex(questionnaire, {
+        scope: "Balanced",
+        risk: "Moderate",
+        timing: "This week",
+      }),
+    ).toBeNull();
   });
 });
