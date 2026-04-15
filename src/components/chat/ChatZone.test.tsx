@@ -817,6 +817,92 @@ describe('ChatZone', () => {
     ).toContain('questionnaire-step-enter');
   });
 
+  it('returns to the first unanswered question before submitting a skipped questionnaire step', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Need three decisions.',
+          questionnaire: {
+            intro: 'Need three decisions.',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+              {
+                id: 'risk',
+                prompt: 'How risky can the change be?',
+                choices: ['Safe', 'Moderate', 'Aggressive'],
+              },
+              {
+                id: 'timing',
+                prompt: 'How soon do you need it?',
+                choices: ['Today', 'This week', 'Later'],
+              },
+            ],
+          },
+        }),
+      ],
+      questionnaireDraftsByConversationId: {
+        'conv-1': {
+          assistantMessageId: 'msg-assistant-1',
+          currentStepIndex: 2,
+          answersByStepId: {
+            scope: 'Balanced',
+          },
+          draftTextByStepId: {},
+        },
+      },
+      recordActiveQuestionnaireAnswer: mock((_conversationId: string, answer: string) => {
+        chatState = {
+          ...chatState,
+          questionnaireDraftsByConversationId: {
+            ...chatState.questionnaireDraftsByConversationId,
+            'conv-1': {
+              assistantMessageId: 'msg-assistant-1',
+              currentStepIndex: 1,
+              answersByStepId: {
+                scope: 'Balanced',
+                timing: answer,
+              },
+              draftTextByStepId: {},
+            },
+          },
+        };
+        useChatStore.emit();
+        return {
+          completed: false,
+          state: null,
+        };
+      }),
+      submitActiveQuestionnaire: mock(async () => ({ status: 'sent' })),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('How soon do you need it?');
+
+    const lastStepButton = Array.from(
+      requireContainer().querySelectorAll('button')
+    ).find((candidate) => candidate.textContent?.includes('This week'));
+    expect(lastStepButton).toBeDefined();
+
+    await act(async () => {
+      lastStepButton?.click();
+    });
+
+    expect(chatState.recordActiveQuestionnaireAnswer).toHaveBeenCalledWith('conv-1', 'This week');
+    expect(chatState.submitActiveQuestionnaire).not.toHaveBeenCalled();
+    expect(requireContainer().textContent).toContain('How risky can the change be?');
+    expect(requireContainer().textContent).not.toContain('How soon do you need it?');
+  });
+
   it('lets the user navigate forward and backward between questionnaire steps', async () => {
     chatState = {
       ...chatState,
