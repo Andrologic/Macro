@@ -1350,6 +1350,33 @@ const syncPlanTaskMetadataAtScope = async (
     nodes: normalizePlanNodes(plan.nodes),
     predictedBranches: normalizePlanPredictedBranches(plan.predictedBranches),
   };
+  const activeTaskIds = new Set(normalizedPlan.nodes.map((node) => node.id));
+
+  try {
+    const existingTaskEntries = await tauriIpc.fsListDir({
+      path: getPlanTasksRoot(normalizedBranch, normalizedPlan.id),
+      recursive: false,
+      includeHidden: true,
+      allowOutsideWorkspace: false,
+      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspacePath: scope.workspacePath,
+    });
+
+    await Promise.all(
+      existingTaskEntries
+        .filter((entry) => entry.kind === 'dir' || entry.kind === 'directory')
+        .filter((entry) => !activeTaskIds.has(entry.name))
+        .map((entry) =>
+          tauriIpc.fsDelete({
+            path: getTaskPlannedPath(normalizedBranch, normalizedPlan.id, entry.name),
+            workspaceScope: METADATA_WORKSPACE_SCOPE,
+            workspacePath: scope.workspacePath,
+          }).catch(() => undefined)
+        )
+    );
+  } catch {
+    // Ignore missing task directories and keep planned metadata writes best-effort.
+  }
 
   await Promise.all(
     normalizedPlan.nodes.map((node) =>

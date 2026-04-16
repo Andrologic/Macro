@@ -75,6 +75,8 @@ import {
   formatArchitectPlanUpdateToolResult,
   formatArchitectStrategyGenerateToolResult,
   formatArchitectStrategyGetToolResult,
+  formatArchitectStrategyMutationPreviewToolResult,
+  formatArchitectStrategyMutationRepairToolResult,
   formatArchitectStrategyUpdateToolResult,
 } from "../services/architectChat";
 import { normalizeArchitectToolId } from "../services/architectToolNames";
@@ -87,6 +89,11 @@ import {
   type WorkBranchType,
 } from "../services/gitFlowBranchIntents";
 import { normalizeStrategyDependencies } from "../services/implementTaskDerivation";
+import {
+  applyStrategyMutationPreview,
+  prepareStrategyMutationPreview,
+  type StrategyMutationDecision,
+} from "../services/architectStrategyMutationGuard";
 import { getLocalProjectContextState } from "../services/localProjectContext";
 import {
   getFocusedProjectForGroup,
@@ -135,6 +142,7 @@ const conversationCompactionStateCache = new Map<
   string,
   ConversationCompactionState | null
 >();
+const strategyMutationRepairAttempts = new Map<string, number>();
 const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
 const EMPTY_MESSAGE_IMAGES: MessageImageAttachment[] = [];
 
@@ -2619,6 +2627,87 @@ export const useChatStore = create<ChatStore>((set, get) => {
         activePlanDescription: activePlan.description,
       };
     };
+
+    const executeStrategyMutation = async (params: {
+      source: "strategy_generate" | "strategy_update";
+      targetBranch: string;
+      activePlan: ArchitectPlanRecord;
+      strategy: Awaited<ReturnType<typeof resolveStrategyForPlan>>;
+      metadataUpdate?: {
+        title?: string;
+        label?: string;
+        description?: string;
+      };
+    }): Promise<StrategyMutationDecision> => {
+      const repairAttemptKey = [
+        assistantMessageId,
+        params.activePlan.id,
+        params.source,
+      ].join(":");
+      const repairAttempted =
+        (strategyMutationRepairAttempts.get(repairAttemptKey) || 0) > 0;
+
+      useAppStore.getState().setStrategyMutationPreview(null);
+
+      const preview = prepareStrategyMutationPreview({
+        source: params.source,
+        plan: params.activePlan,
+        candidateNodes: params.strategy.planNodes,
+        tasks: useTaskStore
+          .getState()
+          .tasks.filter((task) => task.plan_id === params.activePlan.id)
+          .map((task) => ({
+            id: task.id,
+            plan_id: task.plan_id,
+            status: task.status,
+          })),
+        metadataUpdate: params.metadataUpdate,
+        targetBranchesByProjectId: params.strategy.targetBranchesByProjectId,
+        getProjectGitFlowSettings: (projectId) =>
+          useAppStore.getState().getProjectById(projectId)?.gitFlowSettings,
+        repairAttempted,
+      });
+
+      if (preview.status === "valid") {
+        strategyMutationRepairAttempts.delete(repairAttemptKey);
+
+        if (preview.requiresPreview) {
+          useAppStore.getState().setStrategyMutationPreview(preview);
+          return {
+            outcome: "preview_staged",
+            preview,
+          };
+        }
+
+        const plan = await applyStrategyMutationPreview({
+          preview,
+          setActive: true,
+        });
+        useAppStore.getState().setStrategyMutationPreview(null);
+        await hydratePlanContext(params.targetBranch, plan.id);
+        await useTaskStore.getState().refreshFromPlan();
+        return {
+          outcome: "applied",
+          preview,
+          plan,
+        };
+      }
+
+      if (!repairAttempted) {
+        strategyMutationRepairAttempts.set(repairAttemptKey, 1);
+        return {
+          outcome: "repair_requested",
+          preview,
+        };
+      }
+
+      strategyMutationRepairAttempts.delete(repairAttemptKey);
+      useAppStore.getState().setStrategyMutationPreview(preview);
+      return {
+        outcome: "blocked",
+        preview,
+      };
+    };
     if (normalizedToolName === "need_add") {
       const activePlanId = resolveActivePlanId();
       if (!activePlanId) {
@@ -2822,35 +2911,58 @@ export const useChatStore = create<ChatStore>((set, get) => {
         typeof args.plan_description === "string"
           ? args.plan_description
           : activePlan?.description || "";
+      if (!activePlan) {
+        return `Active plan ${activePlanId} is unavailable.`;
+      }
 
-      await updateArchitectPlan({
-        branchName: targetBranch,
-        planId: activePlanId,
-        ...(activePlan && requestedPlanTitleAlias !== undefined
+      const metadataUpdate =
+        activePlan && requestedPlanTitleAlias !== undefined
           ? isCanonicalArchitectPlan(activePlan)
-            ? { label: requestedPlanTitleAlias }
-            : { title: requestedPlanTitleAlias }
-          : {}),
-        description: inputDescription,
-        status: "draft",
-        nodes: strategy.planNodes,
-        predictedBranches: strategy.predictedBranches,
-        projectId: strategy.resolvedProjectId,
-        projectIds: strategy.resolvedProjectIds,
-        targetBranchesByProjectId: strategy.targetBranchesByProjectId,
-        setActive: true,
+            ? {
+                label: requestedPlanTitleAlias,
+                description: inputDescription,
+              }
+            : {
+                title: requestedPlanTitleAlias,
+                description: inputDescription,
+              }
+          : {
+              description: inputDescription,
+            };
+      const decision = await executeStrategyMutation({
+        source: "strategy_generate",
+        targetBranch,
+        activePlan,
+        strategy,
+        metadataUpdate,
       });
 
-      await hydratePlanContext(targetBranch, activePlanId);
+      if (decision.outcome === "repair_requested") {
+        return formatArchitectStrategyMutationRepairToolResult({
+          planId: activePlanId,
+          source: "strategy_generate",
+          conflicts: decision.preview.conflicts,
+          frozenNodes: decision.preview.frozenNodes,
+        });
+      }
+
+      if (
+        decision.outcome === "preview_staged" ||
+        decision.outcome === "blocked"
+      ) {
+        return formatArchitectStrategyMutationPreviewToolResult(
+          decision.preview,
+        );
+      }
 
       return formatArchitectStrategyGenerateToolResult({
         planId: activePlanId,
-        planTitle: strategy.activePlanTitle,
-        planDescription: strategy.activePlanDescription,
-        planNodes: strategy.planNodes,
-        predictedBranches: strategy.predictedBranches,
-        resolvedProjectIds: strategy.resolvedProjectIds,
-        targetBranchesByProjectId: strategy.targetBranchesByProjectId,
+        planTitle: decision.plan.label || decision.plan.title,
+        planDescription: decision.plan.description,
+        planNodes: decision.plan.nodes,
+        predictedBranches: decision.plan.predictedBranches,
+        resolvedProjectIds: decision.preview.resolvedProjectIds,
+        targetBranchesByProjectId: decision.preview.targetBranchesByProjectId,
       });
     }
 
@@ -3042,25 +3154,38 @@ export const useChatStore = create<ChatStore>((set, get) => {
         reuseExistingIds: !replace,
         existingNodesForPatch: activePlan.nodes,
       });
-
-      await updateArchitectPlan({
-        branchName: targetBranch,
-        planId: activePlanId,
-        description: activePlan.description,
-        status: activePlan.status,
-        nodes: strategy.planNodes,
-        predictedBranches: strategy.predictedBranches,
-        projectId: strategy.resolvedProjectId,
-        projectIds: strategy.resolvedProjectIds,
-        targetBranchesByProjectId: strategy.targetBranchesByProjectId,
-        setActive: true,
+      const decision = await executeStrategyMutation({
+        source: "strategy_update",
+        targetBranch,
+        activePlan,
+        strategy,
+        metadataUpdate: {
+          description: activePlan.description,
+        },
       });
 
-      await hydratePlanContext(targetBranch, activePlanId);
+      if (decision.outcome === "repair_requested") {
+        return formatArchitectStrategyMutationRepairToolResult({
+          planId: activePlanId,
+          source: "strategy_update",
+          conflicts: decision.preview.conflicts,
+          frozenNodes: decision.preview.frozenNodes,
+        });
+      }
+
+      if (
+        decision.outcome === "preview_staged" ||
+        decision.outcome === "blocked"
+      ) {
+        return formatArchitectStrategyMutationPreviewToolResult(
+          decision.preview,
+        );
+      }
+
       return formatArchitectStrategyUpdateToolResult({
         planId: activePlanId,
-        planNodes: strategy.planNodes,
-        predictedBranches: strategy.predictedBranches,
+        planNodes: decision.plan.nodes,
+        predictedBranches: decision.plan.predictedBranches,
       });
     }
 
@@ -3527,6 +3652,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       systemInstructions.push(
         "In Architect mode, never call `plan_set_active`. If another plan should become active, ask the user to select it from the plan selector.",
+      );
+      systemInstructions.push(
+        "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
       );
       systemInstructions.push(
         "Git workflow for plans is strict: each new plan gets a generated identifier and uses that identifier as its canonical slug. Integration branch is `plan/<plan-id>` from `develop`; strategy branches must be `feature/<plan-id>/<feature-slug>` and merge into the plan branch in dependency order. Optional labels must never change git branch identity.",

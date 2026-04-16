@@ -43,6 +43,53 @@ interface LoadArchitectPlanServiceOptions {
 
 const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {}) => {
   mock.restore();
+  const workspaceFilesByWorkspacePath = options.filesByWorkspacePath ?? {};
+  const normalizeMockPath = (value: string): string =>
+    value.replace(/\\/g, '/').replace(/\/+$/, '');
+  const listWorkspaceDir = (workspacePath: string, dirPath: string) => {
+    const workspaceFiles = workspaceFilesByWorkspacePath[workspacePath] ?? {};
+    const normalizedDirPath = normalizeMockPath(dirPath);
+    const prefix = normalizedDirPath.length > 0 ? `${normalizedDirPath}/` : '';
+    const entries = new Map<
+      string,
+      {
+        path: string;
+        relative_path: string;
+        name: string;
+        kind: string;
+        is_hidden: boolean;
+        is_readonly: boolean;
+      }
+    >();
+
+    Object.keys(workspaceFiles).forEach((rawPath) => {
+      const normalizedPath = normalizeMockPath(rawPath);
+      if (!normalizedPath.startsWith(prefix)) {
+        return;
+      }
+
+      const remainder = normalizedPath.slice(prefix.length);
+      if (!remainder) {
+        return;
+      }
+
+      const [name, ...rest] = remainder.split('/').filter(Boolean);
+      if (!name || entries.has(name)) {
+        return;
+      }
+
+      entries.set(name, {
+        path: `${normalizedDirPath}/${name}`,
+        relative_path: name,
+        name,
+        kind: rest.length > 0 ? 'directory' : 'file',
+        is_hidden: name.startsWith('.'),
+        is_readonly: false,
+      });
+    });
+
+    return Array.from(entries.values());
+  };
   const tauriModule = () => ({
     ...actualTauriIpc,
     aiGetDevProviderOverrides: async () => null,
@@ -50,11 +97,56 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
     workspaceGetActiveRoot: async () => options.workspaceRoot ?? '/repos/web',
     fsReadFileWithOptions: async (params: { path: string; workspacePath?: string | null }) => {
       const workspacePath = params.workspacePath ?? '';
-      const content = options.filesByWorkspacePath?.[workspacePath]?.[params.path];
+      const content = workspaceFilesByWorkspacePath[workspacePath]?.[normalizeMockPath(params.path)];
       if (typeof content !== 'string') {
         throw new Error(`Missing mocked file for ${workspacePath}:${params.path}`);
       }
       return { content };
+    },
+    fsWriteFile: async (params: {
+      path: string;
+      content: string;
+      workspacePath?: string | null;
+    }) => {
+      const workspacePath = params.workspacePath ?? '';
+      if (!workspaceFilesByWorkspacePath[workspacePath]) {
+        workspaceFilesByWorkspacePath[workspacePath] = {};
+      }
+      const normalizedPath = normalizeMockPath(params.path);
+      const created = !(normalizedPath in workspaceFilesByWorkspacePath[workspacePath]);
+      workspaceFilesByWorkspacePath[workspacePath][normalizedPath] = params.content;
+      return {
+        path: normalizedPath,
+        bytes_written: params.content.length,
+        created,
+        skipped: false,
+      };
+    },
+    fsListDir: async (params: {
+      path: string;
+      workspacePath?: string | null;
+    }) => {
+      const workspacePath = params.workspacePath ?? '';
+      return listWorkspaceDir(workspacePath, params.path);
+    },
+    fsDelete: async (params: {
+      path: string;
+      recursive?: boolean;
+      workspacePath?: string | null;
+    }) => {
+      const workspacePath = params.workspacePath ?? '';
+      const workspaceFiles = workspaceFilesByWorkspacePath[workspacePath] ?? {};
+      const normalizedPath = normalizeMockPath(params.path);
+      if (params.recursive) {
+        Object.keys(workspaceFiles).forEach((rawPath) => {
+          const candidatePath = normalizeMockPath(rawPath);
+          if (candidatePath === normalizedPath || candidatePath.startsWith(`${normalizedPath}/`)) {
+            delete workspaceFiles[candidatePath];
+          }
+        });
+        return;
+      }
+      delete workspaceFiles[normalizedPath];
     },
   });
   mock.module('./tauriIpc', tauriModule);
@@ -410,6 +502,100 @@ describe('architectPlanService', () => {
     const listed = await service.listArchitectPlans(branchName, true, true);
 
     expect(listed.activePlanId).toBeNull();
+  });
+
+  it('removes orphaned planned metadata while preserving executed task history', async () => {
+    const registrySnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: null,
+      scopedProjectIds: [],
+      actionableProjectIds: ['web'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['web']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['web'],
+      validProjectIdSet: new Set(['web']),
+      repoPathByProjectId: new Map([['web', '/repos/web']]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/web': {},
+    };
+
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/web',
+      registrySnapshot,
+      filesByWorkspacePath,
+    });
+
+    await service.createArchitectPlan({
+      branchName,
+      planId: 'plan-task-metadata',
+      projectIds: ['web'],
+      nodes: [
+        {
+          id: 'task-keep',
+          title: 'Keep planned file',
+          description: 'Still in the plan',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/keep-planned-file',
+          projectId: 'web',
+          projectIds: ['web'],
+        },
+        {
+          id: 'task-remove',
+          title: 'Remove planned file',
+          description: 'Will disappear from the plan',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/remove-planned-file',
+          projectId: 'web',
+          projectIds: ['web'],
+        },
+      ],
+    });
+
+    filesByWorkspacePath['/repos/web'][
+      'branches/develop/plans/plan-task-metadata/tasks/task-remove/executed.md'
+    ] = '# Executed task';
+
+    await service.updateArchitectPlan({
+      branchName,
+      planId: 'plan-task-metadata',
+      nodes: [
+        {
+          id: 'task-keep',
+          title: 'Keep planned file',
+          description: 'Still in the plan',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/keep-planned-file',
+          projectId: 'web',
+          projectIds: ['web'],
+        },
+      ],
+    });
+
+    expect(
+      filesByWorkspacePath['/repos/web'][
+        'branches/develop/plans/plan-task-metadata/tasks/task-keep/planned.md'
+      ]
+    ).toContain('Keep planned file');
+    expect(
+      filesByWorkspacePath['/repos/web'][
+        'branches/develop/plans/plan-task-metadata/tasks/task-remove/planned.md'
+      ]
+    ).toBeUndefined();
+    expect(
+      filesByWorkspacePath['/repos/web'][
+        'branches/develop/plans/plan-task-metadata/tasks/task-remove/executed.md'
+      ]
+    ).toBe('# Executed task');
   });
 
   it('does not treat unscoped legacy plans as visible inside a selected project scope', () => {
