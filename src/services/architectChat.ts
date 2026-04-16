@@ -1,5 +1,9 @@
 import type { PlanNode, PredictedBranch } from '../types';
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
+import type {
+  FrozenPlanNode,
+  StrategyMutationPreview,
+} from './architectStrategyMutationGuard';
 import { getArchitectPlanProjectIds } from './architectPlanService';
 import { getArchitectPlanDisplayName, isCanonicalArchitectPlan } from './architectPlanPresentation';
 
@@ -63,6 +67,15 @@ const summarizePredictedBranch = (branch: PredictedBranch) => ({
   branch_type: branch.branchType,
   branch_slug: branch.branchSlug,
   task_ids: branch.taskIds,
+});
+
+const summarizeFrozenPlanNode = (node: FrozenPlanNode) => ({
+  id: node.id,
+  title: node.title,
+  reason: node.reason,
+  status: node.status,
+  dependencies: node.dependencies,
+  project_ids: node.projectIds,
 });
 
 const formatArchitectToolResult = (summary: string, payload?: unknown): string =>
@@ -234,4 +247,47 @@ export const formatArchitectStrategyUpdateToolResult = (params: {
       predicted_branches: params.predictedBranches.map(summarizePredictedBranch),
     }
   );
+};
+
+export const formatArchitectStrategyMutationRepairToolResult = (params: {
+  planId: string;
+  source: 'strategy_generate' | 'strategy_update';
+  conflicts: string[];
+  frozenNodes: FrozenPlanNode[];
+}): string =>
+  formatArchitectToolResult(
+    `Strategy mutation for plan ${params.planId} conflicted with frozen work. Call ${params.source} once more with a corrected full strategy that preserves every frozen node exactly.`,
+    {
+      action: 'repair_requested',
+      plan_id: params.planId,
+      source_tool: params.source,
+      conflicts: params.conflicts,
+      frozen_nodes: params.frozenNodes.map(summarizeFrozenPlanNode),
+    }
+  );
+
+export const formatArchitectStrategyMutationPreviewToolResult = (
+  preview: StrategyMutationPreview
+): string => {
+  const summary =
+    preview.status === 'valid'
+      ? `Strategy preview staged for ${preview.planTitle}: ${preview.frozenNodes.length} frozen node${preview.frozenNodes.length === 1 ? '' : 's'} preserved, ${preview.rewrittenPendingNodes.length} pending rewrite${preview.rewrittenPendingNodes.length === 1 ? '' : 's'}, ${preview.newNodes.length} new node${preview.newNodes.length === 1 ? '' : 's'}, ${preview.removedPendingNodes.length} pending removal${preview.removedPendingNodes.length === 1 ? '' : 's'}.`
+      : `Strategy mutation blocked for ${preview.planTitle}. Review the conflicts before trying again.`;
+
+  return formatArchitectToolResult(summary, {
+    action: preview.status === 'valid' ? 'preview_staged' : 'blocked',
+    plan_id: preview.planId,
+    plan_title: preview.planTitle,
+    source_tool: preview.source,
+    preview_status: preview.status,
+    next_plan_status: preview.nextPlanStatus,
+    auto_provision_branches: preview.autoProvisionBranches,
+    repair_attempted: preview.repairAttempted,
+    requires_preview: preview.requiresPreview,
+    frozen_nodes: preview.frozenNodes.map(summarizeFrozenPlanNode),
+    rewritten_pending_nodes: preview.rewrittenPendingNodes,
+    new_nodes: preview.newNodes,
+    removed_pending_nodes: preview.removedPendingNodes,
+    conflicts: preview.conflicts,
+  });
 };

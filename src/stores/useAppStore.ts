@@ -41,6 +41,7 @@ import {
   resolveTargetBranch,
   setActiveArchitectPlan as persistActiveArchitectPlan,
 } from "../services/architectPlanService";
+import type { StrategyMutationPreview } from "../services/architectStrategyMutationGuard";
 import { taskMatchesProjectId } from "../services/implementTaskCatalog";
 import {
   loadPreference,
@@ -537,6 +538,7 @@ const hydrateArchitectPlanInStore = async (input: {
     },
     planNodes: plan.nodes || [],
     predictedBranches: plan.predictedBranches || [],
+    strategyMutationPreview: null,
   });
   useNeedsStore.getState().hydrateNeedsForPlan(plan.id, input.needs);
 };
@@ -547,6 +549,7 @@ const clearActiveArchitectPlanInStore = (): void => {
     activePlanContext: null,
     planNodes: [],
     predictedBranches: [],
+    strategyMutationPreview: null,
   });
 };
 
@@ -761,6 +764,7 @@ interface AppStore {
   activePlanContext: ArchitectPlanContext | null;
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
+  strategyMutationPreview: StrategyMutationPreview | null;
   setMode: (mode: AppMode) => void;
   setAgentType: (agentType: AgentType) => void;
   setTheme: (themeId: string) => void;
@@ -817,6 +821,9 @@ interface AppStore {
   ) => Promise<void>;
   setPlanNodes: (nodes: PlanNode[]) => void;
   setPredictedBranches: (branches: PredictedBranch[]) => void;
+  setStrategyMutationPreview: (
+    preview: StrategyMutationPreview | null,
+  ) => void;
   setActiveArchitectPlanId: (planId: string | null) => void;
   activateArchitectPlan: (
     planId: string,
@@ -966,6 +973,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   activePlanContext: null,
   planNodes: [],
   predictedBranches: [],
+  strategyMutationPreview: null,
 
   setMode: (mode) => {
     set({ mode });
@@ -1028,6 +1036,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       activePlanContext: null,
       planNodes: [],
       predictedBranches: [],
+      strategyMutationPreview: null,
     });
     void (async () => {
       if (previousGroupId) {
@@ -1214,6 +1223,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         activePlanContext: null,
         planNodes: [],
         predictedBranches: [],
+        strategyMutationPreview: null,
         recentProjects: nextRecentProjects,
         macroEnabledProjects: nextMacroEnabledProjects,
       });
@@ -1294,6 +1304,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setPlanNodes: (nodes) => set({ planNodes: nodes }),
 
   setPredictedBranches: (branches) => set({ predictedBranches: branches }),
+
+  setStrategyMutationPreview: (preview) =>
+    set({ strategyMutationPreview: preview }),
 
   setActiveArchitectPlanId: (planId) => set({ activeArchitectPlanId: planId }),
 
