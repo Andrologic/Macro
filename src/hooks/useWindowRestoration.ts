@@ -8,18 +8,21 @@
 import { useEffect, useCallback } from "react";
 import {
   savePreference,
+  loadPersistedPreference,
   loadPreferences,
   PREF_KEYS,
 } from "../services/preferences";
 import {
   isTauriEnvironment,
   showMainWindow,
+  windowCurrentMonitorWorkArea,
   windowIsMaximized,
   windowMaximize,
   windowOnMoved,
   windowOnResized,
   windowOuterPosition,
   windowOuterSize,
+  windowPrimaryMonitorWorkArea,
   windowScaleFactor,
   windowSetBackgroundColor,
   windowSetPosition,
@@ -48,6 +51,19 @@ let lastSavedState: string | null = null;
 let restorePromise: Promise<void> | null = null;
 
 type NativeWindowThemePreference = 'light' | 'dark' | null;
+
+const MACOS_WINDOW_BOOTSTRAP_VERSION = 2;
+const LEGACY_MACOS_DEFAULT_WINDOW_SIZE = {
+  width: 1200,
+  height: 800,
+} as const;
+
+const isLegacyMacosDefaultWindowSize = (
+  width: number | undefined,
+  height: number | undefined
+): boolean =>
+  width === LEGACY_MACOS_DEFAULT_WINDOW_SIZE.width &&
+  height === LEGACY_MACOS_DEFAULT_WINDOW_SIZE.height;
 
 /**
  * Check if running in Tauri environment
@@ -101,14 +117,28 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
     if (!api || isPageShuttingDown()) return;
 
     try {
-      const prefs = await loadPreferences<Record<string, unknown>>([
-        PREF_KEYS.WINDOW_WIDTH,
-        PREF_KEYS.WINDOW_HEIGHT,
-        PREF_KEYS.WINDOW_X,
-        PREF_KEYS.WINDOW_Y,
-        PREF_KEYS.IS_MAXIMIZED,
-        PREF_KEYS.NATIVE_MACOS_TITLEBAR_BG,
-        PREF_KEYS.NATIVE_MACOS_TITLEBAR_THEME,
+      const [
+        prefs,
+        persistedWidth,
+        persistedHeight,
+        persistedX,
+        persistedY,
+        persistedBootstrapVersion,
+      ] = await Promise.all([
+        loadPreferences<Record<string, unknown>>([
+          PREF_KEYS.WINDOW_WIDTH,
+          PREF_KEYS.WINDOW_HEIGHT,
+          PREF_KEYS.WINDOW_X,
+          PREF_KEYS.WINDOW_Y,
+          PREF_KEYS.IS_MAXIMIZED,
+          PREF_KEYS.NATIVE_MACOS_TITLEBAR_BG,
+          PREF_KEYS.NATIVE_MACOS_TITLEBAR_THEME,
+        ]),
+        loadPersistedPreference<number>(PREF_KEYS.WINDOW_WIDTH),
+        loadPersistedPreference<number>(PREF_KEYS.WINDOW_HEIGHT),
+        loadPersistedPreference<number | null>(PREF_KEYS.WINDOW_X),
+        loadPersistedPreference<number | null>(PREF_KEYS.WINDOW_Y),
+        loadPersistedPreference<number>(PREF_KEYS.WINDOW_BOOTSTRAP_VERSION),
       ]);
 
       const width = prefs[PREF_KEYS.WINDOW_WIDTH] as number | undefined;
@@ -118,8 +148,9 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
       const isMaximized = prefs[PREF_KEYS.IS_MAXIMIZED] as boolean;
       const nativeMacosTitlebarBg = prefs[PREF_KEYS.NATIVE_MACOS_TITLEBAR_BG] as string | undefined;
       const nativeMacosTitlebarTheme = prefs[PREF_KEYS.NATIVE_MACOS_TITLEBAR_THEME] as NativeWindowThemePreference | undefined;
+      const chromeState = getPlatformChromeState();
 
-      if (getPlatformChromeState().usesNativeMacosTitlebar) {
+      if (chromeState.usesNativeMacosTitlebar) {
         await Promise.all([
           nativeMacosTitlebarBg
             ? windowSetBackgroundColor(nativeMacosTitlebarBg)
@@ -134,17 +165,104 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
 
       if (isPageShuttingDown()) return;
 
-      if (isMaximized) {
+      const hasPersistedWindowGeometry =
+        persistedWidth !== undefined ||
+        persistedHeight !== undefined ||
+        persistedX !== undefined ||
+        persistedY !== undefined;
+      const needsMacosBootstrapVersionUpgrade =
+        chromeState.platform === "macos" &&
+        (persistedBootstrapVersion ?? 0) < MACOS_WINDOW_BOOTSTRAP_VERSION;
+      const shouldMigrateLegacyMacosDefault =
+        needsMacosBootstrapVersionUpgrade &&
+        isLegacyMacosDefaultWindowSize(persistedWidth, persistedHeight);
+      const shouldBootstrapMacosMaximized =
+        chromeState.platform === "macos" &&
+        (!hasPersistedWindowGeometry || shouldMigrateLegacyMacosDefault);
+
+      let bootstrappedMacosMaximized = false;
+      let restoredWithMacosWorkArea = false;
+      let restoredMacosWorkArea:
+        | { width: number; height: number; x: number; y: number }
+        | null = null;
+      if (shouldBootstrapMacosMaximized) {
+        try {
+          await api.maximize();
+          bootstrappedMacosMaximized = true;
+        } catch (error) {
+          devLogger.log(
+            `Failed to maximize default macOS window, falling back to monitor work area: ${String(error)}`
+          );
+          const monitorWorkArea =
+            (await windowCurrentMonitorWorkArea()) ??
+            (await windowPrimaryMonitorWorkArea());
+          if (monitorWorkArea) {
+            restoredMacosWorkArea = monitorWorkArea;
+            await api.setSize(monitorWorkArea.width, monitorWorkArea.height);
+            await api.setPosition(monitorWorkArea.x, monitorWorkArea.y);
+            restoredWithMacosWorkArea = true;
+          }
+        }
+      }
+
+      if (bootstrappedMacosMaximized) {
+        await Promise.all([
+          savePreference(PREF_KEYS.IS_MAXIMIZED, true),
+          savePreference(
+            PREF_KEYS.WINDOW_BOOTSTRAP_VERSION,
+            MACOS_WINDOW_BOOTSTRAP_VERSION
+          ),
+        ]);
+      } else if (restoredWithMacosWorkArea && restoredMacosWorkArea) {
+        await Promise.all([
+          savePreference(PREF_KEYS.WINDOW_WIDTH, restoredMacosWorkArea.width),
+          savePreference(PREF_KEYS.WINDOW_HEIGHT, restoredMacosWorkArea.height),
+          savePreference(PREF_KEYS.WINDOW_X, restoredMacosWorkArea.x),
+          savePreference(PREF_KEYS.WINDOW_Y, restoredMacosWorkArea.y),
+          savePreference(PREF_KEYS.IS_MAXIMIZED, false),
+          savePreference(
+            PREF_KEYS.WINDOW_BOOTSTRAP_VERSION,
+            MACOS_WINDOW_BOOTSTRAP_VERSION
+          ),
+        ]);
+      } else if (restoredWithMacosWorkArea) {
+        await Promise.all([
+          savePreference(PREF_KEYS.IS_MAXIMIZED, false),
+          savePreference(
+            PREF_KEYS.WINDOW_BOOTSTRAP_VERSION,
+            MACOS_WINDOW_BOOTSTRAP_VERSION
+          ),
+        ]);
+      } else if (isMaximized) {
         await api.maximize();
-      } else if (width && height && width > 100 && height > 100) {
+      } else if (!restoredWithMacosWorkArea && width && height && width > 100 && height > 100) {
         await api.setSize(width, height);
         if (x !== null && y !== null && x >= 0 && y >= 0) {
           await api.setPosition(x, y);
         }
       }
 
+      if (
+        needsMacosBootstrapVersionUpgrade &&
+        !bootstrappedMacosMaximized &&
+        !restoredWithMacosWorkArea
+      ) {
+        await savePreference(
+          PREF_KEYS.WINDOW_BOOTSTRAP_VERSION,
+          MACOS_WINDOW_BOOTSTRAP_VERSION
+        );
+      }
+
       if (isPageShuttingDown()) return;
-      devLogger.log("Window state restored:", { width, height, x, y, isMaximized });
+      devLogger.log("Window state restored:", {
+        width,
+        height,
+        x,
+        y,
+        isMaximized,
+        bootstrappedMacosMaximized,
+        restoredWithMacosWorkArea,
+      });
     } catch (error) {
       if (isPageShuttingDown()) return;
       console.error("Failed to restore window state:", error);
