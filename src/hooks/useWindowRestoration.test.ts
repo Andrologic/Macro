@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 let loadPreferencesMock: ReturnType<typeof mock>;
+let loadPersistedPreferenceMock: ReturnType<typeof mock>;
+let savePreferenceMock: ReturnType<typeof mock>;
 let showMainWindowMock: ReturnType<typeof mock>;
+let windowCurrentMonitorWorkAreaMock: ReturnType<typeof mock>;
 let windowMaximizeMock: ReturnType<typeof mock>;
 let windowIsMaximizedMock: ReturnType<typeof mock>;
 let windowOuterPositionMock: ReturnType<typeof mock>;
 let windowOuterSizeMock: ReturnType<typeof mock>;
+let windowPrimaryMonitorWorkAreaMock: ReturnType<typeof mock>;
 let windowScaleFactorMock: ReturnType<typeof mock>;
 let windowSetBackgroundColorMock: ReturnType<typeof mock>;
 let windowSetMacosAppIconThemeMock: ReturnType<typeof mock>;
@@ -20,6 +24,8 @@ let chromeState: {
   usesNativeMacosTitlebar: boolean;
 };
 let invocationOrder: string[];
+let persistedPreferenceValues: Record<string, unknown>;
+let preferenceValues: Record<string, unknown>;
 let importCounter = 0;
 
 const registerWindowRestorationMocks = async () => {
@@ -30,16 +36,19 @@ const registerWindowRestorationMocks = async () => {
   mock.module('../services/preferences', () => ({
     ...actualPreferences,
     loadPreferences: (...args: unknown[]) => loadPreferencesMock(...args),
-    savePreference: () => Promise.resolve(),
+    loadPersistedPreference: (...args: unknown[]) => loadPersistedPreferenceMock(...args),
+    savePreference: (...args: unknown[]) => savePreferenceMock(...args),
   }));
 
   mock.module('../services/tauriWindow', () => ({
     isTauriEnvironment: () => true,
     showMainWindow: (...args: unknown[]) => showMainWindowMock(...args),
+    windowCurrentMonitorWorkArea: (...args: unknown[]) => windowCurrentMonitorWorkAreaMock(...args),
     windowIsMaximized: (...args: unknown[]) => windowIsMaximizedMock(...args),
     windowMaximize: (...args: unknown[]) => windowMaximizeMock(...args),
     windowOuterPosition: (...args: unknown[]) => windowOuterPositionMock(...args),
     windowOuterSize: (...args: unknown[]) => windowOuterSizeMock(...args),
+    windowPrimaryMonitorWorkArea: (...args: unknown[]) => windowPrimaryMonitorWorkAreaMock(...args),
     windowScaleFactor: (...args: unknown[]) => windowScaleFactorMock(...args),
     windowSetBackgroundColor: (...args: unknown[]) => windowSetBackgroundColorMock(...args),
     windowSetMacosAppIconTheme: (...args: unknown[]) => windowSetMacosAppIconThemeMock(...args),
@@ -86,33 +95,53 @@ describe('ensureWindowRestoredOnce', () => {
       disableCustomDoubleClickZoom: true,
       usesNativeMacosTitlebar: true,
     };
+    preferenceValues = {
+      windowWidth: 1440,
+      windowHeight: 900,
+      windowX: 32,
+      windowY: 48,
+      isMaximized: false,
+      nativeMacosTitlebarBg: '#223344',
+      nativeMacosTitlebarTheme: 'dark',
+    };
+    persistedPreferenceValues = {
+      windowWidth: 1440,
+      windowHeight: 900,
+      windowX: 32,
+      windowY: 48,
+      isMaximized: false,
+      windowBootstrapVersion: 2,
+    };
 
     loadPreferencesMock = mock(async (keys: string[]) =>
       Object.fromEntries(
-        keys.map((key) => [
-          key,
-          {
-            windowWidth: 1440,
-            windowHeight: 900,
-            windowX: 32,
-            windowY: 48,
-            isMaximized: false,
-            nativeMacosTitlebarBg: '#223344',
-            nativeMacosTitlebarTheme: 'dark',
-          }[key],
-        ])
+        keys.map((key) => [key, preferenceValues[key]])
       )
     );
+    loadPersistedPreferenceMock = mock(async (key: string) => persistedPreferenceValues[key]);
+    savePreferenceMock = mock(async () => undefined);
 
     showMainWindowMock = mock(async () => {
       invocationOrder.push('show');
     });
+    windowCurrentMonitorWorkAreaMock = mock(async () => ({
+      x: 0,
+      y: 40,
+      width: 1728,
+      height: 1077,
+    }));
     windowMaximizeMock = mock(async () => {
       invocationOrder.push('maximize');
     });
     windowIsMaximizedMock = mock(async () => false);
     windowOuterPositionMock = mock(async () => ({ x: 0, y: 0 }));
     windowOuterSizeMock = mock(async () => ({ width: 0, height: 0 }));
+    windowPrimaryMonitorWorkAreaMock = mock(async () => ({
+      x: 0,
+      y: 24,
+      width: 1512,
+      height: 958,
+    }));
     windowScaleFactorMock = mock(async () => 1);
     windowSetBackgroundColorMock = mock(async () => {
       invocationOrder.push('background');
@@ -156,6 +185,175 @@ describe('ensureWindowRestoredOnce', () => {
 
     expect(windowSetBackgroundColorMock.mock.calls).toHaveLength(0);
     expect(windowSetThemeMock.mock.calls).toHaveLength(0);
+    expect(windowCurrentMonitorWorkAreaMock.mock.calls).toHaveLength(0);
+    expect(windowPrimaryMonitorWorkAreaMock.mock.calls).toHaveLength(0);
     expect(showMainWindowMock.mock.calls).toHaveLength(1);
+  });
+
+  it('bootstraps the first macOS launch maximized before showing the window', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    preferenceValues = {
+      windowWidth: 1200,
+      windowHeight: 800,
+      windowX: null,
+      windowY: null,
+      isMaximized: false,
+      nativeMacosTitlebarBg: '#223344',
+      nativeMacosTitlebarTheme: 'dark',
+    };
+    persistedPreferenceValues = {};
+
+    __resetWindowRestorationForTests();
+    await ensureWindowRestoredOnce();
+
+    expect(windowCurrentMonitorWorkAreaMock.mock.calls).toHaveLength(0);
+    expect(windowPrimaryMonitorWorkAreaMock.mock.calls).toHaveLength(0);
+    expect(windowSetSizeMock.mock.calls).toHaveLength(0);
+    expect(windowSetPositionMock.mock.calls).toHaveLength(0);
+    expect(windowMaximizeMock.mock.calls).toHaveLength(1);
+    expect(savePreferenceMock.mock.calls).toEqual([
+      ['isMaximized', true],
+      ['windowBootstrapVersion', 2],
+    ]);
+    expect(invocationOrder.indexOf('maximize')).toBeLessThan(invocationOrder.indexOf('show'));
+  });
+
+  it('migrates the legacy macOS 1200x800 bootstrap once to a maximized launch', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    preferenceValues = {
+      windowWidth: 1200,
+      windowHeight: 800,
+      windowX: 32,
+      windowY: 48,
+      isMaximized: false,
+      nativeMacosTitlebarBg: '#223344',
+      nativeMacosTitlebarTheme: 'dark',
+    };
+    persistedPreferenceValues = {
+      windowWidth: 1200,
+      windowHeight: 800,
+      windowX: 32,
+      windowY: 48,
+      isMaximized: false,
+    };
+
+    __resetWindowRestorationForTests();
+    await ensureWindowRestoredOnce();
+
+    expect(windowCurrentMonitorWorkAreaMock.mock.calls).toHaveLength(0);
+    expect(windowSetSizeMock.mock.calls).toHaveLength(0);
+    expect(windowSetPositionMock.mock.calls).toHaveLength(0);
+    expect(windowMaximizeMock.mock.calls).toHaveLength(1);
+    expect(savePreferenceMock.mock.calls).toEqual([
+      ['isMaximized', true],
+      ['windowBootstrapVersion', 2],
+    ]);
+  });
+
+  it('preserves a custom persisted macOS window size when the bootstrap version is already current', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
+
+    __resetWindowRestorationForTests();
+    await ensureWindowRestoredOnce();
+
+    expect(windowCurrentMonitorWorkAreaMock.mock.calls).toHaveLength(0);
+    expect(windowPrimaryMonitorWorkAreaMock.mock.calls).toHaveLength(0);
+    expect(windowSetSizeMock.mock.calls).toEqual([[1440, 900]]);
+    expect(windowSetPositionMock.mock.calls).toEqual([[32, 48]]);
+    expect(savePreferenceMock.mock.calls).toHaveLength(0);
+  });
+
+  it('does not migrate an already customized macOS window state from an older bootstrap version', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    persistedPreferenceValues = {
+      windowWidth: 1380,
+      windowHeight: 860,
+      windowX: 20,
+      windowY: 30,
+      isMaximized: false,
+    };
+    preferenceValues = {
+      windowWidth: 1380,
+      windowHeight: 860,
+      windowX: 20,
+      windowY: 30,
+      isMaximized: false,
+      nativeMacosTitlebarBg: '#223344',
+      nativeMacosTitlebarTheme: 'dark',
+    };
+
+    __resetWindowRestorationForTests();
+    await ensureWindowRestoredOnce();
+
+    expect(windowCurrentMonitorWorkAreaMock.mock.calls).toHaveLength(0);
+    expect(windowSetSizeMock.mock.calls).toEqual([[1380, 860]]);
+    expect(windowSetPositionMock.mock.calls).toEqual([[20, 30]]);
+    expect(savePreferenceMock.mock.calls).toEqual([['windowBootstrapVersion', 2]]);
+  });
+
+  it('keeps maximized macOS windows maximized and records the new bootstrap version', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    persistedPreferenceValues = {
+      windowWidth: 1200,
+      windowHeight: 800,
+      isMaximized: true,
+    };
+    preferenceValues = {
+      windowWidth: 1200,
+      windowHeight: 800,
+      windowX: 32,
+      windowY: 48,
+      isMaximized: true,
+      nativeMacosTitlebarBg: '#223344',
+      nativeMacosTitlebarTheme: 'dark',
+    };
+
+    __resetWindowRestorationForTests();
+    await ensureWindowRestoredOnce();
+
+    expect(windowCurrentMonitorWorkAreaMock.mock.calls).toHaveLength(0);
+    expect(windowSetSizeMock.mock.calls).toHaveLength(0);
+    expect(windowSetPositionMock.mock.calls).toHaveLength(0);
+    expect(windowMaximizeMock.mock.calls).toHaveLength(1);
+    expect(savePreferenceMock.mock.calls).toEqual([
+      ['isMaximized', true],
+      ['windowBootstrapVersion', 2],
+    ]);
+  });
+
+  it('falls back to the primary monitor work area when default maximize fails', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    preferenceValues = {
+      windowWidth: 1200,
+      windowHeight: 800,
+      windowX: null,
+      windowY: null,
+      isMaximized: false,
+      nativeMacosTitlebarBg: '#223344',
+      nativeMacosTitlebarTheme: 'dark',
+    };
+    persistedPreferenceValues = {};
+    windowMaximizeMock = mock(async () => {
+      invocationOrder.push('maximize');
+      throw new Error('maximize not available');
+    });
+    windowCurrentMonitorWorkAreaMock = mock(async () => null);
+
+    __resetWindowRestorationForTests();
+    await ensureWindowRestoredOnce();
+
+    expect(windowMaximizeMock.mock.calls).toHaveLength(1);
+    expect(windowCurrentMonitorWorkAreaMock.mock.calls).toHaveLength(1);
+    expect(windowPrimaryMonitorWorkAreaMock.mock.calls).toHaveLength(1);
+    expect(windowSetSizeMock.mock.calls).toEqual([[1512, 958]]);
+    expect(windowSetPositionMock.mock.calls).toEqual([[0, 24]]);
+    expect(savePreferenceMock.mock.calls).toEqual([
+      ['windowWidth', 1512],
+      ['windowHeight', 958],
+      ['windowX', 0],
+      ['windowY', 24],
+      ['isMaximized', false],
+      ['windowBootstrapVersion', 2],
+    ]);
   });
 });
