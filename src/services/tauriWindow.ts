@@ -3,6 +3,7 @@ import type { MacosDynamicAppIconThemeSpec } from '../hooks/dynamicAppIconRender
 
 type WindowSize = { width: number; height: number };
 type WindowPosition = { x: number; y: number };
+export type WindowWorkArea = WindowSize & WindowPosition;
 
 async function invokeWindow<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import('@tauri-apps/api/core');
@@ -12,6 +13,29 @@ async function invokeWindow<T>(command: string, args?: Record<string, unknown>):
 async function getCurrentTauriWindow() {
   const { getCurrentWindow } = await import('@tauri-apps/api/window');
   return getCurrentWindow();
+}
+
+async function getLogicalMonitorWorkArea(
+  readMonitor: () => Promise<{
+    workArea: {
+      position: { x: number; y: number };
+      size: { width: number; height: number };
+    };
+    scaleFactor: number;
+  } | null>
+): Promise<WindowWorkArea | null> {
+  const monitor = await readMonitor();
+  if (!monitor) {
+    return null;
+  }
+
+  const scaleFactor = monitor.scaleFactor > 0 ? monitor.scaleFactor : 1;
+  return {
+    x: Math.round(monitor.workArea.position.x / scaleFactor),
+    y: Math.round(monitor.workArea.position.y / scaleFactor),
+    width: Math.round(monitor.workArea.size.width / scaleFactor),
+    height: Math.round(monitor.workArea.size.height / scaleFactor),
+  };
 }
 
 const backgroundColorPermissionFailures = new Set<string>();
@@ -77,6 +101,16 @@ export async function windowOuterPosition(): Promise<WindowPosition> {
 
 export async function windowScaleFactor(): Promise<number> {
   return invokeWindow<number>('window_scale_factor');
+}
+
+export async function windowCurrentMonitorWorkArea(): Promise<WindowWorkArea | null> {
+  const { currentMonitor } = await import('@tauri-apps/api/window');
+  return getLogicalMonitorWorkArea(() => currentMonitor());
+}
+
+export async function windowPrimaryMonitorWorkArea(): Promise<WindowWorkArea | null> {
+  const { primaryMonitor } = await import('@tauri-apps/api/window');
+  return getLogicalMonitorWorkArea(() => primaryMonitor());
 }
 
 export async function windowSetZoom(scale: number): Promise<void> {
