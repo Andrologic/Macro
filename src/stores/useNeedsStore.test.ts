@@ -34,7 +34,7 @@ const createMockStoreHook = <TState extends object>(state: TState) => {
 
 const useAppStoreMock = createMockStoreHook(appState);
 
-const registerUseNeedsStoreMocks = () => {
+const registerUseNeedsStoreMocks = async () => {
   mock.restore();
 
   const appStoreModule = () => ({
@@ -43,7 +43,13 @@ const registerUseNeedsStoreMocks = () => {
   mock.module('./useAppStore', appStoreModule);
   mock.module('./useAppStore.ts', appStoreModule);
 
+  importCounter += 1;
+  const actualArchitectPlanService = await import(
+    `../services/architectPlanService.ts?use-needs-store-architect-plan-service-test=${importCounter}`
+  );
+
   const architectPlanServiceModule = () => ({
+    ...actualArchitectPlanService,
     createArchitectPlan: mock(async () => {
       throw new Error('not implemented');
     }),
@@ -58,10 +64,6 @@ const registerUseNeedsStoreMocks = () => {
     getArchitectPlanNeeds: mock(async () => []),
     getArchitectPlanProjectIds: (plan: { projectId?: string; projectIds?: string[] }) =>
       Array.from(new Set([plan.projectId, ...(plan.projectIds ?? [])].filter(Boolean))) as string[],
-    getArchitectPlanTargetBranchForProject: () => undefined,
-    getArchitectPlanTargetBranchesByProjectId: () => ({}),
-    getGitFlowBaseBranch: () => 'develop',
-    getGitFlowMainBranch: () => 'main',
     isArchitectPlanVisibleForScope: () => true,
     isArchitectPlanReplicaDivergenceError: () => false,
     listArchitectPlans: mock(async () => ({
@@ -69,7 +71,6 @@ const registerUseNeedsStoreMocks = () => {
       plans: [],
     })),
     listArchitectPlanTargetBranches: () => [],
-    planHasMixedTargetBranches: () => false,
     planMatchesProjectId: (
       plan: { projectId?: string; projectIds?: string[] },
       projectId?: string | null
@@ -84,7 +85,6 @@ const registerUseNeedsStoreMocks = () => {
       plan: { projectId?: string; projectIds?: string[] },
       fallbackProjectId?: string | null
     ) => plan.projectId ?? plan.projectIds?.[0] ?? fallbackProjectId ?? null,
-    resolveTargetBranch: (branchName?: string | null) => branchName ?? 'develop',
     repairArchitectPlanReplicas: mock(async () => undefined),
     restoreArchitectPlan: mock(async () => undefined),
     saveArchitectPlanChatMessages: mock(async () => undefined),
@@ -109,8 +109,8 @@ const loadNeedsStore = async () => {
 };
 
 describe('useNeedsStore', () => {
-  beforeEach(() => {
-    registerUseNeedsStoreMocks();
+  beforeEach(async () => {
+    await registerUseNeedsStoreMocks();
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
     appState.activeArchitectPlanId = null;

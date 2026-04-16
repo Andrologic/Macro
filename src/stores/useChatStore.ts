@@ -56,7 +56,6 @@ import {
   getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
-  isArchitectPlanVisibleForScope,
   listArchitectPlans,
   resolvePlanProjectContextId,
   resolveTargetBranch,
@@ -94,7 +93,6 @@ import {
   getGlobalProjectById,
   getProjectGroupByProjectId,
   getScopedActionableProjectIds,
-  getScopedProjectIds,
 } from "../services/globalProjects";
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from "../services/macroSyncService";
 import { resolveProjectExecutionContext } from "../services/projectExecutionContext";
@@ -963,13 +961,30 @@ const buildChatContextKey = (
     | "activePlanContext"
   >,
 ): ChatContextKey => {
+  if (appState.mode === "Architect") {
+    if (appState.activeArchitectPlanId) {
+      return [
+        "Architect",
+        "plan",
+        appState.activeArchitectPlanId,
+        appState.activePlanContext?.targetBranch || "none",
+      ].join("::");
+    }
+
+    return [
+      "Architect",
+      "scope",
+      appState.selectedGroupId || "none",
+      appState.selectedProjectId || "none",
+      appState.activePlanContext?.targetBranch || "none",
+    ].join("::");
+  }
+
   return [
     appState.mode,
     appState.selectedGroupId || "none",
     appState.selectedProjectId || "none",
     appState.selectedTaskId || "none",
-    appState.activeArchitectPlanId || "none",
-    appState.activePlanContext?.targetBranch || "none",
   ].join("::");
 };
 
@@ -2209,42 +2224,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!plan || plan.status === "deleted") return;
 
       const appStore = useAppStore.getState();
-      const planProjectId = resolvePlanProjectContextId(
-        plan,
-        appStore.selectedProjectId,
-      );
-      const scopedProjectIds = getScopedProjectIds(
-        appStore.projectGroups,
-        appStore.selectedGroupId,
-        appStore.selectedProjectId,
-      );
-      const isPlanAlreadyInScope = isArchitectPlanVisibleForScope(plan, scopedProjectIds);
-      if (planProjectId && !isPlanAlreadyInScope) {
-        await appStore.switchProjectContext(planProjectId, {
-          restoreProjectContext: false,
-          ensureAutoPlan: false,
-        });
-      }
-      appStore.setActiveArchitectPlanId(plan.id);
-      appStore.setPlanNodes(plan.nodes || []);
-      appStore.setPredictedBranches(plan.predictedBranches || []);
-      appStore.setActivePlanContext({
-        id: plan.id,
-        slug: plan.slug,
-        title: plan.title,
-        label: plan.label,
-        description: plan.description,
-        status: plan.status,
-        targetBranch: plan.targetBranch,
-        targetBranchesByProjectId: plan.targetBranchesByProjectId,
-        hasMixedTargetBranches:
-          Boolean(plan.targetBranchesByProjectId) &&
-          new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
+      const activated = await appStore.activateArchitectPlan(plan.id, {
+        targetBranch,
+        persistActiveSelection: false,
       });
-
-      const planNeeds = await getArchitectPlanNeeds(targetBranch, plan.id);
-      useNeedsStore.getState().hydrateNeedsForPlan(plan.id, planNeeds);
-
+      if (!activated) {
+        return;
+      }
+      const latestAppStore = useAppStore.getState();
       const plansIndex = await listArchitectPlans(targetBranch, true, true);
       const conversationId = plan.conversationId;
       const hasSharedConversation = Boolean(
@@ -2256,18 +2243,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ),
       );
 
-      const fallbackGroupId = appStore.selectedGroupId;
+      const fallbackGroupId = latestAppStore.selectedGroupId;
       const fallbackGroupProjectId =
         getFocusedProjectForGroup(
-          appStore.projectGroups,
+          latestAppStore.projectGroups,
           fallbackGroupId,
-          appStore.selectedProjectId,
+          latestAppStore.selectedProjectId,
         )?.id ?? null;
       const fallbackProjectId =
-        resolvePlanProjectContextId(plan, appStore.selectedProjectId) ||
+        resolvePlanProjectContextId(plan, latestAppStore.selectedProjectId) ||
         fallbackGroupProjectId ||
-        appStore.selectedProjectId ||
-        appStore.projectGroups.flatMap((group) => group.projects)[0]?.id ||
+        latestAppStore.selectedProjectId ||
+        latestAppStore.projectGroups.flatMap((group) => group.projects)[0]?.id ||
         null;
       await get().ensureArchitectConversationForPlan({
         plan,
@@ -5705,29 +5692,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
         if (!isCurrentRequest()) return null;
         if (activePlan && activePlan.status !== "deleted") {
-          const scopedProjectIds = getScopedProjectIds(
-            appState.projectGroups,
-            appState.selectedGroupId,
-            appState.selectedProjectId,
-          );
-          const isPlanAlreadyInScope = isArchitectPlanVisibleForScope(
-            activePlan,
-            scopedProjectIds,
-          );
-          const planProjectId = resolvePlanProjectContextId(
-            activePlan,
-            appState.selectedProjectId,
-          );
-          if (planProjectId && !isPlanAlreadyInScope) {
-            await appState.switchProjectContext(planProjectId, {
-              restoreProjectContext: false,
-              ensureAutoPlan: false,
-            });
-            if (!isCurrentRequest()) return null;
-            appState = useAppStore.getState();
-            ({ mode, selectedGroupId, selectedProjectId, selectedTaskId } =
-              appState);
-          }
           const conversationId = activePlan.conversationId;
           let hasSharedConversation = false;
           if (conversationId) {
@@ -6365,12 +6329,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const mode = appState.mode;
       const contextKey = buildChatContextKey(appState);
       const requestId = get().selectionRequestId + 1;
+      const stateBeforeResolve = get();
+      const shouldShowResolving =
+        !stateBeforeResolve.selectedConversationId ||
+        stateBeforeResolve.restoreStatus === "error";
 
       set({
         selectionRequestId: requestId,
         activeContextKey: contextKey,
-        restoreStatus: "resolving",
         lastError: null,
+        ...(shouldShowResolving ? { restoreStatus: "resolving" as const } : {}),
       });
 
       const isCurrentRequest = () => {
@@ -6388,6 +6356,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
         if (!isCurrentRequest()) {
           return get().selectedConversationId;
+        }
+
+        const latestState = get();
+        const isAlreadySelected =
+          conversationId !== null
+            ? latestState.selectedConversationId === conversationId &&
+              latestState.selectedConversationIdsByMode[mode] === conversationId
+            : latestState.selectedConversationId === null &&
+              (latestState.selectedConversationIdsByMode[mode] ?? null) === null;
+
+        if (isAlreadySelected) {
+          if (isCurrentRequest()) {
+            set({ restoreStatus: "ready", lastError: null });
+          }
+          return conversationId;
         }
 
         if (

@@ -20,6 +20,31 @@ describe('notification conventions', () => {
     expect(existsSync(join(ROOT_DIR, 'AGENT.md'))).toBe(true);
   });
 
+  it('keeps notification template consumers on direct imports to avoid chunk barrel warnings', () => {
+    const checks = [
+      {
+        filePath: join(SRC_DIR, 'components/layout/NotificationCenterPopover.tsx'),
+        disallowedImport: "from '../ui/notifications'",
+      },
+      {
+        filePath: join(SRC_DIR, 'components/settings/views/NotificationsView.tsx'),
+        disallowedImport: "from '../../ui/notifications'",
+      },
+      {
+        filePath: join(SRC_DIR, 'components/ui/toastService.tsx'),
+        disallowedImport: "from './notifications'",
+      },
+    ];
+
+    const offenders = checks
+      .filter(({ filePath, disallowedImport }) =>
+        readFileSync(filePath, 'utf8').includes(disallowedImport)
+      )
+      .map(({ filePath }) => filePath);
+
+    expect(offenders).toEqual([]);
+  });
+
   it('avoids direct toast usage in feature code outside infrastructure and tests', () => {
     const offenders = walk(SRC_DIR)
       .filter((filePath) => /\.(ts|tsx)$/.test(filePath))

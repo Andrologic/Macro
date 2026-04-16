@@ -12,6 +12,7 @@ import {
   useSensors,
 } from '@dnd-kit/core';
 import { useAppStore } from '../../stores/useAppStore';
+import { getServiceRuntimeCapabilities } from '../../services';
 import { toServiceError } from '../../services/contracts/errors';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
@@ -203,6 +204,7 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
 
 export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onClose }) => {
   const { t } = useTranslation();
+  const runtimeCapabilities = getServiceRuntimeCapabilities();
   const {
     projectGroups,
     selectedGroupId,
@@ -234,6 +236,11 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   const [projectOpenSelection, setProjectOpenSelection] = useState<ProjectOpenAppSelection>({
     ...getEmptyProjectOpenSelection(),
   });
+  const projectManagementDisabled = !runtimeCapabilities.projectMutation;
+  const projectManagementDisabledTitle = t(
+    'projects.remoteProjectManagementUnavailable',
+    'Project creation and editing are unavailable in remote mode.'
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -303,11 +310,17 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   };
 
   const handleNewProject = () => {
+    if (projectManagementDisabled) {
+      return;
+    }
     onClose();
     openProjectModal(null);
   };
 
   const handleAddSubproject = (groupId: string) => {
+    if (projectManagementDisabled) {
+      return;
+    }
     onClose();
     openProjectModal(groupId);
   };
@@ -466,6 +479,8 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                   onClick={() => {
                     handleAddSubproject(menuState.group.id);
                   }}
+                  disabled={projectManagementDisabled}
+                  title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
                 >
                   <Icon name="plus" size={12} />
@@ -473,9 +488,13 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                 </button>
                 <button
                   onClick={() => {
-                    setRenameTarget({ type: 'group', group: menuState.group });
-                    setMenuState(null);
+                    if (!projectManagementDisabled) {
+                      setRenameTarget({ type: 'group', group: menuState.group });
+                      setMenuState(null);
+                    }
                   }}
+                  disabled={projectManagementDisabled}
+                  title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
                 >
                   <Icon name="edit" size={12} />
@@ -483,9 +502,13 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                 </button>
                 <button
                   onClick={() => {
-                    setRemoveTarget({ type: 'group', group: menuState.group });
-                    setMenuState(null);
+                    if (!projectManagementDisabled) {
+                      setRemoveTarget({ type: 'group', group: menuState.group });
+                      setMenuState(null);
+                    }
                   }}
+                  disabled={projectManagementDisabled}
+                  title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10"
                 >
                   <Icon name="x" size={12} />
@@ -496,9 +519,13 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
               <>
                 <button
                   onClick={() => {
-                    openProjectGitFlowModal(menuState.project.id);
-                    setMenuState(null);
+                    if (!projectManagementDisabled) {
+                      openProjectGitFlowModal(menuState.project.id);
+                      setMenuState(null);
+                    }
                   }}
+                  disabled={projectManagementDisabled}
+                  title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
                 >
                   <Icon name="git-branch" size={12} />
@@ -506,9 +533,13 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                 </button>
                 <button
                   onClick={() => {
-                    setRenameTarget({ type: 'project', project: menuState.project });
-                    setMenuState(null);
+                    if (!projectManagementDisabled) {
+                      setRenameTarget({ type: 'project', project: menuState.project });
+                      setMenuState(null);
+                    }
                   }}
+                  disabled={projectManagementDisabled}
+                  title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
                 >
                   <Icon name="edit" size={12} />
@@ -516,9 +547,13 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                 </button>
                 <button
                   onClick={() => {
-                    setRemoveTarget({ type: 'project', project: menuState.project });
-                    setMenuState(null);
+                    if (!projectManagementDisabled) {
+                      setRemoveTarget({ type: 'project', project: menuState.project });
+                      setMenuState(null);
+                    }
                   }}
+                  disabled={projectManagementDisabled}
+                  title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10"
                 >
                   <Icon name="x" size={12} />
@@ -695,7 +730,8 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
         <div className="flex items-center px-4 py-3 border-t border-border bg-muted/30">
           <button
             onClick={handleNewProject}
-            disabled={isLoading}
+            disabled={isLoading || projectManagementDisabled}
+            title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50"
           >
             <Icon name="plus" size={14} />

@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
+  REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
+  REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
+} from '../services/serviceRuntime';
+import {
   buildPlanFinalizationFailureState,
   buildPlanFinalizationRefreshState,
   buildPlanFinalizationSuccessState,
@@ -303,5 +307,48 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
       'InProgress',
     );
     expect(useTaskStore.getState().lastError).toBe('Persistence failed');
+  });
+});
+
+describe('useTaskStore remote runtime guards', () => {
+  it('rejects task status mutations with the stable remote unsupported error', async () => {
+    const previousTransport = process.env.VITE_BACKEND_TRANSPORT;
+    const previousProvider = process.env.VITE_DATA_PROVIDER;
+    process.env.VITE_BACKEND_TRANSPORT = 'remote';
+    delete process.env.VITE_DATA_PROVIDER;
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      useTaskStore.setState({
+        tasks: [buildStandaloneTask({ status: 'InProgress' })],
+        lastError: null,
+      });
+
+      await expect(
+        useTaskStore.getState().setTaskStatus('task-1', 'InReview'),
+      ).rejects.toMatchObject({
+        code: REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
+        message: REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
+      });
+
+      expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe(
+        'InProgress',
+      );
+      expect(useTaskStore.getState().lastError).toBe(
+        REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
+      );
+    } finally {
+      if (previousTransport === undefined) {
+        delete process.env.VITE_BACKEND_TRANSPORT;
+      } else {
+        process.env.VITE_BACKEND_TRANSPORT = previousTransport;
+      }
+
+      if (previousProvider === undefined) {
+        delete process.env.VITE_DATA_PROVIDER;
+      } else {
+        process.env.VITE_DATA_PROVIDER = previousProvider;
+      }
+    }
   });
 });

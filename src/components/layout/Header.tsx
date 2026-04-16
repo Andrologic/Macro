@@ -1,6 +1,8 @@
 import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
+  Suspense,
+  lazy,
   useEffect,
   useRef,
   useState,
@@ -17,12 +19,17 @@ import { getPlatformChromeState } from '../../utils/desktopPlatform';
 import { getEffectiveUiZoomScale } from '../../utils/uiZoom';
 import { Logo } from '../ui/Logo';
 import { Icon, type IconName } from '../ui/Icon';
-import { ProjectNavigator } from '../modals/ProjectNavigator';
 import { WindowControls } from './WindowControls';
 import {
   getMacosTrafficLightPosition,
   getTitleBarLayout,
 } from './titleBarLayout';
+
+const ProjectNavigator = lazy(() =>
+  import('../modals/ProjectNavigator').then((module) => ({
+    default: module.ProjectNavigator,
+  }))
+);
 
 const MODES_DROPDOWN_WIDTH = 192;
 const MODES_DROPDOWN_GAP = 6;
@@ -417,7 +424,12 @@ export function Header({
         </div>
       </header>
 
-      <ProjectNavigator isOpen={projectNavigatorOpen} onClose={() => setProjectNavigatorOpen(false)} />
+      <Suspense fallback={null}>
+        <ProjectNavigator
+          isOpen={projectNavigatorOpen}
+          onClose={() => setProjectNavigatorOpen(false)}
+        />
+      </Suspense>
     </>
   );
 }

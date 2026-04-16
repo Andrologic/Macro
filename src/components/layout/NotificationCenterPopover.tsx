@@ -3,10 +3,8 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
 import { Icon } from '../ui/Icon';
-import {
-  ActionableNotificationTemplate,
-  InformationalNotificationTemplate,
-} from '../ui/notifications';
+import { ActionableNotificationTemplate } from '../ui/notifications/ActionableNotificationTemplate';
+import { InformationalNotificationTemplate } from '../ui/notifications/InformationalNotificationTemplate';
 import { executeRegisteredNotificationAction } from '../ui/toastService';
 import {
   calculateNotificationCenterPosition,

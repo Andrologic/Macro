@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 let importCounter = 0;
 
@@ -64,10 +64,35 @@ const probeProviderReachabilityMock = mock(async () => ({
   source: 'models_endpoint',
   models: [],
 }));
-const actualPreferences = await import('../services/preferences');
+const appStoreState = {
+  mode: 'Chat' as const,
+};
+const useAppStoreMock = Object.assign(
+  <TSelected = typeof appStoreState>(
+    selector?: (state: typeof appStoreState) => TSelected
+  ) => (selector ? selector(appStoreState) : (appStoreState as TSelected)),
+  {
+    getState: () => appStoreState,
+    setState: (
+      patch: Partial<typeof appStoreState> | ((state: typeof appStoreState) => Partial<typeof appStoreState>)
+    ) => {
+      Object.assign(appStoreState, typeof patch === 'function' ? patch(appStoreState) : patch);
+    },
+    subscribe: () => () => undefined,
+  }
+);
 const actualTauriIpc = await import('../services/tauriIpc');
+const { loadPreference: actualLoadPreference } = await import('../services/preferences');
+const loadPreferenceMock = mock(
+  async (key: string): Promise<unknown> => actualLoadPreference(key as any)
+);
+const savePreferenceMock = mock(async () => undefined);
 
 const loadProviderStore = async () => {
+  const actualPreferences = await import(
+    `../services/preferences.ts?provider-store-preferences-test=${importCounter + 1}`
+  );
+
   mock.module('@tauri-apps/api/event', () => ({
     listen: async () => () => undefined,
   }));
@@ -105,15 +130,11 @@ const loadProviderStore = async () => {
   }));
   mock.module('../services/preferences', () => ({
     ...actualPreferences,
-    loadPreference: async () => null,
-    savePreference: async () => undefined,
+    loadPreference: loadPreferenceMock,
+    savePreference: savePreferenceMock,
   }));
   mock.module('./useAppStore', () => ({
-    useAppStore: {
-      getState: () => ({
-        mode: 'Chat',
-      }),
-    },
+    useAppStore: useAppStoreMock,
   }));
 
   importCounter += 1;
@@ -122,6 +143,9 @@ const loadProviderStore = async () => {
 
 describe('useProviderStore secret resolution', () => {
   beforeEach(() => {
+    useAppStoreMock.setState({ mode: 'Chat' });
+    loadPreferenceMock.mockClear();
+    savePreferenceMock.mockClear();
     listProviderConfigsMock.mockClear();
     revealProviderApiKeyMock.mockClear();
     updateProviderConfigMock.mockClear();
@@ -131,6 +155,11 @@ describe('useProviderStore secret resolution', () => {
     fetchModelsFromProviderMock.mockClear();
     probeModelsEndpointMock.mockClear();
     probeProviderReachabilityMock.mockClear();
+  });
+
+  afterEach(() => {
+    useAppStoreMock.setState({ mode: 'Chat' });
+    mock.restore();
   });
 
   it('loads provider configs without touching the keychain', async () => {

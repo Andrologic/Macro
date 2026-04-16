@@ -228,7 +228,7 @@ const translationMock = {
   },
 };
 
-const validatePlanAndProvisionBranchesMock = mock(async () => ({
+const validatePlanAndProvisionBranchesMock = mock(async (_params?: unknown) => ({
   plan: {
     id: 'plan-1',
     nodes: [] as MockPlanNode[],
@@ -240,8 +240,8 @@ const validatePlanAndProvisionBranchesMock = mock(async () => ({
   },
 }));
 
-const notifySuccessMock = mock(() => undefined);
-const notifyErrorMock = mock(() => undefined);
+const notifySuccessMock = mock((..._args: unknown[]) => undefined);
+const notifyErrorMock = mock((..._args: unknown[]) => undefined);
 
 mock.restore();
 
@@ -358,7 +358,7 @@ const seedStores = (
   },
 ) => {
   const includeConversation = options?.includeConversation ?? true;
-  const conversationRuntimeById =
+  const conversationRuntimeById: Record<string, MockConversationRuntime> =
     includeConversation && options?.isStreaming
       ? {
           'conversation-1': {

@@ -1,18 +1,55 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { FileChangesDiffModal } from './FileChangesDiffModal';
-import { useAppStore } from '../../stores/useAppStore';
 import {
-  useFileChangesStore,
   type FileChangeEntry,
   type FileDiffModalSession,
   type ReviewRepositoryState,
 } from '../../stores/useFileChangesStore';
+import type { FileChangesDiffModal as FileChangesDiffModalComponent } from './FileChangesDiffModal';
+import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
+import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
 import type { ParsedDiffHunk } from '../../services/gitDiffParser';
 
-const initialStoreState = useFileChangesStore.getState();
-const initialAppStoreState = useAppStore.getState();
+let FileChangesDiffModal!: typeof FileChangesDiffModalComponent;
+let useAppStore!: typeof UseAppStoreHook;
+let useFileChangesStore!: typeof UseFileChangesStoreHook;
+let initialStoreState: ReturnType<typeof useFileChangesStore.getState> | null = null;
+let initialAppStoreState: ReturnType<typeof useAppStore.getState> | null = null;
+let importCounter = 0;
+
+const loadFileChangesDiffModalModules = async () => {
+  importCounter += 1;
+
+  const preferencesModule = await import(
+    `../../services/preferences.ts?file-changes-diff-modal-preferences-test=${importCounter}`
+  );
+  mock.module('../../services/preferences', () => ({
+    ...preferencesModule,
+  }));
+
+  const appStoreModule = await import(
+    `../../stores/useAppStore.ts?file-changes-diff-modal-app-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useAppStore', () => ({
+    ...appStoreModule,
+  }));
+
+  const fileChangesStoreModule = await import(
+    `../../stores/useFileChangesStore.ts?file-changes-diff-modal-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useFileChangesStore', () => ({
+    ...fileChangesStoreModule,
+  }));
+
+  ({ FileChangesDiffModal } = await import(
+    `./FileChangesDiffModal.tsx?file-changes-diff-modal-test=${importCounter}`
+  ));
+  ({ useAppStore } = appStoreModule);
+  ({ useFileChangesStore } = fileChangesStoreModule);
+  initialStoreState = useFileChangesStore.getState();
+  initialAppStoreState = useAppStore.getState();
+};
 
 const makeHunk = (header: string): ParsedDiffHunk => ({
   header,
@@ -161,7 +198,9 @@ describe('FileChangesDiffModal', () => {
     });
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    mock.restore();
+    await loadFileChangesDiffModalModules();
     localStorage.clear();
     useAppStore.setState({ codeOverflowMode: 'wrap' });
     repository = buildRepository();
@@ -190,8 +229,13 @@ describe('FileChangesDiffModal', () => {
     localStorage.clear();
     root = null;
     container = null;
-    useFileChangesStore.setState(initialStoreState, true);
-    useAppStore.setState(initialAppStoreState, true);
+    if (initialStoreState) {
+      useFileChangesStore.setState(initialStoreState, true);
+    }
+    if (initialAppStoreState) {
+      useAppStore.setState(initialAppStoreState, true);
+    }
+    mock.restore();
   });
 
   it('renders the current repository, file metadata, and live diff view from the store session', async () => {

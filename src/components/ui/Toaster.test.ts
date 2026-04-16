@@ -2,6 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, createElement, forwardRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
+import type { Toaster as ToasterComponent } from './Toaster';
+import type * as ToastServiceModule from './toastService';
+import type * as ToastBatchControllerModule from './toastBatchController';
+import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
+import type { useAuthStore as UseAuthStoreHook } from '../../stores/useAuthStore';
+import type { useNotificationCenterStore as UseNotificationCenterStoreHook } from '../../stores/useNotificationCenterStore';
 import type { User } from '../../types';
 import type { NotificationChannelModes } from '../../services/notificationChannels';
 
@@ -65,26 +71,7 @@ const sonnerToastMock = Object.assign(
 
 const SonnerToasterMock = mock((_props?: unknown) => undefined);
 
-mock.module('sonner', () => ({
-  toast: sonnerToastMock,
-  Toaster: forwardRef<HTMLElement, Record<string, unknown>>(function SonnerToasterTestDouble(
-    props,
-    ref
-  ) {
-    SonnerToasterMock(props);
-    return createElement('section', { ref, 'data-testid': 'sonner-toaster-mock' });
-  }),
-}));
-
 const maybeSendDesktopNotificationMock = mock(async (_input?: unknown) => true);
-
-mock.module('../../services/desktopNotifications', () => ({
-  maybeSendDesktopNotification: maybeSendDesktopNotificationMock,
-  sendDesktopNotificationPreview: maybeSendDesktopNotificationMock,
-  getDesktopNotificationStatus: () => 'granted' as const,
-  initializeDesktopNotifications: async () => undefined,
-  subscribeDesktopNotificationStatus: () => () => undefined,
-}));
 
 const defaultNotificationChannelModes: NotificationChannelModes = {
   task_attention_required: 'both',
@@ -94,43 +81,88 @@ const defaultNotificationChannelModes: NotificationChannelModes = {
   git_sync_attention_required: 'both',
 };
 
-const useAppStore: {
-  state: {
-    notificationChannelModes: NotificationChannelModes;
-  };
-  getState: () => {
-    notificationChannelModes: NotificationChannelModes;
-  };
-  setState: (nextState: Partial<{ notificationChannelModes: NotificationChannelModes }>) => void;
-} = {
-  state: {
-    notificationChannelModes: defaultNotificationChannelModes,
-  },
-  getState() {
-    return this.state;
-  },
-  setState(nextState: Partial<typeof useAppStore.state>) {
-    this.state = {
-      ...this.state,
-      ...nextState,
-    };
-  },
+const registerToasterMocks = () => {
+  mock.module('sonner', () => ({
+    toast: sonnerToastMock,
+    Toaster: forwardRef<HTMLElement, Record<string, unknown>>(function SonnerToasterTestDouble(
+      props,
+      ref
+    ) {
+      SonnerToasterMock(props);
+      return createElement('section', { ref, 'data-testid': 'sonner-toaster-mock' });
+    }),
+  }));
+
+  mock.module('../../services/desktopNotifications', () => ({
+    maybeSendDesktopNotification: maybeSendDesktopNotificationMock,
+    sendDesktopNotificationPreview: maybeSendDesktopNotificationMock,
+    getDesktopNotificationStatus: () => 'granted' as const,
+    initializeDesktopNotifications: async () => undefined,
+    subscribeDesktopNotificationStatus: () => () => undefined,
+  }));
 };
 
-mock.module('../../stores/useAppStore', () => ({
-  useAppStore,
-}));
+let Toaster!: typeof ToasterComponent;
+let toast!: typeof ToastServiceModule.toast;
+let notify!: typeof ToastServiceModule.notify;
+let __testables!: typeof ToastServiceModule.__testables;
+let TOAST_BATCH_DURATION_MS!: typeof ToastBatchControllerModule.TOAST_BATCH_DURATION_MS;
+let clearToastBatch!: typeof ToastBatchControllerModule.clearToastBatch;
+let getToastBatchSnapshot!: typeof ToastBatchControllerModule.getToastBatchSnapshot;
+let registerToastInBatch!: typeof ToastBatchControllerModule.registerToastInBatch;
+let useAppStore!: typeof UseAppStoreHook;
+let useAuthStore!: typeof UseAuthStoreHook;
+let useNotificationCenterStore!: typeof UseNotificationCenterStoreHook;
+let initialAppStoreState: ReturnType<typeof useAppStore.getState> | null = null;
+let importCounter = 0;
 
-const { Toaster } = await import('./Toaster');
-const { toast, notify, __testables } = await import('./toastService');
-const {
-  TOAST_BATCH_DURATION_MS,
-  clearToastBatch,
-  getToastBatchSnapshot,
-  registerToastInBatch,
-} = await import('./toastBatchController');
-const { useAuthStore } = await import('../../stores/useAuthStore');
-const { useNotificationCenterStore } = await import('../../stores/useNotificationCenterStore');
+const loadToasterModules = async () => {
+  registerToasterMocks();
+
+  importCounter += 1;
+
+  const appStoreModule = await import(`../../stores/useAppStore.ts?toaster-store-test=${importCounter}`);
+  mock.module('../../stores/useAppStore', () => ({
+    ...appStoreModule,
+  }));
+
+  const authStoreModule = await import(`../../stores/useAuthStore.ts?toaster-auth-store-test=${importCounter}`);
+  mock.module('../../stores/useAuthStore', () => ({
+    ...authStoreModule,
+  }));
+
+  const notificationCenterStoreModule = await import(
+    `../../stores/useNotificationCenterStore.ts?toaster-notification-center-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useNotificationCenterStore', () => ({
+    ...notificationCenterStoreModule,
+  }));
+
+  const toastBatchControllerModule = await import(
+    `./toastBatchController.ts?toaster-toast-batch-controller-test=${importCounter}`
+  );
+  mock.module('./toastBatchController', () => ({
+    ...toastBatchControllerModule,
+  }));
+
+  const toastServiceModule = await import(`./toastService.tsx?toaster-toast-service-test=${importCounter}`);
+  mock.module('./toastService', () => ({
+    ...toastServiceModule,
+  }));
+
+  ({ Toaster } = await import(`./Toaster.tsx?toaster-test=${importCounter}`));
+  ({ toast, notify, __testables } = toastServiceModule);
+  ({
+    TOAST_BATCH_DURATION_MS,
+    clearToastBatch,
+    getToastBatchSnapshot,
+    registerToastInBatch,
+  } = toastBatchControllerModule);
+  ({ useAppStore } = appStoreModule);
+  ({ useAuthStore } = authStoreModule);
+  ({ useNotificationCenterStore } = notificationCenterStoreModule);
+  initialAppStoreState = useAppStore.getState();
+};
 
 const buildUser = (notifications: boolean): User => ({
   id: 'user-1',
@@ -163,7 +195,8 @@ describe('toast wrapper', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await loadToasterModules();
     localStorageMock.clear();
     clearToastBatch();
     useNotificationCenterStore.setState({
@@ -171,7 +204,9 @@ describe('toast wrapper', () => {
       isCenterOpen: false,
     });
     useAppStore.setState({
+      ...useAppStore.getState(),
       notificationChannelModes: defaultNotificationChannelModes,
+      activeThemeId: 'macro-dark',
     });
     useAuthStore.setState({
       authStatus: 'authenticated',
@@ -226,6 +261,10 @@ describe('toast wrapper', () => {
     container?.remove();
     container = null;
     root = null;
+    if (initialAppStoreState) {
+      useAppStore.setState(initialAppStoreState, true);
+    }
+    mock.restore();
   });
 
   it('mounts Sonner with the scoped toaster class used for stacked height rules', () => {

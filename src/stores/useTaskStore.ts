@@ -1,7 +1,12 @@
 import { create } from 'zustand';
 import type { TaskExecutionTarget, TaskStatus } from '../types';
 import i18n from '../i18n';
-import { services } from '../services';
+import {
+  createRemoteUnsupportedInRemoteModeError,
+  getServiceRuntimeCapabilities,
+  REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
+  services,
+} from '../services';
 import { toServiceError } from '../services/contracts/errors';
 import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
@@ -84,6 +89,13 @@ export interface TaskMissingBaseBranchIssue {
 }
 
 let appSyncUnsubscribe: (() => void) | null = null;
+const REMOTE_TASK_ACTION_UNAVAILABLE_MESSAGE = REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE;
+
+const canUseTaskMutationRuntime = (): boolean => getServiceRuntimeCapabilities().taskMutation;
+const canUseImplementExecutionRuntime = (): boolean =>
+  getServiceRuntimeCapabilities().implementExecution;
+const canUseTaskCommandRuntime = (): boolean =>
+  getServiceRuntimeCapabilities().taskProjectCommands;
 
 const normalizeBranchName = (value?: string): string => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -982,7 +994,27 @@ const cleanupTaskExecutionTargets = async (
   return removedWorktreeKeys;
 };
 
-export const useTaskStore = create<TaskStore>((set, get) => ({
+export const useTaskStore = create<TaskStore>((set, get) => {
+  const throwRemoteTaskActionUnavailable = (feature: string): never => {
+    const serviceError = createRemoteUnsupportedInRemoteModeError(feature);
+    const error = Object.assign(new Error(serviceError.message), serviceError);
+    set({ lastError: error.message });
+    throw error;
+  };
+
+  const assertTaskMutationRuntime = (feature: string): void => {
+    if (!canUseTaskMutationRuntime()) {
+      throwRemoteTaskActionUnavailable(feature);
+    }
+  };
+
+  const assertImplementExecutionRuntime = (feature: string): void => {
+    if (!canUseImplementExecutionRuntime()) {
+      throwRemoteTaskActionUnavailable(feature);
+    }
+  };
+
+  return ({
   tasks: [],
   planSummaries: [],
   hasStandaloneTasks: false,
@@ -1130,6 +1162,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   createManualFeatureDraft: async (params) => {
     set({ lastError: null });
+    assertTaskMutationRuntime('createManualFeatureDraft');
+
     try {
       if (!tauriIpc.isTauriAvailable()) {
         throw new Error('Manual features require the desktop runtime.');
@@ -1159,6 +1193,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   finalizeManualFeatureDraft: async (params) => {
     set({ lastError: null });
+    assertTaskMutationRuntime('finalizeManualFeatureDraft');
+
     try {
       if (!tauriIpc.isTauriAvailable()) {
         throw new Error('Manual features require the desktop runtime.');
@@ -1186,6 +1222,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   deleteManualFeatureDraft: async (taskId) => {
     set({ lastError: null });
+    assertTaskMutationRuntime('deleteManualFeatureDraft');
+
     const existingTask = get().getTaskById(taskId);
 
     try {
@@ -1212,6 +1250,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   createMissingBaseBranch: async (issue) => {
     set({ lastError: null });
+    assertImplementExecutionRuntime('createMissingBaseBranch');
+
     try {
       const fromRef = await resolveMissingBaseBranchSourceRef(issue.repoPath, issue.missingRef);
       await tauriIpc.gitBranchCreate({
@@ -1233,6 +1273,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   renameTask: async (taskId, title) => {
     set({ lastError: null });
+    assertTaskMutationRuntime('renameTask');
+
     const task = get().getTaskById(taskId);
     const nextTitle = title.trim();
     if (!task) {
@@ -1301,6 +1343,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   archiveTask: async (taskId, options) => {
     set({ lastError: null });
+    assertTaskMutationRuntime('archiveTask');
+
     const task = get().getTaskById(taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
@@ -1390,6 +1434,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   restoreTask: async (taskId) => {
     set({ lastError: null });
+    assertTaskMutationRuntime('restoreTask');
+
     const task = get().getTaskById(taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
@@ -1422,6 +1468,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   deleteTask: async (taskId) => {
     set({ lastError: null });
+    assertTaskMutationRuntime('deleteTask');
+
     const task = get().getTaskById(taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
@@ -1526,6 +1574,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   },
 
   reopenTask: async (taskId) => {
+    assertTaskMutationRuntime('reopenTask');
+
     const task = get().getTaskById(taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
@@ -1550,6 +1600,11 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   },
 
   startTask: async (taskId) => {
+    if (!canUseImplementExecutionRuntime()) {
+      set({ lastError: REMOTE_TASK_ACTION_UNAVAILABLE_MESSAGE });
+      return;
+    }
+
     const task = get().tasks.find((candidate) => candidate.id === taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
@@ -1632,6 +1687,11 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   },
 
   runTaskCommands: async (taskId) => {
+    if (!canUseTaskCommandRuntime()) {
+      set({ lastError: REMOTE_TASK_ACTION_UNAVAILABLE_MESSAGE });
+      return null;
+    }
+
     const task = get().tasks.find((candidate) => candidate.id === taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
@@ -2177,6 +2237,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   setTaskStatus: async (taskId, status) => {
     set({ lastError: null });
+    assertTaskMutationRuntime('setTaskStatus');
 
     const currentTask = get().tasks.find((task) => task.id === taskId);
     if (!currentTask) {
@@ -2357,6 +2418,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   },
 
   getTaskById: (taskId) => get().tasks.find((task) => task.id === taskId),
-}));
+  });
+});
 
 export type { CatalogedImplementTask as ImplementTask };

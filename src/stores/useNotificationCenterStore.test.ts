@@ -37,7 +37,6 @@ Object.defineProperty(globalThis, 'localStorage', {
 });
 
 let importCounter = 0;
-const actualPreferences = await import('../services/preferences');
 
 const createNotificationItem = (
   index: number,
@@ -53,6 +52,10 @@ const createNotificationItem = (
 });
 
 const loadNotificationCenterStore = async () => {
+  const actualPreferences = await import(
+    `../services/preferences.ts?notification-center-preferences-test=${importCounter + 1}`
+  );
+
   mock.module('../services/preferences', () => ({
     ...actualPreferences,
     savePreference: async (key: string, value: unknown) => {
