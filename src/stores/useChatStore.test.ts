@@ -69,12 +69,16 @@ const appState = {
   codeOverflowMode: 'wrap' as const,
   activeArchitectPlanId: null as string | null,
   activePlanContext: null as { id?: string; targetBranch: string } | null,
+  strategyMutationPreview: null as Record<string, unknown> | null,
   projectGroups,
   getProjectById: (projectId: string) =>
     projectGroups.flatMap((group) => group.projects).find((project) => project.id === projectId),
   setActiveArchitectPlanId: (_planId: string | null) => undefined,
   setPlanNodes: (_nodes: unknown[]) => undefined,
   setPredictedBranches: (_branches: unknown[]) => undefined,
+  setStrategyMutationPreview: (preview: Record<string, unknown> | null) => {
+    appState.strategyMutationPreview = preview;
+  },
   setActivePlanContext: (_context: unknown) => undefined,
   setTheme: (_themeId: string) => undefined,
   activateArchitectPlan: mock(
@@ -255,6 +259,9 @@ const cloneAppState = () => ({
   activePlanContext: appState.activePlanContext
     ? { ...appState.activePlanContext }
     : appState.activePlanContext,
+  strategyMutationPreview: appState.strategyMutationPreview
+    ? { ...appState.strategyMutationPreview }
+    : appState.strategyMutationPreview,
 });
 
 const emitAppStoreUpdate = (previousState: typeof appState) => {
@@ -376,6 +383,12 @@ const updateArchitectPlanMock = mock(async (params: {
   title?: string;
   label?: string;
   description?: string;
+  status?: string;
+  nodes?: Array<Record<string, unknown>>;
+  predictedBranches?: Array<Record<string, unknown>>;
+  projectId?: string;
+  projectIds?: string[];
+  targetBranchesByProjectId?: Record<string, string>;
 }) => {
   const existing = architectPlans.get(params.planId);
   if (!existing) {
@@ -387,6 +400,15 @@ const updateArchitectPlanMock = mock(async (params: {
     title: params.title ?? existing.title,
     label: params.label ?? existing.label,
     description: params.description ?? existing.description,
+    status: (params.status as ArchitectPlanRecord['status'] | undefined) ?? existing.status,
+    nodes: (params.nodes as ArchitectPlanRecord['nodes'] | undefined) ?? existing.nodes,
+    predictedBranches:
+      (params.predictedBranches as ArchitectPlanRecord['predictedBranches'] | undefined) ??
+      existing.predictedBranches,
+    projectId: params.projectId ?? existing.projectId,
+    projectIds: params.projectIds ?? existing.projectIds,
+    targetBranchesByProjectId:
+      params.targetBranchesByProjectId ?? existing.targetBranchesByProjectId,
     updatedAt: '2026-03-19T01:00:00.000Z',
   };
   architectPlans.set(params.planId, updated);
@@ -1134,6 +1156,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.codeOverflowMode = 'wrap';
     appState.activeArchitectPlanId = null;
     appState.activePlanContext = null;
+    appState.strategyMutationPreview = null;
 
     providerState.selectedProviderId = 'provider-1';
     providerState.selectedModelId = 'model-1';
@@ -1992,6 +2015,101 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(architectPlans.get(blankSibling.id)?.label).toBe('new plan 2');
   });
 
+  it('stages a non-destructive preview during strategy generation when frozen work exists', async () => {
+    const activePlan = createPlan({
+      id: 'started-plan',
+      conversationId: 'plan-conv',
+      status: 'in_progress',
+      nodes: [
+        {
+          id: 'task-a',
+          title: 'Prepare schema',
+          description: '',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/prepare-schema',
+          branchType: 'feature',
+          branchSlug: 'prepare-schema',
+          projectId: 'project-1',
+          projectIds: ['project-1'],
+        },
+        {
+          id: 'task-b',
+          title: 'Build endpoint',
+          description: '',
+          type: 'task',
+          status: 'in-progress',
+          dependencies: ['task-a'],
+          assignedBranch: 'feature/build-endpoint',
+          branchType: 'feature',
+          branchSlug: 'build-endpoint',
+          projectId: 'project-1',
+          projectIds: ['project-1'],
+        },
+      ],
+    });
+    architectPlans.set(activePlan.id, activePlan);
+    appState.activeArchitectPlanId = activePlan.id;
+    appState.activePlanContext = { id: activePlan.id, targetBranch: 'develop' };
+    taskStoreState.tasks = [
+      createImplementTask({
+        id: 'task-a',
+        title: 'Prepare schema',
+        status: 'Pending',
+        plan_id: activePlan.id,
+        assigned_branch: 'feature/prepare-schema',
+        branch_name: 'feature/prepare-schema',
+      }),
+      createImplementTask({
+        id: 'task-b',
+        title: 'Build endpoint',
+        status: 'InProgress',
+        plan_id: activePlan.id,
+        assigned_branch: 'feature/build-endpoint',
+        branch_name: 'feature/build-endpoint',
+        dependencies: ['task-a'],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Regenerate the strategy safely.',
+    });
+    updateArchitectPlanMock.mockClear();
+
+    const result = await onToolCall('strategy_generate', {
+      nodes: [
+        {
+          id: 'task-a',
+          title: 'Prepare schema',
+          dependencies: [],
+          status: 'pending',
+        },
+        {
+          id: 'task-b',
+          title: 'Build endpoint',
+          dependencies: ['task-a'],
+          status: 'in-progress',
+        },
+        {
+          title: 'Ship telemetry',
+          dependencies: ['task-b'],
+        },
+      ],
+    });
+
+    expect(String(result)).toContain('preview_staged');
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    expect(appState.strategyMutationPreview).not.toBeNull();
+    expect((appState.strategyMutationPreview as { status: string }).status).toBe('valid');
+  });
+
   it('does not pass label metadata during strategy updates unless explicitly requested', async () => {
     const plan = createPlan({
       id: 'plan-1',
@@ -2084,6 +2202,122 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect('label' in lastCall).toBe(false);
     expect('title' in lastCall).toBe(false);
     expect(architectPlans.get(blankSibling.id)?.label).toBe(blankSibling.label);
+  });
+
+  it('requests one repair attempt for frozen-node conflicts and blocks on the second invalid update', async () => {
+    const activePlan = createPlan({
+      id: 'started-plan',
+      conversationId: 'plan-conv',
+      status: 'in_progress',
+      nodes: [
+        {
+          id: 'task-a',
+          title: 'Prepare schema',
+          description: '',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/prepare-schema',
+          branchType: 'feature',
+          branchSlug: 'prepare-schema',
+          projectId: 'project-1',
+          projectIds: ['project-1'],
+        },
+        {
+          id: 'task-b',
+          title: 'Build endpoint',
+          description: '',
+          type: 'task',
+          status: 'in-progress',
+          dependencies: ['task-a'],
+          assignedBranch: 'feature/build-endpoint',
+          branchType: 'feature',
+          branchSlug: 'build-endpoint',
+          projectId: 'project-1',
+          projectIds: ['project-1'],
+        },
+      ],
+    });
+    architectPlans.set(activePlan.id, activePlan);
+    appState.activeArchitectPlanId = activePlan.id;
+    appState.activePlanContext = { id: activePlan.id, targetBranch: 'develop' };
+    taskStoreState.tasks = [
+      createImplementTask({
+        id: 'task-a',
+        title: 'Prepare schema',
+        status: 'Pending',
+        plan_id: activePlan.id,
+        assigned_branch: 'feature/prepare-schema',
+        branch_name: 'feature/prepare-schema',
+      }),
+      createImplementTask({
+        id: 'task-b',
+        title: 'Build endpoint',
+        status: 'InProgress',
+        plan_id: activePlan.id,
+        assigned_branch: 'feature/build-endpoint',
+        branch_name: 'feature/build-endpoint',
+        dependencies: ['task-a'],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Update the active strategy.',
+    });
+    updateArchitectPlanMock.mockClear();
+
+    const firstResult = await onToolCall('strategy_update', {
+      replace: true,
+      nodes: [
+        {
+          id: 'task-a',
+          title: 'Prepare schema',
+          dependencies: [],
+          status: 'pending',
+        },
+        {
+          id: 'task-b',
+          title: 'Build endpoint',
+          description: 'Changed frozen description',
+          dependencies: ['task-a'],
+          status: 'in-progress',
+        },
+      ],
+    });
+
+    expect(String(firstResult)).toContain('repair_requested');
+    expect(appState.strategyMutationPreview).toBeNull();
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+
+    const secondResult = await onToolCall('strategy_update', {
+      replace: true,
+      nodes: [
+        {
+          id: 'task-a',
+          title: 'Prepare schema',
+          dependencies: [],
+          status: 'pending',
+        },
+        {
+          id: 'task-b',
+          title: 'Build endpoint',
+          description: 'Changed frozen description',
+          dependencies: ['task-a'],
+          status: 'in-progress',
+        },
+      ],
+    });
+
+    expect(String(secondResult)).toContain('"action": "blocked"');
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    expect(appState.strategyMutationPreview).not.toBeNull();
+    expect((appState.strategyMutationPreview as { status: string }).status).toBe('blocked');
   });
 
   it('launches Architect conversations with the plan explorer internal profile', async () => {

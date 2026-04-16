@@ -86,10 +86,21 @@ type AppStoreState = {
   projectGroups: MockProjectGroup[];
   planNodes: MockPlanNode[];
   predictedBranches: unknown[];
+  strategyMutationPreview: {
+    planId: string;
+    status: 'valid' | 'blocked';
+    autoProvisionBranches: boolean;
+    frozenNodes: Array<{ id: string; title: string; reason: 'started' | 'completed' | 'dependency_locked' }>;
+    rewrittenPendingNodes: Array<{ id: string; title: string }>;
+    newNodes: Array<{ id: string; title: string }>;
+    removedPendingNodes: Array<{ id: string; title: string }>;
+    conflicts: string[];
+  } | null;
   activePlanContext: MockPlanContext | null;
   setActivePlanContext: (context: MockPlanContext | null) => void;
   setPlanNodes: (nodes: MockPlanNode[]) => void;
   setPredictedBranches: (branches: unknown[]) => void;
+  setStrategyMutationPreview: (preview: AppStoreState['strategyMutationPreview']) => void;
   setMode: (mode: AppMode) => void;
   setSelectedTask: (taskId: string | null) => void;
 };
@@ -239,6 +250,64 @@ const validatePlanAndProvisionBranchesMock = mock(async (_params?: unknown) => (
     createdFeatureBranches: [] as unknown[],
   },
 }));
+const applyStrategyMutationPreviewMock = mock(async (params: {
+  preview: AppStoreState['strategyMutationPreview'];
+}) => ({
+  id: params.preview?.planId ?? 'plan-1',
+  slug: 'plan-1',
+  title: 'Plan One',
+  label: 'Plan One',
+  description: 'Updated preview',
+  status: 'in_progress',
+  targetBranch: 'develop',
+  targetBranchesByProjectId: { 'project-1': 'develop' },
+  nodes: appState.planNodes,
+  predictedBranches: appState.predictedBranches,
+}));
+const buildFrozenPlanNodeMapMock = (params: {
+  plan: { nodes: MockPlanNode[] };
+  tasks?: Array<{ id: string; status: TaskStatus }>;
+}) => {
+  const nodeById = new Map(params.plan.nodes.map((node) => [node.id, node]));
+  const frozen = new Map<
+    string,
+    { id: string; title: string; reason: 'started' | 'completed' | 'dependency_locked' }
+  >();
+  const visitDependencies = (nodeId: string, seen = new Set<string>()) => {
+    if (seen.has(nodeId)) return;
+    seen.add(nodeId);
+    const node = nodeById.get(nodeId);
+    if (!node) return;
+    node.dependencies.forEach((dependencyId) => {
+      const dependency = nodeById.get(dependencyId);
+      if (!dependency) return;
+      if (!frozen.has(dependencyId)) {
+        frozen.set(dependencyId, {
+          id: dependency.id,
+          title: dependency.title,
+          reason: 'dependency_locked',
+        });
+      }
+      visitDependencies(dependencyId, seen);
+    });
+  };
+
+  params.plan.nodes.forEach((node) => {
+    const taskStatus = params.tasks?.find((task) => task.id === node.id)?.status;
+    const reason =
+      taskStatus === 'Completed'
+        ? 'completed'
+        : taskStatus === 'InProgress' ||
+            taskStatus === 'AwaitingResponse' ||
+            taskStatus === 'InReview'
+          ? 'started'
+          : null;
+    if (!reason) return;
+    frozen.set(node.id, { id: node.id, title: node.title, reason });
+    visitDependencies(node.id);
+  });
+  return frozen;
+};
 
 const notifySuccessMock = mock((..._args: unknown[]) => undefined);
 const notifyErrorMock = mock((..._args: unknown[]) => undefined);
@@ -270,6 +339,30 @@ mock.module('../../services/architectGitFlowService', () => ({
 mock.module('../../services/architectGitFlowService.ts', () => ({
   validatePlanAndProvisionBranches: (params: unknown) =>
     validatePlanAndProvisionBranchesMock(params),
+}));
+
+mock.module('../../services/architectStrategyMutationGuard', () => ({
+  applyStrategyMutationPreview: (params: unknown) =>
+    applyStrategyMutationPreviewMock(params as { preview: AppStoreState['strategyMutationPreview'] }),
+  buildFrozenPlanNodeMap: (params: unknown) =>
+    buildFrozenPlanNodeMapMock(
+      params as {
+        plan: { nodes: MockPlanNode[] };
+        tasks?: Array<{ id: string; status: TaskStatus }>;
+      }
+    ),
+}));
+
+mock.module('../../services/architectStrategyMutationGuard.ts', () => ({
+  applyStrategyMutationPreview: (params: unknown) =>
+    applyStrategyMutationPreviewMock(params as { preview: AppStoreState['strategyMutationPreview'] }),
+  buildFrozenPlanNodeMap: (params: unknown) =>
+    buildFrozenPlanNodeMapMock(
+      params as {
+        plan: { nodes: MockPlanNode[] };
+        tasks?: Array<{ id: string; status: TaskStatus }>;
+      }
+    ),
 }));
 
 mock.module('../ui/toastService', () => ({
@@ -316,6 +409,7 @@ const resetState = () => {
     projectGroups: [],
     planNodes: [],
     predictedBranches: [],
+    strategyMutationPreview: null,
     activePlanContext: null,
     setActivePlanContext: (context) => {
       useAppStore.setState({ activePlanContext: context });
@@ -325,6 +419,9 @@ const resetState = () => {
     },
     setPredictedBranches: (branches) => {
       useAppStore.setState({ predictedBranches: branches });
+    },
+    setStrategyMutationPreview: (preview) => {
+      useAppStore.setState({ strategyMutationPreview: preview });
     },
     setMode: (mode) => {
       useAppStore.setState({ mode });
@@ -394,6 +491,7 @@ const seedStores = (
       },
     ],
     predictedBranches: [],
+    strategyMutationPreview: null,
     activePlanContext: null,
   });
 
@@ -442,6 +540,7 @@ describe('StrategyGraph', () => {
 
   beforeEach(() => {
     validatePlanAndProvisionBranchesMock.mockClear();
+    applyStrategyMutationPreviewMock.mockClear();
     notifySuccessMock.mockClear();
     notifyErrorMock.mockClear();
     resetState();
@@ -511,6 +610,97 @@ describe('StrategyGraph', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="running"]')
     ).not.toBeNull();
+  });
+
+  it('surfaces frozen-node reasons in the branch view', async () => {
+    seedStores('InProgress');
+    useAppStore.setState({
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'in_progress',
+        targetBranch: 'develop',
+      },
+      predictedBranches: [
+        {
+          id: 'branch-1',
+          name: 'feature/graph',
+          color: '#3b82f6',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-1'],
+          status: 'pending',
+        },
+      ],
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Branches')
+    );
+    expect(branchesButton).not.toBeUndefined();
+
+    await act(async () => {
+      branchesButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Architect node');
+    expect(document.body.textContent).toContain('started');
+  });
+
+  it('renders and applies a staged strategy preview', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'in_progress',
+        targetBranch: 'develop',
+      },
+      strategyMutationPreview: {
+        planId: 'plan-1',
+        status: 'valid',
+        autoProvisionBranches: true,
+        frozenNodes: [{ id: 'task-1', title: 'Architect node', reason: 'started' }],
+        rewrittenPendingNodes: [{ id: 'task-2', title: 'Rewrite checkout flow' }],
+        newNodes: [{ id: 'task-3', title: 'Add regression coverage' }],
+        removedPendingNodes: [{ id: 'task-4', title: 'Drop stale workaround' }],
+        conflicts: [],
+      },
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Regeneration preview');
+    expect(document.body.textContent).toContain('Architect node');
+    expect(document.body.textContent).toContain('Rewrite checkout flow');
+    expect(document.body.textContent).toContain('Add regression coverage');
+    expect(document.body.textContent).toContain('Drop stale workaround');
+
+    const applyButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Apply regeneration')
+    );
+    expect(applyButton).not.toBeUndefined();
+
+    await act(async () => {
+      applyButton?.click();
+      await flushRender();
+    });
+
+    expect(applyStrategyMutationPreviewMock).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().strategyMutationPreview).toBeNull();
+    expect(taskState.refreshFromPlan).toHaveBeenCalledTimes(1);
+    expect(notifySuccessMock).toHaveBeenCalledTimes(1);
   });
 
   it('validates the plan, switches to Implement, and activates the first task without auto execution', async () => {
