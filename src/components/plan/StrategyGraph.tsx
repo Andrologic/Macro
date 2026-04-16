@@ -9,6 +9,12 @@ import { validatePlanAndProvisionBranches } from '../../services/architectGitFlo
 import { getScopedProjectIds } from '../../services/globalProjects';
 import { normalizeNodeProjectIds } from '../../services/implementTaskDerivation';
 import {
+  applyStrategyMutationPreview,
+  buildFrozenPlanNodeMap,
+  formatFrozenPlanNodeReason,
+  type FrozenPlanNode,
+} from '../../services/architectStrategyMutationGuard';
+import {
   mapPlanNodeStatusToTaskStatus,
   resolvePlanNodeStatusIndicatorState,
   resolveRunningTaskIds,
@@ -49,6 +55,27 @@ const taskStatusBgColors: Record<TaskStatus, string> = {
   Completed: 'bg-emerald-500',
   Failed: 'bg-red-500/20',
   Blocked: 'bg-red-500/20',
+};
+
+const frozenReasonTone: Record<
+  FrozenPlanNode['reason'],
+  { badgeFill: string; icon: string; pill: string }
+> = {
+  started: {
+    badgeFill: '#f59e0b',
+    icon: 'text-background',
+    pill: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
+  },
+  completed: {
+    badgeFill: '#10b981',
+    icon: 'text-background',
+    pill: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
+  },
+  dependency_locked: {
+    badgeFill: '#0ea5e9',
+    icon: 'text-background',
+    pill: 'bg-sky-500/10 text-sky-500 border-sky-500/20',
+  },
 };
 
 const NODE_RADIUS = 16;
@@ -140,9 +167,11 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     planNodes,
     predictedBranches,
     activePlanContext,
+    strategyMutationPreview,
     setActivePlanContext,
     setPlanNodes,
     setPredictedBranches,
+    setStrategyMutationPreview,
     setMode,
   } = useAppStore();
   const { conversations, conversationRuntimeById } = useChatStore(
@@ -184,6 +213,31 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     () => new Map(tasks.map((task) => [task.id, task.status])),
     [tasks]
   );
+  const activeStrategyMutationPreview = useMemo(
+    () =>
+      strategyMutationPreview &&
+      activePlanContext &&
+      strategyMutationPreview.planId === activePlanContext.id
+        ? strategyMutationPreview
+        : null,
+    [activePlanContext, strategyMutationPreview]
+  );
+  const frozenNodeById = useMemo<Map<string, FrozenPlanNode>>(() => {
+    if (!activePlanContext?.id) {
+      return new Map<string, FrozenPlanNode>();
+    }
+    return buildFrozenPlanNodeMap({
+      plan: {
+        id: activePlanContext.id,
+        nodes: planNodes,
+      },
+      tasks: tasks.map((task) => ({
+        id: task.id,
+        plan_id: task.plan_id,
+        status: task.status,
+      })),
+    });
+  }, [activePlanContext?.id, planNodes, tasks]);
 
   const targetBranch = useMemo(() => {
     if (activePlanContext?.targetBranch) {
@@ -196,6 +250,51 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
     return getGitFlowBaseBranch();
   }, [activePlanContext?.targetBranch]);
+
+  const handleDiscardStrategyPreview = useCallback(() => {
+    setStrategyMutationPreview(null);
+  }, [setStrategyMutationPreview]);
+
+  const handleApplyStrategyPreview = useCallback(async () => {
+    if (!activeStrategyMutationPreview || !activePlanContext) return;
+    try {
+      const updatedPlan = await applyStrategyMutationPreview({
+        preview: activeStrategyMutationPreview,
+        setActive: true,
+      });
+      setPlanNodes(updatedPlan.nodes || []);
+      setPredictedBranches(updatedPlan.predictedBranches || []);
+      setActivePlanContext({
+        id: updatedPlan.id,
+        slug: updatedPlan.slug,
+        title: updatedPlan.title,
+        label: updatedPlan.label,
+        description: updatedPlan.description,
+        status: updatedPlan.status,
+        targetBranch: updatedPlan.targetBranch,
+        targetBranchesByProjectId: updatedPlan.targetBranchesByProjectId,
+        hasMixedTargetBranches:
+          Boolean(updatedPlan.targetBranchesByProjectId) &&
+          new Set(Object.values(updatedPlan.targetBranchesByProjectId || {})).size > 1,
+      });
+      setStrategyMutationPreview(null);
+      await useTaskStore.getState().refreshFromPlan();
+      notify.success(
+        activeStrategyMutationPreview.autoProvisionBranches
+          ? 'Strategy applied and plan branches synced.'
+          : 'Strategy applied successfully.'
+      );
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : 'Failed to apply strategy preview.');
+    }
+  }, [
+    activePlanContext,
+    activeStrategyMutationPreview,
+    setActivePlanContext,
+    setPlanNodes,
+    setPredictedBranches,
+    setStrategyMutationPreview,
+  ]);
 
   const handleValidatePlan = async () => {
     if (!activePlanContext || isValidating) return;
@@ -432,6 +531,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   );
   const hoveredNodeData = layoutData.nodes.find(n => n.id === hoveredNodeId);
   const hoveredNodeTone = hoveredNodeData ? getNodeStatusTone(hoveredNodeData) : null;
+  const hoveredFrozenNode = hoveredNodeData ? frozenNodeById.get(hoveredNodeData.id) ?? null : null;
   const scopedNodeIdSet = useMemo(() => new Set(layoutData.nodes.map((node) => node.id)), [layoutData.nodes]);
   const scopedNodeById = useMemo(
     () => new Map(layoutData.nodes.map((node) => [node.id, node])),
@@ -772,6 +872,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       {layoutData.nodes.map((node) => {
         const visualStatus = getNodeIndicatorState(node);
         const visualTone = getNodeStatusTone(node);
+        const frozenNode = frozenNodeById.get(node.id) || null;
         const isHovered = hoveredNodeId === node.id;
         const isRelated = hoveredNodeData && (
           hoveredNodeData.dependencies?.includes(node.id) ||
@@ -828,6 +929,25 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                 />
               </div>
             </foreignObject>
+
+            {frozenNode && (
+              <g
+                transform={`translate(${node.x + NODE_RADIUS - 2} ${node.y - NODE_RADIUS + 2})`}
+                className="pointer-events-none"
+              >
+                <circle
+                  cx={0}
+                  cy={0}
+                  r={8}
+                  fill={frozenReasonTone[frozenNode.reason].badgeFill}
+                />
+                <foreignObject x={-6} y={-6} width="12" height="12">
+                  <div className={cn('w-full h-full flex items-center justify-center', frozenReasonTone[frozenNode.reason].icon)}>
+                    <Icon name="lock" size={8} />
+                  </div>
+                </foreignObject>
+              </g>
+            )}
           </g>
         );
       })}
@@ -980,9 +1100,22 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                 }}
               >
                 <div className="flex items-start justify-between gap-4 mb-2">
-                  <h3 className="font-semibold text-sm leading-tight text-popover-foreground">
-                    {hoveredNodeData.title}
-                  </h3>
+                  <div className="min-w-0 space-y-2">
+                    <h3 className="font-semibold text-sm leading-tight text-popover-foreground">
+                      {hoveredNodeData.title}
+                    </h3>
+                    {hoveredFrozenNode && (
+                      <span
+                        className={cn(
+                          'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                          frozenReasonTone[hoveredFrozenNode.reason].pill
+                        )}
+                      >
+                        <Icon name="lock" size={10} />
+                        {formatFrozenPlanNodeReason(hoveredFrozenNode.reason)}
+                      </span>
+                    )}
+                  </div>
                   <div
                     className={cn(
                       'shrink-0 w-2 h-2 rounded-full mt-1.5',
@@ -1097,6 +1230,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                     {branch.tasks.map((task, taskIndex) => {
                       const visualStatus = getNodeIndicatorState(task);
                       const visualTone = getNodeStatusTone(task);
+                      const frozenTask = frozenNodeById.get(task.id) || null;
                       return (
                         <div key={task.id} className="px-3 py-2">
                           <div className="flex items-center justify-between gap-2">
@@ -1105,6 +1239,17 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                                 {taskIndex + 1}.
                               </span>
                               <span className="text-xs text-foreground truncate">{task.title}</span>
+                              {frozenTask && (
+                                <span
+                                  className={cn(
+                                    'inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                    frozenReasonTone[frozenTask.reason].pill
+                                  )}
+                                >
+                                  <Icon name="lock" size={9} />
+                                  {formatFrozenPlanNodeReason(frozenTask.reason)}
+                                </span>
+                              )}
                             </div>
 
                             <div className="shrink-0 flex items-center gap-2">
@@ -1244,6 +1389,161 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                 {Math.round(modalTransform.scale * 100)}%
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {activeStrategyMutationPreview && (
+        <div className="border-t border-border bg-card/80 px-4 py-3 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">
+                {activeStrategyMutationPreview.status === 'valid'
+                  ? t('architect.strategyPreviewTitle', 'Regeneration preview')
+                  : t('architect.strategyPreviewBlockedTitle', 'Regeneration blocked')}
+              </h2>
+              <p className="text-xs text-muted-foreground mt-1">
+                {activeStrategyMutationPreview.status === 'valid'
+                  ? t(
+                      'architect.strategyPreviewDescription',
+                      'Frozen work is preserved. Review the pending rewrites before applying the updated strategy.'
+                    )
+                  : t(
+                      'architect.strategyPreviewBlockedDescription',
+                      'This mutation would break frozen work or create an inconsistent plan.'
+                    )}
+              </p>
+            </div>
+            <span
+              className={cn(
+                'shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                activeStrategyMutationPreview.status === 'valid'
+                  ? 'border-sky-500/20 bg-sky-500/10 text-sky-500'
+                  : 'border-red-500/20 bg-red-500/10 text-red-500'
+              )}
+            >
+              {activeStrategyMutationPreview.status}
+            </span>
+          </div>
+
+          {activeStrategyMutationPreview.frozenNodes.length > 0 && (
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">
+                {t('architect.strategyPreviewFrozen', 'Frozen nodes kept')}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {activeStrategyMutationPreview.frozenNodes.map((node) => (
+                  <span
+                    key={node.id}
+                    className={cn(
+                      'inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px]',
+                      frozenReasonTone[node.reason].pill
+                    )}
+                  >
+                    <Icon name="lock" size={10} />
+                    {node.title}
+                    <span className="opacity-80">{formatFrozenPlanNodeReason(node.reason)}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">
+                {t('architect.strategyPreviewRewrites', 'Pending rewrites')}
+              </div>
+              <div className="space-y-1">
+                {activeStrategyMutationPreview.rewrittenPendingNodes.length > 0 ? (
+                  activeStrategyMutationPreview.rewrittenPendingNodes.map((node) => (
+                    <div key={node.id} className="rounded-md border border-border bg-background/50 px-2.5 py-1.5 text-xs text-foreground">
+                      {node.title}
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-md border border-dashed border-border px-2.5 py-1.5 text-xs text-muted-foreground">
+                    {t('architect.strategyPreviewNone', 'None')}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">
+                {t('architect.strategyPreviewNew', 'New tasks')}
+              </div>
+              <div className="space-y-1">
+                {activeStrategyMutationPreview.newNodes.length > 0 ? (
+                  activeStrategyMutationPreview.newNodes.map((node) => (
+                    <div key={node.id} className="rounded-md border border-border bg-background/50 px-2.5 py-1.5 text-xs text-foreground">
+                      {node.title}
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-md border border-dashed border-border px-2.5 py-1.5 text-xs text-muted-foreground">
+                    {t('architect.strategyPreviewNone', 'None')}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">
+                {t('architect.strategyPreviewRemoved', 'Pending removals')}
+              </div>
+              <div className="space-y-1">
+                {activeStrategyMutationPreview.removedPendingNodes.length > 0 ? (
+                  activeStrategyMutationPreview.removedPendingNodes.map((node) => (
+                    <div key={node.id} className="rounded-md border border-border bg-background/50 px-2.5 py-1.5 text-xs text-foreground">
+                      {node.title}
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-md border border-dashed border-border px-2.5 py-1.5 text-xs text-muted-foreground">
+                    {t('architect.strategyPreviewNone', 'None')}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">
+                {t('architect.strategyPreviewConflicts', 'Conflicts')}
+              </div>
+              <div className="space-y-1">
+                {activeStrategyMutationPreview.conflicts.length > 0 ? (
+                  activeStrategyMutationPreview.conflicts.map((conflict, index) => (
+                    <div key={`${index}-${conflict}`} className="rounded-md border border-red-500/20 bg-red-500/5 px-2.5 py-1.5 text-xs text-red-500">
+                      {conflict}
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-md border border-dashed border-border px-2.5 py-1.5 text-xs text-muted-foreground">
+                    {t('architect.strategyPreviewNone', 'None')}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleDiscardStrategyPreview}
+              className="h-8 rounded-lg border border-border px-3 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            >
+              {t('common.discard', 'Discard')}
+            </button>
+            {activeStrategyMutationPreview.status === 'valid' && (
+              <button
+                type="button"
+                onClick={() => void handleApplyStrategyPreview()}
+                className="h-8 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+              >
+                {t('architect.applyStrategyPreview', 'Apply regeneration')}
+              </button>
+            )}
           </div>
         </div>
       )}
