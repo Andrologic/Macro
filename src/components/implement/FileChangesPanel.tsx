@@ -13,6 +13,10 @@ import {
   type ReviewRepositoryUiState,
 } from '../../services/implementMultiRepoSummary';
 import {
+  getServiceRuntimeCapabilities,
+  REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
+} from '../../services';
+import {
   areAllFileChangesRepositoriesResolved,
 } from '../../services/fileChangesReviewScope';
 import { Icon } from '../ui/Icon';
@@ -344,6 +348,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const { t } = useTranslation();
   const translate: TranslateFn = (key, fallback, options) =>
     String(t(key, { defaultValue: fallback, ...(options || {}) }));
+  const serviceRuntimeCapabilities = getServiceRuntimeCapabilities();
+  const isReadOnlyRemoteMode = !serviceRuntimeCapabilities.taskMutation;
   const { selectedGroupId, selectedProjectId, selectedTaskId, getProjectById } = useAppStore();
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
@@ -391,6 +397,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const hasRepositoryScope = Boolean(selectedGroupId || selectedProjectId);
 
   useEffect(() => {
+    if (isReadOnlyRemoteMode) {
+      resetReviewState();
+      return;
+    }
     if (!hasRepositoryScope || !selectedTaskId) {
       resetReviewState();
       return;
@@ -409,9 +419,13 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedProjectId,
     selectedTaskId,
     selectedTaskWorktreeKey,
+    isReadOnlyRemoteMode,
   ]);
 
   useEffect(() => {
+    if (isReadOnlyRemoteMode) {
+      return;
+    }
     if (!hasRepositoryScope || !selectedTaskId) {
       return;
     }
@@ -485,6 +499,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedGroupId,
     selectedProjectId,
     selectedTaskId,
+    isReadOnlyRemoteMode,
   ]);
 
   useEffect(() => {
@@ -596,6 +611,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   const handleStartReview = async () => {
     if (!currentTask || isCommitting) return;
+    if (isReadOnlyRemoteMode) {
+      notify.error(REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE);
+      return;
+    }
     try {
       await startReview(currentTask.id);
       await loadCurrentChanges();
@@ -614,6 +633,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   const handleRevert = async (repositoryId: string, changeIds: string[]) => {
     if (changeIds.length === 0) return;
+    if (isReadOnlyRemoteMode) {
+      notify.error(REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE);
+      return;
+    }
     try {
       await revertChanges(repositoryId, changeIds);
       notify.success(t('implement.revertSuccess', 'Changes reverted.'));
@@ -625,6 +648,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   const handleOpenCommit = () => {
     if (!nextCommitRepository) return;
+    if (isReadOnlyRemoteMode) {
+      notify.error(REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE);
+      return;
+    }
     selectRepository(nextCommitRepository.id);
     void handleCommit();
   };
@@ -679,6 +706,30 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           <Icon name="git-compare" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
           <p className="text-muted-foreground text-sm">
             {t('implement.selectTaskForValidation', 'Select a task to validate changes')}
+          </p>
+        </div>
+      </aside>
+    );
+  }
+
+  if (isReadOnlyRemoteMode) {
+    return (
+      <aside
+        className={cn(
+          'h-full w-full bg-card border-l border-border flex items-center justify-center',
+          className
+        )}
+      >
+        <div className="text-center px-6 max-w-sm">
+          <Icon name="lock" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
+          <p className="text-foreground text-sm font-medium">
+            {t(
+              'implement.remoteValidationUnavailable',
+              'Local validation is not available in remote mode yet.'
+            )}
+          </p>
+          <p className="mt-2 text-muted-foreground text-sm">
+            {REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE}
           </p>
         </div>
       </aside>

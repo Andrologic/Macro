@@ -2,14 +2,48 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   getAppBootstrap,
   getGitTreeForProject,
+  getMCPServerSettings,
+  getToolSettings,
   listCommits,
   listTasks,
   resolveRemoteConfig,
+  updateMCPServerSettings,
+  updateToolSettings,
 } from './remote';
 
 type FetchCall = {
   url: string;
   init?: RequestInit;
+};
+
+type LocalStorageMock = {
+  clear: () => void;
+  getItem: (key: string) => string | null;
+  key: (index: number) => string | null;
+  length: number;
+  removeItem: (key: string) => void;
+  setItem: (key: string, value: string) => void;
+};
+
+const createLocalStorageMock = (): LocalStorageMock => {
+  let store = new Map<string, string>();
+
+  return {
+    clear: () => {
+      store = new Map<string, string>();
+    },
+    getItem: (key) => store.get(key) ?? null,
+    key: (index) => Array.from(store.keys())[index] ?? null,
+    get length() {
+      return store.size;
+    },
+    removeItem: (key) => {
+      store.delete(key);
+    },
+    setItem: (key, value) => {
+      store.set(key, String(value));
+    },
+  };
 };
 
 const ENV_KEYS = [
@@ -22,9 +56,11 @@ const ENV_KEYS = [
 ];
 
 const originalEnv: Record<string, string | undefined> = {};
+const originalFetch = globalThis.fetch;
+const originalLocalStorage = globalThis.localStorage;
 
 let fetchCalls: FetchCall[] = [];
-const originalFetch = globalThis.fetch;
+let localStorageMock: LocalStorageMock;
 
 const setEnv = (key: string, value?: string) => {
   if (value === undefined) {
@@ -44,6 +80,12 @@ const jsonResponse = (payload: unknown, status = 200): Response => {
 describe('remote provider', () => {
   beforeEach(() => {
     fetchCalls = [];
+    localStorageMock = createLocalStorageMock();
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: localStorageMock,
+      configurable: true,
+    });
+
     ENV_KEYS.forEach((key) => {
       originalEnv[key] = process.env[key];
       delete process.env[key];
@@ -60,6 +102,15 @@ describe('remote provider', () => {
       setEnv(key, originalEnv[key]);
     });
     globalThis.fetch = originalFetch;
+
+    if (originalLocalStorage === undefined) {
+      delete (globalThis as { localStorage?: unknown }).localStorage;
+    } else {
+      Object.defineProperty(globalThis, 'localStorage', {
+        value: originalLocalStorage,
+        configurable: true,
+      });
+    }
   });
 
   it('returns null config when remote base url is not set', () => {
@@ -150,6 +201,47 @@ describe('remote provider', () => {
 
     await expect(listCommits('project-1')).rejects.toMatchObject({
       code: 'REMOTE_REQUEST_FAILED',
+    });
+  });
+
+  it('persists tool settings locally in remote mode', async () => {
+    const initial = await getToolSettings();
+    const initialTools = initial.tools as unknown as Record<
+      string,
+      { status: string; config?: { enabled?: boolean } }
+    >;
+
+    expect(initialTools.read?.status).toBe('enabled');
+    await updateToolSettings({
+      tools: {
+        read: false,
+      },
+    });
+
+    const updated = await getToolSettings();
+    const updatedTools = updated.tools as unknown as Record<
+      string,
+      { status: string; config?: { enabled?: boolean } }
+    >;
+
+    expect(updatedTools.read?.status).toBe('disabled');
+    expect(updatedTools.read?.config?.enabled).toBe(false);
+    expect(JSON.parse(localStorageMock.getItem('macro_tool_settings') || '{}')).toMatchObject({
+      read: false,
+    });
+  });
+
+  it('persists MCP settings locally in remote mode', async () => {
+    await updateMCPServerSettings({
+      servers: {
+        example: true,
+      } as never,
+    });
+
+    const result = await getMCPServerSettings();
+    expect(result.servers).toEqual({});
+    expect(JSON.parse(localStorageMock.getItem('macro_mcp_server_settings') || '{}')).toEqual({
+      example: true,
     });
   });
 });

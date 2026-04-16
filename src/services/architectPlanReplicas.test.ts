@@ -237,9 +237,22 @@ const registerArchitectPlanMocks = () => {
   mock.module('./tauriIpc.ts', tauriModule);
 
   mock.module('../stores/useAppStore', () => ({
-    useAppStore: {
-      getState: () => appState,
-    },
+    useAppStore: Object.assign(
+      <TSelected = typeof appState>(
+        selector?: (state: typeof appState) => TSelected
+      ) => (selector ? selector(appState) : (appState as unknown as TSelected)),
+      {
+        getState: () => appState,
+        setState: (
+          patch:
+            | Partial<typeof appState>
+            | ((state: typeof appState) => Partial<typeof appState>)
+        ) => {
+          Object.assign(appState, typeof patch === 'function' ? patch(appState) : patch);
+        },
+        subscribe: () => () => undefined,
+      }
+    ),
   }));
 };
 

@@ -15,7 +15,7 @@ A modern, high-performance desktop application built with React, TypeScript, Tau
 
 - [Bun](https://bun.sh) >= 1.1.0
 - [Rust](https://rustup.rs/) (for Tauri)
-- [Node.js](https://nodejs.org/) (optional, Bun is preferred)
+- [Python](https://www.python.org/) only if you need to run `bun run i18n:generate`
 
 ## Quick Start
 
@@ -108,7 +108,7 @@ Stable macOS releases are published through [`.github/workflows/release-macos.ym
 
 This project uses Bun with optimized settings:
 
-- **Isolated Installs**: Strict dependency isolation (pnpm-like) via `linker = "isolated"`
+- **Hoisted Installs**: Compatibility-first installs via `linker = "hoisted"`
 - **Auto-install**: Automatic dependency installation when `node_modules` is missing
 - **Exact Versions**: Exact versions saved to `package.json`
 - **Text Lockfile**: Human-readable `bun.lock` for better git diffs
@@ -160,8 +160,9 @@ This project includes several performance optimizations:
 
 Bun is the recommended package manager and runtime for this project. It provides:
 
-- **Faster installs**: Up to 30x faster than npm with isolated installs
-- **Strict dependency isolation**: Prevents phantom dependencies
+- **Faster installs**: Up to 30x faster than npm
+- **Single runtime for repo scripts**: Internal `.mjs` scripts run with Bun, so Node.js is not required for normal development
+- **Hoisted compatibility**: Matches the repository's `linker = "hoisted"` setup
 - **Built-in test runner**: Jest-compatible API with built-in coverage
 - **Native TypeScript support**: No additional configuration needed
 - **Auto-install**: Dependencies installed automatically when missing
@@ -172,8 +173,8 @@ Bun is the recommended package manager and runtime for this project. It provides
 Create a `.env` file in the project root:
 
 ```env
-VITE_DATA_PROVIDER=mock  # or 'ipc' for production
 VITE_BACKEND_TRANSPORT=desktop  # 'desktop' (default) or 'remote'
+VITE_DATA_PROVIDER=mock         # desktop only: 'mock' in browser, 'ipc' in Tauri
 
 # Remote backend (used when VITE_BACKEND_TRANSPORT=remote)
 VITE_REMOTE_API_BASE_URL=http://localhost:3000
@@ -182,6 +183,13 @@ VITE_REMOTE_WORKSPACE_ID=
 VITE_REMOTE_AUTH_TOKEN=
 VITE_REMOTE_TIMEOUT_MS=15000
 ```
+
+Remote transport contract:
+
+- `VITE_BACKEND_TRANSPORT=remote` is sufficient to switch the `services` layer to the remote provider.
+- `VITE_DATA_PROVIDER` is only used for desktop transport. If it is set while `VITE_BACKEND_TRANSPORT=remote`, it is ignored.
+- The current remote mode is intentionally minimal. It supports workspace bootstrap, task catalog, Git tree/history, remote tool policy/validation/execution, and local browser persistence for tool/MCP preferences.
+- Project creation/import/edit flows, Git worktree flows, file preview from the Git tree, and local implementation actions remain desktop-only in this pass.
 
 ### Local API Keys for Tauri Dev
 

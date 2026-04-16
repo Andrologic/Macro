@@ -54,9 +54,12 @@ let promptValues: Record<string, string>;
 const loadPreferencesMock = mock(async (_keys: string[]) => ({}));
 const savePreferencesMock = mock(async (_preferences: Record<string, string>) => undefined);
 let importCounter = 0;
-const actualPreferences = await import('../../../services/preferences');
 
 const loadPromptsView = async () => {
+  const actualPreferences = await import(
+    `../../../services/preferences.ts?prompts-view-preferences-test=${importCounter + 1}`
+  );
+
   mock.module('../../../services/preferences', () => ({
     ...actualPreferences,
     PROMPT_PREFERENCE_DEFINITIONS: promptDefinitions,

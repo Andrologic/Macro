@@ -109,17 +109,23 @@ describe('NotificationCenterPopover', () => {
 
   it('renders shared templates and interactive actionable items when session actions are available', async () => {
     const { NotificationCenterPopover } = await loadNotificationCenterPopover();
+    const originalDateNow = Date.now;
+    Date.now = () => new Date('2026-04-13T12:30:00.000Z').getTime();
 
-    await act(async () => {
-      root?.render(
-        <NotificationCenterPopover
-          isOpen
-          anchorRef={{ current: anchor }}
-          onClose={() => undefined}
-        />
-      );
-      await Promise.resolve();
-    });
+    try {
+      await act(async () => {
+        root?.render(
+          <NotificationCenterPopover
+            isOpen
+            anchorRef={{ current: anchor }}
+            onClose={() => undefined}
+          />
+        );
+        await Promise.resolve();
+      });
+    } finally {
+      Date.now = originalDateNow;
+    }
 
     const surfaces = document.body.querySelectorAll('[data-notification-surface="true"]');
     expect(surfaces).toHaveLength(2);

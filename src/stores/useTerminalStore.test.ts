@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 type TerminalTabDto = {
   id: string;
@@ -109,6 +109,17 @@ const appStoreState = {
   setSelectedProject: (projectId: string | null) => {
     appStoreState.selectedProjectId = projectId;
   },
+};
+
+const chatStoreState = {
+  conversations: [
+    {
+      id: 'conversation-1',
+      title: 'manual-feature-1774264545297-kowb7j',
+      task_id: 'task-1',
+    },
+  ],
+  selectedConversationId: null as string | null,
 };
 
 const taskStoreState = {
@@ -242,7 +253,12 @@ const terminalUpdateTabMetadataMock = mock(
     } | null;
   }): Promise<TerminalTabDto> => buildUpdatedTabDto(params)
 );
-const loadPreferenceMock = mock(async (_key: string): Promise<unknown> => null);
+const actualTauriIpc = await import('../services/tauriIpc');
+const { loadPreference: actualLoadPreference } = await import('../services/preferences');
+const loadPreferenceMock = mock(
+  async (key: string): Promise<unknown> =>
+    actualLoadPreference(key as any)
+);
 const savePreferenceMock = mock(async () => undefined);
 const resolveProjectExecutionContextMock = mock(
   (params?: { selectedProjectId?: string | null; selectedTaskId?: string | null }) => ({
@@ -256,68 +272,106 @@ const resolveProjectExecutionContextMock = mock(
     },
   })
 );
-const actualPreferences = await import('../services/preferences');
-const actualTauriIpc = await import('../services/tauriIpc');
+const registerUseTerminalStoreMocks = async () => {
+  const actualPreferences = await import(
+    `../services/preferences.ts?terminal-store-preferences-test=${importCounter + 1}`
+  );
 
-mock.module('@tauri-apps/api/event', () => ({
-  listen: listenMock,
-}));
+  mock.module('@tauri-apps/api/event', () => ({
+    listen: listenMock,
+  }));
 
-mock.module('../services/tauriIpc', () => ({
-  ...actualTauriIpc,
-  isTauriAvailable: () => true,
-  terminalListTabs: terminalListTabsMock,
-  terminalCreateTab: terminalCreateTabMock,
-  terminalReconnectTab: terminalReconnectTabMock,
-  terminalReadTab: terminalReadTabMock,
-  terminalUpdateTabMetadata: terminalUpdateTabMetadataMock,
-}));
+  mock.module('../services/tauriIpc', () => ({
+    ...actualTauriIpc,
+    isTauriAvailable: () => true,
+    terminalListTabs: terminalListTabsMock,
+    terminalCreateTab: terminalCreateTabMock,
+    terminalReconnectTab: terminalReconnectTabMock,
+    terminalReadTab: terminalReadTabMock,
+    terminalUpdateTabMetadata: terminalUpdateTabMetadataMock,
+  }));
 
-mock.module('../services/preferences', () => ({
-  ...actualPreferences,
-  loadPreference: loadPreferenceMock,
-  savePreference: savePreferenceMock,
-}));
+  mock.module('../services/preferences', () => ({
+    ...actualPreferences,
+    loadPreference: loadPreferenceMock,
+    savePreference: savePreferenceMock,
+  }));
 
-mock.module('../services/projectExecutionContext', () => ({
-  resolveProjectExecutionContext: resolveProjectExecutionContextMock,
-}));
+  mock.module('../services/projectExecutionContext', () => ({
+    resolveProjectExecutionContext: resolveProjectExecutionContextMock,
+  }));
 
-mock.module('./useAppStore', () => ({
-  useAppStore: {
-    getState: () => appStoreState,
-  },
-}));
-
-mock.module('./useChatStore', () => ({
-  useChatStore: {
-    getState: () => ({
-      conversations: [
-        {
-          id: 'conversation-1',
-          title: 'manual-feature-1774264545297-kowb7j',
-          task_id: 'task-1',
+  mock.module('./useAppStore', () => ({
+    useAppStore: Object.assign(
+      <TSelected = typeof appStoreState>(
+        selector?: (state: typeof appStoreState) => TSelected
+      ) =>
+        selector
+          ? selector(appStoreState)
+          : (appStoreState as unknown as TSelected),
+      {
+        getState: () => appStoreState,
+        setState: (
+          patch:
+            | Partial<typeof appStoreState>
+            | ((state: typeof appStoreState) => Partial<typeof appStoreState>)
+        ) => {
+          Object.assign(
+            appStoreState,
+            typeof patch === 'function' ? patch(appStoreState) : patch
+          );
         },
-      ],
-      selectedConversationId: null,
-    }),
-  },
-}));
+        subscribe: () => () => undefined,
+      }
+    ),
+  }));
 
-mock.module('./useTaskStore', () => ({
-  useTaskStore: {
-    getState: () => taskStoreState,
-  },
-}));
+  mock.module('./useChatStore', () => ({
+    useChatStore: Object.assign(
+      <TSelected = typeof chatStoreState>(
+        selector?: (state: typeof chatStoreState) => TSelected
+      ) =>
+        selector
+          ? selector(chatStoreState)
+          : (chatStoreState as unknown as TSelected),
+      {
+        getState: () => chatStoreState,
+        setState: (
+          patch:
+            | Partial<typeof chatStoreState>
+            | ((state: typeof chatStoreState) => Partial<typeof chatStoreState>)
+        ) => {
+          Object.assign(
+            chatStoreState,
+            typeof patch === 'function' ? patch(chatStoreState) : patch
+          );
+        },
+        subscribe: () => () => undefined,
+      }
+    ),
+  }));
+
+  mock.module('./useTaskStore', () => ({
+    getPlanActivationCandidateTask: () => null,
+    useTaskStore: {
+      getState: () => taskStoreState,
+    },
+  }));
+};
 
 let importCounter = 0;
 
 const loadTerminalStore = async () => {
+  await registerUseTerminalStoreMocks();
   importCounter += 1;
   return import(`./useTerminalStore.ts?test=${importCounter}`);
 };
 
 describe('useTerminalStore', () => {
+  afterEach(() => {
+    mock.restore();
+  });
+
   beforeEach(() => {
     Object.keys(eventHandlers).forEach((key) => {
       delete eventHandlers[key];
@@ -393,7 +447,7 @@ describe('useTerminalStore', () => {
       if (key === 'terminalPanelHeight') return 320;
       if (key === 'terminalActiveTabId') return null;
       if (key === 'terminalLastManualProjectByTask') return {};
-      return null;
+      return actualLoadPreference(key as any);
     });
     resolveProjectExecutionContextMock.mockImplementation(
       (params?: { selectedProjectId?: string | null; selectedTaskId?: string | null }) => ({
@@ -442,7 +496,7 @@ describe('useTerminalStore', () => {
       }
       if (key === 'terminalPanelHeight') return 320;
       if (key === 'terminalActiveTabId') return null;
-      return null;
+      return actualLoadPreference(key as any);
     });
 
     const { useTerminalStore } = await loadTerminalStore();
@@ -472,7 +526,7 @@ describe('useTerminalStore', () => {
       }
       if (key === 'terminalPanelHeight') return 320;
       if (key === 'terminalActiveTabId') return null;
-      return null;
+      return actualLoadPreference(key as any);
     });
 
     const { useTerminalStore } = await loadTerminalStore();

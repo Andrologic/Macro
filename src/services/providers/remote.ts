@@ -21,166 +21,42 @@ import type {
   ProjectGroup,
 } from '../../types';
 import type { ServiceProvider } from '../contracts/serviceProvider';
-import { resolveRemoteConfig, type RemoteConfig } from './remoteConfig';
+import {
+  buildMCPServerSettingsPayload,
+  buildToolSettingsPayload,
+  normalizeMCPServerEnablementInput,
+  writeStoredMCPServerEnablement,
+  writeStoredToolEnablement,
+} from './clientSettingsStorage';
+import {
+  ensureRemoteConfig,
+  getWorkspaceBasePath,
+  remoteRequest,
+  remoteUnsupported,
+} from './remoteHttp';
 
-export { resolveRemoteConfig } from './remoteConfig';
-
-const notConfigured = (): never => {
-  throw {
-    code: 'REMOTE_NOT_CONFIGURED',
-    message: 'Remote backend transport is not configured yet',
-  };
-};
-
-const notReady = (): never => {
-  throw {
-    code: 'REMOTE_ENDPOINT_NOT_IMPLEMENTED',
-    message: 'This remote endpoint is not implemented yet',
-  };
-};
-
-const getWorkspaceBasePath = (config: RemoteConfig): string => {
-  if (!config.workspaceId) {
-    return '/workspace';
-  }
-  return `/workspaces/${encodeURIComponent(config.workspaceId)}`;
-};
-
-const toAbsoluteApiUrl = (config: RemoteConfig, path: string): string => {
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  return `${config.baseUrl}${config.apiPrefix}${normalizedPath}`;
-};
-
-const extractPayload = <T>(payload: unknown, key?: string): T => {
-  if (!key) {
-    if (payload && typeof payload === 'object' && 'data' in payload) {
-      return (payload as { data: T }).data;
-    }
-    return payload as T;
-  }
-
-  if (payload && typeof payload === 'object') {
-    const direct = payload as Record<string, unknown>;
-    if (key in direct) {
-      return direct[key] as T;
-    }
-
-    if ('data' in direct && direct.data && typeof direct.data === 'object') {
-      const nested = direct.data as Record<string, unknown>;
-      if (key in nested) {
-        return nested[key] as T;
-      }
-    }
-  }
-
-  throw {
-    code: 'REMOTE_INVALID_RESPONSE',
-    message: `Remote response did not include expected field: ${key}`,
-    details: payload,
-  };
-};
-
-const remoteRequest = async <T>(
-  path: string,
-  options: RequestInit = {},
-  payloadKey?: string,
-): Promise<T> => {
-  const config = resolveRemoteConfig();
-  if (!config) {
-    return notConfigured();
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-    ...(options.headers as Record<string, string> | undefined),
-  };
-
-  if (config.authToken) {
-    headers.Authorization = `Bearer ${config.authToken}`;
-  }
-
-  const url = toAbsoluteApiUrl(config, path);
-
-  try {
-    const response = await fetch(url, {
-      ...options,
-      headers,
-      signal: controller.signal,
-    });
-
-    const contentType = response.headers.get('content-type') ?? '';
-    const body = contentType.includes('application/json')
-      ? await response.json().catch(() => null)
-      : await response.text().catch(() => null);
-
-    if (!response.ok) {
-      throw {
-        code: 'REMOTE_REQUEST_FAILED',
-        message: `Remote request failed (${response.status})`,
-        details: {
-          status: response.status,
-          url,
-          body,
-        },
-      };
-    }
-
-    return extractPayload<T>(body, payloadKey);
-  } catch (error) {
-    if (
-      typeof error === 'object' &&
-      error !== null &&
-      'code' in error &&
-      (error as { code?: string }).code === 'REMOTE_REQUEST_FAILED'
-    ) {
-      throw error;
-    }
-
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw {
-        code: 'REMOTE_TIMEOUT',
-        message: `Remote request timed out after ${config.timeoutMs}ms`,
-        details: { url },
-      };
-    }
-
-    throw {
-      code: 'REMOTE_REQUEST_ERROR',
-      message: 'Remote request failed to execute',
-      details: {
-        url,
-        error: error instanceof Error ? error.message : String(error),
-      },
-    };
-  } finally {
-    clearTimeout(timeoutId);
-  }
-};
+export { resolveRemoteConfig } from './remoteHttp';
 
 export const getAppBootstrap = async (): Promise<AppBootstrapDto> => {
-  const config = resolveRemoteConfig();
-  if (!config) {
-    return notConfigured();
-  }
-
+  const config = ensureRemoteConfig();
   return remoteRequest<AppBootstrapDto>(`${getWorkspaceBasePath(config)}/bootstrap`);
 };
-export const listConversations = async (): Promise<ConversationsDto> => notReady();
-export const listMessages = async (_conversationId?: string): Promise<MessagesDto> => notReady();
-export const listTasks = async (): Promise<TaskCatalogDto> => {
-  const config = resolveRemoteConfig();
-  if (!config) {
-    return notConfigured();
-  }
 
+export const listConversations = async (): Promise<ConversationsDto> =>
+  remoteUnsupported('listConversations');
+
+export const listMessages = async (_conversationId?: string): Promise<MessagesDto> =>
+  remoteUnsupported('listMessages');
+
+export const listTasks = async (): Promise<TaskCatalogDto> => {
+  const config = ensureRemoteConfig();
   return remoteRequest<TaskCatalogDto>(`${getWorkspaceBasePath(config)}/tasks`);
 };
+
 export const getGitTreeForProject = async (projectId: string): Promise<GitTreeDto> => {
   return remoteRequest<GitTreeDto>(`/projects/${encodeURIComponent(projectId)}/git/tree`);
 };
+
 export const gitWorktreeCreate = async (
   _projectId: string,
   _taskId: string,
@@ -192,7 +68,8 @@ export const gitWorktreeCreate = async (
   worktreePath: string;
   branchName: string;
   status: 'created' | 'reused' | 'repaired';
-}> => notReady();
+}> => remoteUnsupported('gitWorktreeCreate');
+
 export const gitWorktreeRemove = async (
   _projectId: string,
   _taskId: string
@@ -202,8 +79,11 @@ export const gitWorktreeRemove = async (
   removedPath: boolean;
   prunedRegistration: boolean;
   alreadyAbsent: boolean;
-}> => notReady();
-export const getFileContent = async (_path: string): Promise<FileContentDto> => notReady();
+}> => remoteUnsupported('gitWorktreeRemove');
+
+export const getFileContent = async (_path: string): Promise<FileContentDto> =>
+  remoteUnsupported('getFileContent');
+
 export const listCommits = async (projectId?: string): Promise<CommitsDto> => {
   if (!projectId) {
     throw {
@@ -214,18 +94,23 @@ export const listCommits = async (projectId?: string): Promise<CommitsDto> => {
 
   return remoteRequest<CommitsDto>(`/projects/${encodeURIComponent(projectId)}/git/commits`);
 };
-export const listProviders = async (): Promise<ProvidersDto> => notReady();
-export const listModels = async (_providerId?: string): Promise<ModelsDto> => notReady();
+
+export const listProviders = async (): Promise<ProvidersDto> => remoteUnsupported('listProviders');
+
+export const listModels = async (_providerId?: string): Promise<ModelsDto> =>
+  remoteUnsupported('listModels');
+
 export const sendChat = async (
   _request: ChatCompletionRequestDto
-): Promise<ChatCompletionResponseDto> => notReady();
+): Promise<ChatCompletionResponseDto> => remoteUnsupported('sendChat');
+
 export const detectProjectGitFlow = async (_data: {
   path?: string;
-}): Promise<ProjectGitFlowDetection> => notReady();
+}): Promise<ProjectGitFlowDetection> => remoteUnsupported('detectProjectGitFlow');
 
 export const previewProjectGitSetup = async (_data: {
   path?: string;
-}): Promise<ProjectGitFlowDetection> => notReady();
+}): Promise<ProjectGitFlowDetection> => remoteUnsupported('previewProjectGitSetup');
 
 export const createProject = async (_data: {
   name: string;
@@ -234,7 +119,7 @@ export const createProject = async (_data: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: Project['gitFlowSettings'];
-}): Promise<ProjectDto> => notReady();
+}): Promise<ProjectDto> => remoteUnsupported('createProject');
 
 export const createProjectWithGitSetup = async (_data: {
   name: string;
@@ -247,7 +132,7 @@ export const createProjectWithGitSetup = async (_data: {
   expectedRepoRootPath?: string | null;
   expectedSetupState: ProjectGitFlowDetection['setupState'];
   expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
-}): Promise<ProjectGitSetupCommitResult> => notReady();
+}): Promise<ProjectGitSetupCommitResult> => remoteUnsupported('createProjectWithGitSetup');
 
 export const importGitRepo = async (_data: {
   gitUrl: string;
@@ -257,22 +142,22 @@ export const importGitRepo = async (_data: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: Project['gitFlowSettings'];
-}): Promise<ProjectDto> => notReady();
+}): Promise<ProjectDto> => remoteUnsupported('importGitRepo');
 
 export const renameProjectGroup = async (_data: {
   groupId: string;
   name: string;
-}): Promise<{ projectGroup: ProjectGroup }> => notReady();
+}): Promise<{ projectGroup: ProjectGroup }> => remoteUnsupported('renameProjectGroup');
 
 export const renameProject = async (_data: {
   projectId: string;
   name: string;
-}): Promise<ProjectDto> => notReady();
+}): Promise<ProjectDto> => remoteUnsupported('renameProject');
 
 export const updateProjectGitFlow = async (_data: {
   projectId: string;
   gitFlowSettings: Project['gitFlowSettings'];
-}): Promise<ProjectDto> => notReady();
+}): Promise<ProjectDto> => remoteUnsupported('updateProjectGitFlow');
 
 export const updateProjectGitFlowWithSetup = async (_data: {
   projectId: string;
@@ -281,43 +166,52 @@ export const updateProjectGitFlowWithSetup = async (_data: {
   expectedRepoRootPath?: string | null;
   expectedSetupState: ProjectGitFlowDetection['setupState'];
   expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
-}): Promise<ProjectGitSetupCommitResult> => notReady();
+}): Promise<ProjectGitSetupCommitResult> =>
+  remoteUnsupported('updateProjectGitFlowWithSetup');
 
 export const updateProjectAccess = async (_data: {
   projectId: string;
   userReadOnly: boolean;
   confirmedMigration?: boolean;
-}): Promise<ProjectDto> => notReady();
+}): Promise<ProjectDto> => remoteUnsupported('updateProjectAccess');
 
 export const previewProjectAccessChange = async (_data: {
   projectId: string;
   targetReadOnly: boolean;
-}) => notReady();
+}) => remoteUnsupported('previewProjectAccessChange');
 
 export const archiveProjectGroup = async (_data: {
   groupId: string;
-}): Promise<{ projectGroup: ProjectGroup }> => notReady();
+}): Promise<{ projectGroup: ProjectGroup }> => remoteUnsupported('archiveProjectGroup');
 
 export const archiveProject = async (_data: {
   projectId: string;
-}): Promise<ProjectDto> => notReady();
+}): Promise<ProjectDto> => remoteUnsupported('archiveProject');
 
 export const removeProjectGroup = async (_data: {
   groupId: string;
-}): Promise<{ projectGroups: ProjectGroup[] }> => notReady();
+}): Promise<{ projectGroups: ProjectGroup[] }> => remoteUnsupported('removeProjectGroup');
 
 export const removeProject = async (_data: {
   projectId: string;
-}): Promise<{ projectGroups: ProjectGroup[] }> => notReady();
+}): Promise<{ projectGroups: ProjectGroup[] }> => remoteUnsupported('removeProject');
 
 export const closeProject = async (_data: {
   projectId: string;
-}): Promise<{ projectGroups: ProjectGroup[] }> => notReady();
+}): Promise<{ projectGroups: ProjectGroup[] }> => remoteUnsupported('closeProject');
 
-export const getToolSettings = async (): Promise<ToolSettingsDto> => notReady();
-export const updateToolSettings = async (_settings: ToolSettingsDto): Promise<void> => notReady();
-export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => notReady();
-export const updateMCPServerSettings = async (_settings: MCPServerSettingsDto): Promise<void> => notReady();
+export const getToolSettings = async (): Promise<ToolSettingsDto> => buildToolSettingsPayload();
+
+export const updateToolSettings = async (settings: ToolSettingsDto): Promise<void> => {
+  writeStoredToolEnablement(settings.tools || {});
+};
+
+export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> =>
+  buildMCPServerSettingsPayload();
+
+export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): Promise<void> => {
+  writeStoredMCPServerEnablement(normalizeMCPServerEnablementInput(settings));
+};
 
 export const provider: ServiceProvider = {
   getAppBootstrap,

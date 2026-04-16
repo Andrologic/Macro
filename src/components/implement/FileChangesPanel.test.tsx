@@ -1,15 +1,91 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { FileChangesPanel } from './FileChangesPanel';
-import { useAppStore } from '../../stores/useAppStore';
-import { useTaskStore } from '../../stores/useTaskStore';
-import { useFileChangesStore, type ReviewRepositoryState } from '../../stores/useFileChangesStore';
+import type { FileChangesPanel as FileChangesPanelComponent } from './FileChangesPanel';
+import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
+import type { useTaskStore as UseTaskStoreHook } from '../../stores/useTaskStore';
+import {
+  type ReviewRepositoryState,
+} from '../../stores/useFileChangesStore';
+import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
 import { buildReviewTaskSummary } from '../../services/implementMultiRepoSummary';
 
-const initialAppState = useAppStore.getState();
-const initialTaskState = useTaskStore.getState();
-const initialFileChangesState = useFileChangesStore.getState();
+let FileChangesPanel!: typeof FileChangesPanelComponent;
+let useAppStore!: typeof UseAppStoreHook;
+let useTaskStore!: typeof UseTaskStoreHook;
+let useFileChangesStore!: typeof UseFileChangesStoreHook;
+let initialAppState: ReturnType<typeof useAppStore.getState> | null = null;
+let initialTaskState: ReturnType<typeof useTaskStore.getState> | null = null;
+let initialFileChangesState: ReturnType<typeof useFileChangesStore.getState> | null = null;
+let notifySuccessMock: ReturnType<typeof mock>;
+let notifyErrorMock: ReturnType<typeof mock>;
+let importCounter = 0;
+
+const loadFileChangesPanelModules = async () => {
+  importCounter += 1;
+
+  const tauriWindowModule = await import(
+    `../../services/tauriWindow.ts?file-changes-panel-tauri-window-test=${importCounter}`
+  );
+  mock.module('../../services/tauriWindow', () => ({
+    ...tauriWindowModule,
+  }));
+  mock.module('../../services/tauriWindow.ts', () => ({
+    ...tauriWindowModule,
+  }));
+
+  const preferencesModule = await import(
+    `../../services/preferences.ts?file-changes-panel-preferences-test=${importCounter}`
+  );
+  mock.module('../../services/preferences', () => ({
+    ...preferencesModule,
+  }));
+
+  const appStoreModule = await import(
+    `../../stores/useAppStore.ts?file-changes-panel-app-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useAppStore', () => ({
+    ...appStoreModule,
+  }));
+
+  const taskStoreModule = await import(
+    `../../stores/useTaskStore.ts?file-changes-panel-task-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useTaskStore', () => ({
+    ...taskStoreModule,
+  }));
+
+  const fileChangesStoreModule = await import(
+    `../../stores/useFileChangesStore.ts?file-changes-panel-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useFileChangesStore', () => ({
+    ...fileChangesStoreModule,
+  }));
+
+  const fileChangesDiffModalModule = await import(
+    `../modals/FileChangesDiffModal.tsx?file-changes-panel-diff-modal-test=${importCounter}`
+  );
+  mock.module('../modals/FileChangesDiffModal', () => ({
+    ...fileChangesDiffModalModule,
+  }));
+
+  mock.module('../ui/toastService', () => ({
+    notify: {
+      success: (...args: unknown[]) => notifySuccessMock(...args),
+      error: (...args: unknown[]) => notifyErrorMock(...args),
+      info: mock(() => undefined),
+      warning: mock(() => undefined),
+    },
+  }));
+
+  ({ FileChangesPanel } = await import(`./FileChangesPanel.tsx?file-changes-panel-test=${importCounter}`));
+  ({ useAppStore } = appStoreModule);
+  ({ useTaskStore } = taskStoreModule);
+  ({ useFileChangesStore } = fileChangesStoreModule);
+  initialAppState = useAppStore.getState();
+  initialTaskState = useTaskStore.getState();
+  initialFileChangesState = useFileChangesStore.getState();
+};
 
 const buildRepository = (reviewedMain: boolean): ReviewRepositoryState => ({
   id: 'repo-1',
@@ -154,7 +230,11 @@ describe('FileChangesPanel', () => {
     });
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    mock.restore();
+    notifySuccessMock = mock(() => undefined);
+    notifyErrorMock = mock(() => undefined);
+    await loadFileChangesPanelModules();
     setReviewedStateMock = mock(() => undefined);
     loadCurrentChangesMock = mock(async () => undefined);
     container = document.createElement('div');
@@ -170,9 +250,18 @@ describe('FileChangesPanel', () => {
     container?.remove();
     root = null;
     container = null;
-    useAppStore.setState(initialAppState, true);
-    useTaskStore.setState(initialTaskState, true);
-    useFileChangesStore.setState(initialFileChangesState, true);
+    if (initialAppState) {
+      useAppStore.setState(initialAppState, true);
+    }
+    if (initialTaskState) {
+      useTaskStore.setState(initialTaskState, true);
+    }
+    if (initialFileChangesState) {
+      useFileChangesStore.setState(initialFileChangesState, true);
+    }
+    delete process.env.VITE_BACKEND_TRANSPORT;
+    delete process.env.VITE_DATA_PROVIDER;
+    mock.restore();
   });
 
   it('renders validate and revert actions for pending scopes', async () => {
@@ -273,5 +362,25 @@ describe('FileChangesPanel', () => {
 
     expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
     expect(document.body.textContent).not.toContain('Select a project to view changes');
+  });
+
+  it('renders a read-only remote empty state and hides validation actions in remote mode', async () => {
+    process.env.VITE_BACKEND_TRANSPORT = 'remote';
+    seedStores(buildRepository(false));
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Local validation is not available in remote mode yet.');
+    expect(document.body.textContent).toContain('This action is not available in remote mode yet.');
+    expect(document.body.textContent).not.toContain('Validate changes');
+    expect(document.body.textContent).not.toContain('Commit');
+    expect(document.body.textContent).not.toContain('Finish task');
+    expect(document.querySelector('[aria-label="Validate"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Revert"]')).toBeNull();
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+    expect(notifySuccessMock).not.toHaveBeenCalled();
   });
 });

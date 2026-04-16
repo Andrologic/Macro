@@ -2,7 +2,6 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun
 import type { AppMode, Conversation, ProjectGroup } from '../types';
 import type { ArchitectPlanRecord } from '../services/architectPlanService';
 const actualTauriIpc = await import('../services/tauriIpc');
-const actualPreferences = await import('../services/preferences');
 
 interface LocalStorageMock {
   clear: () => void;
@@ -66,8 +65,10 @@ const appState = {
   selectedGroupId: 'group-1' as string | null,
   selectedProjectId: 'project-1' as string | null,
   selectedTaskId: null as string | null,
+  activeThemeId: 'macro-dark',
+  codeOverflowMode: 'wrap' as const,
   activeArchitectPlanId: null as string | null,
-  activePlanContext: null as { targetBranch: string } | null,
+  activePlanContext: null as { id?: string; targetBranch: string } | null,
   projectGroups,
   getProjectById: (projectId: string) =>
     projectGroups.flatMap((group) => group.projects).find((project) => project.id === projectId),
@@ -75,6 +76,51 @@ const appState = {
   setPlanNodes: (_nodes: unknown[]) => undefined,
   setPredictedBranches: (_branches: unknown[]) => undefined,
   setActivePlanContext: (_context: unknown) => undefined,
+  setTheme: (_themeId: string) => undefined,
+  activateArchitectPlan: mock(
+    async (
+      planId: string,
+      options?: {
+        targetBranch?: string | null;
+        persistActiveSelection?: boolean;
+        allowScopeSwitch?: boolean;
+      }
+    ) => {
+      const plan = architectPlans.get(planId);
+      if (!plan || plan.status === 'deleted') {
+        return false;
+      }
+
+      const scopedProjectIds = projectGroups.flatMap((group) => group.projects.map((project) => project.id));
+      const planProjectIds = [
+        ...(plan.projectIds ?? []),
+        ...(plan.projectId ? [plan.projectId] : []),
+      ];
+      const preferredProjectId =
+        planProjectIds.find((projectId) => projectId === appState.selectedProjectId) ??
+        planProjectIds[0] ??
+        null;
+      const isPlanAlreadyInScope = planProjectIds.some((projectId) => scopedProjectIds.includes(projectId));
+
+      if (
+        options?.allowScopeSwitch !== false &&
+        preferredProjectId &&
+        !isPlanAlreadyInScope
+      ) {
+        await appState.switchProjectContext(preferredProjectId, {
+          restoreProjectContext: false,
+          ensureAutoPlan: false,
+        });
+      }
+
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = {
+        id: plan.id,
+        targetBranch: options?.targetBranch ?? plan.targetBranch,
+      };
+      return true;
+    }
+  ),
   switchProjectContext: mock(async (_projectId: string, _options?: unknown) => undefined),
 };
 
@@ -195,6 +241,25 @@ const emitTaskStoreUpdate = (previousTasks: Array<Record<string, unknown>>) => {
     tasks: taskStoreState.tasks,
   };
   taskStoreSubscribers.forEach((listener) => listener(nextState, previousState));
+};
+
+const appStoreSubscribers = new Set<
+  (
+    nextState: typeof appState,
+    previousState: typeof appState,
+  ) => void
+>();
+
+const cloneAppState = () => ({
+  ...appState,
+  activePlanContext: appState.activePlanContext
+    ? { ...appState.activePlanContext }
+    : appState.activePlanContext,
+});
+
+const emitAppStoreUpdate = (previousState: typeof appState) => {
+  const nextState = cloneAppState();
+  appStoreSubscribers.forEach((listener) => listener(nextState, previousState));
 };
 
 const taskStoreState = {
@@ -504,9 +569,29 @@ const createMockStoreHook = <TState extends object>(
 const useAppStoreMock = createMockStoreHook(
   () => appState,
   (patch) => {
+    const previousState = cloneAppState();
     Object.assign(appState, typeof patch === 'function' ? patch(appState) : patch);
+    emitAppStoreUpdate(previousState);
   }
 );
+
+appState.setTheme = (themeId: string) => {
+  useAppStoreMock.setState({ activeThemeId: themeId });
+};
+
+useAppStoreMock.subscribe = (
+  listener?: (
+    nextState: typeof appState,
+    previousState: typeof appState,
+  ) => void
+) => {
+  if (!listener) {
+    return () => undefined;
+  }
+
+  appStoreSubscribers.add(listener);
+  return () => appStoreSubscribers.delete(listener);
+};
 
 const useTaskStoreMock = createMockStoreHook(
   () => taskStoreState,
@@ -531,7 +616,11 @@ useTaskStoreMock.subscribe = (
   return () => taskStoreSubscribers.delete(listener);
 };
 
-const registerUseChatStoreMocks = () => {
+const registerUseChatStoreMocks = async () => {
+  const actualPreferences = await import(
+    `../services/preferences.ts?chat-store-preferences-test=${importCounter + 1}`
+  );
+
   mock.restore();
 
   mock.module('./useProviderStore', () => ({
@@ -575,6 +664,7 @@ const registerUseChatStoreMocks = () => {
   }));
 
   mock.module('./useTaskStore', () => ({
+    getPlanActivationCandidateTask: () => null,
     useTaskStore: useTaskStoreMock,
   }));
 
@@ -687,7 +777,13 @@ const registerUseChatStoreMocks = () => {
     updateConversationDetails: updateConversationDetailsMock,
   }));
 
+  importCounter += 1;
+  const actualArchitectPlanService = await import(
+    `../services/architectPlanService.ts?use-chat-store-architect-plan-service-test=${importCounter}`
+  );
+
   const architectPlanServiceModule = () => ({
+    ...actualArchitectPlanService,
     createArchitectPlan: mock(async () => {
       throw new Error('not implemented');
     }),
@@ -708,11 +804,9 @@ const registerUseChatStoreMocks = () => {
       return projectIds.some((projectId) => scopedProjectIdSet.has(projectId));
     },
     getArchitectPlanNeeds: mock(async () => []),
-    getGitFlowBaseBranch: () => 'develop',
     listArchitectPlans: listArchitectPlansMock,
     resolvePlanProjectContextId: (plan: ArchitectPlanRecord, fallbackProjectId?: string | null) =>
       plan.projectId ?? plan.projectIds?.[0] ?? fallbackProjectId ?? null,
-    resolveTargetBranch: (branchName?: string | null) => branchName ?? 'develop',
     restoreArchitectPlan: mock(async () => undefined),
     saveArchitectPlanNeeds: saveArchitectPlanNeedsMock,
     setActiveArchitectPlan: mock(async () => undefined),
@@ -1018,8 +1112,8 @@ const createImplementTask = (overrides: Record<string, unknown> = {}) => ({
 describe('useChatStore ensureArchitectConversationForPlan', () => {
   let localStorageMock: LocalStorageMock;
 
-  beforeEach(() => {
-    registerUseChatStoreMocks();
+  beforeEach(async () => {
+    await registerUseChatStoreMocks();
     localStorageMock = createLocalStorageMock();
     (globalThis as { window?: unknown }).window = {
       localStorage: localStorageMock,
@@ -1036,6 +1130,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.selectedGroupId = 'group-1';
     appState.selectedProjectId = 'project-1';
     appState.selectedTaskId = null;
+    appState.activeThemeId = 'macro-dark';
+    appState.codeOverflowMode = 'wrap';
     appState.activeArchitectPlanId = null;
     appState.activePlanContext = null;
 
@@ -1054,6 +1150,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.tasks = [];
     taskStoreState.currentTask = null;
     taskStoreSubscribers.clear();
+    appStoreSubscribers.clear();
     taskStoreState.lastError = null;
     taskStoreState.refreshFromPlan.mockClear();
     taskStoreState.clearPlanRuntimeState.mockClear();
@@ -1091,6 +1188,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     replaceNeedsForPlanMock.mockClear();
     toolsStoreState.loadSettings.mockClear();
     toolsStoreState.getEnabledChatToolIds = () => ['read_file', 'web_search', 'web_fetch', 'question'];
+    appState.activateArchitectPlan.mockClear();
     appState.switchProjectContext.mockClear();
   });
 
@@ -1484,7 +1582,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
   });
 
-  it('keeps the active plan conversation while initialize switches project scope for the active plan', async () => {
+  it('keeps the active plan conversation during initialize without replaying a project scope switch', async () => {
     tauriAvailable = true;
 
     const plan = createScenarioPlan('scoped_multi_project', {
@@ -1540,10 +1638,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const { useChatStore } = await loadChatStore();
     await useChatStore.getState().initialize();
 
-    expect(appState.switchProjectContext).toHaveBeenCalledWith('project-2', {
-      restoreProjectContext: false,
-      ensureAutoPlan: false,
-    });
+    expect(appState.switchProjectContext).not.toHaveBeenCalled();
     expectArchitectSelection(useChatStore, {
       planId: plan.id,
       conversationId: 'plan-conv',
@@ -1705,6 +1800,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       description: 'Updated scope',
     });
 
+    expect(appState.activateArchitectPlan).toHaveBeenCalledWith(plan.id, {
+      targetBranch: 'develop',
+      persistActiveSelection: false,
+    });
     expect(appState.switchProjectContext).toHaveBeenCalledWith('project-2', {
       restoreProjectContext: false,
       ensureAutoPlan: false,
@@ -1753,6 +1852,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       description: 'Updated scope',
     });
 
+    expect(appState.activateArchitectPlan).toHaveBeenCalledWith(activePlan.id, {
+      targetBranch: 'develop',
+      persistActiveSelection: false,
+    });
     expect(appState.switchProjectContext).toHaveBeenCalledWith('project-2', {
       restoreProjectContext: false,
       ensureAutoPlan: false,
@@ -1765,6 +1868,35 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       mock: { calls: Array<Array<Record<string, unknown>>> };
     }).mock.calls.every((call) => call[0]?.planId === activePlan.id)).toBe(true);
     expect(architectPlans.get(blankSibling.id)?.label).toBe(blankSibling.label);
+  });
+
+  it('does not re-resolve the architect conversation when only the selected task changes', async () => {
+    tauriAvailable = true;
+
+    const plan = createPlan({ conversationId: 'plan-conv' });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('plan-conv', {
+        title: 'Checkout refresh',
+        last_message: 'latest',
+        message_count: 2,
+        updated_at: '2026-03-19T00:04:00.000Z',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+
+    const initialSelectionRequestId = useChatStore.getState().selectionRequestId;
+    useAppStoreMock.setState({ selectedTaskId: 'task-1' });
+    await Promise.resolve();
+
+    expect(useChatStore.getState().selectionRequestId).toBe(initialSelectionRequestId);
+    expect(useChatStore.getState().selectedConversationId).toBe('plan-conv');
+    expect(useChatStore.getState().restoreStatus).toBe('ready');
   });
 
   it('does not pass label metadata during strategy generation unless explicitly requested', async () => {

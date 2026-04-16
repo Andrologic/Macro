@@ -168,6 +168,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   const onChangeRef = useRef(onChange);
   const onEditorReadyRef = useRef(onEditorReady);
   const scheduleRevertAlignmentRef = useRef<(() => void) | null>(null);
+  const revertControlsRef = useRef(revertControls);
   const syncingRef = useRef<'a' | 'b' | null>(null);
   const lastScrollTopRef = useRef({ a: 0, b: 0 });
   const isApplyingExternalUpdateRef = useRef(false);
@@ -188,6 +189,10 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   }, [onEditorReady]);
 
   useEffect(() => {
+    revertControlsRef.current = revertControls;
+  }, [revertControls]);
+
+  useEffect(() => {
     originalRef.current = original;
     modifiedRef.current = modified;
   }, [modified, original]);
@@ -205,7 +210,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
     const requestRevertAlignment = (
       update: Pick<Parameters<Parameters<typeof EditorView.updateListener.of>[0]>[0], 'docChanged' | 'heightChanged' | 'viewportChanged' | 'geometryChanged'>
     ) => {
-      if (!revertControls || !hasRevertRelevantLayoutChange(update)) {
+      if (!revertControlsRef.current || !hasRevertRelevantLayoutChange(update)) {
         return;
       }
 
@@ -281,7 +286,8 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
     };
 
     const scheduleRevertAlignment = () => {
-      if (!revertControls) {
+      const currentRevertControls = revertControlsRef.current;
+      if (!currentRevertControls) {
         return;
       }
       if (revertAlignmentFrame != null) {
@@ -302,7 +308,11 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
                 currentMergeView.dom.querySelectorAll('.cm-merge-revert button')
               ) as HTMLElement[];
 
-              return collectRevertButtonPositions(currentMergeView, revertControls, revertButtons);
+              return collectRevertButtonPositions(
+                currentMergeView,
+                currentRevertControls,
+                revertButtons
+              );
             },
             write: (positions) => {
               if (mergeViewRef.current !== currentMergeView) {
@@ -402,7 +412,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       mergeView.destroy();
       mergeViewRef.current = null;
     };
-  }, [collapseUnchanged, editable, resolvedLanguage, resolvedLocale, resolvedOverflowMode, revertControls, themeContext?.theme, unchangedLinesPhrase]);
+  }, [editable, resolvedLanguage, resolvedLocale, resolvedOverflowMode, themeContext?.theme, unchangedLinesPhrase]);
 
   useEffect(() => {
     const mergeView = mergeViewRef.current;

@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { ThemeProvider, defaultTheme } from '../theme/ThemeProvider';
-import { useAppStore } from '../../stores/useAppStore';
 import type { Theme } from '../../types/theme';
-import CodeMirrorEditor from './CodeMirrorEditor';
+import type { ThemeProvider as ThemeProviderComponent } from '../theme/ThemeProvider';
+import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
+import type CodeMirrorEditorComponent from './CodeMirrorEditor';
 
-const initialAppStoreState = useAppStore.getState();
 const originalFetch = globalThis.fetch;
 const originalRequestIdleCallback = window.requestIdleCallback;
 const originalCancelIdleCallback = window.cancelIdleCallback;
@@ -78,13 +77,54 @@ const flushRender = async () => {
   await Promise.resolve();
 };
 
+let importCounter = 0;
+let initialAppStoreState: ReturnType<(typeof import('../../stores/useAppStore'))['useAppStore']['getState']> | null = null;
+let ThemeProvider!: typeof ThemeProviderComponent;
+let defaultTheme!: Theme;
+let CodeMirrorEditor!: typeof CodeMirrorEditorComponent;
+let useAppStore!: typeof UseAppStoreHook;
+
+const loadCodeMirrorModules = async () => {
+  importCounter += 1;
+  const appStoreModule = await import(
+    `../../stores/useAppStore.ts?code-mirror-editor-store-test=${importCounter}`
+  );
+
+  mock.module('../../stores/useAppStore', () => ({
+    ...appStoreModule,
+  }));
+
+  const themeProviderModule = await import(
+    `../theme/ThemeProvider.tsx?code-mirror-editor-theme-test=${importCounter}`
+  );
+
+  mock.module('../theme/ThemeProvider', () => ({
+    ...themeProviderModule,
+  }));
+
+  ({ ThemeProvider, defaultTheme } = themeProviderModule);
+  ({ default: CodeMirrorEditor } = await import(
+    `./CodeMirrorEditor.tsx?code-mirror-editor-test=${importCounter}`
+  ));
+  useAppStore = appStoreModule.useAppStore;
+  initialAppStoreState = useAppStore.getState();
+};
+
 describe('CodeMirrorEditor diff highlights', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await loadCodeMirrorModules();
     localStorage.clear();
-    useAppStore.setState({ activeThemeId: 'macro-dark' });
+    if (initialAppStoreState) {
+      useAppStore.setState(initialAppStoreState, true);
+    }
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      activeThemeId: 'macro-dark',
+      codeOverflowMode: 'wrap',
+    });
     installThemeFetchMock({
       'macro-dark': defaultTheme,
       'macro-light': macroLightTheme,
@@ -110,10 +150,13 @@ describe('CodeMirrorEditor diff highlights', () => {
     });
     container?.remove();
     localStorage.clear();
-    useAppStore.setState(initialAppStoreState, true);
+    if (initialAppStoreState) {
+      useAppStore.setState(initialAppStoreState, true);
+    }
     globalThis.fetch = originalFetch;
     window.requestIdleCallback = originalRequestIdleCallback;
     window.cancelIdleCallback = originalCancelIdleCallback;
+    mock.restore();
     root = null;
     container = null;
   });

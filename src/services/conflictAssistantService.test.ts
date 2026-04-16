@@ -11,6 +11,25 @@ const sendMessageMock = mock(async () => ({
   userMessageId: "user-1",
   assistantMessageId: "assistant-1",
 }));
+const appStoreState = {
+  setMode: setModeMock,
+};
+const chatStoreState = {
+  ensureConversationForCurrentMode: ensureConversationForCurrentModeMock,
+  createConversation: createConversationMock,
+  sendMessage: sendMessageMock,
+};
+
+const createStoreHook = <TState extends object>(state: TState) =>
+  Object.assign(
+    <TSelected = TState>(selector?: (snapshot: TState) => TSelected) =>
+      (selector ? selector(state) : (state as unknown as TSelected)),
+    {
+      getState: () => state,
+      setState: (patch: Partial<TState>) => Object.assign(state, patch),
+      subscribe: () => () => undefined,
+    }
+  );
 
 describe("conflictAssistantService", () => {
   beforeEach(() => {
@@ -21,21 +40,11 @@ describe("conflictAssistantService", () => {
     sendMessageMock.mockClear();
 
     mock.module("../stores/useAppStore", () => ({
-      useAppStore: {
-        getState: () => ({
-          setMode: setModeMock,
-        }),
-      },
+      useAppStore: createStoreHook(appStoreState),
     }));
 
     mock.module("../stores/useChatStore", () => ({
-      useChatStore: {
-        getState: () => ({
-          ensureConversationForCurrentMode: ensureConversationForCurrentModeMock,
-          createConversation: createConversationMock,
-          sendMessage: sendMessageMock,
-        }),
-      },
+      useChatStore: createStoreHook(chatStoreState),
     }));
   });
 

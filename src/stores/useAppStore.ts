@@ -37,7 +37,9 @@ import {
   getGitFlowBaseBranch,
   isArchitectPlanVisibleForScope,
   planMatchesProjectId,
+  resolvePlanProjectContextId,
   resolveTargetBranch,
+  setActiveArchitectPlan as persistActiveArchitectPlan,
 } from "../services/architectPlanService";
 import { taskMatchesProjectId } from "../services/implementTaskCatalog";
 import {
@@ -463,32 +465,25 @@ const restoreProjectContext = async (
       const targetBranch = resolveTargetBranch(
         appState.activePlanContext?.targetBranch || getGitFlowBaseBranch(),
       );
-      const plan = await getArchitectPlan(targetBranch, contextPlanId);
+      const candidatePlan = await getArchitectPlan(targetBranch, contextPlanId);
       if (
-        plan &&
-        plan.status !== "deleted" &&
+        candidatePlan &&
+        candidatePlan.status !== "deleted" &&
         globalProject.subProjectIds.some((projectId) =>
-          planMatchesProjectId(plan, projectId),
+          planMatchesProjectId(candidatePlan, projectId),
         )
       ) {
-        restoredPlanId = plan.id;
-        useAppStore.setState({
-          activeArchitectPlanId: plan.id,
-          activePlanContext: {
-            id: plan.id,
-            slug: plan.slug,
-            title: plan.title,
-            label: plan.label,
-            description: plan.description,
-            status: plan.status,
-            targetBranch: plan.targetBranch,
+        const plan = await activateArchitectPlanInStore({
+          planId: contextPlanId,
+          options: {
+            targetBranch,
+            persistActiveSelection: false,
+            allowScopeSwitch: false,
           },
-          planNodes: plan.nodes || [],
-          predictedBranches: plan.predictedBranches || [],
         });
-
-        const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
-        useNeedsStore.getState().hydrateNeedsForPlan(plan.id, needs);
+        restoredPlanId = plan?.id ?? null;
+      } else {
+        clearActiveArchitectPlanInStore();
       }
     } catch {
       restoredPlanId = null;
@@ -496,12 +491,7 @@ const restoreProjectContext = async (
   }
 
   if (!restoredPlanId) {
-    useAppStore.setState({
-      activeArchitectPlanId: null,
-      activePlanContext: null,
-      planNodes: [],
-      predictedBranches: [],
-    });
+    clearActiveArchitectPlanInStore();
   }
 
   const nextFocusProjectId = resolveExplicitProjectIdForGroup(
@@ -540,11 +530,76 @@ const hydrateArchitectPlanInStore = async (input: {
       description: plan.description,
       status: plan.status,
       targetBranch: plan.targetBranch,
+      targetBranchesByProjectId: plan.targetBranchesByProjectId,
+      hasMixedTargetBranches:
+        Boolean(plan.targetBranchesByProjectId) &&
+        new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
     },
     planNodes: plan.nodes || [],
     predictedBranches: plan.predictedBranches || [],
   });
   useNeedsStore.getState().hydrateNeedsForPlan(plan.id, input.needs);
+};
+
+const clearActiveArchitectPlanInStore = (): void => {
+  useAppStore.setState({
+    activeArchitectPlanId: null,
+    activePlanContext: null,
+    planNodes: [],
+    predictedBranches: [],
+  });
+};
+
+const activateArchitectPlanInStore = async (input: {
+  planId: string;
+  options?: ActivateArchitectPlanOptions;
+}): Promise<Awaited<ReturnType<typeof getArchitectPlan>> | null> => {
+  const appStore = useAppStore.getState();
+  const targetBranch = resolveTargetBranch(
+    input.options?.targetBranch ||
+      appStore.activePlanContext?.targetBranch ||
+      getGitFlowBaseBranch(),
+  );
+
+  if (input.options?.persistActiveSelection !== false) {
+    await persistActiveArchitectPlan(targetBranch, input.planId);
+  }
+
+  const plan = await getArchitectPlan(targetBranch, input.planId);
+  if (!plan || plan.status === "deleted") {
+    return null;
+  }
+
+  if (input.options?.allowScopeSwitch !== false) {
+    const latestAppState = useAppStore.getState();
+    const planProjectId = resolvePlanProjectContextId(
+      plan,
+      latestAppState.selectedProjectId,
+    );
+    const scopedProjectIds = getScopedProjectIds(
+      latestAppState.projectGroups,
+      latestAppState.selectedGroupId,
+      latestAppState.selectedProjectId,
+    );
+    const isPlanAlreadyInScope = isArchitectPlanVisibleForScope(
+      plan,
+      scopedProjectIds,
+    );
+
+    if (planProjectId && !isPlanAlreadyInScope) {
+      await latestAppState.switchProjectContext(planProjectId, {
+        restoreProjectContext: false,
+        ensureAutoPlan: false,
+      });
+    }
+  }
+
+  const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
+  await hydrateArchitectPlanInStore({
+    plan,
+    needs,
+  });
+  return plan;
 };
 
 const ensureAutoPlanForSelection = async (input: {
@@ -611,9 +666,13 @@ const ensureAutoPlanForSelection = async (input: {
     return;
   }
 
-  await hydrateArchitectPlanInStore({
-    plan: ensuredPlan.plan,
-    needs: ensuredPlan.needs,
+  await activateArchitectPlanInStore({
+    planId: ensuredPlan.plan.id,
+    options: {
+      targetBranch: ensuredPlan.plan.targetBranch,
+      persistActiveSelection: false,
+      allowScopeSwitch: false,
+    },
   });
 };
 
@@ -759,6 +818,10 @@ interface AppStore {
   setPlanNodes: (nodes: PlanNode[]) => void;
   setPredictedBranches: (branches: PredictedBranch[]) => void;
   setActiveArchitectPlanId: (planId: string | null) => void;
+  activateArchitectPlan: (
+    planId: string,
+    options?: ActivateArchitectPlanOptions,
+  ) => Promise<boolean>;
   setActivePlanContext: (plan: ArchitectPlanContext | null) => void;
   openSettings: (tab?: SettingsTab) => void;
   closeSettings: () => void;
@@ -799,6 +862,12 @@ interface CreateProjectData {
 interface SwitchProjectContextOptions {
   restoreProjectContext?: boolean;
   ensureAutoPlan?: boolean;
+}
+
+interface ActivateArchitectPlanOptions {
+  targetBranch?: string | null;
+  persistActiveSelection?: boolean;
+  allowScopeSwitch?: boolean;
 }
 
 interface ProjectRegistrySnapshot {
@@ -1227,6 +1296,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setPredictedBranches: (branches) => set({ predictedBranches: branches }),
 
   setActiveArchitectPlanId: (planId) => set({ activeArchitectPlanId: planId }),
+
+  activateArchitectPlan: async (planId, options) => {
+    const plan = await activateArchitectPlanInStore({
+      planId,
+      options,
+    });
+    return Boolean(plan);
+  },
 
   setActivePlanContext: (plan) => set({ activePlanContext: plan }),
 

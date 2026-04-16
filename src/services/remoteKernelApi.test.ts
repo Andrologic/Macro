@@ -15,7 +15,9 @@ const ENV_KEYS = [
   'VITE_BACKEND_TRANSPORT',
   'VITE_REMOTE_API_BASE_URL',
   'VITE_REMOTE_BACKEND_URL',
+  'VITE_REMOTE_API_PREFIX',
   'VITE_REMOTE_AUTH_TOKEN',
+  'VITE_REMOTE_TIMEOUT_MS',
 ];
 
 const originalEnv: Record<string, string | undefined> = {};
@@ -64,9 +66,10 @@ describe('remoteKernelApi', () => {
     expect(canUseRemoteKernel()).toBe(true);
   });
 
-  it('calls mode policy endpoint', async () => {
+  it('calls the mode policy endpoint with apiPrefix and auth header', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    setEnv('VITE_REMOTE_API_PREFIX', '/custom');
     setEnv('VITE_REMOTE_AUTH_TOKEN', 'token');
 
     globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
@@ -79,13 +82,14 @@ describe('remoteKernelApi', () => {
 
     const result = await getRemoteToolModePolicy('Implement');
     expect(result.allowed_tool_ids).toEqual(['read', 'grep']);
-    expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/api/v1/tools/mode-policy?mode=Implement');
+    expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/custom/tools/mode-policy?mode=Implement');
     expect((fetchCalls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer token');
   });
 
-  it('calls validate and execute endpoints', async () => {
+  it('calls validate and execute endpoints with apiPrefix', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    setEnv('VITE_REMOTE_API_PREFIX', '/remote/api');
 
     globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
       fetchCalls.push({ url: String(url), init });
@@ -109,8 +113,8 @@ describe('remoteKernelApi', () => {
       workspacePath: 'C:/dev/Smartcards',
     });
     expect(result).toBe('{"ok":true}');
-    expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/api/v1/tools/validate');
-    expect(fetchCalls[1].url).toBe('http://127.0.0.1:8787/api/v1/tools/execute');
+    expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/remote/api/tools/validate');
+    expect(fetchCalls[1].url).toBe('http://127.0.0.1:8787/remote/api/tools/execute');
     expect(JSON.parse(String(fetchCalls[1].init?.body))).toEqual({
       mode: 'Implement',
       tool_id: 'read',
@@ -118,5 +122,28 @@ describe('remoteKernelApi', () => {
       workspace_path: 'C:/dev/Smartcards',
       workspace_scope: null,
     });
+  });
+
+  it('aborts requests when the configured timeout elapses', async () => {
+    let abortObserved = false;
+
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    setEnv('VITE_REMOTE_TIMEOUT_MS', '5');
+
+    globalThis.fetch = mock((_url: string | URL | Request, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal as AbortSignal | undefined;
+        signal?.addEventListener('abort', () => {
+          abortObserved = true;
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(getRemoteToolModePolicy('Implement')).rejects.toMatchObject({
+      code: 'REMOTE_TIMEOUT',
+    });
+    expect(abortObserved).toBe(true);
   });
 });

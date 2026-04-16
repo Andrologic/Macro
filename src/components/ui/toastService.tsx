@@ -17,15 +17,15 @@ import {
   type NotificationCenterSessionAction,
 } from '../../stores/useNotificationCenterStore';
 import { cn } from '../../utils/cn';
+import { ActionableNotificationTemplate } from './notifications/ActionableNotificationTemplate';
+import { InformationalNotificationTemplate } from './notifications/InformationalNotificationTemplate';
 import {
-  ActionableNotificationTemplate,
-  InformationalNotificationTemplate,
   type ActionableNotificationInput,
   type InformationalNotificationInput,
   type NotificationTemplateActionSpec,
   type NotificationTone,
   type NotificationVariant,
-} from './notifications';
+} from './notifications/types';
 import {
   clearToastBatch,
   registerToastInBatch,

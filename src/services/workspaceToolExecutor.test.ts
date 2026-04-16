@@ -106,13 +106,34 @@ const registerWorkspaceToolExecutorMocks = (
     }),
   }));
 
+  const appStoreState = {
+    ...defaultAppState,
+    ...appState,
+  };
+
   mock.module("../stores/useAppStore", () => ({
-    useAppStore: {
-      getState: () => ({
-        ...defaultAppState,
-        ...appState,
-      }),
-    },
+    useAppStore: Object.assign(
+      <TSelected = typeof appStoreState>(
+        selector?: (state: typeof appStoreState) => TSelected
+      ) =>
+        selector
+          ? selector(appStoreState)
+          : (appStoreState as unknown as TSelected),
+      {
+        getState: () => appStoreState,
+        setState: (
+          patch:
+            | Partial<typeof appStoreState>
+            | ((state: typeof appStoreState) => Partial<typeof appStoreState>)
+        ) => {
+          Object.assign(
+            appStoreState,
+            typeof patch === "function" ? patch(appStoreState) : patch
+          );
+        },
+        subscribe: () => () => undefined,
+      }
+    ),
   }));
 };
 
