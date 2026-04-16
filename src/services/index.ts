@@ -1,29 +1,40 @@
-import { isTauriAvailable } from './tauriIpc';
 import type { ServiceProvider } from './contracts/serviceProvider';
+import {
+  getServiceRuntime,
+  type ResolvedServiceRuntime,
+  type ServiceProviderName,
+} from './serviceRuntime';
 
-export type DataProvider = 'mock' | 'ipc';
-export type ServiceTransport = 'desktop' | 'remote';
+export {
+  createRemoteUnsupportedInRemoteModeError,
+  REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
+  REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
+  getServiceRuntime,
+  getServiceRuntimeCapabilities,
+  isRemoteServiceRuntime,
+  resolveServiceRuntime,
+  resolveServiceRuntimeCapabilities,
+} from './serviceRuntime';
+export type {
+  DataProvider,
+  ResolvedServiceRuntime,
+  ServiceProviderName,
+  ServiceRuntimeCapabilities,
+  ServiceRuntimeWarning,
+  ServiceTransport,
+} from './serviceRuntime';
 
 type ServiceProviderModule = {
   provider: ServiceProvider;
 };
 
-const envProvider = import.meta.env.VITE_DATA_PROVIDER as DataProvider | undefined;
-const providerName: DataProvider = envProvider ?? (isTauriAvailable() ? 'ipc' : 'mock');
-const envTransport = import.meta.env.VITE_BACKEND_TRANSPORT as ServiceTransport | undefined;
-const transport: ServiceTransport = envTransport ?? 'desktop';
-
 let providerPromise: Promise<ServiceProvider> | null = null;
+let runtimeWarningsLogged = false;
 
 const loadServiceProviderModule = async (
-  targetTransport: ServiceTransport,
-  targetProvider: DataProvider
+  targetProvider: ServiceProviderName
 ): Promise<ServiceProviderModule> => {
-  if (targetTransport === 'remote') {
-    if (targetProvider === 'mock') {
-      return import('./providers/mock');
-    }
-
+  if (targetProvider === 'remote') {
     return import('./providers/remote');
   }
 
@@ -34,14 +45,22 @@ const loadServiceProviderModule = async (
   return import('./providers/ipc');
 };
 
+const logRuntimeWarnings = (runtime: ResolvedServiceRuntime): void => {
+  if (!import.meta.env.DEV || runtimeWarningsLogged || runtime.warnings.length === 0) {
+    return;
+  }
+
+  runtimeWarningsLogged = true;
+  runtime.warnings.forEach((warning) => {
+    console.warn(`[services] ${warning.message}`);
+  });
+};
+
 const getServiceProvider = async (): Promise<ServiceProvider> => {
   if (!providerPromise) {
-    const resolvedProviderName =
-      transport === 'desktop' && providerName === 'ipc' && !isTauriAvailable()
-        ? 'mock'
-        : providerName;
-
-    providerPromise = loadServiceProviderModule(transport, resolvedProviderName).then(
+    const runtime = getServiceRuntime();
+    logRuntimeWarnings(runtime);
+    providerPromise = loadServiceProviderModule(runtime.effectiveProvider).then(
       (module) => module.provider
     );
   }
@@ -54,7 +73,9 @@ const callProviderMethod = async <MethodName extends keyof ServiceProvider>(
   ...args: Parameters<ServiceProvider[MethodName]>
 ): Promise<Awaited<ReturnType<ServiceProvider[MethodName]>>> => {
   const provider = await getServiceProvider();
-  const method = provider[methodName] as (...methodArgs: Parameters<ServiceProvider[MethodName]>) => ReturnType<ServiceProvider[MethodName]>;
+  const method = provider[methodName] as (
+    ...methodArgs: Parameters<ServiceProvider[MethodName]>
+  ) => ReturnType<ServiceProvider[MethodName]>;
   const result = await method(...args);
   return result as Awaited<ReturnType<ServiceProvider[MethodName]>>;
 };
@@ -108,8 +129,9 @@ export const services = {
   ) => callProviderMethod('updateProjectGitFlowWithSetup', data),
   updateProjectAccess: (data: Parameters<ServiceProvider['updateProjectAccess']>[0]) =>
     callProviderMethod('updateProjectAccess', data),
-  previewProjectAccessChange: (data: Parameters<ServiceProvider['previewProjectAccessChange']>[0]) =>
-    callProviderMethod('previewProjectAccessChange', data),
+  previewProjectAccessChange: (
+    data: Parameters<ServiceProvider['previewProjectAccessChange']>[0]
+  ) => callProviderMethod('previewProjectAccessChange', data),
   archiveProjectGroup: (data: Parameters<ServiceProvider['archiveProjectGroup']>[0]) =>
     callProviderMethod('archiveProjectGroup', data),
   archiveProject: (data: Parameters<ServiceProvider['archiveProject']>[0]) =>

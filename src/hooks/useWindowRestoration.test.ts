@@ -21,9 +21,12 @@ let chromeState: {
 };
 let invocationOrder: string[];
 let importCounter = 0;
-const actualPreferences = await import('../services/preferences');
 
-const registerWindowRestorationMocks = () => {
+const registerWindowRestorationMocks = async () => {
+  const actualPreferences = await import(
+    `../services/preferences.ts?window-restoration-preferences-test=${importCounter + 1}`
+  );
+
   mock.module('../services/preferences', () => ({
     ...actualPreferences,
     loadPreferences: (...args: unknown[]) => loadPreferencesMock(...args),
@@ -68,7 +71,7 @@ const registerWindowRestorationMocks = () => {
 };
 
 const loadWindowRestoration = async () => {
-  registerWindowRestorationMocks();
+  await registerWindowRestorationMocks();
   importCounter += 1;
   return import(`./useWindowRestoration.ts?test=${importCounter}`);
 };

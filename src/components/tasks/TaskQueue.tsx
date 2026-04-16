@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
+import { getServiceRuntimeCapabilities } from '../../services';
 import { useChatStore } from '../../stores/useChatStore';
 import {
   getTaskLifecycleCapabilities,
@@ -442,6 +443,7 @@ const MemoizedTaskItem = React.memo(TaskItem);
 
 const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const { t } = useTranslation();
+  const runtimeCapabilities = getServiceRuntimeCapabilities();
   const {
     selectedGroupId,
     selectedProjectId,
@@ -535,6 +537,26 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     }>;
   } | null>(null);
   const [isSavingTaskCommands, setIsSavingTaskCommands] = useState(false);
+  const projectManagementDisabled = !runtimeCapabilities.projectMutation;
+  const taskMutationDisabled = !runtimeCapabilities.taskMutation;
+  const taskExecutionDisabled = !runtimeCapabilities.implementExecution;
+  const taskCommandsDisabled = !runtimeCapabilities.taskProjectCommands;
+  const projectManagementDisabledTitle = t(
+    'projects.remoteProjectManagementUnavailable',
+    'Project creation and editing are unavailable in remote mode.'
+  );
+  const taskMutationDisabledTitle = t(
+    'implement.remoteTaskMutationUnavailable',
+    'Task management actions are unavailable in remote mode.'
+  );
+  const taskExecutionDisabledTitle = t(
+    'implement.remoteExecutionUnavailable',
+    'Implementation actions are unavailable in remote mode.'
+  );
+  const taskCommandsDisabledTitle = t(
+    'implement.remoteTaskCommandsUnavailable',
+    'Project commands are unavailable in remote mode.'
+  );
 
   useEffect(() => {
     if (!taskError || taskError === lastErrorToastRef.current) return;
@@ -628,6 +650,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   ]);
 
   const handleCreateManualFeature = async () => {
+    if (taskMutationDisabled || taskExecutionDisabled) {
+      notify.error(taskExecutionDisabled ? taskExecutionDisabledTitle : taskMutationDisabledTitle);
+      return;
+    }
+
     if (pendingTaskId || !selectedGroupId) return;
     const selectedGroup = projectGroups.find((group) => group.id === selectedGroupId);
     const actionableProjectIds =
@@ -816,7 +843,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       : t('projects.projectSettings', 'Project settings');
 
   const openReadOnlyProjectSettings = () => {
-    if (!firstReadOnlyProject) {
+    if (!firstReadOnlyProject || projectManagementDisabled) {
       return;
     }
     setSelectedProject(firstReadOnlyProject.id);
@@ -900,12 +927,17 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const canRunTaskCommandsForTask = (task: ImplementTask): boolean =>
+    !taskCommandsDisabled &&
     !isManualDraftPendingInitialization(task) &&
     !task.draft &&
     !task.archived_at &&
     getTaskCommandProjectIds(task).length > 0;
 
   const getRunTaskCommandsTitle = (task: ImplementTask): string => {
+    if (taskCommandsDisabled) {
+      return taskCommandsDisabledTitle;
+    }
+
     if (isManualDraftPendingInitialization(task)) {
       return t(
         'implement.taskCommandsManualDraftUnsupported',
@@ -962,6 +994,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const openTaskCommandModal = async (task: ImplementTask) => {
+    if (taskCommandsDisabled) {
+      notify.error(taskCommandsDisabledTitle);
+      return;
+    }
+
     try {
       const modalState = await buildTaskCommandModalState(task);
       if (modalState.projects.length === 0) {
@@ -990,6 +1027,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const handleRunTaskCommands = async (task: ImplementTask) => {
+    if (taskCommandsDisabled) {
+      notify.error(taskCommandsDisabledTitle);
+      return;
+    }
+
     try {
       const modalState = await buildTaskCommandModalState(task);
       const requiredProjects = modalState.projects.filter((project) =>
@@ -1060,11 +1102,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         key: 'project_settings',
         label: t('project.projectSettings', 'Paramètres du projet'),
         icon: 'settings',
+        disabled: taskCommandsDisabled,
+        title: taskCommandsDisabled ? taskCommandsDisabledTitle : undefined,
       },
       {
         key: 'rename',
         label: t('common.rename', 'Rename'),
         icon: 'edit',
+        disabled: taskMutationDisabled,
+        title: taskMutationDisabled ? taskMutationDisabledTitle : undefined,
       },
     ];
 
@@ -1073,6 +1119,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         key: 'reopen',
         label: t('implement.reopenTask', 'Reopen'),
         icon: 'rotate-ccw',
+        disabled: taskMutationDisabled,
+        title: taskMutationDisabled ? taskMutationDisabledTitle : undefined,
       });
     }
 
@@ -1081,6 +1129,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         key: 'restore',
         label: t('implement.restoreTask', 'Restore'),
         icon: 'rotate-ccw',
+        disabled: taskMutationDisabled,
+        title: taskMutationDisabled ? taskMutationDisabledTitle : undefined,
       });
     }
 
@@ -1089,6 +1139,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         key: 'archive',
         label: t('common.archive', 'Archive'),
         icon: 'archive',
+        disabled: taskMutationDisabled,
+        title: taskMutationDisabled ? taskMutationDisabledTitle : undefined,
       });
     }
 
@@ -1098,8 +1150,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         label: t('common.delete', 'Delete'),
         icon: 'trash',
         destructive: true,
-        disabled: !capabilities.canDelete,
-        title: capabilities.deleteBlockReason || undefined,
+        disabled: taskMutationDisabled || !capabilities.canDelete,
+        title:
+          taskMutationDisabled
+            ? taskMutationDisabledTitle
+            : capabilities.deleteBlockReason || undefined,
       });
     }
 
@@ -1107,6 +1162,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const handleTaskAction = async (task: ImplementTask, action: TaskActionKey) => {
+    if (action === 'project_settings' && taskCommandsDisabled) {
+      notify.error(taskCommandsDisabledTitle);
+      return;
+    }
+
+    if (action !== 'project_settings' && taskMutationDisabled) {
+      notify.error(taskMutationDisabledTitle);
+      return;
+    }
+
     if (action === 'project_settings') {
       await openTaskCommandModal(task);
       return;
@@ -1364,20 +1429,29 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           <button
             type="button"
             onClick={() => void handleCreateManualFeature()}
-            disabled={Boolean(pendingTaskId) || isReadOnlyOnlyScope}
+            disabled={
+              Boolean(pendingTaskId) ||
+              isReadOnlyOnlyScope ||
+              taskMutationDisabled ||
+              taskExecutionDisabled
+            }
             className={cn(
               'inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors',
-              pendingTaskId || isReadOnlyOnlyScope
+              pendingTaskId || isReadOnlyOnlyScope || taskMutationDisabled || taskExecutionDisabled
                 ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
                 : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
             )}
             title={
-              isReadOnlyOnlyScope
-                ? t(
-                    'implement.readOnlyOnlyAction',
-                    'At least one editable repository is required to create a standalone feature.'
-                  )
-                : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
+              taskMutationDisabled
+                ? taskMutationDisabledTitle
+                : taskExecutionDisabled
+                  ? taskExecutionDisabledTitle
+                  : isReadOnlyOnlyScope
+                    ? t(
+                        'implement.readOnlyOnlyAction',
+                        'At least one editable repository is required to create a standalone feature.'
+                      )
+                    : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
           >
             <Icon name={pendingTaskId ? 'loader' : 'plus'} size={12} className={pendingTaskId ? 'animate-spin' : undefined} />
@@ -1404,6 +1478,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               <button
                 type="button"
                 onClick={openReadOnlyProjectSettings}
+                disabled={projectManagementDisabled}
+                title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
                 className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-amber-400/30 bg-amber-100/10 px-2.5 py-1.5 text-xs font-medium text-amber-50 transition-colors hover:bg-amber-100/15"
               >
                 <Icon name="settings" size={12} />

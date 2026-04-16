@@ -10,7 +10,6 @@ import { Skeleton } from "./components/shared/Skeleton";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { getPlatformChromeState } from "./utils/desktopPlatform";
 import { getTitleBarLayout } from "./components/layout/titleBarLayout";
-import { notify } from "./components/ui/toastService";
 import { useShallow } from "zustand/react/shallow";
 
 // =============================================================================
@@ -251,39 +250,51 @@ const App: React.FC = () => {
     }
     lastRecoveryToastKeyRef.current = toastKey;
 
-    if (metadataRecoveryReport.status === "restored_from_history") {
-      notify.success(
-        metadataRecoveryReport.restoredCommit
-          ? `Metadata @macro restored from history (${metadataRecoveryReport.restoredCommit})`
-          : "Metadata @macro restored from history",
-        {
+    let cancelled = false;
+
+    void import("./components/ui/toastService").then(({ notify }) => {
+      if (cancelled) {
+        return;
+      }
+
+      if (metadataRecoveryReport.status === "restored_from_history") {
+        notify.success(
+          metadataRecoveryReport.restoredCommit
+            ? `Metadata @macro restored from history (${metadataRecoveryReport.restoredCommit})`
+            : "Metadata @macro restored from history",
+          {
+            description:
+              metadataRecoveryReport.message ||
+              "Macro restored the latest valid metadata snapshot before loading the workspace.",
+          },
+        );
+        return;
+      }
+
+      if (metadataRecoveryReport.status === "reconstructed_from_hints") {
+        notify.info("Metadata @macro reconfigured from local projects", {
           description:
             metadataRecoveryReport.message ||
-            "Macro restored the latest valid metadata snapshot before loading the workspace.",
-        },
-      );
-      return;
-    }
+            "Macro rebuilt a minimal metadata state from locally known projects.",
+        });
+        return;
+      }
 
-    if (metadataRecoveryReport.status === "reconstructed_from_hints") {
-      notify.info("Metadata @macro reconfigured from local projects", {
-        description:
-          metadataRecoveryReport.message ||
-          "Macro rebuilt a minimal metadata state from locally known projects.",
-      });
-      return;
-    }
+      if (
+        metadataRecoveryReport.status === "blocked_dirty" ||
+        metadataRecoveryReport.status === "blocked_conflict"
+      ) {
+        notify.warning("Automatic @macro recovery skipped", {
+          description:
+            metadataRecoveryReport.message ||
+            "Macro detected local metadata blockers and did not apply recovery automatically.",
+        });
+      }
+    });
 
-    if (
-      metadataRecoveryReport.status === "blocked_dirty" ||
-      metadataRecoveryReport.status === "blocked_conflict"
-    ) {
-      notify.warning("Automatic @macro recovery skipped", {
-        description:
-          metadataRecoveryReport.message ||
-          "Macro detected local metadata blockers and did not apply recovery automatically.",
-      });
-    }
+    return () => {
+      cancelled = true;
+    };
   }, [metadataRecoveryReport]);
 
   // ==========================================================================

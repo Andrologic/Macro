@@ -293,6 +293,7 @@ mock.module('../../stores/useShortcutsStore', () => ({
 }));
 
 mock.module('../../stores/useTaskStore', () => ({
+  getPlanActivationCandidateTask: () => null,
   useTaskStore,
 }));
 

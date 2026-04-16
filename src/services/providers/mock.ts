@@ -9,9 +9,7 @@ import {
 import { mockPlanNodes, mockPredictedBranches } from '../../mock-data/plans';
 import { MOCK_CODE_FILES } from '../../mock-data/code-files';
 import { mockProviders, mockModels } from '../../mock-data/ai';
-import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
 import { getProviderConfig } from '../aiConfig';
-import { normalizeArchitectToolId } from '../architectToolNames';
 import type {
   AppBootstrapDto,
   ConversationsDto,
@@ -37,17 +35,13 @@ import type {
 } from '../../types';
 import { getDefaultProjectGitFlowSettings } from '../architectGitNaming';
 import { delay, maybeFail } from '../utils';
-
-const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
-const LEGACY_TOOL_ID_MAP: Record<string, string> = {
-  'web-search': 'web_search',
-  'file-read': 'read_file',
-};
-
-const normalizeToolId = (id: string): string => normalizeArchitectToolId(LEGACY_TOOL_ID_MAP[id] || id);
-
-const normalizeToolSettings = (settings: Record<string, boolean>): Record<string, boolean> =>
-  Object.fromEntries(Object.entries(settings).map(([id, enabled]) => [normalizeToolId(id), enabled]));
+import {
+  buildMCPServerSettingsPayload,
+  buildToolSettingsPayload,
+  normalizeMCPServerEnablementInput,
+  writeStoredMCPServerEnablement,
+  writeStoredToolEnablement,
+} from './clientSettingsStorage';
 
 // =============================================================================
 // MOCK PROVIDER CONFIGURATION
@@ -702,98 +696,20 @@ export const closeProject = async (data: {
 
 // Tools & MCP Settings
 export const getToolSettings = async (): Promise<any> => {
-  await delay(DEFAULT_LATENCY_MS);
-  maybeFail(ERROR_RATE);
-
-  // Return mock tool settings from localStorage or defaults
-  const savedTools = localStorage.getItem(TOOL_SETTINGS_STORAGE_KEY);
-  let enabledTools: Record<string, boolean> = {};
-
-  try {
-    if (savedTools && savedTools !== "undefined") {
-      enabledTools = normalizeToolSettings(JSON.parse(savedTools));
-    }
-  } catch (e) {
-    console.error("Failed to parse tool settings", e);
-  }
-
-  // Persist normalized IDs back to storage to migrate legacy keys once.
-  localStorage.setItem(TOOL_SETTINGS_STORAGE_KEY, JSON.stringify(enabledTools));
-
-  const tools: Record<string, any> = {};
-  mockInternalTools.forEach((tool) => {
-    const id = tool.id;
-    const enabled = enabledTools[id] !== false;
-    tools[id] = {
-      ...tool,
-      status: enabled ? 'enabled' : 'disabled',
-      config: {
-        ...tool.config,
-        enabled,
-      }
-    };
-  });
-
-  return simulate({ tools });
+  return simulate(buildToolSettingsPayload());
 };
 
 export const updateToolSettings = async (settings: ToolSettingsDto): Promise<void> => {
-  await delay(DEFAULT_LATENCY_MS);
-  maybeFail(ERROR_RATE);
-
-  localStorage.setItem(
-    TOOL_SETTINGS_STORAGE_KEY,
-    JSON.stringify(normalizeToolSettings(settings.tools || {}))
-  );
+  writeStoredToolEnablement(settings.tools || {});
   return simulate(undefined);
 };
 
 export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
-  await delay(DEFAULT_LATENCY_MS);
-  maybeFail(ERROR_RATE);
-
-  const savedServers = localStorage.getItem('macro_mcp_server_settings');
-  let enabledServers: Record<string, boolean> = {};
-
-  try {
-    if (savedServers && savedServers !== "undefined") {
-      enabledServers = JSON.parse(savedServers);
-    }
-  } catch (e) {
-    console.error("Failed to parse MCP server settings", e);
-  }
-
-  const servers = Object.fromEntries(
-    mockMCPServers.map((server) => [
-      server.id,
-      {
-        ...server,
-        status: (enabledServers[server.id] ? 'online' : 'offline') as typeof server.status,
-        config: {
-          ...server.config,
-          enabled: enabledServers[server.id] ?? false,
-        },
-      },
-    ])
-  );
-
-  return simulate({ servers });
+  return simulate(buildMCPServerSettingsPayload());
 };
 
 export const updateMCPServerSettings = async (settings: any): Promise<void> => {
-  await delay(DEFAULT_LATENCY_MS);
-  maybeFail(ERROR_RATE);
-
-  const enabledMap: Record<string, boolean> = {};
-  Object.entries(settings.servers).forEach(([id, value]) => {
-    if (typeof value === 'boolean') {
-      enabledMap[id] = value;
-    } else {
-      enabledMap[id] = (value as any)?.config?.enabled ?? false;
-    }
-  });
-
-  localStorage.setItem('macro_mcp_server_settings', JSON.stringify(enabledMap));
+  writeStoredMCPServerEnablement(normalizeMCPServerEnablementInput(settings));
   return simulate(undefined);
 };
 
