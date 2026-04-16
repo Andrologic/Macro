@@ -169,6 +169,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   const onEditorReadyRef = useRef(onEditorReady);
   const scheduleRevertAlignmentRef = useRef<(() => void) | null>(null);
   const revertControlsRef = useRef(revertControls);
+  const collapseUnchangedRef = useRef<{ margin: number; minSize: number } | undefined>(undefined);
   const syncingRef = useRef<'a' | 'b' | null>(null);
   const lastScrollTopRef = useRef({ a: 0, b: 0 });
   const isApplyingExternalUpdateRef = useRef(false);
@@ -191,6 +192,10 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   useEffect(() => {
     revertControlsRef.current = revertControls;
   }, [revertControls]);
+
+  useEffect(() => {
+    collapseUnchangedRef.current = collapseUnchanged;
+  }, [collapseUnchanged]);
 
   useEffect(() => {
     originalRef.current = original;
@@ -254,11 +259,11 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
         ],
       },
       parent: containerRef.current,
-      revertControls,
+      revertControls: revertControlsRef.current,
       renderRevertControl: () => createRevertControl(),
       highlightChanges: true,
       gutter: true,
-      collapseUnchanged,
+      collapseUnchanged: collapseUnchangedRef.current,
     });
 
     mergeView.dom.classList.add('macro-diff-merge-root');

@@ -18,6 +18,7 @@ export const PREF_KEYS = {
   WINDOW_X: "windowX",
   WINDOW_Y: "windowY",
   IS_MAXIMIZED: "isMaximized",
+  WINDOW_BOOTSTRAP_VERSION: "windowBootstrapVersion",
 
   // Panel state
   LEFT_PANEL_WIDTH: "leftPanelWidth",
@@ -182,6 +183,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.WINDOW_X]: null,
   [PREF_KEYS.WINDOW_Y]: null,
   [PREF_KEYS.IS_MAXIMIZED]: false,
+  [PREF_KEYS.WINDOW_BOOTSTRAP_VERSION]: 0,
   [PREF_KEYS.LEFT_PANEL_WIDTH]: 280,
   [PREF_KEYS.RIGHT_PANEL_WIDTH]: 320,
   [PREF_KEYS.IS_LEFT_PANEL_OPEN]: true,
@@ -350,6 +352,33 @@ export async function loadPreference<T>(key: PrefKey): Promise<T> {
   } catch (error) {
     console.error(`Failed to load preference ${key}:`, error);
     return defaultValue;
+  }
+}
+
+/**
+ * Load a persisted preference value without falling back to defaults.
+ */
+export async function loadPersistedPreference<T>(
+  key: PrefKey
+): Promise<T | undefined> {
+  const localStorageKey = `macro_${key}`;
+
+  try {
+    const localValue = localStorage.getItem(localStorageKey);
+    if (localValue !== null) {
+      return JSON.parse(localValue) as T;
+    }
+
+    const store = await getStore();
+    if (store) {
+      const value = await store.get<T>(key);
+      return value !== null && value !== undefined ? value : undefined;
+    }
+
+    return undefined;
+  } catch (error) {
+    console.error(`Failed to load persisted preference ${key}:`, error);
+    return undefined;
   }
 }
 
