@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
+import { getServiceRuntimeCapabilities } from '../../services';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { cn } from '../../utils/cn';
@@ -12,9 +13,15 @@ interface LeftPanelProps {
 
 export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
   const { t } = useTranslation();
+  const runtimeCapabilities = getServiceRuntimeCapabilities();
   const { projectGroups, toggleProjectGroup, selectedGroupId, setSelectedGroup, openProjectModal } =
     useAppStore();
   const [searchQuery, setSearchQuery] = useState('');
+  const projectManagementDisabled = !runtimeCapabilities.projectMutation;
+  const projectManagementDisabledTitle = t(
+    'projects.remoteProjectManagementUnavailable',
+    'Project creation and editing are unavailable in remote mode.'
+  );
 
   const filteredGroups = useMemo(() => {
     if (!searchQuery.trim()) {
@@ -52,8 +59,19 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
           {t('project.projects', 'Projects')}
         </h1>
         <button
-          onClick={() => openProjectModal(null)}
-          className="p-1 hover:bg-accent rounded-md transition-colors"
+          onClick={() => {
+            if (!projectManagementDisabled) {
+              openProjectModal(null);
+            }
+          }}
+          disabled={projectManagementDisabled}
+          title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
+          className={cn(
+            'rounded-md p-1 transition-colors',
+            projectManagementDisabled
+              ? 'cursor-not-allowed opacity-50'
+              : 'hover:bg-accent'
+          )}
         >
           <Icon name="plus" size={16} className="text-muted-foreground" />
         </button>

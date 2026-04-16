@@ -2,17 +2,12 @@
 import { useTranslation } from 'react-i18next';
 import {
   archiveArchitectPlan,
-  getArchitectPlan,
   getArchitectPlanProjectIds,
-  getArchitectPlanNeeds,
   getGitFlowBaseBranch,
-  isArchitectPlanVisibleForScope,
   isArchitectPlanReplicaDivergenceError,
   listArchitectPlans,
   repairArchitectPlanReplicas,
-  resolvePlanProjectContextId,
   restoreArchitectPlan,
-  setActiveArchitectPlan,
   updateArchitectPlan,
   type ArchitectPlanReplicaDivergence,
   type ArchitectPlanSummary,
@@ -24,7 +19,6 @@ import {
   getScopedReadOnlyProjectIds,
 } from '../../services/globalProjects';
 import { useAppStore } from '../../stores/useAppStore';
-import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
@@ -71,10 +65,6 @@ const formatRelativeDate = (iso: string, unknownLabel: string): string => {
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const { t } = useTranslation();
   const {
-    setPlanNodes,
-    setPredictedBranches,
-    setActiveArchitectPlanId,
-    setActivePlanContext,
     activeArchitectPlanId,
     activePlanContext,
     projectGroups,
@@ -83,6 +73,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     getProjectById,
     openProjectGitFlowModal,
     setSelectedProject,
+    setActiveArchitectPlanId,
+    setPlanNodes,
+    setPredictedBranches,
+    setActivePlanContext,
+    activateArchitectPlan,
   } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   const [plans, setPlans] = useState<ArchitectPlanSummary[]>([]);
@@ -198,12 +193,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     const { refreshState } = params;
     setPlans(refreshState.visiblePlans);
     setActivePlanId(refreshState.nextActivePlanId);
-    setActiveArchitectPlanId(refreshState.nextActivePlanId);
 
     if (params.hydrateActive) {
       if (!refreshState.nextActivePlanId) {
         clearActivePlanSelection();
-      } else if (refreshState.nextActivePlanId !== activePlanId) {
+      } else if (refreshState.nextActivePlanId !== activeArchitectPlanId) {
         await activatePlan(refreshState.nextActivePlanId);
       }
     }
@@ -285,45 +279,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       });
       setPlans(refreshState.visiblePlans);
       setActivePlanId(refreshState.nextActivePlanId);
-      setActiveArchitectPlanId(refreshState.nextActivePlanId);
 
-      if (hydrateActive && refreshState.nextActivePlanId) {
-        const plan = await getArchitectPlan(targetBranch, refreshState.nextActivePlanId);
-        if (plan && plan.status !== 'deleted') {
-          const appStore = useAppStore.getState();
-          const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
-          const currentScopedProjectIds = getScopedProjectIds(
-            appStore.projectGroups,
-            appStore.selectedGroupId,
-            appStore.selectedProjectId
-          );
-          const isPlanAlreadyInScope = isArchitectPlanVisibleForScope(plan, currentScopedProjectIds);
-          if (planProjectId && !isPlanAlreadyInScope) {
-            await appStore.switchProjectContext(planProjectId, {
-              restoreProjectContext: false,
-              ensureAutoPlan: false,
-            });
-          }
-
-          setPlanNodes(plan.nodes || []);
-          setPredictedBranches(plan.predictedBranches || []);
-          setActivePlanContext({
-            id: plan.id,
-            slug: plan.slug,
-            title: plan.title,
-            label: plan.label,
-            description: plan.description,
-            status: plan.status,
-            targetBranch: plan.targetBranch,
-            targetBranchesByProjectId: plan.targetBranchesByProjectId,
-            hasMixedTargetBranches:
-              Boolean(plan.targetBranchesByProjectId) &&
-              new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
-          });
-          const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
-          useNeedsStore.getState().hydrateNeedsForPlan(plan.id, needs);
-        }
-      } else if (hydrateActive && !refreshState.nextActivePlanId) {
+      if (hydrateActive && !refreshState.nextActivePlanId) {
         clearActivePlanSelection();
       }
     } catch (loadError) {
@@ -348,46 +305,14 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setIsActivating(planId);
     setError(null);
     try {
-      await setActiveArchitectPlan(targetBranch, planId);
-      const plan = await getArchitectPlan(targetBranch, planId);
-      if (!plan || plan.status === 'deleted') {
+      const activated = await activateArchitectPlan(planId, {
+        targetBranch,
+      });
+      if (!activated) {
         throw new Error(t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.'));
       }
 
-      const appStore = useAppStore.getState();
-      const planProjectId = resolvePlanProjectContextId(plan, appStore.selectedProjectId);
-      const currentScopedProjectIds = getScopedProjectIds(
-        appStore.projectGroups,
-        appStore.selectedGroupId,
-        appStore.selectedProjectId
-      );
-      const isPlanAlreadyInScope = isArchitectPlanVisibleForScope(plan, currentScopedProjectIds);
-      if (planProjectId && !isPlanAlreadyInScope) {
-        await appStore.switchProjectContext(planProjectId, {
-          restoreProjectContext: false,
-          ensureAutoPlan: false,
-        });
-      }
-
       setActivePlanId(planId);
-      setActiveArchitectPlanId(planId);
-      setPlanNodes(plan.nodes || []);
-      setPredictedBranches(plan.predictedBranches || []);
-      setActivePlanContext({
-        id: plan.id,
-        slug: plan.slug,
-        title: plan.title,
-        label: plan.label,
-        description: plan.description,
-        status: plan.status,
-        targetBranch: plan.targetBranch,
-        targetBranchesByProjectId: plan.targetBranchesByProjectId,
-        hasMixedTargetBranches:
-          Boolean(plan.targetBranchesByProjectId) &&
-          new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
-      });
-      const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
-      useNeedsStore.getState().hydrateNeedsForPlan(plan.id, needs);
       setIsOpen(false);
     } catch (activationError) {
       if (openReplicaRepair(activationError, () => activatePlan(planId))) {
@@ -627,12 +552,17 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   };
 
   useEffect(() => {
-    const effectKey = `${activeArchitectPlanId || 'none'}::${selectedGroupId || 'none'}::${selectedProjectId || 'none'}::${showArchived ? '1' : '0'}`;
+    const effectKey = `${selectedGroupId || 'none'}::${selectedProjectId || 'none'}::${showArchived ? '1' : '0'}`;
     if (lastEffectIdRef.current === effectKey) return;
     lastEffectIdRef.current = effectKey;
-    void loadPlans(true);
+    void loadPlans(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeArchitectPlanId, selectedGroupId, selectedProjectId, showArchived]);
+  }, [selectedGroupId, selectedProjectId, showArchived]);
+
+  useEffect(() => {
+    const nextActivePlanId = activePlanContext?.id ?? activeArchitectPlanId;
+    setActivePlanId((current) => (current === nextActivePlanId ? current : nextActivePlanId));
+  }, [activeArchitectPlanId, activePlanContext]);
 
   useEffect(() => {
     if (!activePlanContext) return;

@@ -1,5 +1,6 @@
 import type { AppMode } from '../types';
-import { resolveRemoteConfig } from './providers/remoteConfig';
+import { isRemoteServiceRuntime } from './serviceRuntime';
+import { remoteRequest, resolveRemoteConfig } from './providers/remoteHttp';
 
 interface RemoteToolModePolicy {
   allowed_tool_ids: string[];
@@ -12,54 +13,15 @@ interface RemoteToolValidation {
   enforce_macro_only_writes: boolean;
 }
 
-const isRemoteTransport = (): boolean =>
-  (import.meta.env.VITE_BACKEND_TRANSPORT as string | undefined) === 'remote';
+const remoteKernelRequest = async <T>(path: string, options: RequestInit = {}): Promise<T> =>
+  remoteRequest<T>(path, options);
 
-const remoteKernelRequest = async <T>(
-  path: string,
-  options: RequestInit = {}
-): Promise<T> => {
-  const config = resolveRemoteConfig();
-  if (!config) {
-    throw {
-      code: 'REMOTE_NOT_CONFIGURED',
-      message: 'Remote backend transport is not configured yet',
-    };
-  }
-
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-    ...(options.headers as Record<string, string> | undefined),
-  };
-
-  if (config.authToken) {
-    headers.Authorization = `Bearer ${config.authToken}`;
-  }
-
-  const response = await fetch(`${config.baseUrl}${path}`, {
-    ...options,
-    headers,
-  });
-
-  const payload = await response.json().catch(() => null);
-
-  if (!response.ok) {
-    throw {
-      code: 'REMOTE_REQUEST_FAILED',
-      message: payload?.message || `Remote request failed (${response.status})`,
-      details: payload,
-    };
-  }
-
-  return payload as T;
-};
-
-export const canUseRemoteKernel = (): boolean => isRemoteTransport() && resolveRemoteConfig() !== null;
+export const canUseRemoteKernel = (): boolean =>
+  isRemoteServiceRuntime() && resolveRemoteConfig() !== null;
 
 export const getRemoteToolModePolicy = async (mode: AppMode): Promise<RemoteToolModePolicy> => {
   return remoteKernelRequest<RemoteToolModePolicy>(
-    `/api/v1/tools/mode-policy?mode=${encodeURIComponent(mode)}`,
+    `/tools/mode-policy?mode=${encodeURIComponent(mode)}`,
     { method: 'GET' }
   );
 };
@@ -69,7 +31,7 @@ export const validateRemoteToolExecution = async (params: {
   toolId: string;
   path?: string;
 }): Promise<RemoteToolValidation> => {
-  return remoteKernelRequest<RemoteToolValidation>('/api/v1/tools/validate', {
+  return remoteKernelRequest<RemoteToolValidation>('/tools/validate', {
     method: 'POST',
     body: JSON.stringify({
       mode: params.mode,
@@ -86,7 +48,7 @@ export const executeRemoteWorkspaceTool = async (params: {
   workspacePath?: string | null;
   workspaceScope?: 'default' | 'metadata';
 }): Promise<string> => {
-  const payload = await remoteKernelRequest<{ result: string }>('/api/v1/tools/execute', {
+  const payload = await remoteKernelRequest<{ result: string }>('/tools/execute', {
     method: 'POST',
     body: JSON.stringify({
       mode: params.mode,

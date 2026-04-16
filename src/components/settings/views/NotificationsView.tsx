@@ -23,10 +23,8 @@ import { useNotificationCenterStore } from '../../../stores/useNotificationCente
 import { isDevelopmentBuild } from '../../../utils/devLogger';
 import { Button } from '../../ui/Button';
 import { Input } from '../../ui/Input';
-import {
-  ActionableNotificationTemplate,
-  InformationalNotificationTemplate,
-} from '../../ui/notifications';
+import { ActionableNotificationTemplate } from '../../ui/notifications/ActionableNotificationTemplate';
+import { InformationalNotificationTemplate } from '../../ui/notifications/InformationalNotificationTemplate';
 import { Select } from '../../ui/Select';
 import { Switch } from '../../ui/Switch';
 import { Textarea } from '../../ui/Textarea';

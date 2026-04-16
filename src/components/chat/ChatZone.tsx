@@ -21,6 +21,7 @@ import { ImagePreviewModal } from '../modals/ImagePreviewModal';
 import { getFocusedProjectForGroup, getGlobalProjectById } from '../../services/globalProjects';
 import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
+import { getServiceRuntimeCapabilities } from '../../services';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
@@ -373,6 +374,7 @@ const buildImplementKickoffPrompt = (params: {
 
 const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const { t } = useTranslation();
+  const runtimeCapabilities = getServiceRuntimeCapabilities();
   const {
     mode,
     agentType,
@@ -595,6 +597,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [selectedTaskProjectIds, t]);
   const canStartImplementExecution = Boolean(
     mode === 'Implement' &&
+      runtimeCapabilities.implementExecution &&
       selectedTask &&
       !selectedTask.draft &&
       !selectedTask.is_blocked &&
@@ -769,6 +772,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const handleStartExecution = useCallback(async (params?: {
     notesOverride?: string;
   }): Promise<boolean> => {
+    if (!runtimeCapabilities.implementExecution) return false;
     if (mode !== 'Implement' || !selectedTask || isBusySending || isConversationPending) return false;
     if (selectedTask.draft) return false;
     if (!selectedProviderId || !selectedModelId) return false;
@@ -830,6 +834,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedTaskProjectSummary,
     sendMessage,
     startTask,
+    runtimeCapabilities.implementExecution,
   ]);
 
   const readClipboardImage = (file: File): Promise<{ dataUrl: string; width?: number; height?: number }> => {
@@ -1409,6 +1414,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     type="button"
                     onClick={() => void handleStartExecution().catch(() => undefined)}
                     disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId || isBusySending}
+                    title={
+                      !runtimeCapabilities.implementExecution
+                        ? t(
+                            'implement.remoteExecutionUnavailable',
+                            'Implementation actions are unavailable in remote mode.'
+                          )
+                        : undefined
+                    }
                     className={cn(
                       'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors shrink-0',
                       canStartImplementExecution && selectedProviderId && selectedModelId && !isBusySending

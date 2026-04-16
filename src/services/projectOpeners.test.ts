@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const loadPreferenceMock = mock(async (_key: string): Promise<string | null> => null);
 const savePreferenceMock = mock(async () => undefined);
@@ -20,11 +20,14 @@ const listExternalAppsMock = mock(async () => ({
   ],
 }));
 
-const actualPreferences = await import('./preferences');
 const actualTauriIpc = await import('./tauriIpc');
 let importCounter = 0;
 
 const loadProjectOpeners = async () => {
+  const actualPreferences = await import(
+    `./preferences.ts?project-openers-preferences-test=${importCounter + 1}`
+  );
+
   mock.module('./preferences', () => ({
     ...actualPreferences,
     loadPreference: loadPreferenceMock,
@@ -64,6 +67,10 @@ describe('projectOpeners', () => {
         { id: 'finder', label: 'Finder', action: 'files', kind: 'builtin' },
       ],
     }));
+  });
+
+  afterEach(() => {
+    mock.restore();
   });
 
   it('migrates a legacy command preference to a detected app id', async () => {

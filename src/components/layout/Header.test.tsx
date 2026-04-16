@@ -7,6 +7,8 @@ import {
   getTitleBarLayout,
 } from './titleBarLayout';
 
+const actualTauriWindow = await import('../../services/tauriWindow');
+
 type AppMode = 'Chat' | 'Architect' | 'Implement';
 
 type AppStoreState = {
@@ -42,9 +44,15 @@ const createStoreHook = <T,>(getSnapshot: () => T) => {
   const hook = ((selector?: (state: T) => unknown) => {
     const snapshot = getSnapshot();
     return selector ? selector(snapshot) : snapshot;
-  }) as ((selector?: (state: T) => unknown) => unknown) & { getState: () => T };
+  }) as ((selector?: (state: T) => unknown) => unknown) & {
+    getState: () => T;
+    setState: (patch: Partial<T>) => void;
+    subscribe: () => () => void;
+  };
 
   hook.getState = getSnapshot;
+  hook.setState = (patch) => Object.assign(getSnapshot() as object, patch);
+  hook.subscribe = () => () => undefined;
   return hook;
 };
 
@@ -74,6 +82,12 @@ const registerHeaderMocks = () => {
   }));
 
   mock.module('../../services/tauriWindow', () => ({
+    ...actualTauriWindow,
+    windowSetTrafficLightPosition: (...args: [number, number]) =>
+      windowSetTrafficLightPositionMock(...args),
+  }));
+  mock.module('../../services/tauriWindow.ts', () => ({
+    ...actualTauriWindow,
     windowSetTrafficLightPosition: (...args: [number, number]) =>
       windowSetTrafficLightPositionMock(...args),
   }));
