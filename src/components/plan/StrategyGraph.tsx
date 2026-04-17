@@ -11,7 +11,6 @@ import { normalizeNodeProjectIds } from '../../services/implementTaskDerivation'
 import {
   applyStrategyMutationPreview,
   buildFrozenPlanNodeMap,
-  formatFrozenPlanNodeReason,
   type FrozenPlanNode,
 } from '../../services/architectStrategyMutationGuard';
 import {
@@ -24,7 +23,7 @@ import { notify } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
 import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
 import { cn } from '../../utils/cn';
-import type { PlanNode, PlanNodeStatus, TaskStatus } from '../../types';
+import type { PlanNode, PlanNodeStatus, PredictedBranch, TaskStatus } from '../../types';
 
 interface StrategyGraphProps {
   className?: string;
@@ -59,24 +58,21 @@ const taskStatusBgColors: Record<TaskStatus, string> = {
 
 const frozenReasonTone: Record<
   FrozenPlanNode['reason'],
-  { badgeFill: string; icon: string; pill: string }
+  { pill: string }
 > = {
   started: {
-    badgeFill: '#f59e0b',
-    icon: 'text-background',
     pill: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
   },
   completed: {
-    badgeFill: '#10b981',
-    icon: 'text-background',
     pill: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
   },
   dependency_locked: {
-    badgeFill: '#0ea5e9',
-    icon: 'text-background',
     pill: 'bg-sky-500/10 text-sky-500 border-sky-500/20',
   },
 };
+
+const lockedBadgeTone =
+  'border-border bg-background/80 text-foreground';
 
 const NODE_RADIUS = 16;
 const PADDING_TOP = 60;
@@ -95,6 +91,13 @@ type GraphTransform = {
   scale: number;
 };
 
+type FrozenBadgeTooltipState = {
+  reason: FrozenPlanNode['reason'];
+  rect: DOMRect;
+};
+
+type BranchCardStatus = 'pending' | 'active' | 'merged' | 'mixed';
+
 interface BranchTaskView extends PlanNode {
   rank?: number;
 }
@@ -103,13 +106,36 @@ interface BranchCardView {
   id: string;
   name: string;
   color: string;
-  status: 'pending' | 'active' | 'merged';
+  status: BranchCardStatus;
   progressDone: number;
   progressTotal: number;
   tasks: BranchTaskView[];
 }
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
+const mixedBranchCardColor = 'rgb(var(--muted-foreground))';
+const branchCardStatusTone: Record<BranchCardStatus, string> = {
+  pending: 'bg-muted text-muted-foreground',
+  active: 'bg-amber-500/10 text-amber-500',
+  merged: 'bg-emerald-500/10 text-emerald-500',
+  mixed: 'bg-muted text-muted-foreground',
+};
+
+const getBranchCardLabel = (
+  branch: Pick<PredictedBranch, 'name' | 'branchSlug'>
+): string => {
+  const explicitSlug = branch.branchSlug?.trim();
+  if (explicitSlug) {
+    return explicitSlug;
+  }
+
+  const segments = branch.name
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+
+  return segments[segments.length - 1] ?? branch.name;
+};
 
 const nodeMatchesProjectId = (node: Pick<PlanNode, 'projectId' | 'projectIds'>, projectId: string): boolean => {
   const projectIds = normalizeNodeProjectIds(node);
@@ -183,6 +209,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const tasks = useTaskStore((state) => state.tasks);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
+  const [hoveredFrozenBadge, setHoveredFrozenBadge] = useState<FrozenBadgeTooltipState | null>(null);
   const [viewMode, setViewMode] = useState<'graph' | 'branches'>('graph');
   const [branchSearch, setBranchSearch] = useState('');
   const [branchStatusFilter, setBranchStatusFilter] = useState<'all' | PlanNodeStatus>('all');
@@ -250,6 +277,63 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
     return getGitFlowBaseBranch();
   }, [activePlanContext?.targetBranch]);
+
+  const getFrozenReasonLabel = useCallback(
+    (reason: FrozenPlanNode['reason']): string => {
+      switch (reason) {
+        case 'completed':
+          return t('architect.frozenReasonCompleted', 'Completed work');
+        case 'dependency_locked':
+          return t('architect.frozenReasonDependencyLocked', 'Locked dependency');
+        default:
+          return t('architect.frozenReasonStarted', 'Started work');
+      }
+    },
+    [t]
+  );
+
+  const getFrozenReasonTooltipDescription = useCallback(
+    (reason: FrozenPlanNode['reason']): string => {
+      switch (reason) {
+        case 'completed':
+          return t(
+            'architect.frozenReasonCompletedTooltip',
+            'This task is already completed and can no longer be modified automatically.'
+          );
+        case 'dependency_locked':
+          return t(
+            'architect.frozenReasonDependencyLockedTooltip',
+            'This dependency is locked because started or completed work already depends on it.'
+          );
+        default:
+          return t(
+            'architect.frozenReasonStartedTooltip',
+            'This task has already been started and can no longer be modified automatically.'
+          );
+      }
+    },
+    [t]
+  );
+
+  const showFrozenBadgeTooltip = useCallback(
+    (reason: FrozenPlanNode['reason'], element: HTMLElement) => {
+      setHoveredFrozenBadge({
+        reason,
+        rect: element.getBoundingClientRect(),
+      });
+    },
+    []
+  );
+
+  const hideFrozenBadgeTooltip = useCallback(() => {
+    setHoveredFrozenBadge(null);
+  }, []);
+
+  useEffect(() => {
+    if (viewMode !== 'branches' && hoveredFrozenBadge) {
+      setHoveredFrozenBadge(null);
+    }
+  }, [hoveredFrozenBadge, viewMode]);
 
   const handleDiscardStrategyPreview = useCallback(() => {
     setStrategyMutationPreview(null);
@@ -554,15 +638,36 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       blocked: 2,
       completed: 3,
     };
+    const groupedBranches = new Map<string, typeof filteredPredictedBranches>();
 
-    return filteredPredictedBranches
-      .map((branch) => {
-        const allTasks: BranchTaskView[] = branch.taskIds.reduce<BranchTaskView[]>((acc, taskId) => {
+    filteredPredictedBranches.forEach((branch) => {
+      const existing = groupedBranches.get(branch.name);
+      if (existing) {
+        existing.push(branch);
+        return;
+      }
+      groupedBranches.set(branch.name, [branch]);
+    });
+
+    return Array.from(groupedBranches.entries())
+      .map(([fullBranchName, branches]) => {
+        const mergedTaskIds = Array.from(
+          new Set(branches.flatMap((branch) => branch.taskIds))
+        );
+        const allTasks: BranchTaskView[] = mergedTaskIds.reduce<BranchTaskView[]>((acc, taskId) => {
           const task = scopedNodeById.get(taskId);
           if (!task) return acc;
           acc.push({ ...task });
           return acc;
         }, []);
+        const branchStatuses = Array.from(
+          new Set(branches.map((branch) => branch.status))
+        );
+        const displayBranchSlug =
+          branches.find((branch) => branch.branchSlug?.trim())?.branchSlug ??
+          undefined;
+        const cardStatus: BranchCardStatus =
+          branchStatuses.length === 1 ? branchStatuses[0] : 'mixed';
 
         const progressDone = allTasks.filter((task) => task.status === 'completed').length;
         const progressTotal = allTasks.length;
@@ -581,10 +686,16 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           });
 
         return {
-          id: branch.id,
-          name: branch.name,
-          color: branch.color,
-          status: branch.status,
+          id: `branch-card::${fullBranchName}`,
+          name: getBranchCardLabel({
+            name: fullBranchName,
+            branchSlug: displayBranchSlug,
+          }),
+          color:
+            cardStatus === 'mixed'
+              ? mixedBranchCardColor
+              : branches[0]?.color || mixedBranchCardColor,
+          status: cardStatus,
           progressDone,
           progressTotal,
           tasks: filteredTasks,
@@ -872,7 +983,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       {layoutData.nodes.map((node) => {
         const visualStatus = getNodeIndicatorState(node);
         const visualTone = getNodeStatusTone(node);
-        const frozenNode = frozenNodeById.get(node.id) || null;
         const isHovered = hoveredNodeId === node.id;
         const isRelated = hoveredNodeData && (
           hoveredNodeData.dependencies?.includes(node.id) ||
@@ -930,24 +1040,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               </div>
             </foreignObject>
 
-            {frozenNode && (
-              <g
-                transform={`translate(${node.x + NODE_RADIUS - 2} ${node.y - NODE_RADIUS + 2})`}
-                className="pointer-events-none"
-              >
-                <circle
-                  cx={0}
-                  cy={0}
-                  r={8}
-                  fill={frozenReasonTone[frozenNode.reason].badgeFill}
-                />
-                <foreignObject x={-6} y={-6} width="12" height="12">
-                  <div className={cn('w-full h-full flex items-center justify-center', frozenReasonTone[frozenNode.reason].icon)}>
-                    <Icon name="lock" size={8} />
-                  </div>
-                </foreignObject>
-              </g>
-            )}
           </g>
         );
       })}
@@ -1105,15 +1197,20 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                       {hoveredNodeData.title}
                     </h3>
                     {hoveredFrozenNode && (
-                      <span
-                        className={cn(
-                          'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-                          frozenReasonTone[hoveredFrozenNode.reason].pill
-                        )}
-                      >
-                        <Icon name="lock" size={10} />
-                        {formatFrozenPlanNodeReason(hoveredFrozenNode.reason)}
-                      </span>
+                      <div className="space-y-1.5">
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                            lockedBadgeTone
+                          )}
+                        >
+                          <Icon name="lock" size={10} />
+                          {t('architect.frozenNodeLocked', 'Locked')}
+                        </span>
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          {getFrozenReasonTooltipDescription(hoveredFrozenNode.reason)}
+                        </p>
+                      </div>
                     )}
                   </div>
                   <div
@@ -1189,6 +1286,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               return (
                 <div
                   key={branch.id}
+                  data-branch-card="true"
+                  data-branch-card-status={branch.status}
                   className="rounded-lg border border-border overflow-hidden bg-card"
                 >
                   <div
@@ -1203,16 +1302,15 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                       />
                       <span className="text-sm font-medium text-foreground flex-1 truncate">{branch.name}</span>
                       <span
+                        data-branch-card-status-badge={branch.status}
                         className={cn(
                           'px-1.5 py-0.5 rounded text-[10px] uppercase',
-                          branch.status === 'merged'
-                            ? 'bg-emerald-500/10 text-emerald-500'
-                            : branch.status === 'active'
-                              ? 'bg-amber-500/10 text-amber-500'
-                              : 'bg-muted text-muted-foreground'
+                          branchCardStatusTone[branch.status]
                         )}
                       >
-                        {t(`architect.branchStatus.${branch.status}`, branch.status)}
+                        {branch.status === 'mixed'
+                          ? t('architect.branchStatus.mixed', 'Mixed')
+                          : t(`architect.branchStatus.${branch.status}`, branch.status)}
                       </span>
                     </div>
 
@@ -1232,7 +1330,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                       const visualTone = getNodeStatusTone(task);
                       const frozenTask = frozenNodeById.get(task.id) || null;
                       return (
-                        <div key={task.id} className="px-3 py-2">
+                        <div key={task.id} className="px-3 py-2" data-branch-task={task.id}>
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0 flex items-center gap-2">
                               <span className="text-[11px] text-muted-foreground w-5 text-right shrink-0">
@@ -1242,12 +1340,28 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                               {frozenTask && (
                                 <span
                                   className={cn(
-                                    'inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-                                    frozenReasonTone[frozenTask.reason].pill
+                                    'inline-flex shrink-0 cursor-help items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                    lockedBadgeTone
                                   )}
+                                  tabIndex={0}
+                                  onMouseEnter={(event) =>
+                                    showFrozenBadgeTooltip(
+                                      frozenTask.reason,
+                                      event.currentTarget
+                                    )
+                                  }
+                                  onMouseLeave={hideFrozenBadgeTooltip}
+                                  onFocus={(event) =>
+                                    showFrozenBadgeTooltip(
+                                      frozenTask.reason,
+                                      event.currentTarget
+                                    )
+                                  }
+                                  onBlur={hideFrozenBadgeTooltip}
+                                  aria-label={`${t('architect.frozenNodeLocked', 'Locked')}. ${getFrozenReasonTooltipDescription(frozenTask.reason)}`}
+                                  data-frozen-lock-badge={task.id}
                                 >
-                                  <Icon name="lock" size={9} />
-                                  {formatFrozenPlanNodeReason(frozenTask.reason)}
+                                  {t('architect.frozenNodeLocked', 'Locked')}
                                 </span>
                               )}
                             </div>
@@ -1286,6 +1400,44 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           </div>
         )}
       </div>
+
+      {hoveredFrozenBadge && viewMode === 'branches' && (
+        <div
+          className="fixed z-[115] w-72 rounded-xl border border-border bg-popover/95 p-3 shadow-xl backdrop-blur-sm pointer-events-none animate-in fade-in zoom-in-95 duration-150"
+          style={{
+            top: Math.min(
+              hoveredFrozenBadge.rect.bottom + 10,
+              window.innerHeight - 120
+            ),
+            ...(hoveredFrozenBadge.rect.left > window.innerWidth / 2
+              ? { left: Math.max(16, hoveredFrozenBadge.rect.right - 288) }
+              : {
+                  left: Math.min(
+                    hoveredFrozenBadge.rect.left,
+                    window.innerWidth - 304
+                  ),
+                }),
+          }}
+        >
+          <div className="space-y-2">
+            <span
+              className={cn(
+                'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                lockedBadgeTone
+              )}
+            >
+              <Icon name="lock" size={10} />
+              {t('architect.frozenNodeLocked', 'Locked')}
+            </span>
+            <p className="text-[11px] font-medium text-popover-foreground">
+              {getFrozenReasonLabel(hoveredFrozenBadge.reason)}
+            </p>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {getFrozenReasonTooltipDescription(hoveredFrozenBadge.reason)}
+            </p>
+          </div>
+        </div>
+      )}
 
       {isGraphModalOpen && (
         <div
@@ -1442,7 +1594,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                   >
                     <Icon name="lock" size={10} />
                     {node.title}
-                    <span className="opacity-80">{formatFrozenPlanNodeReason(node.reason)}</span>
+                    <span className="opacity-80">{getFrozenReasonLabel(node.reason)}</span>
                   </span>
                 ))}
               </div>
