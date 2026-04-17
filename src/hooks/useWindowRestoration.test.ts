@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import React from 'react';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
 
 let loadPreferencesMock: ReturnType<typeof mock>;
 let loadPersistedPreferenceMock: ReturnType<typeof mock>;
@@ -16,6 +19,7 @@ let windowSetMacosAppIconThemeMock: ReturnType<typeof mock>;
 let windowSetPositionMock: ReturnType<typeof mock>;
 let windowSetSizeMock: ReturnType<typeof mock>;
 let windowSetThemeMock: ReturnType<typeof mock>;
+let windowOnCloseRequestedMock: ReturnType<typeof mock>;
 let chromeState: {
   platform: 'macos' | 'windows' | 'linux' | 'web';
   isTauriWindow: boolean;
@@ -27,6 +31,10 @@ let invocationOrder: string[];
 let persistedPreferenceValues: Record<string, unknown>;
 let preferenceValues: Record<string, unknown>;
 let importCounter = 0;
+let pageShuttingDown = false;
+let closeRequestedListener: (() => void | Promise<void>) | null = null;
+let movedListener: (() => void) | null = null;
+let resizedListener: (() => void) | null = null;
 
 const registerWindowRestorationMocks = async () => {
   const actualPreferences = await import(
@@ -56,8 +64,23 @@ const registerWindowRestorationMocks = async () => {
     windowSetSize: (...args: unknown[]) => windowSetSizeMock(...args),
     windowSetTheme: (...args: unknown[]) => windowSetThemeMock(...args),
     windowSetTrafficLightPosition: async () => undefined,
-    windowOnMoved: async () => () => undefined,
-    windowOnResized: async () => () => undefined,
+    windowOnCloseRequested: (...args: unknown[]) => windowOnCloseRequestedMock(...args),
+    windowOnMoved: async (listener: () => void) => {
+      movedListener = listener;
+      return () => {
+        if (movedListener === listener) {
+          movedListener = null;
+        }
+      };
+    },
+    windowOnResized: async (listener: () => void) => {
+      resizedListener = listener;
+      return () => {
+        if (resizedListener === listener) {
+          resizedListener = null;
+        }
+      };
+    },
   }));
 
   mock.module('../utils/desktopPlatform', () => ({
@@ -65,7 +88,11 @@ const registerWindowRestorationMocks = async () => {
   }));
 
   mock.module('../utils/pageLifecycle', () => ({
-    isPageShuttingDown: () => false,
+    isPageShuttingDown: () => pageShuttingDown,
+    markPageShuttingDown: (reason?: unknown) => {
+      pageShuttingDown = true;
+      return reason;
+    },
   }));
 
   mock.module('../utils/devLogger', () => ({
@@ -85,9 +112,34 @@ const loadWindowRestoration = async () => {
   return import(`./useWindowRestoration.ts?test=${importCounter}`);
 };
 
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const renderWindowRestorationHook = async (
+  useWindowRestoration: () => void
+): Promise<{ root: Root; container: HTMLDivElement }> => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  const TestComponent = () => {
+    useWindowRestoration();
+    return null;
+  };
+
+  await act(async () => {
+    root.render(React.createElement(TestComponent));
+  });
+
+  return { root, container };
+};
+
 describe('ensureWindowRestoredOnce', () => {
   beforeEach(() => {
     invocationOrder = [];
+    pageShuttingDown = false;
+    closeRequestedListener = null;
+    movedListener = null;
+    resizedListener = null;
     chromeState = {
       platform: 'macos',
       isTauriWindow: true,
@@ -155,6 +207,14 @@ describe('ensureWindowRestoredOnce', () => {
     });
     windowSetThemeMock = mock(async () => {
       invocationOrder.push('theme');
+    });
+    windowOnCloseRequestedMock = mock(async (listener: () => void | Promise<void>) => {
+      closeRequestedListener = listener;
+      return () => {
+        if (closeRequestedListener === listener) {
+          closeRequestedListener = null;
+        }
+      };
     });
   });
 
@@ -355,5 +415,89 @@ describe('ensureWindowRestoredOnce', () => {
       ['isMaximized', false],
       ['windowBootstrapVersion', 2],
     ]);
+  });
+
+  it('skips showing the window when close is requested before restore completes', async () => {
+    const { __resetWindowRestorationForTests, useWindowRestoration } = await loadWindowRestoration();
+    let releasePreferences: () => void = () => undefined;
+    const preferenceGate = new Promise<void>((resolve) => {
+      releasePreferences = resolve;
+    });
+    loadPreferencesMock = mock(
+      async () => {
+        await preferenceGate;
+        return Object.fromEntries(Object.entries(preferenceValues));
+      }
+    );
+
+    __resetWindowRestorationForTests();
+    const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+
+    expect(typeof closeRequestedListener).toBe('function');
+
+    await act(async () => {
+      await closeRequestedListener?.();
+    });
+
+    releasePreferences();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(showMainWindowMock.mock.calls).toHaveLength(0);
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('skips showing the window when close is requested during the bootstrap delay', async () => {
+    const { __resetWindowRestorationForTests, useWindowRestoration } = await loadWindowRestoration();
+
+    __resetWindowRestorationForTests();
+    const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+
+    expect(typeof closeRequestedListener).toBe('function');
+
+    await delay(10);
+    await act(async () => {
+      await closeRequestedListener?.();
+    });
+    await delay(70);
+
+    expect(showMainWindowMock.mock.calls).toHaveLength(0);
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('cancels the pending window save debounce when close is requested', async () => {
+    const { __resetWindowRestorationForTests, useWindowRestoration } = await loadWindowRestoration();
+
+    __resetWindowRestorationForTests();
+    const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+
+    await delay(80);
+    savePreferenceMock.mockClear();
+
+    expect(typeof movedListener).toBe('function');
+    expect(typeof closeRequestedListener).toBe('function');
+
+    movedListener?.();
+    await act(async () => {
+      await closeRequestedListener?.();
+    });
+    await delay(650);
+
+    expect(savePreferenceMock.mock.calls).toHaveLength(0);
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
   });
 });
