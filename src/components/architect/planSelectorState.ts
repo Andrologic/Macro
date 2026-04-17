@@ -1,7 +1,8 @@
+import type { ArchitectPlanSummary } from '../../services/architectPlanService';
 import {
-  isArchitectPlanVisibleForScope,
-  type ArchitectPlanSummary,
-} from '../../services/architectPlanService';
+  compareArchitectPlanSelectionPriority,
+  planMatchesArchitectScope,
+} from '../../services/architectPlanSelection';
 
 export interface PlanSelectorMutationCheck {
   type: 'archive' | 'delete';
@@ -18,7 +19,7 @@ export interface PlanSelectorRefreshState {
 export const isPlanVisibleForSelection = (
   plan: ArchitectPlanSummary,
   scopedProjectIds: string[]
-): boolean => isArchitectPlanVisibleForScope(plan, scopedProjectIds);
+): boolean => planMatchesArchitectScope(plan, scopedProjectIds);
 
 export const filterPlansForDisplay = (
   plans: ArchitectPlanSummary[],
@@ -33,25 +34,6 @@ export const filterPlansForDisplay = (
     return showArchived ? plan.status === 'archived' : plan.status !== 'archived' && plan.status !== 'deleted';
   });
 
-const comparePlanSelectionPriority = (
-  left: ArchitectPlanSummary,
-  right: ArchitectPlanSummary
-): number => {
-  const leftUpdatedAt = new Date(left.updatedAt).getTime();
-  const rightUpdatedAt = new Date(right.updatedAt).getTime();
-  if (leftUpdatedAt !== rightUpdatedAt) {
-    return rightUpdatedAt - leftUpdatedAt;
-  }
-
-  const leftCreatedAt = new Date(left.createdAt).getTime();
-  const rightCreatedAt = new Date(right.createdAt).getTime();
-  if (leftCreatedAt !== rightCreatedAt) {
-    return rightCreatedAt - leftCreatedAt;
-  }
-
-  return left.id.localeCompare(right.id);
-};
-
 export const computePlanSelectorRefreshState = (params: {
   plans: ArchitectPlanSummary[];
   scopedProjectIds: string[];
@@ -64,7 +46,7 @@ export const computePlanSelectorRefreshState = (params: {
     params.plans,
     params.scopedProjectIds,
     params.showArchived
-  ).sort(comparePlanSelectionPriority);
+  ).sort(compareArchitectPlanSelectionPriority);
   const nextActivePlanId =
     params.preferredActivePlanId && visiblePlans.some((plan) => plan.id === params.preferredActivePlanId)
       ? params.preferredActivePlanId
