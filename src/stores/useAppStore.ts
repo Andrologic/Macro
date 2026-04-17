@@ -21,6 +21,7 @@ import { toServiceError } from "../services/contracts/errors";
 import { devLogger } from "../utils/devLogger";
 import { clampUiZoomLevel } from "../utils/uiZoom";
 import {
+  type LocalProjectContextState,
   type ProjectSwitchPolicy,
   getLocalProjectContextState,
   getLocalSessionContextState,
@@ -36,6 +37,7 @@ import {
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   isArchitectPlanVisibleForScope,
+  listArchitectPlans,
   planMatchesProjectId,
   resolvePlanProjectContextId,
   resolveTargetBranch,
@@ -76,6 +78,7 @@ import {
   reconcileRememberedProjects,
 } from "../services/projectRegistry";
 import { ensureProjectGroupPlan } from "../services/architectAutoPlan";
+import { computeArchitectPlanResolutionState } from "../services/architectPlanSelection";
 import type { NormalizeProjectRegistryResult } from "../services/projectRegistry";
 import * as tauriIpc from "../services/tauriIpc";
 import type {
@@ -459,42 +462,6 @@ const restoreProjectContext = async (
     useAppStore.setState({ selectedTaskId: null });
   }
 
-  let restoredPlanId: string | null = null;
-  const contextPlanId = context?.lastPlanId;
-  if (contextPlanId) {
-    try {
-      const targetBranch = resolveTargetBranch(
-        appState.activePlanContext?.targetBranch || getGitFlowBaseBranch(),
-      );
-      const candidatePlan = await getArchitectPlan(targetBranch, contextPlanId);
-      if (
-        candidatePlan &&
-        candidatePlan.status !== "deleted" &&
-        globalProject.subProjectIds.some((projectId) =>
-          planMatchesProjectId(candidatePlan, projectId),
-        )
-      ) {
-        const plan = await activateArchitectPlanInStore({
-          planId: contextPlanId,
-          options: {
-            targetBranch,
-            persistActiveSelection: false,
-            allowScopeSwitch: false,
-          },
-        });
-        restoredPlanId = plan?.id ?? null;
-      } else {
-        clearActiveArchitectPlanInStore();
-      }
-    } catch {
-      restoredPlanId = null;
-    }
-  }
-
-  if (!restoredPlanId) {
-    clearActiveArchitectPlanInStore();
-  }
-
   const nextFocusProjectId = resolveExplicitProjectIdForGroup(
     appState.projectGroups,
     groupId,
@@ -605,6 +572,110 @@ const activateArchitectPlanInStore = async (input: {
   return plan;
 };
 
+const persistResolvedArchitectPlanContext = async (params: {
+  contextId: string;
+  groupId: string | null;
+  focusProjectId: string | null;
+  planId: string;
+  localContext: LocalProjectContextState | null;
+}): Promise<void> => {
+  await upsertLocalProjectContextState({
+    projectId: params.contextId,
+    groupId: params.groupId ?? params.localContext?.groupId ?? null,
+    focusProjectId:
+      params.focusProjectId ?? params.localContext?.focusProjectId ?? null,
+    lastPlanId: params.planId,
+    lastTaskId: params.localContext?.lastTaskId ?? null,
+    architectConversationId:
+      params.localContext?.architectConversationId ?? null,
+    implementConversationId:
+      params.localContext?.implementConversationId ?? null,
+  });
+};
+
+const resolveArchitectPlanForScope = async (input: {
+  groupId: string | null;
+  projectId: string | null;
+}): Promise<boolean> => {
+  const appState = useAppStore.getState();
+  const scopedProjectIds = getScopedProjectIds(
+    appState.projectGroups,
+    input.groupId,
+    input.projectId,
+  );
+  if (scopedProjectIds.length === 0) {
+    if (appState.activeArchitectPlanId) {
+      clearActiveArchitectPlanInStore();
+    }
+    return false;
+  }
+
+  const targetBranch = resolveTargetBranch(
+    appState.activePlanContext?.targetBranch || getGitFlowBaseBranch(),
+  );
+  const contextId = input.groupId || input.projectId;
+  const localContext = contextId
+    ? await getLocalProjectContextState(contextId)
+    : null;
+  const plansIndex = await listArchitectPlans(targetBranch, true, true);
+  const resolution = computeArchitectPlanResolutionState({
+    plans: plansIndex.plans,
+    scopedProjectIds,
+    currentActivePlanId: appState.activeArchitectPlanId,
+    rememberedPlanId: localContext?.lastPlanId ?? null,
+  });
+  const currentPlanVisible =
+    appState.activeArchitectPlanId !== null &&
+    resolution.visiblePlans.some(
+      (plan) => plan.id === appState.activeArchitectPlanId,
+    );
+
+  if (!resolution.nextActivePlanId) {
+    if (appState.activeArchitectPlanId && !currentPlanVisible) {
+      clearActiveArchitectPlanInStore();
+    }
+    return false;
+  }
+
+  if (
+    resolution.nextActivePlanId === appState.activeArchitectPlanId &&
+    appState.activePlanContext?.id === resolution.nextActivePlanId
+  ) {
+    return true;
+  }
+
+  const resolvedPlan = await activateArchitectPlanInStore({
+    planId: resolution.nextActivePlanId,
+    options: {
+      targetBranch,
+      persistActiveSelection: false,
+      allowScopeSwitch: false,
+    },
+  });
+
+  if (!resolvedPlan) {
+    if (!currentPlanVisible) {
+      clearActiveArchitectPlanInStore();
+    }
+    return false;
+  }
+
+  if (
+    contextId &&
+    resolution.nextActivePlanId !== appState.activeArchitectPlanId
+  ) {
+    await persistResolvedArchitectPlanContext({
+      contextId,
+      groupId: input.groupId,
+      focusProjectId: input.projectId,
+      planId: resolvedPlan.id,
+      localContext,
+    });
+  }
+
+  return true;
+};
+
 const ensureAutoPlanForSelection = async (input: {
   groupId: string | null;
   projectId: string | null;
@@ -615,6 +686,9 @@ const ensureAutoPlanForSelection = async (input: {
 
   const appState = useAppStore.getState();
   if (appState.mode !== "Architect") {
+    return;
+  }
+  if (await resolveArchitectPlanForScope(input)) {
     return;
   }
   const scopedProjectIds = getScopedProjectIds(
@@ -634,29 +708,6 @@ const ensureAutoPlanForSelection = async (input: {
   );
   if (scopedProjectIds.length === 0 || actionableProjectIds.length === 0) {
     return;
-  }
-
-  if (appState.activeArchitectPlanId) {
-    try {
-      const targetBranch = resolveTargetBranch(
-        appState.activePlanContext?.targetBranch || getGitFlowBaseBranch(),
-      );
-      const activePlan = await getArchitectPlan(
-        targetBranch,
-        appState.activeArchitectPlanId,
-      );
-      if (activePlan && activePlan.status !== "deleted") {
-        const isActivePlanVisibleForScope = isArchitectPlanVisibleForScope(
-          activePlan,
-          actionableProjectIds,
-        );
-        if (isActivePlanVisibleForScope) {
-          return;
-        }
-      }
-    } catch {
-      // Ignore lookup failures and continue with implicit auto-plan resolution.
-    }
   }
 
   const ensuredPlan = await ensureProjectGroupPlan({
@@ -976,6 +1027,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   strategyMutationPreview: null,
 
   setMode: (mode) => {
+    const previousMode = get().mode;
     set({ mode });
     void savePreference(PREF_KEYS.LAST_ACTIVE_MODE, mode);
     const { selectedGroupId, selectedProjectId } = get();
@@ -984,6 +1036,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
       selectedProjectId,
       mode,
     });
+    if (mode === "Architect" && previousMode !== "Architect") {
+      void ensureAutoPlanForSelection({
+        groupId: selectedGroupId,
+        projectId: selectedProjectId,
+      });
+    }
   },
   setAgentType: (agentType) => {
     set({ agentType });
