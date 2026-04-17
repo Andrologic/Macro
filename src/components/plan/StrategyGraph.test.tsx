@@ -612,7 +612,58 @@ describe('StrategyGraph', () => {
     ).not.toBeNull();
   });
 
-  it('surfaces frozen-node reasons in the branch view', async () => {
+  it('shows the lock only inside the tooltip for frozen graph nodes', async () => {
+    seedStores('InProgress');
+    useAppStore.setState({
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'in_progress',
+        targetBranch: 'develop',
+      },
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('.lucide-lock')).toBeNull();
+
+    const graphNode = Array.from(document.querySelectorAll('g')).find(
+      (element) => (element as SVGGElement).style?.cursor === 'pointer'
+    ) as SVGGElement | undefined;
+    expect(graphNode).not.toBeUndefined();
+
+    Object.defineProperty(graphNode!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        x: 120,
+        y: 120,
+        top: 120,
+        left: 120,
+        right: 144,
+        bottom: 144,
+        width: 24,
+        height: 24,
+        toJSON: () => ({}),
+      }),
+    });
+
+    await act(async () => {
+      graphNode?.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('.lucide-lock')).not.toBeNull();
+    expect(document.body.textContent).toContain('Locked');
+    expect(document.body.textContent).toContain(
+      'can no longer be modified automatically'
+    );
+  });
+
+  it('explains locked badges on hover in the branch view', async () => {
     seedStores('InProgress');
     useAppStore.setState({
       activePlanContext: {
@@ -651,7 +702,549 @@ describe('StrategyGraph', () => {
     });
 
     expect(document.body.textContent).toContain('Architect node');
-    expect(document.body.textContent).toContain('started');
+    expect(document.body.textContent).toContain('Locked');
+
+    const lockedBadge = document.querySelector(
+      '[data-frozen-lock-badge="task-1"]'
+    ) as HTMLSpanElement | null;
+    expect(lockedBadge).not.toBeNull();
+
+    Object.defineProperty(lockedBadge!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        x: 240,
+        y: 260,
+        top: 260,
+        left: 240,
+        right: 300,
+        bottom: 284,
+        width: 60,
+        height: 24,
+        toJSON: () => ({}),
+      }),
+    });
+
+    await act(async () => {
+      lockedBadge?.dispatchEvent(
+        new window.MouseEvent('mouseover', { bubbles: true })
+      );
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Started work');
+    expect(document.body.textContent).toContain(
+      'can no longer be modified automatically'
+    );
+  });
+
+  it('shortens branch card headers without changing raw branch data', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'in_progress',
+        targetBranch: 'develop',
+      },
+      planNodes: [
+        {
+          id: 'task-1',
+          title: 'Checkout API',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-2',
+          title: 'Graph cleanup',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-3',
+          title: 'Plain branch task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-4',
+          title: 'Branch slug wins',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-1',
+          name: 'feature/plan-1/checkout-api',
+          color: '#3b82f6',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-1'],
+          status: 'pending',
+        },
+        {
+          id: 'branch-2',
+          name: 'feature/graph',
+          color: '#10b981',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-2'],
+          status: 'pending',
+        },
+        {
+          id: 'branch-3',
+          name: 'plain-name',
+          color: '#f59e0b',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-3'],
+          status: 'pending',
+        },
+        {
+          id: 'branch-4',
+          name: 'feature/plan-1/internal-name',
+          branchSlug: 'preferred-name',
+          color: '#8b5cf6',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-4'],
+          status: 'pending',
+        },
+      ],
+    });
+    useTaskStore.setState({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Checkout API',
+          status: 'Pending',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          assigned_branch: 'feature/plan-1/checkout-api',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 0,
+          execution_targets: [{ projectId: 'project-1' }],
+        },
+        {
+          id: 'task-2',
+          title: 'Graph cleanup',
+          status: 'Pending',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          assigned_branch: 'feature/graph',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 1,
+          execution_targets: [{ projectId: 'project-1' }],
+        },
+        {
+          id: 'task-3',
+          title: 'Plain branch task',
+          status: 'Pending',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          assigned_branch: 'plain-name',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 2,
+          execution_targets: [{ projectId: 'project-1' }],
+        },
+        {
+          id: 'task-4',
+          title: 'Branch slug wins',
+          status: 'Pending',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          assigned_branch: 'feature/plan-1/internal-name',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 3,
+          execution_targets: [{ projectId: 'project-1' }],
+        },
+      ],
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Branches')
+    );
+    expect(branchesButton).not.toBeUndefined();
+
+    await act(async () => {
+      branchesButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('checkout-api');
+    expect(document.body.textContent).toContain('graph');
+    expect(document.body.textContent).toContain('plain-name');
+    expect(document.body.textContent).toContain('preferred-name');
+    expect(document.body.textContent).not.toContain('feature/plan-1/checkout-api');
+    expect(document.body.textContent).not.toContain('feature/graph');
+    expect(document.body.textContent).not.toContain('feature/plan-1/internal-name');
+  });
+
+  it('merges exact same branch names into one mixed card with deduplicated tasks', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      selectedGroupId: 'group-1',
+      selectedProjectId: null,
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Project Group',
+          isOpen: true,
+          projects: [
+            makeProject('project-1', '/tmp/project-1', 'Project One'),
+            makeProject('project-2', '/tmp/project-2', 'Project Two'),
+          ],
+        },
+      ],
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'in_progress',
+        targetBranch: 'develop',
+      },
+      planNodes: [
+        {
+          id: 'task-1',
+          title: 'Web task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-shared',
+          title: 'Shared task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-2',
+          title: 'API task',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          projectId: 'project-2',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-1',
+          name: 'feature/plan-1/shared-feature',
+          color: '#3b82f6',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-1', 'task-shared'],
+          status: 'pending',
+        },
+        {
+          id: 'branch-2',
+          name: 'feature/plan-1/shared-feature',
+          color: '#10b981',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-2',
+          taskIds: ['task-shared', 'task-2'],
+          status: 'active',
+        },
+      ],
+    });
+    useTaskStore.setState({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Web task',
+          status: 'Pending',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          assigned_branch: 'feature/plan-1/shared-feature',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 0,
+          execution_targets: [{ projectId: 'project-1' }],
+        },
+        {
+          id: 'task-shared',
+          title: 'Shared task',
+          status: 'Pending',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-1',
+          project_ids: ['project-1', 'project-2'],
+          assigned_branch: 'feature/plan-1/shared-feature',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 1,
+          execution_targets: [
+            { projectId: 'project-1' },
+            { projectId: 'project-2' },
+          ],
+        },
+        {
+          id: 'task-2',
+          title: 'API task',
+          status: 'Completed',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-2',
+          project_ids: ['project-2'],
+          assigned_branch: 'feature/plan-1/shared-feature',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 2,
+          execution_targets: [{ projectId: 'project-2' }],
+        },
+      ],
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Branches')
+    );
+    expect(branchesButton).not.toBeUndefined();
+
+    await act(async () => {
+      branchesButton?.click();
+      await flushRender();
+    });
+
+    const branchCards = document.querySelectorAll('[data-branch-card="true"]');
+    expect(branchCards).toHaveLength(1);
+    expect(document.body.textContent).toContain('shared-feature');
+    expect(document.body.textContent).toContain('Web task');
+    expect(document.body.textContent).toContain('Shared task');
+    expect(document.body.textContent).toContain('API task');
+    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(3);
+
+    const mixedBadge = document.querySelector(
+      '[data-branch-card-status-badge="mixed"]'
+    ) as HTMLSpanElement | null;
+    expect(mixedBadge).not.toBeNull();
+    expect(branchCards[0]?.getAttribute('data-branch-card-status')).toBe('mixed');
+    expect(mixedBadge?.textContent).toContain('Mixed');
+    expect(mixedBadge?.className).toContain('bg-muted');
+    expect(mixedBadge?.className).toContain('text-muted-foreground');
+
+    const searchInput = document.querySelector('input') as HTMLInputElement | null;
+    expect(searchInput).not.toBeNull();
+    const setInputValue = (input: HTMLInputElement, value: string) => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value'
+      )?.set;
+      valueSetter?.call(input, value);
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+
+    await act(async () => {
+      if (searchInput) {
+        setInputValue(searchInput, 'Shared');
+      }
+      await flushRender();
+    });
+
+    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(1);
+
+    await act(async () => {
+      if (searchInput) {
+        setInputValue(searchInput, '');
+      }
+      await flushRender();
+    });
+
+    const statusFilter = document.querySelector('select') as HTMLSelectElement | null;
+    expect(statusFilter).not.toBeNull();
+    const setSelectValue = (select: HTMLSelectElement, value: string) => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLSelectElement.prototype,
+        'value'
+      )?.set;
+      valueSetter?.call(select, value);
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+    };
+
+    await act(async () => {
+      if (statusFilter) {
+        setSelectValue(statusFilter, 'completed');
+      }
+      await flushRender();
+    });
+
+    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(1);
+    expect(document.body.textContent).toContain('API task');
+  });
+
+  it('does not merge different full branch names that share the same short label', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'in_progress',
+        targetBranch: 'develop',
+      },
+      planNodes: [
+        {
+          id: 'task-1',
+          title: 'Feature checkout',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-2',
+          title: 'Bugfix checkout',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-1',
+          name: 'feature/plan-1/checkout-api',
+          color: '#3b82f6',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-1'],
+          status: 'pending',
+        },
+        {
+          id: 'branch-2',
+          name: 'bugfix/plan-1/checkout-api',
+          color: '#10b981',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-2'],
+          status: 'pending',
+        },
+      ],
+    });
+    useTaskStore.setState({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Feature checkout',
+          status: 'Pending',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          assigned_branch: 'feature/plan-1/checkout-api',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 0,
+          execution_targets: [{ projectId: 'project-1' }],
+        },
+        {
+          id: 'task-2',
+          title: 'Bugfix checkout',
+          status: 'Pending',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          assigned_branch: 'bugfix/plan-1/checkout-api',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 1,
+          execution_targets: [{ projectId: 'project-1' }],
+        },
+      ],
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Branches')
+    );
+    expect(branchesButton).not.toBeUndefined();
+
+    await act(async () => {
+      branchesButton?.click();
+      await flushRender();
+    });
+
+    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
+    expect(document.body.textContent).toContain('checkout-api');
+    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(2);
   });
 
   it('renders and applies a staged strategy preview', async () => {
