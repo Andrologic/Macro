@@ -19,6 +19,7 @@ import {
   windowIsMaximized,
   windowMaximize,
   windowOnMoved,
+  windowOnCloseRequested,
   windowOnResized,
   windowOuterPosition,
   windowOuterSize,
@@ -29,6 +30,7 @@ import {
   windowSetSize,
   windowSetTheme,
 } from "../services/tauriWindow";
+import { markWindowCloseShutdown } from "../services/windowShutdown";
 import { getPlatformChromeState } from "../utils/desktopPlatform";
 import { isPageShuttingDown } from "../utils/pageLifecycle";
 import { devLogger } from "../utils/devLogger";
@@ -64,6 +66,15 @@ const isLegacyMacosDefaultWindowSize = (
 ): boolean =>
   width === LEGACY_MACOS_DEFAULT_WINDOW_SIZE.width &&
   height === LEGACY_MACOS_DEFAULT_WINDOW_SIZE.height;
+
+const clearPendingWindowStateSave = (): void => {
+  if (!saveTimeout) {
+    return;
+  }
+
+  clearTimeout(saveTimeout);
+  saveTimeout = null;
+};
 
 /**
  * Check if running in Tauri environment
@@ -111,10 +122,19 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
   }
 
   restorePromise = (async () => {
-    if (isPageShuttingDown()) return;
+    const shouldAbortRestore = (): boolean => {
+      if (!isPageShuttingDown()) {
+        return false;
+      }
+
+      devLogger.log('Aborting window restoration because shutdown is in progress.');
+      return true;
+    };
+
+    if (shouldAbortRestore()) return;
 
     const api = await getWindowApi();
-    if (!api || isPageShuttingDown()) return;
+    if (!api || shouldAbortRestore()) return;
 
     try {
       const [
@@ -141,6 +161,8 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
         loadPersistedPreference<number>(PREF_KEYS.WINDOW_BOOTSTRAP_VERSION),
       ]);
 
+      if (shouldAbortRestore()) return;
+
       const width = prefs[PREF_KEYS.WINDOW_WIDTH] as number | undefined;
       const height = prefs[PREF_KEYS.WINDOW_HEIGHT] as number | undefined;
       const x = prefs[PREF_KEYS.WINDOW_X] as number | null;
@@ -159,11 +181,13 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
             ? windowSetTheme(nativeMacosTitlebarTheme)
             : Promise.resolve(),
         ]);
+
+        if (shouldAbortRestore()) return;
       }
 
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      if (isPageShuttingDown()) return;
+      if (shouldAbortRestore()) return;
 
       const hasPersistedWindowGeometry =
         persistedWidth !== undefined ||
@@ -188,6 +212,7 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
       if (shouldBootstrapMacosMaximized) {
         try {
           await api.maximize();
+          if (shouldAbortRestore()) return;
           bootstrappedMacosMaximized = true;
         } catch (error) {
           devLogger.log(
@@ -199,7 +224,9 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
           if (monitorWorkArea) {
             restoredMacosWorkArea = monitorWorkArea;
             await api.setSize(monitorWorkArea.width, monitorWorkArea.height);
+            if (shouldAbortRestore()) return;
             await api.setPosition(monitorWorkArea.x, monitorWorkArea.y);
+            if (shouldAbortRestore()) return;
             restoredWithMacosWorkArea = true;
           }
         }
@@ -235,10 +262,13 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
         ]);
       } else if (isMaximized) {
         await api.maximize();
+        if (shouldAbortRestore()) return;
       } else if (!restoredWithMacosWorkArea && width && height && width > 100 && height > 100) {
         await api.setSize(width, height);
+        if (shouldAbortRestore()) return;
         if (x !== null && y !== null && x >= 0 && y >= 0) {
           await api.setPosition(x, y);
+          if (shouldAbortRestore()) return;
         }
       }
 
@@ -253,7 +283,7 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
         );
       }
 
-      if (isPageShuttingDown()) return;
+      if (shouldAbortRestore()) return;
       devLogger.log("Window state restored:", {
         width,
         height,
@@ -268,11 +298,11 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
       console.error("Failed to restore window state:", error);
     }
 
-    if (isPageShuttingDown()) return;
+    if (shouldAbortRestore()) return;
 
     try {
       await showMainWindow();
-      if (isPageShuttingDown()) return;
+      if (shouldAbortRestore()) return;
       devLogger.log("Window shown via command");
     } catch (error) {
       if (isPageShuttingDown()) return;
@@ -348,13 +378,42 @@ export function useWindowRestoration() {
     if (isPageShuttingDown()) {
       return;
     }
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
+    clearPendingWindowStateSave();
     saveTimeout = setTimeout(() => {
+      saveTimeout = null;
       void saveWindowState();
     }, 500);
   }, [saveWindowState]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let cancelled = false;
+    let unlistenCloseRequested: (() => void) | null = null;
+
+    void windowOnCloseRequested(() => {
+      clearPendingWindowStateSave();
+      markWindowCloseShutdown();
+    })
+      .then((unlisten) => {
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+
+        unlistenCloseRequested = unlisten;
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error('Failed to register window close listener:', error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      unlistenCloseRequested?.();
+    };
+  }, []);
 
   // Restore window state on mount
   useEffect(() => {
@@ -394,9 +453,7 @@ export function useWindowRestoration() {
 
     return () => {
       cancelled = true;
-      if (saveTimeout) {
-        clearTimeout(saveTimeout);
-      }
+      clearPendingWindowStateSave();
       unlistenResize?.();
       unlistenMove?.();
       if (intervalId) {
@@ -407,10 +464,7 @@ export function useWindowRestoration() {
 }
 
 export function __resetWindowRestorationForTests(): void {
-  if (saveTimeout) {
-    clearTimeout(saveTimeout);
-  }
-  saveTimeout = null;
+  clearPendingWindowStateSave();
   windowApi = null;
   windowApiPromise = null;
   lastSavedState = null;

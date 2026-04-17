@@ -4,6 +4,7 @@ import type { MacosDynamicAppIconThemeSpec } from '../hooks/dynamicAppIconRender
 type WindowSize = { width: number; height: number };
 type WindowPosition = { x: number; y: number };
 export type WindowWorkArea = WindowSize & WindowPosition;
+export type WindowCloseRequestedListener = () => void | Promise<void>;
 
 async function invokeWindow<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import('@tauri-apps/api/core');
@@ -161,4 +162,11 @@ export async function windowOnResized(listener: () => void): Promise<() => void>
 export async function windowOnMoved(listener: () => void): Promise<() => void> {
   const window = await getCurrentTauriWindow();
   return window.onMoved(() => listener());
+}
+
+export async function windowOnCloseRequested(
+  listener: WindowCloseRequestedListener
+): Promise<() => void> {
+  const window = await getCurrentTauriWindow();
+  return window.onCloseRequested(() => listener());
 }
