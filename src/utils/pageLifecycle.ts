@@ -1,7 +1,7 @@
 let pageShuttingDown = false;
 const pageLifecycleController = new AbortController();
 
-const markPageShuttingDown = (reason?: unknown): void => {
+export const markPageShuttingDown = (reason?: unknown): void => {
   if (pageShuttingDown) {
     return;
   }

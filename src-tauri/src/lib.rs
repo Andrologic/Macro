@@ -1,3 +1,4 @@
+mod app_quit_state;
 #[path = "commands.rs"]
 pub mod commands;
 pub mod core;
@@ -19,6 +20,7 @@ mod tool_host;
 pub mod workspace;
 
 use ai::AiState;
+use app_quit_state::AppQuitState;
 use commands::DbPool;
 use core::{init_logging, init_process_environment, load_config};
 use fs::watcher::init_watcher;
@@ -97,7 +99,22 @@ unsafe fn inset_traffic_lights(window: &NSWindow, x: f64, y: f64) {
 // Command to show the main window explicitly from frontend
 #[tauri::command]
 async fn show_main_window(window: tauri::WebviewWindow) {
-    let _ = window.show();
+    let app_quit_state = window.state::<AppQuitState>();
+    if app_quit_state.is_quitting() {
+        tracing::info!(
+            window = %window.label(),
+            "Ignoring show_main_window because app quit is in progress"
+        );
+        return;
+    }
+
+    if let Err(error) = window.show() {
+        tracing::warn!(
+            window = %window.label(),
+            error = %error,
+            "Failed to show main window"
+        );
+    }
 }
 
 #[tauri::command]
@@ -257,16 +274,27 @@ pub fn run() {
     tracing::info!("Starting Macro application");
     tracing::info!("Workspace path: {:?}", config.workspace_path);
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .manage(AppQuitState::default())
         .manage(Arc::new(Mutex::new(None)) as DbPool)
         .manage(AiState::default())
         .manage(GitState::new())
         .manage(commands::terminal::TerminalSessionStore::default())
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let app_quit_state = window.state::<AppQuitState>();
+                app_quit_state.mark_quitting("main-window-close-requested");
+            }
+        })
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             {
@@ -499,6 +527,18 @@ pub fn run() {
             commands::db_upsert_session_context_state,
             commands::db_reconcile_project_registry,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } => {
+            let app_quit_state = app_handle.state::<AppQuitState>();
+            app_quit_state.mark_quitting("exit-requested");
+        }
+        tauri::RunEvent::Exit => {
+            let app_quit_state = app_handle.state::<AppQuitState>();
+            app_quit_state.mark_quitting("exit");
+        }
+        _ => {}
+    });
 }
