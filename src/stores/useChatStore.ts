@@ -94,7 +94,7 @@ import {
   getPlanNodeBranchIntent,
   type WorkBranchType,
 } from "../services/gitFlowBranchIntents";
-import { normalizeStrategyDependencies } from "../services/implementTaskDerivation";
+import { normalizeNodeProjectIds, normalizeStrategyDependencies } from "../services/implementTaskDerivation";
 import {
   applyStrategyMutationPreview,
   prepareStrategyMutationPreview,
@@ -443,6 +443,81 @@ type NormalizedArchitectStrategyNodeInput = {
   status: PlanNodeStatus;
   dependencies: string[];
   projectIds: string[];
+};
+
+const normalizeArchitectStrategyOperationProjectIds = (
+  rawOperation: Record<string, unknown>,
+  fallbackNode?: Pick<PlanNode, "projectId" | "projectIds"> | null,
+): string[] => {
+  const explicitProjectIds = Array.isArray(rawOperation.projectIds)
+    ? rawOperation.projectIds
+        .filter(
+          (projectId): projectId is string => typeof projectId === "string",
+        )
+        .map((projectId) => projectId.trim())
+        .filter(Boolean)
+    : [];
+  const explicitProjectId =
+    typeof rawOperation.projectId === "string"
+      ? rawOperation.projectId.trim()
+      : "";
+
+  if (Array.isArray(rawOperation.projectIds) || explicitProjectId.length > 0) {
+    return Array.from(
+      new Set([
+        ...explicitProjectIds,
+        ...(explicitProjectId.length > 0 ? [explicitProjectId] : []),
+      ]),
+    );
+  }
+
+  return fallbackNode ? normalizeNodeProjectIds(fallbackNode) : [];
+};
+
+const cloneArchitectStrategyWorkingNode = (node: PlanNode): PlanNode => {
+  const projectIds = normalizeNodeProjectIds(node);
+  return {
+    ...node,
+    dependencies: [...node.dependencies],
+    projectId: projectIds[0],
+    projectIds,
+  };
+};
+
+const serializeArchitectStrategyNodeForResolution = (
+  node: Pick<
+    PlanNode,
+    | "id"
+    | "title"
+    | "description"
+    | "type"
+    | "status"
+    | "assignedBranch"
+    | "branchType"
+    | "branchSlug"
+    | "dependencies"
+    | "projectId"
+    | "projectIds"
+  >,
+) => {
+  const projectIds = normalizeNodeProjectIds(node);
+  return {
+    id: node.id,
+    title: node.title,
+    description: node.description,
+    type: node.type,
+    status: node.status,
+    assignedBranch: node.assignedBranch,
+    branchType: node.branchType,
+    branchSlug: node.branchSlug,
+    dependencies: [...node.dependencies],
+    ...(projectIds.length > 0
+      ? {
+          projectId: projectIds[0],
+          projectIds,
+        }
+      : {}),
+  };
 };
 
 const normalizeArchitectStrategyNodeInput = (
@@ -3107,7 +3182,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           return "strategy_update requires either nodes or operations.";
         }
 
-        const working = [...activePlan.nodes];
+        const working = activePlan.nodes.map(cloneArchitectStrategyWorkingNode);
         let idCounter = 0;
         for (const [index, rawOperation] of rawOperations.entries()) {
           const operation = (
@@ -3186,6 +3261,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   .map((dep) => dep.trim())
                   .filter(Boolean)
               : target.dependencies;
+            const nextProjectIds = normalizeArchitectStrategyOperationProjectIds(
+              operation,
+              target,
+            );
 
             if (!ARCHITECT_STRATEGY_NODE_TYPES.has(nextTypeRaw as PlanNodeType)) {
               return `strategy_update update failed at operation ${index + 1}: invalid type ${nextTypeRaw}.`;
@@ -3211,12 +3290,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
               branchType: nextBranchIntent.branchType,
               branchSlug: nextBranchIntent.branchSlug,
               dependencies: Array.from(new Set(nextDependencies)),
+              projectId: nextProjectIds[0],
+              projectIds: nextProjectIds,
             };
             continue;
           }
 
           if (action === "add") {
             const normalized = normalizeArchitectStrategyNodeInput(operation, index);
+            const normalizedProjectIds =
+              normalizeArchitectStrategyOperationProjectIds(operation);
             idCounter += 1;
             working.push({
               id: `node-${Date.now()}-${idCounter}`,
@@ -3228,7 +3311,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
               branchType: normalized.branchType,
               branchSlug: normalized.branchSlug,
               dependencies: normalized.dependencies,
-              projectId: activePlan.projectId,
+              projectId: normalizedProjectIds[0],
+              projectIds: normalizedProjectIds,
             });
             continue;
           }
@@ -3236,17 +3320,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           return `strategy_update failed at operation ${index + 1}: unsupported action "${action}".`;
         }
 
-        nodesInput = working.map((node) => ({
-          id: node.id,
-          title: node.title,
-          description: node.description,
-          type: node.type,
-          status: node.status,
-          assignedBranch: node.assignedBranch,
-          branchType: node.branchType,
-          branchSlug: node.branchSlug,
-          dependencies: node.dependencies,
-        }));
+        nodesInput = working.map((node) =>
+          serializeArchitectStrategyNodeForResolution(node),
+        );
       }
 
       const strategy = await resolveStrategyForPlan({
