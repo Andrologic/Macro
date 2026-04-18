@@ -77,12 +77,12 @@ export const ArchitectGitFlowView: React.FC = () => {
       mainBranch: settings.mainBranch.trim() || defaultSettings.mainBranch,
       planBranch: renderGitFlowBranchName({
         branchType: 'plan',
-        planSlug: '1710000000000',
+        planSlug: 'checkout-rework',
         settings,
       }),
       featureBranch: renderGitFlowBranchName({
         branchType: 'feature',
-        planSlug: '1710000000000',
+        planSlug: 'checkout-rework',
         branchSlug: 'invoice-retry',
         settings,
       }),

@@ -208,6 +208,7 @@ export const deriveImplementTasksFromArchitectPlan = (
   const targetBranchesByProjectId = getArchitectPlanTargetBranchesByProjectId(plan);
   const strategy = deriveImplementTasksFromStrategy({
     planId: plan.id,
+    planSlug: plan.slug,
     nodes: plan.nodes || [],
     predictedBranches: plan.predictedBranches || [],
     targetBranchesByProjectId,

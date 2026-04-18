@@ -382,6 +382,7 @@ const updateArchitectPlanMock = mock(async (params: {
   conversationId?: string;
   title?: string;
   label?: string;
+  slug?: string;
   description?: string;
   status?: string;
   nodes?: Array<Record<string, unknown>>;
@@ -399,6 +400,7 @@ const updateArchitectPlanMock = mock(async (params: {
     conversationId: params.conversationId ?? existing.conversationId,
     title: params.title ?? existing.title,
     label: params.label ?? existing.label,
+    slug: params.slug ?? existing.slug,
     description: params.description ?? existing.description,
     status: (params.status as ArchitectPlanRecord['status'] | undefined) ?? existing.status,
     nodes: (params.nodes as ArchitectPlanRecord['nodes'] | undefined) ?? existing.nodes,
@@ -1777,7 +1779,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(architectPlans.get('1710000000000')?.description).toBe(
       'Refresh checkout state and cart recovery.'
     );
-    expect(useChatStore.getState().conversations[0]?.title).toBe('Plan - Checkout refresh - 1710000000000');
+    expect(useChatStore.getState().conversations[0]?.title).toBe('Plan - Checkout refresh');
   });
 
   it('hydrates the active plan after a tool update without triggering implicit auto-plan on project switch', async () => {
@@ -2108,6 +2110,46 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(updateArchitectPlanMock).not.toHaveBeenCalled();
     expect(appState.strategyMutationPreview).not.toBeNull();
     expect((appState.strategyMutationPreview as { status: string }).status).toBe('valid');
+  });
+
+  it('surfaces the same locked plan slug conflict for strategy generation and updates', async () => {
+    const activePlan = createPlan({
+      id: 'plan-active',
+      slug: 'checkout-refresh',
+      title: 'checkout-refresh',
+      conversationId: 'plan-conv',
+      status: 'validated',
+    });
+    architectPlans.set(activePlan.id, activePlan);
+    appState.activeArchitectPlanId = activePlan.id;
+    appState.activePlanContext = { id: activePlan.id, targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Update the active strategy.',
+    });
+    updateArchitectPlanMock.mockClear();
+
+    const generateResult = await onToolCall('strategy_generate', {
+      plan_slug: 'checkout-rework',
+      nodes: [{ title: 'Implement checkout' }],
+    });
+    const updateResult = await onToolCall('strategy_update', {
+      replace: true,
+      plan_slug: 'checkout-rework',
+      nodes: [{ title: 'Implement checkout' }],
+    });
+
+    expect(String(generateResult)).toContain('checkout-refresh');
+    expect(String(generateResult)).toContain('locked and cannot be changed');
+    expect(String(updateResult)).toContain('checkout-refresh');
+    expect(String(updateResult)).toContain('locked and cannot be changed');
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
   });
 
   it('does not pass label metadata during strategy updates unless explicitly requested', async () => {

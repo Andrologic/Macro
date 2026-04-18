@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { TaskStatus } from '../../types';
+import type { ProjectGitFlowSettings, TaskStatus } from '../../types';
 
 type AppMode = 'Chat' | 'Architect' | 'Implement';
 
@@ -13,6 +13,7 @@ type MockProject = {
   path: string;
   created_at: string;
   status: 'active';
+  gitFlowSettings?: ProjectGitFlowSettings;
   metadata: {
     description: string;
     tags: string[];
@@ -36,10 +37,13 @@ type MockPlanNode = {
   status: 'pending' | 'in-progress' | 'completed';
   dependencies: string[];
   projectId: string;
+  projectIds?: string[];
+  branchSlug?: string;
 };
 
 type MockPlanContext = {
   id: string;
+  slug?: string;
   title: string;
   description: string;
   status: 'draft' | 'validated' | 'completed' | 'in_progress';
@@ -1134,6 +1138,173 @@ describe('StrategyGraph', () => {
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(1);
     expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(1);
+    expect(document.body.textContent).toContain('API task');
+  });
+
+  it('merges repo-specific branch names when they share the same explicit logical branch slug', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      selectedGroupId: 'group-1',
+      selectedProjectId: null,
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Project Group',
+          isOpen: true,
+          projects: [
+            {
+              id: 'project-1',
+              name: 'Web',
+              mountName: 'web',
+              path: '/tmp/project-1',
+              created_at: '2026-03-19T00:00:00.000Z',
+              status: 'active',
+              gitFlowSettings: {
+                baseBranch: 'develop',
+                mainBranch: 'main',
+                planBranchTemplate: 'plan/{planSlug}',
+                featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+                standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
+                releaseBranchTemplate: 'release/{releaseSlug}',
+                hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+                bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
+              },
+              metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] },
+            },
+            {
+              id: 'project-2',
+              name: 'API',
+              mountName: 'api',
+              path: '/tmp/project-2',
+              created_at: '2026-03-19T00:00:00.000Z',
+              status: 'active',
+              gitFlowSettings: {
+                baseBranch: 'develop',
+                mainBranch: 'main',
+                planBranchTemplate: 'roadmap/{planSlug}',
+                featureBranchTemplate: 'work/{planSlug}/{featureSlug}',
+                standaloneFeatureBranchTemplate: 'work/{featureSlug}',
+                releaseBranchTemplate: 'release/{releaseSlug}',
+                hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+                bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
+              },
+              metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] },
+            },
+          ],
+        },
+      ],
+      activePlanContext: {
+        id: 'plan-1',
+        slug: 'plan-1',
+        title: 'Plan One',
+        description: '',
+        status: 'draft',
+        targetBranch: 'develop',
+      },
+      planNodes: [
+        {
+          id: 'task-1',
+          title: 'Web task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          branchSlug: 'checkout-api',
+          projectId: 'project-1',
+          projectIds: ['project-1'],
+        },
+        {
+          id: 'task-2',
+          title: 'API task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          branchSlug: 'checkout-api',
+          projectId: 'project-2',
+          projectIds: ['project-2'],
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-1',
+          name: 'feature/plan-1/checkout-api',
+          branchSlug: 'checkout-api',
+          color: '#3b82f6',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-1'],
+          status: 'pending',
+        },
+        {
+          id: 'branch-2',
+          name: 'work/plan-1/checkout-api',
+          branchSlug: 'checkout-api',
+          color: '#10b981',
+          parentBranch: 'roadmap/plan-1',
+          projectId: 'project-2',
+          taskIds: ['task-2'],
+          status: 'active',
+        },
+      ],
+    });
+    useTaskStore.setState({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Web task',
+          status: 'Pending',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          assigned_branch: 'feature/plan-1/checkout-api',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 0,
+          execution_targets: [{ projectId: 'project-1' }],
+        },
+        {
+          id: 'task-2',
+          title: 'API task',
+          status: 'Pending',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-2',
+          project_ids: ['project-2'],
+          assigned_branch: 'work/plan-1/checkout-api',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 1,
+          execution_targets: [{ projectId: 'project-2' }],
+        },
+      ],
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Branches')
+    );
+    expect(branchesButton).not.toBeUndefined();
+
+    await act(async () => {
+      branchesButton?.click();
+      await flushRender();
+    });
+
+    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(1);
+    expect(document.body.textContent).toContain('checkout-api');
+    expect(document.body.textContent).toContain('Web task');
     expect(document.body.textContent).toContain('API task');
   });
 

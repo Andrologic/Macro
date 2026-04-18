@@ -397,8 +397,6 @@ describe('architectGitFlowService replica integration', () => {
       },
       deleteArchitectPlan: async () => undefined,
       getGitFlowBaseBranch: () => 'develop',
-      toPlanIntegrationBranch: (slug: string) => `plan/${slug}`,
-      toPlanScopedFeatureBranch: (slug: string, branchName: string) => `feature/${slug}/${branchName.split('/').pop()}`,
     });
 
     const result = await service.finalizePlanIntoBaseBranch({
@@ -476,8 +474,6 @@ describe('architectGitFlowService replica integration', () => {
       },
       deleteArchitectPlan: async () => undefined,
       getGitFlowBaseBranch: () => 'develop',
-      toPlanIntegrationBranch: (slug: string) => `plan/${slug}`,
-      toPlanScopedFeatureBranch: (slug: string, branchName: string) => `feature/${slug}/${branchName.split('/').pop()}`,
     });
 
     const review = await service.loadPlanReview({

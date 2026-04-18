@@ -47,35 +47,23 @@ export const getNextDefaultNewPlanLabel = (
 };
 
 export const isCanonicalArchitectPlan = (plan: ArchitectPlanPresentationShape): boolean => {
-  const slug = trimToNull(plan.slug);
   const title = trimToNull(plan.title);
-  return slug === plan.id || title === plan.id;
+  return title === plan.id;
 };
 
 export const getArchitectPlanPrimaryName = (plan: ArchitectPlanPresentationShape): string => {
   const label = trimToNull(plan.label);
+  const slug = trimToNull(plan.slug);
   if (isCanonicalArchitectPlan(plan) && isDefaultNewPlanFamilyLabel(label)) {
     return label || DEFAULT_NEW_PLAN_LABEL;
   }
 
-  if (isCanonicalArchitectPlan(plan)) {
-    return label || plan.id;
-  }
-
-  return trimToNull(plan.title) || plan.id;
+  return label || slug || trimToNull(plan.title) || plan.id;
 };
 
 export const getArchitectPlanSecondaryLabel = (
-  plan: ArchitectPlanPresentationShape
+  _plan: ArchitectPlanPresentationShape
 ): string | null => {
-  if (isCanonicalArchitectPlan(plan) && isDefaultNewPlanFamilyLabel(plan.label)) {
-    return null;
-  }
-
-  if (isCanonicalArchitectPlan(plan)) {
-    return plan.id;
-  }
-
   return null;
 };
 

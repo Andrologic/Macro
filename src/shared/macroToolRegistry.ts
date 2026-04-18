@@ -684,13 +684,18 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "strategy_generate",
-    "Generate a structured strategy for the active plan based on collected needs. Express branch intent with branchType + branchSlug. Concrete branch names are derived later from each subproject GitFlow profile.",
+    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and per-node `featureSlug`) rather than raw git branch names. Concrete branch names are rendered later from each subproject GitFlow profile.",
     {
       type: "object",
       properties: {
         plan_id: {
           type: "string",
           description: "Optional existing plan ID to update.",
+        },
+        plan_slug: {
+          type: "string",
+          description:
+            "Optional logical plan slug. This can change only while the active plan is still a mutable draft.",
         },
         plan_title: {
           type: "string",
@@ -720,17 +725,27 @@ export const MACRO_TOOL_REGISTRY = [
               branchType: {
                 type: "string",
                 enum: ["feature", "release", "hotfix", "bugfix"],
-                description: "Preferred branch family for this node.",
+                description:
+                  "Legacy compatibility field. Prefer featureSlug for plan work branches.",
+              },
+              featureSlug: {
+                type: "string",
+                description:
+                  "Logical feature slug for this node within the current plan.",
+              },
+              feature_slug: {
+                type: "string",
+                description: "Legacy snake_case alias for featureSlug.",
               },
               branchSlug: {
                 type: "string",
                 description:
-                  "Slug for the work branch, without the family prefix.",
+                  "Legacy alias for featureSlug.",
               },
               assignedBranch: {
                 type: "string",
                 description:
-                  "Legacy fallback branch label. Prefer branchType + branchSlug.",
+                  "Legacy fallback branch label. Avoid raw git branch names in new payloads.",
               },
               dependencies: {
                 type: "array",
@@ -809,11 +824,20 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "plan_update",
-    "Update the optional label/title alias or description for an existing plan. For new plans, label changes never rename the canonical id or slug used for git branches.",
+    "Update the optional display label/title alias, description, or mutable draft slug for an existing plan. The technical plan id never changes, and the logical slug becomes immutable once the plan is real.",
     {
       type: "object",
       properties: {
         plan_id: { type: "string" },
+        slug: {
+          type: "string",
+          description:
+            "Optional logical plan slug. Allowed only while the plan is still a mutable draft.",
+        },
+        plan_slug: {
+          type: "string",
+          description: "Legacy alias for slug.",
+        },
         label: {
           type: "string",
           description: "Optional secondary label for the plan.",
@@ -879,11 +903,16 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "strategy_update",
-    "Modify strategy for the active plan. Prefer branchType + branchSlug when creating or updating nodes; assignedBranch remains legacy fallback.",
+    "Modify strategy for the active plan. Prefer logical slugs (`plan_slug` and `featureSlug`) when creating or updating nodes; assignedBranch remains legacy fallback only.",
     {
       type: "object",
       properties: {
         target_branch: { type: "string" },
+        plan_slug: {
+          type: "string",
+          description:
+            "Optional logical plan slug. Allowed only while the active plan is still a mutable draft.",
+        },
         replace: {
           type: "boolean",
           description: "If true, replace strategy with provided nodes.",
@@ -903,8 +932,22 @@ export const MACRO_TOOL_REGISTRY = [
               branchType: {
                 type: "string",
                 enum: ["feature", "release", "hotfix", "bugfix"],
+                description:
+                  "Legacy compatibility field. Prefer featureSlug for plan work branches.",
               },
-              branchSlug: { type: "string" },
+              featureSlug: {
+                type: "string",
+                description:
+                  "Logical feature slug for this node within the active plan.",
+              },
+              feature_slug: {
+                type: "string",
+                description: "Legacy snake_case alias for featureSlug.",
+              },
+              branchSlug: {
+                type: "string",
+                description: "Legacy alias for featureSlug.",
+              },
               assignedBranch: { type: "string" },
               status: {
                 type: "string",
@@ -932,8 +975,22 @@ export const MACRO_TOOL_REGISTRY = [
               branchType: {
                 type: "string",
                 enum: ["feature", "release", "hotfix", "bugfix"],
+                description:
+                  "Legacy compatibility field. Prefer featureSlug for plan work branches.",
               },
-              branchSlug: { type: "string" },
+              featureSlug: {
+                type: "string",
+                description:
+                  "Logical feature slug for this node within the active plan.",
+              },
+              feature_slug: {
+                type: "string",
+                description: "Legacy snake_case alias for featureSlug.",
+              },
+              branchSlug: {
+                type: "string",
+                description: "Legacy alias for featureSlug.",
+              },
               assignedBranch: { type: "string" },
               status: {
                 type: "string",
