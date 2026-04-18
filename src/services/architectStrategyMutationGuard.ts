@@ -117,7 +117,7 @@ export interface StrategyMutationTaskLike {
   status: TaskStatus;
 }
 
-interface PrepareStrategyMutationPreviewParams {
+export interface PrepareStrategyMutationPreviewParams {
   source: "strategy_generate" | "strategy_update";
   plan: ArchitectPlanRecord;
   candidateNodes: PlanNode[];
@@ -136,22 +136,22 @@ interface PrepareStrategyMutationPreviewParams {
   repairAttempted?: boolean;
 }
 
-interface ApplyStrategyMutationPreviewParams {
+export interface ApplyStrategyMutationPreviewParams {
   preview: StrategyMutationPreview;
   setActive?: boolean;
 }
 
-interface StrategyMutationGuardDeps {
+export interface StrategyMutationGuardDeps {
   getArchitectPlan: typeof getArchitectPlan;
   updateArchitectPlan: typeof updateArchitectPlan;
   provisionPlanBranches: typeof provisionPlanBranches;
 }
 
-const defaultDeps: StrategyMutationGuardDeps = {
+export const getDefaultStrategyMutationGuardDeps = (): StrategyMutationGuardDeps => ({
   getArchitectPlan,
   updateArchitectPlan,
   provisionPlanBranches,
-};
+});
 
 const unique = (items: string[]): string[] =>
   Array.from(new Set(items.filter((item) => item.trim().length > 0)));
@@ -750,7 +750,7 @@ export const prepareStrategyMutationPreview = (
 
 export const applyStrategyMutationPreview = async (
   params: ApplyStrategyMutationPreviewParams,
-  deps: StrategyMutationGuardDeps = defaultDeps,
+  deps: StrategyMutationGuardDeps = getDefaultStrategyMutationGuardDeps(),
 ): Promise<ArchitectPlanRecord> => {
   if (params.preview.status !== "valid") {
     throw new Error("Cannot apply a blocked strategy preview.");

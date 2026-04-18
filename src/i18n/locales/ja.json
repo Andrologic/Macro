@@ -47,7 +47,8 @@
     "confirmDelete": "本気ですか？",
     "now": "今",
     "restore": "Restore",
-    "saved": "Saved"
+    "saved": "Saved",
+    "discard": "Discard"
   },
   "header": {
     "architect": "Architect",
@@ -142,6 +143,9 @@
       "nextAction": "次のアクション:{{action}}。",
       "macroConflictTitle": "@マクロ同期の競合",
       "macroConflictDescription": "報告されたメタデータ ブロッカーを解決し、同じ @macro 同期ステップを明示的に再試行します。"
+    },
+    "scope": {
+      "allProjects": "All projects"
     }
   },
   "window": {
@@ -284,7 +288,16 @@
     "noArchivedConversations": "No archived conversations yet",
     "noActiveConversations": "No active conversations",
     "noActiveConversationsDescription": "Start a new conversation to see it here.",
-    "deleteArchivedConversationsTitle": "Delete archived conversations"
+    "deleteArchivedConversationsTitle": "Delete archived conversations",
+    "questionnaireResponseSummaryTitle": "Questionnaire responses",
+    "questionnaireLabel": "Question",
+    "questionnairePreviousStep": "Previous question",
+    "questionnairePeekNextStep": "Next question",
+    "questionnaireProgress": "Question {{current}}/{{total}}",
+    "questionnaireFreeTextHint": "Choose one option or answer freely",
+    "questionnaireFreeTextPlaceholder": "Or type your own answer",
+    "questionnaireSubmit": "Submit",
+    "questionnaireNext": "Next"
   },
   "settings": {
     "title": "設定",
@@ -458,7 +471,18 @@
           }
         }
       }
-    }
+    },
+    "projectOpenNone": "Do nothing",
+    "projectOpenDetectedGroup": "Detected apps",
+    "projectOpenBuiltinGroup": "Built-in options",
+    "openSubprojectsWith": "Open subprojects with",
+    "openSubprojectsWithDesc": "Choose which detected app each quick action should use in the project modal.",
+    "codeEditorApp": "Code editor",
+    "codeEditorAppDesc": "Used when clicking the code editor quick action for a subproject.",
+    "terminalApp": "Terminal",
+    "terminalAppDesc": "Used when clicking the terminal quick action for a subproject.",
+    "fileExplorerApp": "File explorer",
+    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject."
   },
   "project": {
     "projects": "プロジェクト",
@@ -618,7 +642,14 @@
     "gitFlowCurrentBranchLabel": "現在のブランチ",
     "gitFlowDetectedBranches": "検出されたブランチ",
     "gitFlowConfirmAction": "ブランチを確認",
-    "gitFlowConfirmDistinctBranches": "メインと開発には異なる 2 つのブランチを選択してください。"
+    "gitFlowConfirmDistinctBranches": "メインと開発には異なる 2 つのブランチを選択してください。",
+    "remoteProjectManagementUnavailable": "Project creation and editing are unavailable in remote mode.",
+    "openInEditor": "Open in code editor",
+    "openInTerminal": "Open in terminal",
+    "openInFiles": "Open in file explorer",
+    "openInEditorFailed": "Unable to open this subproject in the configured editor.",
+    "openInTerminalFailed": "Unable to open this subproject in the configured terminal.",
+    "openInFilesFailed": "Unable to open this subproject in the configured file explorer."
   },
   "tasks": {
     "tasks": "タスク",
@@ -888,7 +919,12 @@
       "deletedChangeReadOnly": "削除されたファイルは、レビュー中は読み取り専用になります。代わりにタスク・フローからそれらを復元してください。",
       "revertChangesFailed": "変更を元に戻せませんでした。"
     },
-    "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project."
+    "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project.",
+    "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",
+    "remoteExecutionUnavailable": "Implementation actions are unavailable in remote mode.",
+    "remoteTaskCommandsUnavailable": "Project commands are unavailable in remote mode.",
+    "remoteValidationUnavailable": "Local validation is not available in remote mode yet.",
+    "unsavedDraft": "Unsaved draft. Save to validate or reset."
   },
   "architect": {
     "needs": "特定されたニーズ",
@@ -1011,7 +1047,8 @@
     "branchStatus": {
       "pending": "保留中",
       "active": "アクティブ",
-      "merged": "合併しました"
+      "merged": "合併しました",
+      "mixed": "Mixed"
     },
     "progress": "進捗",
     "branchSearch": "タスクを検索...",
@@ -1030,7 +1067,25 @@
       "high": "高い",
       "medium": "中くらい",
       "low": "低い"
-    }
+    },
+    "frozenReasonCompleted": "Completed work",
+    "frozenReasonDependencyLocked": "Locked dependency",
+    "frozenReasonStarted": "Started work",
+    "frozenReasonCompletedTooltip": "This task is already completed and can no longer be modified automatically.",
+    "frozenReasonDependencyLockedTooltip": "This dependency is locked because started or completed work already depends on it.",
+    "frozenReasonStartedTooltip": "This task has already been started and can no longer be modified automatically.",
+    "frozenNodeLocked": "Locked",
+    "strategyPreviewTitle": "Regeneration preview",
+    "strategyPreviewBlockedTitle": "Regeneration blocked",
+    "strategyPreviewDescription": "Frozen work is preserved. Review the pending rewrites before applying the updated strategy.",
+    "strategyPreviewBlockedDescription": "This mutation would break frozen work or create an inconsistent plan.",
+    "strategyPreviewFrozen": "Frozen nodes kept",
+    "strategyPreviewRewrites": "Pending rewrites",
+    "strategyPreviewNone": "None",
+    "strategyPreviewNew": "New tasks",
+    "strategyPreviewRemoved": "Pending removals",
+    "strategyPreviewConflicts": "Conflicts",
+    "applyStrategyPreview": "Apply regeneration"
   },
   "git": {
     "gitTree": "Git ツリー",
@@ -1093,7 +1148,8 @@
       "connected": "Connected",
       "downloading": "Downloading",
       "runtimeMissing": "Not installed",
-      "updateRequired": "Update required"
+      "updateRequired": "Update required",
+      "configured": "Configured"
     },
     "types": {
       "openaiCompatible": "OpenAI対応",
@@ -1167,6 +1223,15 @@
     "modeHintAuto": "Architect/Implement: 有効な tools はモデルが必要としたときに自動実行され、使用状況はチャットに inline 表示されます。",
     "nativeToolSupportWarning": "現在選択されているプロバイダーまたはモデルはネイティブのツール呼び出しをサポートしていません。ここで tools を設定することはできますが、互換性のあるモデルを選ぶまで inject されません。",
     "architectMacroOnly": "Architect: @macro のみ",
+    "architectFullOnly": "Architect Full",
+    "architectAutonomy": {
+      "title": "Architect Tool Autonomy",
+      "description": "Choose whether Architect chat can use destructive need and strategy deletion tools.",
+      "guarded": "Guarded",
+      "full": "Full",
+      "guardedHint": "Guarded keeps need and strategy deletions unavailable to the model.",
+      "fullHint": "Full also exposes need_delete and strategy_delete, but both still require confirm=true."
+    },
     "needNativeToolSupportTooltip": "この tool を使うには、ネイティブのツール呼び出しをサポートするモデルを選択してください。",
     "noCustomMcpServers": "カスタム MCP サーバーが構成されていません。",
     "tabs": {
@@ -1453,5 +1518,11 @@
     "disconnected": "Disconnected",
     "disconnectedDescription": "This terminal session is no longer attached to a live process.",
     "reconnect": "Reconnect"
+  },
+  "notify": {
+    "connectionFailed": "Connection failed",
+    "chatConversationsDeleted": "{{count}} conversations deleted",
+    "chatDeleteFailed": "Failed to delete conversations",
+    "loggedOut": "Logged out"
   }
 }

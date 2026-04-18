@@ -665,7 +665,16 @@ export const MACRO_TOOL_REGISTRY = [
         },
         category: {
           type: "string",
-          enum: ["functional", "technical", "ux", "security", "other"],
+          enum: [
+            "functional",
+            "technical",
+            "ux",
+            "performance",
+            "security",
+            "data",
+            "business",
+            "other",
+          ],
           description: "Category of the need.",
         },
         priority: {
@@ -680,6 +689,124 @@ export const MACRO_TOOL_REGISTRY = [
         },
       },
       required: ["title", "description", "category", "priority"],
+    },
+  ),
+  objectTool(
+    "need_list",
+    "List needs for the active Architect plan. Supports lightweight filtering by status, category, priority, or tag.",
+    {
+      type: "object",
+      properties: {
+        status: {
+          type: "string",
+          enum: ["identified", "refined", "validated"],
+          description: "Optional need status filter.",
+        },
+        category: {
+          type: "string",
+          enum: [
+            "functional",
+            "technical",
+            "ux",
+            "performance",
+            "security",
+            "data",
+            "business",
+            "other",
+          ],
+          description: "Optional need category filter.",
+        },
+        priority: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+          description: "Optional need priority filter.",
+        },
+        tag: {
+          type: "string",
+          description: "Optional tag filter.",
+        },
+      },
+      required: [],
+    },
+  ),
+  objectTool(
+    "need_get",
+    "Load a single need from the active Architect plan by need_id.",
+    {
+      type: "object",
+      properties: {
+        need_id: {
+          type: "string",
+          description: "Need identifier within the active plan.",
+        },
+      },
+      required: ["need_id"],
+    },
+  ),
+  objectTool(
+    "need_update",
+    "Update part of a need on the active Architect plan. Only the provided fields are changed.",
+    {
+      type: "object",
+      properties: {
+        need_id: {
+          type: "string",
+          description: "Need identifier within the active plan.",
+        },
+        title: { type: "string", description: "Updated need title." },
+        description: {
+          type: "string",
+          description: "Updated need description.",
+        },
+        category: {
+          type: "string",
+          enum: [
+            "functional",
+            "technical",
+            "ux",
+            "performance",
+            "security",
+            "data",
+            "business",
+            "other",
+          ],
+          description: "Updated need category.",
+        },
+        priority: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+          description: "Updated need priority.",
+        },
+        status: {
+          type: "string",
+          enum: ["identified", "refined", "validated"],
+          description: "Updated need status.",
+        },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+          description: "Replacement tag list for the need.",
+        },
+      },
+      required: ["need_id"],
+    },
+  ),
+  objectTool(
+    "need_delete",
+    "Delete a need from the active Architect plan. Requires confirm=true.",
+    {
+      type: "object",
+      properties: {
+        need_id: {
+          type: "string",
+          description: "Need identifier within the active plan.",
+        },
+        confirm: {
+          type: "boolean",
+          description: "Must be true to confirm the deletion.",
+        },
+      },
+      required: ["need_id", "confirm"],
     },
   ),
   objectTool(

@@ -47,7 +47,8 @@
     "confirmDelete": "확실합니까?",
     "now": "지금",
     "restore": "Restore",
-    "saved": "Saved"
+    "saved": "Saved",
+    "discard": "Discard"
   },
   "header": {
     "architect": "Architect",
@@ -142,6 +143,9 @@
       "nextAction": "다음 작업:{{action}}.",
       "macroConflictTitle": "@매크로 동기화 충돌",
       "macroConflictDescription": "보고된 메타데이터 차단 문제를 해결한 후 동일한 @macro 동기화 단계를 명시적으로 다시 시도하세요."
+    },
+    "scope": {
+      "allProjects": "All projects"
     }
   },
   "window": {
@@ -284,7 +288,16 @@
     "noArchivedConversations": "No archived conversations yet",
     "noActiveConversations": "No active conversations",
     "noActiveConversationsDescription": "Start a new conversation to see it here.",
-    "deleteArchivedConversationsTitle": "Delete archived conversations"
+    "deleteArchivedConversationsTitle": "Delete archived conversations",
+    "questionnaireResponseSummaryTitle": "Questionnaire responses",
+    "questionnaireLabel": "Question",
+    "questionnairePreviousStep": "Previous question",
+    "questionnairePeekNextStep": "Next question",
+    "questionnaireProgress": "Question {{current}}/{{total}}",
+    "questionnaireFreeTextHint": "Choose one option or answer freely",
+    "questionnaireFreeTextPlaceholder": "Or type your own answer",
+    "questionnaireSubmit": "Submit",
+    "questionnaireNext": "Next"
   },
   "settings": {
     "title": "설정",
@@ -458,7 +471,18 @@
           }
         }
       }
-    }
+    },
+    "projectOpenNone": "Do nothing",
+    "projectOpenDetectedGroup": "Detected apps",
+    "projectOpenBuiltinGroup": "Built-in options",
+    "openSubprojectsWith": "Open subprojects with",
+    "openSubprojectsWithDesc": "Choose which detected app each quick action should use in the project modal.",
+    "codeEditorApp": "Code editor",
+    "codeEditorAppDesc": "Used when clicking the code editor quick action for a subproject.",
+    "terminalApp": "Terminal",
+    "terminalAppDesc": "Used when clicking the terminal quick action for a subproject.",
+    "fileExplorerApp": "File explorer",
+    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject."
   },
   "project": {
     "projects": "프로젝트",
@@ -618,7 +642,14 @@
     "gitFlowCurrentBranchLabel": "현재 브랜치",
     "gitFlowDetectedBranches": "감지된 브랜치",
     "gitFlowConfirmAction": "브랜치 확인",
-    "gitFlowConfirmDistinctBranches": "메인과 개발에는 서로 다른 두 브랜치를 선택하세요."
+    "gitFlowConfirmDistinctBranches": "메인과 개발에는 서로 다른 두 브랜치를 선택하세요.",
+    "remoteProjectManagementUnavailable": "Project creation and editing are unavailable in remote mode.",
+    "openInEditor": "Open in code editor",
+    "openInTerminal": "Open in terminal",
+    "openInFiles": "Open in file explorer",
+    "openInEditorFailed": "Unable to open this subproject in the configured editor.",
+    "openInTerminalFailed": "Unable to open this subproject in the configured terminal.",
+    "openInFilesFailed": "Unable to open this subproject in the configured file explorer."
   },
   "tasks": {
     "tasks": "작업",
@@ -888,7 +919,12 @@
       "deletedChangeReadOnly": "삭제된 파일은 검토 중에 읽기 전용입니다. 대신 TaskFlow에서 복원하십시오.",
       "revertChangesFailed": "변경을 되돌리지 못했습니다."
     },
-    "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project."
+    "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project.",
+    "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",
+    "remoteExecutionUnavailable": "Implementation actions are unavailable in remote mode.",
+    "remoteTaskCommandsUnavailable": "Project commands are unavailable in remote mode.",
+    "remoteValidationUnavailable": "Local validation is not available in remote mode yet.",
+    "unsavedDraft": "Unsaved draft. Save to validate or reset."
   },
   "architect": {
     "needs": "확인된 요구사항",
@@ -1011,7 +1047,8 @@
     "branchStatus": {
       "pending": "보류 중",
       "active": "활동적인",
-      "merged": "병합됨"
+      "merged": "병합됨",
+      "mixed": "Mixed"
     },
     "progress": "진전",
     "branchSearch": "작업 검색...",
@@ -1030,7 +1067,25 @@
       "high": "높은",
       "medium": "중간",
       "low": "낮은"
-    }
+    },
+    "frozenReasonCompleted": "Completed work",
+    "frozenReasonDependencyLocked": "Locked dependency",
+    "frozenReasonStarted": "Started work",
+    "frozenReasonCompletedTooltip": "This task is already completed and can no longer be modified automatically.",
+    "frozenReasonDependencyLockedTooltip": "This dependency is locked because started or completed work already depends on it.",
+    "frozenReasonStartedTooltip": "This task has already been started and can no longer be modified automatically.",
+    "frozenNodeLocked": "Locked",
+    "strategyPreviewTitle": "Regeneration preview",
+    "strategyPreviewBlockedTitle": "Regeneration blocked",
+    "strategyPreviewDescription": "Frozen work is preserved. Review the pending rewrites before applying the updated strategy.",
+    "strategyPreviewBlockedDescription": "This mutation would break frozen work or create an inconsistent plan.",
+    "strategyPreviewFrozen": "Frozen nodes kept",
+    "strategyPreviewRewrites": "Pending rewrites",
+    "strategyPreviewNone": "None",
+    "strategyPreviewNew": "New tasks",
+    "strategyPreviewRemoved": "Pending removals",
+    "strategyPreviewConflicts": "Conflicts",
+    "applyStrategyPreview": "Apply regeneration"
   },
   "git": {
     "gitTree": "Git 트리",
@@ -1093,7 +1148,8 @@
       "connected": "Connected",
       "downloading": "Downloading",
       "runtimeMissing": "Not installed",
-      "updateRequired": "Update required"
+      "updateRequired": "Update required",
+      "configured": "Configured"
     },
     "types": {
       "openaiCompatible": "OpenAI 호환",
@@ -1167,6 +1223,15 @@
     "modeHintAuto": "Architect/Implement: 활성화된 tools 는 모델이 필요로 할 때 자동 실행될 수 있고, 사용 내역은 채팅에 inline 으로 표시됩니다.",
     "nativeToolSupportWarning": "현재 선택된 프로바이더 또는 모델은 네이티브 도구 호출을 지원하지 않습니다. 여기서 tools 를 설정할 수는 있지만, 호환되는 모델을 선택하기 전까지는 inject 되지 않습니다.",
     "architectMacroOnly": "Architect: @macro 전용",
+    "architectFullOnly": "Architect Full",
+    "architectAutonomy": {
+      "title": "Architect Tool Autonomy",
+      "description": "Choose whether Architect chat can use destructive need and strategy deletion tools.",
+      "guarded": "Guarded",
+      "full": "Full",
+      "guardedHint": "Guarded keeps need and strategy deletions unavailable to the model.",
+      "fullHint": "Full also exposes need_delete and strategy_delete, but both still require confirm=true."
+    },
     "needNativeToolSupportTooltip": "이 tool 을 사용하려면 네이티브 도구 호출을 지원하는 모델을 선택하세요.",
     "noCustomMcpServers": "사용자 정의 MCP 서버가 구성되지 않았습니다.",
     "tabs": {
@@ -1453,5 +1518,11 @@
     "disconnected": "Disconnected",
     "disconnectedDescription": "This terminal session is no longer attached to a live process.",
     "reconnect": "Reconnect"
+  },
+  "notify": {
+    "connectionFailed": "Connection failed",
+    "chatConversationsDeleted": "{{count}} conversations deleted",
+    "chatDeleteFailed": "Failed to delete conversations",
+    "loggedOut": "Logged out"
   }
 }

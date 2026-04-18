@@ -1,4 +1,4 @@
-import type { PlanNode, PredictedBranch } from '../types';
+import type { Need, PlanNode, PredictedBranch } from '../types';
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
 import type {
   FrozenPlanNode,
@@ -78,6 +78,18 @@ const summarizeFrozenPlanNode = (node: FrozenPlanNode) => ({
   project_ids: node.projectIds,
 });
 
+const summarizeNeed = (need: Need) => ({
+  id: need.id,
+  title: need.title,
+  description: cleanLine(need.description) || '',
+  category: need.category,
+  priority: need.priority,
+  status: need.status,
+  tags: need.tags,
+  created_at: need.createdAt,
+  updated_at: need.updatedAt,
+});
+
 const formatArchitectToolResult = (summary: string, payload?: unknown): string =>
   `${summary.trim()}${payload === undefined ? '' : compactJsonBlock(payload)}`.trim();
 
@@ -109,6 +121,68 @@ export const formatArchitectNeedAddToolResult = (params: {
       priority: params.priority,
       tags: params.tags,
       total_needs: params.totalNeeds,
+    }
+  );
+
+export const formatArchitectNeedListToolResult = (params: {
+  planId: string;
+  filters: {
+    status?: string;
+    category?: string;
+    priority?: string;
+    tag?: string;
+  };
+  needs: Need[];
+}): string =>
+  formatArchitectToolResult(
+    `Listed ${params.needs.length} need${params.needs.length === 1 ? '' : 's'} for plan ${params.planId}.`,
+    {
+      plan_id: params.planId,
+      filters: params.filters,
+      total_needs: params.needs.length,
+      needs: params.needs.map(summarizeNeed),
+    }
+  );
+
+export const formatArchitectNeedGetToolResult = (params: {
+  planId: string;
+  need: Need;
+}): string =>
+  formatArchitectToolResult(
+    `Loaded need "${params.need.title}" from plan ${params.planId}.`,
+    {
+      plan_id: params.planId,
+      need: summarizeNeed(params.need),
+    }
+  );
+
+export const formatArchitectNeedUpdateToolResult = (params: {
+  planId: string;
+  need: Need;
+  changedFields: string[];
+}): string =>
+  formatArchitectToolResult(
+    `Updated need "${params.need.title}" on plan ${params.planId}. Changed field${params.changedFields.length === 1 ? '' : 's'}: ${params.changedFields.join(', ') || 'none'}.`,
+    {
+      plan_id: params.planId,
+      changed_fields: params.changedFields,
+      need: summarizeNeed(params.need),
+    }
+  );
+
+export const formatArchitectNeedDeleteToolResult = (params: {
+  planId: string;
+  needId: string;
+  title: string;
+  remainingNeeds: number;
+}): string =>
+  formatArchitectToolResult(
+    `Deleted need "${params.title}" from plan ${params.planId}. ${params.remainingNeeds} need${params.remainingNeeds === 1 ? '' : 's'} remain.`,
+    {
+      plan_id: params.planId,
+      need_id: params.needId,
+      title: params.title,
+      remaining_needs: params.remainingNeeds,
     }
   );
 
@@ -248,6 +322,18 @@ export const formatArchitectStrategyUpdateToolResult = (params: {
     }
   );
 };
+
+export const formatArchitectStrategyDeleteToolResult = (params: {
+  planId: string;
+}): string =>
+  formatArchitectToolResult(
+    `Deleted strategy for plan ${params.planId}. The active plan now has no strategy nodes or predicted branches.`,
+    {
+      plan_id: params.planId,
+      node_count: 0,
+      branch_count: 0,
+    }
+  );
 
 export const formatArchitectStrategyMutationRepairToolResult = (params: {
   planId: string;

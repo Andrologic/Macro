@@ -336,7 +336,7 @@ export interface ArchitectGitFlowDependencies {
   getGitFlowBaseBranch: typeof getGitFlowBaseBranch;
 }
 
-const defaultArchitectGitFlowDependencies: ArchitectGitFlowDependencies = {
+const getDefaultArchitectGitFlowDependencies = (): ArchitectGitFlowDependencies => ({
   tauri: tauriIpc,
   getAppState: () => useAppStore.getState(),
   getArchitectPlan,
@@ -344,7 +344,7 @@ const defaultArchitectGitFlowDependencies: ArchitectGitFlowDependencies = {
   archiveArchitectPlan,
   deleteArchitectPlan,
   getGitFlowBaseBranch,
-};
+});
 
 const joinRepoPath = (repoPath: string, ...segments: string[]): string =>
   [repoPath.replace(/[\\/]+$/, ''), ...segments.map((segment) => segment.replace(/^[\\/]+|[\\/]+$/g, ''))]
@@ -643,7 +643,7 @@ export const provisionPlanBranches = async (
   plan: ArchitectPlanRecord,
   explicitRepoPath?: string
 ): Promise<ProvisionPlanBranchesResult> =>
-  defaultArchitectGitFlowService.provisionPlanBranches(plan, explicitRepoPath);
+  getDefaultArchitectGitFlowService().provisionPlanBranches(plan, explicitRepoPath);
 
 export const validatePlanAndProvisionBranches = async (params: {
   branchName: string;
@@ -651,20 +651,20 @@ export const validatePlanAndProvisionBranches = async (params: {
   repoPath?: string;
   setActive?: boolean;
 }): Promise<{ plan: ArchitectPlanRecord; provision: ProvisionPlanBranchesResult }> =>
-  defaultArchitectGitFlowService.validatePlanAndProvisionBranches(params);
+  getDefaultArchitectGitFlowService().validatePlanAndProvisionBranches(params);
 
 export const mergeFeatureBranchIntoPlanBranch = async (params: {
   projectId: string;
   branchName: string;
   planBranchName: string;
   repoPath?: string;
-}): Promise<string> => defaultArchitectGitFlowService.mergeFeatureBranchIntoPlanBranch(params);
+}): Promise<string> => getDefaultArchitectGitFlowService().mergeFeatureBranchIntoPlanBranch(params);
 
 export const loadPlanReview = async (params: {
   branchName: string;
   planId: string;
   repoPath?: string;
-}): Promise<PlanReviewResult> => defaultArchitectGitFlowService.loadPlanReview(params);
+}): Promise<PlanReviewResult> => getDefaultArchitectGitFlowService().loadPlanReview(params);
 
 export const finalizePlanIntoBaseBranch = async (params: {
   branchName: string;
@@ -674,7 +674,7 @@ export const finalizePlanIntoBaseBranch = async (params: {
   plan: ArchitectPlanRecord;
   repositories: FinalizedPlanRepositoryResult[];
   cleanup: CleanupPlanRepositoryResult[];
-}> => defaultArchitectGitFlowService.finalizePlanIntoBaseBranch(params);
+}> => getDefaultArchitectGitFlowService().finalizePlanIntoBaseBranch(params);
 
 export const cleanupPlanBranches = async (
   plan: ArchitectPlanRecord,
@@ -683,7 +683,7 @@ export const cleanupPlanBranches = async (
     allowRetained?: boolean;
   }
 ): Promise<CleanupPlanRepositoryResult[]> =>
-  defaultArchitectGitFlowService.cleanupPlanBranches(plan, explicitRepoPath, options);
+  getDefaultArchitectGitFlowService().cleanupPlanBranches(plan, explicitRepoPath, options);
 
 const PLAN_DELETE_REQUIRES_ARCHIVE_MESSAGE = 'Archive the plan before deleting it.';
 
@@ -696,13 +696,14 @@ export const deletePlanAndCleanupBranches = async (params: {
   deletedBranches: string[];
   deletedWorktreeKeys: string[];
   repositories: CleanupPlanRepositoryResult[];
-}> => defaultArchitectGitFlowService.deletePlanAndCleanupBranches(params);
+}> => getDefaultArchitectGitFlowService().deletePlanAndCleanupBranches(params);
 
 export const createArchitectGitFlowService = (
   overrides: (Partial<ArchitectGitFlowDependencies> & {
     tauri?: Partial<ArchitectGitFlowTauriDeps>;
   }) = {}
 ) => {
+  const defaultArchitectGitFlowDependencies = getDefaultArchitectGitFlowDependencies();
   const deps: ArchitectGitFlowDependencies = {
     ...defaultArchitectGitFlowDependencies,
     ...overrides,
@@ -1410,4 +1411,9 @@ export const createArchitectGitFlowService = (
   };
 };
 
-const defaultArchitectGitFlowService = createArchitectGitFlowService();
+let defaultArchitectGitFlowService: ReturnType<typeof createArchitectGitFlowService> | null = null;
+
+const getDefaultArchitectGitFlowService = () => {
+  defaultArchitectGitFlowService ||= createArchitectGitFlowService();
+  return defaultArchitectGitFlowService;
+};
