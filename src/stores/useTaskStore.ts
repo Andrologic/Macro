@@ -810,6 +810,7 @@ const persistTaskStatusToArchitectPlan = async (
     );
     const currentPlanTasks = deriveImplementTasksFromStrategy({
       planId: plan.id,
+      planSlug: plan.slug,
       nodes: plan.nodes || [],
       predictedBranches: plan.predictedBranches || [],
       targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
@@ -836,6 +837,7 @@ const persistTaskStatusToArchitectPlan = async (
     );
     const strategy = deriveImplementTasksFromStrategy({
       planId: plan.id,
+      planSlug: plan.slug,
       nodes: nextPlanNodes,
       predictedBranches: nextPredictedBranches,
       targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),

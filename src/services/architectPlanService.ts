@@ -251,10 +251,42 @@ const slugifyPlanTitle = (value: string): string =>
     .replace(/^-+/, '')
     .replace(/-+$/, '') || `plan-${Date.now()}`;
 
+const createAvailablePlanSlug = (
+  value: string,
+  reservedSlugs: string[],
+  options?: {
+    excludeSlug?: string | null;
+  }
+): string => {
+  const baseSlug = slugifyPlanTitle(value);
+  const reserved = new Set(
+    reservedSlugs
+      .map((slug) => slugifyPlanTitle(slug))
+      .filter((slug) => slug !== slugifyPlanTitle(options?.excludeSlug || ''))
+  );
+  if (!reserved.has(baseSlug)) {
+    return baseSlug;
+  }
+
+  let index = 2;
+  let attempt = `${baseSlug}-${index}`;
+  while (reserved.has(attempt)) {
+    index += 1;
+    attempt = `${baseSlug}-${index}`;
+  }
+  return attempt;
+};
+
 const normalizePlanLabel = (value?: string): string | undefined => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed.length > 0 ? trimmed : undefined;
 };
+
+export const isArchitectPlanSlugMutable = (
+  plan: Pick<ArchitectPlanRecord, 'status' | 'nodes'>
+): boolean =>
+  plan.status === 'draft' &&
+  !(plan.nodes || []).some((node) => node.status !== 'pending');
 
 const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[] => Array.from(
   new Set(
@@ -1050,7 +1082,7 @@ const sanitizeArchitectPlanRecord = (
     ...plan,
     id: normalizedId,
     slug: normalizedSlug,
-    title: normalizedSlug === normalizedId ? normalizedId : normalizedTitle,
+    title: normalizedTitle,
     label: normalizePlanLabel(plan.label),
     targetBranch: normalizeBranchName(plan.targetBranch || normalized),
     targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
@@ -1165,7 +1197,7 @@ const sanitizeArchitectPlanSummary = (
     ...summary,
     id: safeId,
     slug: normalizedSlug,
-    title: normalizedSlug === safeId ? safeId : normalizedTitle,
+    title: normalizedTitle,
     label: normalizePlanLabel(summary.label),
     targetBranch: normalizeBranchName(summary.targetBranch || branchName),
     targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
@@ -2494,12 +2526,36 @@ const upsertPlanInScopeIndex = async (
   registrySnapshot?: ValidProjectRegistrySnapshot | null
 ): Promise<void> => {
   const index = await readIndexAtScope(scope, branchName, registrySnapshot);
+  const previousSummary = index.plans.find((candidate) => candidate.id === plan.id);
+  const nextPlans = upsertSummary(index.plans, toSummary(plan));
+  const nextPlanSlugs = nextPlans.map((candidate) =>
+    slugifyPlanTitle(candidate.slug || candidate.title || candidate.id)
+  );
+  const releasableDraftSlug =
+    previousSummary &&
+    previousSummary.status === 'draft' &&
+    plan.status === 'draft' &&
+    slugifyPlanTitle(previousSummary.slug || previousSummary.title || previousSummary.id) !==
+      slugifyPlanTitle(plan.slug)
+      ? slugifyPlanTitle(previousSummary.slug || previousSummary.title || previousSummary.id)
+      : null;
   await writeIndexAtScope(scope, branchName, {
     ...index,
     version: 3,
-    plans: upsertSummary(index.plans, toSummary(plan)),
+    plans: nextPlans,
     activePlanId: options?.setActive ? plan.id : index.activePlanId,
-    reservedPlanSlugs: Array.from(new Set([...index.reservedPlanSlugs, plan.slug])),
+    reservedPlanSlugs: Array.from(
+      new Set([
+        ...index.reservedPlanSlugs
+          .map((slug) => slugifyPlanTitle(slug))
+          .filter(
+            (slug) =>
+              slug !== releasableDraftSlug ||
+              nextPlanSlugs.includes(slug)
+          ),
+        ...nextPlanSlugs,
+      ])
+    ),
   });
 };
 
@@ -2604,6 +2660,37 @@ export const listArchitectPlans = async (branchName: string, includeDeleted = fa
   };
 };
 
+export const isArchitectPlanSlugAvailable = async (params: {
+  branchName: string;
+  slug: string;
+  excludePlanId?: string | null;
+}): Promise<boolean> => {
+  const normalizedBranch = normalizeBranchName(params.branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const normalizedSlug = slugifyPlanTitle(params.slug);
+  const normalizedExcludePlanId = params.excludePlanId ? sanitizeId(params.excludePlanId) : null;
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot);
+  const currentSlugForExcludedPlan =
+    index.plans.find((plan) => plan.id === normalizedExcludePlanId)?.slug || null;
+
+  if (
+    index.plans.some(
+      (plan) =>
+        plan.id !== normalizedExcludePlanId &&
+        slugifyPlanTitle(plan.slug || plan.title || plan.id) === normalizedSlug
+    )
+  ) {
+    return false;
+  }
+
+  return !index.reservedPlanSlugs.some(
+    (slug) =>
+      slugifyPlanTitle(slug) === normalizedSlug &&
+      slugifyPlanTitle(currentSlugForExcludedPlan || '') !== normalizedSlug
+  );
+};
+
 export const getArchitectPlan = async (branchName: string, planId: string): Promise<ArchitectPlanRecord | null> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
@@ -2638,11 +2725,13 @@ export const createArchitectPlan = async (input: {
 
   // Read index early for uniqueness checks
   const planId = input.planId ? sanitizeId(input.planId) : String(Date.now());
-  const canonicalSlug = planId;
   const initialLabel = normalizePlanLabel(input.label || input.title);
   const index = await readAggregatedIndex(normalizedBranch, registrySnapshot);
+  const canonicalSlug = createAvailablePlanSlug(
+    input.slug || initialLabel || planId,
+    index.reservedPlanSlugs,
+  );
 
-  // Reject duplicate slugs across all historical plans, including deleted ones.
   if (index.plans.some((plan) => plan.id === planId)) {
     throw new Error(`A plan with id "${planId}" already exists. Choose a different identifier.`);
   }
@@ -2759,8 +2848,26 @@ export const updateArchitectPlan = async (input: {
   }
 
   const requestedSlug = input.slug ? slugifyPlanTitle(input.slug) : existing.slug;
-  if (requestedSlug !== existing.slug) {
+  if (requestedSlug !== existing.slug && !isArchitectPlanSlugMutable(existing)) {
     throw new Error('Plan slug is immutable and cannot be changed after creation.');
+  }
+  if (requestedSlug !== existing.slug) {
+    const idx = await readAggregatedIndex(normalizedBranch, registrySnapshot);
+    const currentSlugForPlan = idx.plans.find((plan) => plan.id === safeId)?.slug || existing.slug;
+    const hasSlugConflict =
+      idx.plans.some(
+        (plan) =>
+          plan.id !== safeId &&
+          slugifyPlanTitle(plan.slug || plan.title || plan.id) === requestedSlug
+      ) ||
+      idx.reservedPlanSlugs.some(
+        (slug) =>
+          slugifyPlanTitle(slug) === requestedSlug &&
+          slugifyPlanTitle(currentSlugForPlan) !== requestedSlug
+      );
+    if (hasSlugConflict) {
+      throw new Error(`A plan slug "${requestedSlug}" already exists. Choose a different slug.`);
+    }
   }
 
   const requestedLabel = normalizePlanLabel(input.label ?? input.title);
@@ -2788,7 +2895,7 @@ export const updateArchitectPlan = async (input: {
 
   const candidateResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...existing,
-    slug: existing.slug,
+    slug: requestedSlug,
     title: isCanonicalPlan ? existing.title : input.title?.trim() || existing.title,
     label: isCanonicalPlan
       ? (input.label !== undefined || input.title !== undefined ? requestedLabel : existing.label)

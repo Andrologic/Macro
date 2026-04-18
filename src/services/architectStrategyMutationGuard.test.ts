@@ -237,4 +237,161 @@ describe('architectStrategyMutationGuard', () => {
     expect(updated.status).toBe('validated');
     expect(updated.nodes).toHaveLength(2);
   });
+
+  it('blocks the preview when metadata slug validation already failed', () => {
+    const plan = createPlan({
+      nodes: [createNode({ id: 'task-a', title: 'Prepare schema' })],
+    });
+
+    const preview = prepareStrategyMutationPreview({
+      source: 'strategy_generate',
+      plan,
+      candidateNodes: [createNode({ id: 'task-a', title: 'Prepare schema' })],
+      metadataUpdate: { slug: 'checkout-rework', description: plan.description },
+      metadataValidationConflicts: [
+        'Plan slug "checkout-rework" is already reserved by another plan.',
+      ],
+    });
+
+    expect(preview.status).toBe('blocked');
+    expect(preview.conflicts).toEqual([
+      'Plan slug "checkout-rework" is already reserved by another plan.',
+    ]);
+  });
+
+  it('passes the preview slug through when applying a valid mutation', async () => {
+    const plan = createPlan({
+      slug: 'checkout-refresh',
+      nodes: [createNode({ id: 'task-a', title: 'Prepare schema' })],
+    });
+    const preview = prepareStrategyMutationPreview({
+      source: 'strategy_generate',
+      plan,
+      candidateNodes: [createNode({ id: 'task-a', title: 'Prepare schema' })],
+      metadataUpdate: {
+        slug: 'checkout-rework',
+        description: plan.description,
+      },
+    });
+
+    expect(preview.status).toBe('valid');
+
+    const getArchitectPlanMock = mock(async () => plan);
+    const provisionPlanBranchesMock = mock(async () => ({
+      planBranchName: 'plan/checkout-rework',
+      repositories: [],
+      createdPlanBranch: false,
+      createdFeatureBranches: [],
+      existingFeatureBranches: [],
+    }));
+    const updateArchitectPlanMock = mock(async (params: {
+      slug?: string;
+      status?: string;
+      nodes?: PlanNode[];
+    }) => ({
+      ...plan,
+      slug: params.slug ?? plan.slug,
+      status: params.status ?? plan.status,
+      nodes: params.nodes ?? plan.nodes,
+      predictedBranches: preview.predictedBranches,
+    }));
+
+    const updated = await applyStrategyMutationPreview(
+      { preview },
+      {
+        getArchitectPlan: getArchitectPlanMock as any,
+        updateArchitectPlan: updateArchitectPlanMock as any,
+        provisionPlanBranches: provisionPlanBranchesMock as any,
+      }
+    );
+
+    expect(updateArchitectPlanMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: 'checkout-rework',
+      })
+    );
+    expect(updated.slug).toBe('checkout-rework');
+    expect(updated.predictedBranches.map((branch) => branch.name)).toEqual([
+      'feature/checkout-rework/prepare-schema',
+    ]);
+    expect(updated.predictedBranches.map((branch) => branch.parentBranch)).toEqual([
+      'plan/checkout-rework',
+    ]);
+  });
+
+  it('rebuilds previewed predicted branches from the target slug instead of the current slug', () => {
+    const plan = createPlan({
+      slug: 'checkout-refresh',
+      title: 'checkout-refresh',
+      nodes: [
+        createNode({
+          id: 'task-a',
+          title: 'Prepare schema',
+          branchSlug: 'prepare-schema',
+          projectId: 'web',
+          projectIds: ['web'],
+        }),
+        createNode({
+          id: 'task-b',
+          title: 'Build endpoint',
+          branchSlug: 'build-endpoint',
+          projectId: 'web',
+          projectIds: ['web'],
+        }),
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-web-prepare-schema',
+          name: 'feature/checkout-refresh/prepare-schema',
+          color: '#3b82f6',
+          parentBranch: 'plan/checkout-refresh',
+          projectId: 'web',
+          taskIds: ['task-a'],
+          status: 'pending',
+          branchType: 'feature',
+          branchSlug: 'prepare-schema',
+        },
+        {
+          id: 'branch-web-build-endpoint',
+          name: 'feature/checkout-refresh/build-endpoint',
+          color: '#10b981',
+          parentBranch: 'plan/checkout-refresh',
+          projectId: 'web',
+          taskIds: ['task-b'],
+          status: 'pending',
+          branchType: 'feature',
+          branchSlug: 'build-endpoint',
+        },
+      ],
+    });
+
+    const preview = prepareStrategyMutationPreview({
+      source: 'strategy_generate',
+      plan,
+      candidateNodes: plan.nodes,
+      metadataUpdate: {
+        slug: 'checkout-rework',
+        description: plan.description,
+      },
+    });
+
+    expect(preview.status).toBe('valid');
+    expect(preview.predictedBranches.map((branch) => branch.name)).toEqual([
+      'feature/checkout-rework/prepare-schema',
+      'feature/checkout-rework/build-endpoint',
+    ]);
+    expect(preview.predictedBranches.map((branch) => branch.id)).toEqual([
+      'branch-web-prepare-schema',
+      'branch-web-build-endpoint',
+    ]);
+    expect(preview.predictedBranches.map((branch) => branch.parentBranch)).toEqual([
+      'plan/checkout-rework',
+      'plan/checkout-rework',
+    ]);
+    expect(
+      preview.predictedBranches.some((branch) =>
+        branch.name.includes('checkout-refresh'),
+      ),
+    ).toBe(false);
+  });
 });

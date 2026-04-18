@@ -18,6 +18,7 @@ use metadata::{
     WorkspaceMetadataRecoveryReportDto, WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState,
     WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
+use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
@@ -1412,14 +1413,15 @@ pub async fn finalize_manual_feature(
 ) -> Result<ManualFeatureDto> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let project_groups = state.project_groups.clone();
-    let feature = state
+    let normalized_task_id = task_id.trim();
+    let feature_index = state
         .manual_features
-        .iter_mut()
-        .find(|candidate| candidate.id == task_id.trim())
+        .iter()
+        .position(|candidate| candidate.id == normalized_task_id)
         .ok_or_else(|| {
             BackendError::Validation(format!("Unknown manual feature id: {}", task_id))
         })?;
-
+    let existing_feature_slug = state.manual_features[feature_index].feature_slug.clone();
     let normalized_title = title.trim();
     let normalized_description = description.trim();
     let normalized_feature_slug = slugify(feature_slug);
@@ -1431,6 +1433,43 @@ pub async fn finalize_manual_feature(
             "Manual feature finalization requires title, description and feature slug".to_string(),
         ));
     }
+
+    let slug_used_by_other_feature = state
+        .manual_features
+        .iter()
+        .enumerate()
+        .any(|(index, candidate)| {
+            index != feature_index
+                && candidate
+                    .feature_slug
+                    .as_ref()
+                    .map(|value| value == &normalized_feature_slug)
+                    .unwrap_or(false)
+        });
+    if slug_used_by_other_feature {
+        return Err(BackendError::Validation(format!(
+            "Standalone feature slug \"{}\" is already in use.",
+            normalized_feature_slug
+        )));
+    }
+
+    let slug_reserved_elsewhere = state.reserved_standalone_feature_slugs.iter().any(|value| {
+        value == &normalized_feature_slug
+            && existing_feature_slug.as_deref() != Some(normalized_feature_slug.as_str())
+    });
+    if slug_reserved_elsewhere {
+        return Err(BackendError::Validation(format!(
+            "Standalone feature slug \"{}\" is already reserved.",
+            normalized_feature_slug
+        )));
+    }
+
+    let feature = state
+        .manual_features
+        .get_mut(feature_index)
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Unknown manual feature id: {}", task_id))
+        })?;
 
     if let Some(next_conversation_id) = conversation_id
         .map(str::trim)
@@ -1455,7 +1494,7 @@ pub async fn finalize_manual_feature(
     feature.draft = false;
     feature.title = normalized_title.to_string();
     feature.description = normalized_description.to_string();
-    feature.feature_slug = Some(normalized_feature_slug);
+    feature.feature_slug = Some(normalized_feature_slug.clone());
     feature.branch_name = Some(branch_name.clone());
     feature.archived_at = None;
     feature.archive_reason = None;
@@ -1463,6 +1502,15 @@ pub async fn finalize_manual_feature(
     feature.base_branch = base_branch;
     feature.execution_targets = execution_targets;
     feature.updated_at = Utc::now().to_rfc3339();
+    if !state
+        .reserved_standalone_feature_slugs
+        .iter()
+        .any(|value| value == &normalized_feature_slug)
+    {
+        state
+            .reserved_standalone_feature_slugs
+            .push(normalized_feature_slug.clone());
+    }
 
     let (sanitized_state, _) = persist_sanitized_state(
         workspace_path,
@@ -2004,6 +2052,8 @@ pub async fn update_project_git_flow(
     git_flow_settings: &ProjectGitFlowSettingsDto,
 ) -> Result<ProjectDto> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let normalized_git_flow_settings = normalize_project_git_flow_settings(Some(git_flow_settings));
+    validate_project_git_flow_settings_strict(&normalized_git_flow_settings)?;
     tracing::info!(
         action = "project_registry_action_started",
         operation = "update_project_git_flow",
@@ -2017,8 +2067,7 @@ pub async fn update_project_git_flow(
             .iter_mut()
             .find(|project| project.id == project_id)
         {
-            project.git_flow_settings =
-                normalize_project_git_flow_settings(Some(git_flow_settings));
+            project.git_flow_settings = normalized_git_flow_settings.clone();
             updated_project = Some(project.clone());
             break;
         }
@@ -3303,6 +3352,7 @@ fn reconstruct_workspace_state_from_hints(
         plan_nodes: Vec::new(),
         predicted_branches: Vec::new(),
         manual_features: Vec::new(),
+        reserved_standalone_feature_slugs: Vec::new(),
     }
 }
 
@@ -3632,6 +3682,24 @@ fn sanitize_workspace_state(
     repair_report.manual_features_removed =
         initial_manual_feature_count.saturating_sub(state.manual_features.len());
     repair_report.manual_feature_targets_removed = removed_manual_feature_targets;
+    let mut reserved_standalone_feature_slugs = state
+        .reserved_standalone_feature_slugs
+        .iter()
+        .map(|value| slugify(value))
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
+    for feature in &state.manual_features {
+        if let Some(feature_slug) = feature.feature_slug.as_ref() {
+            let normalized = slugify(feature_slug);
+            if !normalized.is_empty() {
+                reserved_standalone_feature_slugs.insert(normalized);
+            }
+        }
+    }
+    state.reserved_standalone_feature_slugs = reserved_standalone_feature_slugs
+        .into_iter()
+        .collect::<Vec<_>>();
+    state.reserved_standalone_feature_slugs.sort();
 
     let initial_plan_node_count = state.plan_nodes.len();
     state.plan_nodes.retain(|node| {
@@ -4014,6 +4082,202 @@ fn normalize_branch_template(value: Option<&str>, fallback: &str) -> String {
         .map(|branch| branch.trim_start_matches("refs/heads/").to_string())
         .map(|branch| branch.trim_matches('/').to_string())
         .unwrap_or_else(|| fallback.to_string())
+}
+
+const GIT_FLOW_PARSE_PATTERN: &str = r"[a-z0-9._-]+";
+
+fn compile_branch_template_regex(
+    template: &str,
+    allowed_tokens: &[&str],
+) -> std::result::Result<(Regex, Vec<String>, Vec<String>), String> {
+    let token_regex =
+        Regex::new(r"\{([A-Za-z][A-Za-z0-9]*)\}").map_err(|error| error.to_string())?;
+    let mut seen_tokens = HashSet::new();
+    let mut duplicate_tokens = Vec::new();
+    let mut unsupported_tokens = Vec::new();
+    let mut pattern = String::from("^");
+    let mut last_index = 0usize;
+
+    for captures in token_regex.captures_iter(template) {
+        let Some(full_match) = captures.get(0) else {
+            continue;
+        };
+        let Some(token_match) = captures.get(1) else {
+            continue;
+        };
+        let token = token_match.as_str();
+        pattern.push_str(&regex::escape(&template[last_index..full_match.start()]));
+        if allowed_tokens.iter().any(|allowed| *allowed == token) {
+            if !seen_tokens.insert(token.to_string()) {
+                duplicate_tokens.push(token.to_string());
+            }
+            pattern.push_str(&format!("(?P<{}>{})", token, GIT_FLOW_PARSE_PATTERN));
+        } else {
+            unsupported_tokens.push(token.to_string());
+            pattern.push_str(&regex::escape(full_match.as_str()));
+        }
+        last_index = full_match.end();
+    }
+
+    pattern.push_str(&regex::escape(&template[last_index..]));
+    pattern.push('$');
+
+    let regex = Regex::new(&pattern).map_err(|error| error.to_string())?;
+    Ok((regex, duplicate_tokens, unsupported_tokens))
+}
+
+fn is_valid_git_branch_name(branch_name: &str) -> bool {
+    let normalized = normalize_branch_template(Some(branch_name), "");
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let ref_name = format!("refs/heads/{}", normalized);
+    git2::Reference::is_valid_name(&ref_name)
+}
+
+fn render_plan_branch_name(settings: &ProjectGitFlowSettingsDto, plan_slug: &str) -> String {
+    let rendered = replace_template_tokens(&settings.plan_branch_template, &[("planSlug", plan_slug)]);
+    normalize_branch_template(Some(rendered.as_str()), &format!("plan/{}", plan_slug))
+}
+
+fn render_plan_feature_branch_name(
+    settings: &ProjectGitFlowSettingsDto,
+    plan_slug: &str,
+    feature_slug: &str,
+) -> String {
+    let rendered = replace_template_tokens(
+        &settings.feature_branch_template,
+        &[("planSlug", plan_slug), ("featureSlug", feature_slug)],
+    );
+    normalize_branch_template(
+        Some(rendered.as_str()),
+        &format!("feature/{}/{}", plan_slug, feature_slug),
+    )
+}
+
+fn validate_project_git_flow_settings_strict(
+    settings: &ProjectGitFlowSettingsDto,
+) -> Result<()> {
+    let normalized = normalize_project_git_flow_settings(Some(settings));
+    let mut errors = Vec::new();
+
+    if normalized.base_branch.trim().is_empty() {
+        errors.push("Base branch cannot be empty.".to_string());
+    }
+
+    if normalized.main_branch.trim().is_empty() {
+        errors.push("Main branch cannot be empty.".to_string());
+    }
+
+    let required_tokens = [
+        (
+            "Plan branch template",
+            normalized.plan_branch_template.as_str(),
+            vec!["planSlug"],
+        ),
+        (
+            "Feature branch template",
+            normalized.feature_branch_template.as_str(),
+            vec!["planSlug", "featureSlug"],
+        ),
+        (
+            "Independent feature branch template",
+            normalized.standalone_feature_branch_template.as_str(),
+            vec!["featureSlug"],
+        ),
+    ];
+
+    for (label, template, tokens) in &required_tokens {
+        for token in tokens {
+            if !template.contains(&format!("{{{}}}", token)) {
+                errors.push(format!("{} must include {{{}}}.", label, token));
+            }
+        }
+    }
+
+    let sample_plan_slug = "checkout-rework";
+    let sample_feature_slug = "checkout-api";
+
+    let validate_round_trip = |label: &str,
+                               template: &str,
+                               allowed_tokens: &[&str],
+                               rendered: String,
+                               expected_pairs: &[(&str, &str)],
+                               errors: &mut Vec<String>| {
+        match compile_branch_template_regex(template, allowed_tokens) {
+            Ok((regex, duplicate_tokens, unsupported_tokens)) => {
+                if !duplicate_tokens.is_empty() {
+                    errors.push(format!(
+                        "{} cannot repeat tokens: {}.",
+                        label,
+                        duplicate_tokens.join(", ")
+                    ));
+                }
+                if !unsupported_tokens.is_empty() {
+                    errors.push(format!(
+                        "{} cannot include unsupported tokens: {}.",
+                        label,
+                        unsupported_tokens.join(", ")
+                    ));
+                }
+                if !is_valid_git_branch_name(&rendered) {
+                    errors.push(format!(
+                        "{} must render a valid Git branch name.",
+                        label
+                    ));
+                }
+
+                match regex.captures(&rendered) {
+                    Some(captures) => {
+                        for (token, expected_value) in expected_pairs {
+                            let actual_value = captures.name(token).map(|value| value.as_str());
+                            if actual_value != Some(*expected_value) {
+                                errors.push(format!(
+                                    "{} must preserve {} in a parseable way.",
+                                    label, token
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    None => errors.push(format!("{} must be parseable after rendering.", label)),
+                }
+            }
+            Err(error) => errors.push(format!("{} is invalid: {}", label, error)),
+        }
+    };
+
+    validate_round_trip(
+        "Plan branch template",
+        &normalized.plan_branch_template,
+        &["planSlug"],
+        render_plan_branch_name(&normalized, sample_plan_slug),
+        &[("planSlug", sample_plan_slug)],
+        &mut errors,
+    );
+    validate_round_trip(
+        "Feature branch template",
+        &normalized.feature_branch_template,
+        &["planSlug", "featureSlug"],
+        render_plan_feature_branch_name(&normalized, sample_plan_slug, sample_feature_slug),
+        &[("planSlug", sample_plan_slug), ("featureSlug", sample_feature_slug)],
+        &mut errors,
+    );
+    validate_round_trip(
+        "Independent feature branch template",
+        &normalized.standalone_feature_branch_template,
+        &["featureSlug"],
+        render_standalone_feature_branch_name(Some(&normalized), sample_feature_slug),
+        &[("featureSlug", sample_feature_slug)],
+        &mut errors,
+    );
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(BackendError::Validation(errors.join(" ")))
+    }
 }
 
 fn render_standalone_feature_branch_name(
@@ -4484,6 +4748,109 @@ mod tests {
     }
 
     #[test]
+    fn strict_git_flow_validation_rejects_unparseable_feature_templates() {
+        let mut settings = ProjectGitFlowSettingsDto::default();
+        settings.feature_branch_template =
+            "feature/{planSlug}/{featureSlug}/{featureSlug}".to_string();
+
+        let error = validate_project_git_flow_settings_strict(&settings)
+            .expect_err("template should be rejected");
+
+        match error {
+            BackendError::Validation(message) => {
+                assert!(
+                    message.contains("cannot repeat tokens")
+                        || message.contains("invalid")
+                        || message.contains("parseable")
+                );
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn strict_git_flow_validation_rejects_unknown_template_tokens() {
+        let mut settings = ProjectGitFlowSettingsDto::default();
+        settings.feature_branch_template =
+            "feature/{planSlug}/{featureSlug}/{branchType}".to_string();
+
+        let error = validate_project_git_flow_settings_strict(&settings)
+            .expect_err("template should be rejected");
+
+        match error {
+            BackendError::Validation(message) => {
+                assert!(message.contains("unsupported tokens"));
+                assert!(message.contains("branchType"));
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn strict_git_flow_validation_rejects_invalid_rendered_branch_names() {
+        let mut settings = ProjectGitFlowSettingsDto::default();
+        settings.plan_branch_template = "plan/{planSlug}/.draft".to_string();
+
+        let error = validate_project_git_flow_settings_strict(&settings)
+            .expect_err("template should be rejected");
+
+        match error {
+            BackendError::Validation(message) => {
+                assert!(message.contains("valid Git branch name"));
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sanitize_workspace_state_preserves_reserved_standalone_feature_slugs() {
+        let workspace_path = PathBuf::from("C:/workspace");
+        let state = WorkspaceState {
+            version: 3,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-web", "apps/web")],
+            }],
+            manual_features: vec![ManualFeatureDto {
+                id: "feature-1".to_string(),
+                conversation_id: "conv-1".to_string(),
+                draft: false,
+                title: "Quick export".to_string(),
+                description: "Standalone work".to_string(),
+                status: "Pending".to_string(),
+                feature_slug: Some("quick-export".to_string()),
+                branch_name: Some("feature/quick-export".to_string()),
+                archived_at: None,
+                archive_reason: None,
+                merged_at: None,
+                base_branch: "develop".to_string(),
+                project_ids: vec!["project-web".to_string()],
+                context_project_ids: Vec::new(),
+                execution_targets: vec![WorkspaceTaskExecutionTargetDto {
+                    project_id: "project-web".to_string(),
+                    branch_name: "feature/quick-export".to_string(),
+                    target_branch_name: Some("develop".to_string()),
+                    worktree_key: "branch-project-web-quick-export".to_string(),
+                    repo_path: Some("apps/web".to_string()),
+                }],
+                created_at: "2026-03-14T00:00:00.000Z".to_string(),
+                updated_at: "2026-03-14T00:00:00.000Z".to_string(),
+            }],
+            reserved_standalone_feature_slugs: vec!["legacy-slug".to_string()],
+            ..WorkspaceState::default()
+        };
+
+        let (sanitized, _) = sanitize_workspace_state(&workspace_path, state);
+
+        assert_eq!(
+            sanitized.reserved_standalone_feature_slugs,
+            vec!["legacy-slug".to_string(), "quick-export".to_string()]
+        );
+    }
+
+    #[test]
     fn sanitize_workspace_state_removes_duplicate_paths_and_dead_references() {
         let temp_dir = TempDir::new().expect("temp dir");
         let workspace_path = temp_dir.path().to_path_buf();
@@ -4589,6 +4956,7 @@ mod tests {
                 },
             ],
             manual_features: Vec::new(),
+            reserved_standalone_feature_slugs: Vec::new(),
         };
 
         let (sanitized, report) = sanitize_workspace_state(&workspace_path, state);
@@ -4641,6 +5009,7 @@ mod tests {
             plan_nodes: Vec::new(),
             predicted_branches: Vec::new(),
             manual_features: Vec::new(),
+            reserved_standalone_feature_slugs: Vec::new(),
         };
 
         let (sanitized, report) = sanitize_workspace_state(&workspace_path, state);
