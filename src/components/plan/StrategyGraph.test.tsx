@@ -316,67 +316,77 @@ const buildFrozenPlanNodeMapMock = (params: {
 const notifySuccessMock = mock((..._args: unknown[]) => undefined);
 const notifyErrorMock = mock((..._args: unknown[]) => undefined);
 
-mock.restore();
+let StrategyGraph!: typeof import('./StrategyGraph').StrategyGraph;
+let importCounter = 0;
 
-mock.module('react-i18next', () => ({
-  useTranslation: () => translationMock,
-}));
+const loadStrategyGraphModule = async () => {
+  importCounter += 1;
+  mock.restore();
 
-mock.module('../../stores/useAppStore', () => ({
-  useAppStore,
-}));
+  mock.module('react-i18next', () => ({
+    useTranslation: () => translationMock,
+  }));
 
-mock.module('../../stores/useChatStore', () => ({
-  useChatStore,
-}));
+  mock.module('../../stores/useAppStore', () => ({
+    useAppStore,
+  }));
 
-mock.module('../../stores/useTaskStore', () => ({
-  getPlanActivationCandidateTask,
-  useTaskStore,
-}));
+  mock.module('../../stores/useChatStore', () => ({
+    useChatStore,
+  }));
 
-mock.module('../../services/architectGitFlowService', () => ({
-  validatePlanAndProvisionBranches: (params: unknown) =>
-    validatePlanAndProvisionBranchesMock(params),
-}));
+  mock.module('../../stores/useTaskStore', () => ({
+    getPlanActivationCandidateTask,
+    useTaskStore,
+  }));
 
-mock.module('../../services/architectGitFlowService.ts', () => ({
-  validatePlanAndProvisionBranches: (params: unknown) =>
-    validatePlanAndProvisionBranchesMock(params),
-}));
+  mock.module('../../services/architectGitFlowService', () => ({
+    validatePlanAndProvisionBranches: (params: unknown) =>
+      validatePlanAndProvisionBranchesMock(params),
+  }));
 
-mock.module('../../services/architectStrategyMutationGuard', () => ({
-  applyStrategyMutationPreview: (params: unknown) =>
-    applyStrategyMutationPreviewMock(params as { preview: AppStoreState['strategyMutationPreview'] }),
-  buildFrozenPlanNodeMap: (params: unknown) =>
-    buildFrozenPlanNodeMapMock(
-      params as {
-        plan: { nodes: MockPlanNode[] };
-        tasks?: Array<{ id: string; status: TaskStatus }>;
-      }
-    ),
-}));
+  mock.module('../../services/architectGitFlowService.ts', () => ({
+    validatePlanAndProvisionBranches: (params: unknown) =>
+      validatePlanAndProvisionBranchesMock(params),
+  }));
 
-mock.module('../../services/architectStrategyMutationGuard.ts', () => ({
-  applyStrategyMutationPreview: (params: unknown) =>
-    applyStrategyMutationPreviewMock(params as { preview: AppStoreState['strategyMutationPreview'] }),
-  buildFrozenPlanNodeMap: (params: unknown) =>
-    buildFrozenPlanNodeMapMock(
-      params as {
-        plan: { nodes: MockPlanNode[] };
-        tasks?: Array<{ id: string; status: TaskStatus }>;
-      }
-    ),
-}));
+  mock.module('../../services/architectStrategyMutationGuard', () => ({
+    applyStrategyMutationPreview: (params: unknown) =>
+      applyStrategyMutationPreviewMock(params as { preview: AppStoreState['strategyMutationPreview'] }),
+    buildFrozenPlanNodeMap: (params: unknown) =>
+      buildFrozenPlanNodeMapMock(
+        params as {
+          plan: { nodes: MockPlanNode[] };
+          tasks?: Array<{ id: string; status: TaskStatus }>;
+        }
+      ),
+  }));
 
-mock.module('../ui/toastService', () => ({
-  notify: {
-    success: (...args: unknown[]) => notifySuccessMock(...args),
-    error: (...args: unknown[]) => notifyErrorMock(...args),
-  },
-}));
+  mock.module('../../services/architectStrategyMutationGuard.ts', () => ({
+    applyStrategyMutationPreview: (params: unknown) =>
+      applyStrategyMutationPreviewMock(params as { preview: AppStoreState['strategyMutationPreview'] }),
+    buildFrozenPlanNodeMap: (params: unknown) =>
+      buildFrozenPlanNodeMapMock(
+        params as {
+          plan: { nodes: MockPlanNode[] };
+          tasks?: Array<{ id: string; status: TaskStatus }>;
+        }
+      ),
+  }));
 
-const { StrategyGraph } = await import('./StrategyGraph');
+  mock.module('../ui/Icon', () => ({
+    Icon: ({ name }: { name: string }) => <span data-icon={name} />,
+  }));
+
+  mock.module('../ui/toastService', () => ({
+    notify: {
+      success: (...args: unknown[]) => notifySuccessMock(...args),
+      error: (...args: unknown[]) => notifyErrorMock(...args),
+    },
+  }));
+
+  ({ StrategyGraph } = await import(`./StrategyGraph.tsx?strategy-graph-test=${importCounter}`));
+};
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -542,12 +552,13 @@ describe('StrategyGraph', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     validatePlanAndProvisionBranchesMock.mockClear();
     applyStrategyMutationPreviewMock.mockClear();
     notifySuccessMock.mockClear();
     notifyErrorMock.mockClear();
     resetState();
+    await loadStrategyGraphModule();
     container = document.createElement('div');
     container.style.height = '800px';
     container.style.width = '1000px';
@@ -565,6 +576,7 @@ describe('StrategyGraph', () => {
     root = null;
     document.body.innerHTML = '';
     resetState();
+    mock.restore();
   });
 
   afterAll(() => {
@@ -633,7 +645,7 @@ describe('StrategyGraph', () => {
       await flushRender();
     });
 
-    expect(document.body.querySelector('.lucide-lock')).toBeNull();
+    expect(document.body.querySelector('[data-icon="lock"], .lucide-lock')).toBeNull();
 
     const graphNode = Array.from(document.querySelectorAll('g')).find(
       (element) => (element as SVGGElement).style?.cursor === 'pointer'
@@ -660,7 +672,7 @@ describe('StrategyGraph', () => {
       await flushRender();
     });
 
-    expect(document.body.querySelector('.lucide-lock')).not.toBeNull();
+    expect(document.body.querySelector('[data-icon="lock"], .lucide-lock')).not.toBeNull();
     expect(document.body.textContent).toContain('Locked');
     expect(document.body.textContent).toContain(
       'can no longer be modified automatically'

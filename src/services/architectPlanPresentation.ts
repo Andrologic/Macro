@@ -58,13 +58,26 @@ export const getArchitectPlanPrimaryName = (plan: ArchitectPlanPresentationShape
     return label || DEFAULT_NEW_PLAN_LABEL;
   }
 
-  return label || slug || trimToNull(plan.title) || plan.id;
+  if (isCanonicalArchitectPlan(plan)) {
+    return label || plan.id;
+  }
+
+  return trimToNull(plan.title) || slug || plan.id;
 };
 
 export const getArchitectPlanSecondaryLabel = (
-  _plan: ArchitectPlanPresentationShape
+  plan: ArchitectPlanPresentationShape
 ): string | null => {
-  return null;
+  if (!isCanonicalArchitectPlan(plan)) {
+    return null;
+  }
+
+  const label = trimToNull(plan.label);
+  if (isDefaultNewPlanFamilyLabel(label)) {
+    return null;
+  }
+
+  return label ? plan.id : null;
 };
 
 export const getArchitectPlanDisplayName = (plan: ArchitectPlanPresentationShape): string => {
