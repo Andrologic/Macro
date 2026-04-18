@@ -247,8 +247,10 @@ describe('architectPlanService', () => {
     });
 
     expect(firstLabeled.title).toBe('1710000000001');
+    expect(firstLabeled.slug).toBe('checkout-refresh');
     expect(firstLabeled.label).toBe('Checkout refresh');
     expect(secondLabeled.title).toBe('1710000000002');
+    expect(secondLabeled.slug).toBe('checkout-refresh-2');
     expect(secondLabeled.label).toBe('Checkout refresh');
 
     const listed = await service.listArchitectPlans(branchName, true, true);
@@ -273,7 +275,7 @@ describe('architectPlanService', () => {
     });
 
     expect(updated.id).toBe('1710000000010');
-    expect(updated.slug).toBe('1710000000010');
+    expect(updated.slug).toBe('initial-label');
     expect(updated.title).toBe('1710000000010');
     expect(updated.label).toBe('Renamed label');
 
@@ -284,8 +286,56 @@ describe('architectPlanService', () => {
     });
 
     expect(cleared.title).toBe('1710000000010');
-    expect(cleared.slug).toBe('1710000000010');
+    expect(cleared.slug).toBe('initial-label');
     expect(cleared.label).toBeUndefined();
+  });
+
+  it('allows renaming a draft plan slug before lock and releases the previous draft slug', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000012',
+      title: 'Checkout refresh',
+    });
+
+    expect(created.slug).toBe('checkout-refresh');
+
+    const renamed = await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      slug: 'checkout-rework',
+    });
+
+    expect(renamed.slug).toBe('checkout-rework');
+
+    const reused = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000013',
+      slug: 'checkout-refresh',
+    });
+
+    expect(reused.slug).toBe('checkout-refresh');
+  });
+
+  it('refuses to rename a plan slug after the plan is locked', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000014',
+      slug: 'checkout-refresh',
+    });
+
+    await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      status: 'validated',
+    });
+
+    await expect(
+      service.updateArchitectPlan({
+        branchName,
+        planId: created.id,
+        slug: 'checkout-rework',
+      })
+    ).rejects.toThrow('Plan slug is immutable and cannot be changed after creation.');
   });
 
   it('refuses to archive canonical plans still named new plan', async () => {
@@ -435,11 +485,11 @@ describe('architectPlanService', () => {
     expect(renamedLegacyPlan.slug).toBe('checkout');
     expect(renamedLegacyPlan.title).toBe('Checkout v2');
     expect(service.toPlanIntegrationBranch(renamedLegacyPlan.slug)).toBe('plan/checkout');
-    expect(service.toPlanIntegrationBranch(canonicalPlan.slug)).toBe('plan/1710000000020');
+    expect(service.toPlanIntegrationBranch(canonicalPlan.slug)).toBe('plan/checkout-2');
 
     const listed = await service.listArchitectPlans(branchName, true, true);
     expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === legacyPlan.id)?.slug).toBe('checkout');
-    expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === canonicalPlan.id)?.slug).toBe('1710000000020');
+    expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === canonicalPlan.id)?.slug).toBe('checkout-2');
   });
 
   it('returns no aggregated active plan when metadata scopes disagree on the active plan id', async () => {

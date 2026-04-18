@@ -357,8 +357,6 @@ describe('architectGitFlowService', () => {
       archiveArchitectPlan: archiveArchitectPlanMock,
       deleteArchitectPlan: deleteArchitectPlanMock,
       getGitFlowBaseBranch: () => 'develop',
-      toPlanIntegrationBranch: (slug: string) => `plan/${slug}`,
-      toPlanScopedFeatureBranch: (slug: string, branchName: string) => `feature/${slug}/${branchName.split('/').pop()}`,
     });
   });
 
@@ -829,8 +827,6 @@ describe('architectGitFlowService', () => {
       archiveArchitectPlan: archiveArchitectPlanMock,
       deleteArchitectPlan: deleteArchitectPlanMock,
       getGitFlowBaseBranch: () => 'develop',
-      toPlanIntegrationBranch: (slug: string) => `plan/${slug}`,
-      toPlanScopedFeatureBranch: (slug: string, branchName: string) => `feature/${slug}/${branchName.split('/').pop()}`,
     });
 
     const review = await staleGroupsService.loadPlanReview({

@@ -14,6 +14,10 @@ import {
   type FrozenPlanNode,
 } from '../../services/architectStrategyMutationGuard';
 import {
+  getPlanNodeLogicalBranchIdentity,
+  getPredictedBranchLogicalIdentity,
+} from '../../services/architectBranchIdentity';
+import {
   mapPlanNodeStatusToTaskStatus,
   resolvePlanNodeStatusIndicatorState,
   resolveRunningTaskIds,
@@ -23,7 +27,7 @@ import { notify } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
 import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
 import { cn } from '../../utils/cn';
-import type { PlanNode, PlanNodeStatus, PredictedBranch, TaskStatus } from '../../types';
+import type { PlanNode, PlanNodeStatus, PredictedBranch, ProjectGroup, TaskStatus } from '../../types';
 
 interface StrategyGraphProps {
   className?: string;
@@ -114,11 +118,21 @@ interface BranchCardView {
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 const mixedBranchCardColor = 'rgb(var(--muted-foreground))';
+const branchCardTaskStatusOrder: Record<PlanNodeStatus, number> = {
+  'in-progress': 0,
+  pending: 1,
+  blocked: 2,
+  completed: 3,
+};
 const branchCardStatusTone: Record<BranchCardStatus, string> = {
   pending: 'bg-muted text-muted-foreground',
   active: 'bg-amber-500/10 text-amber-500',
   merged: 'bg-emerald-500/10 text-emerald-500',
   mixed: 'bg-muted text-muted-foreground',
+};
+
+type GroupedBranchCardSource = PredictedBranch & {
+  logicalLabel: string;
 };
 
 const getBranchCardLabel = (
@@ -137,9 +151,196 @@ const getBranchCardLabel = (
   return segments[segments.length - 1] ?? branch.name;
 };
 
+const getLogicalBranchLabel = (params: {
+  planSlug?: string | null;
+  node?: Pick<PlanNode, 'assignedBranch' | 'branchSlug' | 'title'>;
+  branch?: Pick<PredictedBranch, 'name' | 'branchSlug'>;
+}): string => {
+  if (params.node && params.planSlug?.trim()) {
+    const identity = getPlanNodeLogicalBranchIdentity({
+      planSlug: params.planSlug,
+      node: params.node,
+    });
+    return identity.kind === 'plan_feature'
+      ? identity.featureSlug
+      : params.node.branchSlug?.trim() || params.node.assignedBranch?.trim() || 'work';
+  }
+
+  if (params.branch) {
+    const identity = getPredictedBranchLogicalIdentity({
+      planSlug: params.planSlug,
+      branch: params.branch,
+    });
+    if (identity.kind === 'plan_feature') {
+      return identity.featureSlug;
+    }
+    if (identity.kind === 'standalone_feature') {
+      return identity.featureSlug;
+    }
+  }
+
+  if (params.branch) {
+    return getBranchCardLabel(params.branch);
+  }
+
+  if (params.node?.branchSlug?.trim()) {
+    return params.node.branchSlug.trim();
+  }
+
+  return params.node?.assignedBranch?.trim() || 'work';
+};
+
 const nodeMatchesProjectId = (node: Pick<PlanNode, 'projectId' | 'projectIds'>, projectId: string): boolean => {
   const projectIds = normalizeNodeProjectIds(node);
   return projectIds.length === 0 || projectIds.includes(projectId);
+};
+
+const getProjectGitFlowSettingsFromGroups = (
+  projectGroups: ProjectGroup[],
+  projectId: string,
+) =>
+  projectGroups
+    .flatMap((group) => group.projects)
+    .find((project) => project.id === projectId)?.gitFlowSettings;
+
+const filterPredictedBranchesForScopedNodes = (
+  branches: PredictedBranch[],
+  scopedNodeIds: Set<string>,
+): PredictedBranch[] =>
+  branches
+    .map((branch) => ({
+      ...branch,
+      taskIds: branch.taskIds.filter((taskId) => scopedNodeIds.has(taskId)),
+    }))
+    .filter((branch) => branch.taskIds.length > 0);
+
+const getBranchCardGroupIdentity = (params: {
+  activePlanSlug?: string | null;
+  branch: PredictedBranch;
+  projectGroups: ProjectGroup[];
+}): {
+  key: string;
+  logicalLabel: string;
+} => {
+  const projectSettings = params.branch.projectId
+    ? getProjectGitFlowSettingsFromGroups(params.projectGroups, params.branch.projectId)
+    : undefined;
+  const logicalIdentity = getPredictedBranchLogicalIdentity({
+    planSlug: params.activePlanSlug,
+    branch: params.branch,
+    settings: projectSettings,
+  });
+
+  if (logicalIdentity.kind === 'plan_feature') {
+    return {
+      key: logicalIdentity.key,
+      logicalLabel: logicalIdentity.featureSlug,
+    };
+  }
+
+  if (logicalIdentity.kind === 'standalone_feature') {
+    return {
+      key: logicalIdentity.key,
+      logicalLabel: logicalIdentity.featureSlug,
+    };
+  }
+
+  return {
+    key: `git::${params.branch.name}`,
+    logicalLabel: getBranchCardLabel(params.branch),
+  };
+};
+
+const buildBranchCards = (params: {
+  activePlanSlug?: string | null;
+  branchSearch: string;
+  branchStatusFilter: 'all' | PlanNodeStatus;
+  predictedBranches: PredictedBranch[];
+  projectGroups: ProjectGroup[];
+  scopedNodeById: Map<string, BranchTaskView>;
+}): BranchCardView[] => {
+  const normalizedSearch = params.branchSearch.trim().toLowerCase();
+  const groupedBranches = new Map<string, GroupedBranchCardSource[]>();
+
+  params.predictedBranches.forEach((branch) => {
+    const identity = getBranchCardGroupIdentity({
+      activePlanSlug: params.activePlanSlug,
+      branch,
+      projectGroups: params.projectGroups,
+    });
+    const groupedBranch: GroupedBranchCardSource = {
+      ...branch,
+      logicalLabel: identity.logicalLabel,
+    };
+    const existing = groupedBranches.get(identity.key);
+    if (existing) {
+      existing.push(groupedBranch);
+      return;
+    }
+    groupedBranches.set(identity.key, [groupedBranch]);
+  });
+
+  return Array.from(groupedBranches.entries())
+    .map(([branchKey, branches]) => {
+      const mergedTaskIds = Array.from(
+        new Set(branches.flatMap((branch) => branch.taskIds)),
+      );
+      const allTasks = mergedTaskIds.reduce<BranchTaskView[]>((acc, taskId) => {
+        const task = params.scopedNodeById.get(taskId);
+        if (!task) return acc;
+        acc.push({ ...task });
+        return acc;
+      }, []);
+      const branchStatuses = Array.from(
+        new Set(branches.map((branch) => branch.status)),
+      );
+      const cardStatus: BranchCardStatus =
+        branchStatuses.length === 1 ? branchStatuses[0] : 'mixed';
+      const progressDone = allTasks.filter(
+        (task) => task.status === 'completed',
+      ).length;
+      const filteredTasks = allTasks
+        .filter((task) => {
+          if (
+            params.branchStatusFilter !== 'all' &&
+            task.status !== params.branchStatusFilter
+          ) {
+            return false;
+          }
+          if (!normalizedSearch) {
+            return true;
+          }
+          const haystack = `${task.title} ${task.description || ''}`.toLowerCase();
+          return haystack.includes(normalizedSearch);
+        })
+        .sort((a, b) => {
+          if (branchCardTaskStatusOrder[a.status] !== branchCardTaskStatusOrder[b.status]) {
+            return branchCardTaskStatusOrder[a.status] - branchCardTaskStatusOrder[b.status];
+          }
+          if ((a.rank ?? 0) !== (b.rank ?? 0)) {
+            return (a.rank ?? 0) - (b.rank ?? 0);
+          }
+          return a.title.localeCompare(b.title);
+        });
+
+      return {
+        id: `branch-card::${branchKey}`,
+        name:
+          branches[0]?.logicalLabel ||
+          getBranchCardLabel(branches[0] || { name: branchKey }),
+        color:
+          cardStatus === 'mixed'
+            ? mixedBranchCardColor
+            : branches[0]?.color || mixedBranchCardColor,
+        status: cardStatus,
+        progressDone,
+        progressTotal: allTasks.length,
+        tasks: filteredTasks,
+      };
+    })
+    .filter(
+      (branch) => branch.tasks.length > 0 || params.branchSearch.trim().length === 0,
+    );
 };
 
 // Utility hook for element size
@@ -418,6 +619,11 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     }
   };
 
+  const activePlanSlug =
+    activePlanContext?.slug?.trim() ||
+    activePlanContext?.title?.trim() ||
+    null;
+
   // 1. Calculate Layout
   const layoutData = useMemo(() => {
     const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
@@ -460,9 +666,17 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     // --- Disambiguate Overlaps ---
     // If nodes share the same branch AND the same rank, they perfectly overlap.
     // We sort them roughly by ID to be deterministic, then progressively bump ranks.
+    const getNodeLaneKey = (node: PlanNode): string =>
+      activePlanSlug
+        ? getPlanNodeLogicalBranchIdentity({
+            planSlug: activePlanSlug,
+            node,
+          }).key
+        : node.assignedBranch || 'main';
+
     const nodesByBranch = new Map<string, PlanNode[]>();
     nodes.forEach(n => {
-      const b = n.assignedBranch || 'main';
+      const b = getNodeLaneKey(n);
       if (!nodesByBranch.has(b)) nodesByBranch.set(b, []);
       nodesByBranch.get(b)!.push(n);
     });
@@ -483,12 +697,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     });
 
     // --- Lane Packing Algorithm ---
-    const uniqueBranchNames = Array.from(new Set(nodes.map(n => n.assignedBranch || 'main')));
-    const branches = uniqueBranchNames.map(name => {
-      const branchNodes = nodes.filter(n => (n.assignedBranch || 'main') === name);
+    const uniqueBranchKeys = Array.from(new Set(nodes.map((node) => getNodeLaneKey(node))));
+    const branches = uniqueBranchKeys.map((key) => {
+      const branchNodes = nodes.filter((node) => getNodeLaneKey(node) === key);
       const nodeRanks = branchNodes.map(n => ranks.get(n.id) || 0);
       return {
-        name,
+        key,
         minRank: Math.min(...nodeRanks),
         maxRank: Math.max(...nodeRanks),
       };
@@ -513,7 +727,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         assignedLane = lanes.length - 1;
       }
 
-      branchToLaneMap.set(branch.name, assignedLane);
+      branchToLaneMap.set(branch.key, assignedLane);
     });
 
     const activeLanesCount = Math.max(1, lanes.length);
@@ -532,7 +746,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     const effectiveLeftPadding = (finalWidth - totalGraphWidth) / 2; // Keep baseline margin and center remaining space
 
     const positionedNodes = nodes.map(n => {
-      const laneIndex = branchToLaneMap.get(n.assignedBranch || 'main') ?? 0;
+      const laneIndex = branchToLaneMap.get(getNodeLaneKey(n)) ?? 0;
       return {
         ...n,
         x: effectiveLeftPadding + (laneIndex * COL_WIDTH) + (COL_WIDTH / 2),
@@ -545,9 +759,9 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     const laneHeaders: { index: number; branches: string[] }[] = [];
     for (let i = 0; i < lanes.length; i++) {
       const branchesInLane = branches
-        .filter(b => branchToLaneMap.get(b.name) === i)
+        .filter(b => branchToLaneMap.get(b.key) === i)
         .sort((a, b) => a.minRank - b.minRank)
-        .map(b => b.name);
+        .map((branch) => branch.key);
       laneHeaders.push({ index: i, branches: branchesInLane });
     }
 
@@ -580,7 +794,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       colWidth: COL_WIDTH,
       effectiveLeftPadding
     };
-  }, [selectedGroupId, selectedProjectId, projectGroups, planNodes, containerWidth]);
+  }, [activePlanSlug, selectedGroupId, selectedProjectId, projectGroups, planNodes, containerWidth]);
 
   const getNodeTaskStatus = useCallback(
     (nodeId: string, nodeStatus: PlanNodeStatus): TaskStatus =>
@@ -618,94 +832,28 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const hoveredFrozenNode = hoveredNodeData ? frozenNodeById.get(hoveredNodeData.id) ?? null : null;
   const scopedNodeIdSet = useMemo(() => new Set(layoutData.nodes.map((node) => node.id)), [layoutData.nodes]);
   const scopedNodeById = useMemo(
-    () => new Map(layoutData.nodes.map((node) => [node.id, node])),
+    () => new Map<string, BranchTaskView>(layoutData.nodes.map((node) => [node.id, node])),
     [layoutData.nodes]
   );
   const filteredPredictedBranches = useMemo(
-    () => predictedBranches
-      .map((branch) => ({
-        ...branch,
-        taskIds: branch.taskIds.filter((taskId) => scopedNodeIdSet.has(taskId)),
-      }))
-      .filter((branch) => branch.taskIds.length > 0),
+    () => filterPredictedBranchesForScopedNodes(predictedBranches, scopedNodeIdSet),
     [predictedBranches, scopedNodeIdSet]
   );
   const branchCards = useMemo<BranchCardView[]>(() => {
-    const normalizedSearch = branchSearch.trim().toLowerCase();
-    const statusOrder: Record<PlanNodeStatus, number> = {
-      'in-progress': 0,
-      pending: 1,
-      blocked: 2,
-      completed: 3,
-    };
-    const groupedBranches = new Map<string, typeof filteredPredictedBranches>();
-
-    filteredPredictedBranches.forEach((branch) => {
-      const existing = groupedBranches.get(branch.name);
-      if (existing) {
-        existing.push(branch);
-        return;
-      }
-      groupedBranches.set(branch.name, [branch]);
+    return buildBranchCards({
+      activePlanSlug,
+      branchSearch,
+      branchStatusFilter,
+      predictedBranches: filteredPredictedBranches,
+      projectGroups,
+      scopedNodeById,
     });
-
-    return Array.from(groupedBranches.entries())
-      .map(([fullBranchName, branches]) => {
-        const mergedTaskIds = Array.from(
-          new Set(branches.flatMap((branch) => branch.taskIds))
-        );
-        const allTasks: BranchTaskView[] = mergedTaskIds.reduce<BranchTaskView[]>((acc, taskId) => {
-          const task = scopedNodeById.get(taskId);
-          if (!task) return acc;
-          acc.push({ ...task });
-          return acc;
-        }, []);
-        const branchStatuses = Array.from(
-          new Set(branches.map((branch) => branch.status))
-        );
-        const displayBranchSlug =
-          branches.find((branch) => branch.branchSlug?.trim())?.branchSlug ??
-          undefined;
-        const cardStatus: BranchCardStatus =
-          branchStatuses.length === 1 ? branchStatuses[0] : 'mixed';
-
-        const progressDone = allTasks.filter((task) => task.status === 'completed').length;
-        const progressTotal = allTasks.length;
-
-        const filteredTasks = allTasks
-          .filter((task) => {
-            if (branchStatusFilter !== 'all' && task.status !== branchStatusFilter) return false;
-            if (!normalizedSearch) return true;
-            const haystack = `${task.title} ${task.description || ''}`.toLowerCase();
-            return haystack.includes(normalizedSearch);
-          })
-          .sort((a, b) => {
-            if (statusOrder[a.status] !== statusOrder[b.status]) return statusOrder[a.status] - statusOrder[b.status];
-            if ((a.rank ?? 0) !== (b.rank ?? 0)) return (a.rank ?? 0) - (b.rank ?? 0);
-            return a.title.localeCompare(b.title);
-          });
-
-        return {
-          id: `branch-card::${fullBranchName}`,
-          name: getBranchCardLabel({
-            name: fullBranchName,
-            branchSlug: displayBranchSlug,
-          }),
-          color:
-            cardStatus === 'mixed'
-              ? mixedBranchCardColor
-              : branches[0]?.color || mixedBranchCardColor,
-          status: cardStatus,
-          progressDone,
-          progressTotal,
-          tasks: filteredTasks,
-        };
-      })
-      .filter((branch) => branch.tasks.length > 0 || branchSearch.trim().length === 0);
   }, [
+    activePlanSlug,
     branchSearch,
     branchStatusFilter,
     filteredPredictedBranches,
+    projectGroups,
     scopedNodeById,
   ]);
 
@@ -1228,7 +1376,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                 <div className="space-y-2 pt-2 border-t border-border/50">
                   <div className="flex items-center text-[10px] text-muted-foreground">
                     <Icon name="git-branch" size={10} className="mr-2 opacity-70" />
-                    <span className="font-mono">{hoveredNodeData.assignedBranch}</span>
+                    <span className="font-mono">
+                      {getLogicalBranchLabel({
+                        planSlug: activePlanSlug,
+                        node: hoveredNodeData,
+                      })}
+                    </span>
                   </div>
 
                   {hoveredNodeData.estimatedTime && (

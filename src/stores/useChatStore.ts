@@ -14,6 +14,7 @@ import {
   PlanNodeStatus,
   PlanNodeType,
   PredictedBranch,
+  ProjectGitFlowSettings,
   ReasoningEffort,
   ToolTrace,
 } from "../types";
@@ -56,6 +57,8 @@ import {
   getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
+  isArchitectPlanSlugAvailable,
+  isArchitectPlanSlugMutable,
   listArchitectPlans,
   resolvePlanProjectContextId,
   resolveTargetBranch,
@@ -81,9 +84,12 @@ import {
 } from "../services/architectChat";
 import { normalizeArchitectToolId } from "../services/architectToolNames";
 import {
-  renderGitFlowBranchName,
   renderStandaloneFeatureBranchName,
 } from "../services/architectGitNaming";
+import {
+  collectRenderedPlanPredictedBranchDescriptors,
+  normalizePlanSlugInput,
+} from "../services/architectBranchIdentity";
 import {
   getPlanNodeBranchIntent,
   type WorkBranchType,
@@ -410,6 +416,254 @@ const branchNameMatchesCandidate = (
     normalizedExisting === candidateBranchName ||
     normalizedExisting.endsWith(`/${candidateBranchName}`)
   );
+};
+
+const ARCHITECT_STRATEGY_NODE_TYPES = new Set<PlanNodeType>([
+  "spec",
+  "feature",
+  "task",
+  "milestone",
+]);
+
+const ARCHITECT_STRATEGY_NODE_STATUSES = new Set<PlanNodeStatus>([
+  "pending",
+  "in-progress",
+  "completed",
+  "blocked",
+]);
+
+type NormalizedArchitectStrategyNodeInput = {
+  id?: string;
+  title: string;
+  description: string;
+  type: PlanNodeType;
+  assignedBranch: string;
+  branchType: WorkBranchType;
+  branchSlug: string;
+  status: PlanNodeStatus;
+  dependencies: string[];
+  projectIds: string[];
+};
+
+const normalizeArchitectStrategyNodeInput = (
+  rawNode: unknown,
+  index: number,
+): NormalizedArchitectStrategyNodeInput => {
+  const node = (
+    rawNode && typeof rawNode === "object" ? rawNode : {}
+  ) as Record<string, unknown>;
+  const title = typeof node.title === "string" ? node.title.trim() : "";
+  const description =
+    typeof node.description === "string" ? node.description.trim() : "";
+  const rawType =
+    typeof node.type === "string" ? node.type.trim().toLowerCase() : "task";
+  const rawStatus =
+    typeof node.status === "string"
+      ? node.status.trim().toLowerCase()
+      : "pending";
+  const assignedBranchRaw =
+    typeof node.assignedBranch === "string"
+      ? node.assignedBranch.trim()
+      : "";
+  const branchTypeRaw =
+    typeof node.branchType === "string"
+      ? node.branchType.trim().toLowerCase()
+      : "";
+  const branchSlugRaw =
+    typeof node.featureSlug === "string"
+      ? node.featureSlug.trim()
+      : typeof node.feature_slug === "string"
+        ? node.feature_slug.trim()
+        : typeof node.branchSlug === "string"
+          ? node.branchSlug.trim()
+          : "";
+  const dependencies = Array.isArray(node.dependencies)
+    ? node.dependencies
+        .filter((dep): dep is string => typeof dep === "string")
+        .map((dep) => dep.trim())
+        .filter(Boolean)
+    : [];
+  const projectIds = Array.isArray(node.projectIds)
+    ? node.projectIds
+        .filter(
+          (projectId): projectId is string => typeof projectId === "string",
+        )
+        .map((projectId) => projectId.trim())
+        .filter(Boolean)
+    : typeof node.projectId === "string" && node.projectId.trim().length > 0
+      ? [node.projectId.trim()]
+      : [];
+
+  if (!title) {
+    throw new Error(
+      `Invalid strategy node at index ${index}: missing title.`,
+    );
+  }
+  if (!ARCHITECT_STRATEGY_NODE_TYPES.has(rawType as PlanNodeType)) {
+    throw new Error(`Invalid node type for "${title}": ${rawType}.`);
+  }
+  if (!ARCHITECT_STRATEGY_NODE_STATUSES.has(rawStatus as PlanNodeStatus)) {
+    throw new Error(`Invalid node status for "${title}": ${rawStatus}.`);
+  }
+
+  const branchIntent = getPlanNodeBranchIntent({
+    branchType: branchTypeRaw,
+    branchSlug: branchSlugRaw,
+    assignedBranch: assignedBranchRaw,
+    title,
+  });
+
+  return {
+    id: typeof node.id === "string" ? node.id.trim() : undefined,
+    title,
+    description,
+    type: rawType as PlanNodeType,
+    assignedBranch: branchIntent.label,
+    branchType: branchIntent.branchType,
+    branchSlug: branchIntent.branchSlug,
+    status: rawStatus as PlanNodeStatus,
+    dependencies: Array.from(new Set(dependencies)),
+    projectIds: Array.from(new Set(projectIds)),
+  };
+};
+
+const buildArchitectStrategyPredictedBranches = (params: {
+  nodes: PlanNode[];
+  planSlug: string;
+  getProjectGitFlowSettings: (
+    projectId: string,
+  ) => ProjectGitFlowSettings | undefined;
+}): PredictedBranch[] => {
+  const colors = [
+    "#3b82f6",
+    "#10b981",
+    "#f59e0b",
+    "#ef4444",
+    "#8b5cf6",
+    "#ec4899",
+    "#06b6d4",
+  ];
+
+  return collectRenderedPlanPredictedBranchDescriptors({
+    nodes: params.nodes,
+    planSlug: params.planSlug,
+    getProjectGitFlowSettings: params.getProjectGitFlowSettings,
+  }).map((branch, index) => ({
+    id: `branch-${Date.now()}-${index}`,
+    name: branch.name,
+    color: colors[index % colors.length],
+    parentBranch: branch.parentBranch,
+    projectId: branch.projectId,
+    taskIds: branch.taskIds,
+    status: "pending" as const,
+    branchType: branch.branchType,
+    branchSlug: branch.branchSlug,
+  }));
+};
+
+const resolveRequestedArchitectPlanSlug = (params: {
+  activePlan: Pick<ArchitectPlanRecord, "id" | "slug" | "title">;
+  requestedPlanSlug?: string | null;
+}): string | null => {
+  const trimmedRequestedSlug = params.requestedPlanSlug?.trim() || "";
+  if (!trimmedRequestedSlug) {
+    return null;
+  }
+
+  return normalizePlanSlugInput(
+    trimmedRequestedSlug,
+    params.activePlan.slug || params.activePlan.id,
+  );
+};
+
+const validateRequestedArchitectPlanSlug = async (params: {
+  branchName: string;
+  activePlan: ArchitectPlanRecord;
+  requestedPlanSlug?: string | null;
+}): Promise<{
+  normalizedRequestedPlanSlug: string | null;
+  slugValidationConflicts: string[];
+}> => {
+  const normalizedRequestedPlanSlug = resolveRequestedArchitectPlanSlug({
+    activePlan: params.activePlan,
+    requestedPlanSlug: params.requestedPlanSlug,
+  });
+  const slugValidationConflicts: string[] = [];
+
+  if (
+    normalizedRequestedPlanSlug &&
+    normalizedRequestedPlanSlug !== params.activePlan.slug
+  ) {
+    if (!isArchitectPlanSlugMutable(params.activePlan)) {
+      slugValidationConflicts.push(
+        `Plan slug "${params.activePlan.slug}" is already locked and cannot be changed.`,
+      );
+    } else if (
+      !(await isArchitectPlanSlugAvailable({
+        branchName: params.branchName,
+        slug: normalizedRequestedPlanSlug,
+        excludePlanId: params.activePlan.id,
+      }))
+    ) {
+      slugValidationConflicts.push(
+        `Plan slug "${normalizedRequestedPlanSlug}" is already reserved by another plan.`,
+      );
+    }
+  }
+
+  return {
+    normalizedRequestedPlanSlug,
+    slugValidationConflicts,
+  };
+};
+
+const buildArchitectStrategyMetadataUpdate = async (params: {
+  branchName: string;
+  activePlan: ArchitectPlanRecord;
+  requestedPlanSlug?: string | null;
+  requestedPlanTitleAlias?: string;
+  description: string;
+  includeTitleAlias?: boolean;
+}): Promise<{
+  title?: string;
+  label?: string;
+  slug?: string;
+  description: string;
+  validationConflicts?: string[];
+}> => {
+  const { normalizedRequestedPlanSlug, slugValidationConflicts } =
+    await validateRequestedArchitectPlanSlug({
+      branchName: params.branchName,
+      activePlan: params.activePlan,
+      requestedPlanSlug: params.requestedPlanSlug,
+    });
+  const metadataUpdate: {
+    title?: string;
+    label?: string;
+    slug?: string;
+    description: string;
+    validationConflicts?: string[];
+  } = {
+    description: params.description,
+  };
+
+  if (normalizedRequestedPlanSlug) {
+    metadataUpdate.slug = normalizedRequestedPlanSlug;
+  }
+
+  if (params.includeTitleAlias && params.requestedPlanTitleAlias !== undefined) {
+    if (isCanonicalArchitectPlan(params.activePlan)) {
+      metadataUpdate.label = params.requestedPlanTitleAlias;
+    } else {
+      metadataUpdate.title = params.requestedPlanTitleAlias;
+    }
+  }
+
+  if (slugValidationConflicts.length > 0) {
+    metadataUpdate.validationConflicts = slugValidationConflicts;
+  }
+
+  return metadataUpdate;
 };
 
 const MESSAGE_IMAGES_STORAGE_KEY = "macro_chat_message_images";
@@ -2273,200 +2527,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     };
 
-    const allowedNodeTypes = new Set<PlanNodeType>([
-      "spec",
-      "feature",
-      "task",
-      "milestone",
-    ]);
-    const allowedNodeStatuses = new Set<PlanNodeStatus>([
-      "pending",
-      "in-progress",
-      "completed",
-      "blocked",
-    ]);
-
-    const normalizeNodeInput = (
-      rawNode: unknown,
-      index: number,
-    ): {
-      id?: string;
-      title: string;
-      description: string;
-      type: PlanNodeType;
-      assignedBranch: string;
-      branchType: WorkBranchType;
-      branchSlug: string;
-      status: PlanNodeStatus;
-      dependencies: string[];
-      projectIds: string[];
-    } => {
-      const node = (
-        rawNode && typeof rawNode === "object" ? rawNode : {}
-      ) as Record<string, unknown>;
-      const title = typeof node.title === "string" ? node.title.trim() : "";
-      const description =
-        typeof node.description === "string" ? node.description.trim() : "";
-      const rawType =
-        typeof node.type === "string" ? node.type.trim().toLowerCase() : "task";
-      const rawStatus =
-        typeof node.status === "string"
-          ? node.status.trim().toLowerCase()
-          : "pending";
-      const assignedBranchRaw =
-        typeof node.assignedBranch === "string"
-          ? node.assignedBranch.trim()
-          : "";
-      const branchTypeRaw =
-        typeof node.branchType === "string"
-          ? node.branchType.trim().toLowerCase()
-          : "";
-      const branchSlugRaw =
-        typeof node.branchSlug === "string" ? node.branchSlug.trim() : "";
-      const dependencies = Array.isArray(node.dependencies)
-        ? node.dependencies
-            .filter((dep): dep is string => typeof dep === "string")
-            .map((dep) => dep.trim())
-            .filter(Boolean)
-        : [];
-      const projectIds = Array.isArray(node.projectIds)
-        ? node.projectIds
-            .filter(
-              (projectId): projectId is string => typeof projectId === "string",
-            )
-            .map((projectId) => projectId.trim())
-            .filter(Boolean)
-        : typeof node.projectId === "string" && node.projectId.trim().length > 0
-          ? [node.projectId.trim()]
-          : [];
-
-      if (!title) {
-        throw new Error(
-          `Invalid strategy node at index ${index}: missing title.`,
-        );
-      }
-      if (!allowedNodeTypes.has(rawType as PlanNodeType)) {
-        throw new Error(`Invalid node type for "${title}": ${rawType}.`);
-      }
-      if (!allowedNodeStatuses.has(rawStatus as PlanNodeStatus)) {
-        throw new Error(`Invalid node status for "${title}": ${rawStatus}.`);
-      }
-
-      const branchIntent = getPlanNodeBranchIntent({
-        branchType: branchTypeRaw,
-        branchSlug: branchSlugRaw,
-        assignedBranch: assignedBranchRaw,
-        title,
-      });
-
-      return {
-        id: typeof node.id === "string" ? node.id.trim() : undefined,
-        title,
-        description,
-        type: rawType as PlanNodeType,
-        assignedBranch: branchIntent.label,
-        branchType: branchIntent.branchType,
-        branchSlug: branchIntent.branchSlug,
-        status: rawStatus as PlanNodeStatus,
-        dependencies: Array.from(new Set(dependencies)),
-        projectIds: Array.from(new Set(projectIds)),
-      };
-    };
-
-    const buildPredictedBranches = (
-      nodes: PlanNode[],
-      planSlug: string,
-    ): PredictedBranch[] => {
-      const branchMap = new Map<
-        string,
-        {
-          projectId: string;
-          taskIds: string[];
-          branchType: WorkBranchType;
-          branchSlug: string;
-          name: string;
-          parentBranch: string;
-        }
-      >();
-      nodes.forEach((node) => {
-        const branchIntent = getPlanNodeBranchIntent(node);
-        const projectIds =
-          Array.isArray(node.projectIds) && node.projectIds.length > 0
-            ? node.projectIds
-            : node.projectId
-              ? [node.projectId]
-              : [];
-        projectIds.forEach((projectId) => {
-          const projectSettings = useAppStore
-            .getState()
-            .getProjectById(projectId)?.gitFlowSettings;
-          const branchName = renderGitFlowBranchName({
-            branchType: branchIntent.branchType,
-            planSlug,
-            branchSlug: branchIntent.branchSlug,
-            settings: projectSettings,
-          });
-          const parentBranch = renderGitFlowBranchName({
-            branchType: "plan",
-            planSlug,
-            settings: projectSettings,
-          });
-          const key = `${projectId}::${branchIntent.key}`;
-          if (!branchMap.has(key)) {
-            branchMap.set(key, {
-              projectId,
-              taskIds: [],
-              branchType: branchIntent.branchType,
-              branchSlug: branchIntent.branchSlug,
-              name: branchName,
-              parentBranch,
-            });
-          }
-          branchMap.get(key)!.taskIds.push(node.id);
-        });
-      });
-
-      const colors = [
-        "#3b82f6",
-        "#10b981",
-        "#f59e0b",
-        "#ef4444",
-        "#8b5cf6",
-        "#ec4899",
-        "#06b6d4",
-      ];
-      return Array.from(branchMap.values()).map((value, index) => ({
-        id: `branch-${Date.now()}-${index}`,
-        name: value.name,
-        color: colors[index % colors.length],
-        parentBranch: value.parentBranch,
-        projectId: value.projectId,
-        taskIds: Array.from(new Set(value.taskIds)),
-        status: "pending" as const,
-        branchType: value.branchType,
-        branchSlug: value.branchSlug,
-      }));
-    };
-
     const resolveStrategyForPlan = async (params: {
-      targetBranch: string;
-      activePlanId: string;
+      activePlan: ArchitectPlanRecord;
       nodesInput: unknown[];
+      requestedPlanSlug?: string;
       reuseExistingIds?: boolean;
       existingNodesForPatch?: PlanNode[];
     }): Promise<{
       planNodes: PlanNode[];
       predictedBranches: PredictedBranch[];
-      resolvedProjectId: string | undefined;
       resolvedProjectIds: string[];
       targetBranchesByProjectId: Record<string, string>;
-      activePlanTitle: string;
-      activePlanDescription: string;
     }> => {
       const {
-        targetBranch,
-        activePlanId,
+        activePlan,
         nodesInput,
+        requestedPlanSlug,
         reuseExistingIds = false,
         existingNodesForPatch = [],
       } = params;
@@ -2495,14 +2571,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ]),
       ).filter(Boolean);
 
-      const activePlan = await getArchitectPlan(targetBranch, activePlanId);
-      if (!activePlan || activePlan.status === "deleted") {
-        throw new Error(
-          `Active plan ${activePlanId} is unavailable. Select another plan.`,
-        );
-      }
-
-      const planSlug = activePlan.slug;
+      const planSlug =
+        requestedPlanSlug && isArchitectPlanSlugMutable(activePlan)
+          ? normalizePlanSlugInput(requestedPlanSlug, activePlan.slug || activePlan.id)
+          : activePlan.slug;
 
       const idBase = `plan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const existingIdByTitle = new Map(
@@ -2510,7 +2582,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
 
       const normalizedNodes = nodesInput.map((rawNode, index) =>
-        normalizeNodeInput(rawNode, index),
+        normalizeArchitectStrategyNodeInput(rawNode, index),
       );
       const titleSet = new Set<string>();
       normalizedNodes.forEach((node) => {
@@ -2595,11 +2667,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       }
 
-      const predictedBranches = buildPredictedBranches(planNodes, planSlug);
+      const predictedBranches = buildArchitectStrategyPredictedBranches({
+        nodes: planNodes,
+        planSlug,
+        getProjectGitFlowSettings: (projectId) =>
+          appState.getProjectById(projectId)?.gitFlowSettings,
+      });
 
       const normalizedStrategy = normalizeStrategyDependencies(
         planNodes,
         predictedBranches,
+        {
+          planSlug,
+        },
       );
       const resolvedProjectIds = Array.from(
         new Set(
@@ -2620,11 +2700,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return {
         planNodes: normalizedStrategy.nodes,
         predictedBranches: normalizedStrategy.predictedBranches,
-        resolvedProjectId: resolvedProjectIds[0] || undefined,
         resolvedProjectIds,
         targetBranchesByProjectId,
-        activePlanTitle: activePlan.title,
-        activePlanDescription: activePlan.description,
       };
     };
 
@@ -2636,7 +2713,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       metadataUpdate?: {
         title?: string;
         label?: string;
+        slug?: string;
         description?: string;
+        validationConflicts?: string[];
       };
     }): Promise<StrategyMutationDecision> => {
       const repairAttemptKey = [
@@ -2662,6 +2741,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             status: task.status,
           })),
         metadataUpdate: params.metadataUpdate,
+        metadataValidationConflicts: params.metadataUpdate?.validationConflicts,
         targetBranchesByProjectId: params.strategy.targetBranchesByProjectId,
         getProjectGitFlowSettings: (projectId) =>
           useAppStore.getState().getProjectById(projectId)?.gitFlowSettings,
@@ -2844,17 +2924,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
         typeof args.title === "string" ? args.title.trim() : undefined;
       const label =
         typeof args.label === "string" ? args.label.trim() : undefined;
+      const slug =
+        typeof args.slug === "string"
+          ? args.slug.trim()
+          : typeof args.plan_slug === "string"
+            ? args.plan_slug.trim()
+            : undefined;
       const shouldPassTitleAlias =
         titleAlias !== undefined &&
         (!isCanonicalPlan ||
           titleAlias !== existingPlan.title ||
           label !== undefined);
 
+      if (slug !== undefined && slug.length > 0 && !isArchitectPlanSlugMutable(existingPlan) && normalizePlanSlugInput(slug, existingPlan.slug || existingPlan.id) !== existingPlan.slug) {
+        return `Plan slug "${existingPlan.slug}" is locked and can no longer be changed.`;
+      }
+
       const updatedPlan = await updateArchitectPlan({
         branchName: targetBranch,
         planId,
         ...(shouldPassTitleAlias ? { title: titleAlias } : {}),
         ...(label !== undefined ? { label } : {}),
+        ...(slug !== undefined ? { slug } : {}),
         ...(typeof args.description === "string"
           ? { description: args.description }
           : {}),
@@ -2896,13 +2987,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return `strategy_generate can only update the active plan (${activePlanId}).`;
       }
 
-      const strategy = await resolveStrategyForPlan({
-        targetBranch,
-        activePlanId,
-        nodesInput: rawNodes,
-      });
+      const requestedPlanSlug =
+        typeof args.plan_slug === "string"
+          ? args.plan_slug.trim()
+          : typeof args.planSlug === "string"
+            ? args.planSlug.trim()
+            : "";
 
       const activePlan = await getArchitectPlan(targetBranch, activePlanId);
+      if (!activePlan || activePlan.status === "deleted") {
+        return `Active plan ${activePlanId} is unavailable.`;
+      }
+
+      const strategy = await resolveStrategyForPlan({
+        activePlan,
+        nodesInput: rawNodes,
+        requestedPlanSlug,
+      });
+
       const requestedPlanTitleAlias =
         typeof args.plan_title === "string"
           ? args.plan_title.trim()
@@ -2910,25 +3012,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const inputDescription =
         typeof args.plan_description === "string"
           ? args.plan_description
-          : activePlan?.description || "";
-      if (!activePlan) {
-        return `Active plan ${activePlanId} is unavailable.`;
-      }
-
-      const metadataUpdate =
-        activePlan && requestedPlanTitleAlias !== undefined
-          ? isCanonicalArchitectPlan(activePlan)
-            ? {
-                label: requestedPlanTitleAlias,
-                description: inputDescription,
-              }
-            : {
-                title: requestedPlanTitleAlias,
-                description: inputDescription,
-              }
-          : {
-              description: inputDescription,
-            };
+          : activePlan.description || "";
+      const metadataUpdate = await buildArchitectStrategyMetadataUpdate({
+        branchName: targetBranch,
+        activePlan,
+        requestedPlanSlug,
+        requestedPlanTitleAlias,
+        description: inputDescription,
+        includeTitleAlias: requestedPlanTitleAlias !== undefined,
+      });
       const decision = await executeStrategyMutation({
         source: "strategy_generate",
         targetBranch,
@@ -2991,6 +3083,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!activePlan || activePlan.status === "deleted") {
         return `Active plan ${activePlanId} is unavailable.`;
       }
+      const requestedPlanSlug =
+        typeof args.plan_slug === "string"
+          ? args.plan_slug.trim()
+          : typeof args.planSlug === "string"
+            ? args.planSlug.trim()
+            : "";
 
       const replace = args.replace === true;
       const rawNodes = Array.isArray(args.nodes) ? args.nodes : [];
@@ -3075,9 +3173,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 ? operation.branchType.trim().toLowerCase()
                 : target.branchType;
             const nextBranchSlugRaw =
-              typeof operation.branchSlug === "string"
-                ? operation.branchSlug.trim()
-                : target.branchSlug;
+              typeof operation.featureSlug === "string"
+                ? operation.featureSlug.trim()
+                : typeof operation.feature_slug === "string"
+                  ? operation.feature_slug.trim()
+                  : typeof operation.branchSlug === "string"
+                    ? operation.branchSlug.trim()
+                    : target.branchSlug;
             const nextDependencies = Array.isArray(operation.dependencies)
               ? operation.dependencies
                   .filter((dep): dep is string => typeof dep === "string")
@@ -3085,10 +3187,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   .filter(Boolean)
               : target.dependencies;
 
-            if (!allowedNodeTypes.has(nextTypeRaw as PlanNodeType)) {
+            if (!ARCHITECT_STRATEGY_NODE_TYPES.has(nextTypeRaw as PlanNodeType)) {
               return `strategy_update update failed at operation ${index + 1}: invalid type ${nextTypeRaw}.`;
             }
-            if (!allowedNodeStatuses.has(nextStatusRaw as PlanNodeStatus)) {
+            if (!ARCHITECT_STRATEGY_NODE_STATUSES.has(nextStatusRaw as PlanNodeStatus)) {
               return `strategy_update update failed at operation ${index + 1}: invalid status ${nextStatusRaw}.`;
             }
 
@@ -3114,7 +3216,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
 
           if (action === "add") {
-            const normalized = normalizeNodeInput(operation, index);
+            const normalized = normalizeArchitectStrategyNodeInput(operation, index);
             idCounter += 1;
             working.push({
               id: `node-${Date.now()}-${idCounter}`,
@@ -3148,9 +3250,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       const strategy = await resolveStrategyForPlan({
-        targetBranch,
-        activePlanId,
+        activePlan,
         nodesInput,
+        requestedPlanSlug,
         reuseExistingIds: !replace,
         existingNodesForPatch: activePlan.nodes,
       });
@@ -3159,9 +3261,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         targetBranch,
         activePlan,
         strategy,
-        metadataUpdate: {
+        metadataUpdate: await buildArchitectStrategyMetadataUpdate({
+          branchName: targetBranch,
+          activePlan,
+          requestedPlanSlug,
           description: activePlan.description,
-        },
+        }),
       });
 
       if (decision.outcome === "repair_requested") {
@@ -3648,7 +3753,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "In Architect mode, never call `plan_delete` or `plan_restore`. If a plan should be removed, archived, or restored, ask the user to do it from the plan selector.",
       );
       systemInstructions.push(
-        "In Architect mode, `plan_update` may only change the optional label/title alias and description. Never use it to change plan status or activate a plan.",
+        "In Architect mode, `plan_update` may only change the optional label/title alias, description, and the logical plan slug while the plan is still a mutable draft. Never use it to change plan status or activate a plan.",
       );
       systemInstructions.push(
         "In Architect mode, never call `plan_set_active`. If another plan should become active, ask the user to select it from the plan selector.",
@@ -3657,12 +3762,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
       );
       systemInstructions.push(
-        "Git workflow for plans is strict: each new plan gets a generated identifier and uses that identifier as its canonical slug. Integration branch is `plan/<plan-id>` from `develop`; strategy branches must be `feature/<plan-id>/<feature-slug>` and merge into the plan branch in dependency order. Optional labels must never change git branch identity.",
+        "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. The Architect AI should propose `plan_slug` and `featureSlug` values, not raw git branch names. Integration branches and feature branches are rendered later from each subproject GitFlow profile. Multiple sequential nodes may share the same `featureSlug` when they stay on the same branch.",
+      );
+      systemInstructions.push(
+        "A plan node is not the same thing as a branch. Reuse the same `featureSlug` for sequential work that stays on one logical branch, and create separate `featureSlug` values only for work that can proceed in parallel.",
       );
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {
         systemInstructions.push(
-          `[Active Plan] id="${activePlanContext.id}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || "none"}", description="${activePlanContext.description || "none"}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". New plans are identifier-first. Use plan_update.label (or title as legacy alias) only for the optional secondary label, and never rename the canonical id/slug of a new plan.`,
+          `[Active Plan] id="${activePlanContext.id}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || "none"}", description="${activePlanContext.description || "none"}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". Use plan_update.label (or title as legacy alias) for the optional display label. Only update plan slug through \`plan_update.slug\` or \`strategy_generate.plan_slug\` while the plan is still a mutable draft.`,
         );
       }
     }
