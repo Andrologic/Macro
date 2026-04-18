@@ -69,6 +69,7 @@ const appState = {
   codeOverflowMode: 'wrap' as const,
   activeArchitectPlanId: null as string | null,
   activePlanContext: null as { id?: string; targetBranch: string } | null,
+  pendingArchitectPlanActivationPayload: null as Record<string, unknown> | null,
   strategyMutationPreview: null as Record<string, unknown> | null,
   projectGroups,
   getProjectById: (projectId: string) =>
@@ -78,6 +79,29 @@ const appState = {
   setPredictedBranches: (_branches: unknown[]) => undefined,
   setStrategyMutationPreview: (preview: Record<string, unknown> | null) => {
     appState.strategyMutationPreview = preview;
+  },
+  consumeArchitectPlanActivationPayload: (params?: {
+    planId?: string | null;
+    targetBranch?: string | null;
+  }) => {
+    const payload = appState.pendingArchitectPlanActivationPayload;
+    if (!payload) {
+      return null;
+    }
+    if (
+      params?.planId &&
+      (payload as { plan?: { id?: string } }).plan?.id !== params.planId
+    ) {
+      return null;
+    }
+    if (
+      params?.targetBranch &&
+      (payload as { targetBranch?: string }).targetBranch !== params.targetBranch
+    ) {
+      return null;
+    }
+    appState.pendingArchitectPlanActivationPayload = null;
+    return payload;
   },
   setActivePlanContext: (_context: unknown) => undefined,
   setTheme: (_themeId: string) => undefined,
@@ -122,6 +146,7 @@ const appState = {
         id: plan.id,
         targetBranch: options?.targetBranch ?? plan.targetBranch,
       };
+      appState.pendingArchitectPlanActivationPayload = null;
       return true;
     }
   ),
@@ -376,10 +401,62 @@ const getArchitectPlanChatMessagesMock = mock(
   async (_branchName: string, planId: string) => architectPlanMessages.get(planId) ?? []
 );
 const getArchitectPlanMock = mock(async (_branchName: string, planId: string) => architectPlans.get(planId) ?? null);
+const getArchitectPlanActivationPayloadMock = mock(
+  async (branchName: string, planId: string) => {
+    const plan = architectPlans.get(planId);
+    if (!plan || plan.status === 'deleted') {
+      return null;
+    }
+
+    const conversationId = plan.conversationId ?? null;
+    return {
+      plan,
+      needs: [],
+      chatMessages: architectPlanMessages.get(planId) ?? [],
+      conversationId,
+      sharedConversation: Boolean(
+        conversationId &&
+          Array.from(architectPlans.values()).some(
+            (candidate) =>
+              candidate.id !== planId &&
+              candidate.status !== 'deleted' &&
+              candidate.conversationId === conversationId
+          )
+      ),
+      targetBranch: branchName,
+      resolutionMode:
+        !conversationId &&
+        plan.status === 'draft' &&
+        plan.description.length === 0 &&
+        plan.nodes.length === 0 &&
+        plan.predictedBranches.length === 0 &&
+        (architectPlanMessages.get(planId)?.length ?? 0) === 0
+          ? 'blank_fast_path'
+          : 'full',
+    };
+  }
+);
 const listArchitectPlansMock = mock(async (_branchName: string) => ({
   activePlanId: appState.activeArchitectPlanId,
   plans: Array.from(architectPlans.values()),
 }));
+const bindArchitectPlanConversationMock = mock(async (params: {
+  branchName: string;
+  planId: string;
+  conversationId: string;
+}) => {
+  const existing = architectPlans.get(params.planId);
+  if (!existing) {
+    throw new Error(`Unknown plan ${params.planId}`);
+  }
+  const updated = {
+    ...existing,
+    conversationId: params.conversationId,
+    updatedAt: '2026-03-19T01:00:00.000Z',
+  };
+  architectPlans.set(params.planId, updated);
+  return updated;
+});
 const updateArchitectPlanMock = mock(async (params: {
   branchName: string;
   planId: string;
@@ -821,10 +898,12 @@ const registerUseChatStoreMocks = async () => {
 
   const architectPlanServiceModule = () => ({
     ...actualArchitectPlanService,
+    bindArchitectPlanConversation: bindArchitectPlanConversationMock,
     createArchitectPlan: mock(async () => {
       throw new Error('not implemented');
     }),
     deleteArchitectPlan: mock(async () => undefined),
+    getArchitectPlanActivationPayload: getArchitectPlanActivationPayloadMock,
     getArchitectPlan: getArchitectPlanMock,
     getArchitectPlanChatMessages: getArchitectPlanChatMessagesMock,
     getArchitectPlanProjectIds: (plan: ArchitectPlanRecord) =>
@@ -855,9 +934,17 @@ const registerUseChatStoreMocks = async () => {
   mock.module('../services/architectPlanService', architectPlanServiceModule);
   mock.module('../services/architectPlanService.ts', architectPlanServiceModule);
 
-  mock.module('../services/localProjectContext', () => ({
+  const localProjectContextModule = () => ({
     getLocalProjectContextState: getLocalProjectContextStateMock,
-  }));
+    getLocalSessionContextState: async () => null,
+    getProjectSwitchPolicy: async () => 'resume_per_project',
+    reconcileLocalProjectRegistryState: async () => undefined,
+    setProjectSwitchPolicy: async () => undefined,
+    upsertLocalProjectContextState: async () => null,
+    upsertLocalSessionContextState: async () => null,
+  });
+  mock.module('../services/localProjectContext', localProjectContextModule);
+  mock.module('../services/localProjectContext.ts', localProjectContextModule);
 
   mock.module('../services/architectGitFlowService', () => ({
     provisionPlanBranches: provisionPlanBranchesMock,
@@ -1056,6 +1143,12 @@ const setArchitectStoreState = (
   useChatStore.setState(createArchitectStoreState(params));
 };
 
+const flushAsyncWork = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+};
+
 const getLatestArchitectToolHandler = () => {
   const lastCall = ((streamChatMock as unknown as {
     mock: { calls: Array<Array<unknown>> };
@@ -1175,6 +1268,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.codeOverflowMode = 'wrap';
     appState.activeArchitectPlanId = null;
     appState.activePlanContext = null;
+    appState.pendingArchitectPlanActivationPayload = null;
     appState.strategyMutationPreview = null;
 
     providerState.selectedProviderId = 'provider-1';
@@ -1205,8 +1299,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     dbMessageCounter = 0;
     chatSnapshotConversations = [];
     chatSnapshotMessages = [];
+    getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanChatMessagesMock.mockClear();
     getArchitectPlanMock.mockClear();
+    bindArchitectPlanConversationMock.mockClear();
     listArchitectPlansMock.mockClear();
     updateArchitectPlanMock.mockClear();
     provisionPlanBranchesMock.mockClear();
@@ -1615,6 +1711,150 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
   });
 
+  it('clears the previous architect conversation immediately when switching to a blank plan', async () => {
+    tauriAvailable = true;
+
+    const advancedPlan = createScenarioPlan('started', {
+      id: 'plan-advanced',
+      slug: 'plan-advanced',
+      title: 'plan-advanced',
+      label: 'Checkout refresh',
+      conversationId: 'plan-advanced-conv',
+    });
+    const blankPlan = createScenarioPlan('blank', {
+      id: 'plan-blank',
+      slug: 'plan-blank',
+      title: 'plan-blank',
+      conversationId: undefined,
+    });
+    architectPlans.set(advancedPlan.id, advancedPlan);
+    architectPlans.set(blankPlan.id, blankPlan);
+    appState.activeArchitectPlanId = advancedPlan.id;
+    appState.activePlanContext = { id: advancedPlan.id, targetBranch: 'develop' };
+
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('plan-advanced-conv', {
+        title: 'Checkout refresh',
+        last_message: 'latest',
+        message_count: 2,
+        updated_at: '2026-03-19T00:04:00.000Z',
+      }),
+    ];
+    chatSnapshotMessages = [
+      createChatMessageRecord({
+        id: 'm-1',
+        conversation_id: 'plan-advanced-conv',
+        role: 'user',
+        content: 'First question',
+      }),
+      createChatMessageRecord({
+        id: 'm-2',
+        conversation_id: 'plan-advanced-conv',
+        role: 'assistant',
+        content: 'Second answer',
+        created_at: '2026-03-19T00:02:00.000Z',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+
+    expect(useChatStore.getState().selectedConversationId).toBe('plan-advanced-conv');
+
+    tauriAvailable = false;
+    useAppStoreMock.setState({
+      activeArchitectPlanId: blankPlan.id,
+      activePlanContext: { id: blankPlan.id, targetBranch: 'develop' },
+    });
+
+    expect(useChatStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().selectedConversationIdsByMode.Architect).toBeNull();
+    expect(useChatStore.getState().restoreStatus).toBe('resolving');
+
+    await flushAsyncWork();
+
+    const nextConversationId = useChatStore.getState().selectedConversationId;
+    expect(nextConversationId).toBeTruthy();
+    expect(nextConversationId).not.toBe('plan-advanced-conv');
+    expect(useChatStore.getState().restoreStatus).toBe('ready');
+    expect(useChatStore.getState().getConversationMessages(nextConversationId!)).toHaveLength(0);
+    expect(getArchitectPlanActivationPayloadMock).toHaveBeenCalledWith('develop', blankPlan.id);
+    expect(bindArchitectPlanConversationMock).not.toHaveBeenCalled();
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+  });
+
+  it('binds a blank architect plan conversation only when the first message is sent', async () => {
+    const plan = createScenarioPlan('blank', {
+      id: 'plan-blank-first-message',
+      slug: 'plan-blank-first-message',
+      title: 'plan-blank-first-message',
+      conversationId: undefined,
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState());
+
+    const conversationId =
+      await useChatStore.getState().ensureConversationForCurrentMode();
+
+    expect(conversationId).toBeTruthy();
+    expect(bindArchitectPlanConversationMock).not.toHaveBeenCalled();
+    expect(updateArchitectPlanMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId,
+      }),
+    );
+
+    await useChatStore.getState().sendMessage({
+      conversationId: conversationId!,
+      content: 'On doit refondre le parcours checkout et la reprise panier.',
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(bindArchitectPlanConversationMock).toHaveBeenCalledWith({
+      branchName: 'develop',
+      planId: plan.id,
+      conversationId,
+    });
+    expect(architectPlans.get(plan.id)?.conversationId).toBe(conversationId);
+  });
+
+  it('reuses the app-store activation payload before falling back to the plan service', async () => {
+    const plan = createScenarioPlan('blank', {
+      id: 'plan-blank-shared-payload',
+      slug: 'plan-blank-shared-payload',
+      title: 'plan-blank-shared-payload',
+      conversationId: undefined,
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+    appState.pendingArchitectPlanActivationPayload = {
+      plan,
+      needs: [],
+      chatMessages: [],
+      conversationId: null,
+      sharedConversation: false,
+      targetBranch: 'develop',
+      resolutionMode: 'blank_fast_path',
+    };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState());
+    getArchitectPlanActivationPayloadMock.mockClear();
+
+    const conversationId =
+      await useChatStore.getState().ensureConversationForCurrentMode();
+
+    expect(conversationId).toBeTruthy();
+    expect(getArchitectPlanActivationPayloadMock).not.toHaveBeenCalled();
+    expect(appState.pendingArchitectPlanActivationPayload).toBeNull();
+  });
+
   it('hydrates the chat snapshot and resolves the active plan conversation during initialize', async () => {
     tauriAvailable = true;
 
@@ -1844,6 +2084,226 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
   });
 
+  it('does not overwrite a manually renamed canonical plan on the first message', async () => {
+    const plan = createPlan({
+      id: '1710000000001',
+      slug: '1710000000001',
+      title: '1710000000001',
+      label: 'Checkout rescue',
+      description: '',
+      conversationId: 'plan-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('plan-conv'),
+          title: 'Plan - Checkout rescue - 1710000000001',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'plan-conv',
+      content: 'On doit stabiliser le checkout au plus vite.',
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    expect(architectPlans.get(plan.id)?.label).toBe('Checkout rescue');
+    expect(useChatStore.getState().conversations[0]?.title).toBe(
+      'Plan - Checkout rescue - 1710000000001'
+    );
+  });
+
+  it('opens architect plan naming recovery after three failed AI naming attempts', async () => {
+    sendChatNonStreamingMock.mockImplementation(async () => {
+      throw new Error('model unavailable');
+    });
+
+    const plan = createPlan({
+      id: '1710000000002',
+      slug: '1710000000002',
+      title: '1710000000002',
+      label: 'new plan',
+      description: '',
+      conversationId: 'plan-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('plan-conv'),
+          title: 'Plan - new plan',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'plan-conv',
+      content: 'On doit refondre le panier et la reprise de session.',
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(3);
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    expect(updateConversationDetailsMock).not.toHaveBeenCalled();
+    expect(architectPlans.get(plan.id)?.label).toBe('new plan');
+    expect(useChatStore.getState().architectPlanNamingRecovery).toMatchObject({
+      conversationId: 'plan-conv',
+      planId: plan.id,
+      targetBranch: 'develop',
+      stage: 'choice',
+      isSubmitting: false,
+      error: null,
+    });
+  });
+
+  it('retries architect plan naming from recovery until it succeeds', async () => {
+    sendChatNonStreamingMock.mockImplementation(async () => {
+      throw new Error('model unavailable');
+    });
+
+    const plan = createPlan({
+      id: '1710000000003',
+      slug: '1710000000003',
+      title: '1710000000003',
+      label: 'new plan',
+      description: '',
+      conversationId: 'plan-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('plan-conv'),
+          title: 'Plan - new plan',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'plan-conv',
+      content: 'On doit refondre le checkout et restaurer le panier.',
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    sendChatNonStreamingMock.mockImplementation(async () =>
+      JSON.stringify({
+        title: 'Checkout refresh',
+        description: 'Refresh checkout state and cart recovery.',
+      })
+    );
+
+    const retried = await useChatStore.getState().retryArchitectPlanNamingRecovery();
+
+    expect(retried).toBe(true);
+    expect(architectPlans.get(plan.id)?.label).toBe('Checkout refresh');
+    expect(useChatStore.getState().architectPlanNamingRecovery).toBeNull();
+    expect(useChatStore.getState().conversations[0]?.title).toBe(
+      'Plan - Checkout refresh - 1710000000003'
+    );
+  });
+
+  it('allows naming the plan manually from recovery', async () => {
+    const plan = createPlan({
+      id: '1710000000004',
+      slug: '1710000000004',
+      title: '1710000000004',
+      label: 'new plan',
+      description: '',
+      conversationId: 'plan-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('plan-conv'),
+          title: 'Plan - new plan',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+      architectPlanNamingRecovery: {
+        conversationId: 'plan-conv',
+        planId: plan.id,
+        targetBranch: 'develop',
+        firstUserContent: 'On doit renommer ce plan.',
+        providerId: 'provider-1',
+        modelId: 'model-1',
+        reasoningEffort: null,
+        stage: 'manual',
+        isSubmitting: false,
+        error: null,
+      },
+    });
+
+    const saved = await useChatStore
+      .getState()
+      .submitArchitectPlanManualName('Checkout recovery');
+
+    expect(saved).toBe(true);
+    expect(architectPlans.get(plan.id)?.label).toBe('Checkout recovery');
+    expect(useChatStore.getState().architectPlanNamingRecovery).toBeNull();
+    expect(useChatStore.getState().conversations[0]?.title).toBe(
+      'Plan - Checkout recovery - 1710000000004'
+    );
+  });
+
   it('hydrates the active plan after a tool update without triggering implicit auto-plan on project switch', async () => {
     const plan = createPlan({
       id: 'plan-1',
@@ -1955,6 +2415,47 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       mock: { calls: Array<Array<Record<string, unknown>>> };
     }).mock.calls.every((call) => call[0]?.planId === activePlan.id)).toBe(true);
     expect(architectPlans.get(blankSibling.id)?.label).toBe(blankSibling.label);
+  });
+
+  it('refuses plan label updates after strategy has been created', async () => {
+    const activePlan = createPlan({
+      id: 'started-plan',
+      conversationId: 'plan-conv',
+      nodes: [
+        {
+          id: 'node-1',
+          title: 'Implement checkout',
+          description: '',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/checkout',
+          projectId: 'project-1',
+          projectIds: ['project-1'],
+        },
+      ],
+    });
+    architectPlans.set(activePlan.id, activePlan);
+    appState.activeArchitectPlanId = activePlan.id;
+    appState.activePlanContext = { targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Update the plan label.',
+    });
+
+    const result = await onToolCall('plan_update', {
+      plan_id: activePlan.id,
+      label: 'New label',
+    });
+
+    expect(result).toContain('cannot rename a plan after strategy has been created');
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
   });
 
   it('does not re-resolve the architect conversation when only the selected task changes', async () => {

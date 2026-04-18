@@ -23,17 +23,13 @@ import { clampUiZoomLevel } from "../utils/uiZoom";
 import {
   type LocalProjectContextState,
   type ProjectSwitchPolicy,
-  getLocalProjectContextState,
-  getLocalSessionContextState,
-  getProjectSwitchPolicy,
-  reconcileLocalProjectRegistryState,
-  setProjectSwitchPolicy as persistProjectSwitchPolicy,
-  upsertLocalProjectContextState,
-  upsertLocalSessionContextState,
 } from "../services/localProjectContext";
+import * as localProjectContext from "../services/localProjectContext";
 import { getDefaultProjectGitFlowSettings } from "../services/architectGitNaming";
 import {
+  type ArchitectPlanActivationPayload,
   getArchitectPlan,
+  getArchitectPlanActivationPayload,
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   isArchitectPlanVisibleForScope,
@@ -77,7 +73,10 @@ import {
   resolveCanonicalProjectGroup,
   reconcileRememberedProjects,
 } from "../services/projectRegistry";
-import { ensureProjectGroupPlan } from "../services/architectAutoPlan";
+import {
+  consolidateScopedBlankPlans,
+  ensureProjectGroupPlan,
+} from "../services/architectAutoPlan";
 import { computeArchitectPlanResolutionState } from "../services/architectPlanSelection";
 import { registerAppStateGetter } from "../services/appStateRuntime";
 import type { NormalizeProjectRegistryResult } from "../services/projectRegistry";
@@ -216,7 +215,7 @@ const persistSessionContext = async (input: {
   selectedProjectId: string | null;
   mode: AppMode;
 }): Promise<void> => {
-  await upsertLocalSessionContextState(input);
+  await localProjectContext.upsertLocalSessionContextState(input);
   void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, input.selectedGroupId);
   void savePreference(
     PREF_KEYS.LAST_SELECTED_PROJECT_ID,
@@ -281,6 +280,67 @@ const logProjectRegistryAction = (
   devLogger.info(JSON.stringify(message));
 };
 
+const pendingBlankPlanConsolidationsByScopeKey = new Map<string, Promise<void>>();
+
+const scheduleScopedBlankPlanConsolidation = (params: {
+  branchName: string;
+  scopedProjectIds: string[];
+  reason: "activate" | "selector" | "scope_init";
+}): void => {
+  const scopedProjectIds = Array.from(
+    new Set(
+      params.scopedProjectIds
+        .map((projectId) => projectId.trim())
+        .filter((projectId) => projectId.length > 0),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+  if (scopedProjectIds.length === 0) {
+    return;
+  }
+
+  const scopeKey = `${resolveTargetBranch(params.branchName)}::${scopedProjectIds.join(",")}`;
+  if (pendingBlankPlanConsolidationsByScopeKey.has(scopeKey)) {
+    return;
+  }
+
+  const startedAt = Date.now();
+  const task = consolidateScopedBlankPlans({
+    branchName: params.branchName,
+    scopedProjectIds,
+  })
+    .then((result) => {
+      devLogger.info(
+        JSON.stringify({
+          event: "architect_blank_plan_consolidated",
+          at: new Date().toISOString(),
+          branchName: resolveTargetBranch(params.branchName),
+          scopedProjectIds,
+          reason: params.reason,
+          deletedPlanIds: result.deletedPlanIds,
+          durationMs: Date.now() - startedAt,
+        }),
+      );
+    })
+    .catch((error) => {
+      devLogger.info(
+        JSON.stringify({
+          event: "architect_blank_plan_consolidation_failed",
+          at: new Date().toISOString(),
+          branchName: resolveTargetBranch(params.branchName),
+          scopedProjectIds,
+          reason: params.reason,
+          durationMs: Date.now() - startedAt,
+          error: toServiceError(error).message,
+        }),
+      );
+    })
+    .finally(() => {
+      pendingBlankPlanConsolidationsByScopeKey.delete(scopeKey);
+    });
+
+  pendingBlankPlanConsolidationsByScopeKey.set(scopeKey, task);
+};
+
 const reconcileProjectRegistryDependencies = async (params: {
   projectGroups: ProjectGroup[];
   selectedGroupId: string | null;
@@ -289,7 +349,7 @@ const reconcileProjectRegistryDependencies = async (params: {
   const { validGroupIds, validProjectIds } = collectProjectRegistryIds(
     params.projectGroups,
   );
-  await reconcileLocalProjectRegistryState({
+  await localProjectContext.reconcileLocalProjectRegistryState({
     validGroupIds,
     validProjectIds,
     selectedGroupId: params.selectedGroupId,
@@ -420,7 +480,7 @@ const persistCurrentProjectContext = async (
     implementByProject[0]?.id ||
     null;
 
-  await upsertLocalProjectContextState({
+  await localProjectContext.upsertLocalProjectContextState({
     projectId: groupId,
     groupId,
     focusProjectId: focusProjectId ?? appState.selectedProjectId ?? null,
@@ -439,7 +499,7 @@ const restoreProjectContext = async (
   const globalProject = getGlobalProjectById(appState.projectGroups, groupId);
   if (!globalProject) return;
 
-  const context = await getLocalProjectContextState(groupId);
+  const context = await localProjectContext.getLocalProjectContextState(groupId);
   const taskStore = useTaskStore.getState();
 
   let restoredTaskId: string | null = null;
@@ -481,10 +541,10 @@ const restoreProjectContext = async (
 };
 
 const hydrateArchitectPlanInStore = async (input: {
-  plan: Awaited<ReturnType<typeof getArchitectPlan>>;
-  needs: Awaited<ReturnType<typeof getArchitectPlanNeeds>>;
+  activationPayload: ArchitectPlanActivationPayload;
 }): Promise<void> => {
-  const plan = input.plan;
+  const { activationPayload } = input;
+  const plan = activationPayload.plan;
   if (!plan || plan.status === "deleted") {
     return;
   }
@@ -507,14 +567,16 @@ const hydrateArchitectPlanInStore = async (input: {
     planNodes: plan.nodes || [],
     predictedBranches: plan.predictedBranches || [],
     strategyMutationPreview: null,
+    pendingArchitectPlanActivationPayload: activationPayload,
   });
-  useNeedsStore.getState().hydrateNeedsForPlan(plan.id, input.needs);
+  useNeedsStore.getState().hydrateNeedsForPlan(plan.id, activationPayload.needs);
 };
 
 const clearActiveArchitectPlanInStore = (): void => {
   useAppStore.setState({
     activeArchitectPlanId: null,
     activePlanContext: null,
+    pendingArchitectPlanActivationPayload: null,
     planNodes: [],
     predictedBranches: [],
     strategyMutationPreview: null,
@@ -536,8 +598,20 @@ const activateArchitectPlanInStore = async (input: {
     await persistActiveArchitectPlan(targetBranch, input.planId);
   }
 
-  const plan = await getArchitectPlan(targetBranch, input.planId);
+  const switchingArchitectPlan =
+    appStore.mode === "Architect" &&
+    appStore.activeArchitectPlanId !== input.planId;
+  if (switchingArchitectPlan) {
+    useChatStore.getState().beginArchitectPlanSwitch();
+  }
+
+  const activationPayload = await getArchitectPlanActivationPayload(
+    targetBranch,
+    input.planId,
+  );
+  const plan = activationPayload?.plan ?? null;
   if (!plan || plan.status === "deleted") {
+    useAppStore.setState({ pendingArchitectPlanActivationPayload: null });
     return null;
   }
 
@@ -565,10 +639,27 @@ const activateArchitectPlanInStore = async (input: {
     }
   }
 
-  const needs = await getArchitectPlanNeeds(targetBranch, plan.id);
   await hydrateArchitectPlanInStore({
-    plan,
-    needs,
+    activationPayload:
+      activationPayload ?? {
+        plan,
+        needs: await getArchitectPlanNeeds(targetBranch, plan.id),
+        chatMessages: [],
+        conversationId: plan.conversationId ?? null,
+        sharedConversation: false,
+        targetBranch,
+        resolutionMode: 'full',
+      },
+  });
+  const latestAppState = useAppStore.getState();
+  scheduleScopedBlankPlanConsolidation({
+    branchName: targetBranch,
+    scopedProjectIds: getScopedProjectIds(
+      latestAppState.projectGroups,
+      latestAppState.selectedGroupId,
+      latestAppState.selectedProjectId,
+    ),
+    reason: "activate",
   });
   return plan;
 };
@@ -580,7 +671,7 @@ const persistResolvedArchitectPlanContext = async (params: {
   planId: string;
   localContext: LocalProjectContextState | null;
 }): Promise<void> => {
-  await upsertLocalProjectContextState({
+  await localProjectContext.upsertLocalProjectContextState({
     projectId: params.contextId,
     groupId: params.groupId ?? params.localContext?.groupId ?? null,
     focusProjectId:
@@ -616,7 +707,7 @@ const resolveArchitectPlanForScope = async (input: {
   );
   const contextId = input.groupId || input.projectId;
   const localContext = contextId
-    ? await getLocalProjectContextState(contextId)
+    ? await localProjectContext.getLocalProjectContextState(contextId)
     : null;
   const plansIndex = await listArchitectPlans(targetBranch, true, true);
   const resolution = computeArchitectPlanResolutionState({
@@ -814,6 +905,7 @@ interface AppStore {
   // Architect mode state
   activeArchitectPlanId: string | null;
   activePlanContext: ArchitectPlanContext | null;
+  pendingArchitectPlanActivationPayload: ArchitectPlanActivationPayload | null;
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
   strategyMutationPreview: StrategyMutationPreview | null;
@@ -876,6 +968,10 @@ interface AppStore {
   setStrategyMutationPreview: (
     preview: StrategyMutationPreview | null,
   ) => void;
+  consumeArchitectPlanActivationPayload: (params?: {
+    planId?: string | null;
+    targetBranch?: string | null;
+  }) => ArchitectPlanActivationPayload | null;
   setActiveArchitectPlanId: (planId: string | null) => void;
   activateArchitectPlan: (
     planId: string,
@@ -1023,6 +1119,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   metadataRecoveryReport: null,
   activeArchitectPlanId: null,
   activePlanContext: null,
+  pendingArchitectPlanActivationPayload: null,
   planNodes: [],
   predictedBranches: [],
   strategyMutationPreview: null,
@@ -1093,6 +1190,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       selectedTaskId: null,
       activeArchitectPlanId: null,
       activePlanContext: null,
+      pendingArchitectPlanActivationPayload: null,
       planNodes: [],
       predictedBranches: [],
       strategyMutationPreview: null,
@@ -1127,7 +1225,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const normalized =
       policy === "reset_on_switch" ? "reset_on_switch" : "resume_per_project";
     set({ projectSwitchPolicy: normalized });
-    await persistProjectSwitchPolicy(normalized);
+    await localProjectContext.setProjectSwitchPolicy(normalized);
   },
 
   setMetadataAutoPush: (enabled) => {
@@ -1280,6 +1378,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedTaskId: null,
         activeArchitectPlanId: null,
         activePlanContext: null,
+        pendingArchitectPlanActivationPayload: null,
         planNodes: [],
         predictedBranches: [],
         strategyMutationPreview: null,
@@ -1367,7 +1466,34 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setStrategyMutationPreview: (preview) =>
     set({ strategyMutationPreview: preview }),
 
-  setActiveArchitectPlanId: (planId) => set({ activeArchitectPlanId: planId }),
+  consumeArchitectPlanActivationPayload: (params) => {
+    const state = get();
+    const payload = state.pendingArchitectPlanActivationPayload;
+    if (!payload) {
+      return null;
+    }
+
+    if (params?.planId && payload.plan.id !== params.planId) {
+      return null;
+    }
+
+    if (
+      params?.targetBranch &&
+      resolveTargetBranch(payload.targetBranch) !==
+        resolveTargetBranch(params.targetBranch)
+    ) {
+      return null;
+    }
+
+    set({ pendingArchitectPlanActivationPayload: null });
+    return payload;
+  },
+
+  setActiveArchitectPlanId: (planId) =>
+    set({
+      activeArchitectPlanId: planId,
+      pendingArchitectPlanActivationPayload: null,
+    }),
 
   activateArchitectPlan: async (planId, options) => {
     const plan = await activateArchitectPlanInStore({
@@ -1377,7 +1503,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     return Boolean(plan);
   },
 
-  setActivePlanContext: (plan) => set({ activePlanContext: plan }),
+  setActivePlanContext: (plan) =>
+    set({
+      activePlanContext: plan,
+      pendingArchitectPlanActivationPayload: null,
+    }),
 
   setTaskSortOption: (option) => set({ taskSortOption: option }),
 
@@ -3150,8 +3280,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         loadPreference<NotificationChannelModes>(
           PREF_KEYS.NOTIFICATION_CHANNEL_MODES,
         ),
-        getProjectSwitchPolicy(),
-        getLocalSessionContextState(),
+        localProjectContext.getProjectSwitchPolicy(),
+        localProjectContext.getLocalSessionContextState(),
       ]);
 
       const normalizedZoomMode: UiZoomMode =

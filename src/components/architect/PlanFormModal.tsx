@@ -6,6 +6,12 @@ import { cn } from '../../utils/cn';
 interface PlanFormModalProps {
   initialValue?: string;
   isCanonicalPlan?: boolean;
+  title?: string;
+  description?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  requireValue?: boolean;
+  placeholder?: string;
   onConfirm: (value: string) => void;
   onClose: () => void;
   isLoading?: boolean;
@@ -15,6 +21,12 @@ interface PlanFormModalProps {
 export const PlanFormModal: React.FC<PlanFormModalProps> = ({
   initialValue = '',
   isCanonicalPlan = false,
+  title,
+  description,
+  confirmLabel,
+  cancelLabel,
+  requireValue,
+  placeholder,
   onConfirm,
   onClose,
   isLoading = false,
@@ -24,6 +36,7 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
   const [value, setValue] = useState(initialValue);
   const [localError, setLocalError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const effectiveRequireValue = requireValue ?? !isCanonicalPlan;
 
   useEffect(() => {
     const timer = setTimeout(() => inputRef.current?.focus(), 50);
@@ -42,7 +55,7 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const normalizedValue = value.trim();
-    if (!isCanonicalPlan && !normalizedValue) {
+    if (effectiveRequireValue && !normalizedValue) {
       setLocalError(
         isCanonicalPlan
           ? t('architect.planForm.labelRequired', 'Plan label is required.')
@@ -70,9 +83,10 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
             <Icon name="edit" size={14} className="text-primary" />
           </div>
           <h2 className="text-sm font-semibold text-foreground flex-1">
-            {isCanonicalPlan
-              ? t('architect.planForm.editLabelTitle', 'Edit Plan Label')
-              : t('architect.planForm.renameTitle', 'Rename Plan')}
+            {title ||
+              (isCanonicalPlan
+                ? t('architect.planForm.editLabelTitle', 'Edit Plan Label')
+                : t('architect.planForm.renameTitle', 'Rename Plan'))}
           </h2>
           <button
             type="button"
@@ -86,6 +100,10 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
         {/* Body */}
         <form onSubmit={handleSubmit} id="plan-form">
           <div className="p-4 space-y-4">
+            {description && (
+              <p className="text-sm text-muted-foreground">{description}</p>
+            )}
+
             {displayError && (
               <div className="flex items-center gap-2 text-red-400 text-sm bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
                 <Icon name="alert-circle" size={14} className="shrink-0" />
@@ -98,7 +116,7 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
                 {isCanonicalPlan
                   ? t('architect.planForm.labelLabel', 'Plan label')
                   : t('architect.planForm.nameLabel', 'Plan name')}{' '}
-                {isCanonicalPlan ? (
+                {!effectiveRequireValue && isCanonicalPlan ? (
                   <span className="text-xs text-muted-foreground/80">
                     ({t('common.optional', 'optional')})
                   </span>
@@ -112,14 +130,15 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
                 placeholder={
-                  isCanonicalPlan
+                  placeholder ||
+                  (isCanonicalPlan
                     ? t('architect.planForm.labelPlaceholder', 'e.g. Authentication Overhaul')
-                    : t('architect.planForm.namePlaceholder', 'e.g. Authentication Overhaul')
+                    : t('architect.planForm.namePlaceholder', 'e.g. Authentication Overhaul'))
                 }
                 className={cn(
                   'w-full bg-muted border rounded-lg px-3 py-2 text-sm text-foreground',
                   'placeholder:text-muted-foreground focus:outline-none transition-colors',
-                  localError && !value.trim()
+                  effectiveRequireValue && localError && !value.trim()
                     ? 'border-red-500/50 focus:border-red-500'
                     : 'border-border focus:border-primary'
                 )}
@@ -135,7 +154,7 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
             onClick={onClose}
             className="h-8 px-4 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
           >
-            {t('common.cancel', 'Cancel')}
+            {cancelLabel || t('common.cancel', 'Cancel')}
           </button>
           <button
             type="submit"
@@ -144,9 +163,10 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
             className="h-8 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors flex items-center gap-2"
           >
             {isLoading && <Icon name="loader" size={13} className="animate-spin" />}
-            {isCanonicalPlan
-              ? t('architect.planForm.saveLabel', 'Save Label')
-              : t('common.rename', 'Rename')}
+            {confirmLabel ||
+              (isCanonicalPlan
+                ? t('architect.planForm.saveLabel', 'Save Label')
+                : t('common.rename', 'Rename'))}
           </button>
         </footer>
       </div>
