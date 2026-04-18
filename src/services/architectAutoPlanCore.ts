@@ -21,6 +21,11 @@ export interface ArchitectAutoPlanDependencies {
     status?: ArchitectPlanRecord['status'];
     setActive?: boolean;
   }) => Promise<ArchitectPlanRecord>;
+  deleteArchitectPlan: (params: {
+    branchName: string;
+    planId: string;
+    hardDelete?: boolean;
+  }) => Promise<void>;
   getArchitectPlan: (branchName: string, planId: string) => Promise<ArchitectPlanRecord | null>;
   getArchitectPlanChatMessages: (branchName: string, planId: string) => Promise<Array<unknown>>;
   getArchitectPlanEditableName: (plan: ArchitectPlanNamingShape) => string;
@@ -57,6 +62,15 @@ export interface EnsureProjectGroupPlanResult {
   needs: Need[];
 }
 
+export interface EnsureScopedBlankPlanResult {
+  action: 'created' | 'reused_blank' | 'expanded_blank';
+  plan: ArchitectPlanRecord;
+}
+
+export interface ConsolidateScopedBlankPlansResult {
+  deletedPlanIds: string[];
+}
+
 type PlaceholderCandidatePlan = ArchitectPlanNamingShape & Pick<ArchitectPlanSummary, 'status'>;
 
 interface ResolvedBlankPlanResult {
@@ -90,6 +104,15 @@ const coversScope = (projectIds: string[], scopedProjectIds: string[]): boolean 
   const projectIdSet = new Set(projectIds);
   return scopedProjectIds.every((projectId) => projectIdSet.has(projectId));
 };
+
+const normalizePlanIdList = (projectIds?: string[]): string[] =>
+  Array.from(
+    new Set(
+      (projectIds || [])
+        .map((projectId) => projectId.trim())
+        .filter((projectId) => projectId.length > 0)
+    )
+  ).sort((left, right) => left.localeCompare(right));
 
 export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependencies) => {
   const belongsToPlaceholderFamily = (plan: PlaceholderCandidatePlan): boolean =>
@@ -147,26 +170,115 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
     return left.id.localeCompare(right.id);
   };
 
+  const isDefinitelyNonBlankSummary = (plan: ArchitectPlanSummary): boolean =>
+    !belongsToPlaceholderFamily(plan) ||
+    Boolean(trimToNull(plan.description)) ||
+    plan.nodeCount > 0 ||
+    (plan.predictedBranchCount || 0) > 0 ||
+    (plan.needCount || 0) > 0 ||
+    (plan.chatMessageCount || 0) > 0;
+
+  const isDefinitelyBlankSummary = (plan: ArchitectPlanSummary): boolean =>
+    belongsToPlaceholderFamily(plan) &&
+    !trimToNull(plan.description) &&
+    plan.nodeCount === 0 &&
+    (plan.predictedBranchCount || 0) === 0 &&
+    plan.needCount === 0 &&
+    plan.chatMessageCount === 0;
+
+  const getBlankScopeSignature = (plan: ArchitectPlanSummary): string => {
+    const actionableProjectIds = normalizePlanIdList(
+      plan.expectedProjectIds && plan.expectedProjectIds.length > 0
+        ? plan.expectedProjectIds
+        : deps.getArchitectPlanProjectIds(plan)
+    );
+    const contextProjectIds = normalizePlanIdList(plan.contextProjectIds);
+    const targetBranchesByProjectId = Object.fromEntries(
+      actionableProjectIds.map((projectId) => [
+        projectId,
+        plan.targetBranchesByProjectId?.[projectId] ?? plan.targetBranch,
+      ])
+    );
+
+    return JSON.stringify({
+      actionableProjectIds,
+      contextProjectIds,
+      targetBranchesByProjectId,
+    });
+  };
+
+  const consolidateBlankCandidateSummaries = async (params: {
+    branchName: string;
+    blankCandidates: ArchitectPlanSummary[];
+    preferredPlanId?: string | null;
+  }): Promise<ConsolidateScopedBlankPlansResult & {
+    blankCandidates: ArchitectPlanSummary[];
+  }> => {
+    const candidatesByScope = new Map<string, ArchitectPlanSummary[]>();
+    params.blankCandidates.forEach((candidate) => {
+      const scopeSignature = getBlankScopeSignature(candidate);
+      const existing = candidatesByScope.get(scopeSignature) || [];
+      existing.push(candidate);
+      candidatesByScope.set(scopeSignature, existing);
+    });
+
+    const keptBlankCandidates: ArchitectPlanSummary[] = [];
+    const deletedPlanIds: string[] = [];
+
+    for (const candidates of candidatesByScope.values()) {
+      const sortedCandidates = [...candidates].sort((left, right) =>
+        compareBlankDraftPriority(left, right, params.preferredPlanId)
+      );
+      const keptCandidate = sortedCandidates[0];
+      if (keptCandidate) {
+        keptBlankCandidates.push(keptCandidate);
+      }
+
+      const losers = sortedCandidates.slice(1);
+      if (losers.length === 0) {
+        continue;
+      }
+
+      for (const candidate of losers) {
+        await deps.deleteArchitectPlan({
+          branchName: params.branchName,
+          planId: candidate.id,
+          hardDelete: true,
+        });
+        deletedPlanIds.push(candidate.id);
+      }
+    }
+
+    keptBlankCandidates.sort((left, right) =>
+      compareBlankDraftPriority(left, right, params.preferredPlanId)
+    );
+
+    return {
+      blankCandidates: keptBlankCandidates,
+      deletedPlanIds,
+    };
+  };
+
   const inspectVisiblePlans = async (params: {
     branchName: string;
     visiblePlans: ArchitectPlanSummary[];
     preferredPlanId?: string | null;
   }): Promise<{
-    blankCandidates: Array<{
-      summary: ArchitectPlanSummary;
-      plan: ArchitectPlanRecord;
-    }>;
+    blankCandidates: ArchitectPlanSummary[];
+    deletedPlanIds: string[];
     hasNonBlankVisiblePlan: boolean;
   }> => {
-    const blankCandidates: Array<{
-      summary: ArchitectPlanSummary;
-      plan: ArchitectPlanRecord;
-    }> = [];
+    const blankCandidates: ArchitectPlanSummary[] = [];
     let hasNonBlankVisiblePlan = false;
 
     for (const candidate of params.visiblePlans) {
-      if (candidate.status !== 'draft') {
+      if (candidate.status !== 'draft' || isDefinitelyNonBlankSummary(candidate)) {
         hasNonBlankVisiblePlan = true;
+        continue;
+      }
+
+      if (isDefinitelyBlankSummary(candidate)) {
+        blankCandidates.push(candidate);
         continue;
       }
 
@@ -181,18 +293,21 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       ]);
 
       if (isReusableBlankDraft(plan, needs, chatMessages)) {
-        blankCandidates.push({ summary: candidate, plan });
+        blankCandidates.push(candidate);
       } else {
         hasNonBlankVisiblePlan = true;
       }
     }
 
-    blankCandidates.sort((left, right) =>
-      compareBlankDraftPriority(left.summary, right.summary, params.preferredPlanId)
-    );
+    const consolidation = await consolidateBlankCandidateSummaries({
+      branchName: params.branchName,
+      blankCandidates,
+      preferredPlanId: params.preferredPlanId,
+    });
 
     return {
-      blankCandidates,
+      blankCandidates: consolidation.blankCandidates,
+      deletedPlanIds: consolidation.deletedPlanIds,
       hasNonBlankVisiblePlan,
     };
   };
@@ -240,6 +355,23 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
   };
 
   const resolveScopedBlankPlan = async (
+    params: Pick<ScopedBlankPlanParams, 'branchName' | 'scopedProjectIds' | 'contextProjectIds'> & {
+      blankCandidates: ArchitectPlanSummary[];
+    }
+  ): Promise<ResolvedBlankPlanResult | null> => {
+    for (const candidate of params.blankCandidates) {
+      const reusableBlankPlan = await deps.getArchitectPlan(params.branchName, candidate.id);
+      if (!reusableBlankPlan || reusableBlankPlan.status === 'deleted') {
+        continue;
+      }
+
+      return synchronizeBlankPlanToScope(reusableBlankPlan, params);
+    }
+
+    return null;
+  };
+
+  const resolveVisibleScopedBlankPlan = async (
     params: ScopedBlankPlanParams & {
       visiblePlans: ArchitectPlanSummary[];
       preferredPlanId?: string | null;
@@ -250,12 +382,10 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       visiblePlans: params.visiblePlans,
       preferredPlanId: params.preferredPlanId,
     });
-    const reusableBlankPlan = inspectedPlans.blankCandidates[0]?.plan ?? null;
-    if (!reusableBlankPlan) {
-      return null;
-    }
-
-    return synchronizeBlankPlanToScope(reusableBlankPlan, params);
+    return resolveScopedBlankPlan({
+      ...params,
+      blankCandidates: inspectedPlans.blankCandidates,
+    });
   };
 
   const getPlaceholderLabelForNewPlan = (plans: ArchitectPlanSummary[]): string => {
@@ -271,7 +401,31 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       : deps.DEFAULT_NEW_PLAN_LABEL;
   };
 
-  const ensureScopedBlankPlan = async (params: ScopedBlankPlanParams): Promise<ArchitectPlanRecord | null> => {
+  const consolidateScopedBlankPlans = async (
+    params: Pick<ScopedBlankPlanParams, 'branchName' | 'scopedProjectIds'>
+  ): Promise<ConsolidateScopedBlankPlansResult> => {
+    if (params.scopedProjectIds.length === 0) {
+      return {
+        deletedPlanIds: [],
+      };
+    }
+
+    const { fullResult, scopedPlans } = await listScopedPlans(params.branchName, params.scopedProjectIds);
+    const visiblePlans = scopedPlans.filter((plan) => plan.status !== 'archived' && plan.status !== 'deleted');
+    const inspectedPlans = await inspectVisiblePlans({
+      branchName: params.branchName,
+      visiblePlans,
+      preferredPlanId: fullResult.activePlanId,
+    });
+
+    return {
+      deletedPlanIds: inspectedPlans.deletedPlanIds,
+    };
+  };
+
+  const ensureScopedBlankPlan = async (
+    params: ScopedBlankPlanParams
+  ): Promise<EnsureScopedBlankPlanResult | null> => {
     if (params.scopedProjectIds.length === 0) {
       return null;
     }
@@ -279,20 +433,20 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
     const trigger = params.trigger ?? 'implicit_resume';
     const { fullResult, scopedPlans } = await listScopedPlans(params.branchName, params.scopedProjectIds);
     const visiblePlans = scopedPlans.filter((plan) => plan.status !== 'archived' && plan.status !== 'deleted');
-    const resolvedBlankPlan = await resolveScopedBlankPlan({
+    const resolvedBlankPlan = await resolveVisibleScopedBlankPlan({
       ...params,
       visiblePlans,
       preferredPlanId: fullResult.activePlanId,
     });
     if (resolvedBlankPlan) {
-      return resolvedBlankPlan.plan;
+      return resolvedBlankPlan;
     }
 
     if (trigger !== 'explicit_create') {
       return null;
     }
 
-    return deps.createArchitectPlan({
+    const createdPlan = await deps.createArchitectPlan({
       branchName: params.branchName,
       label: getPlaceholderLabelForNewPlan(scopedPlans),
       projectId: params.scopedProjectIds[0] || undefined,
@@ -302,6 +456,11 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       status: 'draft',
       setActive: true,
     });
+
+    return {
+      action: 'created',
+      plan: createdPlan,
+    };
   };
 
   const ensureProjectGroupPlan = async (params: ScopedBlankPlanParams): Promise<EnsureProjectGroupPlanResult | null> => {
@@ -317,14 +476,16 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       visiblePlans,
       preferredPlanId: fullResult.activePlanId,
     });
-    const reusableBlankPlan = inspectedPlans.blankCandidates[0]?.plan ?? null;
+    const resolvedBlankPlan = await resolveScopedBlankPlan({
+      ...params,
+      blankCandidates: inspectedPlans.blankCandidates,
+    });
 
-    if (reusableBlankPlan) {
+    if (resolvedBlankPlan) {
       if (trigger === 'implicit_resume' && inspectedPlans.hasNonBlankVisiblePlan) {
         return null;
       }
 
-      const resolvedBlankPlan = await synchronizeBlankPlanToScope(reusableBlankPlan, params);
       const blankPlan = resolvedBlankPlan.plan;
       await deps.setActiveArchitectPlan(params.branchName, blankPlan.id);
       const needs = await deps.getArchitectPlanNeeds(params.branchName, blankPlan.id);
@@ -358,6 +519,7 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
   };
 
   return {
+    consolidateScopedBlankPlans,
     ensureProjectGroupPlan,
     ensureScopedBlankPlan,
     isArchitectPlanBlankDraft: isReusableBlankDraft,

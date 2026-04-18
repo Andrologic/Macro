@@ -60,6 +60,9 @@ const createArchitectAutoPlanHarness = () => {
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
     nodeCount: plan.nodes.length,
+    predictedBranchCount: plan.predictedBranches.length,
+    needCount: 0,
+    chatMessageCount: 0,
   });
 
   const clonePlan = (plan: ArchitectPlanRecord): ArchitectPlanRecord => ({
@@ -114,6 +117,30 @@ const createArchitectAutoPlanHarness = () => {
   const getArchitectPlan = async (_branchName: string, planId: string) => {
     const plan = plans.get(planId);
     return plan ? clonePlan(plan) : null;
+  };
+
+  const deleteArchitectPlan = async (params: {
+    branchName: string;
+    planId: string;
+    hardDelete?: boolean;
+  }) => {
+    void params.branchName;
+    if (params.hardDelete) {
+      plans.delete(params.planId);
+      if (activePlanId === params.planId) {
+        activePlanId = Array.from(plans.keys())[0] ?? null;
+      }
+      return;
+    }
+
+    const existing = plans.get(params.planId);
+    if (!existing) {
+      throw new Error(`Unknown plan ${params.planId}`);
+    }
+    plans.set(params.planId, {
+      ...existing,
+      status: 'deleted',
+    });
   };
 
   const listArchitectPlans = async (_branchName?: string, _includeArchived?: boolean, _includeDeleted?: boolean) => ({
@@ -182,6 +209,7 @@ const createArchitectAutoPlanHarness = () => {
     ensureProjectGroupPlan: createArchitectAutoPlanService({
       DEFAULT_NEW_PLAN_LABEL,
       createArchitectPlan,
+      deleteArchitectPlan,
       getArchitectPlan,
       getArchitectPlanChatMessages,
       getArchitectPlanEditableName,
@@ -195,9 +223,27 @@ const createArchitectAutoPlanHarness = () => {
       setActiveArchitectPlan,
       updateArchitectPlan,
     }).ensureProjectGroupPlan,
+    consolidateScopedBlankPlans: createArchitectAutoPlanService({
+      DEFAULT_NEW_PLAN_LABEL,
+      createArchitectPlan,
+      deleteArchitectPlan,
+      getArchitectPlan,
+      getArchitectPlanChatMessages,
+      getArchitectPlanEditableName,
+      getArchitectPlanNeeds,
+      getArchitectPlanProjectIds,
+      getNextDefaultNewPlanLabel,
+      isCanonicalArchitectPlan,
+      isDefaultNewPlanFamilyLabel,
+      isDefaultNewPlanBaseLabel,
+      listArchitectPlans,
+      setActiveArchitectPlan,
+      updateArchitectPlan,
+    }).consolidateScopedBlankPlans,
     ensureScopedBlankPlan: createArchitectAutoPlanService({
       DEFAULT_NEW_PLAN_LABEL,
       createArchitectPlan,
+      deleteArchitectPlan,
       getArchitectPlan,
       getArchitectPlanChatMessages,
       getArchitectPlanEditableName,
@@ -368,8 +414,8 @@ describe('architectAutoPlan', () => {
     });
 
     expect(ensured).not.toBeNull();
-    expect(ensured?.id).not.toBe('legacy-unscoped');
-    expect(ensured?.projectIds).toEqual(['web']);
+    expect(ensured?.plan.id).not.toBe('legacy-unscoped');
+    expect(ensured?.plan.projectIds).toEqual(['web']);
 
     const listed = await listArchitectPlans(branchName, true, true);
     expect(listed.plans).toHaveLength(2);
@@ -461,8 +507,9 @@ describe('architectAutoPlan', () => {
     });
 
     expect(ensured).not.toBeNull();
-    expect(ensured?.id).not.toBe(created.id);
-    expect(ensured?.label).toBe('new plan 2');
+    expect(ensured?.action).toBe('created');
+    expect(ensured?.plan.id).not.toBe(created.id);
+    expect(ensured?.plan.label).toBe('new plan 2');
 
     const reloadedOriginal = await getArchitectPlan(branchName, created.id);
     expect(reloadedOriginal?.label).toBe('new plan');
@@ -490,8 +537,9 @@ describe('architectAutoPlan', () => {
     });
 
     expect(ensured).not.toBeNull();
-    expect(ensured?.id).not.toBe(created.id);
-    expect(ensured?.label).toBe('new plan');
+    expect(ensured?.action).toBe('created');
+    expect(ensured?.plan.id).not.toBe(created.id);
+    expect(ensured?.plan.label).toBe('new plan');
 
     const reloadedOriginal = await getArchitectPlan(branchName, created.id);
     expect(reloadedOriginal?.label).toBe('architecture scratchpad');
@@ -520,10 +568,11 @@ describe('architectAutoPlan', () => {
       trigger: 'explicit_create',
     });
 
-    expect(ensured?.id).toBe(created.id);
-    expect(ensured?.projectIds).toEqual(['web', 'api']);
-    expect(ensured?.expectedProjectIds).toEqual(['web', 'api']);
-    expect(ensured?.contextProjectIds).toEqual(['docs', 'storybook']);
+    expect(ensured?.action).toBe('expanded_blank');
+    expect(ensured?.plan.id).toBe(created.id);
+    expect(ensured?.plan.projectIds).toEqual(['web', 'api']);
+    expect(ensured?.plan.expectedProjectIds).toEqual(['web', 'api']);
+    expect(ensured?.plan.contextProjectIds).toEqual(['docs', 'storybook']);
 
     const listed = await listArchitectPlans(branchName, true, true);
     expect(listed.plans).toHaveLength(1);
@@ -550,8 +599,9 @@ describe('architectAutoPlan', () => {
       trigger: 'explicit_create',
     });
 
-    expect(ensured?.id).toBe(created.id);
-    expect(ensured?.label).toBe('new plan 2');
+    expect(ensured?.action).toBe('reused_blank');
+    expect(ensured?.plan.id).toBe(created.id);
+    expect(ensured?.plan.label).toBe('new plan 2');
 
     const listed = await listArchitectPlans(branchName, true, true);
     expect(listed.plans).toHaveLength(1);
@@ -586,10 +636,12 @@ describe('architectAutoPlan', () => {
       trigger: 'explicit_create',
     });
 
-    expect(ensured?.id).toBe(activeBlank.id);
+    expect(ensured?.action).toBe('reused_blank');
+    expect(ensured?.plan.id).toBe(activeBlank.id);
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans).toHaveLength(2);
+    expect(listed.plans).toHaveLength(1);
+    expect(listed.plans[0]?.id).toBe(activeBlank.id);
   });
 
   it('falls back to the most recent blank draft when no active blank is set', async () => {
@@ -619,10 +671,46 @@ describe('architectAutoPlan', () => {
       trigger: 'explicit_create',
     });
 
-    expect(ensured?.id).toBe(newerBlank.id);
+    expect(ensured?.action).toBe('reused_blank');
+    expect(ensured?.plan.id).toBe(newerBlank.id);
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans).toHaveLength(2);
+    expect(listed.plans).toHaveLength(1);
+    expect(listed.plans[0]?.id).toBe(newerBlank.id);
+  });
+
+  it('hard-deletes duplicate blank placeholders that share the same scope', async () => {
+    const { consolidateScopedBlankPlans, createArchitectPlan, listArchitectPlans } =
+      createArchitectAutoPlanHarness();
+    await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan-older',
+      label: 'new plan',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const winner = await createArchitectPlan({
+      branchName,
+      planId: 'blank-plan-newer',
+      label: 'new plan 2',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-03T00:00:00.000Z',
+      updatedAt: '2026-01-04T00:00:00.000Z',
+    });
+
+    const result = await consolidateScopedBlankPlans({
+      branchName,
+      scopedProjectIds: ['web'],
+    });
+
+    expect(result.deletedPlanIds).toEqual(['blank-plan-older']);
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans).toHaveLength(1);
+    expect(listed.plans[0]?.id).toBe(winner.id);
   });
 
   it('returns new plan 2 as the next numbered placeholder after a single base label', () => {

@@ -27,6 +27,8 @@ import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
 import { QuestionnaireFooter } from './QuestionnaireFooter';
 import { QuestionnaireResponseSummary } from './QuestionnaireResponseSummary';
+import { PlanFormModal } from '../architect/PlanFormModal';
+import { ArchitectPlanNamingRecoveryModal } from '../architect/ArchitectPlanNamingRecoveryModal';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
@@ -416,6 +418,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     editMessage,
     getMessageImages,
     setMessageImages,
+    architectPlanNamingRecovery,
+    setArchitectPlanNamingRecoveryStage,
+    retryArchitectPlanNamingRecovery,
+    submitArchitectPlanManualName,
     composerContextRefs,
     questionnaireDraftsByConversationId,
     startQuestionnaireResponseEdit,
@@ -444,6 +450,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     editMessage: state.editMessage,
     getMessageImages: state.getMessageImages,
     setMessageImages: state.setMessageImages,
+    architectPlanNamingRecovery: state.architectPlanNamingRecovery,
+    setArchitectPlanNamingRecoveryStage:
+      state.setArchitectPlanNamingRecoveryStage,
+    retryArchitectPlanNamingRecovery: state.retryArchitectPlanNamingRecovery,
+    submitArchitectPlanManualName: state.submitArchitectPlanManualName,
     composerContextRefs: state.composerContextRefs,
     questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
     startQuestionnaireResponseEdit: state.startQuestionnaireResponseEdit,
@@ -1544,6 +1555,67 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         image={previewImage}
         onClose={() => setPreviewImage(null)}
       />
+
+      {mode === 'Architect' &&
+        architectPlanNamingRecovery?.stage === 'choice' && (
+          <ArchitectPlanNamingRecoveryModal
+            title={t(
+              'architect.planNamingRecovery.title',
+              'Plan name still needed'
+            )}
+            description={t(
+              'architect.planNamingRecovery.description',
+              'Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.'
+            )}
+            retryLabel={t('architect.planNamingRecovery.retryAi', 'Retry AI')}
+            manualLabel={t(
+              'architect.planNamingRecovery.nameManually',
+              'Name manually'
+            )}
+            retryingLabel={t(
+              'architect.planNamingRecovery.retryingAi',
+              'Retrying AI...'
+            )}
+            error={architectPlanNamingRecovery.error}
+            isLoading={architectPlanNamingRecovery.isSubmitting}
+            onRetry={() => {
+              void retryArchitectPlanNamingRecovery();
+            }}
+            onManual={() => setArchitectPlanNamingRecoveryStage('manual')}
+          />
+        )}
+
+      {mode === 'Architect' &&
+        architectPlanNamingRecovery?.stage === 'manual' && (
+          <PlanFormModal
+            initialValue=""
+            isCanonicalPlan
+            title={t(
+              'architect.planNamingRecovery.manualTitle',
+              'Name This Plan'
+            )}
+            description={t(
+              'architect.planNamingRecovery.manualDescription',
+              'Enter the plan name you want to use for this conversation.'
+            )}
+            confirmLabel={t(
+              'architect.planNamingRecovery.saveManualName',
+              'Save plan name'
+            )}
+            cancelLabel={t('architect.planNamingRecovery.back', 'Back')}
+            requireValue
+            placeholder={t(
+              'architect.planNamingRecovery.manualPlaceholder',
+              'e.g. Checkout Recovery Refresh'
+            )}
+            isLoading={architectPlanNamingRecovery.isSubmitting}
+            error={architectPlanNamingRecovery.error}
+            onConfirm={(value) => {
+              void submitArchitectPlanManualName(value);
+            }}
+            onClose={() => setArchitectPlanNamingRecoveryStage('choice')}
+          />
+        )}
     </main>
   );
 };

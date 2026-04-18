@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const actualTauriIpc = await import('./tauriIpc');
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
 import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
+import { DEFAULT_NEW_PLAN_LABEL } from './architectPlanPresentation';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -739,5 +740,93 @@ describe('architectPlanService', () => {
 
     expect(afterFirstSave?.updatedAt).toBe(afterSecondSave?.updatedAt);
     expect(afterFirstSave?.revision).toBe(afterSecondSave?.revision);
+  });
+
+  it('persists lightweight need and chat counts in architect plan summaries', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000993',
+    });
+
+    await service.saveArchitectPlanNeeds(branchName, created.id, [
+      {
+        id: 'need-1',
+        planId: created.id,
+        title: 'Clarify retry UX',
+        description: 'Need a clear retry loop for checkout.',
+        category: 'functional',
+        status: 'identified',
+        priority: 'high',
+        tags: ['checkout'],
+        createdAt: '2026-04-14T12:00:00.000Z',
+        updatedAt: '2026-04-14T12:00:00.000Z',
+      },
+    ]);
+    await service.saveArchitectPlanChatMessages(branchName, created.id, [
+      {
+        id: 'msg-1',
+        role: 'assistant',
+        content: 'We should retry the payment intent.',
+        createdAt: '2026-04-14T12:05:00.000Z',
+      },
+    ]);
+
+    const listed = await service.listArchitectPlans(branchName, true, true);
+    const summary = listed.plans.find(
+      (plan: ArchitectPlanSummary) => plan.id === created.id,
+    );
+
+    expect(summary?.needCount).toBe(1);
+    expect(summary?.chatMessageCount).toBe(1);
+  });
+
+  it('binds a blank plan conversation without loading or mutating blank content', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000994',
+    });
+
+    const bound = await service.bindArchitectPlanConversation({
+      branchName,
+      planId: created.id,
+      conversationId: 'conv-blank',
+    });
+
+    expect(bound.conversationId).toBe('conv-blank');
+
+    const listed = await service.listArchitectPlans(branchName, true, true);
+    const summary = listed.plans.find(
+      (plan: ArchitectPlanSummary) => plan.id === created.id,
+    );
+    const payload = await service.getArchitectPlanActivationPayload(
+      branchName,
+      created.id,
+    );
+
+    expect(summary?.conversationId).toBe('conv-blank');
+    expect(summary?.needCount).toBe(0);
+    expect(summary?.chatMessageCount).toBe(0);
+    expect(payload?.conversationId).toBe('conv-blank');
+    expect(payload?.needs).toHaveLength(0);
+    expect(payload?.chatMessages).toHaveLength(0);
+  });
+
+  it('returns a blank fast-path activation payload for an untouched new plan', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000001994',
+      label: DEFAULT_NEW_PLAN_LABEL,
+    });
+
+    const payload = await service.getArchitectPlanActivationPayload(
+      branchName,
+      created.id,
+    );
+
+    expect(payload?.resolutionMode).toBe('blank_fast_path');
+    expect(payload?.plan.id).toBe(created.id);
+    expect(payload?.needs).toHaveLength(0);
+    expect(payload?.chatMessages).toHaveLength(0);
+    expect(payload?.conversationId).toBeNull();
   });
 });
