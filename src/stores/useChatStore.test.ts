@@ -1974,6 +1974,69 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect('title' in lastCall).toBe(false);
   });
 
+  it('persists a renamed draft slug through strategy generation and rebuilds rendered branches', async () => {
+    const plan = createPlan({
+      id: 'draft-plan',
+      slug: 'checkout-refresh',
+      title: 'checkout-refresh',
+      label: 'Checkout refresh',
+      status: 'draft',
+      conversationId: 'plan-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Generate the strategy.',
+    });
+    updateArchitectPlanMock.mockClear();
+
+    await onToolCall('strategy_generate', {
+      plan_slug: 'checkout-rework',
+      nodes: [
+        {
+          title: 'Prepare schema',
+          featureSlug: 'prepare-schema',
+        },
+      ],
+    });
+
+    const lastCall = ((updateArchitectPlanMock as unknown as {
+      mock: { calls: Array<Array<Record<string, unknown>>> };
+    }).mock.calls.at(-1)?.[0] ?? {}) as Record<string, unknown>;
+    const predictedBranches = (lastCall.predictedBranches as Array<Record<string, unknown>>) ?? [];
+    const persistedPlan = architectPlans.get(plan.id);
+
+    expect(lastCall.slug).toBe('checkout-rework');
+    expect(predictedBranches.map((branch) => branch.name)).toEqual([
+      'feature/checkout-rework/prepare-schema',
+    ]);
+    expect(predictedBranches.map((branch) => branch.parentBranch)).toEqual([
+      'plan/checkout-rework',
+    ]);
+    expect(
+      predictedBranches.some((branch) =>
+        String(branch.name || '').includes('checkout-refresh'),
+      ),
+    ).toBe(false);
+    expect(
+      predictedBranches.some((branch) =>
+        String(branch.parentBranch || '').includes('checkout-refresh'),
+      ),
+    ).toBe(false);
+    expect(persistedPlan?.slug).toBe('checkout-rework');
+    expect(persistedPlan?.predictedBranches.map((branch) => branch.name)).toEqual([
+      'feature/checkout-rework/prepare-schema',
+    ]);
+  });
+
   it('keeps the active plan and conversation stable during strategy generation with blank sibling drafts', async () => {
     const activePlan = createScenarioPlan('started', {
       id: 'started-plan',
@@ -2150,6 +2213,147 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(String(updateResult)).toContain('checkout-refresh');
     expect(String(updateResult)).toContain('locked and cannot be changed');
     expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves project scope for strategy_update operations and only rescopes when explicitly requested', async () => {
+    const activePlan = createPlan({
+      id: 'plan-multi',
+      slug: 'checkout',
+      title: 'checkout',
+      conversationId: 'plan-conv',
+      status: 'draft',
+      projectId: 'project-1',
+      projectIds: ['project-1', 'project-2'],
+      nodes: [
+        {
+          id: 'task-web',
+          title: 'Build checkout UI',
+          description: '',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/checkout/checkout-web',
+          branchType: 'feature',
+          branchSlug: 'checkout-web',
+          projectId: 'project-1',
+          projectIds: ['project-1'],
+        },
+        {
+          id: 'task-api',
+          title: 'Add checkout endpoint',
+          description: '',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/checkout/checkout-api',
+          branchType: 'feature',
+          branchSlug: 'checkout-api',
+          projectId: 'project-2',
+          projectIds: ['project-2'],
+        },
+      ],
+      predictedBranches: [],
+    });
+    architectPlans.set(activePlan.id, activePlan);
+    appState.activeArchitectPlanId = activePlan.id;
+    appState.activePlanContext = { id: activePlan.id, targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Patch the active strategy.',
+    });
+    updateArchitectPlanMock.mockClear();
+
+    await onToolCall('strategy_update', {
+      operations: [
+        {
+          action: 'update',
+          node_id: 'task-api',
+          description: 'Updated endpoint scope',
+        },
+        {
+          action: 'add',
+          title: 'API telemetry',
+          featureSlug: 'api-telemetry',
+          projectIds: ['project-2'],
+        },
+        {
+          action: 'add',
+          title: 'Checkout docs',
+          featureSlug: 'checkout-docs',
+        },
+      ],
+    });
+
+    const lastCall = ((updateArchitectPlanMock as unknown as {
+      mock: { calls: Array<Array<Record<string, unknown>>> };
+    }).mock.calls.at(-1)?.[0] ?? {}) as Record<string, unknown>;
+    const updatedNodes = (lastCall.nodes as Array<Record<string, unknown>>) ?? [];
+    const predictedBranches = (lastCall.predictedBranches as Array<Record<string, unknown>>) ?? [];
+
+    expect(updatedNodes.find((node) => node.id === 'task-api')).toMatchObject({
+      projectId: 'project-2',
+      projectIds: ['project-2'],
+    });
+    expect(updatedNodes.find((node) => node.title === 'API telemetry')).toMatchObject({
+      projectId: 'project-2',
+      projectIds: ['project-2'],
+    });
+    expect(updatedNodes.find((node) => node.title === 'Checkout docs')).toMatchObject({
+      projectId: 'project-1',
+      projectIds: ['project-1'],
+    });
+
+    expect(predictedBranches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          projectId: 'project-1',
+          name: 'feature/checkout/checkout-web',
+          branchSlug: 'checkout-web',
+        }),
+        expect.objectContaining({
+          projectId: 'project-2',
+          name: 'feature/checkout/checkout-api',
+          branchSlug: 'checkout-api',
+        }),
+        expect.objectContaining({
+          projectId: 'project-2',
+          name: 'feature/checkout/api-telemetry',
+          branchSlug: 'api-telemetry',
+        }),
+        expect.objectContaining({
+          projectId: 'project-1',
+          name: 'feature/checkout/checkout-docs',
+          branchSlug: 'checkout-docs',
+        }),
+      ]),
+    );
+    expect(
+      predictedBranches.some(
+        (branch) =>
+          branch.projectId === 'project-1' &&
+          branch.branchSlug === 'checkout-api',
+      ),
+    ).toBe(false);
+    expect(
+      predictedBranches.some(
+        (branch) =>
+          branch.projectId === 'project-1' &&
+          branch.branchSlug === 'api-telemetry',
+      ),
+    ).toBe(false);
+    expect(
+      predictedBranches.some(
+        (branch) =>
+          branch.projectId === 'project-2' &&
+          branch.branchSlug === 'checkout-docs',
+      ),
+    ).toBe(false);
   });
 
   it('does not pass label metadata during strategy updates unless explicitly requested', async () => {
