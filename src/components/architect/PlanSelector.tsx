@@ -2,8 +2,10 @@
 import { useTranslation } from 'react-i18next';
 import {
   archiveArchitectPlan,
+  getArchitectPlan,
   getArchitectPlanProjectIds,
   getGitFlowBaseBranch,
+  hasPersistedArchitectStrategy,
   isArchitectPlanReplicaDivergenceError,
   listArchitectPlans,
   repairArchitectPlanReplicas,
@@ -36,12 +38,16 @@ import {
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
 import { toServiceError } from '../../services/contracts/errors';
-import { ensureScopedBlankPlan } from '../../services/architectAutoPlan';
+import {
+  consolidateScopedBlankPlans,
+  ensureScopedBlankPlan,
+} from '../../services/architectAutoPlan';
 import {
   computePlanSelectorRefreshState,
   type PlanSelectorMutationCheck,
   type PlanSelectorRefreshState,
 } from './planSelectorState';
+import { useChatStore } from '../../stores/useChatStore';
 
 interface PlanSelectorProps {
   className?: string;
@@ -91,6 +97,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [planReviewTarget, setPlanReviewTarget] = useState<{ planId: string; branchName: string } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const lastEffectIdRef = useRef<string | null | undefined>(undefined);
+  const blankConsolidationPromiseRef = useRef<Promise<void> | null>(null);
   const targetBranch = getGitFlowBaseBranch();
 
   const [planFormModal, setPlanFormModal] = useState<ArchitectPlanSummary | null>(null);
@@ -283,6 +290,25 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (hydrateActive && !refreshState.nextActivePlanId) {
         clearActivePlanSelection();
       }
+
+      if (
+        scopedProjectIds.length > 0 &&
+        !blankConsolidationPromiseRef.current
+      ) {
+        blankConsolidationPromiseRef.current = consolidateScopedBlankPlans({
+          branchName: targetBranch,
+          scopedProjectIds,
+        })
+          .then(async (result) => {
+            if (result.deletedPlanIds.length > 0) {
+              await loadPlans(false);
+            }
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            blankConsolidationPromiseRef.current = null;
+          });
+      }
     } catch (loadError) {
       if (openReplicaRepair(loadError, () => loadPlans(hydrateActive), { toastOnError: false })) {
         setPlans([]);
@@ -350,7 +376,22 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       });
       if (ensuredBlankPlan) {
         await loadPlans(false);
-        await activatePlan(ensuredBlankPlan.id);
+        await activatePlan(ensuredBlankPlan.plan.id);
+        if (ensuredBlankPlan.action === 'reused_blank') {
+          notify.info(
+            t(
+              'architect.planSelector.toastBlankPlanReady',
+              'A blank new plan is already ready. Send the first message to name it.'
+            )
+          );
+        } else if (ensuredBlankPlan.action === 'expanded_blank') {
+          notify.info(
+            t(
+              'architect.planSelector.toastBlankPlanExpanded',
+              'Reused the existing blank new plan and updated its scope. Send the first message to name it.'
+            )
+          );
+        }
         return;
       }
     } catch (err) {
@@ -370,8 +411,16 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
   const handleRenamePlan = (planId: string) => {
     const plan = plans.find((p) => p.id === planId);
+    if (!plan) {
+      return;
+    }
+    const hasStrategy =
+      plan.nodeCount > 0 || (plan.predictedBranchCount ?? 0) > 0;
+    if (hasStrategy) {
+      return;
+    }
     setFormError(null);
-    setPlanFormModal(plan || null);
+    setPlanFormModal(plan);
   };
 
   const handleFormConfirm = async (value: string) => {
@@ -379,16 +428,40 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setFormLoading(true);
     setFormError(null);
     try {
-      const existingValue = getArchitectPlanEditableName(planFormModal);
+      const latestPlan = await getArchitectPlan(targetBranch, planFormModal.id);
+      if (!latestPlan || latestPlan.status === 'deleted') {
+        throw new Error(
+          t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
+        );
+      }
+      if (hasPersistedArchitectStrategy(latestPlan)) {
+        throw new Error(
+          t(
+            'architect.planSelector.renameAfterStrategyBlocked',
+            'Rename is unavailable after strategy has been created for this plan.'
+          )
+        );
+      }
+
+      const existingValue = getArchitectPlanEditableName(latestPlan);
       if (value === existingValue) {
         setPlanFormModal(null);
         return;
       }
-      await updateArchitectPlan({
+      const updatedPlan = await updateArchitectPlan({
         branchName: targetBranch,
         planId: planFormModal.id,
         ...(isCanonicalArchitectPlan(planFormModal) ? { label: value } : { title: value }),
       });
+      if (updatedPlan.conversationId) {
+        await useChatStore
+          .getState()
+          .syncArchitectPlanConversationMetadata(updatedPlan.conversationId, updatedPlan);
+      }
+      const namingRecovery = useChatStore.getState().architectPlanNamingRecovery;
+      if (namingRecovery?.planId === planFormModal.id) {
+        useChatStore.getState().dismissArchitectPlanNamingRecovery();
+      }
       setPlanFormModal(null);
       await loadPlans(false);
     } catch (err) {
@@ -745,6 +818,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const secondaryLabel = getArchitectPlanSecondaryLabel(plan);
               const secondaryText = secondaryLabel || (!isCanonicalPlan ? plan.id : null);
               const canDeletePlan = plan.status === 'archived' || plan.status === 'deleted';
+              const canRenamePlan =
+                plan.status !== 'deleted' &&
+                plan.nodeCount === 0 &&
+                (plan.predictedBranchCount ?? 0) === 0;
               const canArchivePlan =
                 plan.status === 'archived' ||
                 !(isCanonicalPlan && isDefaultNewPlanFamilyLabel(plan.label));
@@ -823,9 +900,14 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                           event.stopPropagation();
                           handleRenamePlan(plan.id);
                         }}
-                        disabled={isMissingProjects}
+                        disabled={isMissingProjects || !canRenamePlan}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
-                        title={renameLabel}
+                        title={!canRenamePlan
+                          ? t(
+                              'architect.planSelector.renameAfterStrategyBlocked',
+                              'Rename is unavailable after strategy has been created for this plan.'
+                            )
+                          : renameLabel}
                       >
                         <Icon name="edit" size={11} className="text-muted-foreground" />
                       </button>

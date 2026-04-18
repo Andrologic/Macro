@@ -202,6 +202,7 @@ const chatStoreState = {
     updated_at?: string;
   }>,
   selectedConversationId: null as string | null,
+  beginArchitectPlanSwitch: mock(() => undefined),
   reconcileProjectRegistry: mock(() => undefined),
 };
 
@@ -287,6 +288,24 @@ const listArchitectPlansMock = mock(async () => ({
 const getArchitectPlanMock = mock(async (_branchName: string, planId: string) =>
   planById.get(planId) ?? null
 );
+const getArchitectPlanActivationPayloadMock = mock(
+  async (branchName: string, planId: string) => {
+    const plan = planById.get(planId);
+    if (!plan || plan.status === 'deleted') {
+      return null;
+    }
+
+    return {
+      plan,
+      needs: [],
+      chatMessages: [],
+      conversationId: null,
+      sharedConversation: false,
+      targetBranch: branchName,
+      resolutionMode: 'blank_fast_path',
+    };
+  }
+);
 const getArchitectPlanNeedsMock = mock(async () => []);
 const persistActiveArchitectPlanMock = mock(async () => undefined);
 const getAppBootstrapMock = mock(async () => ({
@@ -304,6 +323,9 @@ const ensureProjectGroupPlanMock = mock(async () => {
   }
   return ensureProjectGroupPlanResult;
 });
+const consolidateScopedBlankPlansMock = mock(async () => ({
+  deletedPlanIds: [],
+}));
 const upsertLocalProjectContextStateMock = mock(
   async (input: {
     projectId: string;
@@ -410,6 +432,7 @@ const registerUseAppStoreMocks = async () => {
   }));
 
   registerMockModulePair('../services/architectPlanService', () => ({
+    getArchitectPlanActivationPayload: getArchitectPlanActivationPayloadMock,
     getArchitectPlan: getArchitectPlanMock,
     getArchitectPlanNeeds: getArchitectPlanNeedsMock,
     getGitFlowBaseBranch: () => 'develop',
@@ -436,6 +459,7 @@ const registerUseAppStoreMocks = async () => {
   }));
 
   registerMockModulePair('../services/architectAutoPlan', () => ({
+    consolidateScopedBlankPlans: consolidateScopedBlankPlansMock,
     ensureProjectGroupPlan: ensureProjectGroupPlanMock,
   }));
 
@@ -473,14 +497,17 @@ describe('useAppStore architect plan resolution', () => {
     projectContexts.clear();
     planById.clear();
     listArchitectPlansMock.mockClear();
+    getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanMock.mockClear();
     getArchitectPlanNeedsMock.mockClear();
     persistActiveArchitectPlanMock.mockClear();
     getAppBootstrapMock.mockClear();
     ensureProjectGroupPlanMock.mockClear();
+    consolidateScopedBlankPlansMock.mockClear();
     upsertLocalProjectContextStateMock.mockClear();
     upsertLocalSessionContextStateMock.mockClear();
     needsStoreState.hydrateNeedsForPlan.mockClear();
+    chatStoreState.beginArchitectPlanSwitch.mockClear();
     taskStoreState.activateTask.mockClear();
     chatStoreState.reconcileProjectRegistry.mockClear();
     taskStoreState.tasks = [];
@@ -715,5 +742,54 @@ describe('useAppStore architect plan resolution', () => {
 
     expect(ensureProjectGroupPlanMock).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().activeArchitectPlanId).toBe('plan-blank');
+  });
+
+  it('hydrates a switched architect plan from the activation payload and starts the chat transition immediately', async () => {
+    const currentPlan = buildPlan({
+      id: 'plan-current',
+      updatedAt: '2026-04-17T10:00:00.000Z',
+    });
+    const nextPlan = buildPlan({
+      id: 'plan-next',
+      updatedAt: '2026-04-17T11:00:00.000Z',
+      label: 'Checkout refresh',
+    });
+    planById.set(currentPlan.id, currentPlan);
+    planById.set(nextPlan.id, nextPlan);
+    projectContexts.set(
+      'group-1',
+      buildProjectContext({
+        projectId: 'group-1',
+        groupId: 'group-1',
+        lastPlanId: currentPlan.id,
+      })
+    );
+    preferenceValues.lastActiveMode = 'Architect';
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    await useAppStore.getState().initialize();
+
+    getArchitectPlanActivationPayloadMock.mockClear();
+    getArchitectPlanNeedsMock.mockClear();
+    chatStoreState.beginArchitectPlanSwitch.mockClear();
+    needsStoreState.hydrateNeedsForPlan.mockClear();
+
+    await useAppStore.getState().activateArchitectPlan(nextPlan.id);
+
+    expect(chatStoreState.beginArchitectPlanSwitch).toHaveBeenCalledTimes(1);
+    expect(getArchitectPlanActivationPayloadMock).toHaveBeenCalledWith(
+      'develop',
+      nextPlan.id
+    );
+    expect(getArchitectPlanNeedsMock).not.toHaveBeenCalled();
+    expect(needsStoreState.hydrateNeedsForPlan).toHaveBeenCalledWith(
+      nextPlan.id,
+      []
+    );
+    expect(useAppStore.getState().activeArchitectPlanId).toBe(nextPlan.id);
+    expect(useAppStore.getState().activePlanContext?.id).toBe(nextPlan.id);
+    expect(
+      useAppStore.getState().pendingArchitectPlanActivationPayload?.plan.id
+    ).toBe(nextPlan.id);
   });
 });
