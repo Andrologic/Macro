@@ -47,7 +47,8 @@
     "confirmDelete": "¿Estás seguro?",
     "now": "ahora",
     "restore": "Restore",
-    "saved": "Saved"
+    "saved": "Saved",
+    "discard": "Discard"
   },
   "header": {
     "architect": "Architect",
@@ -142,6 +143,9 @@
       "nextAction": "Próxima acción: {{action}}.",
       "macroConflictTitle": "@conflicto de sincronización de macros",
       "macroConflictDescription": "Resuelva los bloqueadores de metadatos informados y luego vuelva a intentar explícitamente el mismo paso de sincronización @macro."
+    },
+    "scope": {
+      "allProjects": "All projects"
     }
   },
   "window": {
@@ -284,7 +288,16 @@
     "noArchivedConversations": "No archived conversations yet",
     "noActiveConversations": "No active conversations",
     "noActiveConversationsDescription": "Start a new conversation to see it here.",
-    "deleteArchivedConversationsTitle": "Delete archived conversations"
+    "deleteArchivedConversationsTitle": "Delete archived conversations",
+    "questionnaireResponseSummaryTitle": "Questionnaire responses",
+    "questionnaireLabel": "Question",
+    "questionnairePreviousStep": "Previous question",
+    "questionnairePeekNextStep": "Next question",
+    "questionnaireProgress": "Question {{current}}/{{total}}",
+    "questionnaireFreeTextHint": "Choose one option or answer freely",
+    "questionnaireFreeTextPlaceholder": "Or type your own answer",
+    "questionnaireSubmit": "Submit",
+    "questionnaireNext": "Next"
   },
   "settings": {
     "title": "Configuración",
@@ -458,7 +471,18 @@
           }
         }
       }
-    }
+    },
+    "projectOpenNone": "Do nothing",
+    "projectOpenDetectedGroup": "Detected apps",
+    "projectOpenBuiltinGroup": "Built-in options",
+    "openSubprojectsWith": "Open subprojects with",
+    "openSubprojectsWithDesc": "Choose which detected app each quick action should use in the project modal.",
+    "codeEditorApp": "Code editor",
+    "codeEditorAppDesc": "Used when clicking the code editor quick action for a subproject.",
+    "terminalApp": "Terminal",
+    "terminalAppDesc": "Used when clicking the terminal quick action for a subproject.",
+    "fileExplorerApp": "File explorer",
+    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject."
   },
   "project": {
     "projects": "Proyectos",
@@ -618,7 +642,14 @@
     "gitFlowCurrentBranchLabel": "Rama actual",
     "gitFlowDetectedBranches": "Ramas detectadas",
     "gitFlowConfirmAction": "Confirmar ramas",
-    "gitFlowConfirmDistinctBranches": "Selecciona dos ramas distintas para principal y desarrollo."
+    "gitFlowConfirmDistinctBranches": "Selecciona dos ramas distintas para principal y desarrollo.",
+    "remoteProjectManagementUnavailable": "Project creation and editing are unavailable in remote mode.",
+    "openInEditor": "Open in code editor",
+    "openInTerminal": "Open in terminal",
+    "openInFiles": "Open in file explorer",
+    "openInEditorFailed": "Unable to open this subproject in the configured editor.",
+    "openInTerminalFailed": "Unable to open this subproject in the configured terminal.",
+    "openInFilesFailed": "Unable to open this subproject in the configured file explorer."
   },
   "tasks": {
     "tasks": "Tareas",
@@ -888,7 +919,12 @@
       "deletedChangeReadOnly": "Los archivos eliminados son de solo lectura durante la revisión. En su lugar, restáurelos desde el flujo de tareas.",
       "revertChangesFailed": "No se pudieron revertir los cambios."
     },
-    "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project."
+    "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project.",
+    "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",
+    "remoteExecutionUnavailable": "Implementation actions are unavailable in remote mode.",
+    "remoteTaskCommandsUnavailable": "Project commands are unavailable in remote mode.",
+    "remoteValidationUnavailable": "Local validation is not available in remote mode yet.",
+    "unsavedDraft": "Unsaved draft. Save to validate or reset."
   },
   "architect": {
     "needs": "Necesidades identificadas",
@@ -1011,7 +1047,8 @@
     "branchStatus": {
       "pending": "Pendiente",
       "active": "Activo",
-      "merged": "Fusionado"
+      "merged": "Fusionado",
+      "mixed": "Mixed"
     },
     "progress": "Progreso",
     "branchSearch": "Buscar tareas...",
@@ -1030,7 +1067,25 @@
       "high": "Alto",
       "medium": "Medio",
       "low": "Bajo"
-    }
+    },
+    "frozenReasonCompleted": "Completed work",
+    "frozenReasonDependencyLocked": "Locked dependency",
+    "frozenReasonStarted": "Started work",
+    "frozenReasonCompletedTooltip": "This task is already completed and can no longer be modified automatically.",
+    "frozenReasonDependencyLockedTooltip": "This dependency is locked because started or completed work already depends on it.",
+    "frozenReasonStartedTooltip": "This task has already been started and can no longer be modified automatically.",
+    "frozenNodeLocked": "Locked",
+    "strategyPreviewTitle": "Regeneration preview",
+    "strategyPreviewBlockedTitle": "Regeneration blocked",
+    "strategyPreviewDescription": "Frozen work is preserved. Review the pending rewrites before applying the updated strategy.",
+    "strategyPreviewBlockedDescription": "This mutation would break frozen work or create an inconsistent plan.",
+    "strategyPreviewFrozen": "Frozen nodes kept",
+    "strategyPreviewRewrites": "Pending rewrites",
+    "strategyPreviewNone": "None",
+    "strategyPreviewNew": "New tasks",
+    "strategyPreviewRemoved": "Pending removals",
+    "strategyPreviewConflicts": "Conflicts",
+    "applyStrategyPreview": "Apply regeneration"
   },
   "git": {
     "gitTree": "Árbol Git",
@@ -1093,7 +1148,8 @@
       "connected": "Connected",
       "downloading": "Downloading",
       "runtimeMissing": "Not installed",
-      "updateRequired": "Update required"
+      "updateRequired": "Update required",
+      "configured": "Configured"
     },
     "types": {
       "openaiCompatible": "Compatible con OpenAI",
@@ -1167,6 +1223,15 @@
     "modeHintAuto": "Architect/Implement: las tools habilitadas pueden ejecutarse automáticamente cuando el modelo las necesita; el uso se muestra inline en el chat.",
     "nativeToolSupportWarning": "El provider o modelo seleccionado no soporta tool calling nativo. Las tools siguen configurables aquí, pero no se inyectarán hasta elegir un modelo compatible.",
     "architectMacroOnly": "Architect: solo @macro",
+    "architectFullOnly": "Architect Full",
+    "architectAutonomy": {
+      "title": "Architect Tool Autonomy",
+      "description": "Choose whether Architect chat can use destructive need and strategy deletion tools.",
+      "guarded": "Guarded",
+      "full": "Full",
+      "guardedHint": "Guarded keeps need and strategy deletions unavailable to the model.",
+      "fullHint": "Full also exposes need_delete and strategy_delete, but both still require confirm=true."
+    },
     "needNativeToolSupportTooltip": "Selecciona un modelo compatible con tool calling nativo para usar esta tool.",
     "noCustomMcpServers": "No hay servidores MCP personalizados configurados.",
     "tabs": {
@@ -1453,5 +1518,11 @@
     "disconnected": "Disconnected",
     "disconnectedDescription": "This terminal session is no longer attached to a live process.",
     "reconnect": "Reconnect"
+  },
+  "notify": {
+    "connectionFailed": "Connection failed",
+    "chatConversationsDeleted": "{{count}} conversations deleted",
+    "chatDeleteFailed": "Failed to delete conversations",
+    "loggedOut": "Logged out"
   }
 }

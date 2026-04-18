@@ -5,6 +5,7 @@ import {
   type PromptBackedInternalAgentProfile,
   type PromptPreferenceKey,
 } from "./preferences";
+import { getArchitectChatActionToolIds } from "./architectToolSurface";
 
 export type InternalAgentProfile =
   | "default_executor"
@@ -34,18 +35,7 @@ const PLAN_EXPLORER_TOOL_IDS = new Set([
   "git_branch_list",
   "git_diff",
   "git_get_tree",
-  "need_add",
-  "strategy_generate",
-  "plan_create",
-  "plan_list",
-  "plan_get",
-  "plan_update",
-  "plan_delete",
-  "plan_restore",
-  "plan_set_active",
-  "strategy_get",
-  "strategy_update",
-  "strategy_delete",
+  ...getArchitectChatActionToolIds("full"),
 ]);
 
 const TASK_REVIEWER_TOOL_IDS = new Set([

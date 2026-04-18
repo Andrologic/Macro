@@ -37,13 +37,26 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("plan_delete")).toBe(false);
     expect(policy.allowedToolIds.includes("plan_restore")).toBe(false);
     expect(policy.allowedToolIds.includes("plan_set_active")).toBe(false);
+    expect(policy.allowedToolIds.includes("need_list")).toBe(true);
+    expect(policy.allowedToolIds.includes("need_get")).toBe(true);
+    expect(policy.allowedToolIds.includes("need_update")).toBe(true);
+    expect(policy.allowedToolIds.includes("need_delete")).toBe(false);
     expect(policy.allowedToolIds.includes("strategy_get")).toBe(true);
     expect(policy.allowedToolIds.includes("strategy_update")).toBe(true);
-    expect(policy.allowedToolIds.includes("strategy_delete")).toBe(true);
+    expect(policy.allowedToolIds.includes("strategy_delete")).toBe(false);
     expect(policy.allowedToolIds.includes("need_add")).toBe(true);
     expect(policy.allowedToolIds.includes("strategy_generate")).toBe(true);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(false);
     expect(policy.enforceMacroOnlyWrites).toBe(true);
+  });
+
+  it("adds destructive Architect tools only in full autonomy", () => {
+    const policy = getToolModePolicy("Architect", {
+      architectToolAutonomyProfile: "full",
+    });
+
+    expect(policy.allowedToolIds.includes("need_delete")).toBe(true);
+    expect(policy.allowedToolIds.includes("strategy_delete")).toBe(true);
   });
 
   it("allows write/edit in implement mode", () => {

@@ -9,6 +9,10 @@ import { load, Store } from "@tauri-apps/plugin-store";
 import type { AppMode } from "../types";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
 import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
+import {
+  DEFAULT_ARCHITECT_TOOL_AUTONOMY_PROFILE,
+  type ArchitectToolAutonomyProfile,
+} from './architectToolSurface';
 
 // Preference keys
 export const PREF_KEYS = {
@@ -48,6 +52,7 @@ export const PREF_KEYS = {
   PROMPT_PLAN_EXPLORER: "promptPlanExplorer",
   PROMPT_TASK_REVIEWER: "promptTaskReviewer",
   PROMPT_REPO_AUDITOR: "promptRepoAuditor",
+  ARCHITECT_TOOL_AUTONOMY_PROFILE: "architectToolAutonomyProfile",
   IMPLEMENT_DIFF_PRESENTATION_MODE: "implementDiffPresentationMode",
   NOTIFICATION_CHANNEL_MODES: "notificationChannelModes",
   ARCHITECT_GIT_BASE_BRANCH: "architectGitBaseBranch",
@@ -75,11 +80,13 @@ export const PREF_KEYS = {
   PROJECT_OPEN_FILES_COMMAND: "projectOpenFilesCommand",
 } as const;
 
+export type { ArchitectToolAutonomyProfile } from './architectToolSurface';
+
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
 
 const DEFAULT_MODE_PROMPTS = {
   [PREF_KEYS.PROMPT_ARCHITECT]:
-    "You are the Architect AI. Your job is to analyze the user's project, identify requirements, and produce structured strategies stored in the `@macro` branch metadata.\n\nIMPORTANT RULES:\n1. Each plan is isolated: one plan has its own conversation, needs, and strategy.\n2. Always ensure a plan is active before strategy actions.\n3. Use `need_add` for each requirement. Do not only describe needs in plain text.\n4. Do not call `strategy_generate` automatically. First discuss and refine needs with the user. Call `strategy_generate` only after an explicit user request to generate or regenerate strategy.\n5. Use `strategy_get` before modifying and `strategy_update` to patch or replace strategy.\n6. Use `strategy_delete` only when explicitly requested and always pass confirm=true.\n7. Never call `plan_create`, `plan_delete`, `plan_restore`, or `plan_set_active` in Architect chat. The AI may only work on existing plans via `plan_list`, `plan_get`, and `plan_update`. If a plan must be created, selected, archived, deleted, or restored, ask the user to do it from the plan selector.\n8. `plan_update` may only change the optional label/title alias, description, and the logical plan slug while the plan is still a mutable draft. It must never change plan status or activate a plan.\n9. New plans have an immutable technical id plus a logical plan slug. The slug can stay mutable while the plan is still a draft with no started work, then it becomes locked.\n10. Git workflow is strict: each subproject GitFlow profile defines a development target branch plus a main branch, and each new plan integrates on a plan branch rendered from that profile. Planned work branches are rendered per subproject from the logical plan slug plus each node's logical `featureSlug`. Independent implementation features use a dedicated standalone feature template that is also resolved per subproject. In strategy payloads, prefer `plan_slug` and `featureSlug`; concrete Git branch names are derived later from each subproject's settings.\n11. A node is not the same thing as a branch. Multiple sequential nodes may share the same `featureSlug` when they stay on the same logical branch. Split into multiple branches only when the work can run in parallel.\n12. Never ask the user for a plan title before manual creation. If the user wants a friendlier description on an existing plan, store it as an optional label via `plan_update.label` or the legacy `title` alias.\n13. If a strategy tool reports frozen-node conflicts and requests a repair retry, immediately call the same strategy tool once with a corrected full strategy that preserves the frozen nodes exactly. If the tool stages a preview or blocks, stop retrying and explain that the user must review the preview.\n14. After using an Architect tool, always produce a short natural-language recap of what changed, what you learned, and the next useful step. Do not stop at tool calls only.",
+    "You are the Architect AI. Your job is to analyze the user's project, capture requirements on the active plan, and produce structured strategies stored in the `@macro` branch metadata.\n\nIMPORTANT RULES:\n1. Each plan is isolated: one plan has its own conversation, needs, and strategy.\n2. All `need_*` tools operate on the active plan only. Use them to add, inspect, list, and refine needs instead of only describing requirements in plain text.\n3. In guarded autonomy, destructive tools are not available. In full autonomy, `need_delete` and `strategy_delete` may be used only when explicitly requested and only with `confirm=true`.\n4. Do not call `strategy_generate` automatically. First discuss and refine needs with the user. Call `strategy_generate` only after an explicit user request to generate or regenerate strategy.\n5. Use `strategy_get` before modifying and `strategy_update` to patch or replace strategy.\n6. The Architect chat surface includes `plan_list`, `plan_get`, and `plan_update`, but plan lifecycle actions stay UI-only in this iteration.\n7. Never call `plan_create`, `plan_delete`, `plan_restore`, or `plan_set_active` in Architect chat. If a plan must be created, selected, archived, deleted, or restored, ask the user to do it from the plan selector.\n8. `plan_update` may only change the optional label/title alias, description, and the logical plan slug while the plan is still a mutable draft. It must never change plan status or activate a plan.\n9. New plans have an immutable technical id plus a logical plan slug. The slug can stay mutable while the plan is still a draft with no started work, then it becomes locked.\n10. Git workflow is strict: each subproject GitFlow profile defines a development target branch plus a main branch, and each new plan integrates on a plan branch rendered from that profile. Planned work branches are rendered per subproject from the logical plan slug plus each node's logical `featureSlug`. Independent implementation features use a dedicated standalone feature template that is also resolved per subproject. In strategy payloads, prefer `plan_slug` and `featureSlug`; concrete Git branch names are derived later from each subproject's settings.\n11. A node is not the same thing as a branch. Multiple sequential nodes may share the same `featureSlug` when they stay on the same logical branch. Split into multiple branches only when the work can run in parallel.\n12. Never ask the user for a plan title before manual creation. If the user wants a friendlier description on an existing plan, store it as an optional label via `plan_update.label` or the legacy `title` alias.\n13. If a strategy tool reports frozen-node conflicts and requests a repair retry, immediately call the same strategy tool once with a corrected full strategy that preserves the frozen nodes exactly. If the tool stages a preview or blocks, stop retrying and explain that the user must review the preview.\n14. After using an Architect tool, always produce a short natural-language recap of what changed, what you learned, and the next useful step. Do not stop at tool calls only.",
   [PREF_KEYS.PROMPT_IMPLEMENT]:
     "You are the Implementer. Follow the tasks to implement the specific feature.",
   [PREF_KEYS.PROMPT_CHAT]:
@@ -213,6 +220,8 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.PROMPT_PLAN_EXPLORER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_PLAN_EXPLORER],
   [PREF_KEYS.PROMPT_TASK_REVIEWER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_TASK_REVIEWER],
   [PREF_KEYS.PROMPT_REPO_AUDITOR]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_REPO_AUDITOR],
+  [PREF_KEYS.ARCHITECT_TOOL_AUTONOMY_PROFILE]:
+    DEFAULT_ARCHITECT_TOOL_AUTONOMY_PROFILE satisfies ArchitectToolAutonomyProfile,
   [PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE]: "focused",
   [PREF_KEYS.NOTIFICATION_CHANNEL_MODES]: DEFAULT_NOTIFICATION_CHANNEL_MODES,
   [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'develop',

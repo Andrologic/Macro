@@ -209,4 +209,75 @@ describe('useNeedsStore', () => {
       }),
     ]);
   });
+
+  it('persists partial need updates on the same plan', async () => {
+    const { useNeedsStore } = await loadNeedsStore();
+    useNeedsStore.setState({
+      needs: [
+        {
+          id: 'need-3',
+          planId: 'plan-3',
+          title: 'Initial scope',
+          description: 'Original description.',
+          category: 'functional',
+          status: 'identified',
+          priority: 'medium',
+          tags: ['scope'],
+          createdAt: '2026-04-14T10:20:00.000Z',
+          updatedAt: '2026-04-14T10:20:00.000Z',
+        },
+      ],
+      selectedNeedId: null,
+    });
+
+    useNeedsStore.getState().updateNeed('need-3', {
+      status: 'validated',
+      priority: 'high',
+      tags: ['scope', 'approved'],
+    });
+
+    expect(useNeedsStore.getState().getNeed('need-3')).toEqual(
+      expect.objectContaining({
+        status: 'validated',
+        priority: 'high',
+        tags: ['scope', 'approved'],
+      })
+    );
+    expect(saveArchitectPlanNeedsMock).toHaveBeenCalledTimes(1);
+    expect(saveArchitectPlanNeedsMock).toHaveBeenCalledWith('develop', 'plan-3', [
+      expect.objectContaining({
+        id: 'need-3',
+        planId: 'plan-3',
+        status: 'validated',
+      }),
+    ]);
+  });
+
+  it('persists need deletions and clears the selection when needed', async () => {
+    const { useNeedsStore } = await loadNeedsStore();
+    useNeedsStore.setState({
+      needs: [
+        {
+          id: 'need-4',
+          planId: 'plan-4',
+          title: 'Remove me',
+          description: 'Temporary requirement.',
+          category: 'other',
+          status: 'identified',
+          priority: 'low',
+          tags: [],
+          createdAt: '2026-04-14T10:30:00.000Z',
+          updatedAt: '2026-04-14T10:30:00.000Z',
+        },
+      ],
+      selectedNeedId: 'need-4',
+    });
+
+    useNeedsStore.getState().deleteNeed('need-4');
+
+    expect(useNeedsStore.getState().getNeed('need-4')).toBeUndefined();
+    expect(useNeedsStore.getState().selectedNeedId).toBeNull();
+    expect(saveArchitectPlanNeedsMock).toHaveBeenCalledTimes(1);
+    expect(saveArchitectPlanNeedsMock).toHaveBeenCalledWith('develop', 'plan-4', []);
+  });
 });

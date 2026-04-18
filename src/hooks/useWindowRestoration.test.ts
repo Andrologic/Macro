@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -216,6 +216,14 @@ describe('ensureWindowRestoredOnce', () => {
         }
       };
     });
+  });
+
+  afterEach(() => {
+    closeRequestedListener = null;
+    movedListener = null;
+    resizedListener = null;
+    pageShuttingDown = false;
+    mock.restore();
   });
 
   it('applies the native macOS theme snapshot before showing the window', async () => {

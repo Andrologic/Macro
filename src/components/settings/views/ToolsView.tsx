@@ -11,6 +11,16 @@ import { useAppStore } from '../../../stores/useAppStore';
 import { useProviderStore } from '../../../stores/useProviderStore';
 import { getToolModePolicy } from '../../../services/toolModePolicy';
 import {
+  DEFAULT_ARCHITECT_TOOL_AUTONOMY_PROFILE,
+  isArchitectDestructiveChatToolId,
+  type ArchitectToolAutonomyProfile,
+} from '../../../services/architectToolSurface';
+import {
+  loadPreference,
+  PREF_KEYS,
+  savePreference,
+} from '../../../services/preferences';
+import {
   WebSearchSettings,
   getWebSearchSettings,
   saveWebSearchSettings,
@@ -30,9 +40,17 @@ export const ToolsView: React.FC = () => {
   const nativeToolsSupported = useProviderStore((state) =>
     state.selectedSupportsNativeToolCalling()
   );
+  const [architectToolAutonomyProfile, setArchitectToolAutonomyProfile] =
+    useState<ArchitectToolAutonomyProfile>(DEFAULT_ARCHITECT_TOOL_AUTONOMY_PROFILE);
 
   const chatPolicy = useMemo(() => getToolModePolicy('Chat'), []);
-  const architectPolicy = useMemo(() => getToolModePolicy('Architect'), []);
+  const architectPolicy = useMemo(
+    () =>
+      getToolModePolicy('Architect', {
+        architectToolAutonomyProfile,
+      }),
+    [architectToolAutonomyProfile]
+  );
   const implementPolicy = useMemo(() => getToolModePolicy('Implement'), []);
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -48,10 +66,33 @@ export const ToolsView: React.FC = () => {
     loadSettings();
   }, [loadSettings]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    void loadPreference<ArchitectToolAutonomyProfile>(
+      PREF_KEYS.ARCHITECT_TOOL_AUTONOMY_PROFILE
+    ).then((profile) => {
+      if (!cancelled) {
+        setArchitectToolAutonomyProfile(profile);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const updateWebSearchSettings = (updates: Partial<WebSearchSettings>) => {
     const nextSettings = { ...webSearchSettings, ...updates };
     setWebSearchSettings(nextSettings);
     saveWebSearchSettings(nextSettings);
+  };
+
+  const updateArchitectToolAutonomyProfile = (
+    profile: ArchitectToolAutonomyProfile
+  ) => {
+    setArchitectToolAutonomyProfile(profile);
+    void savePreference(PREF_KEYS.ARCHITECT_TOOL_AUTONOMY_PROFILE, profile);
   };
 
   const filteredTools = useMemo(() => {
@@ -254,6 +295,62 @@ export const ToolsView: React.FC = () => {
         </TabsContent>
 
         <TabsContent value="tools" className="flex-1 overflow-y-auto pr-2 space-y-3">
+          <div className="p-4 bg-card border border-border rounded-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <h4 className="font-medium text-foreground">
+                  {t('tools.architectAutonomy.title', 'Architect Tool Autonomy')}
+                </h4>
+                <p className="text-sm text-muted-foreground">
+                  {t(
+                    'tools.architectAutonomy.description',
+                    'Choose whether Architect chat can use destructive need and strategy deletion tools.'
+                  )}
+                </p>
+              </div>
+              <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground uppercase">
+                {architectToolAutonomyProfile}
+              </span>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={() => updateArchitectToolAutonomyProfile('guarded')}
+                className={cn(
+                  'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors',
+                  architectToolAutonomyProfile === 'guarded'
+                    ? 'bg-primary/10 border-primary text-primary'
+                    : 'bg-card border-border text-muted-foreground hover:bg-accent'
+                )}
+              >
+                {t('tools.architectAutonomy.guarded', 'Guarded')}
+              </button>
+              <button
+                onClick={() => updateArchitectToolAutonomyProfile('full')}
+                className={cn(
+                  'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors',
+                  architectToolAutonomyProfile === 'full'
+                    ? 'bg-primary/10 border-primary text-primary'
+                    : 'bg-card border-border text-muted-foreground hover:bg-accent'
+                )}
+              >
+                {t('tools.architectAutonomy.full', 'Full')}
+              </button>
+            </div>
+
+            <p className="mt-3 text-xs text-muted-foreground">
+              {architectToolAutonomyProfile === 'guarded'
+                ? t(
+                    'tools.architectAutonomy.guardedHint',
+                    'Guarded keeps need and strategy deletions unavailable to the model.'
+                  )
+                : t(
+                    'tools.architectAutonomy.fullHint',
+                    'Full also exposes need_delete and strategy_delete, but both still require confirm=true.'
+                  )}
+            </p>
+          </div>
+
           {filteredTools.map((tool) => {
             const webSearchLockedByKey = tool.id === 'web_search' && !hasSelectedWebSearchKey;
             const switchDisabled = webSearchLockedByKey || !nativeToolsSupported;
@@ -287,6 +384,13 @@ export const ToolsView: React.FC = () => {
                           {t('header.architect', 'Architect')}
                         </span>
                       )}
+                      {!architectPolicy.allowedToolIds.includes(tool.id) &&
+                        isArchitectDestructiveChatToolId(tool.id) &&
+                        architectToolAutonomyProfile === 'guarded' && (
+                          <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">
+                            {t('tools.architectFullOnly', 'Architect Full')}
+                          </span>
+                        )}
                       {implementPolicy.allowedToolIds.includes(tool.id) && (
                         <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground">
                           {t('header.implement', 'Implement')}

@@ -195,6 +195,10 @@ const ALL_INTERNAL_TOOL_IDS = [
   'terminal_read',
   'terminal_kill',
   'need_add',
+  'need_list',
+  'need_get',
+  'need_update',
+  'need_delete',
   'strategy_generate',
   'plan_create',
   'plan_list',
@@ -416,6 +420,13 @@ const updateArchitectPlanMock = mock(async (params: {
   architectPlans.set(params.planId, updated);
   return updated;
 });
+const provisionPlanBranchesMock = mock(async () => ({
+  planBranchName: 'plan/mock',
+  repositories: [],
+  createdPlanBranch: false,
+  createdFeatureBranches: [],
+  existingFeatureBranches: [],
+}));
 
 const sendChatNonStreamingMock = mock(
   async () =>
@@ -456,13 +467,15 @@ const getToolModePolicyMock = mock(async (mode: AppMode) => {
         'git_diff',
         'git_get_tree',
         'need_add',
+        'need_list',
+        'need_get',
+        'need_update',
         'strategy_generate',
         'plan_list',
         'plan_get',
         'plan_update',
         'strategy_get',
         'strategy_update',
-        'strategy_delete',
       ],
       enforce_macro_only_writes: true,
     };
@@ -846,6 +859,10 @@ const registerUseChatStoreMocks = async () => {
     getLocalProjectContextState: getLocalProjectContextStateMock,
   }));
 
+  mock.module('../services/architectGitFlowService', () => ({
+    provisionPlanBranches: provisionPlanBranchesMock,
+  }));
+
   mock.module('../services/macroSyncService', () => ({
     syncMacroMetadataAfterStream: mock(async () => undefined),
   }));
@@ -1192,6 +1209,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     getArchitectPlanMock.mockClear();
     listArchitectPlansMock.mockClear();
     updateArchitectPlanMock.mockClear();
+    provisionPlanBranchesMock.mockClear();
     streamChatMock.mockClear();
     sendChatNonStreamingMock.mockClear();
     getToolModePolicyMock.mockClear();
@@ -1243,6 +1261,48 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('keeps strategy mutations isolated when the strategy guard loads before the plan service mocks', async () => {
+    mock.restore();
+    await import('../services/architectStrategyMutationGuard');
+    await registerUseChatStoreMocks();
+
+    const plan = createPlan({
+      id: 'plan-early-guard',
+      slug: 'plan-early-guard',
+      title: 'Plan Early Guard',
+      conversationId: 'plan-conv',
+      status: 'draft',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Generate the strategy.',
+    });
+    updateArchitectPlanMock.mockClear();
+
+    await onToolCall('strategy_generate', {
+      nodes: [{ title: 'Implement checkout' }],
+    });
+
+    expect(updateArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(
+      ((updateArchitectPlanMock as unknown as {
+        mock: { calls: Array<Array<Record<string, unknown>>> };
+      }).mock.calls.at(-1)?.[0] ?? {}) as Record<string, unknown>,
+    ).toMatchObject({
+      branchName: 'develop',
+      planId: 'plan-early-guard',
+    });
   });
 
   it('restores a plan transcript into an existing empty conversation', async () => {
@@ -1779,7 +1839,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(architectPlans.get('1710000000000')?.description).toBe(
       'Refresh checkout state and cart recovery.'
     );
-    expect(useChatStore.getState().conversations[0]?.title).toBe('Plan - Checkout refresh');
+    expect(useChatStore.getState().conversations[0]?.title).toBe(
+      'Plan - Checkout refresh - 1710000000000'
+    );
   });
 
   it('hydrates the active plan after a tool update without triggering implicit auto-plan on project switch', async () => {
@@ -2605,10 +2667,48 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).not.toContain('edit');
     expect(streamOptions.allowedToolIds).not.toContain('apply_patch');
     expect(streamOptions.allowedToolIds).toContain('plan_get');
+    expect(streamOptions.allowedToolIds).toContain('need_update');
     expect(streamOptions.allowedToolIds).toContain('strategy_update');
+    expect(streamOptions.allowedToolIds).not.toContain('need_delete');
+    expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
     expect(String(streamOptions.messages[0]?.content)).toContain(
       'Custom PLAN_EXPLORER prompt for tests.'
     );
+  });
+
+  it('adds destructive Architect tools when the autonomy profile is full', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    localStorage.setItem(
+      'macro_architectToolAutonomyProfile',
+      JSON.stringify('full')
+    );
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('plan-conv')],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'plan-conv',
+      content: 'Analyse le plan actif.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      allowedToolIds: string[];
+    };
+    expect(streamOptions.allowedToolIds).toContain('need_delete');
+    expect(streamOptions.allowedToolIds).toContain('strategy_delete');
   });
 
   it('uses the backend tool policy in Chat mode and keeps question available when enabled', async () => {

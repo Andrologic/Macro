@@ -1,6 +1,5 @@
 import type { PlanNode, PredictedBranch } from '../types';
 import type { Need } from '../types';
-import { useAppStore } from '../stores/useAppStore';
 import * as tauriIpc from './tauriIpc';
 import { devLogger } from '../utils/devLogger';
 import {
@@ -17,8 +16,10 @@ import {
   isSyntheticProjectId,
   loadValidProjectRegistrySnapshot,
   normalizeProjectRegistryPath,
+  type ValidProjectRegistryAppState,
   type ValidProjectRegistrySnapshot,
 } from './validProjectRegistry';
+import { getRegisteredAppState } from './appStateRuntime';
 
 export type ArchitectPlanStatus =
   | 'draft'
@@ -148,6 +149,50 @@ export interface ArchitectPlanReplicaDivergence {
   reason: 'content_diverged' | 'missing_replica';
   replicas: ArchitectPlanReplica[];
 }
+
+export interface ArchitectPlanServiceAppState extends ValidProjectRegistryAppState {
+  metadataAutoPush?: boolean;
+}
+
+export interface ArchitectPlanServiceDependencies {
+  tauri?: typeof tauriIpc;
+  getAppState?: () => ArchitectPlanServiceAppState | Promise<ArchitectPlanServiceAppState>;
+  loadRegistrySnapshot?: (options?: {
+    getAppState?:
+      | (() => ValidProjectRegistryAppState | Promise<ValidProjectRegistryAppState>)
+      | undefined;
+  }) => Promise<ValidProjectRegistrySnapshot>;
+}
+
+interface ResolvedArchitectPlanServiceDependencies {
+  tauri: typeof tauriIpc;
+  getAppState: () => Promise<ArchitectPlanServiceAppState>;
+  loadRegistrySnapshot: (options?: {
+    getAppState?:
+      | (() => ValidProjectRegistryAppState | Promise<ValidProjectRegistryAppState>)
+      | undefined;
+  }) => Promise<ValidProjectRegistrySnapshot>;
+}
+
+const loadDefaultArchitectPlanAppState = async (): Promise<ArchitectPlanServiceAppState> =>
+  await getRegisteredAppState<ArchitectPlanServiceAppState>();
+
+const resolveArchitectPlanServiceDependencies = (
+  overrides: ArchitectPlanServiceDependencies = {}
+): ResolvedArchitectPlanServiceDependencies => {
+  const getAppState = overrides.getAppState ?? loadDefaultArchitectPlanAppState;
+
+  return {
+    tauri: overrides.tauri ?? tauriIpc,
+    getAppState: async () => await getAppState(),
+    loadRegistrySnapshot:
+      overrides.loadRegistrySnapshot ??
+      ((options) =>
+        loadValidProjectRegistrySnapshot({
+          getAppState: options?.getAppState ?? getAppState,
+        })),
+  };
+};
 
 const assertPlanCanBeArchived = (
   plan: Pick<ArchitectPlanRecord, 'id' | 'slug' | 'title' | 'label'>
@@ -739,8 +784,9 @@ const getWorkspaceFallbackScope = async (): Promise<ArchitectMetadataScope | nul
 const resolveMetadataScopes = async (projectIds?: string[], options?: {
   includeAllKnown?: boolean;
   includeWorkspaceFallback?: boolean;
-}, registrySnapshot?: ValidProjectRegistrySnapshot | null): Promise<ArchitectMetadataScope[]> => {
-  if (!tauriIpc.isTauriAvailable()) {
+}, registrySnapshot?: ValidProjectRegistrySnapshot | null, deps?: ResolvedArchitectPlanServiceDependencies): Promise<ArchitectMetadataScope[]> => {
+  const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
+  if (!resolvedDeps.tauri.isTauriAvailable()) {
     return [{
       scopeKey: 'local',
       projectId: projectIds?.[0] || null,
@@ -750,7 +796,9 @@ const resolveMetadataScopes = async (projectIds?: string[], options?: {
     }];
   }
 
-  const resolvedRegistrySnapshot = registrySnapshot ?? await loadValidProjectRegistrySnapshot();
+  const resolvedRegistrySnapshot =
+    registrySnapshot ??
+    await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState });
   const scopes: ArchitectMetadataScope[] = [];
   if (projectIds && projectIds.length > 0) {
     scopes.push(...getProjectMetadataScopes(resolvedRegistrySnapshot, projectIds));
@@ -767,8 +815,14 @@ const resolveMetadataScopes = async (projectIds?: string[], options?: {
   return dedupeScopes(scopes);
 };
 
-const loadArchitectPlanRegistrySnapshot = async (): Promise<ValidProjectRegistrySnapshot | undefined> =>
-  tauriIpc.isTauriAvailable() ? loadValidProjectRegistrySnapshot() : undefined;
+const loadArchitectPlanRegistrySnapshot = async (
+  deps?: ResolvedArchitectPlanServiceDependencies
+): Promise<ValidProjectRegistrySnapshot | undefined> => {
+  const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
+  return resolvedDeps.tauri.isTauriAvailable()
+    ? resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState })
+    : undefined;
+};
 
 const toReplicaDescriptor = (
   scope: ArchitectMetadataScope,
@@ -815,7 +869,8 @@ const buildPlanContentHashes = (
 
 const loadParticipantSnapshots = async (
   expectedProjectIds: string[],
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+  deps?: ResolvedArchitectPlanServiceDependencies
 ): Promise<ArchitectPlanParticipant[]> => {
   const uniqueProjectIds = normalizeExpectedProjectIds(expectedProjectIds);
   if (uniqueProjectIds.length === 0) {
@@ -825,7 +880,9 @@ const loadParticipantSnapshots = async (
   const repoPathByProjectId = registrySnapshot?.repoPathByProjectId ?? new Map<string, string>();
 
   try {
-    const projects = useAppStore.getState().projectGroups.flatMap((group) => group.projects);
+    const projects = deps
+      ? (await deps.getAppState()).projectGroups.flatMap((group) => group.projects)
+      : [];
     return uniqueProjectIds.map((projectId) => {
       const project = projects.find((candidate) => candidate.id === projectId);
       return {
@@ -858,6 +915,7 @@ const buildPlanManifest = async (params: {
   needs: Need[];
   chatMessages: ArchitectPlanChatMessage[];
   registrySnapshot?: ValidProjectRegistrySnapshot | null;
+  deps?: ResolvedArchitectPlanServiceDependencies;
 }): Promise<ArchitectPlanManifest> => ({
   schemaVersion: 3,
   planId: params.plan.id,
@@ -872,7 +930,8 @@ const buildPlanManifest = async (params: {
   ),
   participants: await loadParticipantSnapshots(
     normalizeExpectedProjectIds(params.plan.expectedProjectIds, params.plan.projectIds),
-    params.registrySnapshot
+    params.registrySnapshot,
+    params.deps
   ),
   revision:
     typeof params.plan.revision === 'number' && Number.isFinite(params.plan.revision) && params.plan.revision > 0
@@ -2158,12 +2217,21 @@ const listTargetBranchesAtScope = async (
 
 const readAggregatedIndex = async (
   branchName: string,
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+  deps?: ResolvedArchitectPlanServiceDependencies
 ): Promise<ArchitectPlanIndex> => {
+  const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
   const normalized = normalizeBranchName(branchName);
   const resolvedRegistrySnapshot =
-    tauriIpc.isTauriAvailable() ? (registrySnapshot ?? await loadValidProjectRegistrySnapshot()) : registrySnapshot;
-  const scopes = await resolveMetadataScopes(undefined, { includeAllKnown: true }, resolvedRegistrySnapshot);
+    resolvedDeps.tauri.isTauriAvailable()
+      ? (registrySnapshot ?? await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState }))
+      : registrySnapshot;
+  const scopes = await resolveMetadataScopes(
+    undefined,
+    { includeAllKnown: true },
+    resolvedRegistrySnapshot,
+    resolvedDeps
+  );
   const indexes = await Promise.all(
     scopes.map(async (scope) => ({
       scope,
@@ -2198,9 +2266,11 @@ const readAggregatedIndex = async (
   };
 };
 
-export const listArchitectPlanTargetBranches = async (): Promise<string[]> => {
-  const registrySnapshot = tauriIpc.isTauriAvailable() ? await loadValidProjectRegistrySnapshot() : undefined;
-  const scopes = await resolveMetadataScopes(undefined, { includeAllKnown: true }, registrySnapshot);
+const listArchitectPlanTargetBranchesImpl = async (
+  deps: ResolvedArchitectPlanServiceDependencies
+): Promise<string[]> => {
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const scopes = await resolveMetadataScopes(undefined, { includeAllKnown: true }, registrySnapshot, deps);
   const discoveredBranches = (
     await Promise.all(scopes.map((scope) => listTargetBranchesAtScope(scope)))
   ).flat();
@@ -2218,13 +2288,23 @@ const loadPlanReplicaSet = async (
     allowDivergence?: boolean;
     disableAutoHeal?: boolean;
     registrySnapshot?: ValidProjectRegistrySnapshot | null;
-  }
+  },
+  deps?: ResolvedArchitectPlanServiceDependencies
 ): Promise<ArchitectPlanReplicaSet | null> => {
+  const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
   const normalizedBranch = normalizeBranchName(branchName);
   const safeId = sanitizeId(planId);
   const resolvedRegistrySnapshot =
-    tauriIpc.isTauriAvailable() ? (options?.registrySnapshot ?? await loadValidProjectRegistrySnapshot()) : undefined;
-  const scopes = await resolveMetadataScopes(undefined, { includeAllKnown: true }, resolvedRegistrySnapshot);
+    resolvedDeps.tauri.isTauriAvailable()
+      ? (options?.registrySnapshot ??
+        await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState }))
+      : undefined;
+  const scopes = await resolveMetadataScopes(
+    undefined,
+    { includeAllKnown: true },
+    resolvedRegistrySnapshot,
+    resolvedDeps
+  );
   const snapshotDiagnosticsRaw: Array<ArchitectPlanReplicaSnapshotDiagnostics | null> = await Promise.all(
     scopes.map(async (scope) => {
       const planResult = await readPlanAtScopeWithDiagnostics(
@@ -2289,7 +2369,8 @@ const loadPlanReplicaSet = async (
     ...(await resolveMetadataScopes(
       expectedProjectIds,
       { includeWorkspaceFallback: false },
-      resolvedRegistrySnapshot
+      resolvedRegistrySnapshot,
+      resolvedDeps
     )),
     ...snapshots.map((snapshot) => snapshot.scope),
   ]);
@@ -2390,7 +2471,7 @@ const loadPlanReplicaSet = async (
       ...options,
       disableAutoHeal: true,
       registrySnapshot: resolvedRegistrySnapshot,
-    });
+    }, resolvedDeps);
   }
 
   if (!options?.allowDivergence) {
@@ -2466,15 +2547,17 @@ const commitMetadataScopes = async (
   commitMessage: string,
   options?: {
     commit?: boolean;
-  }
+  },
+  deps?: ResolvedArchitectPlanServiceDependencies
 ): Promise<void> => {
+  const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
   if (!options?.commit) {
     return;
   }
 
   if (
-    !tauriIpc.isTauriAvailable() ||
-    typeof tauriIpc.macroBranchCommitIfDirty !== 'function'
+    !resolvedDeps.tauri.isTauriAvailable() ||
+    typeof resolvedDeps.tauri.macroBranchCommitIfDirty !== 'function'
   ) {
     return;
   }
@@ -2492,23 +2575,23 @@ const commitMetadataScopes = async (
 
   let metadataAutoPush = false;
   try {
-    metadataAutoPush = Boolean(useAppStore.getState().metadataAutoPush);
+    metadataAutoPush = Boolean((await resolvedDeps.getAppState()).metadataAutoPush);
   } catch {
     metadataAutoPush = false;
   }
 
   await Promise.all(
     repoScopes.map(async (scope) => {
-      const commitResult = await tauriIpc.macroBranchCommitIfDirty({
+      const commitResult = await resolvedDeps.tauri.macroBranchCommitIfDirty({
         message: commitMessage,
         workspacePath: scope.workspacePath,
       });
       if (
         metadataAutoPush &&
         commitResult.committed &&
-        typeof tauriIpc.macroBranchPush === 'function'
+        typeof resolvedDeps.tauri.macroBranchPush === 'function'
       ) {
-        await tauriIpc.macroBranchPush({
+        await resolvedDeps.tauri.macroBranchPush({
           workspacePath: scope.workspacePath,
         });
       }
@@ -2578,9 +2661,11 @@ const removePlanFromScopeIndex = async (
 
 const ensurePlanScopes = async (
   projectIds: string[],
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+  deps?: ResolvedArchitectPlanServiceDependencies
 ): Promise<ArchitectMetadataScope[]> => {
-  if (!tauriIpc.isTauriAvailable()) {
+  const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
+  if (!resolvedDeps.tauri.isTauriAvailable()) {
     return [{
       scopeKey: 'local',
       projectId: projectIds[0] || null,
@@ -2590,7 +2675,9 @@ const ensurePlanScopes = async (
     }];
   }
 
-  const resolvedRegistrySnapshot = registrySnapshot ?? await loadValidProjectRegistrySnapshot();
+  const resolvedRegistrySnapshot =
+    registrySnapshot ??
+    await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState });
 
   if (projectIds.length > 0) {
     const scopes = dedupeScopes(getProjectMetadataScopes(resolvedRegistrySnapshot, projectIds));
@@ -2619,14 +2706,14 @@ export const commitArchitectPlanMetadata = async (input: {
   branchName: string;
   planId: string;
   commitMessage: string;
-}): Promise<void> => {
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<void> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, input.planId, {
     allowDivergence: true,
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet) {
     throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
   }
@@ -2637,7 +2724,8 @@ export const commitArchitectPlanMetadata = async (input: {
       ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
     ]),
     input.commitMessage,
-    { commit: true }
+    { commit: true },
+    deps
   );
 };
 
@@ -2645,10 +2733,23 @@ export const listArchitectPlans = async (branchName: string, includeDeleted = fa
   activePlanId: string | null;
   plans: ArchitectPlanSummary[];
 }> => {
+  const deps = resolveArchitectPlanServiceDependencies();
+  return listArchitectPlansWithDeps(branchName, includeDeleted, includeArchived, deps);
+};
+
+const listArchitectPlansWithDeps = async (
+  branchName: string,
+  includeDeleted = false,
+  includeArchived = false,
+  deps: ResolvedArchitectPlanServiceDependencies
+): Promise<{
+  activePlanId: string | null;
+  plans: ArchitectPlanSummary[];
+}> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
-  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
   const plans = index.plans.filter((plan) => {
     if (!includeDeleted && plan.status === 'deleted') return false;
     if (!includeArchived && plan.status === 'archived') return false;
@@ -2664,13 +2765,13 @@ export const isArchitectPlanSlugAvailable = async (params: {
   branchName: string;
   slug: string;
   excludePlanId?: string | null;
-}): Promise<boolean> => {
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<boolean> => {
   const normalizedBranch = normalizeBranchName(params.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const normalizedSlug = slugifyPlanTitle(params.slug);
   const normalizedExcludePlanId = params.excludePlanId ? sanitizeId(params.excludePlanId) : null;
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
-  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
   const currentSlugForExcludedPlan =
     index.plans.find((plan) => plan.id === normalizedExcludePlanId)?.slug || null;
 
@@ -2691,13 +2792,17 @@ export const isArchitectPlanSlugAvailable = async (params: {
   );
 };
 
-export const getArchitectPlan = async (branchName: string, planId: string): Promise<ArchitectPlanRecord | null> => {
+export const getArchitectPlan = async (
+  branchName: string,
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
+): Promise<ArchitectPlanRecord | null> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
     registrySnapshot,
-  });
+  }, deps);
   return replicaSet?.canonical.plan || null;
 };
 
@@ -2717,16 +2822,16 @@ export const createArchitectPlan = async (input: {
   predictedBranches?: PredictedBranch[];
   planId?: string;
   setActive?: boolean;
-}): Promise<ArchitectPlanRecord> => {
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const now = new Date().toISOString();
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
 
   // Read index early for uniqueness checks
   const planId = input.planId ? sanitizeId(input.planId) : String(Date.now());
   const initialLabel = normalizePlanLabel(input.label || input.title);
-  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot);
+  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
   const canonicalSlug = createAvailablePlanSlug(
     input.slug || initialLabel || planId,
     index.reservedPlanSlugs,
@@ -2786,7 +2891,7 @@ export const createArchitectPlan = async (input: {
   }
   const plan = planResult.plan;
 
-  const scopes = await ensurePlanScopes(plan.expectedProjectIds || plan.projectIds || [], registrySnapshot);
+  const scopes = await ensurePlanScopes(plan.expectedProjectIds || plan.projectIds || [], registrySnapshot, deps);
   await Promise.all(
     scopes.map(async (scope) => {
       await writePlanAtScope(scope, normalizedBranch, plan, registrySnapshot);
@@ -2795,9 +2900,9 @@ export const createArchitectPlan = async (input: {
       }, registrySnapshot);
     })
   );
-  await commitMetadataScopes(scopes, `chore(metadata): create architect plan ${plan.id}`);
+  await commitMetadataScopes(scopes, `chore(metadata): create architect plan ${plan.id}`, undefined, deps);
 
-  return (await getArchitectPlan(normalizedBranch, plan.id)) || plan;
+  return (await getArchitectPlan(normalizedBranch, plan.id, deps)) || plan;
 };
 
 export const updateArchitectPlan = async (input: {
@@ -2817,14 +2922,14 @@ export const updateArchitectPlan = async (input: {
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
   setActive?: boolean;
-}): Promise<ArchitectPlanRecord> => {
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(input.planId);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet) {
     throw new Error(`Plan not found: ${safeId}`);
   }
@@ -2837,7 +2942,7 @@ export const updateArchitectPlan = async (input: {
   }
 
   if (!isCanonicalPlan && input.title && input.title.trim().toLowerCase() !== existing.title.trim().toLowerCase()) {
-    const idx = await readAggregatedIndex(normalizedBranch, registrySnapshot);
+    const idx = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
     const normalizedTitle = input.title.trim().toLowerCase();
     const titleConflict = idx.plans.find(
       (p) => p.id !== safeId && p.status !== 'deleted' && p.title.trim().toLowerCase() === normalizedTitle
@@ -2852,7 +2957,7 @@ export const updateArchitectPlan = async (input: {
     throw new Error('Plan slug is immutable and cannot be changed after creation.');
   }
   if (requestedSlug !== existing.slug) {
-    const idx = await readAggregatedIndex(normalizedBranch, registrySnapshot);
+    const idx = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
     const currentSlugForPlan = idx.plans.find((plan) => plan.id === safeId)?.slug || existing.slug;
     const hasSlugConflict =
       idx.plans.some(
@@ -2926,7 +3031,11 @@ export const updateArchitectPlan = async (input: {
   }
   const candidate = candidateResult.plan;
 
-  const targetScopes = await ensurePlanScopes(candidate.expectedProjectIds || candidate.projectIds || [], registrySnapshot);
+  const targetScopes = await ensurePlanScopes(
+    candidate.expectedProjectIds || candidate.projectIds || [],
+    registrySnapshot,
+    deps
+  );
   const existingScopes = dedupeScopes([
     ...replicaSet.expectedScopes,
     ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
@@ -2998,20 +3107,26 @@ export const updateArchitectPlan = async (input: {
   );
   await commitMetadataScopes(
     dedupeScopes([...writeScopes, ...removedScopes]),
-    `chore(metadata): update architect plan ${next.id}`
+    `chore(metadata): update architect plan ${next.id}`,
+    undefined,
+    deps
   );
 
-  return (await getArchitectPlan(normalizedBranch, next.id)) || next;
+  return (await getArchitectPlan(normalizedBranch, next.id, deps)) || next;
 };
 
-export const setActiveArchitectPlan = async (branchName: string, planId: string): Promise<void> => {
+export const setActiveArchitectPlan = async (
+  branchName: string,
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
+): Promise<void> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(planId);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet || replicaSet.canonical.plan.status === 'deleted') {
     throw new Error(`Cannot activate missing or deleted plan: ${planId}`);
   }
@@ -3036,14 +3151,14 @@ export const deleteArchitectPlan = async (input: {
   branchName: string;
   planId: string;
   hardDelete?: boolean;
-}): Promise<void> => {
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<void> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(input.planId);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet) {
     throw new Error(`Plan not found: ${safeId}`);
   }
@@ -3056,7 +3171,7 @@ export const deleteArchitectPlan = async (input: {
         await removePlanFromScopeIndex(scope, normalizedBranch, safeId, registrySnapshot);
       })
     );
-    await commitMetadataScopes(scopes, `chore(metadata): hard delete architect plan ${safeId}`);
+    await commitMetadataScopes(scopes, `chore(metadata): hard delete architect plan ${safeId}`, undefined, deps);
     return;
   }
 
@@ -3096,23 +3211,31 @@ export const deleteArchitectPlan = async (input: {
       });
     })
   );
-  await commitMetadataScopes(scopes, `chore(metadata): delete architect plan ${safeId}`);
+  await commitMetadataScopes(scopes, `chore(metadata): delete architect plan ${safeId}`, undefined, deps);
 };
 
-export const restoreArchitectPlan = async (branchName: string, planId: string): Promise<ArchitectPlanRecord> => {
+export const restoreArchitectPlan = async (
+  branchName: string,
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
+): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  return updateArchitectPlan({ branchName: normalizedBranch, planId, status: 'draft' });
+  return updateArchitectPlan({ branchName: normalizedBranch, planId, status: 'draft' }, deps);
 };
 
-export const archiveArchitectPlan = async (branchName: string, planId: string): Promise<ArchitectPlanRecord> => {
+export const archiveArchitectPlan = async (
+  branchName: string,
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
+): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(planId);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet) throw new Error(`Plan not found: ${safeId}`);
   assertPlanReplicaSetWritable(replicaSet, 'archive');
   assertPlanCanBeArchived(replicaSet.canonical.plan);
@@ -3148,17 +3271,26 @@ export const archiveArchitectPlan = async (branchName: string, planId: string): 
       });
     })
   );
-  await commitMetadataScopes(dedupeScopes(replicaSet.expectedScopes), `chore(metadata): archive architect plan ${safeId}`);
-  return (await getArchitectPlan(normalizedBranch, safeId)) || archived;
+  await commitMetadataScopes(
+    dedupeScopes(replicaSet.expectedScopes),
+    `chore(metadata): archive architect plan ${safeId}`,
+    undefined,
+    deps
+  );
+  return (await getArchitectPlan(normalizedBranch, safeId, deps)) || archived;
 };
 
-export const getArchitectPlanNeeds = async (branchName: string, planId: string): Promise<Need[]> => {
+export const getArchitectPlanNeeds = async (
+  branchName: string,
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
+): Promise<Need[]> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet) {
     throw new Error(`Plan not found: ${sanitizeId(planId)}`);
   }
@@ -3167,14 +3299,15 @@ export const getArchitectPlanNeeds = async (branchName: string, planId: string):
 
 export const getArchitectPlanChatMessages = async (
   branchName: string,
-  planId: string
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
 ): Promise<ArchitectPlanChatMessage[]> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet) {
     throw new Error(`Plan not found: ${sanitizeId(planId)}`);
   }
@@ -3184,14 +3317,15 @@ export const getArchitectPlanChatMessages = async (
 export const saveArchitectPlanChatMessages = async (
   branchName: string,
   planId: string,
-  messages: ArchitectPlanChatMessage[]
+  messages: ArchitectPlanChatMessage[],
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
 ): Promise<void> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet) {
     throw new Error(`Plan not found: ${sanitizeId(planId)}`);
   }
@@ -3221,24 +3355,29 @@ export const saveArchitectPlanChatMessages = async (
       await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, undefined, registrySnapshot);
     })
   );
-  await commitMetadataScopes(dedupeScopes(replicaSet.expectedScopes), `chore(metadata): update architect plan chat ${sanitizeId(planId)}`);
+  await commitMetadataScopes(
+    dedupeScopes(replicaSet.expectedScopes),
+    `chore(metadata): update architect plan chat ${sanitizeId(planId)}`,
+    undefined,
+    deps
+  );
 };
 
 export const syncArchitectPlanChatFromConversation = async (params: {
   branchName: string;
   planId: string;
   conversationId?: string | null;
-}): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable()) {
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<void> => {
+  if (!deps.tauri.isTauriAvailable()) {
     return;
   }
 
   const normalizedBranch = normalizeBranchName(params.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, params.planId, {
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet) {
     throw new Error(`Plan not found: ${sanitizeId(params.planId)}`);
   }
@@ -3249,11 +3388,11 @@ export const syncArchitectPlanChatFromConversation = async (params: {
     if (arePlanChatMessagesEquivalent(parseJsonLines(replicaSet.canonical.files['chat.jsonl'] || ''), [])) {
       return;
     }
-    await saveArchitectPlanChatMessages(normalizedBranch, params.planId, []);
+    await saveArchitectPlanChatMessages(normalizedBranch, params.planId, [], deps);
     return;
   }
 
-  const dbMessages = await tauriIpc.listMessages(conversationId);
+  const dbMessages = await deps.tauri.listMessages(conversationId);
   const transcript = dbMessages
     .filter((message) => message.role === 'user' || message.role === 'assistant')
     .map((message) => ({
@@ -3268,16 +3407,21 @@ export const syncArchitectPlanChatFromConversation = async (params: {
     return;
   }
 
-  await saveArchitectPlanChatMessages(normalizedBranch, params.planId, transcript);
+  await saveArchitectPlanChatMessages(normalizedBranch, params.planId, transcript, deps);
 };
 
-export const saveArchitectPlanNeeds = async (branchName: string, planId: string, needs: Need[]): Promise<void> => {
+export const saveArchitectPlanNeeds = async (
+  branchName: string,
+  planId: string,
+  needs: Need[],
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
+): Promise<void> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet) {
     throw new Error(`Plan not found: ${sanitizeId(planId)}`);
   }
@@ -3303,21 +3447,26 @@ export const saveArchitectPlanNeeds = async (branchName: string, planId: string,
       await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, undefined, registrySnapshot);
     })
   );
-  await commitMetadataScopes(dedupeScopes(replicaSet.expectedScopes), `chore(metadata): update architect plan needs ${sanitizeId(planId)}`);
+  await commitMetadataScopes(
+    dedupeScopes(replicaSet.expectedScopes),
+    `chore(metadata): update architect plan needs ${sanitizeId(planId)}`,
+    undefined,
+    deps
+  );
 };
 
 export const repairArchitectPlanReplicas = async (input: {
   branchName: string;
   planId: string;
   strategy: ArchitectPlanReplicaRepairStrategy;
-}): Promise<ArchitectPlanRecord> => {
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, input.planId, {
     allowDivergence: true,
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet) {
     throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
   }
@@ -3383,11 +3532,16 @@ export const repairArchitectPlanReplicas = async (input: {
       );
     })
   );
-  await commitMetadataScopes(dedupeScopes(replicaSet.expectedScopes), `chore(metadata): repair architect plan ${canonicalPlan.id}`);
+  await commitMetadataScopes(
+    dedupeScopes(replicaSet.expectedScopes),
+    `chore(metadata): repair architect plan ${canonicalPlan.id}`,
+    undefined,
+    deps
+  );
 
   const repairedReplicaSet = await loadPlanReplicaSet(normalizedBranch, canonicalPlan.id, {
     registrySnapshot,
-  });
+  }, deps);
   const repaired = repairedReplicaSet?.canonical.plan || null;
   if (!repaired) {
     throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
@@ -3399,20 +3553,20 @@ export const writeArchitectTaskExecution = async (params: {
   branchName: string;
   planId: string;
   execution: ArchitectTaskExecutionRecord;
-}): Promise<void> => {
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<void> => {
   const normalizedBranch = normalizeBranchName(params.branchName);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot();
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, params.planId, {
     registrySnapshot,
-  });
+  }, deps);
   if (!replicaSet) {
     throw new Error(`Plan not found: ${params.planId}`);
   }
-  if (!tauriIpc.isTauriAvailable()) return;
+  if (!deps.tauri.isTauriAvailable()) return;
 
   await Promise.all(
     dedupeScopes(replicaSet.expectedScopes).map((scope) =>
-      tauriIpc.fsWriteFile({
+      deps.tauri.fsWriteFile({
         path: getTaskExecutedPath(normalizedBranch, replicaSet.canonical.plan.id, params.execution.taskId),
         content: buildTaskExecutedMarkdown(replicaSet.canonical.plan, params.execution),
         createDirs: true,
@@ -3423,6 +3577,60 @@ export const writeArchitectTaskExecution = async (params: {
     )
   );
 };
+
+export interface ArchitectPlanService {
+  listArchitectPlanTargetBranches: () => Promise<string[]>;
+  commitArchitectPlanMetadata: typeof commitArchitectPlanMetadata;
+  listArchitectPlans: typeof listArchitectPlans;
+  isArchitectPlanSlugAvailable: typeof isArchitectPlanSlugAvailable;
+  getArchitectPlan: typeof getArchitectPlan;
+  createArchitectPlan: typeof createArchitectPlan;
+  updateArchitectPlan: typeof updateArchitectPlan;
+  setActiveArchitectPlan: typeof setActiveArchitectPlan;
+  deleteArchitectPlan: typeof deleteArchitectPlan;
+  restoreArchitectPlan: typeof restoreArchitectPlan;
+  archiveArchitectPlan: typeof archiveArchitectPlan;
+  getArchitectPlanNeeds: typeof getArchitectPlanNeeds;
+  getArchitectPlanChatMessages: typeof getArchitectPlanChatMessages;
+  saveArchitectPlanChatMessages: typeof saveArchitectPlanChatMessages;
+  syncArchitectPlanChatFromConversation: typeof syncArchitectPlanChatFromConversation;
+  saveArchitectPlanNeeds: typeof saveArchitectPlanNeeds;
+  repairArchitectPlanReplicas: typeof repairArchitectPlanReplicas;
+  writeArchitectTaskExecution: typeof writeArchitectTaskExecution;
+}
+
+export const createArchitectPlanService = (
+  overrides: ArchitectPlanServiceDependencies = {}
+): ArchitectPlanService => {
+  const deps = resolveArchitectPlanServiceDependencies(overrides);
+
+  return {
+    listArchitectPlanTargetBranches: () => listArchitectPlanTargetBranchesImpl(deps),
+    commitArchitectPlanMetadata: (input) => commitArchitectPlanMetadata(input, deps),
+    listArchitectPlans: (branchName, includeDeleted, includeArchived) =>
+      listArchitectPlansWithDeps(branchName, includeDeleted, includeArchived, deps),
+    isArchitectPlanSlugAvailable: (params) => isArchitectPlanSlugAvailable(params, deps),
+    getArchitectPlan: (branchName, planId) => getArchitectPlan(branchName, planId, deps),
+    createArchitectPlan: (input) => createArchitectPlan(input, deps),
+    updateArchitectPlan: (input) => updateArchitectPlan(input, deps),
+    setActiveArchitectPlan: (branchName, planId) => setActiveArchitectPlan(branchName, planId, deps),
+    deleteArchitectPlan: (input) => deleteArchitectPlan(input, deps),
+    restoreArchitectPlan: (branchName, planId) => restoreArchitectPlan(branchName, planId, deps),
+    archiveArchitectPlan: (branchName, planId) => archiveArchitectPlan(branchName, planId, deps),
+    getArchitectPlanNeeds: (branchName, planId) => getArchitectPlanNeeds(branchName, planId, deps),
+    getArchitectPlanChatMessages: (branchName, planId) =>
+      getArchitectPlanChatMessages(branchName, planId, deps),
+    saveArchitectPlanChatMessages: (branchName, planId, messages) =>
+      saveArchitectPlanChatMessages(branchName, planId, messages, deps),
+    syncArchitectPlanChatFromConversation: (params) => syncArchitectPlanChatFromConversation(params, deps),
+    saveArchitectPlanNeeds: (branchName, planId, needs) => saveArchitectPlanNeeds(branchName, planId, needs, deps),
+    repairArchitectPlanReplicas: (input) => repairArchitectPlanReplicas(input, deps),
+    writeArchitectTaskExecution: (params) => writeArchitectTaskExecution(params, deps),
+  };
+};
+
+export const listArchitectPlanTargetBranches = async (): Promise<string[]> =>
+  listArchitectPlanTargetBranchesImpl(resolveArchitectPlanServiceDependencies());
 
 export const toPlanScopedFeatureBranch = (planSlug: string, rawBranchName: string): string => {
   const normalizedPlanSlug = slugifyPlanTitle(planSlug);
