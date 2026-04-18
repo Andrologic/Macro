@@ -11,7 +11,9 @@ import {
   type ArchitectPlanStatus,
 } from "./architectPlanService";
 import { provisionPlanBranches } from "./architectGitFlowService";
-import { renderGitFlowBranchName } from "./architectGitNaming";
+import {
+  collectRenderedPlanPredictedBranchDescriptors,
+} from "./architectBranchIdentity";
 import {
   getPlanNodeBranchIntent,
   getPredictedBranchIntentKey,
@@ -76,6 +78,7 @@ export interface StrategyMutationPreview {
   metadataUpdate: {
     title?: string;
     label?: string;
+    slug?: string;
     description: string;
   };
   resolvedProjectIds: string[];
@@ -122,8 +125,10 @@ interface PrepareStrategyMutationPreviewParams {
   metadataUpdate?: {
     title?: string;
     label?: string;
+    slug?: string;
     description?: string;
   };
+  metadataValidationConflicts?: string[];
   targetBranchesByProjectId?: Record<string, string>;
   getProjectGitFlowSettings?: (
     projectId: string,
@@ -311,53 +316,16 @@ const createStablePredictedBranchId = (projectId: string, branchKey: string): st
 const buildPredictedBranchesForMutation = (params: {
   plan: Pick<ArchitectPlanRecord, "slug" | "title" | "predictedBranches">;
   nodes: PlanNode[];
+  planSlug?: string;
   getProjectGitFlowSettings?: (
     projectId: string,
   ) => ProjectGitFlowSettings | undefined;
 }): PredictedBranch[] => {
-  const planSlug = params.plan.slug || params.plan.title;
-  const branchMap = new Map<
-    string,
-    {
-      key: string;
-      projectId: string;
-      taskIds: string[];
-      branchType: PredictedBranch["branchType"];
-      branchSlug: PredictedBranch["branchSlug"];
-      name: string;
-      parentBranch: string;
-    }
-  >();
-
-  params.nodes.forEach((node) => {
-    const branchIntent = getPlanNodeBranchIntent(node);
-    normalizeNodeProjectIds(node).forEach((projectId) => {
-      const settings = params.getProjectGitFlowSettings?.(projectId);
-      const branchName = renderGitFlowBranchName({
-        branchType: branchIntent.branchType,
-        planSlug,
-        branchSlug: branchIntent.branchSlug,
-        settings,
-      });
-      const parentBranch = renderGitFlowBranchName({
-        branchType: "plan",
-        planSlug,
-        settings,
-      });
-      const key = `${projectId}::${branchIntent.key}`;
-      if (!branchMap.has(key)) {
-        branchMap.set(key, {
-          key,
-          projectId,
-          taskIds: [],
-          branchType: branchIntent.branchType,
-          branchSlug: branchIntent.branchSlug,
-          name: branchName,
-          parentBranch,
-        });
-      }
-      branchMap.get(key)!.taskIds.push(node.id);
-    });
+  const planSlug = params.planSlug || params.plan.slug || params.plan.title;
+  const renderedBranches = collectRenderedPlanPredictedBranchDescriptors({
+    nodes: params.nodes,
+    planSlug,
+    getProjectGitFlowSettings: params.getProjectGitFlowSettings,
   });
 
   const existingByKey = new Map(
@@ -367,7 +335,7 @@ const buildPredictedBranchesForMutation = (params: {
     ]),
   );
 
-  return Array.from(branchMap.values()).map((branch, index) => {
+  return renderedBranches.map((branch, index) => {
     const existing = existingByKey.get(branch.key);
     return {
       id:
@@ -486,6 +454,7 @@ const buildBlockedPreview = (
     metadataUpdate: {
       ...(params.metadataUpdate?.title ? { title: params.metadataUpdate.title } : {}),
       ...(params.metadataUpdate?.label ? { label: params.metadataUpdate.label } : {}),
+      ...(params.metadataUpdate?.slug ? { slug: params.metadataUpdate.slug } : {}),
       description:
         params.metadataUpdate?.description ?? params.plan.description,
     },
@@ -527,6 +496,14 @@ export const prepareStrategyMutationPreview = (
     return buildBlockedPreview(params, frozenNodes, [
       `Plan ${params.plan.id} is ${params.plan.status} and cannot be regenerated.`,
     ]);
+  }
+
+  if ((params.metadataValidationConflicts?.length || 0) > 0) {
+    return buildBlockedPreview(
+      params,
+      frozenNodes,
+      params.metadataValidationConflicts || [],
+    );
   }
 
   const candidateById = new Map(
@@ -645,15 +622,57 @@ export const prepareStrategyMutationPreview = (
     };
   }
 
+  const targetPlanSlug =
+    params.metadataUpdate?.slug || params.plan.slug || params.plan.title;
   const rebuiltPredictedBranches = buildPredictedBranchesForMutation({
     plan: params.plan,
     nodes: finalNodes,
+    planSlug: targetPlanSlug,
     getProjectGitFlowSettings: params.getProjectGitFlowSettings,
   });
   const normalized = normalizeStrategyDependencies(
     finalNodes,
     rebuiltPredictedBranches,
+    {
+      planSlug: targetPlanSlug,
+    },
   );
+  const expectedRenderedBranches = buildPredictedBranchesForMutation({
+    plan: params.plan,
+    nodes: normalized.nodes,
+    planSlug: targetPlanSlug,
+    getProjectGitFlowSettings: params.getProjectGitFlowSettings,
+  });
+  const expectedRenderedBranchByKey = new Map(
+    expectedRenderedBranches.map((branch) => [
+      `${branch.projectId}::${getPredictedBranchIntentKey(branch)}`,
+      branch,
+    ]),
+  );
+  const staleRenderedBranchConflicts = normalized.predictedBranches
+    .map((branch) => {
+      const expected = expectedRenderedBranchByKey.get(
+        `${branch.projectId}::${getPredictedBranchIntentKey(branch)}`,
+      );
+      if (!expected) {
+        return null;
+      }
+      if (
+        expected.name === branch.name &&
+        (expected.parentBranch || null) === (branch.parentBranch || null)
+      ) {
+        return null;
+      }
+      return `Predicted branch "${branch.name}" must be regenerated for plan slug "${targetPlanSlug}".`;
+    })
+    .filter((value): value is string => Boolean(value));
+
+  if (staleRenderedBranchConflicts.length > 0) {
+    return {
+      ...buildBlockedPreview(params, frozenNodes, staleRenderedBranchConflicts),
+      ...preNormalizationDiff,
+    };
+  }
   const postNormalizationCycleNode = assertAcyclic(normalized.nodes);
   if (postNormalizationCycleNode) {
     return {
@@ -713,6 +732,7 @@ export const prepareStrategyMutationPreview = (
     metadataUpdate: {
       ...(params.metadataUpdate?.title ? { title: params.metadataUpdate.title } : {}),
       ...(params.metadataUpdate?.label ? { label: params.metadataUpdate.label } : {}),
+      ...(params.metadataUpdate?.slug ? { slug: params.metadataUpdate.slug } : {}),
       description:
         params.metadataUpdate?.description ?? params.plan.description,
     },
@@ -763,6 +783,9 @@ export const applyStrategyMutationPreview = async (
     ...(params.preview.metadataUpdate.label
       ? { label: params.preview.metadataUpdate.label }
       : {}),
+    ...(params.preview.metadataUpdate.slug
+      ? { slug: params.preview.metadataUpdate.slug }
+      : {}),
     status: params.preview.nextPlanStatus,
     projectId: params.preview.resolvedProjectIds[0],
     projectIds: params.preview.resolvedProjectIds,
@@ -785,6 +808,9 @@ export const applyStrategyMutationPreview = async (
     ...(params.preview.metadataUpdate.label
       ? { label: params.preview.metadataUpdate.label }
       : {}),
+    ...(params.preview.metadataUpdate.slug
+      ? { slug: params.preview.metadataUpdate.slug }
+      : {}),
     status: params.preview.nextPlanStatus,
     nodes: params.preview.planNodes,
     predictedBranches: params.preview.predictedBranches,
@@ -806,6 +832,9 @@ export const applyStrategyMutationPreview = async (
       : {}),
     ...(params.preview.metadataUpdate.label
       ? { label: params.preview.metadataUpdate.label }
+      : {}),
+    ...(params.preview.metadataUpdate.slug
+      ? { slug: params.preview.metadataUpdate.slug }
       : {}),
     nodes: params.preview.planNodes,
     predictedBranches: params.preview.predictedBranches,

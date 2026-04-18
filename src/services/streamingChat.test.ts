@@ -129,10 +129,14 @@ describe('streamingChat Architect tool contracts', () => {
 
   it('documents plan_title as a label alias for strategy generation', async () => {
     const { GENERATE_PLAN_TOOL } = await loadStreamingChat();
-    const planTitleProperty = asObjectSchema(GENERATE_PLAN_TOOL.function.parameters).properties
-      .plan_title as { description?: string };
+    const properties = asObjectSchema(GENERATE_PLAN_TOOL.function.parameters).properties as Record<
+      string,
+      { description?: string }
+    >;
+    const planTitleProperty = properties.plan_title;
 
-    expect(String(GENERATE_PLAN_TOOL.function.description)).toContain('branchType + branchSlug');
+    expect(String(GENERATE_PLAN_TOOL.function.description)).toContain('plan_slug');
+    expect(properties.plan_slug).toBeDefined();
     expect(String(planTitleProperty.description)).toContain('secondary plan label');
   });
 
@@ -148,7 +152,7 @@ describe('streamingChat Architect tool contracts', () => {
     expect(properties.status).toBeUndefined();
     expect(properties.set_active).toBeUndefined();
     expect(String(UPDATE_PLAN_TOOL.function.description)).toContain(
-      'never rename the canonical id or slug'
+      'logical slug becomes immutable'
     );
   });
 });

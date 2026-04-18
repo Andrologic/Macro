@@ -16,6 +16,8 @@ pub struct WorkspaceState {
     pub predicted_branches: Vec<PredictedBranchDto>,
     #[serde(default)]
     pub manual_features: Vec<ManualFeatureDto>,
+    #[serde(default, rename = "reservedStandaloneFeatureSlugs")]
+    pub reserved_standalone_feature_slugs: Vec<String>,
 }
 
 impl Default for WorkspaceState {
@@ -27,12 +29,13 @@ impl Default for WorkspaceState {
             plan_nodes: Vec::new(),
             predicted_branches: Vec::new(),
             manual_features: Vec::new(),
+            reserved_standalone_feature_slugs: Vec::new(),
         }
     }
 }
 
 const fn default_version() -> u32 {
-    2
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
