@@ -89,6 +89,20 @@ type MockChatState = {
   editMessage: ReturnType<typeof mock>;
   getMessageImages: ReturnType<typeof mock>;
   setMessageImages: ReturnType<typeof mock>;
+  architectPlanNamingRecovery: {
+    conversationId: string;
+    planId: string;
+    targetBranch: string;
+    firstUserContent: string;
+    providerId: string;
+    modelId: string;
+    stage: 'choice' | 'manual';
+    isSubmitting: boolean;
+    error: string | null;
+  } | null;
+  setArchitectPlanNamingRecoveryStage: ReturnType<typeof mock>;
+  retryArchitectPlanNamingRecovery: ReturnType<typeof mock>;
+  submitArchitectPlanManualName: ReturnType<typeof mock>;
   composerContextRefs: unknown[];
 };
 
@@ -446,6 +460,10 @@ const resetState = () => {
     editMessage: mock(async () => undefined),
     getMessageImages: mock(() => []),
     setMessageImages: mock(() => undefined),
+    architectPlanNamingRecovery: null,
+    setArchitectPlanNamingRecoveryStage: mock(() => undefined),
+    retryArchitectPlanNamingRecovery: mock(async () => false),
+    submitArchitectPlanManualName: mock(async () => false),
     composerContextRefs: [],
   };
 
@@ -539,6 +557,32 @@ describe('ChatZone', () => {
 
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(requireContainer().textContent).not.toContain('Type your message');
+  });
+
+  it('renders architect plan naming recovery actions when a plan still needs a name', async () => {
+    appState.mode = 'Architect';
+    chatState = {
+      ...chatState,
+      architectPlanNamingRecovery: {
+        conversationId: 'conv-1',
+        planId: 'plan-1',
+        targetBranch: 'develop',
+        firstUserContent: 'On doit renommer le plan.',
+        providerId: 'provider-1',
+        modelId: 'model-1',
+        stage: 'choice',
+        isSubmitting: false,
+        error: null,
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('Plan name still needed');
+    expect(requireContainer().textContent).toContain('Retry AI');
+    expect(requireContainer().textContent).toContain('Name manually');
   });
 
   it('renders the visible assistant content while streaming', async () => {

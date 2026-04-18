@@ -15,6 +15,9 @@ import type {
   ArchitectPlanRecord,
   ArchitectPlanSummary,
 } from "./architectPlanService";
+import {
+  hasPersistedArchitectStrategy,
+} from "./architectPlanService";
 import { isCanonicalArchitectPlan } from "./architectPlanPresentation";
 import {
   formatArchitectNeedAddToolResult,
@@ -1291,6 +1294,17 @@ export const handleArchitectToolCall = async (
       (!isCanonicalPlan ||
         titleAlias !== existingPlan.title ||
         label !== undefined);
+    const requestedLabelChange =
+      label !== undefined && label !== (existingPlan.label ?? "");
+    const requestedTitleAliasChange =
+      shouldPassTitleAlias && titleAlias !== undefined && titleAlias !== existingPlan.title;
+
+    if (
+      hasPersistedArchitectStrategy(existingPlan) &&
+      (requestedLabelChange || requestedTitleAliasChange)
+    ) {
+      return "plan_update cannot rename a plan after strategy has been created. Only description and mutable draft slug updates remain allowed.";
+    }
 
     if (
       slug !== undefined &&

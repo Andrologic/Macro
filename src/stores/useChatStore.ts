@@ -47,12 +47,16 @@ import {
 } from "../services/remoteKernelApi";
 import * as tauriIpc from "../services/tauriIpc";
 import {
+  type ArchitectPlanActivationPayload,
   type ArchitectPlanRecord,
+  bindArchitectPlanConversation,
   getArchitectPlan,
+  getArchitectPlanActivationPayload,
   getArchitectPlanChatMessages,
   getGitFlowBaseBranch,
   getArchitectPlanProjectIds,
   getArchitectPlanNeeds,
+  hasPersistedArchitectStrategy,
   isArchitectPlanSlugAvailable,
   isArchitectPlanSlugMutable,
   listArchitectPlans,
@@ -123,6 +127,7 @@ const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
 const MANUAL_FEATURE_MAX_SLUG_LENGTH = 64;
 const MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT = 4;
+const ARCHITECT_PLAN_METADATA_ATTEMPT_LIMIT = 3;
 const metadataGenerationInFlight = new Set<string>();
 const conversationCompactionStateCache = new Map<
   string,
@@ -635,6 +640,21 @@ interface ArchitectTranscriptState {
   relation: "equal" | "db_prefix" | "metadata_prefix" | "diverged";
 }
 
+type ArchitectPlanNamingRecoveryStage = "choice" | "manual";
+
+interface ArchitectPlanNamingRecoveryState {
+  conversationId: string;
+  planId: string;
+  targetBranch: string;
+  firstUserContent: string;
+  providerId: string;
+  modelId: string;
+  reasoningEffort?: ReasoningEffort | null;
+  stage: ArchitectPlanNamingRecoveryStage;
+  isSubmitting: boolean;
+  error: string | null;
+}
+
 interface ChatStore {
   messages: ChatMessage[];
   messagesByConversationId: Record<string, ChatMessage[]>;
@@ -657,6 +677,7 @@ interface ChatStore {
     string,
     ConversationQuestionnaireDraft
   >;
+  architectPlanNamingRecovery: ArchitectPlanNamingRecoveryState | null;
   addMessage: (message: ChatMessage) => void;
   clearLastError: () => void;
   updateMessageContent: (messageId: string, content: string) => void;
@@ -683,6 +704,7 @@ interface ChatStore {
     projectId: string | null,
     groupId?: string | null,
   ) => Promise<Conversation>;
+  beginArchitectPlanSwitch: () => void;
   ensureArchitectConversationForPlan: (params: {
     plan: ArchitectPlanRecord;
     targetBranch: string;
@@ -755,6 +777,17 @@ interface ChatStore {
     images: MessageImageAttachment[],
   ) => void;
   getMessageImages: (messageId: string) => MessageImageAttachment[];
+  dismissArchitectPlanNamingRecovery: () => void;
+  setArchitectPlanNamingRecoveryStage: (
+    stage: ArchitectPlanNamingRecoveryStage,
+  ) => void;
+  retryArchitectPlanNamingRecovery: () => Promise<boolean>;
+  submitArchitectPlanManualName: (value: string) => Promise<boolean>;
+  syncArchitectPlanConversationMetadata: (
+    conversationId: string,
+    plan: ArchitectPlanRecord,
+    descriptionOverride?: string,
+  ) => Promise<void>;
   composerContextRefs: ContextReference[];
   addComposerContextRef: (ref: ContextReference) => void;
   removeComposerContextRef: (id: string, kind: ContextRefKind) => void;
@@ -1209,6 +1242,59 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
   let hydrationPromise: Promise<void> | null = null;
   let awaitingResponseReconciliationScheduled = false;
+  const pendingArchitectConversationIdsByPlanKey = new Map<string, string>();
+
+  const getArchitectPlanConversationCacheKey = (
+    targetBranch: string,
+    planId: string,
+  ): string => `${targetBranch}::${planId}`;
+
+  const clearPendingArchitectConversationForPlan = (params: {
+    targetBranch: string;
+    planId: string;
+  }) => {
+    pendingArchitectConversationIdsByPlanKey.delete(
+      getArchitectPlanConversationCacheKey(params.targetBranch, params.planId),
+    );
+  };
+
+  const clearPendingArchitectConversationsForConversationIds = (
+    conversationIds: string[],
+  ) => {
+    if (conversationIds.length === 0) {
+      return;
+    }
+
+    const removedConversationIds = new Set(conversationIds);
+    for (const [planKey, conversationId] of pendingArchitectConversationIdsByPlanKey) {
+      if (removedConversationIds.has(conversationId)) {
+        pendingArchitectConversationIdsByPlanKey.delete(planKey);
+      }
+    }
+  };
+
+  const getPendingArchitectConversationId = (params: {
+    targetBranch: string;
+    planId: string;
+  }): string | null => {
+    const conversationId =
+      pendingArchitectConversationIdsByPlanKey.get(
+        getArchitectPlanConversationCacheKey(params.targetBranch, params.planId),
+      ) ?? null;
+    if (!conversationId) {
+      return null;
+    }
+
+    const conversationStillExists = get().conversations.some(
+      (conversation) => conversation.id === conversationId,
+    );
+    if (conversationStillExists) {
+      return conversationId;
+    }
+
+    clearPendingArchitectConversationForPlan(params);
+    return null;
+  };
 
   const persistAiSelections = () => {
     if (!aiSelectionsLoaded) return;
@@ -1264,6 +1350,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
       !!provider.apiKey?.trim() ||
       providerHasAuthSession(provider)
     );
+  };
+
+  const resolveConversationMetadataProviderContext = async (params: {
+    providerId: string;
+    modelId: string;
+    reasoningEffort?: ReasoningEffort | null;
+  }) => {
+    const providerState = useProviderStore.getState();
+    const providerConfig = providerState.providerConfigs.find(
+      (candidate) => candidate.id === params.providerId,
+    );
+    if (!providerConfig || !providerConfig.isEnabled) {
+      throw new Error("The selected provider is no longer available.");
+    }
+
+    const apiKey =
+      providerConfig.isLocal || providerHasAuthSession(providerConfig)
+        ? providerConfig.apiKey
+        : await providerState.resolveProviderApiKey(params.providerId);
+
+    return {
+      providerId: params.providerId,
+      providerType: providerConfig.providerType,
+      baseUrl: providerConfig.baseUrl,
+      apiKey,
+      modelId: params.modelId,
+      reasoningEffort: params.reasoningEffort,
+    };
   };
 
   const isSelectionUsable = (
@@ -1724,11 +1838,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     contextSelectionUnsubscribe = useAppStore.subscribe(
       (nextState, previousState) => {
-        if (
-          buildChatContextKey(nextState) === buildChatContextKey(previousState)
-        ) {
+        const nextContextKey = buildChatContextKey(nextState);
+        const previousContextKey = buildChatContextKey(previousState);
+        if (nextContextKey === previousContextKey) {
           return;
         }
+
+        const nextArchitectBranch =
+          nextState.mode === "Architect"
+            ? resolveTargetBranch(nextState.activePlanContext?.targetBranch)
+            : null;
+        const previousArchitectBranch =
+          previousState.mode === "Architect"
+            ? resolveTargetBranch(previousState.activePlanContext?.targetBranch)
+            : null;
+        const shouldBeginArchitectPlanSwitch =
+          nextState.mode === "Architect" &&
+          (previousState.mode !== "Architect" ||
+            nextState.activeArchitectPlanId !==
+              previousState.activeArchitectPlanId ||
+            nextArchitectBranch !== previousArchitectBranch);
+
+        if (shouldBeginArchitectPlanSwitch) {
+          beginArchitectPlanSwitchSelection();
+        }
+
         void get().ensureConversationForCurrentMode();
       },
     );
@@ -2958,6 +3092,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (conversationIds.length === 0) {
       return;
     }
+    clearPendingArchitectConversationsForConversationIds(conversationIds);
     set((state) => buildConversationRemovalState(state, conversationIds));
   };
 
@@ -3138,6 +3273,123 @@ export const useChatStore = create<ChatStore>((set, get) => {
           : conversation,
       ),
     }));
+  };
+
+  const persistConversationMetadata = async (
+    conversationId: string,
+    metadata: { title: string; description: string },
+  ) => {
+    updateConversationMetadataLocally(conversationId, metadata);
+
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+
+    await tauriIpc.updateConversationDetails({
+      id: conversationId,
+      title: metadata.title,
+      description: metadata.description,
+    });
+  };
+
+  const shouldGenerateArchitectPlanTitleFromFirstMessage = (
+    plan: ArchitectPlanRecord,
+    conversationId: string,
+  ): boolean =>
+    plan.status !== "deleted" &&
+    plan.conversationId === conversationId &&
+    isCanonicalArchitectPlan(plan) &&
+    isDefaultNewPlanFamilyLabel(plan.label) &&
+    !hasPersistedArchitectStrategy(plan);
+
+  const requestConversationMetadata = async (params: {
+    firstUserContent: string;
+    providerId: string;
+    providerType: string;
+    baseUrl: string;
+    apiKey?: string;
+    modelId: string;
+    reasoningEffort?: ReasoningEffort | null;
+  }): Promise<{ title: string; description: string }> => {
+    const output = await sendChatNonStreaming({
+      providerId: params.providerId,
+      providerType: params.providerType,
+      baseUrl: params.baseUrl,
+      apiKey: params.apiKey,
+      modelId: params.modelId,
+      reasoningEffort: params.reasoningEffort,
+      messages: prepareMetadataMessages(params.firstUserContent),
+      onComplete: () => {},
+      onError: () => {},
+    });
+
+    return extractMetadataFromModelOutput(output);
+  };
+
+  const requestConversationMetadataWithRetries = async (
+    params: Parameters<typeof requestConversationMetadata>[0],
+    attemptLimit: number,
+  ): Promise<{ title: string; description: string }> => {
+    let lastError: unknown = null;
+
+    for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
+      try {
+        return await requestConversationMetadata(params);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError ?? new Error("Failed to generate conversation metadata.");
+  };
+
+  const hydrateActiveArchitectPlanIfNeeded = async (params: {
+    updatedPlan: ArchitectPlanRecord;
+    targetBranch: string;
+  }) => {
+    const appState = useAppStore.getState();
+    if (
+      appState.activeArchitectPlanId !== params.updatedPlan.id ||
+      resolveTargetBranch(appState.activePlanContext?.targetBranch) !==
+        params.targetBranch
+    ) {
+      return;
+    }
+
+    appState.setPlanNodes(params.updatedPlan.nodes || []);
+    appState.setPredictedBranches(params.updatedPlan.predictedBranches || []);
+    appState.setActivePlanContext({
+      id: params.updatedPlan.id,
+      slug: params.updatedPlan.slug,
+      title: params.updatedPlan.title,
+      label: params.updatedPlan.label,
+      description: params.updatedPlan.description,
+      status: params.updatedPlan.status,
+      targetBranch: params.updatedPlan.targetBranch,
+      targetBranchesByProjectId: params.updatedPlan.targetBranchesByProjectId,
+      hasMixedTargetBranches:
+        Boolean(params.updatedPlan.targetBranchesByProjectId) &&
+        new Set(
+          Object.values(params.updatedPlan.targetBranchesByProjectId || {}),
+        ).size > 1,
+    });
+
+    const planNeeds = await getArchitectPlanNeeds(
+      params.targetBranch,
+      params.updatedPlan.id,
+    );
+    useNeedsStore.getState().hydrateNeedsForPlan(params.updatedPlan.id, planNeeds);
+  };
+
+  const syncConversationMetadataFromArchitectPlan = async (
+    conversationId: string,
+    plan: ArchitectPlanRecord,
+    descriptionOverride?: string,
+  ) => {
+    await persistConversationMetadata(conversationId, {
+      title: getArchitectPlanConversationTitle(plan),
+      description: descriptionOverride ?? plan.description ?? "",
+    });
   };
 
   const finalizeManualFeatureDraftIfNeeded = async (params: {
@@ -3354,6 +3606,131 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const loadRecoverableArchitectPlan = async (params: {
+    architectPlan: {
+      planId: string;
+      targetBranch: string;
+    };
+    conversationId: string;
+  }): Promise<ArchitectPlanRecord | null> => {
+    try {
+      const plan = await getArchitectPlan(
+        params.architectPlan.targetBranch,
+        params.architectPlan.planId,
+      );
+      if (
+        !plan ||
+        !shouldGenerateArchitectPlanTitleFromFirstMessage(
+          plan,
+          params.conversationId,
+        )
+      ) {
+        return null;
+      }
+
+      return plan;
+    } catch (error) {
+      console.warn(
+        "Failed to load architect plan metadata from first message:",
+        error,
+      );
+      return null;
+    }
+  };
+
+  const bindPendingArchitectConversationIfNeeded = async (params: {
+    architectPlan: {
+      planId: string;
+      targetBranch: string;
+    };
+    conversationId: string;
+  }): Promise<boolean> => {
+    const pendingConversationId = getPendingArchitectConversationId({
+      targetBranch: params.architectPlan.targetBranch,
+      planId: params.architectPlan.planId,
+    });
+    if (!pendingConversationId) {
+      return true;
+    }
+    if (pendingConversationId !== params.conversationId) {
+      return false;
+    }
+
+    try {
+      await bindArchitectPlanConversation({
+        branchName: params.architectPlan.targetBranch,
+        planId: params.architectPlan.planId,
+        conversationId: params.conversationId,
+      });
+      clearPendingArchitectConversationForPlan({
+        targetBranch: params.architectPlan.targetBranch,
+        planId: params.architectPlan.planId,
+      });
+      return true;
+    } catch (error) {
+      logArchitectTranscriptEvent(
+        "warn",
+        "architect_conversation_binding_failed",
+        {
+          planId: params.architectPlan.planId,
+          conversationId: params.conversationId,
+          error: toServiceError(error).message,
+        },
+      );
+      return false;
+    }
+  };
+
+  const applyArchitectPlanInitialMetadata = async (params: {
+    architectPlan: {
+      planId: string;
+      targetBranch: string;
+    };
+    conversationId: string;
+    metadata: {
+      title: string;
+      description: string;
+    };
+  }): Promise<boolean> => {
+    const recoverablePlan = await loadRecoverableArchitectPlan({
+      architectPlan: params.architectPlan,
+      conversationId: params.conversationId,
+    });
+    if (!recoverablePlan) {
+      return false;
+    }
+
+    const nextDescription =
+      recoverablePlan.description.trim() || params.metadata.description;
+    const updatedPlan = await updateArchitectPlan({
+      branchName: params.architectPlan.targetBranch,
+      planId: recoverablePlan.id,
+      label: params.metadata.title,
+      description: nextDescription,
+    });
+
+    await syncConversationMetadataFromArchitectPlan(
+      params.conversationId,
+      updatedPlan,
+      nextDescription,
+    );
+    await hydrateActiveArchitectPlanIfNeeded({
+      updatedPlan,
+      targetBranch: params.architectPlan.targetBranch,
+    });
+
+    set((state) => ({
+      architectPlanNamingRecovery:
+        state.architectPlanNamingRecovery?.planId === updatedPlan.id &&
+        state.architectPlanNamingRecovery?.conversationId ===
+          params.conversationId
+          ? null
+          : state.architectPlanNamingRecovery,
+    }));
+
+    return true;
+  };
+
   const maybeGenerateConversationMetadata = async (params: {
     conversationId: string;
     firstUserContent: string;
@@ -3384,143 +3761,64 @@ export const useChatStore = create<ChatStore>((set, get) => {
     metadataGenerationInFlight.add(conversationId);
 
     try {
-      const output = await sendChatNonStreaming({
-        providerId,
-        providerType,
-        baseUrl,
-        apiKey,
-        modelId,
-        reasoningEffort,
-        messages: prepareMetadataMessages(firstUserContent),
-        onComplete: () => {},
-        onError: () => {},
-      });
-
-      let metadata: { title: string; description: string };
-      try {
-        metadata = extractMetadataFromModelOutput(output);
-      } catch {
-        metadata = {
-          title: getConversationFallbackTitle(firstUserContent),
-          description: getConversationFallbackDescription(firstUserContent),
-        };
-      }
-
-      updateConversationMetadataLocally(conversationId, metadata);
-
-      if (tauriIpc.isTauriAvailable()) {
-        tauriIpc
-          .updateConversationDetails({
-            id: conversationId,
-            title: metadata.title,
-            description: metadata.description,
-          })
-          .catch(console.error);
-      }
-
       if (architectPlan) {
-        try {
-          const plan = await getArchitectPlan(
-            architectPlan.targetBranch,
-            architectPlan.planId,
-          );
-          const shouldAdoptMetadata = Boolean(
-            plan &&
-            plan.status !== "deleted" &&
-            plan.conversationId === conversationId &&
-            isCanonicalArchitectPlan(plan) &&
-            isDefaultNewPlanFamilyLabel(plan.label) &&
-            plan.nodes.length === 0 &&
-            plan.predictedBranches.length === 0,
-          );
-
-          if (shouldAdoptMetadata && plan) {
-            const nextDescription =
-              plan.description.trim() || metadata.description;
-            const updatedPlan = await updateArchitectPlan({
-              branchName: architectPlan.targetBranch,
-              planId: plan.id,
-              label: metadata.title,
-              description: nextDescription,
-            });
-
-            const conversationMetadata = {
-              title: getArchitectPlanConversationTitle(updatedPlan),
-              description: nextDescription,
-            };
-            updateConversationMetadataLocally(
-              conversationId,
-              conversationMetadata,
+        const recoverablePlan = await loadRecoverableArchitectPlan({
+          architectPlan,
+          conversationId,
+        });
+        if (recoverablePlan) {
+          try {
+            const metadata = await requestConversationMetadataWithRetries(
+              {
+                firstUserContent,
+                providerId,
+                providerType,
+                baseUrl,
+                apiKey,
+                modelId,
+                reasoningEffort,
+              },
+              ARCHITECT_PLAN_METADATA_ATTEMPT_LIMIT,
             );
-
-            if (tauriIpc.isTauriAvailable()) {
-              tauriIpc
-                .updateConversationDetails({
-                  id: conversationId,
-                  title: conversationMetadata.title,
-                  description: conversationMetadata.description,
-                })
-                .catch(console.error);
-            }
-
-            const appState = useAppStore.getState();
-            if (
-              appState.activeArchitectPlanId === updatedPlan.id &&
-              resolveTargetBranch(appState.activePlanContext?.targetBranch) ===
-                architectPlan.targetBranch
-            ) {
-              appState.setPlanNodes(updatedPlan.nodes || []);
-              appState.setPredictedBranches(
-                updatedPlan.predictedBranches || [],
-              );
-              appState.setActivePlanContext({
-                id: updatedPlan.id,
-                slug: updatedPlan.slug,
-                title: updatedPlan.title,
-                label: updatedPlan.label,
-                description: updatedPlan.description,
-                status: updatedPlan.status,
-                targetBranch: updatedPlan.targetBranch,
-                targetBranchesByProjectId:
-                  updatedPlan.targetBranchesByProjectId,
-                hasMixedTargetBranches:
-                  Boolean(updatedPlan.targetBranchesByProjectId) &&
-                  new Set(
-                    Object.values(updatedPlan.targetBranchesByProjectId || {}),
-                  ).size > 1,
-              });
-
-              const planNeeds = await getArchitectPlanNeeds(
-                architectPlan.targetBranch,
-                updatedPlan.id,
-              );
-              useNeedsStore
-                .getState()
-                .hydrateNeedsForPlan(updatedPlan.id, planNeeds);
-            }
+            await applyArchitectPlanInitialMetadata({
+              architectPlan,
+              conversationId,
+              metadata,
+            });
+          } catch (error) {
+            console.warn(
+              "Failed to generate architect plan metadata from first message:",
+              error,
+            );
+            set({
+              architectPlanNamingRecovery: {
+                conversationId,
+                planId: architectPlan.planId,
+                targetBranch: architectPlan.targetBranch,
+                firstUserContent,
+                providerId,
+                modelId,
+                reasoningEffort,
+                stage: "choice",
+                isSubmitting: false,
+                error: null,
+              },
+            });
           }
-        } catch (error) {
-          console.warn(
-            "Failed to sync architect plan metadata from first message:",
-            error,
-          );
+          return;
         }
+
+        return;
       }
-    } catch {
-      const metadata = {
+
+      const metadata = await requestConversationMetadata(params).catch(() => ({
         title: getConversationFallbackTitle(firstUserContent),
         description: getConversationFallbackDescription(firstUserContent),
-      };
-      updateConversationMetadataLocally(conversationId, metadata);
-      if (tauriIpc.isTauriAvailable()) {
-        tauriIpc
-          .updateConversationDetails({
-            id: conversationId,
-            title: metadata.title,
-            description: metadata.description,
-          })
-          .catch(console.error);
-      }
+      }));
+
+      await persistConversationMetadata(conversationId, metadata);
+    } catch (error) {
+      console.warn("Failed to update conversation metadata:", error);
     } finally {
       metadataGenerationInFlight.delete(conversationId);
     }
@@ -4392,6 +4690,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }));
   };
 
+  const beginArchitectPlanSwitchSelection = () => {
+    set((current) => ({
+      selectedConversationId:
+        useAppStore.getState().mode === "Architect"
+          ? null
+          : current.selectedConversationId,
+      selectedConversationIdsByMode: {
+        ...current.selectedConversationIdsByMode,
+        Architect: null,
+      },
+      restoreStatus: "resolving",
+      lastError: null,
+    }));
+  };
+
+  const isLightweightBlankArchitectPlanPayload = (
+    payload: ArchitectPlanActivationPayload,
+  ): boolean =>
+    payload.resolutionMode === "blank_fast_path" ||
+    (payload.plan.status === "draft" &&
+      payload.plan.description.trim().length === 0 &&
+      payload.plan.nodes.length === 0 &&
+      payload.plan.predictedBranches.length === 0 &&
+      payload.needs.length === 0 &&
+      payload.chatMessages.length === 0 &&
+      !payload.conversationId &&
+      !payload.sharedConversation);
+
   const createConversationRecord = async (params: {
     title: string;
     taskId: string | null;
@@ -4632,6 +4958,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     fallbackProjectId?: string;
     fallbackGroupId?: string;
     sharedConversation?: boolean;
+    conversationIdHint?: string | null;
+    chatMessagesHint?: ArchitectPlanActivationPayload["chatMessages"];
   }): Promise<{
     conversationId: string | null;
     restoredTranscript: boolean;
@@ -4643,16 +4971,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       fallbackProjectId,
       fallbackGroupId,
       sharedConversation = false,
+      conversationIdHint,
+      chatMessagesHint,
     } = params;
-    const existingConversation = plan.conversationId
+    const resolvedConversationId = conversationIdHint ?? plan.conversationId ?? null;
+    const existingConversation = resolvedConversationId
       ? (get().conversations.find(
-          (conversation) => conversation.id === plan.conversationId,
+          (conversation) => conversation.id === resolvedConversationId,
         ) ?? null)
       : null;
-    const transcript = await getArchitectPlanChatMessages(
-      targetBranch,
-      plan.id,
-    ).catch(() => []);
+    const transcript =
+      chatMessagesHint ??
+      (await getArchitectPlanChatMessages(targetBranch, plan.id).catch(() => []));
 
     let conversation =
       existingConversation &&
@@ -4729,7 +5059,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     }
 
-    if (conversation.id !== plan.conversationId) {
+    if (conversation.id !== resolvedConversationId) {
       try {
         await updateArchitectPlan({
           branchName: targetBranch,
@@ -4840,19 +5170,92 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let state = get();
 
     if (mode === "Architect" && appState.activeArchitectPlanId) {
+      const architectResolutionStartedAt = Date.now();
       try {
         const targetBranch = resolveTargetBranch(
           appState.activePlanContext?.targetBranch,
         );
-        const activePlan = await getArchitectPlan(
-          targetBranch,
-          appState.activeArchitectPlanId,
-        );
+        const sharedActivationPayload =
+          appState.consumeArchitectPlanActivationPayload({
+            planId: appState.activeArchitectPlanId,
+            targetBranch,
+          });
+        const activationPayload: ArchitectPlanActivationPayload | null =
+          sharedActivationPayload ??
+          (await getArchitectPlanActivationPayload(
+            targetBranch,
+            appState.activeArchitectPlanId,
+          ));
+        const activationPayloadSource = sharedActivationPayload
+          ? "app_store"
+          : "service";
+        if (!isCurrentRequest()) return null;
+        const activePlan =
+          activationPayload?.plan ??
+          (await getArchitectPlan(
+            targetBranch,
+            appState.activeArchitectPlanId,
+          ));
         if (!isCurrentRequest()) return null;
         if (activePlan && activePlan.status !== "deleted") {
-          const conversationId = activePlan.conversationId;
-          let hasSharedConversation = false;
-          if (conversationId) {
+          if (
+            activationPayload &&
+            isLightweightBlankArchitectPlanPayload(activationPayload)
+          ) {
+            const pendingConversationId = getPendingArchitectConversationId({
+              targetBranch,
+              planId: activePlan.id,
+            });
+            if (pendingConversationId) {
+              return pendingConversationId;
+            }
+
+            const fallbackProjectId =
+              resolvePlanProjectContextId(activePlan, selectedProjectId) ||
+              getArchitectPlanProjectIds(activePlan)[0] ||
+              selectedProjectId ||
+              appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
+              null;
+            const blankConversation = await createConversationRecord({
+              title: getArchitectPlanConversationTitle(activePlan),
+              taskId: null,
+              projectId: fallbackProjectId ?? null,
+              groupId: selectedGroupId ?? null,
+              selectConversation: false,
+            });
+            pendingArchitectConversationIdsByPlanKey.set(
+              getArchitectPlanConversationCacheKey(targetBranch, activePlan.id),
+              blankConversation.id,
+            );
+            if (!isCurrentRequest()) {
+              return null;
+            }
+            logArchitectTranscriptEvent(
+              "info",
+              "architect_conversation_resolved",
+              {
+                planId: activePlan.id,
+                conversationId: blankConversation.id,
+                source: activationPayloadSource,
+                resolutionMode:
+                  activationPayload?.resolutionMode ?? "full",
+                durationMs: Date.now() - architectResolutionStartedAt,
+              },
+            );
+            return blankConversation.id;
+          }
+
+          clearPendingArchitectConversationForPlan({
+            targetBranch,
+            planId: activePlan.id,
+          });
+          const conversationId =
+            activationPayload?.conversationId ??
+            activePlan.conversationId ??
+            null;
+          let hasSharedConversation =
+            activationPayload?.sharedConversation ?? false;
+          if (!activationPayload && conversationId) {
             const plansSnapshot = await listArchitectPlans(
               targetBranch,
               true,
@@ -4877,9 +5280,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
             fallbackProjectId: fallbackProjectId ?? undefined,
             fallbackGroupId: selectedGroupId ?? undefined,
             sharedConversation: hasSharedConversation,
+            conversationIdHint: conversationId,
+            chatMessagesHint: activationPayload?.chatMessages,
           });
           if (!isCurrentRequest()) return null;
           if (ensuredConversation.conversationId) {
+            logArchitectTranscriptEvent(
+              "info",
+              "architect_conversation_resolved",
+              {
+                planId: activePlan.id,
+                conversationId: ensuredConversation.conversationId,
+                source: activationPayloadSource,
+                resolutionMode:
+                  activationPayload?.resolutionMode ?? "full",
+                restoredTranscript: ensuredConversation.restoredTranscript,
+                createdConversation: ensuredConversation.createdConversation,
+                durationMs: Date.now() - architectResolutionStartedAt,
+              },
+            );
             return ensuredConversation.conversationId;
           }
         }
@@ -5053,6 +5472,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     abortController: null,
     messageImagesByMessageId: {},
     questionnaireDraftsByConversationId: loadQuestionnaireDraftsFromStorage(),
+    architectPlanNamingRecovery: null,
     composerContextRefs: [],
 
     addMessage: (message) => {
@@ -5393,6 +5813,174 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return state.messageImagesByMessageId[messageId] || EMPTY_MESSAGE_IMAGES;
     },
 
+    dismissArchitectPlanNamingRecovery: () =>
+      set({ architectPlanNamingRecovery: null }),
+
+    setArchitectPlanNamingRecoveryStage: (stage) =>
+      set((state) =>
+        state.architectPlanNamingRecovery
+          ? {
+              architectPlanNamingRecovery: {
+                ...state.architectPlanNamingRecovery,
+                stage,
+                error: null,
+              },
+            }
+          : state,
+      ),
+
+    retryArchitectPlanNamingRecovery: async () => {
+      const recovery = get().architectPlanNamingRecovery;
+      if (!recovery || recovery.isSubmitting) {
+        return false;
+      }
+
+      set((state) => ({
+        architectPlanNamingRecovery: state.architectPlanNamingRecovery
+          ? {
+              ...state.architectPlanNamingRecovery,
+              stage: "choice",
+              isSubmitting: true,
+              error: null,
+            }
+          : null,
+      }));
+
+      const recoverablePlan = await loadRecoverableArchitectPlan({
+        architectPlan: {
+          planId: recovery.planId,
+          targetBranch: recovery.targetBranch,
+        },
+        conversationId: recovery.conversationId,
+      });
+
+      if (!recoverablePlan) {
+        set({ architectPlanNamingRecovery: null });
+        return false;
+      }
+
+      try {
+        const providerContext =
+          await resolveConversationMetadataProviderContext({
+            providerId: recovery.providerId,
+            modelId: recovery.modelId,
+            reasoningEffort: recovery.reasoningEffort,
+          });
+        const metadata = await requestConversationMetadataWithRetries(
+          {
+            firstUserContent: recovery.firstUserContent,
+            ...providerContext,
+          },
+          ARCHITECT_PLAN_METADATA_ATTEMPT_LIMIT,
+        );
+        const applied = await applyArchitectPlanInitialMetadata({
+          architectPlan: {
+            planId: recovery.planId,
+            targetBranch: recovery.targetBranch,
+          },
+          conversationId: recovery.conversationId,
+          metadata,
+        });
+        if (!applied) {
+          set({ architectPlanNamingRecovery: null });
+          return false;
+        }
+        return true;
+      } catch (error) {
+        set((state) => ({
+          architectPlanNamingRecovery: state.architectPlanNamingRecovery
+            ? {
+                ...state.architectPlanNamingRecovery,
+                stage: "choice",
+                isSubmitting: false,
+                error:
+                  error instanceof Error && error.message.trim()
+                    ? error.message
+                    : "Macro could not generate a plan name automatically.",
+              }
+            : null,
+        }));
+        return false;
+      }
+    },
+
+    submitArchitectPlanManualName: async (value) => {
+      const recovery = get().architectPlanNamingRecovery;
+      const trimmedValue = value.trim();
+      if (!recovery || recovery.isSubmitting || !trimmedValue) {
+        return false;
+      }
+
+      set((state) => ({
+        architectPlanNamingRecovery: state.architectPlanNamingRecovery
+          ? {
+              ...state.architectPlanNamingRecovery,
+              stage: "manual",
+              isSubmitting: true,
+              error: null,
+            }
+          : null,
+      }));
+
+      const recoverablePlan = await loadRecoverableArchitectPlan({
+        architectPlan: {
+          planId: recovery.planId,
+          targetBranch: recovery.targetBranch,
+        },
+        conversationId: recovery.conversationId,
+      });
+
+      if (!recoverablePlan) {
+        set({ architectPlanNamingRecovery: null });
+        return false;
+      }
+
+      try {
+        const updatedPlan = await updateArchitectPlan({
+          branchName: recovery.targetBranch,
+          planId: recoverablePlan.id,
+          label: trimmedValue,
+        });
+        await syncConversationMetadataFromArchitectPlan(
+          recovery.conversationId,
+          updatedPlan,
+        );
+        await hydrateActiveArchitectPlanIfNeeded({
+          updatedPlan,
+          targetBranch: recovery.targetBranch,
+        });
+        set({ architectPlanNamingRecovery: null });
+        return true;
+      } catch (error) {
+        set((state) => ({
+          architectPlanNamingRecovery: state.architectPlanNamingRecovery
+            ? {
+                ...state.architectPlanNamingRecovery,
+                stage: "manual",
+                isSubmitting: false,
+                error:
+                  error instanceof Error && error.message.trim()
+                    ? error.message
+                    : "Failed to rename the plan.",
+              }
+            : null,
+        }));
+        return false;
+      }
+    },
+
+    syncArchitectPlanConversationMetadata: async (
+      conversationId,
+      plan,
+      descriptionOverride,
+    ) => {
+      await syncConversationMetadataFromArchitectPlan(
+        conversationId,
+        plan,
+        descriptionOverride,
+      );
+    },
+
     addComposerContextRef: (ref) =>
       set((state) => {
         const exists = state.composerContextRefs.some(
@@ -5449,6 +6037,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         groupId,
       }),
 
+    beginArchitectPlanSwitch: () => {
+      beginArchitectPlanSwitchSelection();
+    },
+
     ensureArchitectConversationForPlan: async ({
       plan,
       targetBranch,
@@ -5488,7 +6080,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const contextKey = buildChatContextKey(appState);
       const requestId = get().selectionRequestId + 1;
       const stateBeforeResolve = get();
+      const contextChanged = stateBeforeResolve.activeContextKey !== contextKey;
+      if (mode === "Architect" && contextChanged) {
+        beginArchitectPlanSwitchSelection();
+      }
       const shouldShowResolving =
+        contextChanged ||
         !stateBeforeResolve.selectedConversationId ||
         stateBeforeResolve.restoreStatus === "error";
 
@@ -6120,7 +6717,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
           const appState = useAppStore.getState();
-          const architectPlan =
+          let skipMetadataGeneration = false;
+          let architectPlan =
             modeAtSend === "Architect" && appState.activeArchitectPlanId
               ? {
                   planId: appState.activeArchitectPlanId,
@@ -6129,18 +6727,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   ),
                 }
               : undefined;
+          if (architectPlan) {
+            const bindingSucceeded =
+              await bindPendingArchitectConversationIfNeeded({
+                architectPlan,
+                conversationId,
+              });
+            if (!bindingSucceeded) {
+              skipMetadataGeneration = true;
+            }
+          }
 
-          void maybeGenerateConversationMetadata({
-            conversationId,
-            firstUserContent: content,
-            providerId: selectedProviderId,
-            providerType: providerConfigForUse.providerType,
-            baseUrl: providerConfigForUse.baseUrl,
-            apiKey: providerConfigForUse.apiKey,
-            modelId: selectedModelId,
-            reasoningEffort: selectedReasoningEffort,
-            architectPlan,
-          });
+          if (!skipMetadataGeneration) {
+            void maybeGenerateConversationMetadata({
+              conversationId,
+              firstUserContent: content,
+              providerId: selectedProviderId,
+              providerType: providerConfigForUse.providerType,
+              baseUrl: providerConfigForUse.baseUrl,
+              apiKey: providerConfigForUse.apiKey,
+              modelId: selectedModelId,
+              reasoningEffort: selectedReasoningEffort,
+              architectPlan,
+            });
+          }
         }
 
         const assistantMessage: ChatMessage = {

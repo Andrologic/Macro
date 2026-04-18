@@ -71,6 +71,7 @@ export interface ArchitectPlanManifest {
   revision: number;
   updatedAt: string;
   contentHashes: ArchitectPlanContentHashes;
+  needCount?: number;
   conversation: ArchitectPlanConversationSnapshot;
   deletion: ArchitectPlanDeletionSnapshot | null;
 }
@@ -124,6 +125,9 @@ export interface ArchitectPlanSummary {
   createdAt: string;
   updatedAt: string;
   nodeCount: number;
+  predictedBranchCount?: number;
+  needCount?: number;
+  chatMessageCount?: number;
   expectedProjectIds?: string[];
   availableProjectIds?: string[];
   missingProjectIds?: string[];
@@ -148,6 +152,18 @@ export interface ArchitectPlanReplicaDivergence {
   planId: string;
   reason: 'content_diverged' | 'missing_replica';
   replicas: ArchitectPlanReplica[];
+}
+
+export type ArchitectPlanActivationResolutionMode = 'blank_fast_path' | 'full';
+
+export interface ArchitectPlanActivationPayload {
+  plan: ArchitectPlanRecord;
+  needs: Need[];
+  chatMessages: ArchitectPlanChatMessage[];
+  conversationId: string | null;
+  sharedConversation: boolean;
+  targetBranch: string;
+  resolutionMode: ArchitectPlanActivationResolutionMode;
 }
 
 export interface ArchitectPlanServiceAppState extends ValidProjectRegistryAppState {
@@ -202,6 +218,62 @@ const assertPlanCanBeArchived = (
   }
 };
 
+const canUseBlankActivationSummary = (
+  summary: ArchitectPlanSummary | null
+): boolean => {
+  if (!summary) {
+    return false;
+  }
+
+  return (
+    summary.status === 'draft' &&
+    isCanonicalArchitectPlan(summary) &&
+    isDefaultNewPlanFamilyLabel(summary.label) &&
+    summary.description.trim().length === 0 &&
+    summary.nodeCount === 0 &&
+    (summary.predictedBranchCount ?? 0) === 0 &&
+    summary.needCount === 0 &&
+    summary.chatMessageCount === 0 &&
+    !summary.conversationId
+  );
+};
+
+const planRecordFromActivationSummary = (
+  summary: ArchitectPlanSummary,
+  branchName: string
+): ArchitectPlanRecord => {
+  const expectedProjectIds = normalizeExpectedProjectIds(
+    summary.expectedProjectIds,
+    getArchitectPlanProjectIds(summary)
+  );
+
+  return {
+    id: summary.id,
+    slug: summary.slug,
+    title: summary.title,
+    label: summary.label,
+    description: summary.description,
+    status: summary.status,
+    targetBranch: normalizeBranchName(summary.targetBranch || branchName),
+    targetBranchesByProjectId: summary.targetBranchesByProjectId,
+    conversationId: summary.conversationId,
+    projectId: summary.projectId,
+    projectIds: summary.projectIds,
+    contextProjectIds: summary.contextProjectIds,
+    createdAt: summary.createdAt,
+    updatedAt: summary.updatedAt,
+    nodes: [],
+    predictedBranches: [],
+    expectedProjectIds,
+    availableProjectIds: summary.availableProjectIds,
+    missingProjectIds: summary.missingProjectIds,
+    replicationState: summary.replicationState,
+    revision: summary.revision,
+    replicas: summary.replicas,
+    hasReplicaDivergence: summary.hasReplicaDivergence,
+  };
+};
+
 export class ArchitectPlanReplicaDivergenceError extends Error {
   readonly code = 'ARCHITECT_PLAN_REPLICA_DIVERGENCE';
   readonly divergence: ArchitectPlanReplicaDivergence;
@@ -245,12 +317,32 @@ const LOCAL_PLAN_NEEDS_KEY_PREFIX = 'macro_architect_plan_needs';
 const LOCAL_PLAN_CHAT_KEY_PREFIX = 'macro_architect_plan_chat';
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 const DEFAULT_GIT_FLOW_BASE_BRANCH = 'develop';
+const ARCHITECT_PLAN_INDEX_CACHE_TTL_MS = 5_000;
+const ARCHITECT_PLAN_ACTIVATION_CACHE_TTL_MS = 5_000;
 const GIT_FLOW_ALLOWED_TARGET_PATTERNS = [
   /^feature\/[a-z0-9._-]+$/i,
   /^release\/[a-z0-9._-]+$/i,
   /^hotfix\/[a-z0-9._-]+$/i,
   /^bugfix\/[a-z0-9._-]+$/i,
 ];
+
+const architectPlanIndexCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    value?: ArchitectPlanIndex;
+    promise?: Promise<ArchitectPlanIndex>;
+  }
+>();
+
+const architectPlanActivationCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    value?: ArchitectPlanActivationPayload | null;
+    promise?: Promise<ArchitectPlanActivationPayload | null>;
+  }
+>();
 
 const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -267,6 +359,89 @@ const normalizeBranchName = (value?: string, fallbackBranch = DEFAULT_GIT_FLOW_B
     .replace(/^\/+/, '')
     .replace(/\/+$/, '');
   return normalized || fallbackBranch;
+};
+
+const getArchitectPlanIndexCacheKey = (branchName: string): string =>
+  normalizeBranchName(branchName);
+
+const getArchitectPlanActivationCacheKey = (branchName: string, planId: string): string =>
+  `${normalizeBranchName(branchName)}::${sanitizeId(planId)}`;
+
+const loadCachedArchitectPlanValue = async <T>(params: {
+  cache: Map<
+    string,
+    {
+      expiresAt: number;
+      value?: T;
+      promise?: Promise<T>;
+    }
+  >;
+  cacheKey: string;
+  ttlMs: number;
+  loader: () => Promise<T>;
+}): Promise<T> => {
+  const now = Date.now();
+  const cached = params.cache.get(params.cacheKey);
+  if (cached?.value !== undefined && cached.expiresAt > now) {
+    return cached.value;
+  }
+  if (cached?.promise) {
+    return cached.promise;
+  }
+
+  const promise = params.loader().then(
+    (value) => {
+      params.cache.set(params.cacheKey, {
+        value,
+        expiresAt: Date.now() + params.ttlMs,
+      });
+      return value;
+    },
+    (error) => {
+      const inFlight = params.cache.get(params.cacheKey);
+      if (inFlight?.promise === promise) {
+        params.cache.delete(params.cacheKey);
+      }
+      throw error;
+    }
+  );
+
+  params.cache.set(params.cacheKey, {
+    expiresAt: now + params.ttlMs,
+    promise,
+  });
+  return promise;
+};
+
+const invalidateArchitectPlanRuntimeCaches = (params?: {
+  branchName?: string;
+  planId?: string;
+}): void => {
+  const normalizedBranch = params?.branchName
+    ? normalizeBranchName(params.branchName)
+    : null;
+
+  if (!normalizedBranch) {
+    architectPlanIndexCache.clear();
+    architectPlanActivationCache.clear();
+    return;
+  }
+
+  architectPlanIndexCache.delete(getArchitectPlanIndexCacheKey(normalizedBranch));
+
+  if (params?.planId) {
+    architectPlanActivationCache.delete(
+      getArchitectPlanActivationCacheKey(normalizedBranch, params.planId)
+    );
+    return;
+  }
+
+  const activationPrefix = `${normalizedBranch}::`;
+  for (const cacheKey of architectPlanActivationCache.keys()) {
+    if (cacheKey.startsWith(activationPrefix)) {
+      architectPlanActivationCache.delete(cacheKey);
+    }
+  }
 };
 
 const isGitFlowTargetBranch = (branchName: string): boolean =>
@@ -332,6 +507,11 @@ export const isArchitectPlanSlugMutable = (
 ): boolean =>
   plan.status === 'draft' &&
   !(plan.nodes || []).some((node) => node.status !== 'pending');
+
+export const hasPersistedArchitectStrategy = (
+  plan: Pick<ArchitectPlanRecord, 'nodes' | 'predictedBranches'>
+): boolean =>
+  (plan.nodes || []).length > 0 || (plan.predictedBranches || []).length > 0;
 
 const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[] => Array.from(
   new Set(
@@ -939,6 +1119,7 @@ const buildPlanManifest = async (params: {
       : 1,
   updatedAt: params.plan.updatedAt,
   contentHashes: buildPlanContentHashes(params.plan, params.needs, params.chatMessages),
+  needCount: params.needs.length,
   conversation: buildPlanConversationSnapshot(params.plan, params.chatMessages),
   deletion: params.plan.status === 'deleted' ? { deletedAt: params.plan.updatedAt } : null,
 });
@@ -1099,6 +1280,26 @@ const logArchitectPlanSanitization = (params: {
     context: params.context,
     removedInvalidProjectIds: params.removedInvalidProjectIds,
   }));
+};
+
+const logArchitectPlanActivationLoad = (params: {
+  branchName: string;
+  planId: string;
+  resolutionMode: ArchitectPlanActivationResolutionMode;
+  durationMs: number;
+  sharedConversation: boolean;
+}): void => {
+  devLogger.info(
+    JSON.stringify({
+      event: 'architect_plan_activation_loaded',
+      at: new Date().toISOString(),
+      branchName: params.branchName,
+      planId: params.planId,
+      resolutionMode: params.resolutionMode,
+      sharedConversation: params.sharedConversation,
+      durationMs: params.durationMs,
+    })
+  );
 };
 
 const sanitizeArchitectPlanRecord = (
@@ -1277,6 +1478,18 @@ const sanitizeArchitectPlanSummary = (
         ? Math.floor(summary.revision)
         : 1,
     nodeCount: typeof summary.nodeCount === 'number' ? summary.nodeCount : 0,
+    predictedBranchCount:
+      typeof summary.predictedBranchCount === 'number' ? summary.predictedBranchCount : 0,
+    needCount:
+      typeof summary.needCount === 'number' && Number.isFinite(summary.needCount) && summary.needCount >= 0
+        ? Math.floor(summary.needCount)
+        : undefined,
+    chatMessageCount:
+      typeof summary.chatMessageCount === 'number' &&
+      Number.isFinite(summary.chatMessageCount) &&
+      summary.chatMessageCount >= 0
+        ? Math.floor(summary.chatMessageCount)
+        : undefined,
   };
   const sanitizedProjects = sanitizeProjectIdsForRegistry(
     normalizedSummary.projectIds,
@@ -1803,6 +2016,23 @@ const readPlanChatAtScope = async (
   return raw ? parseJsonLines(raw) : [];
 };
 
+const readStoredPlanManifestAtScope = async (
+  scope: ArchitectMetadataScope,
+  branchName: string,
+  planId: string
+): Promise<Partial<ArchitectPlanManifest> | null> => {
+  const normalized = normalizeBranchName(branchName);
+  const safeId = sanitizeId(planId);
+  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
+    return null;
+  }
+
+  return await readJsonFileAtScope<Partial<ArchitectPlanManifest>>(
+    scope,
+    getPlanManifestPath(normalized, safeId)
+  );
+};
+
 const readPlanManifestAtScope = async (params: {
   scope: ArchitectMetadataScope;
   branchName: string;
@@ -1875,6 +2105,10 @@ const readPlanManifestAtScope = async (params: {
               : fallbackManifest.contentHashes.chat,
         }
       : fallbackManifest.contentHashes,
+    needCount:
+      typeof parsed.needCount === 'number' && Number.isFinite(parsed.needCount) && parsed.needCount >= 0
+        ? Math.floor(parsed.needCount)
+        : fallbackManifest.needCount,
     conversation: parsed.conversation && typeof parsed.conversation === 'object'
       ? {
           conversationId:
@@ -2076,7 +2310,13 @@ const readPlanFilesAtScope = async (
   }
 };
 
-const toSummary = (plan: ArchitectPlanRecord): ArchitectPlanSummary => ({
+const toSummary = (
+  plan: ArchitectPlanRecord,
+  options?: {
+    needCount?: number;
+    chatMessageCount?: number;
+  }
+): ArchitectPlanSummary => ({
   id: plan.id,
   slug: plan.slug,
   title: plan.title,
@@ -2093,6 +2333,9 @@ const toSummary = (plan: ArchitectPlanRecord): ArchitectPlanSummary => ({
   updatedAt: plan.updatedAt,
   revision: typeof plan.revision === 'number' ? plan.revision : 1,
   nodeCount: plan.nodes.length,
+  predictedBranchCount: plan.predictedBranches.length,
+  needCount: options?.needCount,
+  chatMessageCount: options?.chatMessageCount,
 });
 
 const upsertSummary = (summaries: ArchitectPlanSummary[], summary: ArchitectPlanSummary): ArchitectPlanSummary[] => {
@@ -2220,50 +2463,71 @@ const readAggregatedIndex = async (
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
   deps?: ResolvedArchitectPlanServiceDependencies
 ): Promise<ArchitectPlanIndex> => {
-  const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
   const normalized = normalizeBranchName(branchName);
-  const resolvedRegistrySnapshot =
-    resolvedDeps.tauri.isTauriAvailable()
-      ? (registrySnapshot ?? await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState }))
-      : registrySnapshot;
-  const scopes = await resolveMetadataScopes(
-    undefined,
-    { includeAllKnown: true },
-    resolvedRegistrySnapshot,
-    resolvedDeps
-  );
-  const indexes = await Promise.all(
-    scopes.map(async (scope) => ({
-      scope,
-      index: await readIndexAtScope(scope, normalized, resolvedRegistrySnapshot),
-    }))
-  );
+  const cacheKey = getArchitectPlanIndexCacheKey(normalized);
 
-  const plansById = new Map<string, Array<{ scope: ArchitectMetadataScope; summary: ArchitectPlanSummary }>>();
-  for (const { scope, index } of indexes) {
-    for (const summary of index.plans) {
-      const existing = plansById.get(summary.id) || [];
-      existing.push({ scope, summary });
-      plansById.set(summary.id, existing);
-    }
-  }
+  return await loadCachedArchitectPlanValue({
+    cache: architectPlanIndexCache,
+    cacheKey,
+    ttlMs: ARCHITECT_PLAN_INDEX_CACHE_TTL_MS,
+    loader: async () => {
+      const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
+      const resolvedRegistrySnapshot =
+        resolvedDeps.tauri.isTauriAvailable()
+          ? (registrySnapshot ??
+            await resolvedDeps.loadRegistrySnapshot({
+              getAppState: resolvedDeps.getAppState,
+            }))
+          : registrySnapshot;
+      const scopes = await resolveMetadataScopes(
+        undefined,
+        { includeAllKnown: true },
+        resolvedRegistrySnapshot,
+        resolvedDeps
+      );
+      const indexes = await Promise.all(
+        scopes.map(async (scope) => ({
+          scope,
+          index: await readIndexAtScope(scope, normalized, resolvedRegistrySnapshot),
+        }))
+      );
 
-  const activePlanIds = Array.from(
-    new Set(
-      indexes
-        .map(({ index }) => index.activePlanId)
-        .filter((planId): planId is string => Boolean(planId))
-    )
-  );
+      const plansById = new Map<
+        string,
+        Array<{ scope: ArchitectMetadataScope; summary: ArchitectPlanSummary }>
+      >();
+      for (const { scope, index } of indexes) {
+        for (const summary of index.plans) {
+          const existing = plansById.get(summary.id) || [];
+          existing.push({ scope, summary });
+          plansById.set(summary.id, existing);
+        }
+      }
 
-  return {
-    version: 3,
-    activePlanId: activePlanIds.length === 1 ? activePlanIds[0] : null,
-    plans: Array.from(plansById.values()).map((entries) => mergePlanSummaries(entries, resolvedRegistrySnapshot)),
-    reservedPlanSlugs: Array.from(
-      new Set(indexes.flatMap(({ index }) => index.reservedPlanSlugs.map((slug) => slugifyPlanTitle(slug))))
-    ),
-  };
+      const activePlanIds = Array.from(
+        new Set(
+          indexes
+            .map(({ index }) => index.activePlanId)
+            .filter((planId): planId is string => Boolean(planId))
+        )
+      );
+
+      return {
+        version: 3,
+        activePlanId: activePlanIds.length === 1 ? activePlanIds[0] : null,
+        plans: Array.from(plansById.values()).map((entries) =>
+          mergePlanSummaries(entries, resolvedRegistrySnapshot)
+        ),
+        reservedPlanSlugs: Array.from(
+          new Set(
+            indexes.flatMap(({ index }) =>
+              index.reservedPlanSlugs.map((slug) => slugifyPlanTitle(slug))
+            )
+          )
+        ),
+      };
+    },
+  });
 };
 
 const listArchitectPlanTargetBranchesImpl = async (
@@ -2528,6 +2792,291 @@ const loadPlanReplicaSet = async (
   };
 };
 
+interface ArchitectPlanActivationSnapshot {
+  scope: ArchitectMetadataScope;
+  plan: ArchitectPlanRecord;
+  updatedAt: string;
+  expectedProjectIds: string[];
+  conversationId: string | null;
+  needCount: number | null;
+  chatMessageCount: number | null;
+}
+
+const buildArchitectPlanActivationSnapshot = async (params: {
+  scope: ArchitectMetadataScope;
+  branchName: string;
+  planId: string;
+  summary?: ArchitectPlanSummary | null;
+  registrySnapshot?: ValidProjectRegistrySnapshot | null;
+}): Promise<ArchitectPlanActivationSnapshot | null> => {
+  const planResult = await readPlanAtScopeWithDiagnostics(
+    params.scope,
+    params.branchName,
+    params.planId,
+    params.registrySnapshot
+  );
+  if (!planResult.plan || planResult.plan.status === 'deleted') {
+    return null;
+  }
+
+  const storedManifest = await readStoredPlanManifestAtScope(
+    params.scope,
+    params.branchName,
+    params.planId
+  );
+  const fallbackProjectIds = params.summary
+    ? getArchitectPlanProjectIds(params.summary)
+    : resolvePlanProjectIds(planResult.plan);
+  const expectedProjectIds = normalizeExpectedProjectIds(
+    Array.isArray(storedManifest?.expectedProjectIds)
+      ? storedManifest.expectedProjectIds
+      : planResult.plan.expectedProjectIds,
+    fallbackProjectIds
+  );
+  const contextProjectIds = normalizeContextProjectIds(
+    Array.isArray(storedManifest?.contextProjectIds)
+      ? storedManifest.contextProjectIds
+      : planResult.plan.contextProjectIds,
+    expectedProjectIds,
+    params.registrySnapshot
+  );
+  const targetBranch = normalizeBranchName(
+    typeof storedManifest?.targetBranch === 'string'
+      ? storedManifest.targetBranch
+      : planResult.plan.targetBranch
+  );
+  const targetBranchesByProjectId = normalizeTargetBranchesByProjectId(
+    storedManifest?.targetBranchesByProjectId,
+    expectedProjectIds,
+    targetBranch
+  );
+  const updatedAt =
+    typeof storedManifest?.updatedAt === 'string' && storedManifest.updatedAt.trim().length > 0
+      ? storedManifest.updatedAt
+      : planResult.plan.updatedAt;
+  const conversationId =
+    storedManifest?.conversation &&
+    typeof storedManifest.conversation === 'object' &&
+    typeof storedManifest.conversation.conversationId === 'string'
+      ? storedManifest.conversation.conversationId
+      : params.summary?.conversationId ?? planResult.plan.conversationId ?? null;
+  const needCount =
+    typeof params.summary?.needCount === 'number'
+      ? params.summary.needCount
+      : typeof storedManifest?.needCount === 'number' &&
+          Number.isFinite(storedManifest.needCount) &&
+          storedManifest.needCount >= 0
+        ? Math.floor(storedManifest.needCount)
+        : null;
+  const chatMessageCount =
+    typeof params.summary?.chatMessageCount === 'number'
+      ? params.summary.chatMessageCount
+      : storedManifest?.conversation &&
+          typeof storedManifest.conversation === 'object' &&
+          typeof storedManifest.conversation.messageCount === 'number' &&
+          Number.isFinite(storedManifest.conversation.messageCount) &&
+          storedManifest.conversation.messageCount >= 0
+        ? Math.floor(storedManifest.conversation.messageCount)
+        : null;
+
+  return {
+    scope: params.scope,
+    updatedAt,
+    expectedProjectIds,
+    conversationId,
+    needCount,
+    chatMessageCount,
+    plan: {
+      ...planResult.plan,
+      targetBranch,
+      targetBranchesByProjectId,
+      expectedProjectIds,
+      contextProjectIds,
+      conversationId: conversationId ?? undefined,
+      revision:
+        typeof storedManifest?.revision === 'number' &&
+        Number.isFinite(storedManifest.revision) &&
+        storedManifest.revision > 0
+          ? Math.floor(storedManifest.revision)
+          : planResult.plan.revision,
+      updatedAt,
+    },
+  };
+};
+
+const loadArchitectPlanActivationPayloadImpl = async (
+  branchName: string,
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies
+): Promise<ArchitectPlanActivationPayload | null> => {
+  const startedAt = Date.now();
+  const normalizedBranch = normalizeBranchName(branchName);
+  const safeId = sanitizeId(planId);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
+  const summary = index.plans.find((candidate) => candidate.id === safeId) ?? null;
+  const blankSummary =
+    summary && canUseBlankActivationSummary(summary) ? summary : null;
+  if (blankSummary) {
+    const payload: ArchitectPlanActivationPayload = {
+      plan: planRecordFromActivationSummary(blankSummary, normalizedBranch),
+      needs: [],
+      chatMessages: [],
+      conversationId: null,
+      sharedConversation: false,
+      targetBranch: normalizedBranch,
+      resolutionMode: 'blank_fast_path',
+    };
+    logArchitectPlanActivationLoad({
+      branchName: normalizedBranch,
+      planId: safeId,
+      resolutionMode: payload.resolutionMode,
+      sharedConversation: false,
+      durationMs: Date.now() - startedAt,
+    });
+    return payload;
+  }
+  const scopedProjectIds = summary ? getArchitectPlanProjectIds(summary) : [];
+  const scopes = await resolveMetadataScopes(
+    scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
+    {
+      includeAllKnown: scopedProjectIds.length === 0,
+      includeWorkspaceFallback: true,
+    },
+    registrySnapshot,
+    deps
+  );
+  const snapshots = (
+    await Promise.all(
+      scopes.map((scope) =>
+        buildArchitectPlanActivationSnapshot({
+          scope,
+          branchName: normalizedBranch,
+          planId: safeId,
+          summary,
+          registrySnapshot,
+        })
+      )
+    )
+  ).filter((snapshot): snapshot is ArchitectPlanActivationSnapshot => snapshot !== null);
+
+  if (snapshots.length === 0) {
+    return null;
+  }
+
+  const canonicalSnapshot = pickCanonicalReplica(
+    snapshots.map((snapshot) => ({
+      ...snapshot,
+      repoPath: snapshot.scope.repoPath,
+    })),
+    'newest'
+  );
+  const expectedProjectIds = normalizeExpectedProjectIds(
+    canonicalSnapshot.expectedProjectIds,
+    resolvePlanProjectIds(canonicalSnapshot.plan)
+  );
+  const availableProjectIds = Array.from(
+    new Set(
+      snapshots.flatMap((snapshot) => {
+        if (snapshot.scope.source === 'local' && expectedProjectIds.length > 0) {
+          return expectedProjectIds;
+        }
+
+        const candidates = normalizeExpectedProjectIds(
+          [snapshot.scope.projectId, snapshot.plan.projectId].filter(
+            (projectId): projectId is string =>
+              typeof projectId === 'string' && projectId.trim().length > 0
+          ),
+          resolvePlanProjectIds(snapshot.plan)
+        );
+        return candidates.filter((projectId) => expectedProjectIds.includes(projectId));
+      })
+    )
+  );
+  const missingProjectIds = expectedProjectIds.filter(
+    (projectId) => !availableProjectIds.includes(projectId)
+  );
+  const plan = {
+    ...canonicalSnapshot.plan,
+    projectId: availableProjectIds[0] ?? canonicalSnapshot.plan.projectId,
+    projectIds:
+      canonicalSnapshot.plan.projectIds && canonicalSnapshot.plan.projectIds.length > 0
+        ? canonicalSnapshot.plan.projectIds
+        : expectedProjectIds,
+    expectedProjectIds,
+    availableProjectIds,
+    missingProjectIds,
+    replicationState:
+      canonicalSnapshot.plan.status === 'deleted'
+        ? 'deleted'
+        : missingProjectIds.length > 0
+          ? 'missing_projects'
+          : 'healthy',
+  } satisfies ArchitectPlanRecord;
+  const needCountHint =
+    typeof summary?.needCount === 'number'
+      ? summary.needCount
+      : canonicalSnapshot.needCount;
+  const chatMessageCountHint =
+    typeof summary?.chatMessageCount === 'number'
+      ? summary.chatMessageCount
+      : canonicalSnapshot.chatMessageCount;
+  const [needs, chatMessages] = await Promise.all([
+    needCountHint === 0
+      ? Promise.resolve([] as Need[])
+      : readPlanNeedsAtScope(canonicalSnapshot.scope, normalizedBranch, safeId),
+    chatMessageCountHint === 0
+      ? Promise.resolve([] as ArchitectPlanChatMessage[])
+      : readPlanChatAtScope(canonicalSnapshot.scope, normalizedBranch, safeId),
+  ]);
+  const conversationId = canonicalSnapshot.conversationId ?? null;
+  const payload: ArchitectPlanActivationPayload = {
+    plan,
+    needs,
+    chatMessages,
+    conversationId,
+    sharedConversation: Boolean(
+      conversationId &&
+        index.plans.some(
+          (candidate) =>
+            candidate.id !== safeId &&
+            candidate.status !== 'deleted' &&
+            candidate.conversationId === conversationId
+        )
+    ),
+    targetBranch: normalizedBranch,
+    resolutionMode: 'full',
+  };
+
+  logArchitectPlanActivationLoad({
+    branchName: normalizedBranch,
+    planId: safeId,
+    resolutionMode: payload.resolutionMode,
+    sharedConversation: payload.sharedConversation,
+    durationMs: Date.now() - startedAt,
+  });
+
+  return payload;
+};
+
+export const getArchitectPlanActivationPayload = async (
+  branchName: string,
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
+): Promise<ArchitectPlanActivationPayload | null> => {
+  const normalizedBranch = normalizeBranchName(branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const cacheKey = getArchitectPlanActivationCacheKey(normalizedBranch, planId);
+
+  return await loadCachedArchitectPlanValue({
+    cache: architectPlanActivationCache,
+    cacheKey,
+    ttlMs: ARCHITECT_PLAN_ACTIVATION_CACHE_TTL_MS,
+    loader: async () =>
+      await loadArchitectPlanActivationPayloadImpl(normalizedBranch, planId, deps),
+  });
+};
+
 const assertPlanReplicaSetWritable = (
   replicaSet: ArchitectPlanReplicaSet,
   action: string
@@ -2605,12 +3154,20 @@ const upsertPlanInScopeIndex = async (
   plan: ArchitectPlanRecord,
   options?: {
     setActive?: boolean;
+    needCount?: number;
+    chatMessageCount?: number;
   },
   registrySnapshot?: ValidProjectRegistrySnapshot | null
 ): Promise<void> => {
   const index = await readIndexAtScope(scope, branchName, registrySnapshot);
   const previousSummary = index.plans.find((candidate) => candidate.id === plan.id);
-  const nextPlans = upsertSummary(index.plans, toSummary(plan));
+  const nextPlans = upsertSummary(
+    index.plans,
+    toSummary(plan, {
+      needCount: options?.needCount ?? previousSummary?.needCount,
+      chatMessageCount: options?.chatMessageCount ?? previousSummary?.chatMessageCount,
+    })
+  );
   const nextPlanSlugs = nextPlans.map((candidate) =>
     slugifyPlanTitle(candidate.slug || candidate.title || candidate.id)
   );
@@ -2897,10 +3454,16 @@ export const createArchitectPlan = async (input: {
       await writePlanAtScope(scope, normalizedBranch, plan, registrySnapshot);
       await upsertPlanInScopeIndex(scope, normalizedBranch, plan, {
         setActive: input.setActive !== false,
+        needCount: 0,
+        chatMessageCount: 0,
       }, registrySnapshot);
     })
   );
   await commitMetadataScopes(scopes, `chore(metadata): create architect plan ${plan.id}`, undefined, deps);
+  invalidateArchitectPlanRuntimeCaches({
+    branchName: normalizedBranch,
+    planId: plan.id,
+  });
 
   return (await getArchitectPlan(normalizedBranch, plan.id, deps)) || plan;
 };
@@ -3095,6 +3658,8 @@ export const updateArchitectPlan = async (input: {
       await writePlanNeedsAtScope(scope, normalizedBranch, next.id, replicaSet.canonical.needs, registrySnapshot);
       await upsertPlanInScopeIndex(scope, normalizedBranch, next, {
         setActive: shouldActivate,
+        needCount: replicaSet.canonical.needs.length,
+        chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
       }, registrySnapshot);
     })
   );
@@ -3111,8 +3676,107 @@ export const updateArchitectPlan = async (input: {
     undefined,
     deps
   );
+  invalidateArchitectPlanRuntimeCaches({
+    branchName: normalizedBranch,
+    planId: next.id,
+  });
 
   return (await getArchitectPlan(normalizedBranch, next.id, deps)) || next;
+};
+
+const canBindArchitectPlanConversationLightly = (
+  plan: ArchitectPlanRecord,
+  needs: Need[],
+  chatMessages: ArchitectPlanChatMessage[]
+): boolean =>
+  plan.status === 'draft' &&
+  plan.description.trim().length === 0 &&
+  plan.nodes.length === 0 &&
+  plan.predictedBranches.length === 0 &&
+  needs.length === 0 &&
+  chatMessages.length === 0;
+
+export const bindArchitectPlanConversation = async (params: {
+  branchName: string;
+  planId: string;
+  conversationId: string;
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanRecord> => {
+  const normalizedBranch = normalizeBranchName(params.branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const safeId = sanitizeId(params.planId);
+  const conversationId = params.conversationId.trim();
+  if (!conversationId) {
+    throw new Error('Conversation id is required to bind an architect plan conversation.');
+  }
+
+  const activationPayload = await getArchitectPlanActivationPayload(
+    normalizedBranch,
+    safeId,
+    deps
+  );
+  if (!activationPayload || activationPayload.plan.status === 'deleted') {
+    throw new Error(`Plan not found: ${safeId}`);
+  }
+  if (activationPayload.plan.conversationId === conversationId) {
+    return activationPayload.plan;
+  }
+  if (
+    !canBindArchitectPlanConversationLightly(
+      activationPayload.plan,
+      activationPayload.needs,
+      activationPayload.chatMessages
+    )
+  ) {
+    return updateArchitectPlan({
+      branchName: normalizedBranch,
+      planId: safeId,
+      conversationId,
+    }, deps);
+  }
+
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const nextResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
+    ...activationPayload.plan,
+    conversationId,
+    updatedAt: new Date().toISOString(),
+    revision: (activationPayload.plan.revision || 1) + 1,
+  }, registrySnapshot, {
+    logContext: 'plan_bind_conversation',
+  });
+  if (!nextResult.plan) {
+    throw new Error(`Plan not found: ${safeId}`);
+  }
+  const nextPlan = nextResult.plan;
+  const scopes = await ensurePlanScopes(
+    nextPlan.expectedProjectIds || nextPlan.projectIds || [],
+    registrySnapshot,
+    deps
+  );
+
+  await Promise.all(
+    scopes.map(async (scope) => {
+      await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot, {
+        needs: [],
+        chatMessages: [],
+      });
+      await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, {
+        needCount: 0,
+        chatMessageCount: 0,
+      }, registrySnapshot);
+    })
+  );
+  await commitMetadataScopes(
+    scopes,
+    `chore(metadata): bind architect plan conversation ${safeId}`,
+    undefined,
+    deps
+  );
+  invalidateArchitectPlanRuntimeCaches({
+    branchName: normalizedBranch,
+    planId: safeId,
+  });
+
+  return nextPlan;
 };
 
 export const setActiveArchitectPlan = async (
@@ -3145,6 +3809,7 @@ export const setActiveArchitectPlan = async (
       });
     })
   );
+  invalidateArchitectPlanRuntimeCaches({ branchName: normalizedBranch });
 };
 
 export const deleteArchitectPlan = async (input: {
@@ -3172,6 +3837,10 @@ export const deleteArchitectPlan = async (input: {
       })
     );
     await commitMetadataScopes(scopes, `chore(metadata): hard delete architect plan ${safeId}`, undefined, deps);
+    invalidateArchitectPlanRuntimeCaches({
+      branchName: normalizedBranch,
+      planId: safeId,
+    });
     return;
   }
 
@@ -3212,6 +3881,10 @@ export const deleteArchitectPlan = async (input: {
     })
   );
   await commitMetadataScopes(scopes, `chore(metadata): delete architect plan ${safeId}`, undefined, deps);
+  invalidateArchitectPlanRuntimeCaches({
+    branchName: normalizedBranch,
+    planId: safeId,
+  });
 };
 
 export const restoreArchitectPlan = async (
@@ -3277,6 +3950,10 @@ export const archiveArchitectPlan = async (
     undefined,
     deps
   );
+  invalidateArchitectPlanRuntimeCaches({
+    branchName: normalizedBranch,
+    planId: safeId,
+  });
   return (await getArchitectPlan(normalizedBranch, safeId, deps)) || archived;
 };
 
@@ -3352,7 +4029,10 @@ export const saveArchitectPlanChatMessages = async (
       await writePlanChatAtScope(scope, normalizedBranch, planId, nextMessages, registrySnapshot, {
         skipManifest: true,
       });
-      await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, undefined, registrySnapshot);
+      await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, {
+        needCount: replicaSet.canonical.needs.length,
+        chatMessageCount: nextMessages.length,
+      }, registrySnapshot);
     })
   );
   await commitMetadataScopes(
@@ -3361,6 +4041,10 @@ export const saveArchitectPlanChatMessages = async (
     undefined,
     deps
   );
+  invalidateArchitectPlanRuntimeCaches({
+    branchName: normalizedBranch,
+    planId,
+  });
 };
 
 export const syncArchitectPlanChatFromConversation = async (params: {
@@ -3444,7 +4128,10 @@ export const saveArchitectPlanNeeds = async (
       await writePlanNeedsAtScope(scope, normalizedBranch, planId, normalizedNeeds, registrySnapshot, {
         skipManifest: true,
       });
-      await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, undefined, registrySnapshot);
+      await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, {
+        needCount: normalizedNeeds.length,
+        chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
+      }, registrySnapshot);
     })
   );
   await commitMetadataScopes(
@@ -3453,6 +4140,10 @@ export const saveArchitectPlanNeeds = async (
     undefined,
     deps
   );
+  invalidateArchitectPlanRuntimeCaches({
+    branchName: normalizedBranch,
+    planId,
+  });
 };
 
 export const repairArchitectPlanReplicas = async (input: {
@@ -3509,7 +4200,10 @@ export const repairArchitectPlanReplicas = async (input: {
         parseJsonLines(canonicalSnapshot.files['chat.jsonl'] || ''),
         registrySnapshot
       );
-      await upsertPlanInScopeIndex(scope, normalizedBranch, canonicalPlan, undefined, registrySnapshot);
+      await upsertPlanInScopeIndex(scope, normalizedBranch, canonicalPlan, {
+        needCount: canonicalSnapshot.needs.length,
+        chatMessageCount: canonicalSnapshot.manifest.conversation.messageCount,
+      }, registrySnapshot);
 
       if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
         return;
@@ -3542,6 +4236,10 @@ export const repairArchitectPlanReplicas = async (input: {
   const repairedReplicaSet = await loadPlanReplicaSet(normalizedBranch, canonicalPlan.id, {
     registrySnapshot,
   }, deps);
+  invalidateArchitectPlanRuntimeCaches({
+    branchName: normalizedBranch,
+    planId: canonicalPlan.id,
+  });
   const repaired = repairedReplicaSet?.canonical.plan || null;
   if (!repaired) {
     throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
@@ -3583,9 +4281,11 @@ export interface ArchitectPlanService {
   commitArchitectPlanMetadata: typeof commitArchitectPlanMetadata;
   listArchitectPlans: typeof listArchitectPlans;
   isArchitectPlanSlugAvailable: typeof isArchitectPlanSlugAvailable;
+  getArchitectPlanActivationPayload: typeof getArchitectPlanActivationPayload;
   getArchitectPlan: typeof getArchitectPlan;
   createArchitectPlan: typeof createArchitectPlan;
   updateArchitectPlan: typeof updateArchitectPlan;
+  bindArchitectPlanConversation: typeof bindArchitectPlanConversation;
   setActiveArchitectPlan: typeof setActiveArchitectPlan;
   deleteArchitectPlan: typeof deleteArchitectPlan;
   restoreArchitectPlan: typeof restoreArchitectPlan;
@@ -3610,9 +4310,12 @@ export const createArchitectPlanService = (
     listArchitectPlans: (branchName, includeDeleted, includeArchived) =>
       listArchitectPlansWithDeps(branchName, includeDeleted, includeArchived, deps),
     isArchitectPlanSlugAvailable: (params) => isArchitectPlanSlugAvailable(params, deps),
+    getArchitectPlanActivationPayload: (branchName, planId) =>
+      getArchitectPlanActivationPayload(branchName, planId, deps),
     getArchitectPlan: (branchName, planId) => getArchitectPlan(branchName, planId, deps),
     createArchitectPlan: (input) => createArchitectPlan(input, deps),
     updateArchitectPlan: (input) => updateArchitectPlan(input, deps),
+    bindArchitectPlanConversation: (params) => bindArchitectPlanConversation(params, deps),
     setActiveArchitectPlan: (branchName, planId) => setActiveArchitectPlan(branchName, planId, deps),
     deleteArchitectPlan: (input) => deleteArchitectPlan(input, deps),
     restoreArchitectPlan: (branchName, planId) => restoreArchitectPlan(branchName, planId, deps),
