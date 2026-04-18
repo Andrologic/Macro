@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import type { ProjectGitFlowSettings } from '../types';
 import { toBranchWorktreeKey } from './implementTaskDerivation';
 import {
   createArchitectGitFlowService,
@@ -6,7 +7,13 @@ import {
   type PlanFinalizationBlockedError,
 } from './architectGitFlowService';
 
-const projectPaths = new Map<string, { id: string; name: string; mountName: string; path: string }>();
+const projectPaths = new Map<string, {
+  id: string;
+  name: string;
+  mountName: string;
+  path: string;
+  gitFlowSettings?: ProjectGitFlowSettings;
+}>();
 let currentPlan: any = null;
 
 interface MockGitStatus {
@@ -144,10 +151,20 @@ const fsWriteFileMock = mock(async (_params: { path: string; content: string }) 
 }));
 
 const getArchitectPlanMock = mock(async (_branchName: string, _planId: string) => currentPlan);
-const updateArchitectPlanMock = mock(async (params: { status?: string }) => {
+const updateArchitectPlanMock = mock(async (params: {
+  status?: string;
+  nodes?: any[];
+  predictedBranches?: any[];
+  projectId?: string;
+  projectIds?: string[];
+}) => {
   currentPlan = {
     ...currentPlan,
     status: params.status ?? currentPlan?.status ?? 'validated',
+    nodes: params.nodes ?? currentPlan?.nodes ?? [],
+    predictedBranches: params.predictedBranches ?? currentPlan?.predictedBranches ?? [],
+    projectId: params.projectId ?? currentPlan?.projectId,
+    projectIds: params.projectIds ?? currentPlan?.projectIds ?? [],
   };
   return currentPlan;
 });
@@ -213,6 +230,20 @@ const buildPlan = () => ({
       status: 'completed',
     },
   ],
+});
+
+const createGitFlowSettings = (
+  overrides: Partial<ProjectGitFlowSettings> = {}
+): ProjectGitFlowSettings => ({
+  baseBranch: 'develop',
+  mainBranch: 'main',
+  planBranchTemplate: 'plan/{planSlug}',
+  featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+  standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
+  releaseBranchTemplate: 'release/{branchSlug}',
+  hotfixBranchTemplate: 'hotfix/{branchSlug}',
+  bugfixBranchTemplate: 'bugfix/{branchSlug}',
+  ...overrides,
 });
 
 const getExpectedWorktreePath = (projectId: string, repoPath: string, branchName: string) =>
@@ -358,6 +389,97 @@ describe('architectGitFlowService', () => {
       deleteArchitectPlan: deleteArchitectPlanMock,
       getGitFlowBaseBranch: () => 'develop',
     });
+  });
+
+  it('renders and provisions repo-specific branch names when projects use different git flow templates', async () => {
+    projectPaths.set('web', {
+      ...projectPaths.get('web')!,
+      gitFlowSettings: createGitFlowSettings(),
+    });
+    projectPaths.set('api', {
+      ...projectPaths.get('api')!,
+      gitFlowSettings: createGitFlowSettings({
+        planBranchTemplate: 'roadmap/{planSlug}',
+        featureBranchTemplate: 'work/{planSlug}/{featureSlug}',
+      }),
+    });
+    currentPlan = buildPlan();
+    gitBranchCreateMock.mockReset();
+    gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
+
+    const result = await architectGitFlowService.validatePlanAndProvisionBranches({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    });
+
+    expect(gitBranchCreateMock.mock.calls.map(([params]) => params)).toEqual([
+      { repoPath: '/repos/web', branchName: 'plan/checkout', fromRef: 'develop' },
+      { repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', fromRef: 'plan/checkout' },
+      { repoPath: '/repos/api', branchName: 'roadmap/checkout', fromRef: 'develop' },
+      { repoPath: '/repos/api', branchName: 'work/checkout/checkout-api', fromRef: 'roadmap/checkout' },
+    ]);
+
+    expect(result.provision).toEqual({
+      planBranchName: 'plan/checkout',
+      repositories: [
+        {
+          projectId: 'web',
+          repoPath: '/repos/web',
+          planBranchName: 'plan/checkout',
+          createdPlanBranch: true,
+          createdFeatureBranches: ['feature/checkout/checkout-web'],
+          existingFeatureBranches: [],
+        },
+        {
+          projectId: 'api',
+          repoPath: '/repos/api',
+          planBranchName: 'roadmap/checkout',
+          createdPlanBranch: true,
+          createdFeatureBranches: ['work/checkout/checkout-api'],
+          existingFeatureBranches: [],
+        },
+      ],
+      createdPlanBranch: true,
+      createdFeatureBranches: [
+        'feature/checkout/checkout-web',
+        'work/checkout/checkout-api',
+      ],
+      existingFeatureBranches: [],
+    });
+
+    const persistedPredictedBranches =
+      updateArchitectPlanMock.mock.calls.at(-1)?.[0]?.predictedBranches ?? [];
+
+    expect(result.plan.predictedBranches).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        projectId: 'web',
+        name: 'feature/checkout/checkout-web',
+        parentBranch: 'plan/checkout',
+      }),
+      expect.objectContaining({
+        projectId: 'api',
+        name: 'work/checkout/checkout-api',
+        parentBranch: 'roadmap/checkout',
+      }),
+    ]));
+    expect(persistedPredictedBranches).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        projectId: 'web',
+        name: 'feature/checkout/checkout-web',
+        parentBranch: 'plan/checkout',
+      }),
+      expect.objectContaining({
+        projectId: 'api',
+        name: 'work/checkout/checkout-api',
+        parentBranch: 'roadmap/checkout',
+      }),
+    ]));
+    expect(
+      persistedPredictedBranches.some((branch: { name: string; parentBranch: string | null; projectId: string }) =>
+        branch.projectId === 'api'
+        && (branch.name.includes('feature/checkout/') || branch.parentBranch === 'plan/checkout')
+      )
+    ).toBe(false);
   });
 
   it('surfaces repository blocking state in the plan review', async () => {
