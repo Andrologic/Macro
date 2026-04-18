@@ -220,17 +220,44 @@ const needsStoreState = {
   hydrateNeedsForPlan: mock(() => undefined),
 };
 
-const useChatStoreMock = {
-  getState: () => chatStoreState,
-};
+const useChatStoreMock = Object.assign(
+  <TSelected = typeof chatStoreState>(
+    selector?: (state: typeof chatStoreState) => TSelected
+  ) =>
+    selector
+      ? selector(chatStoreState)
+      : (chatStoreState as unknown as TSelected),
+  {
+    getState: () => chatStoreState,
+    subscribe: () => () => undefined,
+  }
+);
 
-const useTaskStoreMock = {
-  getState: () => taskStoreState,
-};
+const useTaskStoreMock = Object.assign(
+  <TSelected = typeof taskStoreState>(
+    selector?: (state: typeof taskStoreState) => TSelected
+  ) =>
+    selector
+      ? selector(taskStoreState)
+      : (taskStoreState as unknown as TSelected),
+  {
+    getState: () => taskStoreState,
+    subscribe: () => () => undefined,
+  }
+);
 
-const useNeedsStoreMock = {
-  getState: () => needsStoreState,
-};
+const useNeedsStoreMock = Object.assign(
+  <TSelected = typeof needsStoreState>(
+    selector?: (state: typeof needsStoreState) => TSelected
+  ) =>
+    selector
+      ? selector(needsStoreState)
+      : (needsStoreState as unknown as TSelected),
+  {
+    getState: () => needsStoreState,
+    subscribe: () => () => undefined,
+  }
+);
 
 let importCounter = 0;
 let preferenceValues: Record<string, unknown> = {};

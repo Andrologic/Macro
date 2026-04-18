@@ -272,9 +272,12 @@ const resolveProjectExecutionContextMock = mock(
     },
   })
 );
-const registerUseTerminalStoreMocks = async () => {
+const registerUseTerminalStoreMocks = async (counter: number) => {
   const actualPreferences = await import(
-    `../services/preferences.ts?terminal-store-preferences-test=${importCounter + 1}`
+    `../services/preferences.ts?terminal-store-preferences-test=${counter}`
+  );
+  const actualTaskStoreModule = await import(
+    `./useTaskStore.ts?terminal-store-task-store-test=${counter}`
   );
 
   mock.module('@tauri-apps/api/event', () => ({
@@ -352,18 +355,28 @@ const registerUseTerminalStoreMocks = async () => {
   }));
 
   mock.module('./useTaskStore', () => ({
+    ...actualTaskStoreModule,
     getPlanActivationCandidateTask: () => null,
-    useTaskStore: {
-      getState: () => taskStoreState,
-    },
+    useTaskStore: Object.assign(
+      <TSelected = typeof taskStoreState>(
+        selector?: (state: typeof taskStoreState) => TSelected
+      ) =>
+        selector
+          ? selector(taskStoreState)
+          : (taskStoreState as unknown as TSelected),
+      {
+        getState: () => taskStoreState,
+        subscribe: () => () => undefined,
+      }
+    ),
   }));
 };
 
 let importCounter = 0;
 
 const loadTerminalStore = async () => {
-  await registerUseTerminalStoreMocks();
   importCounter += 1;
+  await registerUseTerminalStoreMocks(importCounter);
   return import(`./useTerminalStore.ts?test=${importCounter}`);
 };
 

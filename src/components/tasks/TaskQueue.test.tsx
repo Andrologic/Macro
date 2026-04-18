@@ -1,42 +1,91 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { useAppStore } from '../../stores/useAppStore';
-import { useChatStore } from '../../stores/useChatStore';
-import { useFileChangesStore } from '../../stores/useFileChangesStore';
-import { useTaskStore } from '../../stores/useTaskStore';
+import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
+import type { useChatStore as UseChatStoreHook } from '../../stores/useChatStore';
+import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
+import type { useTaskStore as UseTaskStoreHook } from '../../stores/useTaskStore';
 import type { TaskStatus } from '../../types';
 
-mock.module('../../hooks/useVirtualList', () => ({
-  useVirtualList: ({ items }: { items: unknown[] }) => ({
-    parentRef: { current: null },
-    virtualItems: items.map((item, index) => ({
-      index,
-      key: index,
-      size: 112,
-      start: index * 120,
-      item,
-    })),
-    totalSize: items.length * 120,
-    scrollToIndex: () => undefined,
-    scrollToEnd: () => undefined,
-    measureElement: () => undefined,
-  }),
-  useVirtualMessages: (messages: unknown[]) => ({
-    parentRef: { current: null },
-    virtualItems: messages.map((item, index) => ({
-      index,
-      key: index,
-      size: 112,
-      start: index * 120,
-      item,
-    })),
-    totalSize: messages.length * 120,
-    scrollToIndex: () => undefined,
-    scrollToEnd: () => undefined,
-    measureElement: () => undefined,
-  }),
-}));
+let useAppStore!: typeof UseAppStoreHook;
+let useChatStore!: typeof UseChatStoreHook;
+let useFileChangesStore!: typeof UseFileChangesStoreHook;
+let useTaskStore!: typeof UseTaskStoreHook;
+let TaskQueueComponent!: typeof import('./TaskQueue').TaskQueue;
+let importCounter = 0;
+
+const registerVirtualListMock = () => {
+  mock.module('../../hooks/useVirtualList', () => ({
+    useVirtualList: ({ items }: { items: unknown[] }) => ({
+      parentRef: { current: null },
+      virtualItems: items.map((item, index) => ({
+        index,
+        key: index,
+        size: 112,
+        start: index * 120,
+        item,
+      })),
+      totalSize: items.length * 120,
+      scrollToIndex: () => undefined,
+      scrollToEnd: () => undefined,
+      measureElement: () => undefined,
+    }),
+    useVirtualMessages: (messages: unknown[]) => ({
+      parentRef: { current: null },
+      virtualItems: messages.map((item, index) => ({
+        index,
+        key: index,
+        size: 112,
+        start: index * 120,
+        item,
+      })),
+      totalSize: messages.length * 120,
+      scrollToIndex: () => undefined,
+      scrollToEnd: () => undefined,
+      measureElement: () => undefined,
+    }),
+  }));
+};
+
+const loadTaskQueueModules = async () => {
+  importCounter += 1;
+  mock.restore();
+  registerVirtualListMock();
+
+  const appStoreModule = await import(
+    `../../stores/useAppStore.ts?task-queue-app-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useAppStore', () => ({
+    ...appStoreModule,
+  }));
+
+  const chatStoreModule = await import(
+    `../../stores/useChatStore.ts?task-queue-chat-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useChatStore', () => ({
+    ...chatStoreModule,
+  }));
+
+  const fileChangesStoreModule = await import(
+    `../../stores/useFileChangesStore.ts?task-queue-file-changes-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useFileChangesStore', () => ({
+    ...fileChangesStoreModule,
+  }));
+
+  const taskStoreModule = await import(
+    `../../stores/useTaskStore.ts?task-queue-task-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useTaskStore', () => ({
+    ...taskStoreModule,
+  }));
+
+  ({ TaskQueue: TaskQueueComponent } = await import(`./TaskQueue.tsx?task-queue-test=${importCounter}`));
+  ({ useAppStore } = appStoreModule);
+  ({ useChatStore } = chatStoreModule);
+  ({ useFileChangesStore } = fileChangesStoreModule);
+  ({ useTaskStore } = taskStoreModule);
+};
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -65,13 +114,12 @@ const makeProject = (id: string, path: string, name: string) => ({
 });
 
 describe('TaskQueue', () => {
-  const initialAppState = useAppStore.getState();
-  const initialChatState = useChatStore.getState();
-  const initialTaskState = useTaskStore.getState();
-  const initialFileChangesState = useFileChangesStore.getState();
+  let initialAppState: ReturnType<typeof useAppStore.getState> | null = null;
+  let initialChatState: ReturnType<typeof useChatStore.getState> | null = null;
+  let initialTaskState: ReturnType<typeof useTaskStore.getState> | null = null;
+  let initialFileChangesState: ReturnType<typeof useFileChangesStore.getState> | null = null;
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
-  let TaskQueueComponent: typeof import('./TaskQueue').TaskQueue;
 
   const seedStores = (taskStatus: TaskStatus, options?: { isStreaming?: boolean }) => {
     const conversationRuntimeById = options?.isStreaming
@@ -150,15 +198,17 @@ describe('TaskQueue', () => {
     });
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await loadTaskQueueModules();
+    initialAppState = useAppStore.getState();
+    initialChatState = useChatStore.getState();
+    initialTaskState = useTaskStore.getState();
+    initialFileChangesState = useFileChangesStore.getState();
     container = document.createElement('div');
     container.style.height = '900px';
     container.style.width = '480px';
     document.body.appendChild(container);
     root = createRoot(container);
-    return import('./TaskQueue').then((module) => {
-      TaskQueueComponent = module.TaskQueue;
-    });
   });
 
   afterEach(async () => {
@@ -169,10 +219,19 @@ describe('TaskQueue', () => {
     container?.remove();
     container = null;
     root = null;
-    useAppStore.setState(initialAppState, true);
-    useChatStore.setState(initialChatState, true);
-    useTaskStore.setState(initialTaskState, true);
-    useFileChangesStore.setState(initialFileChangesState, true);
+    if (initialAppState) {
+      useAppStore.setState(initialAppState, true);
+    }
+    if (initialChatState) {
+      useChatStore.setState(initialChatState, true);
+    }
+    if (initialTaskState) {
+      useTaskStore.setState(initialTaskState, true);
+    }
+    if (initialFileChangesState) {
+      useFileChangesStore.setState(initialFileChangesState, true);
+    }
+    mock.restore();
   });
 
   it('renders a fixed dot for pending tasks without streaming', async () => {

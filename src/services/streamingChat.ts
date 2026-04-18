@@ -518,6 +518,10 @@ const TERMINAL_RUN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('ter
 const TERMINAL_READ_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('terminal_read'));
 const TERMINAL_KILL_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('terminal_kill'));
 const ADD_NEED_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('need_add'));
+const LIST_NEEDS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('need_list'));
+const GET_NEED_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('need_get'));
+const UPDATE_NEED_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('need_update'));
+const DELETE_NEED_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('need_delete'));
 export const GENERATE_PLAN_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('strategy_generate')
 );
@@ -970,6 +974,10 @@ const collectAllowedTools = (params: {
   }
   if (allowedTools.has('web_fetch') && enableWebFetch) tools.push(WEB_FETCH_TOOL);
   if (allowedTools.has('need_add')) tools.push(ADD_NEED_TOOL);
+  if (allowedTools.has('need_list')) tools.push(LIST_NEEDS_TOOL);
+  if (allowedTools.has('need_get')) tools.push(GET_NEED_TOOL);
+  if (allowedTools.has('need_update')) tools.push(UPDATE_NEED_TOOL);
+  if (allowedTools.has('need_delete')) tools.push(DELETE_NEED_TOOL);
   if (allowedTools.has('strategy_generate')) tools.push(GENERATE_PLAN_TOOL);
   if (allowedTools.has('plan_create')) tools.push(CREATE_PLAN_TOOL);
   if (allowedTools.has('plan_list')) tools.push(LIST_PLANS_TOOL);

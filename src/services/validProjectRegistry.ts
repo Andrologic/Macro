@@ -1,10 +1,16 @@
 import type { ProjectGroup } from '../types';
-import { useAppStore } from '../stores/useAppStore';
 import {
   getScopedActionableProjectIds,
   getScopedProjectIds,
   getScopedReadOnlyProjectIds,
 } from './globalProjects';
+import { getRegisteredAppState } from './appStateRuntime';
+
+export interface ValidProjectRegistryAppState {
+  projectGroups: ProjectGroup[];
+  selectedGroupId: string | null;
+  selectedProjectId: string | null;
+}
 
 export interface ValidProjectRegistrySnapshot {
   selectedGroupId: string | null;
@@ -119,9 +125,17 @@ export const buildValidProjectRegistrySnapshot = (params: {
   };
 };
 
-export const loadValidProjectRegistrySnapshot = async (): Promise<ValidProjectRegistrySnapshot> => {
+const loadDefaultValidProjectRegistryAppState = async (): Promise<ValidProjectRegistryAppState> =>
+  await getRegisteredAppState<ValidProjectRegistryAppState>();
+
+export const loadValidProjectRegistrySnapshot = async (options?: {
+  getAppState?:
+    | (() => ValidProjectRegistryAppState | Promise<ValidProjectRegistryAppState>)
+    | undefined;
+}): Promise<ValidProjectRegistrySnapshot> => {
   try {
-    const state = useAppStore.getState();
+    const getAppState = options?.getAppState ?? loadDefaultValidProjectRegistryAppState;
+    const state = await getAppState();
     return buildValidProjectRegistrySnapshot({
       projectGroups: state.projectGroups,
       selectedGroupId: state.selectedGroupId,

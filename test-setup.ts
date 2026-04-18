@@ -15,6 +15,76 @@ const assignGlobal = (key: string, value: unknown) => {
   });
 };
 
+const installCanvasAndImageMocks = () => {
+  const canvasPrototype = windowInstance.HTMLCanvasElement.prototype as HTMLCanvasElement & {
+    getContext?: (contextId: string) => CanvasRenderingContext2D | null;
+    toBlob?: (
+      callback: BlobCallback,
+      type?: string,
+      quality?: number,
+    ) => void;
+  };
+
+  Object.defineProperty(canvasPrototype, 'getContext', {
+    configurable: true,
+    writable: true,
+    value: (contextId: string) => {
+      if (contextId !== '2d') {
+        return null;
+      }
+
+      return {
+        clearRect: () => undefined,
+        drawImage: () => undefined,
+      } as unknown as CanvasRenderingContext2D;
+    },
+  });
+
+  Object.defineProperty(canvasPrototype, 'toBlob', {
+    configurable: true,
+    writable: true,
+    value: (callback: BlobCallback, type?: string) => {
+      callback(new windowInstance.Blob([''], { type: type ?? 'image/png' }));
+    },
+  });
+
+  class ImageMock {
+    onload: ((event: Event) => void) | null = null;
+    onerror: ((event: Event) => void) | null = null;
+    private currentSrc = '';
+
+    get src(): string {
+      return this.currentSrc;
+    }
+
+    set src(value: string) {
+      this.currentSrc = value;
+      queueMicrotask(() => {
+        this.onload?.(new windowInstance.Event('load'));
+      });
+    }
+  }
+
+  assignGlobal('Image', ImageMock as unknown as typeof windowInstance.Image);
+
+  const urlConstructor = globalThis.URL as typeof URL & {
+    createObjectURL?: (object: unknown) => string;
+    revokeObjectURL?: (url: string) => void;
+  };
+
+  Object.defineProperty(urlConstructor, 'createObjectURL', {
+    configurable: true,
+    writable: true,
+    value: () => 'blob:mock-url',
+  });
+
+  Object.defineProperty(urlConstructor, 'revokeObjectURL', {
+    configurable: true,
+    writable: true,
+    value: () => undefined,
+  });
+};
+
 const installDomGlobals = () => {
   class ResizeObserverMock {
     observe() {}
@@ -43,6 +113,8 @@ const installDomGlobals = () => {
   assignGlobal('File', windowInstance.File);
   assignGlobal('Image', windowInstance.Image);
   assignGlobal('ResizeObserver', ResizeObserverMock);
+
+  installCanvasAndImageMocks();
 };
 
 installDomGlobals();
@@ -51,6 +123,8 @@ installDomGlobals();
 
 afterEach(() => {
   installDomGlobals();
+  Reflect.deleteProperty(windowInstance as Window & { __TAURI__?: unknown }, '__TAURI__');
+  Reflect.deleteProperty(windowInstance as Window & { __TAURI_INTERNALS__?: unknown }, '__TAURI_INTERNALS__');
   windowInstance.document.body.innerHTML = '';
   windowInstance.localStorage.clear();
   windowInstance.sessionStorage.clear();

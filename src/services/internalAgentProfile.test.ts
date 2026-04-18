@@ -59,6 +59,15 @@ describe("internalAgentProfile", () => {
     ]);
   });
 
+  it("keeps plan explorer aligned with the Architect chat action surface", () => {
+    const filtered = filterToolIdsForInternalAgentProfile(
+      ["need_delete", "strategy_delete", "plan_create", "plan_get"],
+      "plan_explorer"
+    );
+
+    expect(filtered).toEqual(["need_delete", "strategy_delete", "plan_get"]);
+  });
+
   it("keeps task reviewer focused on read, patch, and verification tools", () => {
     const filtered = filterToolIdsForInternalAgentProfile(
       [

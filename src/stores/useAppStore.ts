@@ -79,6 +79,7 @@ import {
 } from "../services/projectRegistry";
 import { ensureProjectGroupPlan } from "../services/architectAutoPlan";
 import { computeArchitectPlanResolutionState } from "../services/architectPlanSelection";
+import { registerAppStateGetter } from "../services/appStateRuntime";
 import type { NormalizeProjectRegistryResult } from "../services/projectRegistry";
 import * as tauriIpc from "../services/tauriIpc";
 import type {
@@ -3388,3 +3389,5 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 }));
+
+registerAppStateGetter(() => useAppStore.getState());

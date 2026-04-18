@@ -255,121 +255,131 @@ const translationMock = {
 const scrollContainerRef = { current: null as HTMLDivElement | null };
 const markdownRendererContentMock = mock((_content: string) => undefined);
 
-mock.module('react-i18next', () => ({
-  useTranslation: () => translationMock,
-}));
+let ChatZone!: typeof import('./ChatZone').default;
+let importCounter = 0;
 
-mock.module('../../stores/useAppStore', () => ({
-  useAppStore,
-}));
+const loadChatZoneModule = async () => {
+  importCounter += 1;
+  mock.restore();
 
-mock.module('../../stores/useChatStore', () => ({
-  useChatStore,
-}));
+  mock.module('react-i18next', () => ({
+    useTranslation: () => translationMock,
+  }));
 
-mock.module('../../stores/useNeedsStore', () => ({
-  useNeedsStore,
-}));
+  mock.module('../../stores/useAppStore', () => ({
+    useAppStore,
+  }));
 
-mock.module('../../stores/useProviderStore', () => ({
-  useProviderStore,
-  providerHasCredentials: (provider: {
-    isEnabled?: boolean;
-    isLocal?: boolean;
-    apiKey?: string;
-    hasStoredApiKey?: boolean;
-    authStatus?: string;
-  }) =>
-    !!provider.isEnabled &&
-    (!!provider.isLocal ||
-      !!provider.apiKey ||
-      !!provider.hasStoredApiKey ||
-      provider.authStatus === 'connected' ||
-      provider.authStatus === 'authenticated'),
-}));
+  mock.module('../../stores/useChatStore', () => ({
+    useChatStore,
+  }));
 
-mock.module('../../stores/useShortcutsStore', () => ({
-  useShortcutsStore,
-}));
+  mock.module('../../stores/useNeedsStore', () => ({
+    useNeedsStore,
+  }));
 
-mock.module('../../stores/useTaskStore', () => ({
-  getPlanActivationCandidateTask: () => null,
-  useTaskStore,
-}));
+  mock.module('../../stores/useProviderStore', () => ({
+    useProviderStore,
+    providerHasCredentials: (provider: {
+      isEnabled?: boolean;
+      isLocal?: boolean;
+      apiKey?: string;
+      hasStoredApiKey?: boolean;
+      authStatus?: string;
+    }) =>
+      !!provider.isEnabled &&
+      (!!provider.isLocal ||
+        !!provider.apiKey ||
+        !!provider.hasStoredApiKey ||
+        provider.authStatus === 'connected' ||
+        provider.authStatus === 'authenticated'),
+  }));
 
-mock.module('../../hooks/useScrollMagnet', () => ({
-  useScrollMagnet: () => ({
-    scrollContainerRef,
-    separatorState: 'hidden',
-  }),
-}));
+  mock.module('../../stores/useShortcutsStore', () => ({
+    useShortcutsStore,
+  }));
 
-mock.module('../../hooks/usePerformanceMonitor', () => ({
-  usePerformanceMonitor: () => ({
-    mark: () => undefined,
-  }),
-}));
+  mock.module('../../stores/useTaskStore', () => ({
+    getPlanActivationCandidateTask: () => null,
+    useTaskStore,
+  }));
 
-mock.module('../ui/Icon', () => ({
-  Icon: ({ name }: { name: string }) => <span data-icon={name} />,
-}));
+  mock.module('../../hooks/useScrollMagnet', () => ({
+    useScrollMagnet: () => ({
+      scrollContainerRef,
+      separatorState: 'hidden',
+    }),
+  }));
 
-mock.module('../ai/ProviderDropdown', () => ({
-  ProviderDropdown: () => <div data-testid="provider-dropdown" />,
-}));
+  mock.module('../../hooks/usePerformanceMonitor', () => ({
+    usePerformanceMonitor: () => ({
+      mark: () => undefined,
+    }),
+  }));
 
-mock.module('../ai/ModelDropdown', () => ({
-  ModelDropdown: () => <div data-testid="model-dropdown" />,
-}));
+  mock.module('../ui/Icon', () => ({
+    Icon: ({ name }: { name: string }) => <span data-icon={name} />,
+  }));
 
-mock.module('../ai/ReasoningDropdown', () => ({
-  ReasoningDropdown: () => <div data-testid="reasoning-dropdown" />,
-}));
+  mock.module('../ai/ProviderDropdown', () => ({
+    ProviderDropdown: () => <div data-testid="provider-dropdown" />,
+  }));
 
-mock.module('./MarkdownRenderer', () => ({
-  MarkdownRenderer: ({ content }: { content: string }) => {
-    markdownRendererContentMock(content);
-    return <div>{content}</div>;
-  },
-}));
+  mock.module('../ai/ModelDropdown', () => ({
+    ModelDropdown: () => <div data-testid="model-dropdown" />,
+  }));
 
-mock.module('./ScrollSeparator', () => ({
-  ScrollSeparator: () => <div data-testid="scroll-separator" />,
-}));
+  mock.module('../ai/ReasoningDropdown', () => ({
+    ReasoningDropdown: () => <div data-testid="reasoning-dropdown" />,
+  }));
 
-mock.module('../modals/ImagePreviewModal', () => ({
-  ImagePreviewModal: () => null,
-}));
+  mock.module('./MarkdownRenderer', () => ({
+    MarkdownRenderer: ({ content }: { content: string }) => {
+      markdownRendererContentMock(content);
+      return <div>{content}</div>;
+    },
+  }));
 
-mock.module('../architect/PlanSelector', () => ({
-  PlanSelector: () => null,
-}));
+  mock.module('./ScrollSeparator', () => ({
+    ScrollSeparator: () => <div data-testid="scroll-separator" />,
+  }));
 
-mock.module('./composer/LazyComposerEditor', () => ({
-  __esModule: true,
-  default: React.forwardRef((_props: Record<string, unknown>, ref: React.ForwardedRef<{
-    getTextContent: () => string;
-    clear: () => void;
-    setText: (_value: string) => void;
-  }>) => {
-    React.useImperativeHandle(ref, () => ({
-      getTextContent: () => '',
-      clear: () => undefined,
-      setText: () => undefined,
-    }));
-    return <div data-testid="composer-editor" />;
-  }),
-}));
+  mock.module('../modals/ImagePreviewModal', () => ({
+    ImagePreviewModal: () => null,
+  }));
 
-const actualGlobalProjects = await import('../../services/globalProjects');
+  mock.module('../architect/PlanSelector', () => ({
+    PlanSelector: () => null,
+  }));
 
-mock.module('../../services/globalProjects', () => ({
-  ...actualGlobalProjects,
-  getFocusedProjectForGroup: () => null,
-  getGlobalProjectById: () => null,
-}));
+  mock.module('./composer/LazyComposerEditor', () => ({
+    __esModule: true,
+    default: React.forwardRef((_props: Record<string, unknown>, ref: React.ForwardedRef<{
+      getTextContent: () => string;
+      clear: () => void;
+      setText: (_value: string) => void;
+    }>) => {
+      React.useImperativeHandle(ref, () => ({
+        getTextContent: () => '',
+        clear: () => undefined,
+        setText: () => undefined,
+      }));
+      return <div data-testid="composer-editor" />;
+    }),
+  }));
 
-const { default: ChatZone } = await import('./ChatZone');
+  const actualGlobalProjects = await import(
+    `../../services/globalProjects.ts?chat-zone-global-projects-test=${importCounter}`
+  );
+
+  mock.module('../../services/globalProjects', () => ({
+    ...actualGlobalProjects,
+    getFocusedProjectForGroup: () => null,
+    getGlobalProjectById: () => null,
+  }));
+
+  ({ default: ChatZone } = await import(`./ChatZone.tsx?chat-zone-test=${importCounter}`));
+};
 
 const buildConversation = (): MockConversation => ({
   id: 'conv-1',
@@ -476,7 +486,7 @@ describe('ChatZone', () => {
     return root;
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
     if (!globalThis.requestAnimationFrame) {
@@ -484,6 +494,7 @@ describe('ChatZone', () => {
         setTimeout(() => callback(performance.now()), 0) as unknown as number;
     }
 
+    await loadChatZoneModule();
     resetState();
     markdownRendererContentMock.mockClear();
     container = document.createElement('div');
@@ -501,6 +512,7 @@ describe('ChatZone', () => {
     root = null;
     container = null;
     document.body.innerHTML = '';
+    mock.restore();
   });
 
   afterAll(() => {

@@ -181,13 +181,13 @@ export interface FileChangesStoreDependencies {
   setTaskState: FileChangesSetTaskState;
 }
 
-const defaultFileChangesStoreDependencies: FileChangesStoreDependencies = {
+const getDefaultFileChangesStoreDependencies = (): FileChangesStoreDependencies => ({
   tauri: tauriIpc,
   getGitFlowBaseBranch,
   getAppState: () => useAppStore.getState(),
   getTaskState: () => useTaskStore.getState(),
   setTaskState: (partial) => useTaskStore.setState(partial),
-};
+});
 
 export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
   const root: FolderNode[] = [];
@@ -703,6 +703,7 @@ interface FileChangesState {
 export const createFileChangesStore = (
   overrides: Partial<FileChangesStoreDependencies> = {}
 ) => {
+  const defaultFileChangesStoreDependencies = getDefaultFileChangesStoreDependencies();
   const deps: FileChangesStoreDependencies = {
     ...defaultFileChangesStoreDependencies,
     ...overrides,

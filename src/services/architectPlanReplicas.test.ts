@@ -1,23 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const actualTauriIpc = await import('./tauriIpc');
-
-type MockProject = {
-  id: string;
-  name: string;
-  mountName: string;
-  path: string;
-};
+import type { Project, ProjectGroup } from '../types';
+import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
 
 type MockAppState = {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
-  projectGroups: Array<{
-    id: string;
-    name: string;
-    isOpen: boolean;
-    projects: MockProject[];
-  }>;
+  projectGroups: ProjectGroup[];
 };
+
+const makeProject = (id: string, name: string, mountName: string, path: string): Project => ({
+  id,
+  name,
+  mountName,
+  path,
+  created_at: '2026-03-15T00:00:00.000Z',
+  status: 'active',
+  metadata: {
+    description: '',
+    tags: [],
+    team_members: [],
+    api_contracts: [],
+    dependencies: [],
+  },
+});
 
 const projectGroups: MockAppState['projectGroups'] = [
   {
@@ -25,8 +31,8 @@ const projectGroups: MockAppState['projectGroups'] = [
     name: 'Main',
     isOpen: true,
     projects: [
-      { id: 'web', name: 'Web', mountName: 'web', path: '/repos/web' },
-      { id: 'api', name: 'API', mountName: 'api', path: '/repos/api' },
+      makeProject('web', 'Web', 'web', '/repos/web'),
+      makeProject('api', 'API', 'api', '/repos/api'),
     ],
   },
 ];
@@ -235,31 +241,26 @@ const registerArchitectPlanMocks = () => {
 
   mock.module('./tauriIpc', tauriModule);
   mock.module('./tauriIpc.ts', tauriModule);
-
-  mock.module('../stores/useAppStore', () => ({
-    useAppStore: Object.assign(
-      <TSelected = typeof appState>(
-        selector?: (state: typeof appState) => TSelected
-      ) => (selector ? selector(appState) : (appState as unknown as TSelected)),
-      {
-        getState: () => appState,
-        setState: (
-          patch:
-            | Partial<typeof appState>
-            | ((state: typeof appState) => Partial<typeof appState>)
-        ) => {
-          Object.assign(appState, typeof patch === 'function' ? patch(appState) : patch);
-        },
-        subscribe: () => () => undefined,
-      }
-    ),
-  }));
 };
 
 const loadArchitectPlanService = async () => {
   registerArchitectPlanMocks();
   importCounter += 1;
-  return import(`./architectPlanService.ts?replica-test=${importCounter}`);
+  const serviceModule = await import(`./architectPlanService.ts?replica-test=${importCounter}`);
+  const getAppState = () => appState;
+
+  return {
+    ...serviceModule,
+    service: serviceModule.createArchitectPlanService({
+      getAppState,
+      loadRegistrySnapshot: async () =>
+        buildValidProjectRegistrySnapshot({
+          projectGroups: getAppState().projectGroups,
+          selectedGroupId: getAppState().selectedGroupId,
+          selectedProjectId: getAppState().selectedProjectId,
+        }),
+    }),
+  };
 };
 
 describe('architectPlanService replicas', () => {
@@ -275,7 +276,7 @@ describe('architectPlanService replicas', () => {
   });
 
   it('creates the v3 replica layout with manifest and chat transcript files', async () => {
-    const service = await loadArchitectPlanService();
+    const { service } = await loadArchitectPlanService();
     const created = await service.createArchitectPlan({
       branchName: 'develop',
       planId: 'plan-v3',
@@ -315,7 +316,7 @@ describe('architectPlanService replicas', () => {
     seedReplica('/repos/web', plan);
     seedReplica('/repos/api', plan);
 
-    const service = await loadArchitectPlanService();
+    const { service } = await loadArchitectPlanService();
     const loaded = await service.getArchitectPlan('develop', plan.id);
 
     expect(loaded).not.toBeNull();
@@ -377,7 +378,7 @@ describe('architectPlanService replicas', () => {
     seedReplica('/repos/web', oldest);
     seedReplica('/repos/api', newest);
 
-    const service = await loadArchitectPlanService();
+    const { isArchitectPlanReplicaDivergenceError, service } = await loadArchitectPlanService();
 
     let divergence: unknown;
     try {
@@ -386,8 +387,8 @@ describe('architectPlanService replicas', () => {
       divergence = error;
     }
 
-    expect(service.isArchitectPlanReplicaDivergenceError(divergence)).toBe(true);
-    if (service.isArchitectPlanReplicaDivergenceError(divergence)) {
+    expect(isArchitectPlanReplicaDivergenceError(divergence)).toBe(true);
+    if (isArchitectPlanReplicaDivergenceError(divergence)) {
       const divergenceError = divergence as {
         divergence: {
           reason: string;
@@ -433,7 +434,7 @@ describe('architectPlanService replicas', () => {
     });
     seedReplica('/repos/web', plan);
 
-    const service = await loadArchitectPlanService();
+    const { service } = await loadArchitectPlanService();
     const loaded = await service.getArchitectPlan('develop', plan.id);
 
     expect(loaded).not.toBeNull();
@@ -462,7 +463,7 @@ describe('architectPlanService replicas', () => {
     seedReplica('/repos/web', webPlan);
     seedReplica('/repos/api', apiPlan);
 
-    const service = await loadArchitectPlanService();
+    const { isArchitectPlanReplicaDivergenceError, service } = await loadArchitectPlanService();
 
     let divergence: unknown;
     try {
@@ -471,8 +472,8 @@ describe('architectPlanService replicas', () => {
       divergence = error;
     }
 
-    expect(service.isArchitectPlanReplicaDivergenceError(divergence)).toBe(true);
-    if (service.isArchitectPlanReplicaDivergenceError(divergence)) {
+    expect(isArchitectPlanReplicaDivergenceError(divergence)).toBe(true);
+    if (isArchitectPlanReplicaDivergenceError(divergence)) {
       const divergenceError = divergence as {
         divergence: {
           reason: string;
