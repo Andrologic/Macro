@@ -304,7 +304,7 @@ const App: React.FC = () => {
   // Show minimal loading state while critical initialization is pending
   if (!initStatus.critical) {
     return (
-      <div className="h-screen w-screen bg-background flex items-center justify-center">
+      <div className="flex h-full w-full min-h-0 min-w-0 items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-4">
           <Skeleton className="h-12 w-12 rounded-full" />
           <Skeleton className="h-4 w-32" />
@@ -315,9 +315,8 @@ const App: React.FC = () => {
 
   return (
     <div
-      className="macro-app-shell h-screen w-screen bg-background overflow-hidden"
+      className="macro-app-shell grid h-full w-full min-h-0 min-w-0 overflow-hidden bg-background"
       style={{
-        display: "grid",
         gridTemplateRows: `${titleBarLayout.titleBarHeightPx}px 1fr 32px`,
       }}
     >
@@ -329,12 +328,12 @@ const App: React.FC = () => {
       />
 
       {/* Main Content Area */}
-      <div className="flex overflow-hidden h-full">
+      <div className="flex h-full min-h-0 min-w-0 overflow-hidden">
         {/* Left Panel - Mode-specific content */}
         {isLeftOpen && (
           <>
             <div
-              className="hidden sm:flex flex-col shrink-0 h-full"
+              className="hidden h-full min-h-0 min-w-0 shrink-0 overflow-hidden sm:flex sm:flex-col"
               style={{ width: leftPanelWidth }}
             >
               <ModeRouter panel="left" />
@@ -347,7 +346,7 @@ const App: React.FC = () => {
         )}
 
         {/* Center - Chat Zone (all modes use chat in center) */}
-        <div className="flex-1 min-w-0 overflow-hidden h-full">
+        <div className="flex-1 h-full min-h-0 min-w-0 overflow-hidden">
           <ModeRouter panel="center" />
         </div>
 
@@ -359,7 +358,7 @@ const App: React.FC = () => {
               className="hidden sm:flex"
             />
             <div
-              className="hidden sm:flex flex-col shrink-0 h-full"
+              className="hidden h-full min-h-0 min-w-0 shrink-0 overflow-hidden sm:flex sm:flex-col"
               style={{ width: rightPanelWidth }}
             >
               <ModeRouter panel="right" />
