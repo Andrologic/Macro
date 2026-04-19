@@ -28,6 +28,9 @@ import * as localProjectContext from "../services/localProjectContext";
 import { getDefaultProjectGitFlowSettings } from "../services/architectGitNaming";
 import {
   type ArchitectPlanActivationPayload,
+  type ArchitectPlanRecord,
+  type ArchitectPlanSummary,
+  getArchitectPlanProjectIds,
   getArchitectPlan,
   getArchitectPlanActivationPayload,
   getArchitectPlanNeeds,
@@ -127,6 +130,7 @@ interface RememberedProject {
 
 const MAX_REMEMBERED_PROJECTS = 50;
 let projectSwitchRequestId = 0;
+let architectPlanSwitchRequestId = 0;
 
 export interface ArchitectPlanContext {
   id: string;
@@ -139,6 +143,98 @@ export interface ArchitectPlanContext {
   targetBranchesByProjectId?: Record<string, string>;
   hasMixedTargetBranches?: boolean;
 }
+
+export type ArchitectPlanSwitchStatus =
+  | "idle"
+  | "resolving"
+  | "ready"
+  | "error";
+
+export interface ArchitectPlanSwitchState {
+  requestId: number;
+  targetPlanId: string | null;
+  targetBranch: string | null;
+  status: ArchitectPlanSwitchStatus;
+  startedAt: number | null;
+  summaryHint: ArchitectPlanSummary | null;
+  errorMessage: string | null;
+}
+
+const idleArchitectPlanSwitchState = (): ArchitectPlanSwitchState => ({
+  requestId: 0,
+  targetPlanId: null,
+  targetBranch: null,
+  status: "idle",
+  startedAt: null,
+  summaryHint: null,
+  errorMessage: null,
+});
+
+const buildArchitectPlanContext = (
+  plan:
+    | Pick<
+        ArchitectPlanContext,
+        | "id"
+        | "slug"
+        | "title"
+        | "label"
+        | "description"
+        | "status"
+        | "targetBranch"
+        | "targetBranchesByProjectId"
+      >
+    | Pick<
+        ArchitectPlanSummary,
+        | "id"
+        | "slug"
+        | "title"
+        | "label"
+        | "description"
+        | "status"
+        | "targetBranch"
+        | "targetBranchesByProjectId"
+      >
+): ArchitectPlanContext => ({
+  id: plan.id,
+  slug: plan.slug,
+  title: plan.title,
+  label: plan.label,
+  description: plan.description,
+  status: plan.status,
+  targetBranch: plan.targetBranch,
+  targetBranchesByProjectId: plan.targetBranchesByProjectId,
+  hasMixedTargetBranches:
+    Boolean(plan.targetBranchesByProjectId) &&
+    new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
+});
+
+const summarizeArchitectPlanRecord = (
+  plan: ArchitectPlanRecord,
+): ArchitectPlanSummary => ({
+  id: plan.id,
+  slug: plan.slug,
+  title: plan.title,
+  label: plan.label,
+  description: plan.description,
+  status: plan.status,
+  targetBranch: plan.targetBranch,
+  targetBranchesByProjectId: plan.targetBranchesByProjectId,
+  conversationId: plan.conversationId,
+  projectId: plan.projectId,
+  projectIds: plan.projectIds,
+  contextProjectIds: plan.contextProjectIds,
+  expectedProjectIds: plan.expectedProjectIds,
+  createdAt: plan.createdAt,
+  updatedAt: plan.updatedAt,
+  nodeCount: plan.nodes.length,
+  predictedBranchCount: plan.predictedBranches.length,
+  availableProjectIds: plan.availableProjectIds,
+  missingProjectIds: plan.missingProjectIds,
+  replicationState: plan.replicationState,
+  revision: plan.revision,
+  replicas: plan.replicas,
+  hasReplicaDivergence: plan.hasReplicaDivergence,
+});
 
 const upsertRememberedProject = (
   projects: RememberedProject[],
@@ -541,6 +637,7 @@ const restoreProjectContext = async (
 };
 
 const hydrateArchitectPlanInStore = async (input: {
+  requestId: number;
   activationPayload: ArchitectPlanActivationPayload;
 }): Promise<void> => {
   const { activationPayload } = input;
@@ -548,21 +645,28 @@ const hydrateArchitectPlanInStore = async (input: {
   if (!plan || plan.status === "deleted") {
     return;
   }
+  if (
+    input.requestId > 0 &&
+    !isCurrentArchitectPlanSwitchRequest({
+      requestId: input.requestId,
+      planId: plan.id,
+      targetBranch: activationPayload.targetBranch,
+    })
+  ) {
+    return;
+  }
 
   useAppStore.setState({
     activeArchitectPlanId: plan.id,
-    activePlanContext: {
-      id: plan.id,
-      slug: plan.slug,
-      title: plan.title,
-      label: plan.label,
-      description: plan.description,
-      status: plan.status,
+    activePlanContext: buildArchitectPlanContext(plan),
+    architectPlanSwitch: {
+      requestId: input.requestId,
+      targetPlanId: plan.id,
       targetBranch: plan.targetBranch,
-      targetBranchesByProjectId: plan.targetBranchesByProjectId,
-      hasMixedTargetBranches:
-        Boolean(plan.targetBranchesByProjectId) &&
-        new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
+      status: "ready",
+      startedAt: Date.now(),
+      summaryHint: null,
+      errorMessage: null,
     },
     planNodes: plan.nodes || [],
     predictedBranches: plan.predictedBranches || [],
@@ -576,11 +680,68 @@ const clearActiveArchitectPlanInStore = (): void => {
   useAppStore.setState({
     activeArchitectPlanId: null,
     activePlanContext: null,
+    architectPlanSwitch: idleArchitectPlanSwitchState(),
     pendingArchitectPlanActivationPayload: null,
     planNodes: [],
     predictedBranches: [],
     strategyMutationPreview: null,
   });
+  useNeedsStore.getState().beginArchitectPlanSwitch(null);
+};
+
+const beginArchitectPlanSwitchInStore = (input: {
+  requestId: number;
+  planId: string;
+  targetBranch: string;
+  summaryHint?: ArchitectPlanSummary | null;
+}): void => {
+  useAppStore.setState({
+    activeArchitectPlanId: input.planId,
+    activePlanContext: input.summaryHint
+      ? buildArchitectPlanContext({
+          ...input.summaryHint,
+          targetBranch: input.summaryHint.targetBranch || input.targetBranch,
+        })
+      : {
+          id: input.planId,
+          title: input.planId,
+          description: "",
+          status: "draft",
+          targetBranch: input.targetBranch,
+        },
+    architectPlanSwitch: {
+      requestId: input.requestId,
+      targetPlanId: input.planId,
+      targetBranch: input.targetBranch,
+      status: "resolving",
+      startedAt: Date.now(),
+      summaryHint: input.summaryHint ?? null,
+      errorMessage: null,
+    },
+    pendingArchitectPlanActivationPayload: null,
+    planNodes: [],
+    predictedBranches: [],
+    strategyMutationPreview: null,
+  });
+  useNeedsStore.getState().beginArchitectPlanSwitch(input.planId);
+  useChatStore
+    .getState()
+    .beginArchitectPlanSwitch({ requestId: input.requestId });
+};
+
+const isCurrentArchitectPlanSwitchRequest = (input: {
+  requestId: number;
+  planId: string;
+  targetBranch: string;
+}): boolean => {
+  const state = useAppStore.getState();
+  const switchState = state.architectPlanSwitch;
+  return (
+    switchState.requestId === input.requestId &&
+    switchState.targetPlanId === input.planId &&
+    resolveTargetBranch(switchState.targetBranch) ===
+      resolveTargetBranch(input.targetBranch)
+  );
 };
 
 const activateArchitectPlanInStore = async (input: {
@@ -600,18 +761,62 @@ const activateArchitectPlanInStore = async (input: {
 
   const switchingArchitectPlan =
     appStore.mode === "Architect" &&
-    appStore.activeArchitectPlanId !== input.planId;
+    (appStore.activeArchitectPlanId !== input.planId ||
+      resolveTargetBranch(appStore.activePlanContext?.targetBranch) !==
+        targetBranch);
+  const requestId = switchingArchitectPlan
+    ? ++architectPlanSwitchRequestId
+    : appStore.architectPlanSwitch.requestId;
   if (switchingArchitectPlan) {
-    useChatStore.getState().beginArchitectPlanSwitch();
+    beginArchitectPlanSwitchInStore({
+      requestId,
+      planId: input.planId,
+      targetBranch,
+      summaryHint: input.options?.planSummaryHint ?? null,
+    });
   }
 
   const activationPayload = await getArchitectPlanActivationPayload(
     targetBranch,
     input.planId,
+    {
+      summaryHint: input.options?.planSummaryHint ?? null,
+      scopedProjectIdsHint: input.options?.planSummaryHint
+        ? getArchitectPlanProjectIds(input.options.planSummaryHint)
+        : undefined,
+    }
   );
+  if (
+    switchingArchitectPlan &&
+    !isCurrentArchitectPlanSwitchRequest({
+      requestId,
+      planId: input.planId,
+      targetBranch,
+    })
+  ) {
+    return null;
+  }
   const plan = activationPayload?.plan ?? null;
   if (!plan || plan.status === "deleted") {
-    useAppStore.setState({ pendingArchitectPlanActivationPayload: null });
+    if (
+      switchingArchitectPlan &&
+      isCurrentArchitectPlanSwitchRequest({
+        requestId,
+        planId: input.planId,
+        targetBranch,
+      })
+    ) {
+      useAppStore.setState((state) => ({
+        pendingArchitectPlanActivationPayload: null,
+        architectPlanSwitch: {
+          ...state.architectPlanSwitch,
+          status: "error",
+          errorMessage: `Plan not found: ${input.planId}`,
+        },
+      }));
+    } else {
+      useAppStore.setState({ pendingArchitectPlanActivationPayload: null });
+    }
     return null;
   }
 
@@ -636,10 +841,21 @@ const activateArchitectPlanInStore = async (input: {
         restoreProjectContext: false,
         ensureAutoPlan: false,
       });
+      if (
+        switchingArchitectPlan &&
+        !isCurrentArchitectPlanSwitchRequest({
+          requestId,
+          planId: input.planId,
+          targetBranch,
+        })
+      ) {
+        return null;
+      }
     }
   }
 
   await hydrateArchitectPlanInStore({
+    requestId,
     activationPayload:
       activationPayload ?? {
         plan,
@@ -742,6 +958,10 @@ const resolveArchitectPlanForScope = async (input: {
       targetBranch,
       persistActiveSelection: false,
       allowScopeSwitch: false,
+      planSummaryHint:
+        resolution.visiblePlans.find(
+          (plan) => plan.id === resolution.nextActivePlanId,
+        ) ?? null,
     },
   });
 
@@ -818,6 +1038,7 @@ const ensureAutoPlanForSelection = async (input: {
       targetBranch: ensuredPlan.plan.targetBranch,
       persistActiveSelection: false,
       allowScopeSwitch: false,
+      planSummaryHint: summarizeArchitectPlanRecord(ensuredPlan.plan),
     },
   });
 };
@@ -905,6 +1126,7 @@ interface AppStore {
   // Architect mode state
   activeArchitectPlanId: string | null;
   activePlanContext: ArchitectPlanContext | null;
+  architectPlanSwitch: ArchitectPlanSwitchState;
   pendingArchitectPlanActivationPayload: ArchitectPlanActivationPayload | null;
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
@@ -1023,6 +1245,7 @@ interface ActivateArchitectPlanOptions {
   targetBranch?: string | null;
   persistActiveSelection?: boolean;
   allowScopeSwitch?: boolean;
+  planSummaryHint?: ArchitectPlanSummary | null;
 }
 
 interface ProjectRegistrySnapshot {
@@ -1119,6 +1342,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   metadataRecoveryReport: null,
   activeArchitectPlanId: null,
   activePlanContext: null,
+  architectPlanSwitch: idleArchitectPlanSwitchState(),
   pendingArchitectPlanActivationPayload: null,
   planNodes: [],
   predictedBranches: [],
@@ -1190,6 +1414,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       selectedTaskId: null,
       activeArchitectPlanId: null,
       activePlanContext: null,
+      architectPlanSwitch: idleArchitectPlanSwitchState(),
       pendingArchitectPlanActivationPayload: null,
       planNodes: [],
       predictedBranches: [],
@@ -1378,6 +1603,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedTaskId: null,
         activeArchitectPlanId: null,
         activePlanContext: null,
+        architectPlanSwitch: idleArchitectPlanSwitchState(),
         pendingArchitectPlanActivationPayload: null,
         planNodes: [],
         predictedBranches: [],
@@ -1492,6 +1718,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setActiveArchitectPlanId: (planId) =>
     set({
       activeArchitectPlanId: planId,
+      architectPlanSwitch: idleArchitectPlanSwitchState(),
       pendingArchitectPlanActivationPayload: null,
     }),
 
@@ -1506,6 +1733,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setActivePlanContext: (plan) =>
     set({
       activePlanContext: plan,
+      architectPlanSwitch: idleArchitectPlanSwitchState(),
       pendingArchitectPlanActivationPayload: null,
     }),
 
@@ -2153,6 +2381,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
           activeArchitectPlanId: didRemoveActiveGroup
             ? null
             : previousState.activeArchitectPlanId,
+          architectPlanSwitch: didRemoveActiveGroup
+            ? idleArchitectPlanSwitchState()
+            : previousState.architectPlanSwitch,
           activePlanContext: didRemoveActiveGroup
             ? null
             : previousState.activePlanContext,
@@ -2276,6 +2507,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         activeArchitectPlanId: didRemoveActiveGroup
           ? null
           : previousState.activeArchitectPlanId,
+        architectPlanSwitch: didRemoveActiveGroup
+          ? idleArchitectPlanSwitchState()
+          : previousState.architectPlanSwitch,
         activePlanContext: didRemoveActiveGroup
           ? null
           : previousState.activePlanContext,
@@ -2427,6 +2661,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
           activeArchitectPlanId: didRemoveProjectInActiveGroup
             ? null
             : previousState.activeArchitectPlanId,
+          architectPlanSwitch: didRemoveProjectInActiveGroup
+            ? idleArchitectPlanSwitchState()
+            : previousState.architectPlanSwitch,
           activePlanContext: didRemoveProjectInActiveGroup
             ? null
             : previousState.activePlanContext,
@@ -2547,6 +2784,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         activeArchitectPlanId: didRemoveProjectInActiveGroup
           ? null
           : previousState.activeArchitectPlanId,
+        architectPlanSwitch: didRemoveProjectInActiveGroup
+          ? idleArchitectPlanSwitchState()
+          : previousState.architectPlanSwitch,
         activePlanContext: didRemoveProjectInActiveGroup
           ? null
           : previousState.activePlanContext,
@@ -2886,6 +3126,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         activeArchitectPlanId: isCurrentGroup
           ? state.activeArchitectPlanId
           : null,
+        architectPlanSwitch: isCurrentGroup
+          ? state.architectPlanSwitch
+          : idleArchitectPlanSwitchState(),
         activePlanContext: isCurrentGroup ? state.activePlanContext : null,
         recentProjects: nextRecentProjects,
         macroEnabledProjects: nextMacroEnabledProjects,
@@ -3063,6 +3306,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         activeArchitectPlanId: isCurrentGroup
           ? state.activeArchitectPlanId
           : null,
+        architectPlanSwitch: isCurrentGroup
+          ? state.architectPlanSwitch
+          : idleArchitectPlanSwitchState(),
         activePlanContext: isCurrentGroup ? state.activePlanContext : null,
         recentProjects: nextRecentProjects,
         macroEnabledProjects: nextMacroEnabledProjects,

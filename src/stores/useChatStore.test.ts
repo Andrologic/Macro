@@ -69,6 +69,15 @@ const appState = {
   codeOverflowMode: 'wrap' as const,
   activeArchitectPlanId: null as string | null,
   activePlanContext: null as { id?: string; targetBranch: string } | null,
+  architectPlanSwitch: {
+    requestId: 0,
+    targetPlanId: null as string | null,
+    targetBranch: null as string | null,
+    status: 'idle',
+    startedAt: null as number | null,
+    summaryHint: null,
+    errorMessage: null as string | null,
+  },
   pendingArchitectPlanActivationPayload: null as Record<string, unknown> | null,
   strategyMutationPreview: null as Record<string, unknown> | null,
   projectGroups,
@@ -145,6 +154,15 @@ const appState = {
       appState.activePlanContext = {
         id: plan.id,
         targetBranch: options?.targetBranch ?? plan.targetBranch,
+      };
+      appState.architectPlanSwitch = {
+        requestId: appState.architectPlanSwitch.requestId + 1,
+        targetPlanId: plan.id,
+        targetBranch: options?.targetBranch ?? plan.targetBranch,
+        status: 'ready',
+        startedAt: Date.now(),
+        summaryHint: null,
+        errorMessage: null,
       };
       appState.pendingArchitectPlanActivationPayload = null;
       return true;
@@ -288,6 +306,7 @@ const cloneAppState = () => ({
   activePlanContext: appState.activePlanContext
     ? { ...appState.activePlanContext }
     : appState.activePlanContext,
+  architectPlanSwitch: { ...appState.architectPlanSwitch },
   strategyMutationPreview: appState.strategyMutationPreview
     ? { ...appState.strategyMutationPreview }
     : appState.strategyMutationPreview,
@@ -1268,6 +1287,15 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.codeOverflowMode = 'wrap';
     appState.activeArchitectPlanId = null;
     appState.activePlanContext = null;
+    appState.architectPlanSwitch = {
+      requestId: 0,
+      targetPlanId: null,
+      targetBranch: null,
+      status: 'idle',
+      startedAt: null,
+      summaryHint: null,
+      errorMessage: null,
+    };
     appState.pendingArchitectPlanActivationPayload = null;
     appState.strategyMutationPreview = null;
 
@@ -1778,7 +1806,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(nextConversationId).not.toBe('plan-advanced-conv');
     expect(useChatStore.getState().restoreStatus).toBe('ready');
     expect(useChatStore.getState().getConversationMessages(nextConversationId!)).toHaveLength(0);
-    expect(getArchitectPlanActivationPayloadMock).toHaveBeenCalledWith('develop', blankPlan.id);
+    expect(getArchitectPlanActivationPayloadMock).toHaveBeenCalledWith(
+      'develop',
+      blankPlan.id,
+      expect.any(Object)
+    );
     expect(bindArchitectPlanConversationMock).not.toHaveBeenCalled();
     expect(updateArchitectPlanMock).not.toHaveBeenCalled();
   });
