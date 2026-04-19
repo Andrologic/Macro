@@ -60,6 +60,7 @@ interface NeedsState {
   deleteNeed: (id: string) => void;
   selectNeed: (id: string | null) => void;
   clearNeeds: () => void;
+  beginArchitectPlanSwitch: (planId: string | null) => void;
   hydrateNeedsForPlan: (planId: string, needs: Need[]) => void;
   replaceNeedsForPlan: (planId: string, needs: Need[]) => void;
   getNeedsForPlan: (planId: string) => Need[];
@@ -133,6 +134,27 @@ export const useNeedsStore = create<NeedsState>((set, get) => ({
 
   clearNeeds: () => {
     set({ needs: [], selectedNeedId: null });
+  },
+
+  beginArchitectPlanSwitch: (planId) => {
+    set((state) => {
+      if (!state.selectedNeedId) {
+        return state;
+      }
+
+      const selectedNeed = state.needs.find(
+        (need) => need.id === state.selectedNeedId
+      );
+      if (!selectedNeed) {
+        return { selectedNeedId: null };
+      }
+
+      if (!planId || selectedNeed.planId !== planId) {
+        return { selectedNeedId: null };
+      }
+
+      return state;
+    });
   },
 
   hydrateNeedsForPlan: (planId, nextNeeds) => {

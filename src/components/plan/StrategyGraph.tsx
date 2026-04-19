@@ -26,8 +26,13 @@ import {
 import { notify } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
 import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
+import { Skeleton } from '../shared/Skeleton';
 import { cn } from '../../utils/cn';
 import type { PlanNode, PlanNodeStatus, PredictedBranch, ProjectGroup, TaskStatus } from '../../types';
+import {
+  isCanonicalArchitectPlan,
+  isDefaultNewPlanFamilyLabel,
+} from '../../services/architectPlanPresentation';
 
 interface StrategyGraphProps {
   className?: string;
@@ -105,6 +110,16 @@ type BranchCardStatus = 'pending' | 'active' | 'merged' | 'mixed';
 interface BranchTaskView extends PlanNode {
   rank?: number;
 }
+
+const IDLE_ARCHITECT_PLAN_SWITCH = {
+  requestId: 0,
+  targetPlanId: null,
+  targetBranch: null,
+  status: 'idle' as const,
+  startedAt: null,
+  summaryHint: null,
+  errorMessage: null,
+};
 
 interface BranchCardView {
   id: string;
@@ -400,7 +415,25 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     setPredictedBranches,
     setStrategyMutationPreview,
     setMode,
-  } = useAppStore();
+    architectPlanSwitch,
+  } = useAppStore(
+    useShallow((state) => ({
+      selectedGroupId: state.selectedGroupId,
+      selectedProjectId: state.selectedProjectId,
+      projectGroups: state.projectGroups,
+      planNodes: state.planNodes,
+      predictedBranches: state.predictedBranches,
+      activePlanContext: state.activePlanContext,
+      strategyMutationPreview: state.strategyMutationPreview,
+      setActivePlanContext: state.setActivePlanContext,
+      setPlanNodes: state.setPlanNodes,
+      setPredictedBranches: state.setPredictedBranches,
+      setStrategyMutationPreview: state.setStrategyMutationPreview,
+      setMode: state.setMode,
+      architectPlanSwitch:
+        state.architectPlanSwitch ?? IDLE_ARCHITECT_PLAN_SWITCH,
+    }))
+  );
   const { conversations, conversationRuntimeById } = useChatStore(
     useShallow((state) => ({
       conversations: state.conversations,
@@ -429,6 +462,20 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     originX: 0,
     originY: 0,
   });
+  const isResolvingActivePlan =
+    architectPlanSwitch.status === 'resolving' &&
+    architectPlanSwitch.targetPlanId === activePlanContext?.id;
+  const isResolvingBlankPlan = Boolean(
+    architectPlanSwitch.summaryHint &&
+      isCanonicalArchitectPlan(architectPlanSwitch.summaryHint) &&
+      isDefaultNewPlanFamilyLabel(architectPlanSwitch.summaryHint.label) &&
+      architectPlanSwitch.summaryHint.nodeCount === 0 &&
+      (architectPlanSwitch.summaryHint.predictedBranchCount ?? 0) === 0 &&
+      (architectPlanSwitch.summaryHint.needCount ?? 0) === 0 &&
+      (architectPlanSwitch.summaryHint.chatMessageCount ?? 0) === 0 &&
+      !architectPlanSwitch.summaryHint.conversationId
+  );
+  const showResolvingSkeleton = isResolvingActivePlan && !isResolvingBlankPlan;
   const runningTaskIds = useMemo(
     () =>
       resolveRunningTaskIds({
@@ -626,6 +673,10 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
   // 1. Calculate Layout
   const layoutData = useMemo(() => {
+    if (showResolvingSkeleton) {
+      return { nodes: [], edges: [], width: 0, height: 0, branches: [], laneHeaders: [], colWidth: 140, effectiveLeftPadding: 0 };
+    }
+
     const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
     const nodes =
       scopedProjectIds.length > 0
@@ -794,7 +845,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       colWidth: COL_WIDTH,
       effectiveLeftPadding
     };
-  }, [activePlanSlug, selectedGroupId, selectedProjectId, projectGroups, planNodes, containerWidth]);
+  }, [activePlanSlug, containerWidth, planNodes, projectGroups, selectedGroupId, selectedProjectId, showResolvingSkeleton]);
 
   const getNodeTaskStatus = useCallback(
     (nodeId: string, nodeStatus: PlanNodeStatus): TaskStatus =>
@@ -1194,6 +1245,27 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
     </svg>
   );
+
+  if (showResolvingSkeleton) {
+    return (
+      <aside
+        className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
+      >
+        <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
+          <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <Icon name="git-branch" size={16} className="text-primary" />
+            {t('architect.strategy', 'Strategy')}
+          </h1>
+        </div>
+        <div className="flex-1 p-4 space-y-3">
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-24 w-full" />
+        </div>
+      </aside>
+    );
+  }
 
   // If no mock data at all, show empty state (should only happen if filter removes everything and we don't want to show empty graph)
   // But we have a check inside layoutData.nodes.length === 0 returning empty objects

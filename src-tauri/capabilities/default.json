@@ -8,6 +8,7 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:window:allow-set-icon",
+    "core:window:allow-set-theme",
     "core:window:allow-start-dragging",
     "opener:default",
     "dialog:default",

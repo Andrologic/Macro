@@ -666,6 +666,7 @@ interface ChatStore {
   restoreStatus: ChatRestoreStatus;
   activeContextKey: ChatContextKey | null;
   selectionRequestId: number;
+  pendingArchitectPlanSwitchRequestId: number | null;
   conversationRuntimeById: Record<string, ConversationRuntimeState | undefined>;
   isLoading: boolean;
   isStreaming: boolean;
@@ -704,7 +705,7 @@ interface ChatStore {
     projectId: string | null,
     groupId?: string | null,
   ) => Promise<Conversation>;
-  beginArchitectPlanSwitch: () => void;
+  beginArchitectPlanSwitch: (params?: { requestId?: number }) => void;
   ensureArchitectConversationForPlan: (params: {
     plan: ArchitectPlanRecord;
     targetBranch: string;
@@ -1860,7 +1861,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             nextArchitectBranch !== previousArchitectBranch);
 
         if (shouldBeginArchitectPlanSwitch) {
-          beginArchitectPlanSwitchSelection();
+          beginArchitectPlanSwitchSelection({
+            requestId: nextState.architectPlanSwitch.requestId,
+          });
         }
 
         void get().ensureConversationForCurrentMode();
@@ -4690,7 +4693,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }));
   };
 
-  const beginArchitectPlanSwitchSelection = () => {
+  const beginArchitectPlanSwitchSelection = (params?: { requestId?: number }) => {
     set((current) => ({
       selectedConversationId:
         useAppStore.getState().mode === "Architect"
@@ -4701,6 +4704,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         Architect: null,
       },
       restoreStatus: "resolving",
+      pendingArchitectPlanSwitchRequestId:
+        params?.requestId ?? current.pendingArchitectPlanSwitchRequestId,
       lastError: null,
     }));
   };
@@ -5142,6 +5147,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       restoreStatus: "idle",
       activeContextKey: null,
       selectionRequestId: 0,
+      pendingArchitectPlanSwitchRequestId: null,
       conversationRuntimeById: {},
       isLoading: false,
       isStreaming: false,
@@ -5175,6 +5181,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const targetBranch = resolveTargetBranch(
           appState.activePlanContext?.targetBranch,
         );
+        const architectPlanSwitch = appState.architectPlanSwitch;
         const sharedActivationPayload =
           appState.consumeArchitectPlanActivationPayload({
             planId: appState.activeArchitectPlanId,
@@ -5185,6 +5192,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
           (await getArchitectPlanActivationPayload(
             targetBranch,
             appState.activeArchitectPlanId,
+            {
+              summaryHint:
+                architectPlanSwitch.targetPlanId ===
+                appState.activeArchitectPlanId
+                  ? architectPlanSwitch.summaryHint
+                  : null,
+              scopedProjectIdsHint:
+                architectPlanSwitch.targetPlanId ===
+                appState.activeArchitectPlanId
+                  ? architectPlanSwitch.summaryHint
+                    ? getArchitectPlanProjectIds(architectPlanSwitch.summaryHint)
+                    : undefined
+                  : undefined,
+            },
           ));
         const activationPayloadSource = sharedActivationPayload
           ? "app_store"
@@ -5464,6 +5485,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     restoreStatus: "idle",
     activeContextKey: null,
     selectionRequestId: 0,
+    pendingArchitectPlanSwitchRequestId: null,
     conversationRuntimeById: {},
     isLoading: false,
     isStreaming: false,
@@ -6037,8 +6059,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         groupId,
       }),
 
-    beginArchitectPlanSwitch: () => {
-      beginArchitectPlanSwitchSelection();
+    beginArchitectPlanSwitch: (params) => {
+      beginArchitectPlanSwitchSelection(params);
     },
 
     ensureArchitectConversationForPlan: async ({
@@ -6078,8 +6100,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const appState = useAppStore.getState();
       const mode = appState.mode;
       const contextKey = buildChatContextKey(appState);
-      const requestId = get().selectionRequestId + 1;
       const stateBeforeResolve = get();
+      const requestId =
+        mode === "Architect" &&
+        typeof stateBeforeResolve.pendingArchitectPlanSwitchRequestId ===
+          "number"
+          ? Math.max(
+              stateBeforeResolve.selectionRequestId + 1,
+              stateBeforeResolve.pendingArchitectPlanSwitchRequestId,
+            )
+          : stateBeforeResolve.selectionRequestId + 1;
       const contextChanged = stateBeforeResolve.activeContextKey !== contextKey;
       if (mode === "Architect" && contextChanged) {
         beginArchitectPlanSwitchSelection();
@@ -6091,6 +6121,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       set({
         selectionRequestId: requestId,
+        pendingArchitectPlanSwitchRequestId: null,
         activeContextKey: contextKey,
         lastError: null,
         ...(shouldShowResolving ? { restoreStatus: "resolving" as const } : {}),
@@ -6151,6 +6182,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (isCurrentRequest()) {
           set({
             restoreStatus: "error",
+            pendingArchitectPlanSwitchRequestId: null,
             lastError: normalized.message,
           });
         }
@@ -6986,6 +7018,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         restoreStatus: "idle",
         activeContextKey: null,
         selectionRequestId: 0,
+        pendingArchitectPlanSwitchRequestId: null,
       });
       try {
         aiSelections = normalizeAIContextSelections(
@@ -7017,6 +7050,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           restoreStatus: "error",
           activeContextKey: null,
           selectionRequestId: 0,
+          pendingArchitectPlanSwitchRequestId: null,
           conversationRuntimeById: {},
           isLoading: false,
           isStreaming: false,

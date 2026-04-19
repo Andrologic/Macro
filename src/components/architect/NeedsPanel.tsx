@@ -1,11 +1,17 @@
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useShallow } from 'zustand/react/shallow';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import type { NeedCategory } from '../../types';
 import { Icon, IconName } from '../ui/Icon';
+import { Skeleton } from '../shared/Skeleton';
 import { cn } from '../../utils/cn';
+import {
+  isCanonicalArchitectPlan,
+  isDefaultNewPlanFamilyLabel,
+} from '../../services/architectPlanPresentation';
 
 interface NeedsPanelProps {
   className?: string;
@@ -33,6 +39,16 @@ const CATEGORY_COLORS: Record<NeedCategory, string> = {
   other: 'text-muted-foreground',
 };
 
+const IDLE_ARCHITECT_PLAN_SWITCH = {
+  requestId: 0,
+  targetPlanId: null,
+  targetBranch: null,
+  status: 'idle' as const,
+  startedAt: null,
+  summaryHint: null,
+  errorMessage: null,
+};
+
 /**
  * NeedsPanel - Displays project requirements/needs in Architect mode
  * 
@@ -40,14 +56,42 @@ const CATEGORY_COLORS: Record<NeedCategory, string> = {
  */
 const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
   const { t } = useTranslation();
-  const { needs, selectNeed, selectedNeedId } = useNeedsStore();
-  const { activeArchitectPlanId } = useAppStore();
+  const { needs, selectNeed, selectedNeedId } = useNeedsStore(
+    useShallow((state) => ({
+      needs: state.needs,
+      selectNeed: state.selectNeed,
+      selectedNeedId: state.selectedNeedId,
+    }))
+  );
+  const { activeArchitectPlanId, architectPlanSwitch } = useAppStore(
+    useShallow((state) => ({
+      activeArchitectPlanId: state.activeArchitectPlanId,
+      architectPlanSwitch:
+        state.architectPlanSwitch ?? IDLE_ARCHITECT_PLAN_SWITCH,
+    }))
+  );
   const [filter, setFilter] = useState<'all' | NeedCategory>('all');
+  const isResolvingActivePlan =
+    architectPlanSwitch.status === 'resolving' &&
+    architectPlanSwitch.targetPlanId === activeArchitectPlanId;
+  const isResolvingBlankPlan = Boolean(
+    architectPlanSwitch.summaryHint &&
+      isCanonicalArchitectPlan(architectPlanSwitch.summaryHint) &&
+      isDefaultNewPlanFamilyLabel(architectPlanSwitch.summaryHint.label) &&
+      architectPlanSwitch.summaryHint.nodeCount === 0 &&
+      (architectPlanSwitch.summaryHint.predictedBranchCount ?? 0) === 0 &&
+      (architectPlanSwitch.summaryHint.needCount ?? 0) === 0 &&
+      (architectPlanSwitch.summaryHint.chatMessageCount ?? 0) === 0 &&
+      !architectPlanSwitch.summaryHint.conversationId
+  );
 
   const scopedNeeds = useMemo(() => {
+    if (isResolvingActivePlan) {
+      return [];
+    }
     if (!activeArchitectPlanId) return [];
     return needs.filter((need) => need.planId === activeArchitectPlanId);
-  }, [needs, activeArchitectPlanId]);
+  }, [activeArchitectPlanId, isResolvingActivePlan, needs]);
 
   const filteredNeeds = useMemo(() => {
     if (filter === 'all') return scopedNeeds;
@@ -67,6 +111,29 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
       data: need,
     });
   };
+
+  if (isResolvingActivePlan && !isResolvingBlankPlan) {
+    return (
+      <aside className={cn("h-full w-full bg-card border-r border-border flex flex-col", className)}>
+        <div className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
+          <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <Icon name="list" size={16} className="text-primary" />
+            {t('architect.needs', 'Identified Needs')}
+          </h1>
+        </div>
+        <div className="px-3 py-2 border-b border-border flex gap-1 overflow-x-auto no-scrollbar shrink-0">
+          <Skeleton className="h-8 w-16" />
+          <Skeleton className="h-8 w-20" />
+          <Skeleton className="h-8 w-20" />
+        </div>
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          <Skeleton className="h-28 w-full" />
+          <Skeleton className="h-28 w-full" />
+          <Skeleton className="h-28 w-full" />
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <aside className={cn("h-full w-full bg-card border-r border-border flex flex-col", className)}>

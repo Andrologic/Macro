@@ -12,6 +12,7 @@ import {
   restoreArchitectPlan,
   updateArchitectPlan,
   type ArchitectPlanReplicaDivergence,
+  type ArchitectPlanRecord,
   type ArchitectPlanSummary,
 } from '../../services/architectPlanService';
 import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
@@ -67,6 +68,34 @@ const formatRelativeDate = (iso: string, unknownLabel: string): string => {
   if (Number.isNaN(date.getTime())) return unknownLabel;
   return formatDate(date);
 };
+
+const summarizeArchitectPlanRecord = (
+  plan: ArchitectPlanRecord
+): ArchitectPlanSummary => ({
+  id: plan.id,
+  slug: plan.slug,
+  title: plan.title,
+  label: plan.label,
+  description: plan.description,
+  status: plan.status,
+  targetBranch: plan.targetBranch,
+  targetBranchesByProjectId: plan.targetBranchesByProjectId,
+  conversationId: plan.conversationId,
+  projectId: plan.projectId,
+  projectIds: plan.projectIds,
+  contextProjectIds: plan.contextProjectIds,
+  expectedProjectIds: plan.expectedProjectIds,
+  createdAt: plan.createdAt,
+  updatedAt: plan.updatedAt,
+  nodeCount: plan.nodes.length,
+  predictedBranchCount: plan.predictedBranches.length,
+  availableProjectIds: plan.availableProjectIds,
+  missingProjectIds: plan.missingProjectIds,
+  replicationState: plan.replicationState,
+  revision: plan.revision,
+  replicas: plan.replicas,
+  hasReplicaDivergence: plan.hasReplicaDivergence,
+});
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const { t } = useTranslation();
@@ -205,7 +234,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (!refreshState.nextActivePlanId) {
         clearActivePlanSelection();
       } else if (refreshState.nextActivePlanId !== activeArchitectPlanId) {
-        await activatePlan(refreshState.nextActivePlanId);
+        await activatePlan(
+          refreshState.nextActivePlanId,
+          refreshState.visiblePlans.find(
+            (plan) => plan.id === refreshState.nextActivePlanId
+          ) ?? null
+        );
       }
     }
 
@@ -327,12 +361,17 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
   };
 
-  const activatePlan = async (planId: string) => {
+  const activatePlan = async (
+    planId: string,
+    planSummaryHint?: ArchitectPlanSummary | null
+  ) => {
     setIsActivating(planId);
     setError(null);
+    setActivePlanId(planId);
     try {
       const activated = await activateArchitectPlan(planId, {
         targetBranch,
+        planSummaryHint: planSummaryHint ?? null,
       });
       if (!activated) {
         throw new Error(t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.'));
@@ -341,7 +380,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       setActivePlanId(planId);
       setIsOpen(false);
     } catch (activationError) {
-      if (openReplicaRepair(activationError, () => activatePlan(planId))) {
+      if (openReplicaRepair(activationError, () => activatePlan(planId, planSummaryHint ?? null))) {
         return;
       }
       const message = resolveOperationMessage(
@@ -376,7 +415,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       });
       if (ensuredBlankPlan) {
         await loadPlans(false);
-        await activatePlan(ensuredBlankPlan.plan.id);
+        await activatePlan(
+          ensuredBlankPlan.plan.id,
+          summarizeArchitectPlanRecord(ensuredBlankPlan.plan)
+        );
         if (ensuredBlankPlan.action === 'reused_blank') {
           notify.info(
             t(
@@ -842,22 +884,34 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const renameLabel = isCanonicalPlan
                 ? t('architect.planSelector.editPlanLabel', 'Edit plan label')
                 : t('architect.planSelector.renamePlan', 'Rename plan');
+              const canActivatePlan = !isUnavailable && !isBusy;
 
               return (
-                <button
+                <div
                   key={plan.id}
+                  role="button"
+                  tabIndex={canActivatePlan ? 0 : -1}
+                  aria-disabled={!canActivatePlan}
                   onClick={() => {
-                    if (!isUnavailable) {
-                      void activatePlan(plan.id);
+                    if (canActivatePlan) {
+                      void activatePlan(plan.id, plan);
                     }
                   }}
-                  disabled={isBusy}
+                  onKeyDown={(event) => {
+                    if (!canActivatePlan) {
+                      return;
+                    }
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      void activatePlan(plan.id, plan);
+                    }
+                  }}
                   className={cn(
-                    'w-full text-left p-2.5 rounded-lg border transition-colors',
+                    'w-full text-left p-2.5 rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
                     isActive
                       ? 'border-primary/40 bg-primary/5'
                       : 'border-border hover:bg-accent',
-                    isUnavailable && 'cursor-default opacity-80'
+                    canActivatePlan ? 'cursor-pointer' : 'cursor-default opacity-80'
                   )}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -1000,7 +1054,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                   <div className="mt-1 text-[11px] text-muted-foreground truncate">
                     {targetSummary}
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
