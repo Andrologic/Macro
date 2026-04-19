@@ -40,10 +40,16 @@ async function getLogicalMonitorWorkArea(
 }
 
 const backgroundColorPermissionFailures = new Set<string>();
+const windowThemePermissionFailures = new Set<string>();
 
 const isBackgroundColorPermissionError = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes('window.set_background_color not allowed');
+};
+
+const isWindowThemePermissionError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('window.set_theme not allowed');
 };
 
 const logBackgroundColorPermissionOnce = (message: string) => {
@@ -52,6 +58,14 @@ const logBackgroundColorPermissionOnce = (message: string) => {
   }
   backgroundColorPermissionFailures.add(message);
   console.warn('[tauriWindow] Background color update skipped:', message);
+};
+
+const logWindowThemePermissionOnce = (message: string) => {
+  if (windowThemePermissionFailures.has(message)) {
+    return;
+  }
+  windowThemePermissionFailures.add(message);
+  console.warn('[tauriWindow] Native window theme update skipped:', message);
 };
 
 export { isTauriEnvironment };
@@ -146,7 +160,15 @@ export async function windowSetMacosAppIconTheme(
 
 export async function windowSetTheme(theme: 'light' | 'dark' | null): Promise<void> {
   const window = await getCurrentTauriWindow();
-  await window.setTheme(theme);
+  try {
+    await window.setTheme(theme);
+  } catch (error) {
+    if (isWindowThemePermissionError(error)) {
+      logWindowThemePermissionOnce(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function windowStartDragging(): Promise<void> {

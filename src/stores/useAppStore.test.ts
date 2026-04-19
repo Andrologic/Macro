@@ -36,6 +36,16 @@ type PlanRecord = {
   updatedAt: string;
 };
 
+type ActivationPayloadRecord = {
+  plan: PlanRecord;
+  needs: [];
+  chatMessages: [];
+  conversationId: null;
+  sharedConversation: boolean;
+  targetBranch: string;
+  resolutionMode: 'blank_fast_path';
+};
+
 type ProjectContextRecord = {
   projectId: string;
   groupId: string | null;
@@ -218,6 +228,7 @@ const taskStoreState = {
 };
 
 const needsStoreState = {
+  beginArchitectPlanSwitch: mock(() => undefined),
   hydrateNeedsForPlan: mock(() => undefined),
 };
 
@@ -506,6 +517,7 @@ describe('useAppStore architect plan resolution', () => {
     consolidateScopedBlankPlansMock.mockClear();
     upsertLocalProjectContextStateMock.mockClear();
     upsertLocalSessionContextStateMock.mockClear();
+    needsStoreState.beginArchitectPlanSwitch.mockClear();
     needsStoreState.hydrateNeedsForPlan.mockClear();
     chatStoreState.beginArchitectPlanSwitch.mockClear();
     taskStoreState.activateTask.mockClear();
@@ -779,7 +791,8 @@ describe('useAppStore architect plan resolution', () => {
     expect(chatStoreState.beginArchitectPlanSwitch).toHaveBeenCalledTimes(1);
     expect(getArchitectPlanActivationPayloadMock).toHaveBeenCalledWith(
       'develop',
-      nextPlan.id
+      nextPlan.id,
+      expect.any(Object)
     );
     expect(getArchitectPlanNeedsMock).not.toHaveBeenCalled();
     expect(needsStoreState.hydrateNeedsForPlan).toHaveBeenCalledWith(
@@ -791,5 +804,169 @@ describe('useAppStore architect plan resolution', () => {
     expect(
       useAppStore.getState().pendingArchitectPlanActivationPayload?.plan.id
     ).toBe(nextPlan.id);
+  });
+
+  it('clears the previous strategy state immediately while an architect plan switch is resolving', async () => {
+    const currentPlan = buildPlan({
+      id: 'plan-current',
+      updatedAt: '2026-04-17T10:00:00.000Z',
+    });
+    const nextPlan = buildPlan({
+      id: 'plan-next-pending',
+      updatedAt: '2026-04-17T11:00:00.000Z',
+      label: 'Checkout refresh',
+    });
+    planById.set(currentPlan.id, currentPlan);
+    planById.set(nextPlan.id, nextPlan);
+
+    let resolveActivation!: (value: ActivationPayloadRecord) => void;
+    getArchitectPlanActivationPayloadMock.mockImplementationOnce(
+      async (_branchName: string, _planId: string) =>
+        await new Promise((resolve) => {
+          resolveActivation = resolve;
+        })
+    );
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect',
+      projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1',
+      selectedProjectId: 'project-1',
+      activeArchitectPlanId: currentPlan.id,
+      activePlanContext: {
+        id: currentPlan.id,
+        title: currentPlan.title,
+        label: currentPlan.label,
+        description: currentPlan.description,
+        status: currentPlan.status,
+        targetBranch: currentPlan.targetBranch,
+      },
+      planNodes: [{ id: 'node-1' } as never],
+      predictedBranches: [{ id: 'branch-1' } as never],
+    });
+
+    const activationPromise = useAppStore.getState().activateArchitectPlan(
+      nextPlan.id,
+      {
+        planSummaryHint: toPlanSummary(nextPlan),
+      }
+    );
+    await Promise.resolve();
+
+    expect(useAppStore.getState().activeArchitectPlanId).toBe(nextPlan.id);
+    expect(useAppStore.getState().activePlanContext?.id).toBe(nextPlan.id);
+    expect(useAppStore.getState().planNodes).toEqual([]);
+    expect(useAppStore.getState().predictedBranches).toEqual([]);
+    expect(useAppStore.getState().architectPlanSwitch.status).toBe('resolving');
+    expect(needsStoreState.beginArchitectPlanSwitch).toHaveBeenCalledWith(
+      nextPlan.id
+    );
+
+    resolveActivation({
+      plan: nextPlan,
+      needs: [],
+      chatMessages: [],
+      conversationId: null,
+      sharedConversation: false,
+      targetBranch: 'develop',
+      resolutionMode: 'blank_fast_path',
+    });
+    await activationPromise;
+
+    expect(useAppStore.getState().architectPlanSwitch.status).toBe('ready');
+    expect(useAppStore.getState().activeArchitectPlanId).toBe(nextPlan.id);
+  });
+
+  it('ignores stale architect plan switch payloads when a newer selection resolves later', async () => {
+    const currentPlan = buildPlan({ id: 'plan-current-race' });
+    const slowPlan = buildPlan({
+      id: 'plan-slow',
+      updatedAt: '2026-04-17T11:00:00.000Z',
+    });
+    const fastPlan = buildPlan({
+      id: 'plan-fast',
+      updatedAt: '2026-04-17T12:00:00.000Z',
+    });
+    planById.set(currentPlan.id, currentPlan);
+    planById.set(slowPlan.id, slowPlan);
+    planById.set(fastPlan.id, fastPlan);
+
+    let resolveSlow!: (value: ActivationPayloadRecord) => void;
+    let resolveFast!: (value: ActivationPayloadRecord) => void;
+    getArchitectPlanActivationPayloadMock
+      .mockImplementationOnce(
+        async () =>
+          await new Promise((resolve) => {
+            resolveSlow = resolve;
+          })
+      )
+      .mockImplementationOnce(
+        async () =>
+          await new Promise((resolve) => {
+            resolveFast = resolve;
+          })
+      );
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect',
+      projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1',
+      selectedProjectId: 'project-1',
+      activeArchitectPlanId: currentPlan.id,
+      activePlanContext: {
+        id: currentPlan.id,
+        title: currentPlan.title,
+        label: currentPlan.label,
+        description: currentPlan.description,
+        status: currentPlan.status,
+        targetBranch: currentPlan.targetBranch,
+      },
+      planNodes: [],
+      predictedBranches: [],
+    });
+
+    const slowActivation = useAppStore.getState().activateArchitectPlan(
+      slowPlan.id,
+      {
+        planSummaryHint: toPlanSummary(slowPlan),
+      }
+    );
+    const fastActivation = useAppStore.getState().activateArchitectPlan(
+      fastPlan.id,
+      {
+        planSummaryHint: toPlanSummary(fastPlan),
+      }
+    );
+    await Promise.resolve();
+
+    resolveFast({
+      plan: fastPlan,
+      needs: [],
+      chatMessages: [],
+      conversationId: null,
+      sharedConversation: false,
+      targetBranch: 'develop',
+      resolutionMode: 'blank_fast_path',
+    });
+    expect(await fastActivation).toBe(true);
+
+    resolveSlow({
+      plan: slowPlan,
+      needs: [],
+      chatMessages: [],
+      conversationId: null,
+      sharedConversation: false,
+      targetBranch: 'develop',
+      resolutionMode: 'blank_fast_path',
+    });
+    expect(await slowActivation).toBe(false);
+
+    expect(useAppStore.getState().activeArchitectPlanId).toBe(fastPlan.id);
+    expect(useAppStore.getState().activePlanContext?.id).toBe(fastPlan.id);
+    expect(useAppStore.getState().architectPlanSwitch.targetPlanId).toBe(
+      fastPlan.id
+    );
   });
 });
