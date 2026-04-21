@@ -585,6 +585,29 @@ pub async fn workspace_finalize_manual_feature(
 }
 
 #[tauri::command]
+pub async fn workspace_revert_manual_feature_to_draft(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+    conversation_id: Option<String>,
+    title: Option<String>,
+    description: Option<String>,
+) -> Result<ManualFeatureDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::revert_manual_feature_to_draft(
+        &workspace_path,
+        &metadata_root,
+        &task_id,
+        conversation_id.as_deref(),
+        title.as_deref(),
+        description.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn workspace_delete_manual_feature_draft(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,

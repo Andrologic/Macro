@@ -1,0 +1,119 @@
+import { afterEach, describe, expect, it, mock } from 'bun:test';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+
+let importCounter = 0;
+let root: Root | null = null;
+let container: HTMLDivElement | null = null;
+let capturedVirtualizerOptions: Array<{
+  getItemKey?: (index: number) => string | number;
+  estimateSize: (index: number) => number;
+}> = [];
+
+const loadUseVirtualListModule = async () => {
+  importCounter += 1;
+  capturedVirtualizerOptions = [];
+  mock.restore();
+
+  mock.module('@tanstack/react-virtual', () => ({
+    useVirtualizer: (options: {
+      getItemKey?: (index: number) => string | number;
+      estimateSize: (index: number) => number;
+    }) => {
+      capturedVirtualizerOptions.push(options);
+      return {
+        getVirtualItems: () => [
+          {
+            index: 0,
+            key: options.getItemKey ? options.getItemKey(0) : 0,
+            size: options.estimateSize(0),
+            start: 0,
+          },
+        ],
+        getTotalSize: () => options.estimateSize(0),
+        scrollToIndex: () => undefined,
+        measureElement: () => undefined,
+      };
+    },
+  }));
+
+  return import(`./useVirtualList.ts?use-virtual-list-test=${importCounter}`);
+};
+
+describe('useVirtualList', () => {
+  afterEach(async () => {
+    await act(async () => {
+      root?.unmount();
+    });
+    container?.remove();
+    root = null;
+    container = null;
+    mock.restore();
+  });
+
+  it('forwards stable item keys to TanStack Virtual when provided', async () => {
+    const { useVirtualList } = await loadUseVirtualListModule();
+    let hookResult: unknown = null;
+
+    const TestComponent = () => {
+      hookResult = useVirtualList({
+        items: [{ id: 'section:drafts' }, { id: 'task:ready-1' }],
+        getItemKey: (item: { id: string }) => item.id,
+        estimateSize: 112,
+      });
+      return null;
+    };
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<TestComponent />);
+    });
+
+    const options = capturedVirtualizerOptions[capturedVirtualizerOptions.length - 1];
+    const result = hookResult as { virtualItems: Array<{ key: string | number }> } | null;
+
+    expect(options).toBeDefined();
+    expect(result).not.toBeNull();
+    if (!result) {
+      throw new Error('Expected hook result to be available');
+    }
+    expect(options?.getItemKey?.(0)).toBe('section:drafts');
+    expect(options?.getItemKey?.(1)).toBe('task:ready-1');
+    expect(result.virtualItems[0]?.key).toBe('section:drafts');
+  });
+
+  it('keeps the existing index-based fallback when no item key extractor is provided', async () => {
+    const { useVirtualList } = await loadUseVirtualListModule();
+    let hookResult: unknown = null;
+
+    const TestComponent = () => {
+      hookResult = useVirtualList({
+        items: [{ id: 'row-a' }, { id: 'row-b' }],
+        estimateSize: 96,
+      });
+      return null;
+    };
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<TestComponent />);
+    });
+
+    const options = capturedVirtualizerOptions[capturedVirtualizerOptions.length - 1];
+    const result = hookResult as { virtualItems: Array<{ key: string | number }> } | null;
+
+    expect(options).toBeDefined();
+    expect(result).not.toBeNull();
+    if (!result) {
+      throw new Error('Expected hook result to be available');
+    }
+    expect(options?.getItemKey).toBeUndefined();
+    expect(result.virtualItems[0]?.key).toBe(0);
+  });
+});

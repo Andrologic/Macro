@@ -3524,6 +3524,97 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
+  type ManualFeatureDraftRecovery = {
+    taskId: string;
+    conversationId: string;
+    metadata: {
+      title: string;
+      description: string;
+    };
+  };
+
+  const getManualFeatureDraftRecoveryMetadata = (
+    conversationId: string,
+  ): ManualFeatureDraftRecovery["metadata"] => {
+    const conversation = get().conversations.find(
+      (candidate) => candidate.id === conversationId,
+    );
+
+    return {
+      title: conversation?.title?.trim() || "New feature",
+      description: conversation?.description ?? "",
+    };
+  };
+
+  const rollbackManualFeatureDraftAfterFailedLaunch = async (
+    recovery: ManualFeatureDraftRecovery,
+  ) => {
+    try {
+      await useTaskStore.getState().revertManualFeatureToDraft({
+        taskId: recovery.taskId,
+        conversationId: recovery.conversationId,
+        title: recovery.metadata.title,
+        description: recovery.metadata.description,
+      });
+      await persistConversationMetadata(
+        recovery.conversationId,
+        recovery.metadata,
+      );
+    } catch (error) {
+      console.warn(
+        "Failed to revert manual feature draft after assistant launch failure:",
+        error,
+      );
+    }
+  };
+
+  const maybeFinalizeManualFeatureDraftForAssistantRequest = async (params: {
+    conversationId: string;
+    taskId: string;
+    userContent: string;
+    providerId: string;
+    providerType: string;
+    baseUrl: string;
+    apiKey?: string;
+    modelId: string;
+    reasoningEffort?: ReasoningEffort | null;
+  }): Promise<ManualFeatureDraftRecovery | null> => {
+    const task = useTaskStore.getState().getTaskById(params.taskId);
+    if (
+      !task ||
+      task.task_source !== "standalone" ||
+      task.standalone_kind !== "manual_feature" ||
+      task.draft !== true
+    ) {
+      return null;
+    }
+
+    const recovery: ManualFeatureDraftRecovery = {
+      taskId: params.taskId,
+      conversationId: params.conversationId,
+      metadata: getManualFeatureDraftRecoveryMetadata(params.conversationId),
+    };
+
+    try {
+      await finalizeManualFeatureDraftIfNeeded({
+        conversationId: params.conversationId,
+        taskId: params.taskId,
+        firstUserContent: params.userContent,
+        providerId: params.providerId,
+        providerType: params.providerType,
+        baseUrl: params.baseUrl,
+        apiKey: params.apiKey,
+        modelId: params.modelId,
+        reasoningEffort: params.reasoningEffort,
+      });
+    } catch (error) {
+      await rollbackManualFeatureDraftAfterFailedLaunch(recovery);
+      throw error;
+    }
+
+    return recovery;
+  };
+
   const shouldGenerateArchitectPlanTitleFromFirstMessage = (
     plan: ArchitectPlanRecord,
     conversationId: string,
@@ -4545,6 +4636,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     providerConfig: NonNullable<
       ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
     >;
+    manualFeatureDraftRecovery?: ManualFeatureDraftRecovery | null;
   }) => {
     const assistantMessage: ChatMessage = {
       id: `msg-${Date.now()}-assistant`,
@@ -4587,12 +4679,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         fileToolContext: streamLaunch.fileToolContext,
         allowedToolIds: streamLaunch.allowedToolIds,
         guidedToolRetry: streamLaunch.guidedToolRetry,
+        manualFeatureDraftRecovery: params.manualFeatureDraftRecovery,
         showToolTraces: streamLaunch.showToolTraces,
         enableWebSearch: streamLaunch.enableWebSearch,
         enableWebFetch: streamLaunch.enableWebFetch,
         webSearchOptions: streamLaunch.webSearchOptions,
       });
     } catch (error) {
+      if (params.manualFeatureDraftRecovery) {
+        await rollbackManualFeatureDraftAfterFailedLaunch(
+          params.manualFeatureDraftRecovery,
+        );
+      }
       applyAssistantLaunchError(
         params.conversationId,
         params.sessionId,
@@ -4674,6 +4772,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       retrySystemPrompt: string;
       maxRetries?: number;
     };
+    manualFeatureDraftRecovery?: ManualFeatureDraftRecovery | null;
     showToolTraces: boolean;
     enableWebSearch: boolean;
     enableWebFetch: boolean;
@@ -4696,6 +4795,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const tokenBatcher = createTokenBatcher((tokenChunk) => {
       get().appendToMessage(params.assistantMessage.id, tokenChunk);
     });
+    let didAttemptManualFeatureDraftRollback = false;
+    let assistantReceivedOutput = false;
+    let assistantReceivedToolActivity = false;
+
+    const maybeRollbackManualFeatureDraft = async () => {
+      if (
+        !params.manualFeatureDraftRecovery ||
+        didAttemptManualFeatureDraftRollback ||
+        assistantReceivedOutput ||
+        assistantReceivedToolActivity
+      ) {
+        return;
+      }
+
+      didAttemptManualFeatureDraftRollback = true;
+      await rollbackManualFeatureDraftAfterFailedLaunch(
+        params.manualFeatureDraftRecovery,
+      );
+    };
 
     void (async () => {
       try {
@@ -4725,9 +4843,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
           sessionId: params.sessionId,
           signal: abortController.signal,
           onToken: (token) => {
+            if (token.length > 0) {
+              assistantReceivedOutput = true;
+            }
             tokenBatcher.push(token);
           },
           onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
+            if (toolTraces.length > 0) {
+              assistantReceivedToolActivity = true;
+            }
             get().updateMessageFields(params.assistantMessage.id, {
               tool_traces: toolTraces,
             });
@@ -4797,22 +4921,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
           onError: (error) => {
             tokenBatcher.dispose();
-            get().updateMessageContent(
-              params.assistantMessage.id,
-              `Error: ${error.message}`,
-            );
-            updateConversationRuntimeIfSessionMatches(
-              params.conversationId,
-              params.sessionId,
-              () => ({
-                phase: "error",
-                sessionId: params.sessionId,
-                assistantMessageId: params.assistantMessage.id,
-                abortController: null,
-                lastError: error.message,
-              }),
-            );
-            set({ lastError: error.message, sendState: "error" });
+            void (async () => {
+              await maybeRollbackManualFeatureDraft();
+              get().updateMessageContent(
+                params.assistantMessage.id,
+                `Error: ${error.message}`,
+              );
+              updateConversationRuntimeIfSessionMatches(
+                params.conversationId,
+                params.sessionId,
+                () => ({
+                  phase: "error",
+                  sessionId: params.sessionId,
+                  assistantMessageId: params.assistantMessage.id,
+                  abortController: null,
+                  lastError: error.message,
+                }),
+              );
+              set({ lastError: error.message, sendState: "error" });
+            })();
           },
           onToolCall: (toolName, args, toolCallId) => {
             return handleToolCall(
@@ -4826,6 +4953,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
       } catch (error) {
         tokenBatcher.dispose();
+        await maybeRollbackManualFeatureDraft();
         const normalized = toServiceError(error);
         get().updateMessageContent(
           params.assistantMessage.id,
@@ -7010,18 +7138,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? useTaskStore.getState().getTaskById(resolvedTaskId)
           : undefined;
         let finalizedManualFeatureDraft = false;
+        let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
 
         if (modeAtSend === "Implement" && resolvedTaskId) {
-          if (
-            taskForSend?.task_source === "standalone" &&
-            taskForSend.standalone_kind === "manual_feature" &&
-            taskForSend.draft === true
-          ) {
-            finalizedManualFeatureDraft = true;
-            await finalizeManualFeatureDraftIfNeeded({
+          manualFeatureDraftRecovery =
+            await maybeFinalizeManualFeatureDraftForAssistantRequest({
               conversationId,
               taskId: resolvedTaskId,
-              firstUserContent: content,
+              userContent: content,
               providerId: selectedProviderId,
               providerType: providerConfigForUse.providerType,
               baseUrl: providerConfigForUse.baseUrl,
@@ -7029,7 +7153,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               modelId: selectedModelId,
               reasoningEffort: selectedReasoningEffort,
             });
-          }
+          finalizedManualFeatureDraft = manualFeatureDraftRecovery !== null;
 
           taskForSend =
             (await assertImplementTaskReadyForSend(resolvedTaskId)) ??
@@ -7146,12 +7270,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
             fileToolContext: streamLaunch.fileToolContext,
             allowedToolIds: streamLaunch.allowedToolIds,
             guidedToolRetry: streamLaunch.guidedToolRetry,
+            manualFeatureDraftRecovery,
             showToolTraces: streamLaunch.showToolTraces,
             enableWebSearch: streamLaunch.enableWebSearch,
             enableWebFetch: streamLaunch.enableWebFetch,
             webSearchOptions: streamLaunch.webSearchOptions,
           });
         } catch (error) {
+          if (manualFeatureDraftRecovery) {
+            await rollbackManualFeatureDraftAfterFailedLaunch(
+              manualFeatureDraftRecovery,
+            );
+          }
           applyAssistantLaunchError(
             conversationId,
             activeSessionId,
@@ -7254,9 +7384,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!target) return;
 
       const conversationId = target.conversation_id;
+      let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
       assertConversationRuntimeAvailableForSend(conversationId);
       if (modeAtEdit === "Implement" && target.task_id) {
         try {
+          manualFeatureDraftRecovery =
+            await maybeFinalizeManualFeatureDraftForAssistantRequest({
+              conversationId,
+              taskId: target.task_id,
+              userContent: newContent,
+              providerId: selectedProviderId,
+              providerType: providerConfigForUse.providerType,
+              baseUrl: providerConfigForUse.baseUrl,
+              apiKey: providerConfigForUse.apiKey,
+              modelId: selectedModelId,
+              reasoningEffort: selectedReasoningEffort,
+            });
           await assertImplementTaskReadyForSend(target.task_id);
         } catch (error) {
           const normalized = toServiceError(error);
@@ -7306,6 +7449,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         modelId: selectedModelId,
         reasoningEffort: selectedReasoningEffort,
         providerConfig: providerConfigForUse,
+        manualFeatureDraftRecovery,
       });
     },
 

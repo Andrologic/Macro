@@ -11,6 +11,8 @@ import { useVirtualizer, VirtualizerOptions } from "@tanstack/react-virtual";
 export interface UseVirtualListOptions<T> {
   /** Items to virtualize */
   items: T[];
+  /** Optional stable key extractor for items */
+  getItemKey?: (item: T, index: number) => React.Key;
   /** Optional external scroll container ref */
   parentRef?: React.RefObject<HTMLDivElement | null>;
   /** Estimated height of each item in pixels */
@@ -49,6 +51,7 @@ export interface UseVirtualListResult<T> {
  */
 export function useVirtualList<T>({
   items,
+  getItemKey,
   parentRef: externalParentRef,
   estimateSize,
   overscan = 5,
@@ -62,6 +65,9 @@ export function useVirtualList<T>({
     count: items.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => estimateSize,
+    getItemKey: getItemKey
+      ? (index: number) => getItemKey(items[index]!, index)
+      : undefined,
     overscan,
     gap,
   };

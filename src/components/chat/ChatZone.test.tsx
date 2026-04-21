@@ -156,6 +156,7 @@ type TaskState = {
     id: string;
     title: string;
     draft?: boolean;
+    task_source?: 'architect' | 'standalone';
     is_blocked?: boolean;
     status?: string;
     execution_targets?: Array<{ projectId: string }>;
@@ -287,6 +288,8 @@ const translationMock = {
 
 const scrollContainerRef = { current: null as HTMLDivElement | null };
 const markdownRendererContentMock = mock((_content: string) => undefined);
+let composerEditorValue = '';
+let latestComposerProps: Record<string, unknown> | null = null;
 
 let ChatZone!: typeof import('./ChatZone').default;
 let importCounter = 0;
@@ -387,17 +390,35 @@ const loadChatZoneModule = async () => {
 
   mock.module('./composer/LazyComposerEditor', () => ({
     __esModule: true,
-    default: React.forwardRef((_props: Record<string, unknown>, ref: React.ForwardedRef<{
+    default: React.forwardRef((props: Record<string, unknown>, ref: React.ForwardedRef<{
       getTextContent: () => string;
       clear: () => void;
       setText: (_value: string) => void;
     }>) => {
+      latestComposerProps = props;
       React.useImperativeHandle(ref, () => ({
-        getTextContent: () => '',
-        clear: () => undefined,
-        setText: () => undefined,
+        getTextContent: () => composerEditorValue,
+        clear: () => {
+          composerEditorValue = '';
+        },
+        setText: (value: string) => {
+          composerEditorValue = value;
+        },
       }));
-      return <div data-testid="composer-editor" />;
+      return (
+        <textarea
+          data-testid="composer-editor"
+          disabled={props.editable === false}
+          placeholder={typeof props.placeholder === 'string' ? props.placeholder : ''}
+          value={composerEditorValue}
+          onChange={(event) => {
+            composerEditorValue = event.target.value;
+            if (typeof props.onTextChange === 'function') {
+              props.onTextChange(event.target.value);
+            }
+          }}
+        />
+      );
     }),
   }));
 
@@ -510,6 +531,8 @@ const resetState = () => {
     tasks: [],
     startTask: mock(async () => undefined),
   };
+  composerEditorValue = '';
+  latestComposerProps = null;
 };
 
 describe('ChatZone', () => {
@@ -676,7 +699,7 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
   });
 
-  it('keeps implement kickoff manual when a task is selected with an empty conversation', async () => {
+  it('keeps implement kickoff manual for planned tasks with an empty conversation', async () => {
     appState = {
       ...appState,
       mode: 'Implement',
@@ -689,6 +712,7 @@ describe('ChatZone', () => {
           id: 'task-1',
           title: 'Implement checkout',
           draft: false,
+          task_source: 'architect',
           is_blocked: false,
           status: 'Pending',
           execution_targets: [{ projectId: 'project-1' }],
@@ -709,8 +733,114 @@ describe('ChatZone', () => {
 
     expect(requireContainer().textContent).toContain('Task briefing');
     expect(requireContainer().textContent).toContain('Start execution');
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer).not.toBeNull();
+    expect(composer?.disabled).toBe(true);
+    expect(composer?.getAttribute('placeholder')).toBe('Start execution to begin the task conversation');
     expect(taskState.startTask).not.toHaveBeenCalled();
     expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('skips kickoff UI for standalone tasks with an empty conversation', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Quick export',
+          draft: false,
+          task_source: 'standalone',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: null,
+          branch_name: 'feature/quick-export',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Add CSV export from the table.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).not.toContain('Task briefing');
+    expect(requireContainer().textContent).not.toContain('Start execution');
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer).not.toBeNull();
+    expect(composer?.disabled).toBe(false);
+    expect(composer?.getAttribute('placeholder')).toBe('Type your message');
+  });
+
+  it('sends the first standalone task message directly from the composer', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Quick export',
+          draft: false,
+          task_source: 'standalone',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: null,
+          branch_name: 'feature/quick-export',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Add CSV export from the table.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer).not.toBeNull();
+
+    await act(async () => {
+      composerEditorValue = 'Implement the standalone feature directly.';
+      const onTextChange = latestComposerProps?.onTextChange as
+        | ((value: string) => void)
+        | undefined;
+      onTextChange?.(composerEditorValue);
+    });
+
+    const sendButton = requireContainer()
+      .querySelector('span[data-icon="arrow-up"]')
+      ?.closest('button') as HTMLButtonElement | null;
+    expect(sendButton).not.toBeNull();
+    expect(sendButton?.disabled).toBe(false);
+
+    await act(async () => {
+      sendButton?.click();
+    });
+
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: 'Implement the standalone feature directly.',
+      taskId: 'task-1',
+      images: [],
+    });
+    expect(taskState.startTask).not.toHaveBeenCalled();
   });
 
   it('renders the active questionnaire in the footer and hides the standard composer', async () => {

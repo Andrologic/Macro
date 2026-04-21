@@ -590,7 +590,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     mode === 'Implement'
       ? selectedTask?.id ?? currentConversation?.task_id ?? null
       : null;
-  const isManualFeatureDraftTask = selectedTask?.draft === true;
+  const selectedTaskRequiresKickoff = Boolean(
+    mode === 'Implement' &&
+      selectedTask &&
+      !selectedTask.draft &&
+      selectedTask.task_source !== 'standalone'
+  );
   const selectedTaskProjectIds = useMemo(() => {
     if (!selectedTask) {
       return [];
@@ -620,10 +625,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     });
   }, [selectedTaskProjectIds, t]);
   const canStartImplementExecution = Boolean(
-    mode === 'Implement' &&
-      runtimeCapabilities.implementExecution &&
+    selectedTaskRequiresKickoff &&
       selectedTask &&
-      !selectedTask.draft &&
+      runtimeCapabilities.implementExecution &&
       !selectedTask.is_blocked &&
       selectedTask.status !== 'Completed' &&
       selectedTask.status !== 'InReview' &&
@@ -631,10 +635,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       currentMessages.length === 0
   );
   const isImplementComposerLocked =
-    mode === 'Implement' &&
-    Boolean(selectedTask) &&
-    !selectedTask?.draft &&
-    currentMessages.length === 0;
+    selectedTaskRequiresKickoff && currentMessages.length === 0;
   const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask;
   const isComposerDisabled =
     isConversationPending ||
@@ -799,6 +800,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }): Promise<boolean> => {
     if (!runtimeCapabilities.implementExecution) return false;
     if (mode !== 'Implement' || !selectedTask || isBusySending || isConversationPending) return false;
+    if (!selectedTaskRequiresKickoff) return false;
     if (selectedTask.draft) return false;
     if (!selectedProviderId || !selectedModelId) return false;
     if (startingExecutionRef.current) return false;
@@ -857,6 +859,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedProviderId,
     selectedTask,
     selectedTaskProjectSummary,
+    selectedTaskRequiresKickoff,
     sendMessage,
     startTask,
     runtimeCapabilities.implementExecution,
@@ -1282,10 +1285,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   ) : mode === 'Implement' ? (
                     <p className="text-muted-foreground text-sm">
                       {selectedTask
-                        ? t(
-                            'implement.startConversationFromBrief',
-                            'Use the task briefing below to start the task conversation.'
-                          )
+                        ? selectedTaskRequiresKickoff
+                          ? t(
+                              'implement.startConversationFromBrief',
+                              'Use the task briefing below to start the task conversation.'
+                            )
+                          : t('chat.typeMessage')
                         : t(
                             'implement.selectTaskToStart',
                             'Select a task to start implementation.'
@@ -1414,7 +1419,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               )}
             </div>
 
-            {mode === 'Implement' && selectedTask && !isManualFeatureDraftTask && currentMessages.length === 0 && (
+            {selectedTask && selectedTaskRequiresKickoff && currentMessages.length === 0 && (
               <div className="rounded-xl border border-border bg-card/70 p-3 space-y-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="space-y-1">
