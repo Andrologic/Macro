@@ -57,8 +57,11 @@ describe('aiConfig loadAIConfigFile', () => {
     devOverrides = {
       providers: {
         openrouter: {
+          name: 'OpenRouter',
+          providerType: 'openrouter',
           apiKey: 'test-api-key',
           baseUrl: 'https://openrouter.ai/api/v1/',
+          isLocal: false,
         },
       },
     };

@@ -1,8 +1,11 @@
 import { aiGetDevProviderOverrides, isTauriAvailable } from './aiConfigRuntime';
 
 export interface AIProviderConfig {
+  name?: string;
+  providerType?: string;
   apiKey?: string;
   baseUrl?: string;
+  isLocal?: boolean;
 }
 
 export interface AIConfigFile {

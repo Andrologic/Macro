@@ -3377,8 +3377,15 @@ pub async fn db_delete_messages_after(
 #[tauri::command]
 pub async fn db_list_provider_configs(
     pool: State<'_, DbPool>,
+    workspace_metadata_root: State<'_, WorkspaceMetadataRoot>,
 ) -> CommandResult<Vec<ProviderConfig>> {
     let pool = get_pool(&pool).await?;
+    if tauri::is_dev() {
+        let workspace_root = workspace_metadata_root.0.read().await.clone();
+        crate::dev_overrides::sync_declared_dev_providers_from_workspace(&pool, &workspace_root)
+            .await
+            .map_err(CommandError::from)?;
+    }
 
     repository::list_provider_configs(&pool)
         .await
@@ -3429,8 +3436,10 @@ pub async fn db_update_provider_config(
     pool: State<'_, DbPool>,
     id: String,
     name: Option<String>,
+    provider_type: Option<String>,
     base_url: Option<String>,
     api_key: Option<String>,
+    is_local: Option<bool>,
     is_enabled: Option<bool>,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
@@ -3443,8 +3452,10 @@ pub async fn db_update_provider_config(
         UpdateProviderConfigInput {
             id,
             name,
+            provider_type,
             base_url,
             api_key,
+            is_local,
             is_enabled,
         },
     )

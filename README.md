@@ -191,20 +191,24 @@ Remote transport contract:
 - The current remote mode is intentionally minimal. It supports workspace bootstrap, task catalog, Git tree/history, remote tool policy/validation/execution, and local browser persistence for tool/MCP preferences.
 - Project creation/import/edit flows, Git worktree flows, file preview from the Git tree, and local implementation actions remain desktop-only in this pass.
 
-### Local API Keys for Tauri Dev
+### Local AI Provider Config for Tauri Dev
 
-Recommended for day-to-day macOS development: to avoid repeated keychain prompts and re-entering provider API keys on every `bun run tauri:dev` restart, create a local keys file:
+Recommended for day-to-day macOS development: to avoid repeated keychain prompts and re-entering provider API keys on every `bun run tauri:dev` restart, create a local provider config file:
 
 ```bash
 cp dev/ai-keys.local.example.json dev/ai-keys.local.json
 ```
 
-Then edit `dev/ai-keys.local.json` with your real keys.
+Then edit `dev/ai-keys.local.json` with your real keys and any dev-only provider definitions.
 
-- File format supports provider IDs (`openai`, `anthropic`, `openrouter`, `zai`, etc.)
+- File format supports legacy key-only overrides for existing provider IDs (`openai`, `anthropic`, `openrouter`, `zai`, etc.)
+- Declarative entries can define a dev-managed provider with `name`, `providerType`, `baseUrl`, and optional `apiKey`/`isLocal`
+- For declarative entries, the JSON object key becomes the canonical provider ID
 - Provider keys are matched flexibly (`zai` and `z.ai` both work)
 - `apiKey` is enough in most cases
 - `baseUrl` is optional and only needed for custom/proxy endpoints
+- In `bun run tauri:dev`, declarative entries sync their `name`, `providerType`, `baseUrl`, and `isLocal` into the local provider database
+- Providers not declared in this file remain user-managed in the app
 - This file is ignored by git (`dev/ai-keys.local.json`)
 - The preload only works in `bun run tauri:dev`
 - `bun run dev`, `bun run build`, and `bun run tauri:build` do not load this file
@@ -218,8 +222,17 @@ Example:
     "openai": {
       "apiKey": "sk-..."
     },
-    "openrouter": {
+    "minimax": {
+      "name": "MiniMax",
+      "providerType": "openai",
+      "baseUrl": "https://api.minimax.io/v1",
       "apiKey": "test-api-key..."
+    },
+    "opencode-go": {
+      "name": "OpenCode Go",
+      "providerType": "openai",
+      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "apiKey": "go-..."
     }
   }
 }

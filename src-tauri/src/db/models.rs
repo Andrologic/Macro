@@ -186,8 +186,10 @@ pub struct ImportMessageInput {
 pub struct UpdateProviderConfigInput {
     pub id: String,
     pub name: Option<String>,
+    pub provider_type: Option<String>,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
+    pub is_local: Option<bool>,
     pub is_enabled: Option<bool>,
 }
 
