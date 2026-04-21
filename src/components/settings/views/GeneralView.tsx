@@ -16,6 +16,7 @@ import { useAppStore } from '../../../stores/useAppStore';
 // @ts-ignore
 import { Select } from '../../ui/Select';
 import { Switch } from '../../ui/Switch';
+import { ToolSecuritySettingsSection } from './ToolSecuritySettingsSection';
 
 export const GeneralView: React.FC = () => {
     const { t, i18n } = useTranslation();
@@ -156,6 +157,8 @@ export const GeneralView: React.FC = () => {
                 <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
                     {t('settings.application', 'Application')}
                 </h4>
+
+                <ToolSecuritySettingsSection />
 
                 <div className="space-y-4 bg-card/40 p-4 rounded-xl border border-border/50">
                     <div className="flex items-center justify-between gap-4">

@@ -23,6 +23,7 @@ import type {
   ProviderTurnState,
   ToolTrace,
 } from "../types";
+import { parseToolTracesJson as parseSerializedToolTracesJson } from "./toolTraceState";
 
 // ============ Types ============
 
@@ -456,23 +457,7 @@ export const parseProviderTurnStateJson = (
 };
 
 export const parseToolTracesJson = (raw: string | null): ToolTrace[] | undefined => {
-  if (!raw) return undefined;
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return undefined;
-    const traces = parsed.filter(
-      (trace): trace is ToolTrace =>
-        !!trace &&
-        typeof trace === "object" &&
-        typeof (trace as ToolTrace).tool_call_id === "string" &&
-        typeof (trace as ToolTrace).tool_name === "string" &&
-        ((trace as ToolTrace).status === "running" || (trace as ToolTrace).status === "done"),
-    );
-    return traces.length > 0 ? traces : undefined;
-  } catch {
-    return undefined;
-  }
+  return parseSerializedToolTracesJson(raw);
 };
 
 export interface AiStreamErrorEvent {

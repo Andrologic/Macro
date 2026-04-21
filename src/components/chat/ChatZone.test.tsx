@@ -69,6 +69,25 @@ type MockChatState = {
       draftTextByStepId: Record<string, string>;
     }
   >;
+  pendingToolApprovalByConversationId: Record<
+    string,
+    {
+      conversationId: string;
+      assistantMessageId: string;
+      toolCallId: string;
+        toolId: string;
+        actionGroup: 'observe' | 'change' | 'escape';
+        riskLevel: 'strict' | 'balanced' | 'yolo';
+        isDestructive?: boolean;
+        summary: string;
+        detail?: string;
+        rememberKey: string;
+    }
+  >;
+  getPendingToolApproval: ReturnType<typeof mock>;
+  approvePendingToolApprovalOnce: ReturnType<typeof mock>;
+  approvePendingToolApprovalForConversation: ReturnType<typeof mock>;
+  denyPendingToolApproval: ReturnType<typeof mock>;
   getActiveQuestionnaire: ReturnType<typeof mock>;
   startQuestionnaireResponseEdit: ReturnType<typeof mock>;
   cancelQuestionnaireSession: ReturnType<typeof mock>;
@@ -440,6 +459,13 @@ const resetState = () => {
     getConversationMessages: (conversationId: string) =>
       chatState.messages.filter((message) => message.conversation_id === conversationId),
     questionnaireDraftsByConversationId: {},
+    pendingToolApprovalByConversationId: {},
+    getPendingToolApproval: mock((conversationId: string) =>
+      chatState.pendingToolApprovalByConversationId[conversationId] ?? null
+    ),
+    approvePendingToolApprovalOnce: mock(() => undefined),
+    approvePendingToolApprovalForConversation: mock(() => undefined),
+    denyPendingToolApproval: mock(() => undefined),
     getActiveQuestionnaire: mock(() => null),
     startQuestionnaireResponseEdit: mock(() => false),
     cancelQuestionnaireSession: mock(() => undefined),
@@ -722,6 +748,125 @@ describe('ChatZone', () => {
     expect(choiceList?.className).toContain('flex-col');
     expect(stepPanel?.className).toContain('questionnaire-step-enter');
     expect(requireContainer().querySelector('[data-testid="composer-editor"]')).toBeNull();
+  });
+
+  it('renders the active tool approval footer and hides the standard composer', async () => {
+    chatState = {
+      ...chatState,
+      pendingToolApprovalByConversationId: {
+        'conv-1': {
+          conversationId: 'conv-1',
+          assistantMessageId: 'msg-assistant-1',
+          toolCallId: 'tool-call-1',
+          toolId: 'terminal_run',
+          actionGroup: 'escape',
+          riskLevel: 'balanced',
+          isDestructive: true,
+          summary: 'Run a terminal command',
+          detail: 'npm test',
+          rememberKey: 'terminal:npm test',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const footer = requireContainer().querySelector('[data-testid="tool-approval-footer"]');
+    expect(footer?.textContent).toContain('Tool approval');
+    expect(footer?.textContent).toContain('Run a terminal command');
+    expect(footer?.textContent).toContain('System');
+    expect(footer?.textContent).not.toContain('terminal_run');
+    expect(footer?.textContent).toContain('Allow once');
+    expect(footer?.textContent).toContain('Allow for this conversation');
+    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).toBeNull();
+  });
+
+  it('forwards tool approval actions to the chat store', async () => {
+    chatState = {
+      ...chatState,
+      pendingToolApprovalByConversationId: {
+        'conv-1': {
+          conversationId: 'conv-1',
+          assistantMessageId: 'msg-assistant-1',
+          toolCallId: 'tool-call-1',
+          toolId: 'web_fetch',
+          actionGroup: 'escape',
+          riskLevel: 'balanced',
+          isDestructive: false,
+          summary: 'Fetch a web page',
+          detail: 'example.com',
+          rememberKey: 'domain:example.com',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const allowOnceButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Allow once')
+    );
+    const allowConversationButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Allow for this conversation')
+    );
+    const denyButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Refuse')
+    );
+
+    await act(async () => {
+      allowOnceButton?.click();
+      allowConversationButton?.click();
+      denyButton?.click();
+    });
+
+    expect(chatState.approvePendingToolApprovalOnce).toHaveBeenCalledWith('conv-1');
+    expect(chatState.approvePendingToolApprovalForConversation).toHaveBeenCalledWith('conv-1');
+    expect(chatState.denyPendingToolApproval).not.toHaveBeenCalled();
+  });
+
+  it('forwards tool denial confirmations to the chat store', async () => {
+    chatState = {
+      ...chatState,
+      pendingToolApprovalByConversationId: {
+        'conv-1': {
+          conversationId: 'conv-1',
+          assistantMessageId: 'msg-assistant-1',
+          toolCallId: 'tool-call-1',
+          toolId: 'web_fetch',
+          actionGroup: 'escape',
+          riskLevel: 'balanced',
+          isDestructive: false,
+          summary: 'Fetch a web page',
+          detail: 'example.com',
+          rememberKey: 'domain:example.com',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const denyButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Refuse')
+    );
+
+    await act(async () => {
+      denyButton?.click();
+    });
+
+    const confirmDenyButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Confirm denial')
+    );
+
+    await act(async () => {
+      confirmDenyButton?.click();
+    });
+
+    expect(chatState.denyPendingToolApproval).toHaveBeenCalledWith('conv-1', undefined);
   });
 
   it('submits the questionnaire when the user clicks a suggested answer', async () => {
