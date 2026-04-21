@@ -13,14 +13,26 @@ let useFileChangesStore!: typeof UseFileChangesStoreHook;
 let useTaskStore!: typeof UseTaskStoreHook;
 let TaskQueueComponent!: typeof import('./TaskQueue').TaskQueue;
 let importCounter = 0;
+let virtualListRowKeys: Array<Array<string | number>> = [];
 
 const registerVirtualListMock = () => {
   mock.module('../../hooks/useVirtualList', () => ({
-    useVirtualList: ({ items }: { items: unknown[] }) => ({
+    useVirtualList: ({
+      items,
+      getItemKey,
+    }: {
+      items: unknown[];
+      getItemKey?: (item: unknown, index: number) => string | number;
+    }) => {
+      const rowKeys = items.map((item, index) =>
+        getItemKey ? getItemKey(item, index) : index
+      );
+      virtualListRowKeys.push(rowKeys);
+      return {
       parentRef: { current: null },
       virtualItems: items.map((item, index) => ({
         index,
-        key: index,
+        key: rowKeys[index] ?? index,
         size: 112,
         start: index * 120,
         item,
@@ -29,7 +41,8 @@ const registerVirtualListMock = () => {
       scrollToIndex: () => undefined,
       scrollToEnd: () => undefined,
       measureElement: () => undefined,
-    }),
+      };
+    },
     useVirtualMessages: (messages: unknown[]) => ({
       parentRef: { current: null },
       virtualItems: messages.map((item, index) => ({
@@ -50,6 +63,7 @@ const registerVirtualListMock = () => {
 const loadTaskQueueModules = async () => {
   importCounter += 1;
   mock.restore();
+  virtualListRowKeys = [];
   registerVirtualListMock();
 
   const appStoreModule = await import(
@@ -113,6 +127,53 @@ const makeProject = (id: string, path: string, name: string) => ({
   },
 });
 
+const makeTask = (
+  id: string,
+  status: TaskStatus,
+  overrides: Record<string, unknown> = {}
+) => ({
+  id,
+  title: `Task ${id}`,
+  description: `Description for ${id}`,
+  status,
+  task_source: 'standalone' as const,
+  draft: false,
+  archived_at: null,
+  archive_reason: null,
+  merged_at: null,
+  project_id: 'project-1',
+  project_ids: ['project-1'],
+  assigned_branch: `feature/${id}`,
+  branch_name: `feature/${id}`,
+  branch_id: null,
+  branch_task_index: 0,
+  sequence_index: 0,
+  execution_targets: [
+    {
+      projectId: 'project-1',
+      branchName: `feature/${id}`,
+      worktreeKey: `project-1::feature/${id}`,
+    },
+  ],
+  blocked_by: [],
+  blocked_by_task_ids: [],
+  dependencies: [],
+  is_blocked: false,
+  is_ready: status !== 'Completed' && status !== 'Failed' && status !== 'Blocked',
+  needs_revalidation: false,
+  plan_id: '',
+  plan_title: null,
+  plan_status: null,
+  plan_target_branch: null,
+  plan_target_branches_by_project_id: null,
+  has_mixed_target_branches: false,
+  standalone_kind: 'legacy' as const,
+  base_branch: 'develop',
+  feature_slug: id,
+  conversation_id: `conversation-${id}`,
+  ...overrides,
+});
+
 describe('TaskQueue', () => {
   let initialAppState: ReturnType<typeof useAppStore.getState> | null = null;
   let initialChatState: ReturnType<typeof useChatStore.getState> | null = null;
@@ -122,6 +183,16 @@ describe('TaskQueue', () => {
   let root: Root | null = null;
 
   const seedStores = (taskStatus: TaskStatus, options?: { isStreaming?: boolean }) => {
+    seedTasks([makeTask('task-1', taskStatus, {
+      title: 'Render task status indicator',
+      description: 'Check the status marker',
+      task_source: 'architect',
+      plan_id: 'plan-1',
+      plan_title: 'Plan One',
+    })], options);
+  };
+
+  const seedTasks = (tasks: Array<Record<string, unknown>>, options?: { isStreaming?: boolean }) => {
     const conversationRuntimeById = options?.isStreaming
       ? {
           'conversation-1': {
@@ -151,25 +222,7 @@ describe('TaskQueue', () => {
 
     useTaskStore.setState({
       ...useTaskStore.getState(),
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Render task status indicator',
-          description: 'Check the status marker',
-          status: taskStatus,
-          task_source: 'architect',
-          draft: false,
-          archived_at: null,
-          project_id: 'project-1',
-          project_ids: ['project-1'],
-          assigned_branch: 'feature/task-status',
-          blocked_by: [],
-          dependencies: [],
-          is_blocked: false,
-          plan_id: 'plan-1',
-          plan_title: 'Plan One',
-        },
-      ] as never,
+      tasks: tasks as never,
       planSummaries: [],
       hasStandaloneTasks: false,
       publishedStandaloneTasks: {},
@@ -197,6 +250,15 @@ describe('TaskQueue', () => {
       currentTaskId: null,
     });
   };
+
+  const getLastVirtualListKeys = () =>
+    virtualListRowKeys[virtualListRowKeys.length - 1] ?? [];
+
+  const getSectionSummaries = () =>
+    Array.from(document.body.querySelectorAll('h2')).map((heading) => ({
+      title: heading.textContent?.trim(),
+      count: heading.parentElement?.querySelector('span')?.textContent?.trim(),
+    }));
 
   beforeEach(async () => {
     await loadTaskQueueModules();
@@ -245,7 +307,7 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
     ).not.toBeNull();
-    expect(document.body.querySelector('h2')?.parentElement?.className).toContain('pt-1');
+    expect(document.body.querySelector('h2')?.parentElement?.className).toContain('h-7');
   });
 
   it('renders a pulsing dot for awaiting response tasks without streaming', async () => {
@@ -281,6 +343,107 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="running"]')
     ).not.toBeNull();
+  });
+
+  it('keeps virtual row keys stable when draft and blocked sections are inserted', async () => {
+    seedTasks([
+      makeTask('ready-1', 'Pending', {
+        title: 'Ready task',
+        sequence_index: 1,
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(getSectionSummaries()).toEqual([
+      { title: 'Ready tasks', count: '1' },
+    ]);
+    expect(getLastVirtualListKeys()).toEqual([
+      'section:ready',
+      'task:ready-1',
+    ]);
+
+    await act(async () => {
+      useTaskStore.setState({
+        ...useTaskStore.getState(),
+        tasks: [
+          makeTask('draft-1', 'Pending', {
+            title: 'Draft feature',
+            description: '',
+            draft: true,
+            standalone_kind: 'manual_feature',
+            assigned_branch: '',
+            branch_name: '',
+            execution_targets: [],
+            sequence_index: 0,
+          }),
+          makeTask('ready-1', 'Pending', {
+            title: 'Ready task',
+            sequence_index: 1,
+          }),
+        ] as never,
+      });
+      await flushRender();
+    });
+
+    expect(getSectionSummaries()).toEqual([
+      { title: 'Draft features', count: '1' },
+      { title: 'Ready tasks', count: '1' },
+    ]);
+    expect(getLastVirtualListKeys()).toEqual([
+      'section:drafts',
+      'task:draft-1',
+      'section:ready',
+      'task:ready-1',
+    ]);
+
+    await act(async () => {
+      useTaskStore.setState({
+        ...useTaskStore.getState(),
+        tasks: [
+          makeTask('draft-1', 'Pending', {
+            title: 'Draft feature',
+            description: '',
+            draft: true,
+            standalone_kind: 'manual_feature',
+            assigned_branch: '',
+            branch_name: '',
+            execution_targets: [],
+            sequence_index: 0,
+          }),
+          makeTask('ready-1', 'Blocked', {
+            title: 'Blocked task',
+            is_blocked: true,
+            blocked_by: ['Draft feature'],
+            sequence_index: 1,
+          }),
+          makeTask('done-1', 'Completed', {
+            title: 'Completed task',
+            sequence_index: 2,
+          }),
+        ] as never,
+      });
+      await flushRender();
+    });
+
+    expect(getSectionSummaries()).toEqual([
+      { title: 'Draft features', count: '1' },
+      { title: 'Ready tasks', count: '0' },
+      { title: 'Blocked tasks', count: '1' },
+      { title: 'Completed tasks', count: '1' },
+    ]);
+    expect(getLastVirtualListKeys()).toEqual([
+      'section:drafts',
+      'task:draft-1',
+      'section:ready',
+      'section:blocked',
+      'task:ready-1',
+      'section:completed',
+      'task:done-1',
+    ]);
   });
 
 });
