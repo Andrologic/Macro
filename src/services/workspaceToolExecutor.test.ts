@@ -63,6 +63,22 @@ const registerWorkspaceToolExecutorMocks = (
       size: 0,
       encoding: "utf-8",
     }),
+    fsStat: async (path: string | { path: string }) => {
+      const resolvedPath =
+        typeof path === "string" ? path : typeof path?.path === "string" ? path.path : "";
+      return {
+        path: resolvedPath,
+        name: resolvedPath.split(/[\\/]/).pop() || "",
+        kind: "file",
+        size: 0,
+        modified: "2026-03-26T00:00:00.000Z",
+        permissions: "rw-r--r--",
+        language: "text",
+        is_readonly: false,
+        is_hidden: false,
+        is_symlink: false,
+      };
+    },
     fsWriteFile: async ({ path }: { path: string }) => ({
       path,
       bytes_written: 0,
@@ -153,6 +169,7 @@ describe("workspaceToolExecutor helpers", () => {
 
     expect(isWriteTool("write")).toBe(true);
     expect(isWriteTool("edit")).toBe(true);
+    expect(isWriteTool("delete")).toBe(true);
     expect(isWriteTool("apply_patch")).toBe(true);
     expect(isWriteTool("read")).toBe(false);
     expect(isWriteTool("git_commit")).toBe(false);
@@ -591,6 +608,151 @@ describe("workspaceToolExecutor helpers", () => {
       "C:/dev/macro-web/notes.md",
     ]);
     expect(deletes).toEqual([]);
+  });
+
+  it("deletes a file from the routed worktree workspace", async () => {
+    const deletes: string[] = [];
+
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+        fsStat: async (path: string) => ({
+          path,
+          name: "obsolete.ts",
+          kind: "file",
+          size: 20,
+          modified: "2026-03-26T10:00:00.000Z",
+          permissions: "rw-r--r--",
+          language: "typescript",
+          is_readonly: false,
+          is_hidden: false,
+          is_symlink: false,
+        }),
+        fsReadFileWithOptions: async ({ path }: { path: string }) => ({
+          content:
+            path === "C:/worktrees/web-task/src/obsolete.ts"
+              ? "first line\nsecond line\n"
+              : "",
+          language: "typescript",
+          is_binary: false,
+          size: 23,
+          encoding: "utf-8",
+        }),
+        fsDelete: async ({ path }: { path: string }) => {
+          deletes.push(path);
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "delete",
+      { path: "src/obsolete.ts", project_id: "web" },
+      "Implement",
+      {
+        projectId: "web",
+        focusedProjectId: "web",
+        defaultWorkspacePath: "C:/worktrees/web-task",
+        workspacePathsByProjectId: {
+          web: "C:/worktrees/web-task",
+        },
+      },
+    );
+
+    const parsed = JSON.parse(result || "{}");
+    expect(parsed.ok).toBe(true);
+    expect(parsed.files[0].path).toBe("src/obsolete.ts");
+    expect(parsed.files[0].status).toBe("deleted");
+    expect(parsed.files[0].deletions).toBe(2);
+    expect(parsed.files[0].validation.exists).toBe(false);
+    expect(deletes).toEqual(["C:/worktrees/web-task/src/obsolete.ts"]);
+  });
+
+  it("rejects delete on an explicitly targeted read-only subproject", async () => {
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "delete",
+      { path: "api/src/legacy.ts" },
+      "Implement",
+      {
+        groupId: "macro-suite",
+        focusedProjectId: "web",
+        virtualRootEnabled: true,
+        projectMounts: [
+          {
+            projectId: "api",
+            groupId: "macro-suite",
+            mountName: "api",
+            displayName: "API",
+            workspacePath: "C:/dev/macro-api",
+            isReadOnly: true,
+          },
+          {
+            projectId: "web",
+            groupId: "macro-suite",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "C:/dev/macro-web",
+            isReadOnly: false,
+          },
+        ],
+        workspacePathsByProjectId: {
+          api: "C:/dev/macro-api",
+          web: "C:/dev/macro-web",
+        },
+      },
+    );
+
+    expect(result).toBe(
+      'Error executing delete: subproject "API" is read-only.'
+    );
+  });
+
+  it("returns a clear error when delete targets a directory", async () => {
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+        fsStat: async (path: string) => ({
+          path,
+          name: "src",
+          kind: "directory",
+          size: 0,
+          modified: "2026-03-26T10:00:00.000Z",
+          permissions: "rwxr-xr-x",
+          language: null,
+          is_readonly: false,
+          is_hidden: false,
+          is_symlink: false,
+        }),
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "delete",
+      { path: "src", project_id: "web" },
+      "Implement",
+      {
+        projectId: "web",
+        focusedProjectId: "web",
+        defaultWorkspacePath: "C:/worktrees/web-task",
+        workspacePathsByProjectId: {
+          web: "C:/worktrees/web-task",
+        },
+      },
+    );
+
+    expect(result).toBe(
+      "Cannot delete directory with delete tool: src. Only files are supported."
+    );
   });
 
   afterAll(() => {

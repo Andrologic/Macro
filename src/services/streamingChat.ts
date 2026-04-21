@@ -335,7 +335,8 @@ const formatToolTraceDetail = (toolName: string, args: Record<string, unknown>):
     toolName === 'list' ||
     toolName === 'read' ||
     toolName === 'write' ||
-    toolName === 'edit'
+    toolName === 'edit' ||
+    toolName === 'delete'
   ) {
     return typeof args.path === 'string' ? args.path.trim() : undefined;
   }
@@ -498,6 +499,7 @@ const LIST_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('list'));
 const READ_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('read'));
 const WRITE_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('write'));
 const EDIT_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('edit'));
+const DELETE_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('delete'));
 const GLOB_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('glob'));
 const GREP_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('grep'));
 const GIT_STATUS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('git_status'));
@@ -943,6 +945,7 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('read')) tools.push(READ_WORKSPACE_TOOL);
   if (allowedTools.has('write')) tools.push(WRITE_WORKSPACE_TOOL);
   if (allowedTools.has('edit')) tools.push(EDIT_WORKSPACE_TOOL);
+  if (allowedTools.has('delete')) tools.push(DELETE_WORKSPACE_TOOL);
   if (allowedTools.has('glob')) tools.push(GLOB_WORKSPACE_TOOL);
   if (allowedTools.has('grep')) tools.push(GREP_WORKSPACE_TOOL);
   if (allowedTools.has('question')) tools.push(QUESTION_TOOL);

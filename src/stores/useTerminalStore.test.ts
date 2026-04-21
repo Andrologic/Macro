@@ -253,6 +253,29 @@ const terminalUpdateTabMetadataMock = mock(
     } | null;
   }): Promise<TerminalTabDto> => buildUpdatedTabDto(params)
 );
+const terminalCreateSessionMock = mock(
+  async (params: {
+    projectId: string;
+    cwd?: string | null;
+  }) => ({
+    id: `session-${params.projectId}`,
+    project_id: params.projectId,
+    project_name: params.projectId === 'project-2' ? 'API' : 'Web',
+    mount_name: params.projectId === 'project-2' ? 'api' : 'web',
+    workspace_path: params.projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web',
+    cwd:
+      params.cwd ??
+      (params.projectId === 'project-2'
+        ? 'C:/repos/api'
+        : 'C:/repos/web'),
+    status: 'idle',
+    last_command: null,
+    output: '',
+    exit_code: null,
+    timed_out: false,
+    updated_at: '2026-03-26T10:00:00.000Z',
+  })
+);
 const actualTauriIpc = await import('../services/tauriIpc');
 const { loadPreference: actualLoadPreference } = await import('../services/preferences');
 const loadPreferenceMock = mock(
@@ -287,6 +310,7 @@ const registerUseTerminalStoreMocks = async (counter: number) => {
   mock.module('../services/tauriIpc', () => ({
     ...actualTauriIpc,
     isTauriAvailable: () => true,
+    terminalCreateSession: terminalCreateSessionMock,
     terminalListTabs: terminalListTabsMock,
     terminalCreateTab: terminalCreateTabMock,
     terminalReconnectTab: terminalReconnectTabMock,
@@ -395,6 +419,7 @@ describe('useTerminalStore', () => {
     taskStoreState.tasks = buildTasks();
 
     terminalListTabsMock.mockReset();
+    terminalCreateSessionMock.mockReset();
     terminalCreateTabMock.mockReset();
     terminalReconnectTabMock.mockReset();
     terminalReadTabMock.mockReset();
@@ -411,6 +436,26 @@ describe('useTerminalStore', () => {
       };
     });
     terminalListTabsMock.mockImplementation(async () => []);
+    terminalCreateSessionMock.mockImplementation(
+      async (params: { projectId: string; cwd?: string | null }) => ({
+        id: `session-${params.projectId}`,
+        project_id: params.projectId,
+        project_name: params.projectId === 'project-2' ? 'API' : 'Web',
+        mount_name: params.projectId === 'project-2' ? 'api' : 'web',
+        workspace_path: params.projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web',
+        cwd:
+          params.cwd ??
+          (params.projectId === 'project-2'
+            ? 'C:/repos/api'
+            : 'C:/repos/web'),
+        status: 'idle',
+        last_command: null,
+        output: '',
+        exit_code: null,
+        timed_out: false,
+        updated_at: '2026-03-26T10:00:00.000Z',
+      })
+    );
     terminalCreateTabMock.mockImplementation(
       async (params?: {
         kind?: string;
@@ -500,6 +545,51 @@ describe('useTerminalStore', () => {
     );
     expect(state.panelOpen).toBe(true);
     expect(state.lastManualProjectIdByTaskId).toEqual({ 'task-1': 'project-1' });
+  });
+
+  it('creates terminal sessions in the selected task worktree by default', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+
+    const session = await useTerminalStore.getState().createSession({
+      projectId: 'project-1',
+    });
+
+    expect(terminalCreateSessionMock).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      cwd: 'C:/repos/web/.macro/worktrees/task-1',
+    });
+    expect(session.cwd).toBe('C:/repos/web/.macro/worktrees/task-1');
+  });
+
+  it('resolves relative createSession cwd values from the task worktree', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+
+    const session = await useTerminalStore.getState().createSession({
+      projectId: 'project-2',
+      cwd: 'packages/api',
+    });
+
+    expect(terminalCreateSessionMock).toHaveBeenCalledWith({
+      projectId: 'project-2',
+      cwd: 'C:/repos/api/.macro/worktrees/task-1/packages/api',
+    });
+    expect(session.cwd).toBe('C:/repos/api/.macro/worktrees/task-1/packages/api');
+  });
+
+  it('falls back to the project root when no task worktree is selected', async () => {
+    appStoreState.selectedTaskId = null;
+
+    const { useTerminalStore } = await loadTerminalStore();
+
+    const session = await useTerminalStore.getState().createSession({
+      projectId: 'project-1',
+    });
+
+    expect(terminalCreateSessionMock).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      cwd: 'C:/repos/web',
+    });
+    expect(session.cwd).toBe('C:/repos/web');
   });
 
   it('uses the remembered manual project for the current task when available', async () => {

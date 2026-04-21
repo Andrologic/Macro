@@ -28,6 +28,7 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "grep",
         "write",
         "edit",
+        "delete",
         "apply_patch",
         "git_status",
         "git_log",
@@ -94,6 +95,7 @@ fn implement_allowed_tool_ids() -> &'static [&'static str] {
         "grep",
         "write",
         "edit",
+        "delete",
         "apply_patch",
         "git_status",
         "git_log",
@@ -114,7 +116,7 @@ fn implement_allowed_tool_ids() -> &'static [&'static str] {
 }
 
 fn is_write_tool(tool_id: &str) -> bool {
-    matches!(tool_id, "write" | "edit" | "apply_patch")
+    matches!(tool_id, "write" | "edit" | "delete" | "apply_patch")
 }
 
 fn normalize_relative_path_parts(raw_path: &str) -> Option<Vec<String>> {

@@ -38,6 +38,7 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "read",
   "write",
   "edit",
+  "delete",
   "apply_patch",
   "glob",
   "grep",
@@ -369,6 +370,22 @@ export const MACRO_TOOL_REGISTRY = [
         },
       },
       required: ["path", "old_text", "new_text"],
+    },
+  ),
+  objectTool(
+    "delete",
+    "Delete a file in the current execution workspace. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts. This tool only supports files, not directories.",
+    {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Path of the file to delete." },
+        project_id: {
+          type: "string",
+          description:
+            "Optional subproject identifier when you want to force which subproject to use.",
+        },
+      },
+      required: ["path"],
     },
   ),
   objectTool(
