@@ -21,7 +21,7 @@ type RenderSegment =
 interface ToolRenderTrace {
   toolName: string;
   detail?: string;
-  status: 'running' | 'done';
+  status: ToolTrace['status'];
 }
 
 type RenderBlock =
@@ -74,12 +74,21 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
   );
 };
 
-const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: 'running' | 'done' }> = ({
+const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: ToolTrace['status'] }> = ({
   toolName,
   detail,
   status,
 }) => {
   const { t } = useTranslation();
+  const isRunning = status === 'running';
+  const isPendingApproval = status === 'pending_approval';
+  const isDenied = status === 'denied';
+  const badgeLabel =
+    status === 'pending_approval'
+      ? t('chat.toolPendingApproval', 'pending approval')
+      : status === 'denied'
+        ? t('chat.toolDenied', 'denied')
+        : status;
 
   return (
     <div
@@ -99,9 +108,28 @@ const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: 'runni
             {detail}
           </span>
         )}
-        <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-primary/80 bg-primary/10 rounded px-1.5 py-0.5 shrink-0">
-          <span className={cn('w-1.5 h-1.5 rounded-full bg-primary', status === 'running' && 'animate-pulse')} />
-          {status}
+        <span
+          className={cn(
+            'ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] shrink-0',
+            isDenied
+              ? 'bg-destructive/10 text-destructive'
+              : isPendingApproval
+                ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                : 'bg-primary/10 text-primary/80'
+          )}
+        >
+          <span
+            className={cn(
+              'w-1.5 h-1.5 rounded-full',
+              isDenied
+                ? 'bg-destructive'
+                : isPendingApproval
+                  ? 'bg-amber-500'
+                  : 'bg-primary',
+              (isRunning || isPendingApproval) && 'animate-pulse'
+            )}
+          />
+          {badgeLabel}
         </span>
       </div>
     </div>
@@ -464,7 +492,9 @@ const MarkdownRendererBase: React.FC<MarkdownRendererProps> = ({
         }
 
         if (block.type === 'tool_group') {
-          const anyRunningTool = block.tools.some((tool) => tool.status === 'running');
+          const anyRunningTool = block.tools.some(
+            (tool) => tool.status === 'running' || tool.status === 'pending_approval'
+          );
           return anyRunningTool ? (
             <RunningToolTraceGroup key={`tools-${index}`} tools={block.tools} />
           ) : (

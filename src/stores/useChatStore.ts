@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   AppMode,
   ChatMessage,
+  ConversationApprovalGrant,
   ConversationExecutionPhase,
   ConversationQuestionnaireDraft,
   ConversationQuestionnaireState,
@@ -10,7 +11,9 @@ import {
   ContextReference,
   Conversation,
   ConversationCompactionState,
+  PendingToolApproval,
   ReasoningEffort,
+  ToolRiskLevel,
   ToolTrace,
 } from "../types";
 import { toServiceError } from "../services/contracts/errors";
@@ -32,7 +35,6 @@ import { useTaskStore, type ImplementTask } from "./useTaskStore";
 import { getToolModePolicy as getLocalToolModePolicy } from "../services/toolModePolicy";
 import { executeWorkspaceTool } from "../services/workspaceToolExecutor";
 import {
-  type ArchitectToolAutonomyProfile,
   MODE_PROMPT_KEYS_BY_MODE,
   loadPreference,
   PREF_KEYS,
@@ -76,6 +78,16 @@ import {
   getArchitectProfileAdjustedToolIds,
 } from "../services/architectToolSurface";
 import { handleArchitectToolCall } from "../services/architectToolRuntime";
+import {
+  buildToolRiskLevelSystemInstruction,
+  DEFAULT_TOOL_RISK_LEVEL,
+  evaluateToolSecurity,
+  filterDeniedToolIdsForRiskLevel,
+} from "../services/toolSecurityPolicy";
+import {
+  mergeToolTracesPreservingDeniedStatus,
+  parseToolTracesJson,
+} from "../services/toolTraceState";
 import {
   renderStandaloneFeatureBranchName,
 } from "../services/architectGitNaming";
@@ -655,6 +667,11 @@ interface ArchitectPlanNamingRecoveryState {
   error: string | null;
 }
 
+type PendingToolApprovalResolution =
+  | { kind: "allow_once" }
+  | { kind: "allow_conversation" }
+  | { kind: "deny"; reason?: string };
+
 interface ChatStore {
   messages: ChatMessage[];
   messagesByConversationId: Record<string, ChatMessage[]>;
@@ -677,6 +694,11 @@ interface ChatStore {
   questionnaireDraftsByConversationId: Record<
     string,
     ConversationQuestionnaireDraft
+  >;
+  pendingToolApprovalByConversationId: Record<string, PendingToolApproval | undefined>;
+  conversationApprovalGrantsByConversationId: Record<
+    string,
+    ConversationApprovalGrant[]
   >;
   architectPlanNamingRecovery: ArchitectPlanNamingRecoveryState | null;
   addMessage: (message: ChatMessage) => void;
@@ -731,6 +753,10 @@ interface ChatStore {
   getConversationByTask: (taskId: string) => Conversation | undefined;
   getConversationMessages: (conversationId: string) => ChatMessage[];
   getConversationRuntime: (conversationId: string) => ConversationRuntimeState;
+  getPendingToolApproval: (conversationId: string) => PendingToolApproval | null;
+  approvePendingToolApprovalOnce: (conversationId: string) => void;
+  approvePendingToolApprovalForConversation: (conversationId: string) => void;
+  denyPendingToolApproval: (conversationId: string, reason?: string) => void;
   getActiveQuestionnaire: (
     conversationId: string,
   ) => ConversationQuestionnaireState | null;
@@ -822,27 +848,6 @@ const mapDbConversationToConversation = (
   updated_at: conversation.updated_at,
   is_unread: false,
 });
-
-const parseDbToolTraces = (raw: string | null): ToolTrace[] | undefined => {
-  if (!raw) return undefined;
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return undefined;
-    const traces = parsed.filter(
-      (trace): trace is ToolTrace =>
-        !!trace &&
-        typeof trace === "object" &&
-        typeof (trace as ToolTrace).tool_call_id === "string" &&
-        typeof (trace as ToolTrace).tool_name === "string" &&
-        ((trace as ToolTrace).status === "running" ||
-          (trace as ToolTrace).status === "done"),
-    );
-    return traces.length > 0 ? traces : undefined;
-  } catch {
-    return undefined;
-  }
-};
 
 const parseDbProviderTurnState = (
   raw: string | null,
@@ -942,7 +947,7 @@ const mapDbMessageToChatMessage = (
       choices: presentation.choices,
       allow_free_response: presentation.allow_free_response,
       questionnaire: presentation.questionnaire,
-      tool_traces: parseDbToolTraces(message.tool_traces_json),
+      tool_traces: parseToolTracesJson(message.tool_traces_json),
       hidden_context: message.hidden_context ?? undefined,
       provider_input_items: parseDbProviderInputItems(
         message.provider_input_items_json,
@@ -966,7 +971,7 @@ const mapDbMessageToChatMessage = (
     timestamp: message.created_at,
     questionnaire_response_summary:
       userPresentation.questionnaire_response_summary,
-    tool_traces: parseDbToolTraces(message.tool_traces_json),
+    tool_traces: parseToolTracesJson(message.tool_traces_json),
     hidden_context: message.hidden_context ?? undefined,
     provider_input_items: parseDbProviderInputItems(
       message.provider_input_items_json,
@@ -1244,6 +1249,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let hydrationPromise: Promise<void> | null = null;
   let awaitingResponseReconciliationScheduled = false;
   const pendingArchitectConversationIdsByPlanKey = new Map<string, string>();
+  const pendingToolApprovalResolvers = new Map<
+    string,
+    (resolution: PendingToolApprovalResolution) => void
+  >();
+
+  const getPendingToolApprovalResolverKey = (
+    conversationId: string,
+    toolCallId: string,
+  ): string => `${conversationId}::${toolCallId}`;
 
   const getArchitectPlanConversationCacheKey = (
     targetBranch: string,
@@ -1295,6 +1309,113 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     clearPendingArchitectConversationForPlan(params);
     return null;
+  };
+
+  const loadToolRiskLevelPreference = async (): Promise<ToolRiskLevel> => {
+    const value = await loadPreference<ToolRiskLevel>(PREF_KEYS.TOOL_RISK_LEVEL);
+    return value || DEFAULT_TOOL_RISK_LEVEL;
+  };
+
+  const resolveConversationExecutionContext = (conversationId: string) => {
+    const appState = useAppStore.getState();
+    const taskState = useTaskStore.getState();
+    return resolveProjectExecutionContext({
+      mode: appState.mode,
+      projects: appState.projectGroups.flatMap((group) => group.projects),
+      projectGroups: appState.projectGroups,
+      tasks: taskState.tasks,
+      conversations: get().conversations,
+      conversationId,
+      selectedGroupId: appState.selectedGroupId,
+      selectedProjectId: appState.selectedProjectId,
+      selectedTaskId: appState.selectedTaskId,
+      activeRepositoryPath: taskState.activeRepositoryPath,
+      branchWorktrees: taskState.branchWorktrees,
+    });
+  };
+
+  const updateAssistantToolTraceStatus = (
+    assistantMessageId: string,
+    toolCallId: string,
+    status: ToolTrace["status"],
+  ) => {
+    set((state) => {
+      const targetIndex = state.messageIndexById[assistantMessageId];
+      const currentMessage =
+        typeof targetIndex === "number" ? state.messages[targetIndex] : undefined;
+      if (!currentMessage) {
+        return state;
+      }
+
+      const currentTraces = currentMessage.tool_traces ?? [];
+      if (currentTraces.length === 0) {
+        return state;
+      }
+
+      let didChange = false;
+      const nextToolTraces = currentTraces.map((trace) => {
+        if (trace.tool_call_id !== toolCallId || trace.status === status) {
+          return trace;
+        }
+        didChange = true;
+        return { ...trace, status };
+      });
+
+      if (!didChange) {
+        return state;
+      }
+
+      const nextMessage = {
+        ...currentMessage,
+        tool_traces: nextToolTraces,
+      };
+      const nextMessages = [...state.messages];
+      nextMessages[targetIndex] = nextMessage;
+      const nextMessagesByConversationId = {
+        ...state.messagesByConversationId,
+        [currentMessage.conversation_id]: sortMessagesChronologically(
+          getConversationMessagesFromState(state, currentMessage.conversation_id).map(
+            (message) => (message.id === assistantMessageId ? nextMessage : message),
+          ),
+        ),
+      };
+
+      return {
+        messages: nextMessages,
+        messagesByConversationId: nextMessagesByConversationId,
+      };
+    });
+  };
+
+  const clearConversationSecurityState = (conversationId: string) => {
+    const pendingApproval = get().pendingToolApprovalByConversationId[conversationId];
+    if (pendingApproval) {
+      const resolverKey = getPendingToolApprovalResolverKey(
+        conversationId,
+        pendingApproval.toolCallId,
+      );
+      pendingToolApprovalResolvers.get(resolverKey)?.({ kind: "deny" });
+      pendingToolApprovalResolvers.delete(resolverKey);
+    }
+
+    set((state) => {
+      if (
+        !state.pendingToolApprovalByConversationId[conversationId] &&
+        !state.conversationApprovalGrantsByConversationId[conversationId]
+      ) {
+        return state;
+      }
+
+      const nextPendingApprovals = { ...state.pendingToolApprovalByConversationId };
+      const nextGrants = { ...state.conversationApprovalGrantsByConversationId };
+      delete nextPendingApprovals[conversationId];
+      delete nextGrants[conversationId];
+
+      return {
+        pendingToolApprovalByConversationId: nextPendingApprovals,
+        conversationApprovalGrantsByConversationId: nextGrants,
+      };
+    });
   };
 
   const persistAiSelections = () => {
@@ -1651,6 +1772,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       get().conversationRuntimeById,
       conversationId,
     );
+    clearConversationSecurityState(conversationId);
     if (!isConversationRuntimeActive(runtime)) {
       return;
     }
@@ -2245,18 +2367,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     enforceMacroOnlyWrites: boolean;
   }> => {
     const mode = useAppStore.getState().mode;
-    const architectAutonomyProfile =
-      mode === "Architect"
-        ? await loadPreference<ArchitectToolAutonomyProfile>(
-            PREF_KEYS.ARCHITECT_TOOL_AUTONOMY_PROFILE,
-          )
-        : null;
     const adjustAllowedToolIds = (allowedToolIds: string[]): string[] =>
-      mode === "Architect" && architectAutonomyProfile
-        ? getArchitectProfileAdjustedToolIds(
-            allowedToolIds,
-            architectAutonomyProfile,
-          )
+      mode === "Architect"
+        ? getArchitectProfileAdjustedToolIds(allowedToolIds)
         : allowedToolIds;
 
     if (tauriIpc.isTauriAvailable()) {
@@ -2289,12 +2402,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     }
 
-    const fallback =
-      mode === "Architect" && architectAutonomyProfile
-        ? getLocalToolModePolicy(mode, {
-            architectToolAutonomyProfile: architectAutonomyProfile,
-          })
-        : getLocalToolModePolicy(mode);
+    const fallback = getLocalToolModePolicy(mode);
     return {
       allowedToolIds: adjustAllowedToolIds(fallback.allowedToolIds),
       enforceMacroOnlyWrites: fallback.enforceMacroOnlyWrites,
@@ -2321,11 +2429,143 @@ export const useChatStore = create<ChatStore>((set, get) => {
     assistantMessageId: string,
     toolName: string,
     args: Record<string, unknown>,
+    toolCallId?: string,
   ): Promise<ToolCallResolution | string | void> => {
     const normalizedToolName = normalizeArchitectToolId(toolName);
 
     if (!(await isSourceToolEnabled(normalizedToolName))) {
       return `Tool ${normalizedToolName} is disabled for the current mode.`;
+    }
+
+    const executionContext = resolveConversationExecutionContext(conversationId);
+    const riskLevel = await loadToolRiskLevelPreference();
+    const securityEvaluation = evaluateToolSecurity(normalizedToolName, args, {
+      mode: useAppStore.getState().mode,
+      riskLevel,
+      workspacePath: executionContext.workspacePath,
+      defaultWorkspacePath: executionContext.defaultWorkspacePath,
+      projectMounts: executionContext.projectMounts,
+      grants:
+        get().conversationApprovalGrantsByConversationId[conversationId] ?? [],
+    });
+
+    if (securityEvaluation.decision === "deny") {
+      if (toolCallId) {
+        updateAssistantToolTraceStatus(
+          assistantMessageId,
+          toolCallId,
+          "denied",
+        );
+      }
+      return securityEvaluation.denialReason;
+    }
+
+    if (securityEvaluation.decision === "ask") {
+      const resolvedToolCallId =
+        toolCallId ??
+        `${normalizedToolName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const pendingApproval: PendingToolApproval = {
+        conversationId,
+        assistantMessageId,
+        toolCallId: resolvedToolCallId,
+        toolId: normalizedToolName,
+        actionGroup: securityEvaluation.normalizedCall.actionGroup,
+        riskLevel,
+        isDestructive: securityEvaluation.normalizedCall.isDestructive,
+        summary: securityEvaluation.normalizedCall.summary,
+        detail: securityEvaluation.normalizedCall.detail,
+        rememberKey: securityEvaluation.normalizedCall.rememberKey,
+      };
+
+      const resolution = await new Promise<PendingToolApprovalResolution>(
+        (resolve) => {
+          pendingToolApprovalResolvers.set(
+            getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId),
+            resolve,
+          );
+          set((state) => ({
+            pendingToolApprovalByConversationId: {
+              ...state.pendingToolApprovalByConversationId,
+              [conversationId]: pendingApproval,
+            },
+          }));
+          if (toolCallId) {
+            updateAssistantToolTraceStatus(
+              assistantMessageId,
+              resolvedToolCallId,
+              "pending_approval",
+            );
+          }
+        },
+      );
+
+      pendingToolApprovalResolvers.delete(
+        getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId),
+      );
+      set((state) => {
+        if (!state.pendingToolApprovalByConversationId[conversationId]) {
+          return state;
+        }
+        const nextPendingApprovals = {
+          ...state.pendingToolApprovalByConversationId,
+        };
+        delete nextPendingApprovals[conversationId];
+        return {
+          pendingToolApprovalByConversationId: nextPendingApprovals,
+        };
+      });
+
+      if (resolution.kind === "deny") {
+        if (toolCallId) {
+          updateAssistantToolTraceStatus(
+            assistantMessageId,
+            resolvedToolCallId,
+            "denied",
+          );
+        }
+        const denialPrefix = `Tool ${normalizedToolName} was denied by the user.`;
+        return resolution.reason?.trim()
+          ? `${denialPrefix} User reason: ${resolution.reason.trim()}`
+          : denialPrefix;
+      }
+
+      if (resolution.kind === "allow_conversation") {
+        set((state) => {
+          const currentGrants =
+            state.conversationApprovalGrantsByConversationId[conversationId] ??
+            [];
+          if (
+            currentGrants.some(
+              (grant) =>
+                grant.toolId === pendingApproval.toolId &&
+                grant.rememberKey === pendingApproval.rememberKey,
+            )
+          ) {
+            return state;
+          }
+          return {
+            conversationApprovalGrantsByConversationId: {
+              ...state.conversationApprovalGrantsByConversationId,
+              [conversationId]: [
+                ...currentGrants,
+                {
+                  toolId: pendingApproval.toolId,
+                  rememberKey: pendingApproval.rememberKey,
+                  createdAt: new Date().toISOString(),
+                },
+              ],
+            },
+          };
+        });
+      }
+
+      if (toolCallId) {
+        updateAssistantToolTraceStatus(
+          assistantMessageId,
+          resolvedToolCallId,
+          "running",
+        );
+      }
     }
 
     if (normalizedToolName === "question") {
@@ -2338,14 +2578,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       };
     }
 
-    const architectAutonomyProfile = await loadPreference<ArchitectToolAutonomyProfile>(
-      PREF_KEYS.ARCHITECT_TOOL_AUTONOMY_PROFILE,
-    );
     const architectToolResult = await handleArchitectToolCall({
       assistantMessageId,
       toolName: normalizedToolName,
       args,
-      autonomyProfile: architectAutonomyProfile,
       planService: {
         getArchitectPlan,
         getGitFlowBaseBranch,
@@ -2391,20 +2627,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ) {
       const mode = useAppStore.getState().mode;
       const appState = useAppStore.getState();
-      const taskState = useTaskStore.getState();
-      const executionContext = resolveProjectExecutionContext({
-        mode,
-        projects: appState.projectGroups.flatMap((group) => group.projects),
-        projectGroups: appState.projectGroups,
-        tasks: taskState.tasks,
-        conversations: get().conversations,
-        conversationId,
-        selectedGroupId: appState.selectedGroupId,
-        selectedProjectId: appState.selectedProjectId,
-        selectedTaskId: appState.selectedTaskId,
-        activeRepositoryPath: taskState.activeRepositoryPath,
-        branchWorktrees: taskState.branchWorktrees,
-      });
 
       if (normalizedToolName === "terminal_create_session") {
         const explicitProjectId =
@@ -2551,20 +2773,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messageWithImagesId?: string,
   ) => {
     const appState = useAppStore.getState();
-    const taskState = useTaskStore.getState();
-    const executionContext = resolveProjectExecutionContext({
-      mode: appState.mode,
-      projects: appState.projectGroups.flatMap((group) => group.projects),
-      projectGroups: appState.projectGroups,
-      tasks: taskState.tasks,
-      conversations: get().conversations,
-      conversationId,
-      selectedGroupId: appState.selectedGroupId,
-      selectedProjectId: appState.selectedProjectId,
-      selectedTaskId: appState.selectedTaskId,
-      activeRepositoryPath: taskState.activeRepositoryPath,
-      branchWorktrees: taskState.branchWorktrees,
-    });
+    const executionContext = resolveConversationExecutionContext(conversationId);
+    const riskLevel = await loadToolRiskLevelPreference();
     const contextCitations = useCitationsStore
       .getState()
       .getConversationContextCitations(conversationId);
@@ -2751,6 +2961,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.unshift(modePrompt);
     }
 
+    systemInstructions.push(buildToolRiskLevelSystemInstruction(riskLevel));
+
     const internalAgentProfilePromptKey =
       getInternalAgentProfilePromptPreferenceKey(internalAgentProfile);
     const internalAgentProfilePrompt = internalAgentProfilePromptKey
@@ -2807,18 +3019,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.push(
         "In Architect mode, `plan_update` may only change the optional label/title alias, description, and the logical plan slug while the plan is still a mutable draft. Never use it to change plan status or activate a plan.",
       );
-      if (
-        allowedToolIds.includes("need_delete") ||
-        allowedToolIds.includes("strategy_delete")
-      ) {
-        systemInstructions.push(
-          "Architect tool autonomy is currently full. Destructive tools are available, but `need_delete` and `strategy_delete` still require an explicit user request and `confirm=true`.",
-        );
-      } else {
-        systemInstructions.push(
-          "Architect tool autonomy is currently guarded. Do not attempt destructive need or strategy deletions because `need_delete` and `strategy_delete` are unavailable.",
-        );
-      }
       systemInstructions.push(
         "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
       );
@@ -2995,6 +3195,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     | "messageIndexById"
     | "messageImagesByMessageId"
     | "questionnaireDraftsByConversationId"
+    | "pendingToolApprovalByConversationId"
+    | "conversationApprovalGrantsByConversationId"
     | "conversationRuntimeById"
     | "selectedConversationId"
     | "selectedConversationIdsByMode"
@@ -3010,6 +3212,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       messageImagesByMessageId: state.messageImagesByMessageId,
       questionnaireDraftsByConversationId:
         state.questionnaireDraftsByConversationId,
+      pendingToolApprovalByConversationId:
+        state.pendingToolApprovalByConversationId,
+      conversationApprovalGrantsByConversationId:
+        state.conversationApprovalGrantsByConversationId,
       conversationRuntimeById: state.conversationRuntimeById,
       selectedConversationId: state.selectedConversationId,
       selectedConversationIdsByMode: state.selectedConversationIdsByMode,
@@ -3042,6 +3248,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       conversationIds,
     );
     saveQuestionnaireDraftsToStorage(nextQuestionnaireDrafts);
+    const nextPendingToolApprovals = Object.fromEntries(
+      Object.entries(state.pendingToolApprovalByConversationId).filter(
+        ([conversationId]) => !idsToRemove.has(conversationId),
+      ),
+    );
+    const nextConversationApprovalGrants = Object.fromEntries(
+      Object.entries(state.conversationApprovalGrantsByConversationId).filter(
+        ([conversationId]) => !idsToRemove.has(conversationId),
+      ),
+    );
 
     const nextByMode = { ...state.selectedConversationIdsByMode };
     (Object.keys(nextByMode) as AppMode[]).forEach((modeKey) => {
@@ -3083,6 +3299,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ...buildMessageState(nextMessages),
       messageImagesByMessageId: nextImages,
       questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
+      pendingToolApprovalByConversationId: nextPendingToolApprovals,
+      conversationApprovalGrantsByConversationId:
+        nextConversationApprovalGrants,
       conversationRuntimeById: nextConversationRuntimeById,
       ...buildLegacyStreamingFlags({
         conversationRuntimeById: nextConversationRuntimeById,
@@ -3098,6 +3317,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
     clearPendingArchitectConversationsForConversationIds(conversationIds);
+    conversationIds.forEach((conversationId) => {
+      clearConversationSecurityState(conversationId);
+    });
     set((state) => buildConversationRemovalState(state, conversationIds));
   };
 
@@ -3122,6 +3344,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return [];
     }
 
+    const riskLevel = await loadToolRiskLevelPreference();
     const providerState = useProviderStore.getState();
     const selectedProvider = providerState.providerConfigs.find(
       (provider) => provider.id === providerState.selectedProviderId,
@@ -3143,16 +3366,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
         filterForSelectedProvider(toolIds),
         internalAgentProfile,
       );
+      const riskFilteredToolIds = filterDeniedToolIdsForRiskLevel(
+        filteredToolIds,
+        riskLevel,
+      );
 
       if (
         internalAgentProfile === "task_reviewer" &&
         toolIds.includes("apply_patch") &&
-        !filteredToolIds.includes("apply_patch")
+        !riskFilteredToolIds.includes("apply_patch")
       ) {
-        return Array.from(new Set([...filteredToolIds, "apply_patch"]));
+        return Array.from(new Set([...riskFilteredToolIds, "apply_patch"]));
       }
 
-      return filteredToolIds;
+      return riskFilteredToolIds;
     };
 
     const mode = useAppStore.getState().mode;
@@ -3833,8 +4060,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messageId: string,
     result: StreamCompletionResult,
   ) => {
+    const existingToolTraces =
+      get().messages.find((message) => message.id === messageId)?.tool_traces ??
+      [];
+    const mergedToolTraces = mergeToolTracesPreservingDeniedStatus(
+      result.toolTraces,
+      existingToolTraces,
+    );
+
     get().updateMessageFields(messageId, {
-      tool_traces: result.toolTraces,
+      tool_traces: mergedToolTraces,
       hidden_context: result.hiddenContext,
       provider_input_items: result.providerInputItems,
       provider_turn_state: result.providerTurnState,
@@ -4579,12 +4814,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
             );
             set({ lastError: error.message, sendState: "error" });
           },
-          onToolCall: (toolName, args) => {
+          onToolCall: (toolName, args, toolCallId) => {
             return handleToolCall(
               params.conversationId,
               params.assistantMessage.id,
               toolName,
               args,
+              toolCallId,
             );
           },
         });
@@ -4616,9 +4852,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     result: StreamCompletionResult,
   ) => {
     if (!tauriIpc.isTauriAvailable()) return;
+    const persistedToolTraces =
+      get()
+        .getConversationMessages(conversationId)
+        .filter((message) => message.role === "assistant")
+        .at(-1)?.tool_traces ?? result.toolTraces;
     tauriIpc
       .createMessage(conversationId, "assistant", result.visibleContent, {
-        toolTraces: result.toolTraces,
+        toolTraces: persistedToolTraces,
         hiddenContext: result.hiddenContext,
         providerInputItems: result.providerInputItems,
         providerTurnState: result.providerTurnState,
@@ -4670,6 +4911,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return false;
     }
 
+    if (
+      state.selectedConversationId &&
+      state.selectedConversationId !== conversationId
+    ) {
+      clearConversationSecurityState(state.selectedConversationId);
+    }
+
     set((current) => ({
       selectedConversationId: conversationId,
       selectedConversationIdsByMode: {
@@ -4686,6 +4934,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const clearConversationSelection = (mode: AppMode) => {
+    const previousSelectedConversationId = get().selectedConversationId;
+    if (previousSelectedConversationId) {
+      clearConversationSecurityState(previousSelectedConversationId);
+    }
     set((current) => ({
       selectedConversationId: null,
       selectedConversationIdsByMode: {
@@ -5496,6 +5748,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     abortController: null,
     messageImagesByMessageId: {},
     questionnaireDraftsByConversationId: loadQuestionnaireDraftsFromStorage(),
+    pendingToolApprovalByConversationId: {},
+    conversationApprovalGrantsByConversationId: {},
     architectPlanNamingRecovery: null,
     composerContextRefs: [],
 
@@ -6336,6 +6590,57 @@ export const useChatStore = create<ChatStore>((set, get) => {
         get().conversationRuntimeById,
         conversationId,
       ),
+
+    getPendingToolApproval: (conversationId) =>
+      get().pendingToolApprovalByConversationId[conversationId] ?? null,
+
+    approvePendingToolApprovalOnce: (conversationId) => {
+      const pendingApproval =
+        get().pendingToolApprovalByConversationId[conversationId];
+      if (!pendingApproval) {
+        return;
+      }
+      pendingToolApprovalResolvers
+        .get(
+          getPendingToolApprovalResolverKey(
+            conversationId,
+            pendingApproval.toolCallId,
+          ),
+        )
+        ?.({ kind: "allow_once" });
+    },
+
+    approvePendingToolApprovalForConversation: (conversationId) => {
+      const pendingApproval =
+        get().pendingToolApprovalByConversationId[conversationId];
+      if (!pendingApproval) {
+        return;
+      }
+      pendingToolApprovalResolvers
+        .get(
+          getPendingToolApprovalResolverKey(
+            conversationId,
+            pendingApproval.toolCallId,
+          ),
+        )
+        ?.({ kind: "allow_conversation" });
+    },
+
+    denyPendingToolApproval: (conversationId, reason) => {
+      const pendingApproval =
+        get().pendingToolApprovalByConversationId[conversationId];
+      if (!pendingApproval) {
+        return;
+      }
+      pendingToolApprovalResolvers
+        .get(
+          getPendingToolApprovalResolverKey(
+            conversationId,
+            pendingApproval.toolCallId,
+          ),
+        )
+        ?.({ kind: "deny", reason });
+    },
 
     getActiveQuestionnaire: (conversationId) => {
       return resolveConversationQuestionnaireFromState(get(), conversationId);

@@ -8,6 +8,7 @@ import {
 } from './titleBarLayout';
 
 const actualTauriWindow = await import('../../services/tauriWindow');
+const actualDesktopPlatform = await import('../../utils/desktopPlatform');
 
 type AppMode = 'Chat' | 'Architect' | 'Implement';
 
@@ -93,6 +94,7 @@ const registerHeaderMocks = () => {
   }));
 
   mock.module('../../utils/desktopPlatform', () => ({
+    ...actualDesktopPlatform,
     getPlatformChromeState: () => chromeState,
   }));
 

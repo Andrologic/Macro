@@ -26,6 +26,8 @@ type AppBootstrapSnapshot = {
 let appState: AppStoreState;
 let appBootstrapSnapshot: AppBootstrapSnapshot;
 let importCounter = 0;
+const actualDesktopPlatform = await import('./utils/desktopPlatform');
+const actualAppBootstrap = await import('./services/appBootstrap');
 
 const createStoreHook = <T,>(getSnapshot: () => T) => {
   const hook = ((selector?: (state: T) => unknown) => {
@@ -89,6 +91,7 @@ const registerAppMocks = () => {
   }));
 
   mock.module('./utils/desktopPlatform', () => ({
+    ...actualDesktopPlatform,
     getPlatformChromeState: () => ({
       platform: 'windows',
       isTauriWindow: false,
@@ -98,13 +101,8 @@ const registerAppMocks = () => {
     }),
   }));
 
-  mock.module('./components/layout/titleBarLayout', () => ({
-    getTitleBarLayout: () => ({
-      titleBarHeightPx: 48,
-    }),
-  }));
-
   mock.module('./services/appBootstrap', () => ({
+    ...actualAppBootstrap,
     appBootstrap: {
       getSnapshot: () => appBootstrapSnapshot,
       subscribe: () => () => undefined,
@@ -138,10 +136,6 @@ const registerAppMocks = () => {
 
   mock.module('./components/layout/Footer', () => ({
     Footer: () => <footer data-testid="mock-footer" />,
-  }));
-
-  mock.module('zustand/react/shallow', () => ({
-    useShallow: <T,>(selector: T) => selector,
   }));
 };
 
