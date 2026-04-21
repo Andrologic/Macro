@@ -64,6 +64,35 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("passes providerType and isLocal through db_update_provider_config", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.updateProviderConfig({
+      id: "provider-1",
+      name: "MiniMax",
+      providerType: "openai",
+      baseUrl: "https://api.minimax.io/v1",
+      apiKey: "test-api-key",
+      isLocal: false,
+      isEnabled: true,
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_update_provider_config",
+        payload: {
+          id: "provider-1",
+          name: "MiniMax",
+          providerType: "openai",
+          baseUrl: "https://api.minimax.io/v1",
+          apiKey: "test-api-key",
+          isLocal: false,
+          isEnabled: true,
+        },
+      },
+    ]);
+  });
+
   it("passes the stable conversation id through ai_stream_chat", async () => {
     const tauriIpc = await loadTauriIpc();
 
