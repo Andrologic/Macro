@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import i18n from '../i18n';
-import { parseUnifiedDiff, type ParsedDiffHunk } from '../services/gitDiffParser';
+import {
+  parseUnifiedDiff,
+  type ParsedDiffContent,
+  type ParsedDiffHunk,
+} from '../services/gitDiffParser';
 import * as tauriIpc from '../services/tauriIpc';
 import { useTaskStore, type TaskCompletionRepositoryRecord } from './useTaskStore';
 import type { ProjectGroup, TaskExecutionTarget, TaskStatus } from '../types';
@@ -268,6 +272,78 @@ const normalizeStatus = (status: string): FileChangeEntry['status'] => {
   return 'modified';
 };
 
+const splitDiffContentLines = (value: string): string[] => (
+  value.length === 0 ? [] : value.split('\n')
+);
+
+const isLikelyTextFilePair = (originalContent: string, modifiedContent: string): boolean =>
+  !originalContent.includes('\0') && !modifiedContent.includes('\0');
+
+const buildSyntheticDiffFromFilePair = (
+  status: FileChangeEntry['status'],
+  pair: { originalContent: string; modifiedContent: string }
+): ParsedDiffContent | null => {
+  if (!isLikelyTextFilePair(pair.originalContent, pair.modifiedContent)) {
+    return null;
+  }
+
+  if (status === 'added') {
+    const lines = splitDiffContentLines(pair.modifiedContent);
+    const additions = lines.length;
+
+    return {
+      originalContent: pair.originalContent,
+      modifiedContent: pair.modifiedContent,
+      additions,
+      deletions: 0,
+      hunks: [
+        {
+          header: `@@ -0,0 +1,${additions} @@`,
+          oldStart: 0,
+          oldCount: 0,
+          newStart: 1,
+          newCount: additions,
+          lines: lines.map((content, index) => ({
+            type: 'added',
+            content,
+            oldLineNumber: null,
+            newLineNumber: index + 1,
+          })),
+        },
+      ],
+    };
+  }
+
+  if (status === 'deleted') {
+    const lines = splitDiffContentLines(pair.originalContent);
+    const deletions = lines.length;
+
+    return {
+      originalContent: pair.originalContent,
+      modifiedContent: pair.modifiedContent,
+      additions: 0,
+      deletions,
+      hunks: [
+        {
+          header: `@@ -1,${deletions} +0,0 @@`,
+          oldStart: 1,
+          oldCount: deletions,
+          newStart: 0,
+          newCount: 0,
+          lines: lines.map((content, index) => ({
+            type: 'removed',
+            content,
+            oldLineNumber: index + 1,
+            newLineNumber: null,
+          })),
+        },
+      ],
+    };
+  }
+
+  return null;
+};
+
 const normalizePortablePath = (value: string): string =>
   value.replace(/\\/g, '/').replace(/\/+$/, '');
 
@@ -505,7 +581,15 @@ const loadFileChangeEntry = async (
     paths: [file.path],
     contextLines: 3,
   });
-  const parsed = parseUnifiedDiff(patch || '');
+  let parsed = parseUnifiedDiff(patch || '');
+
+  if (parsed.hunks.length === 0 && (status === 'added' || status === 'deleted')) {
+    const pair = await deps.tauri.gitReadFilePair({
+      repoPath: worktreePath,
+      path: file.path,
+    });
+    parsed = buildSyntheticDiffFromFilePair(status, pair) ?? parsed;
+  }
 
   return {
     id,
