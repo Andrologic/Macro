@@ -3221,6 +3221,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).not.toContain('write');
     expect(streamOptions.allowedToolIds).not.toContain('edit');
     expect(streamOptions.allowedToolIds).not.toContain('apply_patch');
+    expect(streamOptions.allowedToolIds).not.toContain('mark_source_passage');
+    expect(streamOptions.allowedToolIds).not.toContain('read_sources');
+    expect(streamOptions.allowedToolIds).not.toContain('edit_source_passage');
     expect(streamOptions.allowedToolIds).toContain('plan_get');
     expect(streamOptions.allowedToolIds).toContain('need_update');
     expect(streamOptions.allowedToolIds).toContain('strategy_update');
@@ -5346,6 +5349,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).toContain('apply_patch');
     expect(streamOptions.allowedToolIds).toContain('git_diff');
     expect(streamOptions.allowedToolIds).toContain('terminal_run');
+    expect(streamOptions.allowedToolIds).not.toContain('mark_source_passage');
+    expect(streamOptions.allowedToolIds).not.toContain('read_sources');
+    expect(streamOptions.allowedToolIds).not.toContain('edit_source_passage');
     expect(streamOptions.allowedToolIds).not.toContain('git_commit');
     expect(streamOptions.allowedToolIds).not.toContain('git_merge');
     expect(String(streamOptions.messages[0]?.content)).toContain(
