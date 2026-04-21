@@ -44,6 +44,10 @@ describe('macroToolRegistry', () => {
     expect(requireMacroToolRegistryEntry('read_file').copilot?.overridesBuiltInTool).toBe(true);
   });
 
+  it('registers the delete workspace tool', () => {
+    expect(() => requireMacroToolRegistryEntry('delete')).not.toThrow();
+  });
+
   it('filters Copilot tools to the currently supported Macro runtime surface', () => {
     expect(
       filterCopilotSupportedToolIds([

@@ -667,6 +667,26 @@ const importMessagesMock = mock(
 );
 const hydrateNeedsForPlanMock = mock(() => undefined);
 const replaceNeedsForPlanMock = mock(() => undefined);
+const terminalCreateSessionFromChatMock = mock(
+  async ({ projectId, cwd }: { projectId: string; cwd?: string | null }) => ({
+    id: `session-${projectId}`,
+    project_id: projectId,
+    project_name: projectId === 'project-2' ? 'API' : 'Web',
+    mount_name: projectId === 'project-2' ? 'api' : 'web',
+    workspace_path: projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web',
+    cwd:
+      cwd ??
+      (projectId === 'project-2'
+        ? 'C:/repos/api/.macro/worktrees/task-1'
+        : 'C:/repos/web/.macro/worktrees/task-1'),
+    status: 'idle',
+    last_command: null,
+    output: '',
+    exit_code: null,
+    timed_out: false,
+    updated_at: '2026-03-26T10:00:00.000Z',
+  })
+);
 
 let importCounter = 0;
 
@@ -815,6 +835,7 @@ const registerUseChatStoreMocks = async () => {
     useTerminalStore: {
       getState: () => ({
         addTerminalLine: () => undefined,
+        createSession: terminalCreateSessionFromChatMock,
       }),
     },
   }));
@@ -1353,6 +1374,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     importMessagesMock.mockClear();
     hydrateNeedsForPlanMock.mockClear();
     replaceNeedsForPlanMock.mockClear();
+    terminalCreateSessionFromChatMock.mockClear();
     toolsStoreState.loadSettings.mockClear();
     toolsStoreState.getEnabledChatToolIds = () => ['read_file', 'web_search', 'web_fetch', 'question'];
     appState.activateArchitectPlan.mockClear();
@@ -5426,6 +5448,64 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getConversationMessages('implement-conv')).toHaveLength(0);
     expect(useChatStore.getState().lastError).toBe('Task worktree is not ready yet.');
     expect(useChatStore.getState().sendState).toBe('error');
+  });
+
+  it('returns worktree-based terminal sessions for terminal_create_session tool calls in implement tasks', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    taskStoreState.tasks = [
+      createImplementTask({
+        status: 'InProgress',
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/implement-checkout',
+            worktreeKey: 'task-1-web',
+          },
+        ],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Ouvre un terminal pour travailler sur cette tâche.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const result = await onToolCall('terminal_create_session', {
+      project_id: 'project-1',
+    });
+
+    expect(terminalCreateSessionFromChatMock).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      cwd: null,
+    });
+
+    const parsed = JSON.parse(String(result));
+    expect(parsed.cwd).toBe('C:/repos/web/.macro/worktrees/task-1');
   });
 
   it('rejects sends without a selected provider or model before committing any message', async () => {
