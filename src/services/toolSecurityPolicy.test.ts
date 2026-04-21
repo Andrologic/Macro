@@ -1,0 +1,122 @@
+import { describe, expect, it } from "bun:test";
+import {
+  evaluateToolSecurity,
+  filterDeniedToolIdsForRiskLevel,
+} from "./toolSecurityPolicy";
+
+describe("toolSecurityPolicy", () => {
+  it("allows non-destructive apply_patch calls in balanced mode", () => {
+    const result = evaluateToolSecurity(
+      "apply_patch",
+      {
+        patch_text: [
+          "*** Begin Patch",
+          "*** Update File: src/app.ts",
+          "@@",
+          "-oldLine();",
+          "+newLine();",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      {
+        mode: "Implement",
+        riskLevel: "balanced",
+        workspacePath: "/repo",
+      },
+    );
+
+    expect(result.decision).toBe("allow");
+    expect(result.normalizedCall.rememberKey).toBe("path:src/app.ts");
+  });
+
+  it("denies apply_patch calls that target paths outside the workspace", () => {
+    const result = evaluateToolSecurity(
+      "apply_patch",
+      {
+        patch_text: [
+          "*** Begin Patch",
+          "*** Update File: ../outside.ts",
+          "@@",
+          "-oldLine();",
+          "+newLine();",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      {
+        mode: "Implement",
+        riskLevel: "balanced",
+        workspacePath: "/repo",
+      },
+    );
+
+    expect(result.decision).toBe("deny");
+    expect(result.denialReason).toContain("outside the current workspace");
+  });
+
+  it("uses a tool-level remember key for web search grants", () => {
+    const result = evaluateToolSecurity(
+      "web_search",
+      { query: "latest bun release notes" },
+      {
+        mode: "Chat",
+        riskLevel: "balanced",
+        grants: [
+          {
+            toolId: "web_search",
+            rememberKey: "tool:web_search",
+            createdAt: "2026-04-21T00:00:00.000Z",
+          },
+        ],
+      },
+    );
+
+    expect(result.decision).toBe("allow");
+    expect(result.normalizedCall.rememberKey).toBe("tool:web_search");
+  });
+
+  it("asks again when the terminal command prefix does not match the grant", () => {
+    const result = evaluateToolSecurity(
+      "terminal_run",
+      { session_id: "session-1", command: "npm run lint" },
+      {
+        mode: "Implement",
+        riskLevel: "balanced",
+        workspacePath: "/repo",
+        grants: [
+          {
+            toolId: "terminal_run",
+            rememberKey: "terminal:npm test",
+            createdAt: "2026-04-21T00:00:00.000Z",
+          },
+        ],
+      },
+    );
+
+    expect(result.decision).toBe("ask");
+    expect(result.normalizedCall.rememberKey).toBe("terminal:npm run");
+  });
+
+  it("allows attached read_file calls in strict mode even when the file path is outside the workspace", () => {
+    const result = evaluateToolSecurity(
+      "read_file",
+      { file: "/Users/someone/Desktop/spec.pdf" },
+      {
+        mode: "Chat",
+        riskLevel: "strict",
+        workspacePath: "/repo",
+      },
+    );
+
+    expect(result.decision).toBe("allow");
+    expect(result.normalizedCall.isExternalToWorkspace).toBe(false);
+  });
+
+  it("removes escape tools from the strict model surface", () => {
+    const result = filterDeniedToolIdsForRiskLevel(
+      ["web_search", "need_delete", "strategy_delete", "need_update"],
+      "strict",
+    );
+
+    expect(result).toEqual(["need_update"]);
+  });
+});

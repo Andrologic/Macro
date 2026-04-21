@@ -207,7 +207,8 @@ export interface StreamingChatOptions {
   webSearchOptions?: WebSearchOptions;
   onToolCall?: (
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    toolCallId?: string,
   ) =>
     | Promise<ToolCallResolution | string | void>
     | ToolCallResolution
@@ -1403,7 +1404,7 @@ const streamChatViaNativeToolCallingProvider = async (
           }
 
           const customResult = normalizeToolCallResolution(
-            await onToolCall?.(toolName, args)
+            await onToolCall?.(toolName, args, toolCall.id)
           );
           if (isToolInterruptResolution(customResult)) {
             interruptResolution = customResult;
@@ -2092,9 +2093,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               continue;
             }
 
-            const customResult = normalizeToolCallResolution(
-              await onToolCall?.(toolName, args)
-            );
+          const customResult = normalizeToolCallResolution(
+              await onToolCall?.(toolName, args, toolCall.id)
+          );
             if (isToolInterruptResolution(customResult)) {
               interruptResolution = customResult;
               customToolResult = customResult.result;

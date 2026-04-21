@@ -55,7 +55,6 @@ import {
   getFocusedProjectForGroup,
   getScopedActionableProjectIds,
 } from "./globalProjects";
-import type { ArchitectToolAutonomyProfile } from "./architectToolSurface";
 
 const strategyMutationRepairAttempts = new Map<string, number>();
 
@@ -222,7 +221,6 @@ interface ArchitectToolRuntimeDependencies {
   assistantMessageId: string;
   toolName: string;
   args: Record<string, unknown>;
-  autonomyProfile: ArchitectToolAutonomyProfile;
   planService: ArchitectToolPlanService;
   strategyService: ArchitectToolStrategyService;
   getAppState: () => ArchitectToolAppState;
@@ -946,7 +944,6 @@ export const handleArchitectToolCall = async (
     toolName,
     args,
     assistantMessageId,
-    autonomyProfile,
     planService,
     strategyService,
   } = params;
@@ -1186,9 +1183,6 @@ export const handleArchitectToolCall = async (
     const activePlanId = resolveActivePlanId(appState);
     if (!activePlanId) {
       return "Cannot need_delete without an active plan. Create or select a plan first.";
-    }
-    if (autonomyProfile !== "full") {
-      return "need_delete is unavailable while Architect autonomy is guarded. Switch the Architect tool autonomy profile to full in Settings to allow deletions.";
     }
 
     const needId = typeof args.need_id === "string" ? args.need_id.trim() : "";
@@ -1715,9 +1709,6 @@ export const handleArchitectToolCall = async (
     const activePlanId = resolveActivePlanId(appState);
     if (!activePlanId) {
       return "Cannot delete strategy without an active plan. Create or select a plan first.";
-    }
-    if (autonomyProfile !== "full") {
-      return "strategy_delete is unavailable while Architect autonomy is guarded. Switch the Architect tool autonomy profile to full in Settings to allow destructive strategy changes.";
     }
 
     if (args.confirm !== true) {
