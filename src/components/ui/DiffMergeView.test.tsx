@@ -194,6 +194,66 @@ describe('DiffMergeView', () => {
     expect(container?.querySelectorAll('.cm-changedText').length).toBeGreaterThan(0);
   });
 
+  it('supports a right-only layout for added files', async () => {
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={''}
+            modified={'line 1\nline 2'}
+            layout="right-only"
+            revertControls="a-to-b"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const host = container?.querySelector('[data-layout="right-only"]') as HTMLElement | null;
+    const leftEditor = container?.querySelector('.cm-mergeViewEditor:first-child') as HTMLElement | null;
+    const rightEditor = container?.querySelector('.cm-mergeViewEditor:last-child') as HTMLElement | null;
+    const revertRail = container?.querySelector('.cm-merge-revert') as HTMLElement | null;
+
+    expect(host).not.toBeNull();
+    expect(container?.querySelectorAll('.cm-merge-b .cm-changedLine').length).toBe(2);
+    expect(leftEditor).not.toBeNull();
+    expect(rightEditor).not.toBeNull();
+    expect(revertRail).not.toBeNull();
+    expect(getComputedStyle(leftEditor as HTMLElement).display).toBe('none');
+    expect(getComputedStyle(rightEditor as HTMLElement).display).toBe('flex');
+    expect(getComputedStyle(revertRail as HTMLElement).display).toBe('none');
+  });
+
+  it('supports a left-only layout for deleted files', async () => {
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={'line 1\nline 2'}
+            modified={''}
+            layout="left-only"
+            revertControls="a-to-b"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const host = container?.querySelector('[data-layout="left-only"]') as HTMLElement | null;
+    const leftEditor = container?.querySelector('.cm-mergeViewEditor:first-child') as HTMLElement | null;
+    const rightEditor = container?.querySelector('.cm-mergeViewEditor:last-child') as HTMLElement | null;
+    const revertRail = container?.querySelector('.cm-merge-revert') as HTMLElement | null;
+
+    expect(host).not.toBeNull();
+    expect(container?.querySelectorAll('.cm-merge-a .cm-changedLine').length).toBe(2);
+    expect(leftEditor).not.toBeNull();
+    expect(rightEditor).not.toBeNull();
+    expect(revertRail).not.toBeNull();
+    expect(getComputedStyle(leftEditor as HTMLElement).display).toBe('flex');
+    expect(getComputedStyle(rightEditor as HTMLElement).display).toBe('none');
+    expect(getComputedStyle(revertRail as HTMLElement).display).toBe('none');
+  });
+
   it('does not emit onChange during mount or external prop synchronization', async () => {
     let onChangeCalls = 0;
     let latestHandle: MergeViewEditorHandle | null = null;
