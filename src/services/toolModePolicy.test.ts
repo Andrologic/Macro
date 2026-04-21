@@ -10,6 +10,7 @@ describe("toolModePolicy", () => {
     const policy = getToolModePolicy("Chat");
     expect(policy.allowedToolIds.includes("write")).toBe(false);
     expect(policy.allowedToolIds.includes("edit")).toBe(false);
+    expect(policy.allowedToolIds.includes("delete")).toBe(false);
     expect(policy.allowedToolIds.includes("apply_patch")).toBe(false);
     expect(policy.allowedToolIds.includes("list")).toBe(false);
     expect(policy.allowedToolIds.includes("read")).toBe(false);
@@ -29,6 +30,7 @@ describe("toolModePolicy", () => {
     const policy = getToolModePolicy("Architect");
     expect(policy.allowedToolIds.includes("write")).toBe(true);
     expect(policy.allowedToolIds.includes("edit")).toBe(true);
+    expect(policy.allowedToolIds.includes("delete")).toBe(true);
     expect(policy.allowedToolIds.includes("apply_patch")).toBe(true);
     expect(policy.allowedToolIds.includes("git_status")).toBe(true);
     expect(policy.allowedToolIds.includes("plan_create")).toBe(false);
@@ -59,10 +61,11 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("strategy_delete")).toBe(true);
   });
 
-  it("allows write/edit in implement mode", () => {
+  it("allows write/edit/delete in implement mode", () => {
     const policy = getToolModePolicy("Implement");
     expect(policy.allowedToolIds.includes("write")).toBe(true);
     expect(policy.allowedToolIds.includes("edit")).toBe(true);
+    expect(policy.allowedToolIds.includes("delete")).toBe(true);
     expect(policy.allowedToolIds.includes("apply_patch")).toBe(true);
     expect(policy.allowedToolIds.includes("git_status")).toBe(true);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(true);

@@ -44,7 +44,10 @@ export interface ExecuteWorkspaceToolOptions {
 }
 
 export const isWriteTool = (toolName: string): boolean =>
-  toolName === "write" || toolName === "edit" || toolName === "apply_patch";
+  toolName === "write" ||
+  toolName === "edit" ||
+  toolName === "delete" ||
+  toolName === "apply_patch";
 
 const isUnknownCommandError = (error: unknown): boolean => {
   if (!error || typeof error !== "object") return false;
@@ -65,6 +68,7 @@ const extractCandidatePath = (
   if (
     toolName === "write" ||
     toolName === "edit" ||
+    toolName === "delete" ||
     toolName === "read" ||
     toolName === "list"
   ) {
@@ -705,6 +709,7 @@ const normalizeDirEntryForVirtualRoot = (
 const isMutatingWorkspaceTool = (toolName: string): boolean =>
   toolName === "write" ||
   toolName === "edit" ||
+  toolName === "delete" ||
   toolName === "apply_patch" ||
   gitMutatingToolIds.has(toolName) ||
   toolName === "terminal_create_session";
@@ -756,6 +761,7 @@ const buildReadOnlyToolError = (
   if (
     toolName === "write" ||
     toolName === "edit" ||
+    toolName === "delete" ||
     toolName === "apply_patch"
   ) {
     return `Error executing ${toolName}: subproject "${label}" is read-only.`;
@@ -809,6 +815,7 @@ const resolveMutatingVirtualTarget = async (params: {
       relativePath:
         params.toolName === "write" ||
         params.toolName === "edit" ||
+        params.toolName === "delete" ||
         params.toolName === "apply_patch"
           ? params.rawPath || "."
           : ".",
@@ -1115,7 +1122,11 @@ const resolveVirtualToolTarget = async (params: {
     getProjectWorkspaceCandidate(params.focusedProjectId, params.candidates) ||
     getProjectWorkspaceCandidate(params.defaultProjectId, params.candidates);
 
-  if (params.toolName === "write" || params.toolName === "edit") {
+  if (
+    params.toolName === "write" ||
+    params.toolName === "edit" ||
+    params.toolName === "delete"
+  ) {
     return {
       candidate: focusedCandidate,
       relativePath: params.rawPath || ".",
@@ -1239,7 +1250,10 @@ export const executeWorkspaceTool = async (
 
   const useMetadataWorkspace =
     mode === "Architect" &&
-    (toolName === "write" || toolName === "edit" || toolName === "apply_patch");
+    (toolName === "write" ||
+      toolName === "edit" ||
+      toolName === "delete" ||
+      toolName === "apply_patch");
   const virtualRootEnabled = virtualRootCandidate && !useMetadataWorkspace;
 
   const executeBackendTool = async (
@@ -1290,6 +1304,7 @@ export const executeWorkspaceTool = async (
       "read",
       "write",
       "edit",
+      "delete",
       "apply_patch",
       "glob",
       "grep",
@@ -1359,6 +1374,7 @@ export const executeWorkspaceTool = async (
       if (
         (toolName === "write" ||
           toolName === "edit" ||
+          toolName === "delete" ||
           toolName === "apply_patch") &&
         resolvedCandidatePath
       ) {
@@ -1668,6 +1684,81 @@ export const executeWorkspaceTool = async (
             language: readback.language,
           },
           replacements: replaceAll ? occurrences : 1,
+          projectId: target.candidate.id,
+          mountName: target.candidate.mountName,
+          realPath: resolved.realPath,
+          rawPath: resolved.virtualPath,
+        });
+      }
+
+      if (toolName === "delete") {
+        const inputPath = sanitizePathInput(toString(rawArgs.path));
+
+        if (!inputPath) return "Missing path argument for delete tool.";
+
+        const { target, error } = await resolveMutatingVirtualTarget({
+          toolName,
+          rawPath: inputPath,
+          args: rawArgs,
+          candidates,
+          focusedProjectId,
+          defaultProjectId: options.projectId,
+        });
+        if (error) {
+          return error;
+        }
+
+        if (!target.candidate?.workspacePath) {
+          return "Error executing delete: select a subproject with project_id or a mount-prefixed path before deleting.";
+        }
+
+        const resolved = formatResolvedWorkspacePath(
+          target.candidate,
+          target.relativePath,
+          mode,
+        );
+        assertPathAllowed(mode, resolved.virtualPath);
+        const realPath = joinPathWithinWorkspace(
+          target.candidate.workspacePath,
+          target.relativePath,
+        );
+        const targetStats = await tauriIpc.fsStat(realPath, {
+          workspacePath: target.candidate.workspacePath,
+        });
+        if (targetStats.kind !== "file") {
+          return `Cannot delete directory with delete tool: ${resolved.virtualPath}. Only files are supported.`;
+        }
+
+        const current = await tauriIpc.fsReadFileWithOptions({
+          path: realPath,
+          allowOutsideWorkspace: true,
+          workspacePath: target.candidate.workspacePath,
+        });
+        const deletions = current.is_binary
+          ? 0
+          : countLogicalLines(current.content);
+
+        await tauriIpc.fsDelete({
+          path: realPath,
+          workspacePath: target.candidate.workspacePath,
+        });
+
+        return buildStructuredWriteResponse({
+          path: resolved.virtualPath,
+          status: "deleted",
+          additions: 0,
+          deletions,
+          created: false,
+          bytesWritten: 0,
+          validation: {
+            path: resolved.virtualPath,
+            exists: false,
+            readable: false,
+            is_binary: false,
+            size: 0,
+            encoding: null,
+            language: null,
+          },
           projectId: target.candidate.id,
           mountName: target.candidate.mountName,
           realPath: resolved.realPath,
@@ -2926,6 +3017,60 @@ export const executeWorkspaceTool = async (
         },
         replacements: replaceAll ? occurrences : 1,
         rawPath: writeResult.path,
+      });
+    }
+
+    if (toolName === "delete") {
+      const inputPath = sanitizePathInput(toString(args.path));
+      if (!inputPath) return "Missing path argument for delete tool.";
+
+      const resolvedPath = useMetadataWorkspace
+        ? inputPath
+        : resolveBackendPath(inputPath, mode, effectiveWorkspacePath);
+      const path = useMetadataWorkspace
+        ? inputPath
+        : resolveDirectPath(inputPath, mode, effectiveWorkspacePath);
+      assertPathAllowed(mode, resolvedPath);
+
+      const targetStats = await tauriIpc.fsStat(path, {
+        workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+        workspacePath: effectiveWorkspacePath,
+      });
+      if (targetStats.kind !== "file") {
+        return `Cannot delete directory with delete tool: ${resolvedPath}. Only files are supported.`;
+      }
+
+      const current = await tauriIpc.fsReadFileWithOptions({
+        path,
+        allowOutsideWorkspace:
+          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+        workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+      });
+      const deletions = current.is_binary ? 0 : countLogicalLines(current.content);
+
+      await tauriIpc.fsDelete({
+        path,
+        workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+        workspacePath: effectiveWorkspacePath,
+      });
+
+      return buildStructuredWriteResponse({
+        path: resolvedPath,
+        status: "deleted",
+        additions: 0,
+        deletions,
+        created: false,
+        bytesWritten: 0,
+        validation: {
+          path: resolvedPath,
+          exists: false,
+          readable: false,
+          is_binary: false,
+          size: 0,
+          encoding: null,
+          language: null,
+        },
+        rawPath: path,
       });
     }
 

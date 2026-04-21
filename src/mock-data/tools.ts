@@ -121,6 +121,20 @@ export const mockInternalTools: Tool[] = [
     },
   },
   {
+    id: 'delete',
+    name: 'Delete Workspace File',
+    category: 'filesystem',
+    status: 'enabled',
+    description: 'Delete a workspace file',
+    icon: 'trash',
+    config: {
+      enabled: true,
+      visible: true,
+      chatMode: true,
+      internal: false,
+    },
+  },
+  {
     id: 'glob',
     name: 'Glob Files',
     category: 'filesystem',
@@ -639,6 +653,7 @@ export const defaultToolSettings: Record<string, boolean> = {
   read: true,
   write: true,
   edit: true,
+  delete: true,
   glob: true,
   grep: true,
   git_status: true,

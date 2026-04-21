@@ -50,6 +50,7 @@ const TASK_REVIEWER_TOOL_IDS = new Set([
   "glob",
   "grep",
   "apply_patch",
+  "delete",
   "git_status",
   "git_log",
   "git_branch_list",
