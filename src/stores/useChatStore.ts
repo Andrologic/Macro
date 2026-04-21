@@ -2380,6 +2380,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       normalizedToolName === "read" ||
       normalizedToolName === "write" ||
       normalizedToolName === "edit" ||
+      normalizedToolName === "delete" ||
       normalizedToolName === "glob" ||
       normalizedToolName === "grep" ||
       normalizedToolName === "terminal_create_session" ||
@@ -2729,14 +2730,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     if (allowedToolIds.includes("apply_patch")) {
       systemInstructions.push(
-        "For file edits, use apply_patch instead of write/edit. Macro patch format is: *** Begin Patch, then one or more sections using *** Add File:, *** Update File:, or *** Delete File:, and finally *** End Patch. In update hunks, prefix context lines with a space, removals with -, additions with +, and separate hunks with @@ when needed.",
+        "For coordinated file edits, use apply_patch instead of write/edit. Macro patch format is: *** Begin Patch, then one or more sections using *** Add File:, *** Update File:, or *** Delete File:, and finally *** End Patch. In update hunks, prefix context lines with a space, removals with -, additions with +, and separate hunks with @@ when needed. Use delete for a direct single-file removal when that is simpler than crafting a patch.",
       );
     } else if (
       allowedToolIds.includes("write") ||
-      allowedToolIds.includes("edit")
+      allowedToolIds.includes("edit") ||
+      allowedToolIds.includes("delete")
     ) {
       systemInstructions.push(
-        "For file edits in this session, use write/edit tools and do not emit apply_patch.",
+        "For file edits in this session, use write/edit/delete tools and do not emit apply_patch. The delete tool only supports files, not directories.",
       );
     }
     const appMode = appState.mode;

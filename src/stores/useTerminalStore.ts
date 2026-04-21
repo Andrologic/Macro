@@ -298,6 +298,80 @@ const resolveProjectLabelFromTab = (
   return projectName || null;
 };
 
+const normalizeSessionCwd = (value: string | null | undefined): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const isAbsoluteSessionCwd = (value: string): boolean => /^(?:[a-zA-Z]:[\\/]|\/)/.test(value);
+
+const joinSessionCwd = (basePath: string, relativePath: string): string => {
+  const normalizedBase = basePath.replace(/[\\/]+$/, '');
+  const normalizedRelative = relativePath.replace(/\\/g, '/').replace(/^\.\//, '');
+
+  if (!normalizedBase) {
+    return normalizedRelative;
+  }
+
+  if (!normalizedRelative || normalizedRelative === '.') {
+    return normalizedBase;
+  }
+
+  return `${normalizedBase}/${normalizedRelative}`;
+};
+
+const resolveSessionBaseCwd = (projectId: string, fallbackProjectPath: string): string => {
+  const appState = useAppStore.getState();
+  const taskState = useTaskStore.getState();
+  const chatState = useChatStore.getState();
+  const executionContext = resolveProjectExecutionContext({
+    mode: appState.mode,
+    projects: appState.projectGroups.flatMap((group) => group.projects),
+    projectGroups: appState.projectGroups,
+    tasks: taskState.tasks,
+    conversations: chatState.conversations,
+    conversationId: chatState.selectedConversationId,
+    selectedGroupId: appState.selectedGroupId,
+    selectedProjectId: projectId,
+    selectedTaskId: appState.selectedTaskId,
+    activeRepositoryPath: taskState.activeRepositoryPath,
+    branchWorktrees: taskState.branchWorktrees,
+  });
+
+  if (executionContext.taskId) {
+    return (
+      executionContext.workspacePathsByProjectId[projectId] ||
+      executionContext.workspacePath ||
+      fallbackProjectPath
+    );
+  }
+
+  return fallbackProjectPath;
+};
+
+const resolveSessionCreationCwd = (params: {
+  projectId: string;
+  projectPath: string;
+  cwd?: string | null;
+}): string => {
+  const requestedCwd = normalizeSessionCwd(params.cwd);
+  const baseCwd = resolveSessionBaseCwd(params.projectId, params.projectPath);
+
+  if (!requestedCwd) {
+    return baseCwd;
+  }
+
+  if (isAbsoluteSessionCwd(requestedCwd)) {
+    return requestedCwd;
+  }
+
+  return joinSessionCwd(baseCwd, requestedCwd);
+};
+
 const getManualInstanceIndexForTab = (params: {
   tabs: TerminalTab[];
   targetTabId: string;
@@ -801,8 +875,15 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     createSession: async ({ projectId, cwd }) => {
-      assertProjectSupportsTerminal(projectId);
-      const session = await tauriIpc.terminalCreateSession({ projectId, cwd: cwd ?? null });
+      const project = assertProjectSupportsTerminal(projectId);
+      const session = await tauriIpc.terminalCreateSession({
+        projectId,
+        cwd: resolveSessionCreationCwd({
+          projectId,
+          projectPath: project.path,
+          cwd: cwd ?? null,
+        }),
+      });
       return get().upsertSession(session);
     },
 

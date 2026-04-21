@@ -2184,13 +2184,9 @@ pub async fn execute_workspace_tool(
             )
             .await?;
 
-            let result = fs::read_file_internal(
-                &effective_workspace,
-                effective_path,
-                Some(false),
-            )
-            .await
-            .map_err(|error| command_error(error.to_string()))?;
+            let result = fs::read_file_internal(&effective_workspace, effective_path, Some(false))
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             if result.is_binary {
                 return Ok(format!(
@@ -2302,13 +2298,10 @@ pub async fn execute_workspace_tool(
             )
             .await?;
 
-            let current = fs::read_file_internal(
-                &effective_workspace,
-                effective_path.clone(),
-                Some(false),
-            )
-            .await
-            .map_err(|error| command_error(error.to_string()))?;
+            let current =
+                fs::read_file_internal(&effective_workspace, effective_path.clone(), Some(false))
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
 
             if current.is_binary {
                 return Ok(format!("Cannot edit binary file: {}", path));
@@ -2374,6 +2367,66 @@ pub async fn execute_workspace_tool(
                     ),
                     ("created".to_string(), Value::Bool(write_result.created)),
                 ]),
+            )
+            .await
+        }
+        "delete" => {
+            let path = json_arg_string(&args, "path")
+                .ok_or_else(|| command_error("Missing path argument for delete tool."))?;
+            let effective_path = remap_macro_tool_path(path.as_str());
+            let effective_workspace = resolve_workspace_for_tool_path(
+                &workspace,
+                &git_state,
+                Some(path.as_str()),
+                workspace_scope.as_deref(),
+            )
+            .await?;
+
+            let absolute_path =
+                resolve_validated_tool_path(&effective_workspace, effective_path.as_str(), false)?;
+            let metadata = tokio::fs::metadata(&absolute_path).await.map_err(|error| {
+                command_error(format!(
+                    "Failed to inspect {} before delete: {}",
+                    path, error
+                ))
+            })?;
+            if metadata.is_dir() {
+                return Ok(format!(
+                    "Cannot delete directory with delete tool: {}. Only files are supported.",
+                    path
+                ));
+            }
+
+            let current =
+                fs::read_file_internal(&effective_workspace, effective_path.clone(), Some(false))
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+            let deletions = if current.is_binary {
+                0
+            } else {
+                current.content.lines().count()
+            };
+
+            tokio::fs::remove_file(&absolute_path)
+                .await
+                .map_err(|error| command_error(format!("Failed to delete {}: {}", path, error)))?;
+
+            let change = PendingFileChange {
+                display_path: path.clone(),
+                effective_workspace,
+                effective_path,
+                absolute_path,
+                status: "deleted".to_string(),
+                new_content: None,
+                created: false,
+                bytes_written: 0,
+                additions: 0,
+                deletions,
+            };
+
+            build_post_write_response(
+                &[change],
+                serde_json::Map::from_iter([("path".to_string(), Value::String(path))]),
             )
             .await
         }
@@ -2688,10 +2741,9 @@ pub async fn execute_workspace_tool(
 
                 let read_path = relative_path.clone();
 
-                let content =
-                    fs::read_file_internal(&effective_workspace, read_path, Some(false))
-                        .await
-                        .map_err(|error| command_error(error.to_string()))?;
+                let content = fs::read_file_internal(&effective_workspace, read_path, Some(false))
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
 
                 if content.is_binary {
                     continue;
@@ -3751,10 +3803,11 @@ pub async fn db_set_setting(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_patch_hunks_to_content, parse_apply_patch, resolve_requested_workspace,
-        resolve_workspace_for_tool_path, ParsedPatchOperation,
+        apply_patch_hunks_to_content, execute_workspace_tool, parse_apply_patch,
+        resolve_requested_workspace, resolve_workspace_for_tool_path, ParsedPatchOperation,
     };
     use crate::git::GitState;
+    use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
 
@@ -3868,6 +3921,52 @@ mod tests {
         .expect("apply patch");
 
         assert_eq!(updated, "export const value = 1;\nconsole.info(value);\n");
+    }
+
+    #[tokio::test]
+    async fn execute_workspace_tool_delete_returns_structured_deleted_file_response() {
+        let workspace = TempDir::new().expect("workspace");
+        fs::write(workspace.path().join("delete-me.txt"), "line 1\nline 2\n").expect("write file");
+
+        let result = execute_workspace_tool(
+            workspace.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            GitState::new(),
+            "Implement".to_string(),
+            "delete".to_string(),
+            json!({ "path": "delete-me.txt" }),
+            None,
+            None,
+        )
+        .await
+        .expect("execute delete");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&result).expect("parse delete response");
+        assert_eq!(
+            parsed.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            parsed
+                .get("files")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|files| files.first())
+                .and_then(|file| file.get("status"))
+                .and_then(serde_json::Value::as_str),
+            Some("deleted")
+        );
+        assert_eq!(
+            parsed
+                .get("files")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|files| files.first())
+                .and_then(|file| file.get("validation"))
+                .and_then(|validation| validation.get("exists"))
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert!(!workspace.path().join("delete-me.txt").exists());
     }
 }
 
