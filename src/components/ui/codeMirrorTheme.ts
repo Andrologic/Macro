@@ -468,6 +468,23 @@ export const createCodeMirrorDiffTheme = (theme?: Theme) => {
     '.macro-diff-merge-root .cm-insertedLine': {
       textDecoration: 'none',
     },
+    '.macro-diff-host[data-layout="left-only"] .macro-diff-merge-root .cm-merge-revert, .macro-diff-host[data-layout="right-only"] .macro-diff-merge-root .cm-merge-revert': {
+      display: 'none',
+    },
+    '.macro-diff-host[data-layout="left-only"] .macro-diff-merge-root .cm-mergeViewEditor:first-child': {
+      flexBasis: '100%',
+      boxShadow: 'none',
+    },
+    '.macro-diff-host[data-layout="left-only"] .macro-diff-merge-root .cm-mergeViewEditor:last-child': {
+      display: 'none',
+    },
+    '.macro-diff-host[data-layout="right-only"] .macro-diff-merge-root .cm-mergeViewEditor:first-child': {
+      display: 'none',
+    },
+    '.macro-diff-host[data-layout="right-only"] .macro-diff-merge-root .cm-mergeViewEditor:last-child': {
+      flexBasis: '100%',
+      flexGrow: '1',
+    },
     '.macro-diff-merge-root .cm-collapsedLines': {
       display: 'inline-flex',
       alignItems: 'center',

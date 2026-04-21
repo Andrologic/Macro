@@ -24,6 +24,7 @@ export interface DiffMergeViewProps {
   modified: string;
   language?: string;
   className?: string;
+  layout?: 'split' | 'left-only' | 'right-only';
   presentationMode?: 'focused' | 'full';
   editable?: boolean;
   autoFocus?: boolean;
@@ -143,6 +144,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   modified,
   language = 'typescript',
   className,
+  layout = 'split',
   presentationMode = 'focused',
   editable = true,
   autoFocus = false,
@@ -512,6 +514,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   return (
     <div
       ref={containerRef}
+      data-layout={layout}
       data-language={resolvedLanguage}
       data-overflow-mode={resolvedOverflowMode}
       style={{
@@ -519,6 +522,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
         ...themeMetadata.diffVars,
       } as CSSProperties}
       className={cn(
+        'macro-diff-host',
         'h-full w-full min-w-0 overflow-hidden rounded-md border border-border',
         className
       )}
