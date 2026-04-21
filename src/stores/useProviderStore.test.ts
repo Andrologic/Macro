@@ -255,6 +255,30 @@ describe('useProviderStore secret resolution', () => {
     expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
   });
 
+  it('persists providerType and isLocal when updating an existing provider', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    await providerStore.useProviderStore.getState().updateProviderConfig('provider-openai', {
+      providerType: 'anthropic',
+      isLocal: true,
+    });
+
+    expect(updateProviderConfigMock).toHaveBeenCalledWith({
+      id: 'provider-openai',
+      name: undefined,
+      providerType: 'anthropic',
+      baseUrl: undefined,
+      apiKey: undefined,
+      isLocal: true,
+      isEnabled: undefined,
+    });
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]).toMatchObject({
+      providerType: 'anthropic',
+      isLocal: true,
+    });
+  });
+
   it('does not scan models immediately after creating a provider with an API key', async () => {
     const providerStore = await loadProviderStore();
 

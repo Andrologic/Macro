@@ -800,16 +800,26 @@ pub async fn update_provider_config(
     // Build dynamic update query
     let mut updates = vec!["updated_at = ?".to_string()];
     let mut has_name = false;
+    let mut has_provider_type = false;
     let mut has_base_url = false;
+    let mut has_is_local = false;
     let mut has_enabled = false;
 
     if input.name.is_some() {
         updates.push("name = ?".to_string());
         has_name = true;
     }
+    if input.provider_type.is_some() {
+        updates.push("provider_type = ?".to_string());
+        has_provider_type = true;
+    }
     if input.base_url.is_some() {
         updates.push("base_url = ?".to_string());
         has_base_url = true;
+    }
+    if input.is_local.is_some() {
+        updates.push("is_local = ?".to_string());
+        has_is_local = true;
     }
     if input.is_enabled.is_some() {
         updates.push("is_enabled = ?".to_string());
@@ -826,8 +836,14 @@ pub async fn update_provider_config(
     if has_name {
         q = q.bind(input.name.unwrap());
     }
+    if has_provider_type {
+        q = q.bind(input.provider_type.unwrap());
+    }
     if has_base_url {
         q = q.bind(input.base_url.unwrap());
+    }
+    if has_is_local {
+        q = q.bind(input.is_local.unwrap() as i32);
     }
     if has_enabled {
         q = q.bind(input.is_enabled.unwrap() as i32);
@@ -884,6 +900,43 @@ pub async fn create_provider_config(
         created_at: now.clone(),
         updated_at: now,
     })
+}
+
+pub async fn upsert_provider_config_by_id(
+    pool: &SqlitePool,
+    id: &str,
+    name: &str,
+    provider_type: &str,
+    base_url: &str,
+    is_local: bool,
+) -> DbResult<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        INSERT INTO provider_configs (
+            id, name, provider_type, base_url, api_key, has_stored_api_key, is_enabled, is_local, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, NULL, 0, 1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            provider_type = excluded.provider_type,
+            base_url = excluded.base_url,
+            is_local = excluded.is_local,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(id)
+    .bind(name)
+    .bind(provider_type)
+    .bind(base_url)
+    .bind(is_local as i32)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 pub async fn set_provider_has_stored_api_key(
