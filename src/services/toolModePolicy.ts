@@ -10,10 +10,7 @@ export interface ToolModePolicy {
   enforceMacroOnlyWrites: boolean;
 }
 
-const BASE_SOURCE_TOOLS = [
-  "mark_source_passage",
-  "read_sources",
-  "edit_source_passage",
+const SHARED_CONTEXT_TOOLS = [
   "question",
   "read_file",
   "web_search",
@@ -54,8 +51,8 @@ const TERMINAL_TOOLS = [
   "terminal_kill",
 ] as const;
 
-const ALL_WORKSPACE_TOOLS = [
-  ...BASE_SOURCE_TOOLS,
+const ARCHITECT_AND_IMPLEMENT_WORKSPACE_TOOLS = [
+  ...SHARED_CONTEXT_TOOLS,
   ...WORKSPACE_READ_TOOLS,
   ...WORKSPACE_WRITE_TOOLS,
 ] as const;
@@ -71,7 +68,7 @@ export const getToolModePolicy = (
   if (mode === "Architect") {
     return {
       allowedToolIds: [
-        ...ALL_WORKSPACE_TOOLS,
+        ...ARCHITECT_AND_IMPLEMENT_WORKSPACE_TOOLS,
         ...GIT_READ_TOOLS,
         ...getArchitectChatActionToolIds(
           options?.architectToolAutonomyProfile ??
@@ -90,7 +87,11 @@ export const getToolModePolicy = (
   }
 
   return {
-    allowedToolIds: [...ALL_WORKSPACE_TOOLS, ...GIT_TOOLS, ...TERMINAL_TOOLS],
+    allowedToolIds: [
+      ...ARCHITECT_AND_IMPLEMENT_WORKSPACE_TOOLS,
+      ...GIT_TOOLS,
+      ...TERMINAL_TOOLS,
+    ],
     enforceMacroOnlyWrites: false,
   };
 };

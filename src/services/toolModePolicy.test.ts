@@ -19,6 +19,7 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("git_status")).toBe(false);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(false);
     expect(policy.allowedToolIds.includes("mark_source_passage")).toBe(false);
+    expect(policy.allowedToolIds.includes("read_sources")).toBe(true);
     expect(policy.allowedToolIds.includes("edit_source_passage")).toBe(false);
     expect(policy.allowedToolIds.includes("read_file")).toBe(true);
     expect(policy.allowedToolIds.includes("web_search")).toBe(true);
@@ -28,6 +29,9 @@ describe("toolModePolicy", () => {
 
   it("enforces macro-only writes in architect mode", () => {
     const policy = getToolModePolicy("Architect");
+    expect(policy.allowedToolIds.includes("mark_source_passage")).toBe(false);
+    expect(policy.allowedToolIds.includes("read_sources")).toBe(false);
+    expect(policy.allowedToolIds.includes("edit_source_passage")).toBe(false);
     expect(policy.allowedToolIds.includes("write")).toBe(true);
     expect(policy.allowedToolIds.includes("edit")).toBe(true);
     expect(policy.allowedToolIds.includes("delete")).toBe(true);
@@ -63,6 +67,9 @@ describe("toolModePolicy", () => {
 
   it("allows write/edit/delete in implement mode", () => {
     const policy = getToolModePolicy("Implement");
+    expect(policy.allowedToolIds.includes("mark_source_passage")).toBe(false);
+    expect(policy.allowedToolIds.includes("read_sources")).toBe(false);
+    expect(policy.allowedToolIds.includes("edit_source_passage")).toBe(false);
     expect(policy.allowedToolIds.includes("write")).toBe(true);
     expect(policy.allowedToolIds.includes("edit")).toBe(true);
     expect(policy.allowedToolIds.includes("delete")).toBe(true);
