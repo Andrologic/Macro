@@ -42,6 +42,7 @@ const initialOriginalFiles: Record<string, Record<string, string>> = {
 };
 
 let currentFiles: Record<string, Record<string, string | null>> = {};
+let pathsWithEmptyGitDiff = new Set<string>();
 let taskStatuses: Record<string, 'Pending' | 'InReview' | 'InProgress' | 'Completed'> = {
   'task-1': 'InReview',
   'task-2': 'InReview',
@@ -168,6 +169,10 @@ const buildGitStatus = (repoPath: string) => {
 const gitStatusMock = mock(async (repoPath: string) => buildGitStatus(repoPath));
 
 const gitDiffMock = mock(async ({ repoPath, paths }: { repoPath: string; paths?: string[] }) => {
+  const path = paths?.[0] || '';
+  if (pathsWithEmptyGitDiff.has(`${repoPath}::${path}`)) {
+    return '';
+  }
   return buildPatch(repoPath, paths?.[0] || '');
 });
 
@@ -367,6 +372,7 @@ describe('useFileChangesStore', () => {
       'task-3': 'InReview',
       'task-4': 'Pending',
     };
+    pathsWithEmptyGitDiff = new Set();
     appStoreState.selectedGroupId = 'group-1';
     appStoreState.selectedProjectId = null;
     appStoreState.selectedTaskId = 'task-1';
@@ -477,6 +483,50 @@ describe('useFileChangesStore', () => {
     const refreshedRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
     expect(refreshedRepository?.worktreePath).toBe(worktreeAPath);
     expect(refreshedRepository?.changes[0]?.modifiedContent).toContain('const value = 3;');
+  });
+
+  it('builds a synthetic textual diff for untracked created files when git diff is empty', async () => {
+    currentFiles[worktreeAPath]['src/new.ts'] = 'export const created = true;\n';
+    pathsWithEmptyGitDiff.add(`${worktreeAPath}::src/new.ts`);
+    const store = useFileChangesStore.getState();
+
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const newChange = repository?.changes.find((change) => change.path === 'src/new.ts');
+
+    expect(newChange?.status).toBe('added');
+    expect(newChange?.modifiedContent).toBe('export const created = true;\n');
+    expect(newChange?.additions).toBeGreaterThan(0);
+    expect(newChange?.deletions).toBe(0);
+    expect(newChange?.hunks).toHaveLength(1);
+    expect(newChange?.hunks[0]?.lines.every((line) => line.type === 'added')).toBe(true);
+    expect(gitReadFilePairMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      path: 'src/new.ts',
+    });
+  });
+
+  it('builds a synthetic textual diff for deleted files when git diff is empty', async () => {
+    currentFiles[worktreeAPath]['src/deleted.ts'] = null;
+    pathsWithEmptyGitDiff.add(`${worktreeAPath}::src/deleted.ts`);
+    const store = useFileChangesStore.getState();
+
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const deletedChange = repository?.changes.find((change) => change.path === 'src/deleted.ts');
+
+    expect(deletedChange?.status).toBe('deleted');
+    expect(deletedChange?.originalContent).toBe('export const removed = true;\n');
+    expect(deletedChange?.additions).toBe(0);
+    expect(deletedChange?.deletions).toBeGreaterThan(0);
+    expect(deletedChange?.hunks).toHaveLength(1);
+    expect(deletedChange?.hunks[0]?.lines.every((line) => line.type === 'removed')).toBe(true);
+    expect(gitReadFilePairMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      path: 'src/deleted.ts',
+    });
   });
 
   it('keeps the current repository list visible during silent refreshes', async () => {

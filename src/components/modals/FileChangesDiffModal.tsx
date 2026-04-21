@@ -91,8 +91,17 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
   const isSaving = Boolean(session?.isSaving || (repository && change && repository.savingChangeId === change.id));
   const isBusy = isHydrating || isSaving;
   const isDirty = session?.isDirty === true;
-  const canEdit = Boolean(change?.canEdit && session && !isHydrating && presentationMode === 'full');
-  const canRevertChunks = Boolean(change?.canEdit && !change?.reviewed && !isHydrating);
+  const diffLayout: 'split' | 'left-only' | 'right-only' = change?.status === 'added'
+    ? 'right-only'
+    : change?.status === 'deleted'
+      ? 'left-only'
+      : 'split';
+  const showPresentationControls = diffLayout === 'split';
+  const effectivePresentationMode: DiffPresentationMode = showPresentationControls ? presentationMode : 'full';
+  const canEdit = Boolean(change?.canEdit && session && !isHydrating && effectivePresentationMode === 'full');
+  const canRevertChunks = Boolean(
+    diffLayout === 'split' && change?.canEdit && !change?.reviewed && !isHydrating
+  );
 
   useEffect(() => {
     if (!session) return;
@@ -130,6 +139,8 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
       repositoryId: session.repositoryId,
       changeId: session.changeId,
       presentationMode,
+      effectivePresentationMode,
+      diffLayout,
       isHydrating,
       isDirty,
       originalLength: original.length,
@@ -138,7 +149,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
       firstMismatchIndex: getFirstMismatchIndex(original, modified),
     });
     console.groupEnd();
-  }, [change, isDirty, isHydrating, presentationMode, repository, session]);
+  }, [change, diffLayout, effectivePresentationMode, isDirty, isHydrating, presentationMode, repository, session]);
 
   const attemptClose = useCallback(() => {
     if (isDirty) {
@@ -230,13 +241,15 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
       repositoryId: session.repositoryId,
       changeId: session.changeId,
       presentationMode,
+      effectivePresentationMode,
+      diffLayout,
       actualOriginalLength: actualOriginal.length,
       actualModifiedLength: actualModified.length,
       sameString: actualOriginal === actualModified,
       firstMismatchIndex: getFirstMismatchIndex(actualOriginal, actualModified),
     });
     console.groupEnd();
-  }, [change, presentationMode, session]);
+  }, [change, diffLayout, effectivePresentationMode, presentationMode, session]);
 
   if (!session || !repository || !change) {
     return null;
@@ -246,6 +259,11 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
     { mode: 'focused', label: t('implement.context.default', 'Focused diff') },
     { mode: 'full', label: t('implement.context.full', 'Full file context') },
   ];
+  const hasRenderableTextDiff = (
+    change.hunks.length > 0 ||
+    (change.status === 'added' && change.additions > 0) ||
+    (change.status === 'deleted' && change.deletions > 0)
+  );
 
   return (
     <div
@@ -320,23 +338,25 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
             </div>
 
             <div className="flex shrink-0 items-center gap-4">
-              <div className="flex items-center rounded-lg border border-border bg-muted/20 p-1">
-                {contextOptions.map((option) => (
-                  <Button
-                    key={option.mode}
-                    variant={presentationMode === option.mode ? 'secondary' : 'ghost'}
-                    size="sm"
-                    onClick={() => handlePresentationModeChange(option.mode)}
-                    disabled={isBusy || isDirty}
-                    className={cn(
-                      'h-7 px-2.5 text-xs',
-                      presentationMode === option.mode ? 'shadow-sm' : ''
-                    )}
-                  >
-                    {option.label}
-                  </Button>
-                ))}
-              </div>
+              {showPresentationControls && (
+                <div className="flex items-center rounded-lg border border-border bg-muted/20 p-1">
+                  {contextOptions.map((option) => (
+                    <Button
+                      key={option.mode}
+                      variant={presentationMode === option.mode ? 'secondary' : 'ghost'}
+                      size="sm"
+                      onClick={() => handlePresentationModeChange(option.mode)}
+                      disabled={isBusy || isDirty}
+                      className={cn(
+                        'h-7 px-2.5 text-xs',
+                        presentationMode === option.mode ? 'shadow-sm' : ''
+                      )}
+                    >
+                      {option.label}
+                    </Button>
+                  ))}
+                </div>
+              )}
               <Button variant="ghost" size="sm" onClick={attemptClose} aria-label={t('common.close', 'Close')}>
                 <Icon name="x" size={16} />
               </Button>
@@ -364,7 +384,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                   <div className="h-3 w-3/5 animate-pulse rounded bg-muted/20" />
                 </div>
               </div>
-            ) : change.hunks.length === 0 ? (
+            ) : !hasRenderableTextDiff ? (
               <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
                 {t('implement.noTextualDiff', 'No textual diff is available for this file.')}
               </div>
@@ -374,7 +394,8 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 original={session.originalContent}
                 modified={session.rightDraftContent}
                 language={change.language}
-                presentationMode={presentationMode}
+                layout={diffLayout}
+                presentationMode={effectivePresentationMode}
                 className="h-full w-full border-none md:border-none"
                 editable={canEdit}
                 autoFocus={canEdit}

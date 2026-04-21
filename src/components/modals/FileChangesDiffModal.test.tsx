@@ -359,6 +359,37 @@ describe('FileChangesDiffModal', () => {
     expect(document.body.querySelector('.cm-merge-revert button')).not.toBeNull();
   });
 
+  it('renders added files in a right-only editable layout without context toggles or chunk reverts', async () => {
+    repository.selectedChangeId = 'change-1';
+    diffSession = buildSession({
+      changeId: 'change-1',
+      originalContent: '',
+      rightDraftContent: 'const list = [];',
+      lastLoadedModifiedContent: 'const list = [];',
+    });
+    seedStore();
+
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+
+    const host = document.body.querySelector('[data-layout="right-only"]') as HTMLElement | null;
+    const leftEditor = document.body.querySelector('.cm-mergeViewEditor:first-child') as HTMLElement | null;
+    const rightEditor = document.body.querySelector('.cm-mergeViewEditor:last-child') as HTMLElement | null;
+
+    expect(host).not.toBeNull();
+    expect(findButton('Focused diff')).toBeUndefined();
+    expect(findButton('Full file context')).toBeUndefined();
+    expect(document.body.querySelector('.cm-merge-revert button')).toBeNull();
+    expect(document.body.textContent).not.toContain('No textual diff is available for this file.');
+    expect(document.body.querySelector('.cm-merge-b .cm-content[contenteditable="true"]')).not.toBeNull();
+    expect(leftEditor).not.toBeNull();
+    expect(rightEditor).not.toBeNull();
+    expect(getComputedStyle(leftEditor as HTMLElement).display).toBe('none');
+    expect(getComputedStyle(rightEditor as HTMLElement).display).toBe('flex');
+  });
+
   it('shows only invalidate for a validated file', async () => {
     repository.changes[1] = {
       ...repository.changes[1],
@@ -437,6 +468,37 @@ describe('FileChangesDiffModal', () => {
     expect(document.body.textContent).toContain('Validated');
     expect(document.body.querySelector('.cm-merge-revert button')).toBeNull();
     expect(document.body.querySelector('.cm-merge-b .cm-content[contenteditable="false"]')).not.toBeNull();
+  });
+
+  it('renders deleted files in a left-only read-only layout without context toggles or chunk reverts', async () => {
+    repository.selectedChangeId = 'change-3';
+    diffSession = buildSession({
+      changeId: 'change-3',
+      originalContent: 'legacy();',
+      rightDraftContent: '',
+      lastLoadedModifiedContent: '',
+    });
+    seedStore();
+
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+
+    const host = document.body.querySelector('[data-layout="left-only"]') as HTMLElement | null;
+    const leftEditor = document.body.querySelector('.cm-mergeViewEditor:first-child') as HTMLElement | null;
+    const rightEditor = document.body.querySelector('.cm-mergeViewEditor:last-child') as HTMLElement | null;
+
+    expect(host).not.toBeNull();
+    expect(findButton('Focused diff')).toBeUndefined();
+    expect(findButton('Full file context')).toBeUndefined();
+    expect(document.body.querySelector('.cm-merge-revert button')).toBeNull();
+    expect(document.body.textContent).not.toContain('No textual diff is available for this file.');
+    expect(document.body.querySelector('.cm-merge-a .cm-content')).not.toBeNull();
+    expect(leftEditor).not.toBeNull();
+    expect(rightEditor).not.toBeNull();
+    expect(getComputedStyle(leftEditor as HTMLElement).display).toBe('flex');
+    expect(getComputedStyle(rightEditor as HTMLElement).display).toBe('none');
   });
 
   it('surfaces loading, missing diff text, and repository errors without breaking layout', async () => {
