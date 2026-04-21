@@ -26,6 +26,7 @@ import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
 import { QuestionnaireFooter } from './QuestionnaireFooter';
+import { ToolApprovalFooter } from './ToolApprovalFooter';
 import { QuestionnaireResponseSummary } from './QuestionnaireResponseSummary';
 import { PlanFormModal } from '../architect/PlanFormModal';
 import { ArchitectPlanNamingRecoveryModal } from '../architect/ArchitectPlanNamingRecoveryModal';
@@ -424,6 +425,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     submitArchitectPlanManualName,
     composerContextRefs,
     questionnaireDraftsByConversationId,
+    getPendingToolApproval,
+    approvePendingToolApprovalOnce,
+    approvePendingToolApprovalForConversation,
+    denyPendingToolApproval,
     startQuestionnaireResponseEdit,
     cancelQuestionnaireSession,
     setActiveQuestionnaireStep,
@@ -457,6 +462,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     submitArchitectPlanManualName: state.submitArchitectPlanManualName,
     composerContextRefs: state.composerContextRefs,
     questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
+    getPendingToolApproval: state.getPendingToolApproval,
+    approvePendingToolApprovalOnce: state.approvePendingToolApprovalOnce,
+    approvePendingToolApprovalForConversation:
+      state.approvePendingToolApprovalForConversation,
+    denyPendingToolApproval: state.denyPendingToolApproval,
     startQuestionnaireResponseEdit: state.startQuestionnaireResponseEdit,
     cancelQuestionnaireSession: state.cancelQuestionnaireSession,
     setActiveQuestionnaireStep: state.setActiveQuestionnaireStep,
@@ -503,6 +513,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const activeQuestionnaireDraft = selectedConversationId
     ? questionnaireDraftsByConversationId[selectedConversationId]
     : undefined;
+  const activePendingToolApproval = selectedConversationId
+    ? getPendingToolApproval(selectedConversationId)
+    : null;
   const activeQuestionnaire = useMemo(
     () =>
       selectedConversationId
@@ -627,7 +640,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isConversationPending ||
     isImplementComposerLocked ||
     isImplementTaskSelectionMissing ||
-    Boolean(activeQuestionnaire);
+    Boolean(activeQuestionnaire) ||
+    Boolean(activePendingToolApproval);
 
   const selectedGlobalProject = useMemo(
     () => getGlobalProjectById(projectGroups, selectedGroupId),
@@ -1299,7 +1313,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3">
           <div className="w-full max-w-3xl mx-auto space-y-3">
-            {!activeQuestionnaire && composerImages.length > 0 && (
+            {!activeQuestionnaire && !activePendingToolApproval && composerImages.length > 0 && (
               <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-card/60 p-2">
                 {composerImages.map((image) => (
                   <div key={image.id} className="relative w-16 h-16 rounded-md border border-border overflow-hidden bg-muted/30">
@@ -1460,7 +1474,27 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               </div>
             )}
 
-            {activeQuestionnaire ? (
+            {activePendingToolApproval ? (
+              <ToolApprovalFooter
+                pendingApproval={activePendingToolApproval}
+                onAllowOnce={() =>
+                  approvePendingToolApprovalOnce(
+                    activePendingToolApproval.conversationId,
+                  )
+                }
+                onAllowForConversation={() =>
+                  approvePendingToolApprovalForConversation(
+                    activePendingToolApproval.conversationId,
+                  )
+                }
+                onDeny={(reason) =>
+                  denyPendingToolApproval(
+                    activePendingToolApproval.conversationId,
+                    reason,
+                  )
+                }
+              />
+            ) : activeQuestionnaire ? (
               <QuestionnaireFooter
                 activeQuestionnaire={activeQuestionnaire}
                 draftText={activeQuestionnaireDraftText}

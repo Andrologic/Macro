@@ -35,7 +35,7 @@ const PLAN_EXPLORER_TOOL_IDS = new Set([
   "git_branch_list",
   "git_diff",
   "git_get_tree",
-  ...getArchitectChatActionToolIds("full"),
+  ...getArchitectChatActionToolIds(),
 ]);
 
 const TASK_REVIEWER_TOOL_IDS = new Set([

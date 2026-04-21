@@ -687,6 +687,26 @@ const terminalCreateSessionFromChatMock = mock(
     updated_at: '2026-03-26T10:00:00.000Z',
   })
 );
+const terminalRunCommandFromChatMock = mock(
+  async ({
+    sessionId,
+    command,
+    timeoutMs,
+  }: {
+    sessionId: string;
+    command: string;
+    timeoutMs?: number | null;
+  }) => ({
+    id: sessionId,
+    command,
+    timeout_ms: timeoutMs ?? null,
+    status: 'idle',
+    output: '',
+    exit_code: null,
+    timed_out: false,
+    updated_at: '2026-03-26T10:00:00.000Z',
+  })
+);
 
 let importCounter = 0;
 
@@ -836,6 +856,7 @@ const registerUseChatStoreMocks = async () => {
       getState: () => ({
         addTerminalLine: () => undefined,
         createSession: terminalCreateSessionFromChatMock,
+        runCommand: terminalRunCommandFromChatMock,
       }),
     },
   }));
@@ -1193,7 +1214,11 @@ const getLatestArchitectToolHandler = () => {
   const lastCall = ((streamChatMock as unknown as {
     mock: { calls: Array<Array<unknown>> };
   }).mock.calls.at(-1)?.[0] ?? null) as {
-    onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+    onToolCall?: (
+      toolName: string,
+      args: Record<string, unknown>,
+      toolCallId?: string
+    ) => Promise<unknown>;
   } | null;
   expect(lastCall?.onToolCall).toBeDefined();
   if (!lastCall?.onToolCall) {
@@ -1375,6 +1400,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     hydrateNeedsForPlanMock.mockClear();
     replaceNeedsForPlanMock.mockClear();
     terminalCreateSessionFromChatMock.mockClear();
+    terminalRunCommandFromChatMock.mockClear();
     toolsStoreState.loadSettings.mockClear();
     toolsStoreState.getEnabledChatToolIds = () => ['read_file', 'web_search', 'web_fetch', 'question'];
     appState.activateArchitectPlan.mockClear();
@@ -3227,18 +3253,18 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).toContain('plan_get');
     expect(streamOptions.allowedToolIds).toContain('need_update');
     expect(streamOptions.allowedToolIds).toContain('strategy_update');
-    expect(streamOptions.allowedToolIds).not.toContain('need_delete');
-    expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
+    expect(streamOptions.allowedToolIds).toContain('need_delete');
+    expect(streamOptions.allowedToolIds).toContain('strategy_delete');
     expect(String(streamOptions.messages[0]?.content)).toContain(
       'Custom PLAN_EXPLORER prompt for tests.'
     );
   });
 
-  it('adds destructive Architect tools when the autonomy profile is full', async () => {
+  it('migrates the legacy guarded autonomy profile to strict tool risk filtering', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     localStorage.setItem(
       'macro_architectToolAutonomyProfile',
-      JSON.stringify('full')
+      JSON.stringify('guarded')
     );
 
     const { useChatStore } = await loadChatStore();
@@ -3265,8 +3291,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     }).mock.calls[0]?.[0] ?? null) as {
       allowedToolIds: string[];
     };
-    expect(streamOptions.allowedToolIds).toContain('need_delete');
-    expect(streamOptions.allowedToolIds).toContain('strategy_delete');
+    expect(streamOptions.allowedToolIds).not.toContain('need_delete');
+    expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
   });
 
   it('uses the backend tool policy in Chat mode and keeps question available when enabled', async () => {
@@ -5459,6 +5485,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('returns worktree-based terminal sessions for terminal_create_session tool calls in implement tasks', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
     taskStoreState.tasks = [
       createImplementTask({
         status: 'InProgress',
@@ -5512,6 +5539,193 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     const parsed = JSON.parse(String(result));
     expect(parsed.cwd).toBe('C:/repos/web/.macro/worktrees/task-1');
+  });
+
+  it('returns the user denial reason when a pending tool approval is rejected', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Lance une commande en terminal.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const toolCallPromise = onToolCall(
+      'terminal_run',
+      { command: 'npm test', session_id: 'session-1' },
+      'tool-call-1'
+    );
+
+    await flushAsyncWork();
+
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')?.toolId).toBe(
+      'terminal_run'
+    );
+
+    useChatStore
+      .getState()
+      .denyPendingToolApproval('implement-conv', 'Stay inside the workspace only.');
+
+    await expect(toolCallPromise).resolves.toBe(
+      'Tool terminal_run was denied by the user. User reason: Stay inside the workspace only.'
+    );
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
+  });
+
+  it('clears conversation-scoped approval grants when the user switches conversations', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+        {
+          ...createConversation('implement-conv-2'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement fallback',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Lance une commande en terminal.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const firstToolCall = onToolCall(
+      'terminal_run',
+      { command: 'npm test', session_id: 'session-1' },
+      'tool-call-1'
+    );
+
+    await flushAsyncWork();
+    useChatStore.getState().approvePendingToolApprovalForConversation('implement-conv');
+    await firstToolCall;
+
+    expect(
+      useChatStore.getState().conversationApprovalGrantsByConversationId['implement-conv']
+    ).toHaveLength(1);
+
+    useChatStore.getState().selectConversation('implement-conv-2');
+
+    expect(
+      useChatStore.getState().conversationApprovalGrantsByConversationId['implement-conv']
+    ).toBeUndefined();
+
+    const secondToolCall = onToolCall(
+      'terminal_run',
+      { command: 'npm test -- --watch=false', session_id: 'session-1' },
+      'tool-call-2'
+    );
+
+    await flushAsyncWork();
+
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')?.toolCallId).toBe(
+      'tool-call-2'
+    );
+
+    useChatStore.getState().denyPendingToolApproval('implement-conv');
+    await expect(secondToolCall).resolves.toBe('Tool terminal_run was denied by the user.');
+  });
+
+  it('cancels a pending approval when the conversation stream is stopped', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Lance une commande en terminal.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const toolCallPromise = onToolCall(
+      'terminal_run',
+      { command: 'npm test', session_id: 'session-1' },
+      'tool-call-1'
+    );
+
+    await flushAsyncWork();
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')).not.toBeNull();
+
+    useChatStore.getState().stopConversationStream('implement-conv');
+
+    await expect(toolCallPromise).resolves.toBe('Tool terminal_run was denied by the user.');
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
+    expect(
+      useChatStore.getState().conversationApprovalGrantsByConversationId['implement-conv']
+    ).toBeUndefined();
   });
 
   it('rejects sends without a selected provider or model before committing any message', async () => {

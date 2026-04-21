@@ -40,6 +40,9 @@ const registerWindowRestorationMocks = async () => {
   const actualPreferences = await import(
     `../services/preferences.ts?window-restoration-preferences-test=${importCounter + 1}`
   );
+  const actualDesktopPlatform = await import(
+    `../utils/desktopPlatform.ts?window-restoration-desktop-platform-test=${importCounter + 1}`
+  );
 
   mock.module('../services/preferences', () => ({
     ...actualPreferences,
@@ -84,6 +87,7 @@ const registerWindowRestorationMocks = async () => {
   }));
 
   mock.module('../utils/desktopPlatform', () => ({
+    ...actualDesktopPlatform,
     getPlatformChromeState: () => chromeState,
   }));
 
