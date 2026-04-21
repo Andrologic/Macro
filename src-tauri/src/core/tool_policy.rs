@@ -15,9 +15,6 @@ pub struct ToolModePolicyResult {
 
 fn architect_allowed_tool_ids() -> &'static [&'static str] {
     &[
-        "mark_source_passage",
-        "read_sources",
-        "edit_source_passage",
         "question",
         "read_file",
         "web_search",
@@ -82,9 +79,6 @@ fn chat_allowed_tool_ids() -> &'static [&'static str] {
 
 fn implement_allowed_tool_ids() -> &'static [&'static str] {
     &[
-        "mark_source_passage",
-        "read_sources",
-        "edit_source_passage",
         "question",
         "read_file",
         "web_search",
