@@ -758,6 +758,12 @@ interface TaskStore {
     description: string;
     featureSlug: string;
   }) => Promise<void>;
+  revertManualFeatureToDraft: (params: {
+    taskId: string;
+    conversationId?: string | null;
+    title?: string | null;
+    description?: string | null;
+  }) => Promise<void>;
   deleteManualFeatureDraft: (taskId: string) => Promise<void>;
   createMissingBaseBranch: (issue: TaskMissingBaseBranchIssue) => Promise<void>;
   clearMissingBaseBranchIssue: () => void;
@@ -1215,6 +1221,85 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
         set({ lastError: message });
       });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      throw normalized;
+    }
+  },
+
+  revertManualFeatureToDraft: async (params) => {
+    set({ lastError: null });
+    assertTaskMutationRuntime('revertManualFeatureToDraft');
+
+    const existingTask = get().getTaskById(params.taskId);
+    if (!existingTask) {
+      set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId: params.taskId }) });
+      return;
+    }
+
+    if (!isManualStandaloneTask(existingTask)) {
+      set({
+        lastError: tTask(
+          'implement.errors.revertDraftUnsupportedTask',
+          'Only standalone features can be reverted to draft.'
+        ),
+      });
+      return;
+    }
+
+    if (existingTask.draft) {
+      return;
+    }
+
+    try {
+      if (!tauriIpc.isTauriAvailable()) {
+        throw new Error('Manual features require the desktop runtime.');
+      }
+
+      const executionTargets = getExecutionTargetsWithRepoPaths(existingTask);
+      for (const target of executionTargets) {
+        await tauriIpc.gitWorktreeRemove({
+          repoPath: target.repoPath,
+          taskId: target.worktreeKey,
+          force: true,
+          branchName: target.branchName,
+        });
+
+        const branches = await tauriIpc.gitBranchList(target.repoPath);
+        if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
+          await tauriIpc.gitBranchDelete({
+            repoPath: target.repoPath,
+            branchName: target.branchName,
+            force: true,
+          });
+        }
+      }
+
+      const removedWorktreeKeys = getExecutionTargets(existingTask).map((target) => target.worktreeKey);
+      set((state) => ({
+        ...updateTaskRuntimeAfterCleanup(state, existingTask, removedWorktreeKeys),
+        missingBaseBranchIssue: null,
+      }));
+
+      await tauriIpc.workspaceRevertManualFeatureToDraft({
+        taskId: params.taskId,
+        conversationId: params.conversationId ?? null,
+        title: params.title ?? null,
+        description: params.description ?? null,
+      });
+
+      await get().refreshFromPlan();
+      await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId: params.taskId });
+      await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
+        set({ lastError: message });
+      });
+
+      if (useAppStore.getState().selectedTaskId === params.taskId) {
+        await get().activateTask(params.taskId);
+      } else if (get().activeBranchName === null && get().activeRepositoryPath === null) {
+        await syncWorkspaceRoot(null);
+      }
     } catch (error) {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });

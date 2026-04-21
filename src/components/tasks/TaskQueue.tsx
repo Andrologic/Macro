@@ -1352,6 +1352,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     showArchived,
     t,
   ]);
+  const getTaskListRowKey = useCallback((row: TaskListRow) => row.id, []);
   const {
     parentRef: taskListRef,
     virtualItems: virtualTaskRows,
@@ -1359,6 +1360,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     measureElement: measureTaskRow,
   } = useVirtualList({
     items: taskListRows,
+    getItemKey: getTaskListRowKey,
     estimateSize: 112,
     overscan: 8,
     dynamicHeight: true,
@@ -1603,17 +1605,17 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                 const row = virtualRow.item;
                 return (
                   <div
-                    key={row.id}
+                    key={virtualRow.key}
                     ref={measureTaskRow}
                     data-index={virtualRow.index}
                     className="absolute left-0 top-0 w-full"
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
                     {row.kind === 'section' ? (
-                      <div className="flex items-center justify-between px-1 pb-1 pt-1">
+                      <div className="flex h-7 items-center justify-between gap-3 px-1">
                         <h2
                           className={cn(
-                            'text-xs font-semibold uppercase tracking-wide',
+                            'truncate whitespace-nowrap text-xs font-semibold uppercase tracking-wide',
                             row.tone === 'draft'
                               ? 'text-sky-400'
                               : row.tone === 'success'
@@ -1623,7 +1625,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         >
                           {row.title}
                         </h2>
-                        <span className="text-xs text-muted-foreground">{row.count}</span>
+                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                          {row.count}
+                        </span>
                       </div>
                     ) : (
                       <MemoizedTaskItem

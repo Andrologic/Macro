@@ -1790,6 +1790,23 @@ export async function workspaceFinalizeManualFeature(params: {
   );
 }
 
+export async function workspaceRevertManualFeatureToDraft(params: {
+  taskId: string;
+  conversationId?: string | null;
+  title?: string | null;
+  description?: string | null;
+}): Promise<WorkspaceManualFeatureDto> {
+  return invoke<WorkspaceManualFeatureDto>(
+    "workspace_revert_manual_feature_to_draft",
+    {
+      taskId: params.taskId,
+      conversationId: params.conversationId ?? null,
+      title: params.title ?? null,
+      description: params.description ?? null,
+    },
+  );
+}
+
 export async function workspaceDeleteManualFeatureDraft(
   taskId: string,
 ): Promise<void> {

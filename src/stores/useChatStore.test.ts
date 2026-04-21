@@ -348,6 +348,29 @@ const taskStoreState = {
     );
     emitTaskStoreUpdate(previousTasks);
   }),
+  revertManualFeatureToDraft: mock(async (params: {
+    taskId: string;
+    title?: string | null;
+    description?: string | null;
+  }) => {
+    const previousTasks = taskStoreState.tasks;
+    taskStoreState.tasks = taskStoreState.tasks.map((task) =>
+      task.id === params.taskId
+        ? {
+            ...task,
+            title: params.title ?? 'New feature',
+            description: params.description ?? '',
+            draft: true,
+            feature_slug: null,
+            assigned_branch: '',
+            branch_name: '',
+            execution_targets: [],
+            status: 'Pending',
+          }
+        : task
+    );
+    emitTaskStoreUpdate(previousTasks);
+  }),
   startTask: mock(async (taskId: string) => {
     const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.map((task) =>
@@ -1365,6 +1388,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.refreshFromPlan.mockClear();
     taskStoreState.clearPlanRuntimeState.mockClear();
     taskStoreState.finalizeManualFeatureDraft.mockClear();
+    taskStoreState.revertManualFeatureToDraft.mockClear();
     taskStoreState.startTask.mockClear();
     taskStoreState.markTaskAwaitingResponse.mockClear();
     taskStoreState.retryTask.mockClear();
@@ -3672,6 +3696,140 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ).toMatchObject({
       title: 'Quick export',
       description: 'Add a quick CSV export from the table.',
+    });
+  });
+
+  it('keeps a standalone manual feature as draft after the first assistant generation fails, then regenerates metadata on retry', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [createManualFeatureTask()];
+
+    sendChatNonStreamingMock
+      .mockImplementationOnce(async () =>
+        JSON.stringify({
+          title: 'Quick export',
+          description: 'Add a quick CSV export from the table.',
+          featureSlug: 'quick-export',
+        })
+      )
+      .mockImplementationOnce(async () =>
+        JSON.stringify({
+          title: 'Retry export',
+          description: 'Retry the CSV export initialization.',
+          featureSlug: 'retry-export',
+        })
+      );
+
+    streamChatMock
+      .mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as {
+          onError?: (error: Error) => void;
+        };
+        options.onError?.(new Error('Assistant unavailable.'));
+        return { usage: null };
+      }) as typeof streamChatMock)
+      .mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as {
+          onComplete?: (result: {
+            visibleContent: string;
+            toolTraces: unknown[];
+            hiddenContext?: string;
+            usage: null;
+          }) => void;
+        };
+        options.onComplete?.({
+          visibleContent: 'C’est reparti.',
+          toolTraces: [],
+          hiddenContext: undefined,
+          usage: null,
+        });
+        return { usage: null };
+      }) as typeof streamChatMock);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
+          task_id: 'manual-task-1',
+          title: 'New feature',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'manual-conv',
+      content: 'Ajoute un export CSV rapide depuis le tableau.',
+      taskId: 'manual-task-1',
+    });
+
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Promise.resolve();
+
+    expect(taskStoreState.revertManualFeatureToDraft).toHaveBeenCalledWith({
+      taskId: 'manual-task-1',
+      conversationId: 'manual-conv',
+      title: 'New feature',
+      description: '',
+    });
+    expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
+      draft: true,
+      status: 'Pending',
+      feature_slug: null,
+      branch_name: '',
+    });
+    expect(
+      useChatStore.getState().conversations.find((conversation: Conversation) => conversation.id === 'manual-conv')
+    ).toMatchObject({
+      title: 'New feature',
+      description: '',
+    });
+
+    const firstUserMessage = useChatStore
+      .getState()
+      .getConversationMessages('manual-conv')
+      .find((message: { role: string }) => message.role === 'user');
+    expect(firstUserMessage).toBeDefined();
+
+    await useChatStore.getState().editMessage(
+      (firstUserMessage as { id: string }).id,
+      (firstUserMessage as { content: string }).content,
+    );
+
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Promise.resolve();
+
+    expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(2);
+    expect(taskStoreState.finalizeManualFeatureDraft).toHaveBeenLastCalledWith({
+      taskId: 'manual-task-1',
+      conversationId: 'manual-conv',
+      title: 'Retry export',
+      description: 'Retry the CSV export initialization.',
+      featureSlug: 'retry-export',
+    });
+    expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
+      draft: false,
+      status: 'InProgress',
+      feature_slug: 'retry-export',
+      branch_name: 'feature/retry-export',
+    });
+    expect(
+      useChatStore.getState().conversations.find((conversation: Conversation) => conversation.id === 'manual-conv')
+    ).toMatchObject({
+      title: 'Retry export',
+      description: 'Retry the CSV export initialization.',
     });
   });
 
