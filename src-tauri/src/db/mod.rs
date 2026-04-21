@@ -1032,6 +1032,20 @@ async fn insert_default_providers(pool: &SqlitePool) -> DbResult<()> {
             false,
         ),
         (
+            "minimax",
+            "MiniMax",
+            "openai",
+            "https://api.minimax.io/v1",
+            false,
+        ),
+        (
+            "opencode-go",
+            "OpenCode Go",
+            "openai",
+            "https://opencode.ai/zen/go/v1",
+            false,
+        ),
+        (
             "ollama",
             "Ollama",
             "ollama",
@@ -1305,6 +1319,78 @@ mod tests {
 
         assert_eq!(table_names, vec!["git_repositories", "git_worktrees"]);
         assert_migration_001_applied(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_inserts_minimax_and_opencode_go_default_providers() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let pool = create_pool(&db_path).await.expect("db pool");
+
+        let providers = sqlx::query(
+            r#"
+            SELECT id, name, provider_type, base_url
+            FROM provider_configs
+            WHERE id IN ('minimax', 'opencode-go')
+            ORDER BY id ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("default provider rows")
+        .into_iter()
+        .map(|row| {
+            (
+                row.get::<String, _>("id"),
+                row.get::<String, _>("name"),
+                row.get::<String, _>("provider_type"),
+                row.get::<String, _>("base_url"),
+            )
+        })
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            providers,
+            vec![
+                (
+                    "minimax".to_string(),
+                    "MiniMax".to_string(),
+                    "openai".to_string(),
+                    "https://api.minimax.io/v1".to_string(),
+                ),
+                (
+                    "opencode-go".to_string(),
+                    "OpenCode Go".to_string(),
+                    "openai".to_string(),
+                    "https://opencode.ai/zen/go/v1".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn create_pool_backfills_missing_new_default_providers_into_existing_runtime_db() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let pool = create_pool(&db_path).await.expect("db pool");
+
+        sqlx::query("DELETE FROM provider_configs WHERE id IN ('minimax', 'opencode-go')")
+            .execute(&pool)
+            .await
+            .expect("delete new defaults");
+
+        drop(pool);
+
+        let migrated_pool = create_pool(&db_path).await.expect("reopened db pool");
+
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM provider_configs WHERE id IN ('minimax', 'opencode-go')",
+        )
+        .fetch_one(&migrated_pool)
+        .await
+        .expect("count new defaults");
+
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]

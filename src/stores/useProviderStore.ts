@@ -1761,8 +1761,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         await ipcUpdateProviderConfig({
           id,
           name: persistedUpdates.name,
+          providerType: persistedUpdates.providerType,
           baseUrl: persistedUpdates.baseUrl,
           apiKey: persistedUpdates.apiKey,
+          isLocal: persistedUpdates.isLocal,
           isEnabled: persistedUpdates.isEnabled,
         });
       }

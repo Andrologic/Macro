@@ -248,8 +248,11 @@ export interface DbProviderSettings {
 }
 
 export interface DevProviderOverrideConfig {
+  name?: string;
+  providerType?: string;
   apiKey?: string;
   baseUrl?: string;
+  isLocal?: boolean;
 }
 
 export interface DevProviderOverridesFile {
@@ -1051,15 +1054,19 @@ export async function revealProviderApiKey(id: string): Promise<string | null> {
 export async function updateProviderConfig(params: {
   id: string;
   name?: string;
+  providerType?: string;
   baseUrl?: string;
   apiKey?: string;
+  isLocal?: boolean;
   isEnabled?: boolean;
 }): Promise<void> {
   return invoke("db_update_provider_config", {
     id: params.id,
     name: params.name ?? null,
+    providerType: params.providerType ?? null,
     baseUrl: params.baseUrl ?? null,
     apiKey: params.apiKey ?? null,
+    isLocal: params.isLocal ?? null,
     isEnabled: params.isEnabled ?? null,
   });
 }
