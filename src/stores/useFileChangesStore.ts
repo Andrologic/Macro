@@ -1,9 +1,10 @@
 import { create } from 'zustand';
 import i18n from '../i18n';
 import {
-  parseUnifiedDiff,
   type ParsedDiffContent,
   type ParsedDiffHunk,
+  buildParsedDiffFromTextPair,
+  buildStableLineNumberMap,
 } from '../services/gitDiffParser';
 import * as tauriIpc from '../services/tauriIpc';
 import { useTaskStore, type TaskCompletionRepositoryRecord } from './useTaskStore';
@@ -16,8 +17,8 @@ import {
 } from '../services/implementMultiRepoSummary';
 import { useAppStore } from './useAppStore';
 import { getGitFlowBaseBranch } from '../services/architectPlanService';
+import { toServiceError } from '../services/contracts/errors';
 import {
-  areAllFileChangesRepositoriesResolved,
   buildFileChangesRepositoryId,
   getFileChangesExecutionTargets,
 } from '../services/fileChangesReviewScope';
@@ -40,18 +41,21 @@ export interface FileChangeEntry {
   status: 'added' | 'modified' | 'deleted';
   additions: number;
   deletions: number;
-  reviewed: boolean;
   originalContent: string;
+  indexContent: string;
   modifiedContent: string;
   language: string;
   hunks: ParsedDiffHunk[];
   contextMode: DiffPresentationMode;
   canEdit: boolean;
+  hasValidatedStage: boolean;
+  validatedRemovedLineNumbers: number[];
+  validatedAddedLineNumbers: number[];
 }
 
 export interface ReviewRepositoryStats {
-  total: number;
-  reviewed: number;
+  pendingVisibleFileCount: number;
+  validatedStagedFileCount: number;
   additions: number;
   deletions: number;
 }
@@ -64,6 +68,7 @@ export interface ReviewRepositoryState {
   branchName: string;
   planBranchName: string | null;
   changes: FileChangeEntry[];
+  stagedPaths: string[];
   selectedChangeId: string | null;
   stats: ReviewRepositoryStats;
   commitMessageDraft: string;
@@ -79,8 +84,7 @@ export interface FolderNode {
   path: string;
   type: 'folder' | 'file';
   changeIds: string[];
-  allReviewed: boolean;
-  hasPendingReview: boolean;
+  hasPendingVisibleChanges: boolean;
   children?: FolderNode[];
   fileChange?: FileChangeEntry;
 }
@@ -116,8 +120,8 @@ interface LoadCurrentChangesOptions {
 }
 
 const EMPTY_STATS: ReviewRepositoryStats = {
-  total: 0,
-  reviewed: 0,
+  pendingVisibleFileCount: 0,
+  validatedStagedFileCount: 0,
   additions: 0,
   deletions: 0,
 };
@@ -213,8 +217,7 @@ export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
           path: currentPath,
           type: isFile ? 'file' : 'folder',
           changeIds: isFile ? [change.id] : [],
-          allReviewed: isFile ? change.reviewed : false,
-          hasPendingReview: isFile ? !change.reviewed : false,
+          hasPendingVisibleChanges: isFile,
           children: isFile ? undefined : [],
           fileChange: isFile ? change : undefined,
         };
@@ -236,8 +239,7 @@ export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
       return {
         ...node,
         changeIds: node.fileChange ? [node.fileChange.id] : node.changeIds,
-        allReviewed: node.fileChange?.reviewed === true,
-        hasPendingReview: node.fileChange?.reviewed !== true,
+        hasPendingVisibleChanges: true,
       };
     }
 
@@ -246,8 +248,7 @@ export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
       ...node,
       children,
       changeIds: children.flatMap((child) => child.changeIds),
-      allReviewed: children.length > 0 && children.every((child) => child.allReviewed),
-      hasPendingReview: children.some((child) => child.hasPendingReview),
+      hasPendingVisibleChanges: children.some((child) => child.hasPendingVisibleChanges),
     };
   };
 
@@ -270,78 +271,6 @@ const normalizeStatus = (status: string): FileChangeEntry['status'] => {
   if (value.includes('added') || value === 'a' || value === 'new' || value === 'untracked') return 'added';
   if (value.includes('deleted') || value === 'd' || value === 'removed') return 'deleted';
   return 'modified';
-};
-
-const splitDiffContentLines = (value: string): string[] => (
-  value.length === 0 ? [] : value.split('\n')
-);
-
-const isLikelyTextFilePair = (originalContent: string, modifiedContent: string): boolean =>
-  !originalContent.includes('\0') && !modifiedContent.includes('\0');
-
-const buildSyntheticDiffFromFilePair = (
-  status: FileChangeEntry['status'],
-  pair: { originalContent: string; modifiedContent: string }
-): ParsedDiffContent | null => {
-  if (!isLikelyTextFilePair(pair.originalContent, pair.modifiedContent)) {
-    return null;
-  }
-
-  if (status === 'added') {
-    const lines = splitDiffContentLines(pair.modifiedContent);
-    const additions = lines.length;
-
-    return {
-      originalContent: pair.originalContent,
-      modifiedContent: pair.modifiedContent,
-      additions,
-      deletions: 0,
-      hunks: [
-        {
-          header: `@@ -0,0 +1,${additions} @@`,
-          oldStart: 0,
-          oldCount: 0,
-          newStart: 1,
-          newCount: additions,
-          lines: lines.map((content, index) => ({
-            type: 'added',
-            content,
-            oldLineNumber: null,
-            newLineNumber: index + 1,
-          })),
-        },
-      ],
-    };
-  }
-
-  if (status === 'deleted') {
-    const lines = splitDiffContentLines(pair.originalContent);
-    const deletions = lines.length;
-
-    return {
-      originalContent: pair.originalContent,
-      modifiedContent: pair.modifiedContent,
-      additions: 0,
-      deletions,
-      hunks: [
-        {
-          header: `@@ -1,${deletions} +0,0 @@`,
-          oldStart: 1,
-          oldCount: deletions,
-          newStart: 0,
-          newCount: 0,
-          lines: lines.map((content, index) => ({
-            type: 'removed',
-            content,
-            oldLineNumber: index + 1,
-            newLineNumber: null,
-          })),
-        },
-      ],
-    };
-  }
-
-  return null;
 };
 
 const normalizePortablePath = (value: string): string =>
@@ -368,9 +297,11 @@ const toDefaultCommitMessage = (title?: string | null): string => {
   return `feat: ${normalized}`;
 };
 
-const computeStats = (changes: FileChangeEntry[]): ReviewRepositoryStats => ({
-  total: changes.length,
-  reviewed: changes.filter((change) => change.reviewed).length,
+const computeStats = (changes: FileChangeEntry[], stagedPathCount: number): ReviewRepositoryStats => ({
+  // These counts intentionally describe two independent Git buckets.
+  // A partially staged file can therefore contribute to both numbers.
+  pendingVisibleFileCount: changes.length,
+  validatedStagedFileCount: stagedPathCount,
   additions: changes.reduce((sum, change) => sum + change.additions, 0),
   deletions: changes.reduce((sum, change) => sum + change.deletions, 0),
 });
@@ -391,17 +322,53 @@ const updateRepositoryState = (
     repository.id === repositoryId ? updater(repository) : repository
   ));
 
-const updateReviewedStateForChangeIds = (
-  changes: FileChangeEntry[],
-  changeIds: string[],
-  reviewed: boolean
-): FileChangeEntry[] => {
-  const targetIds = new Set(changeIds);
-  return changes.map((change) => (
-    targetIds.has(change.id)
-      ? { ...change, reviewed }
-      : change
-  ));
+const collectChangedLineNumbers = (parsed: ParsedDiffContent) => {
+  const removed = new Set<number>();
+  const added = new Set<number>();
+
+  parsed.hunks.forEach((hunk) => {
+    hunk.lines.forEach((line) => {
+      if (line.type === 'removed' && typeof line.oldLineNumber === 'number') {
+        removed.add(line.oldLineNumber);
+      }
+      if (line.type === 'added' && typeof line.newLineNumber === 'number') {
+        added.add(line.newLineNumber);
+      }
+    });
+  });
+
+  return {
+    removed: Array.from(removed).sort((left, right) => left - right),
+    added: Array.from(added).sort((left, right) => left - right),
+  };
+};
+
+const buildValidatedStageDecorations = (params: {
+  headContent: string;
+  indexContent: string;
+  worktreeContent: string;
+}) => {
+  const stagedParsed = buildParsedDiffFromTextPair(params.headContent, params.indexContent);
+  if (stagedParsed.hunks.length === 0) {
+    return {
+      hasValidatedStage: false,
+      validatedRemovedLineNumbers: [] as number[],
+      validatedAddedLineNumbers: [] as number[],
+    };
+  }
+
+  const stagedLineNumbers = collectChangedLineNumbers(stagedParsed);
+  const stableIndexToWorktree = buildStableLineNumberMap(params.indexContent, params.worktreeContent);
+  const validatedAddedLineNumbers = stagedLineNumbers.added
+    .map((lineNumber) => stableIndexToWorktree.get(lineNumber) ?? null)
+    .filter((lineNumber): lineNumber is number => typeof lineNumber === 'number');
+
+  return {
+    hasValidatedStage:
+      stagedLineNumbers.removed.length > 0 || validatedAddedLineNumbers.length > 0,
+    validatedRemovedLineNumbers: stagedLineNumbers.removed,
+    validatedAddedLineNumbers,
+  };
 };
 
 const syncActiveReviewRepository = (
@@ -576,34 +543,37 @@ const loadFileChangeEntry = async (
 ): Promise<FileChangeEntry> => {
   const id = `${repositoryId}::${file.path}`;
   const status = normalizeStatus(file.status);
-  const patch = await deps.tauri.gitDiff({
+  const pair = await deps.tauri.gitReadFilePair({
     repoPath: worktreePath,
-    paths: [file.path],
-    contextLines: 3,
+    path: file.path,
   });
-  let parsed = parseUnifiedDiff(patch || '');
-
-  if (parsed.hunks.length === 0 && (status === 'added' || status === 'deleted')) {
-    const pair = await deps.tauri.gitReadFilePair({
-      repoPath: worktreePath,
-      path: file.path,
-    });
-    parsed = buildSyntheticDiffFromFilePair(status, pair) ?? parsed;
-  }
+  const headContent = pair.headExists ? pair.headContent : '';
+  const indexContent = pair.indexExists ? pair.indexContent : '';
+  const worktreeContent = pair.worktreeExists ? pair.worktreeContent : '';
+  const pendingParsed = buildParsedDiffFromTextPair(indexContent, worktreeContent);
+  const fullParsed = buildParsedDiffFromTextPair(headContent, worktreeContent);
+  const validatedStageDecorations = buildValidatedStageDecorations({
+    headContent,
+    indexContent,
+    worktreeContent,
+  });
 
   return {
     id,
     path: file.path,
     status,
-    additions: parsed.additions,
-    deletions: parsed.deletions,
-    reviewed: previousChange?.reviewed ?? false,
-    originalContent: parsed.originalContent,
-    modifiedContent: parsed.modifiedContent,
+    additions: pendingParsed.additions,
+    deletions: pendingParsed.deletions,
+    originalContent: fullParsed.originalContent,
+    indexContent,
+    modifiedContent: fullParsed.modifiedContent,
     language: deriveLanguage(file.path),
-    hunks: parsed.hunks,
+    hunks: fullParsed.hunks,
     contextMode: previousChange?.contextMode ?? 'focused',
     canEdit: status !== 'deleted',
+    hasValidatedStage: validatedStageDecorations.hasValidatedStage,
+    validatedRemovedLineNumbers: validatedStageDecorations.validatedRemovedLineNumbers,
+    validatedAddedLineNumbers: validatedStageDecorations.validatedAddedLineNumbers,
   };
 };
 
@@ -630,23 +600,22 @@ const loadRepositoryState = async (params: {
 
   const repositoryId = buildFileChangesRepositoryId(target);
   const status = await deps.tauri.gitStatus(worktreePath);
-  const candidates = [
-    ...status.staged_files,
-    ...status.unstaged_files,
-    ...status.untracked_files,
-  ];
-
-  const uniqueByPath = new Map<string, { path: string; status: string }>();
-  candidates.forEach((file) => {
+  const stagedPaths = Array.from(
+    new Set(
+      status.staged_files
+        .map((file) => file.path)
+        .filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+    )
+  );
+  const visibleByPath = new Map<string, { path: string; status: string }>();
+  [...status.unstaged_files, ...status.untracked_files].forEach((file) => {
     if (!file.path) return;
-    if (!uniqueByPath.has(file.path)) {
-      uniqueByPath.set(file.path, { path: file.path, status: file.status });
-    }
+    visibleByPath.set(file.path, { path: file.path, status: file.status });
   });
 
   const previousById = new Map((previousRepository?.changes || []).map((change) => [change.id, change]));
   const changes: FileChangeEntry[] = [];
-  for (const file of uniqueByPath.values()) {
+  for (const file of visibleByPath.values()) {
     const changeId = `${repositoryId}::${file.path}`;
     const previousChange = previousById.get(changeId);
     changes.push(await loadFileChangeEntry(deps, repositoryId, worktreePath, file, previousChange));
@@ -657,7 +626,7 @@ const loadRepositoryState = async (params: {
     ? previousRepository.selectedChangeId
     : changes[0]?.id ?? null;
   const hasCommittedSnapshot = Boolean(committedRecord || previousRepository?.commitState === 'committed');
-  const commitState: ReviewRepositoryCommitState = changes.length === 0
+  const commitState: ReviewRepositoryCommitState = changes.length === 0 && stagedPaths.length === 0
     ? (hasCommittedSnapshot ? 'committed' : 'no_changes')
     : 'idle';
 
@@ -669,8 +638,9 @@ const loadRepositoryState = async (params: {
     branchName: normalizeBranchName(target.branchName),
     planBranchName: target.planBranchName || (task.task_source === 'standalone' ? deps.getGitFlowBaseBranch() : null),
     changes,
+    stagedPaths,
     selectedChangeId,
-    stats: computeStats(changes),
+    stats: computeStats(changes, stagedPaths.length),
     commitMessageDraft: previousRepository?.commitMessageDraft || toDefaultCommitMessage(task.title),
     commitState,
     loadingChangeId: null,
@@ -683,13 +653,13 @@ const loadRepositoryState = async (params: {
 const ensureNoForeignStagedFiles = async (
   deps: FileChangesStoreDependencies,
   worktreePath: string,
-  reviewedPaths: string[]
+  allowedStagedPaths: string[]
 ): Promise<void> => {
   const status = await deps.tauri.gitStatus(worktreePath);
-  const reviewedSet = new Set(reviewedPaths);
+  const validatedSet = new Set(allowedStagedPaths);
   const foreignStaged = status.staged_files
     .map((file) => file.path)
-    .filter((path) => !reviewedSet.has(path));
+    .filter((path) => !validatedSet.has(path));
 
   if (foreignStaged.length > 0) {
     throw new Error(
@@ -763,16 +733,14 @@ interface FileChangesState {
   selectRepository: (repositoryId: string | null) => void;
   openDiffModal: (repositoryId: string, changeId: string) => void;
   closeDiffModal: () => void;
-  setReviewedState: (repositoryId: string, changeIds: string[], reviewed: boolean) => void;
-  markAsReviewed: (repositoryId: string, changeId: string) => void;
-  markAsUnreviewed: (repositoryId: string, changeId: string) => void;
-  markAllAsReviewed: (repositoryId?: string) => void;
+  stageChanges: (repositoryId: string, changeIds: string[]) => Promise<void>;
+  stageAllChanges: (repositoryId?: string) => Promise<void>;
   revertChanges: (repositoryId: string, changeIds: string[]) => Promise<void>;
   updateRightDraft: (content: string) => void;
   resetRightDraft: () => void;
   saveRightDraft: () => Promise<void>;
   goToAdjacentDiff: (direction: 'previous' | 'next') => void;
-  commitReviewedChanges: (repositoryId: string, message?: string) => Promise<CommitTaskChangesResult>;
+  commitStagedChanges: (repositoryId: string, message?: string) => Promise<CommitTaskChangesResult>;
   setCommitMessageDraft: (repositoryId: string, message: string) => void;
   getRepository: (repositoryId: string) => ReviewRepositoryState | undefined;
   getSelectedRepository: () => ReviewRepositoryState | undefined;
@@ -828,6 +796,14 @@ export const createFileChangesStore = (
           repoPath: repository.worktreePath,
           path: change.path,
         });
+        const headContent = pair.headExists ? pair.headContent : '';
+        const indexContent = pair.indexExists ? pair.indexContent : '';
+        const worktreeContent = pair.worktreeExists ? pair.worktreeContent : '';
+        const validatedStageDecorations = buildValidatedStageDecorations({
+          headContent,
+          indexContent,
+          worktreeContent,
+        });
 
         set((state) => {
           const isCurrentSession =
@@ -840,8 +816,12 @@ export const createFileChangesStore = (
               ...currentRepository,
               changes: updateChangeEntry(currentRepository.changes, changeId, (entry) => ({
                 ...entry,
-                originalContent: pair.originalContent,
-                modifiedContent: pair.modifiedContent,
+                originalContent: headContent,
+                indexContent,
+                modifiedContent: worktreeContent,
+                hasValidatedStage: validatedStageDecorations.hasValidatedStage,
+                validatedRemovedLineNumbers: validatedStageDecorations.validatedRemovedLineNumbers,
+                validatedAddedLineNumbers: validatedStageDecorations.validatedAddedLineNumbers,
               })),
               loadingChangeId: null,
               lastError: null,
@@ -849,11 +829,11 @@ export const createFileChangesStore = (
             diffModalSession: isCurrentSession && state.diffModalSession
               ? {
                 ...state.diffModalSession,
-                originalContent: pair.originalContent,
+                originalContent: headContent,
                 rightDraftContent: state.diffModalSession.isDirty
                   ? state.diffModalSession.rightDraftContent
-                  : pair.modifiedContent,
-                lastLoadedModifiedContent: pair.modifiedContent,
+                  : worktreeContent,
+                lastLoadedModifiedContent: worktreeContent,
                 isHydratingFullContext: false,
               }
               : state.diffModalSession,
@@ -861,10 +841,8 @@ export const createFileChangesStore = (
           };
         });
       } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
+        const message = toServiceError(error).message ||
+          tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
         set((state) => ({
           repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
             ...currentRepository,
@@ -1103,9 +1081,8 @@ export const createFileChangesStore = (
         isLoading: false,
         executionRecords: {},
         lastError:
-          error instanceof Error
-            ? error.message
-            : tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.'),
+          toServiceError(error).message ||
+          tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.'),
       });
     }
   },
@@ -1172,43 +1149,104 @@ export const createFileChangesStore = (
     });
   },
 
-  setReviewedState: (repositoryId, changeIds, reviewed) => {
+  stageChanges: async (repositoryId, changeIds) => {
     if (changeIds.length === 0) {
       return;
     }
 
+    const repository = get().getRepository(repositoryId);
+    if (!repository) {
+      throw new Error(
+        tChanges('implement.errors.noActiveRepositoryPath', 'No active repository path found for this task.')
+      );
+    }
+
+    if (!deps.tauri.isTauriAvailable()) {
+      throw new Error(
+        tChanges('implement.errors.commitDesktopOnly', 'Git commit flow is only available in desktop mode.')
+      );
+    }
+
+    const targetIds = new Set(changeIds);
+    const targetChanges = repository.changes.filter((change) => targetIds.has(change.id));
+    if (targetChanges.length === 0) {
+      return;
+    }
+
+    const selectedDiffTarget = get().selectedDiffTarget;
+    const affectsOpenModal =
+      selectedDiffTarget?.repositoryId === repositoryId && targetIds.has(selectedDiffTarget.changeId);
+
     set((state) => ({
-      ...(() => {
-        const repositories = updateRepositoryState(state.repositories, repositoryId, (repository) => {
-          const changes = updateReviewedStateForChangeIds(repository.changes, changeIds, reviewed);
-          return {
-            ...repository,
-            changes,
-            stats: computeStats(changes),
-          };
-        });
-        return {
-          repositories,
-          ...deriveReviewState(repositories, state.selectedRepositoryId),
-        };
-      })(),
+      repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+        ...currentRepository,
+        savingChangeId:
+          targetChanges.length === 1 ? targetChanges[0]?.id ?? currentRepository.savingChangeId : '__batch_stage__',
+        lastError: null,
+      })),
+      diffModalSession:
+        state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+          ? {
+              ...state.diffModalSession,
+              isSaving: affectsOpenModal,
+            }
+          : state.diffModalSession,
+      lastError: null,
     }));
+
+    try {
+      await deps.tauri.gitAdd({
+        repoPath: repository.worktreePath,
+        paths: targetChanges.map((change) => change.path),
+      });
+
+      await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+
+      if (affectsOpenModal) {
+        get().closeDiffModal();
+      }
+    } catch (error) {
+      const message = toServiceError(error).message ||
+        tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: null,
+          lastError: message,
+        })),
+        diffModalSession:
+          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+            ? {
+                ...state.diffModalSession,
+                isSaving: false,
+              }
+            : state.diffModalSession,
+        lastError: message,
+      }));
+      throw error;
+    } finally {
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: null,
+        })),
+        diffModalSession:
+          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+            ? {
+                ...state.diffModalSession,
+                isSaving: false,
+              }
+            : state.diffModalSession,
+      }));
+    }
   },
 
-  markAsReviewed: (repositoryId, changeId) => {
-    get().setReviewedState(repositoryId, [changeId], true);
-  },
-
-  markAsUnreviewed: (repositoryId, changeId) => {
-    get().setReviewedState(repositoryId, [changeId], false);
-  },
-
-  markAllAsReviewed: (repositoryId) => {
+  stageAllChanges: async (repositoryId) => {
     const targetRepositoryId = repositoryId || get().selectedRepositoryId;
     if (!targetRepositoryId) return;
     const repository = get().getRepository(targetRepositoryId);
     if (!repository) return;
-    get().setReviewedState(targetRepositoryId, repository.changes.map((change) => change.id), true);
+    await get().stageChanges(targetRepositoryId, repository.changes.map((change) => change.id));
   },
 
   revertChanges: async (repositoryId, changeIds) => {
@@ -1272,6 +1310,7 @@ export const createFileChangesStore = (
       await deps.tauri.gitRestorePaths({
         repoPath: repository.worktreePath,
         paths: targetChanges.map((change) => change.path),
+        target: 'worktree',
       });
 
       await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
@@ -1285,10 +1324,8 @@ export const createFileChangesStore = (
         }
       }
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : tChanges('implement.errors.revertChangesFailed', 'Failed to revert changes.');
+      const message = toServiceError(error).message ||
+        tChanges('implement.errors.revertChangesFailed', 'Failed to revert changes.');
       set((state) => ({
         repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
           ...currentRepository,
@@ -1396,10 +1433,6 @@ export const createFileChangesStore = (
         ...(() => {
           const repositories = updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
             ...currentRepository,
-            changes: updateChangeEntry(currentRepository.changes, session.changeId, (entry) => ({
-              ...entry,
-              reviewed: false,
-            })),
             savingChangeId: null,
             lastError: null,
           }));
@@ -1421,10 +1454,8 @@ export const createFileChangesStore = (
 
       await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
+      const message = toServiceError(error).message ||
+        tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
       set((state) => ({
         repositories: updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
           ...currentRepository,
@@ -1457,17 +1488,12 @@ export const createFileChangesStore = (
     state.openDiffModal(repository.id, nextChange.id);
   },
 
-  commitReviewedChanges: async (repositoryId, message) => {
+  commitStagedChanges: async (repositoryId, message) => {
     const task = ensureReviewTask(deps);
     const repository = get().getRepository(repositoryId);
     const commitMessage = (message || repository?.commitMessageDraft || toDefaultCommitMessage(task.title)).trim();
     if (!commitMessage) {
       throw new Error(tChanges('implement.errors.commitMessageRequired', 'Commit message is required.'));
-    }
-    if (task.status !== 'InReview') {
-      throw new Error(
-        tChanges('implement.errors.commitRequiresValidationStage', 'Task must be in validation before commit.')
-      );
     }
 
     if (!repository) {
@@ -1482,23 +1508,8 @@ export const createFileChangesStore = (
       );
     }
 
-    if (repository.changes.length === 0) {
+    if (repository.stagedPaths.length === 0) {
       throw new Error(tChanges('implement.errors.commitNoChanges', 'No file changes available for this task.'));
-    }
-
-    const reviewedPaths = Array.from(
-      new Set(
-        repository.changes
-          .filter((change) => change.reviewed)
-          .map((change) => change.path)
-          .filter((path) => path.trim().length > 0)
-      )
-    );
-
-    if (reviewedPaths.length !== repository.changes.length) {
-      throw new Error(
-        tChanges('implement.errors.commitNeedsValidation', 'Validate all file changes before committing this task.')
-      );
     }
 
     const integrationBranchName = repository.planBranchName || (
@@ -1532,11 +1543,7 @@ export const createFileChangesStore = (
     }));
 
     try {
-      await ensureNoForeignStagedFiles(deps, repository.worktreePath, reviewedPaths);
-      await deps.tauri.gitAdd({
-        repoPath: repository.worktreePath,
-        paths: reviewedPaths,
-      });
+      await ensureNoForeignStagedFiles(deps, repository.worktreePath, repository.stagedPaths);
 
       const hash = await deps.tauri.gitCommit({
         repoPath: repository.worktreePath,
@@ -1556,25 +1563,26 @@ export const createFileChangesStore = (
         ...currentState.executionRecords,
         [repositoryId]: executionRecord,
       };
-      const nextRepositories = currentState.repositories.map((currentRepository) => {
-        if (currentRepository.id !== repositoryId) {
-          return currentRepository;
-        }
-        return {
-          ...currentRepository,
-          changes: [],
-          selectedChangeId: null,
-          stats: EMPTY_STATS,
-          commitMessageDraft: commitMessage,
-          commitState: 'committed' as const,
-          loadingChangeId: null,
-          savingChangeId: null,
-          lastError: null,
-          lastCommitHash: hash,
-        };
+
+      set({
+        executionRecords: nextExecutionRecords,
+        lastCommitHash: hash,
+        lastError: null,
       });
 
-      const derivedReviewState = deriveReviewState(nextRepositories, repositoryId);
+      await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+
+      const refreshedState = get();
+      const nextRepositories = refreshedState.repositories.map((currentRepository) => (
+        currentRepository.id === repositoryId
+          ? {
+              ...currentRepository,
+              commitMessageDraft: commitMessage,
+              lastCommitHash: hash,
+            }
+          : currentRepository
+      ));
+      const derivedReviewState = deriveReviewState(nextRepositories, refreshedState.selectedRepositoryId);
       const nextSelectedRepository = derivedReviewState.selectedRepositoryId
         ? nextRepositories.find((candidate) => candidate.id === derivedReviewState.selectedRepositoryId) ?? null
         : null;
@@ -1594,22 +1602,8 @@ export const createFileChangesStore = (
         nextExecutionRecords[currentRepository.id] ||
         buildCompletionRepositoryRecord(deps, currentRepository)
       );
-      const allRepositoriesResolved = areAllFileChangesRepositoriesResolved({
-        task,
-        repositories: nextRepositories,
-        executionRecords: nextExecutionRecords,
-        fallbackRepositoryIds: nextRepositories.map(
-          (currentRepository) => currentRepository.id
-        ),
-        getGitFlowBaseBranch: deps.getGitFlowBaseBranch,
-      });
-
       let taskCompleted = false;
-      let taskStatus: TaskStatus | null = deps.getTaskState().getTaskById(task.id)?.status ?? null;
-      if (allRepositoriesResolved) {
-        await deps.getTaskState().setTaskStatus(task.id, 'InProgress');
-        taskStatus = deps.getTaskState().getTaskById(task.id)?.status ?? null;
-      }
+      const taskStatus: TaskStatus | null = deps.getTaskState().getTaskById(task.id)?.status ?? null;
 
       return {
         hash,
@@ -1620,14 +1614,17 @@ export const createFileChangesStore = (
         repositories: completionRecords,
       };
     } catch (error) {
-      const messageText = error instanceof Error ? error.message : String(error);
+      const messageText = toServiceError(error).message;
       set((state) => ({
         isCommitting: false,
         lastError: messageText,
         ...(() => {
           const repositories = updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
             ...currentRepository,
-            commitState: currentRepository.changes.length === 0 ? 'no_changes' : 'idle',
+            commitState:
+              currentRepository.changes.length === 0 && currentRepository.stagedPaths.length === 0
+                ? 'no_changes'
+                : 'idle',
             lastError: messageText,
           }));
           return {
@@ -1678,8 +1675,10 @@ export const createFileChangesStore = (
   getOverallStats: () => {
     const repositories = get().repositories;
     return repositories.reduce<ReviewRepositoryStats>((aggregate, repository) => ({
-      total: aggregate.total + repository.stats.total,
-      reviewed: aggregate.reviewed + repository.stats.reviewed,
+      pendingVisibleFileCount:
+        aggregate.pendingVisibleFileCount + repository.stats.pendingVisibleFileCount,
+      validatedStagedFileCount:
+        aggregate.validatedStagedFileCount + repository.stats.validatedStagedFileCount,
       additions: aggregate.additions + repository.stats.additions,
       deletions: aggregate.deletions + repository.stats.deletions,
     }), { ...EMPTY_STATS });
