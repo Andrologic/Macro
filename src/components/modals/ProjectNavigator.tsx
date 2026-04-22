@@ -620,7 +620,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                     <div
                       className={cn(
                         'flex items-center justify-between px-3 py-2.5 cursor-pointer transition-colors relative',
-                        isGroupSelected ? 'bg-primary/10' : 'bg-card hover:bg-accent/50'
+                        'bg-transparent'
                       )}
                     >
                       <div
