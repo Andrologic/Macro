@@ -876,6 +876,7 @@
     "deleteTaskDescription": "Elimina esta funcionalidad independiente, descarta los cambios locales, elimina su worktree y su rama local, y borra la conversación.",
     "planFilterAll": "Todos los planes",
     "planFilterStandalone": "Sin plan / independiente",
+    "standaloneBadge": "Independiente",
     "noTasksForFilter": "Ninguna tarea coincide con este filtro.",
     "taskNextActionStart": "Siguiente: iniciar la implementación",
     "taskNextActionContinueImplementation": "Siguiente: continuar con la implementación",

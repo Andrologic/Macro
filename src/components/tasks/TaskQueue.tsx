@@ -11,7 +11,10 @@ import {
   type ImplementTask,
 } from '../../stores/useTaskStore';
 import { useFileChangesStore } from '../../stores/useFileChangesStore';
-import { getArchitectPlanDisplayName } from '../../services/architectPlanPresentation';
+import {
+  getArchitectPlanDisplayName,
+  getArchitectPlanPrimaryName,
+} from '../../services/architectPlanPresentation';
 import { getGitFlowBaseBranch } from '../../services/architectPlanService';
 import { taskMatchesProjectId } from '../../services/implementTaskCatalog';
 import {
@@ -164,6 +167,20 @@ interface TaskActionDescriptor {
   destructive?: boolean;
 }
 
+type TaskContextBadgeTone = 'default' | 'draft';
+
+interface TaskContextBadgeDescriptor {
+  key: 'plan' | 'standalone' | 'draft';
+  label: string;
+  icon?: IconName;
+  tone?: TaskContextBadgeTone;
+}
+
+const taskContextBadgeToneClassName: Record<TaskContextBadgeTone, string> = {
+  default: 'border-border/70 bg-background/40 text-muted-foreground',
+  draft: 'border-amber-500/20 bg-amber-500/10 text-amber-500',
+};
+
 interface TaskItemProps {
   task: ImplementTask;
   isSelected: boolean;
@@ -198,7 +215,29 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const [menuPosition, setMenuPosition] = useState<TaskMenuPosition | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const taskMenuRef = useRef<HTMLDivElement>(null);
-  const showPlanLabel = task.task_source === 'architect' && planLabel.trim().length > 0;
+  const trimmedPlanLabel = planLabel.trim();
+  const contextBadges: TaskContextBadgeDescriptor[] = [];
+  if (task.task_source === 'architect' && trimmedPlanLabel.length > 0) {
+    contextBadges.push({
+      key: 'plan',
+      label: trimmedPlanLabel,
+      icon: 'layers',
+    });
+  }
+  if (task.task_source === 'standalone') {
+    contextBadges.push({
+      key: 'standalone',
+      label: t('implement.standaloneBadge', 'Standalone'),
+      icon: 'layers',
+    });
+  }
+  if (task.draft) {
+    contextBadges.push({
+      key: 'draft',
+      label: t('common.draft', 'Draft'),
+      tone: 'draft',
+    });
+  }
   const status = isAssistantRunning
     ? { color: 'text-amber-500', bgColor: 'bg-amber-500/10' }
     : statusConfig[task.status] || statusConfig.Pending;
@@ -331,11 +370,27 @@ const TaskItem: React.FC<TaskItemProps> = ({
               {task.description}
             </p>
           )}
+        </div>
 
-          {showPlanLabel && (
-            <div className="inline-flex max-w-full items-center gap-1.5 text-xs text-muted-foreground">
-              <Icon name="layers" size={10} />
-              <span className="truncate">{planLabel}</span>
+        <div className="min-w-0 self-end pr-10">
+          {contextBadges.length > 0 && (
+            <div
+              data-task-card-footer="true"
+              className="flex min-w-0 items-center gap-1.5 overflow-hidden"
+            >
+              {contextBadges.map((badge) => (
+                <span
+                  key={badge.key}
+                  data-task-context-badge={badge.key}
+                  className={cn(
+                    'inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold',
+                    taskContextBadgeToneClassName[badge.tone ?? 'default']
+                  )}
+                >
+                  {badge.icon && <Icon name={badge.icon} size={10} className="shrink-0" />}
+                  <span className="truncate">{badge.label}</span>
+                </span>
+              ))}
             </div>
           )}
         </div>
@@ -875,6 +930,14 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       ])
     );
   }, [availablePlanSummaries]);
+  const planPrimaryNamesById = useMemo(() => {
+    return new Map(
+      availablePlanSummaries.map((plan) => [
+        plan.id,
+        getArchitectPlanPrimaryName(plan),
+      ])
+    );
+  }, [availablePlanSummaries]);
 
   const hasScopedStandaloneTasks = useMemo(() => {
     if (!hasStandaloneTasks) return false;
@@ -913,7 +976,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       return standalonePlanLabel;
     }
 
-    return planLabelsById.get(task.plan_id) || task.plan_title || standalonePlanLabel;
+    return planPrimaryNamesById.get(task.plan_id) || task.plan_title || standalonePlanLabel;
   };
 
   const getTaskCommandProjectIds = (task: ImplementTask): string[] => {

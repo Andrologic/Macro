@@ -260,6 +260,15 @@ describe('TaskQueue', () => {
       count: heading.parentElement?.querySelector('span')?.textContent?.trim(),
     }));
 
+  const getTaskCardFooter = () =>
+    document.body.querySelector('[data-task-card-footer="true"]');
+
+  const getTaskContextBadges = () =>
+    Array.from(document.body.querySelectorAll('[data-task-context-badge]')).map((badge) => ({
+      key: badge.getAttribute('data-task-context-badge'),
+      text: badge.textContent?.replace(/\s+/g, ' ').trim(),
+    }));
+
   beforeEach(async () => {
     await loadTaskQueueModules();
     initialAppState = useAppStore.getState();
@@ -343,6 +352,93 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="running"]')
     ).not.toBeNull();
+  });
+
+  it('renders the architect plan badge in the task footer', async () => {
+    seedTasks([
+      makeTask('architect-1', 'Pending', {
+        title: 'Architect task',
+        task_source: 'architect',
+        plan_id: '1710000000000',
+        plan_title: '1710000000000',
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      planSummaries: [
+        {
+          id: '1710000000000',
+          slug: '1710000000000',
+          title: '1710000000000',
+          label: 'Checkout refresh',
+          status: 'in_progress',
+          targetBranch: 'develop',
+          projectIds: ['project-1'],
+          taskCount: 1,
+          completedTaskCount: 0,
+          activeTaskCount: 1,
+          inReviewTaskCount: 0,
+          readyForValidation: false,
+        },
+      ] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(getTaskCardFooter()).not.toBeNull();
+    expect(getTaskContextBadges()).toEqual([
+      { key: 'plan', text: 'Checkout refresh' },
+    ]);
+  });
+
+  it('renders the standalone badge without a plan badge for independent tasks', async () => {
+    seedTasks([
+      makeTask('standalone-1', 'Pending', {
+        title: 'Standalone task',
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(getTaskCardFooter()).not.toBeNull();
+    expect(getTaskContextBadges()).toEqual([
+      { key: 'standalone', text: 'Standalone' },
+    ]);
+    expect(document.body.querySelector('[data-task-context-badge="plan"]')).toBeNull();
+  });
+
+  it('keeps the footer visible for standalone draft tasks even without a description', async () => {
+    seedTasks([
+      makeTask('draft-standalone-1', 'Pending', {
+        title: 'Draft standalone task',
+        description: '',
+        draft: true,
+        standalone_kind: 'manual_feature',
+        assigned_branch: '',
+        branch_name: '',
+        execution_targets: [],
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const taskCard = document.body.querySelector('[role="button"][tabindex="0"]');
+
+    expect(taskCard?.querySelector('p')).toBeNull();
+    expect(getTaskCardFooter()).not.toBeNull();
+    expect(getTaskContextBadges()).toEqual([
+      { key: 'standalone', text: 'Standalone' },
+      { key: 'draft', text: 'Draft' },
+    ]);
   });
 
   it('keeps virtual row keys stable when draft and blocked sections are inserted', async () => {
