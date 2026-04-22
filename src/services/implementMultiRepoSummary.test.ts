@@ -14,7 +14,7 @@ describe('buildReviewTaskSummary', () => {
           projectId: 'web',
           repoPath: '/repos/web',
           branchName: 'feature/shared-task',
-          stats: { total: 0, reviewed: 0 },
+          stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 0 },
           commitState: 'committed',
         },
         {
@@ -22,7 +22,7 @@ describe('buildReviewTaskSummary', () => {
           projectId: 'api',
           repoPath: '/repos/api',
           branchName: 'feature/shared-task',
-          stats: { total: 2, reviewed: 2 },
+          stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 2 },
           commitState: 'idle',
         },
         {
@@ -30,7 +30,7 @@ describe('buildReviewTaskSummary', () => {
           projectId: 'worker',
           repoPath: '/repos/worker',
           branchName: 'feature/shared-task',
-          stats: { total: 3, reviewed: 1 },
+          stats: { pendingVisibleFileCount: 3, validatedStagedFileCount: 0 },
           commitState: 'idle',
         },
       ],
@@ -41,7 +41,7 @@ describe('buildReviewTaskSummary', () => {
     expect(reviewSummary.nextRepositoryId).toBe('repo-b');
     expect(reviewSummary.nextAction).toBe('commit_repository');
     expect(reviewSummary.stateCounts).toEqual({
-      pending_review: 1,
+      pending_validation: 1,
       ready_to_commit: 1,
       committed: 1,
       no_changes: 0,
@@ -56,7 +56,7 @@ describe('buildReviewTaskSummary', () => {
         projectId: 'web',
         repoPath: '/repos/web',
         branchName: 'feature/noop',
-        stats: { total: 0, reviewed: 0 },
+        stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 0 },
         commitState: 'no_changes',
       },
       {
@@ -64,7 +64,7 @@ describe('buildReviewTaskSummary', () => {
         projectId: 'api',
         repoPath: '/repos/api',
         branchName: 'feature/noop',
-        stats: { total: 0, reviewed: 0 },
+        stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 0 },
         commitState: 'no_changes',
       },
     ]);
@@ -72,6 +72,38 @@ describe('buildReviewTaskSummary', () => {
     expect(reviewSummary.allRepositoriesResolved).toBe(true);
     expect(reviewSummary.allRepositoriesNoChanges).toBe(true);
     expect(reviewSummary.nextAction).toBe('complete_without_code_changes');
+  });
+
+  it('prioritizes validation when the current repository has both staged and unstaged work', () => {
+    const reviewSummary = buildReviewTaskSummary(
+      [
+        {
+          id: 'repo-a',
+          projectId: 'web',
+          repoPath: '/repos/web',
+          branchName: 'feature/mixed',
+          stats: { pendingVisibleFileCount: 1, validatedStagedFileCount: 1 },
+          commitState: 'idle',
+        },
+        {
+          id: 'repo-b',
+          projectId: 'api',
+          repoPath: '/repos/api',
+          branchName: 'feature/mixed',
+          stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 2 },
+          commitState: 'idle',
+        },
+      ],
+      'repo-a'
+    );
+
+    expect(reviewSummary.currentRepositoryId).toBe('repo-a');
+    expect(reviewSummary.nextRepositoryId).toBe('repo-a');
+    expect(reviewSummary.actionCounts).toEqual({
+      pending_validation: 1,
+      ready_to_commit: 2,
+    });
+    expect(reviewSummary.nextAction).toBe('validate_repository');
   });
 });
 
@@ -83,7 +115,7 @@ describe('canRequestTaskChangesFromReview', () => {
         projectId: 'web',
         repoPath: '/repos/web',
         branchName: 'feature/shared-task',
-        stats: { total: 0, reviewed: 0 },
+        stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 0 },
         commitState: 'committed',
       },
       {
@@ -91,7 +123,7 @@ describe('canRequestTaskChangesFromReview', () => {
         projectId: 'api',
         repoPath: '/repos/api',
         branchName: 'feature/shared-task',
-        stats: { total: 1, reviewed: 0 },
+        stats: { pendingVisibleFileCount: 1, validatedStagedFileCount: 0 },
         commitState: 'idle',
       },
     ]);

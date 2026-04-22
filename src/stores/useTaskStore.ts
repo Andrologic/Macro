@@ -130,6 +130,8 @@ const getTaskIntegrationBranch = (
   task: CatalogedImplementTask,
   target: TaskExecutionTarget
 ): string | null => {
+  // Planned tasks integrate into the plan branch first; standalone work merges
+  // directly into the configured project development branch.
   if (target.planBranchName) {
     return target.planBranchName;
   }
@@ -2210,6 +2212,49 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       if (task.task_source === 'architect' && task.plan_target_branch) {
+        try {
+          const targetBranch = resolveTargetBranch(task.plan_target_branch);
+          const plan = await getArchitectPlan(targetBranch, task.plan_id);
+          if (!plan || plan.status === 'deleted') {
+            set({
+              lastError: tTask(
+                'implement.errors.unknownTaskPlan',
+                'Cannot update plan metadata for task {{taskId}}.',
+                { taskId: task.id }
+              ),
+            });
+          } else {
+            const nextPlanNodes = (plan.nodes || []).map((node) =>
+              node.id === task.id
+                ? {
+                    ...node,
+                    status: 'completed' as const,
+                    archivedAt: completedAt,
+                    archiveReason: 'merged',
+                    mergedAt: completedAt,
+                  }
+                : node
+            );
+            await updateArchitectPlan({
+              branchName: targetBranch,
+              planId: plan.id,
+              nodes: nextPlanNodes,
+              setActive: false,
+            });
+            const appState = useAppStore.getState();
+            if (appState.activeArchitectPlanId === plan.id) {
+              appState.setPlanNodes(nextPlanNodes);
+            }
+            await get().refreshFromPlan();
+            if (useAppStore.getState().selectedTaskId === taskId) {
+              useAppStore.getState().setSelectedTask(null);
+            }
+          }
+        } catch (error) {
+          const normalized = toServiceError(error);
+          set({ lastError: normalized.message });
+        }
+
         try {
           await writeArchitectTaskExecution({
             branchName: resolveTargetBranch(task.plan_target_branch),

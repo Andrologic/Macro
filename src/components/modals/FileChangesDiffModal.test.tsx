@@ -68,13 +68,16 @@ const buildRepository = (): ReviewRepositoryState => {
       status: 'added',
       additions: 4,
       deletions: 0,
-      reviewed: false,
       originalContent: '',
+      indexContent: '',
       modifiedContent: 'const list = [];',
       language: 'typescript',
       hunks: [makeHunk('@@ -0,0 +1 @@')],
       contextMode: 'focused',
       canEdit: true,
+      hasValidatedStage: false,
+      validatedRemovedLineNumbers: [],
+      validatedAddedLineNumbers: [],
     },
     {
       id: 'change-2',
@@ -82,13 +85,16 @@ const buildRepository = (): ReviewRepositoryState => {
       status: 'modified',
       additions: 7,
       deletions: 2,
-      reviewed: false,
       originalContent: 'before();',
+      indexContent: 'validated();',
       modifiedContent: 'after();',
       language: 'typescript',
       hunks: [makeHunk('@@ -1 +1 @@')],
       contextMode: 'focused',
       canEdit: true,
+      hasValidatedStage: true,
+      validatedRemovedLineNumbers: [1],
+      validatedAddedLineNumbers: [1],
     },
     {
       id: 'change-3',
@@ -96,13 +102,16 @@ const buildRepository = (): ReviewRepositoryState => {
       status: 'deleted',
       additions: 0,
       deletions: 9,
-      reviewed: true,
       originalContent: 'legacy();',
+      indexContent: 'legacy();',
       modifiedContent: '',
       language: 'typescript',
       hunks: [makeHunk('@@ -1 +0 @@')],
       contextMode: 'full',
       canEdit: false,
+      hasValidatedStage: false,
+      validatedRemovedLineNumbers: [],
+      validatedAddedLineNumbers: [],
     },
   ];
 
@@ -114,10 +123,11 @@ const buildRepository = (): ReviewRepositoryState => {
     branchName: 'feature/review-redesign',
     planBranchName: null,
     changes,
+    stagedPaths: ['src/feature.tsx'],
     selectedChangeId: 'change-2',
     stats: {
-      total: 3,
-      reviewed: 1,
+      pendingVisibleFileCount: 3,
+      validatedStagedFileCount: 1,
       additions: 11,
       deletions: 11,
     },
@@ -169,8 +179,7 @@ describe('FileChangesDiffModal', () => {
   let root: Root | null = null;
   let repository: ReviewRepositoryState;
   let diffSession: FileDiffModalSession;
-  let markAsReviewedMock: ReturnType<typeof mock>;
-  let markAsUnreviewedMock: ReturnType<typeof mock>;
+  let stageChangesMock: ReturnType<typeof mock>;
   let revertChangesMock: ReturnType<typeof mock>;
   let updateRightDraftMock: ReturnType<typeof mock>;
   let resetRightDraftMock: ReturnType<typeof mock>;
@@ -188,8 +197,7 @@ describe('FileChangesDiffModal', () => {
       isLoading: false,
       isCommitting: false,
       lastError: null,
-      markAsReviewed: markAsReviewedMock,
-      markAsUnreviewed: markAsUnreviewedMock,
+      stageChanges: stageChangesMock,
       revertChanges: revertChangesMock,
       updateRightDraft: updateRightDraftMock,
       resetRightDraft: resetRightDraftMock,
@@ -205,8 +213,7 @@ describe('FileChangesDiffModal', () => {
     useAppStore.setState({ codeOverflowMode: 'wrap' });
     repository = buildRepository();
     diffSession = buildSession();
-    markAsReviewedMock = mock(async () => undefined);
-    markAsUnreviewedMock = mock(() => undefined);
+    stageChangesMock = mock(async () => undefined);
     revertChangesMock = mock(async () => undefined);
     updateRightDraftMock = mock(() => undefined);
     resetRightDraftMock = mock(() => undefined);
@@ -246,7 +253,7 @@ describe('FileChangesDiffModal', () => {
 
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
     expect(document.body.textContent).toContain('feature/review-redesign');
-    expect(document.body.textContent).toContain('1 / 3 files validated');
+    expect(document.body.textContent).toContain('3 pending, 1 staged');
     expect(document.body.textContent).toContain('src/feature.tsx');
     expect(document.body.querySelector('.macro-diff-merge-root')).not.toBeNull();
     expect(document.body.querySelector('[data-language="typescript"]')).not.toBeNull();
@@ -335,7 +342,6 @@ describe('FileChangesDiffModal', () => {
 
     expect(findButton('Validate file')).toBeDefined();
     expect(findButton('Revert')).toBeDefined();
-    expect(findButton('Invalidate')).toBeUndefined();
     expect(findButton('Reset draft')).toBeUndefined();
     expect(findButton('Focused diff')).toBeDefined();
     expect(findButton('Full file context')).toBeDefined();
@@ -390,12 +396,11 @@ describe('FileChangesDiffModal', () => {
     expect(getComputedStyle(rightEditor as HTMLElement).display).toBe('flex');
   });
 
-  it('shows only invalidate for a validated file', async () => {
+  it('shows the staged legend when a file has already validated lines', async () => {
     repository.changes[1] = {
       ...repository.changes[1],
-      reviewed: true,
+      hasValidatedStage: true,
     };
-    repository.stats.reviewed = 2;
     diffSession = buildSession();
     seedStore();
 
@@ -404,17 +409,12 @@ describe('FileChangesDiffModal', () => {
       await flushRender();
     });
 
-    expect(findButton('Invalidate')).toBeDefined();
-    expect(findButton('Validate file')).toBeUndefined();
-    expect(findButton('Revert')).toBeUndefined();
+    expect(document.body.textContent).toContain('Validated lines are shown with a softer highlight until commit.');
+    expect(findButton('Validate file')).toBeDefined();
+    expect(findButton('Revert')).toBeDefined();
   });
 
-  it('invalidates the current file from the footer', async () => {
-    repository.changes[1] = {
-      ...repository.changes[1],
-      reviewed: true,
-    };
-    repository.stats.reviewed = 2;
+  it('validates the current file from the footer by staging it', async () => {
     seedStore();
 
     await act(async () => {
@@ -423,12 +423,12 @@ describe('FileChangesDiffModal', () => {
     });
 
     await act(async () => {
-      findButton('Invalidate')?.click();
+      findButton('Validate file')?.click();
       await flushRender();
     });
 
-    expect(markAsUnreviewedMock).toHaveBeenCalledTimes(1);
-    expect(markAsUnreviewedMock).toHaveBeenCalledWith('repo-1', 'change-2');
+    expect(stageChangesMock).toHaveBeenCalledTimes(1);
+    expect(stageChangesMock).toHaveBeenCalledWith('repo-1', ['change-2']);
   });
 
   it('reverts the current pending file from the footer', async () => {
@@ -446,7 +446,7 @@ describe('FileChangesDiffModal', () => {
     expect(revertChangesMock).toHaveBeenCalledWith('repo-1', ['change-2']);
   });
 
-  it('renders non-editable files as truly read-only with no revert controls', async () => {
+  it('renders non-editable deleted files as read-only while keeping footer actions available', async () => {
     repository.selectedChangeId = 'change-3';
     diffSession = buildSession({
       changeId: 'change-3',
@@ -462,10 +462,8 @@ describe('FileChangesDiffModal', () => {
     });
 
     expect(findButton('Reset draft')).toBeUndefined();
-    expect(findButton('Invalidate')).toBeDefined();
-    expect(findButton('Validate file')).toBeUndefined();
-    expect(findButton('Revert')).toBeUndefined();
-    expect(document.body.textContent).toContain('Validated');
+    expect(findButton('Validate file')).toBeDefined();
+    expect(findButton('Revert')).toBeDefined();
     expect(document.body.querySelector('.cm-merge-revert button')).toBeNull();
     expect(document.body.querySelector('.cm-merge-b .cm-content[contenteditable="false"]')).not.toBeNull();
   });

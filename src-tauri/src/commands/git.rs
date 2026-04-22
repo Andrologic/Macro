@@ -139,8 +139,33 @@ pub struct GitMergeCheckDto {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitFilePairDto {
+    pub head_exists: bool,
+    pub head_content: String,
+    pub index_exists: bool,
+    pub index_content: String,
+    pub worktree_exists: bool,
+    pub worktree_content: String,
     pub original_content: String,
     pub modified_content: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RestoreTarget {
+    Worktree,
+    StagedAndWorktree,
+}
+
+impl RestoreTarget {
+    fn from_option(value: Option<&str>) -> Result<Self> {
+        match value.unwrap_or("staged_and_worktree") {
+            "worktree" => Ok(Self::Worktree),
+            "staged_and_worktree" => Ok(Self::StagedAndWorktree),
+            other => Err(BackendError::Validation(format!(
+                "Invalid restore target: {}",
+                other
+            ))),
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -797,7 +822,16 @@ fn head_contains_path(repo: &Repository, path: &Path) -> Result<bool> {
     }
 }
 
-pub(crate) fn restore_paths(repo: &Repository, paths: &[String]) -> Result<()> {
+fn index_contains_path(repo: &Repository, path: &Path) -> Result<bool> {
+    let index = repo.index()?;
+    Ok(index.get_path(path, 0).is_some())
+}
+
+pub(crate) fn restore_paths(
+    repo: &Repository,
+    paths: &[String],
+    target: RestoreTarget,
+) -> Result<()> {
     if paths.is_empty() {
         return Err(BackendError::Git {
             message: "No paths were provided to restore".to_string(),
@@ -805,8 +839,10 @@ pub(crate) fn restore_paths(repo: &Repository, paths: &[String]) -> Result<()> {
     }
 
     let repo_root = repo_root(repo)?;
-    let mut tracked_paths = Vec::new();
-    let mut new_paths = Vec::new();
+    let mut restore_from_head_paths = Vec::new();
+    let mut restore_from_index_paths = Vec::new();
+    let mut remove_new_paths = Vec::new();
+    let mut remove_untracked_worktree_paths = Vec::new();
 
     for input in paths {
         let relative = if Path::new(input).is_absolute() {
@@ -815,14 +851,28 @@ pub(crate) fn restore_paths(repo: &Repository, paths: &[String]) -> Result<()> {
             PathBuf::from(input)
         };
 
-        if head_contains_path(repo, &relative)? {
-            tracked_paths.push(relative);
-        } else {
-            new_paths.push(relative);
+        let in_head = head_contains_path(repo, &relative)?;
+        let in_index = index_contains_path(repo, &relative)?;
+
+        match target {
+            RestoreTarget::Worktree => {
+                if in_index {
+                    restore_from_index_paths.push(relative);
+                } else {
+                    remove_untracked_worktree_paths.push(relative);
+                }
+            }
+            RestoreTarget::StagedAndWorktree => {
+                if in_head {
+                    restore_from_head_paths.push(relative);
+                } else {
+                    remove_new_paths.push(relative);
+                }
+            }
         }
     }
 
-    if !tracked_paths.is_empty() {
+    if !restore_from_head_paths.is_empty() {
         let mut args = vec![
             "restore".to_string(),
             "--source=HEAD".to_string(),
@@ -831,7 +881,7 @@ pub(crate) fn restore_paths(repo: &Repository, paths: &[String]) -> Result<()> {
             "--".to_string(),
         ];
         args.extend(
-            tracked_paths
+            restore_from_head_paths
                 .iter()
                 .map(|path| path.to_string_lossy().to_string()),
         );
@@ -848,7 +898,27 @@ pub(crate) fn restore_paths(repo: &Repository, paths: &[String]) -> Result<()> {
         }
     }
 
-    if !new_paths.is_empty() {
+    if !restore_from_index_paths.is_empty() {
+        let mut args = vec!["restore".to_string(), "--worktree".to_string(), "--".to_string()];
+        args.extend(
+            restore_from_index_paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string()),
+        );
+        let output = run_git_command(&repo_root, &args)?;
+        if !output.success {
+            let details = command_output_text(&output);
+            return Err(BackendError::Git {
+                message: if details.is_empty() {
+                    "Failed to restore paths from the index".to_string()
+                } else {
+                    details
+                },
+            });
+        }
+    }
+
+    if !remove_new_paths.is_empty() {
         let mut rm_args = vec![
             "rm".to_string(),
             "--cached".to_string(),
@@ -857,7 +927,7 @@ pub(crate) fn restore_paths(repo: &Repository, paths: &[String]) -> Result<()> {
             "--".to_string(),
         ];
         rm_args.extend(
-            new_paths
+            remove_new_paths
                 .iter()
                 .map(|path| path.to_string_lossy().to_string()),
         );
@@ -873,7 +943,28 @@ pub(crate) fn restore_paths(repo: &Repository, paths: &[String]) -> Result<()> {
             });
         }
 
-        for relative in &new_paths {
+        for relative in &remove_new_paths {
+            let absolute = repo_root.join(relative);
+            if absolute.is_file() {
+                fs::remove_file(&absolute).map_err(|error| BackendError::Io {
+                    message: format!("Failed to remove file {}: {}", absolute.display(), error),
+                    source: error,
+                })?;
+            } else if absolute.is_dir() {
+                fs::remove_dir_all(&absolute).map_err(|error| BackendError::Io {
+                    message: format!(
+                        "Failed to remove directory {}: {}",
+                        absolute.display(),
+                        error
+                    ),
+                    source: error,
+                })?;
+            }
+        }
+    }
+
+    if !remove_untracked_worktree_paths.is_empty() {
+        for relative in &remove_untracked_worktree_paths {
             let absolute = repo_root.join(relative);
             if absolute.is_file() {
                 fs::remove_file(&absolute).map_err(|error| BackendError::Io {
@@ -1958,6 +2049,16 @@ fn read_head_file_content(repo: &Repository, relative_path: &Path) -> Result<Opt
     Ok(Some(String::from_utf8_lossy(blob.content()).to_string()))
 }
 
+fn read_index_file_content(repo: &Repository, relative_path: &Path) -> Result<Option<String>> {
+    let index = repo.index()?;
+    let Some(entry) = index.get_path(relative_path, 0) else {
+        return Ok(None);
+    };
+
+    let blob = repo.find_blob(entry.id)?;
+    Ok(Some(String::from_utf8_lossy(blob.content()).to_string()))
+}
+
 fn read_worktree_file_content(repo_root: &Path, relative_path: &Path) -> Result<Option<String>> {
     let absolute_path = repo_root.join(relative_path);
 
@@ -1976,10 +2077,19 @@ pub(crate) fn read_git_file_pair(
     repo_root: &Path,
     relative_path: &Path,
 ) -> Result<GitFilePairDto> {
-    let original_content = read_head_file_content(repo, relative_path)?.unwrap_or_default();
-    let modified_content = read_worktree_file_content(repo_root, relative_path)?.unwrap_or_default();
+    let head_content = read_head_file_content(repo, relative_path)?;
+    let index_content = read_index_file_content(repo, relative_path)?;
+    let worktree_content = read_worktree_file_content(repo_root, relative_path)?;
+    let original_content = head_content.clone().unwrap_or_default();
+    let modified_content = worktree_content.clone().unwrap_or_default();
 
     Ok(GitFilePairDto {
+        head_exists: head_content.is_some(),
+        head_content: original_content.clone(),
+        index_exists: index_content.is_some(),
+        index_content: index_content.unwrap_or_default(),
+        worktree_exists: worktree_content.is_some(),
+        worktree_content: modified_content.clone(),
         original_content,
         modified_content,
     })
@@ -2328,6 +2438,7 @@ pub async fn git_restore_paths(
     git_state: State<'_, GitState>,
     repo_path: String,
     paths: Vec<String>,
+    target: Option<String>,
 ) -> Result<()> {
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
@@ -2339,7 +2450,7 @@ pub async fn git_restore_paths(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        restore_paths(&repo, &paths)
+        restore_paths(&repo, &paths, RestoreTarget::from_option(target.as_deref())?)
     })
     .await
     .map_err(to_join_error)?
@@ -2440,7 +2551,7 @@ pub async fn git_diff(
 }
 
 #[tauri::command]
-/// Read the full HEAD/worktree file pair for a repository-relative path.
+/// Read the HEAD/index/worktree contents for a repository-relative path.
 pub async fn git_read_file_pair(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
@@ -3424,6 +3535,42 @@ mod tests {
             }
         }
         assert!(found);
+    }
+
+    #[test]
+    fn test_read_git_file_pair_returns_head_index_and_worktree_versions() {
+        let (temp, repo) = init_repo();
+        let file_path = temp.path().join("README.md");
+
+        fs::write(&file_path, "staged version").unwrap();
+        add_paths(&repo, &["README.md".to_string()]).unwrap();
+        fs::write(&file_path, "worktree version").unwrap();
+
+        let pair = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+
+        assert!(pair.head_exists);
+        assert!(pair.index_exists);
+        assert!(pair.worktree_exists);
+        assert_eq!(pair.head_content, "hello");
+        assert_eq!(pair.index_content, "staged version");
+        assert_eq!(pair.worktree_content, "worktree version");
+    }
+
+    #[test]
+    fn test_restore_paths_worktree_target_preserves_index_state() {
+        let (temp, repo) = init_repo();
+        let file_path = temp.path().join("README.md");
+
+        fs::write(&file_path, "staged version").unwrap();
+        add_paths(&repo, &["README.md".to_string()]).unwrap();
+        fs::write(&file_path, "worktree version").unwrap();
+
+        restore_paths(&repo, &["README.md".to_string()], RestoreTarget::Worktree).unwrap();
+
+        let pair = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(pair.head_content, "hello");
+        assert_eq!(pair.index_content, "staged version");
+        assert_eq!(pair.worktree_content, "staged version");
     }
 
     #[test]

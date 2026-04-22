@@ -42,51 +42,61 @@ const initialOriginalFiles: Record<string, Record<string, string>> = {
 };
 
 let currentFiles: Record<string, Record<string, string | null>> = {};
+let stagedFiles: Record<string, Record<string, string | null>> = {};
 let pathsWithEmptyGitDiff = new Set<string>();
 let taskStatuses: Record<string, 'Pending' | 'InReview' | 'InProgress' | 'Completed'> = {
-  'task-1': 'InReview',
-  'task-2': 'InReview',
-  'task-3': 'InReview',
+  'task-1': 'InProgress',
+  'task-2': 'InProgress',
+  'task-3': 'InProgress',
   'task-4': 'Pending',
 };
 
-const getChangedFiles = (repoPath: string): Array<{ path: string; status: string }> => {
-  const original = initialOriginalFiles[repoPath] ?? {};
-  const current = currentFiles[repoPath] ?? {};
-  const paths = new Set([...Object.keys(original), ...Object.keys(current)]);
-  const changes: Array<{ path: string; status: string }> = [];
+const getHeadContent = (repoPath: string, path: string): string | undefined =>
+  initialOriginalFiles[repoPath]?.[path];
 
-  for (const path of paths) {
-    const hasOverride = Object.prototype.hasOwnProperty.call(current, path);
-    if (!hasOverride) {
-      continue;
-    }
-
-    const originalValue = original[path];
-    const currentValue = current[path];
-
-    if (originalValue === undefined && typeof currentValue === 'string') {
-      changes.push({ path, status: 'untracked' });
-      continue;
-    }
-
-    if (originalValue !== undefined && currentValue === null) {
-      changes.push({ path, status: 'deleted' });
-      continue;
-    }
-
-    if (originalValue !== undefined && typeof currentValue === 'string' && originalValue !== currentValue) {
-      changes.push({ path, status: 'modified' });
-    }
+const getIndexContent = (repoPath: string, path: string): string | undefined => {
+  const overrides = stagedFiles[repoPath] ?? {};
+  if (Object.prototype.hasOwnProperty.call(overrides, path)) {
+    return typeof overrides[path] === 'string' ? overrides[path] ?? undefined : undefined;
   }
+  return getHeadContent(repoPath, path);
+};
 
-  return changes.sort((left, right) => left.path.localeCompare(right.path));
+const getWorktreeContent = (repoPath: string, path: string): string | undefined => {
+  const overrides = currentFiles[repoPath] ?? {};
+  if (Object.prototype.hasOwnProperty.call(overrides, path)) {
+    return typeof overrides[path] === 'string' ? overrides[path] ?? undefined : undefined;
+  }
+  return getIndexContent(repoPath, path);
+};
+
+const toStatus = (
+  leftContent: string | undefined,
+  rightContent: string | undefined,
+  whenAdded: string = 'added'
+): string | null => {
+  if (leftContent === rightContent) {
+    return null;
+  }
+  if (leftContent === undefined && rightContent !== undefined) {
+    return whenAdded;
+  }
+  if (leftContent !== undefined && rightContent === undefined) {
+    return 'deleted';
+  }
+  return 'modified';
+};
+
+const getRepositoryPaths = (repoPath: string): string[] => {
+  const head = Object.keys(initialOriginalFiles[repoPath] ?? {});
+  const index = Object.keys(stagedFiles[repoPath] ?? {});
+  const worktree = Object.keys(currentFiles[repoPath] ?? {});
+  return Array.from(new Set([...head, ...index, ...worktree])).sort((left, right) => left.localeCompare(right));
 };
 
 const buildPatch = (repoPath: string, path: string): string => {
-  const original = initialOriginalFiles[repoPath]?.[path] ?? '';
-  const override = currentFiles[repoPath]?.[path];
-  const modified = override === null ? '' : override ?? original;
+  const original = getHeadContent(repoPath, path) ?? '';
+  const modified = getWorktreeContent(repoPath, path) ?? '';
   const originalLines = original.split('\n');
   const modifiedLines = modified.split('\n');
   const patchLines = [
@@ -120,15 +130,36 @@ const buildPatch = (repoPath: string, path: string): string => {
 };
 
 const buildGitStatus = (repoPath: string) => {
-  const changes = getChangedFiles(repoPath);
+  const paths = getRepositoryPaths(repoPath);
+  const staged = paths.flatMap((path) => {
+    const status = toStatus(getHeadContent(repoPath, path), getIndexContent(repoPath, path));
+    return status ? [{ path, status }] : [];
+  });
+  const unstaged = paths.flatMap((path) => {
+    const indexContent = getIndexContent(repoPath, path);
+    const worktreeContent = getWorktreeContent(repoPath, path);
+    const status = toStatus(indexContent, worktreeContent);
+    if (!status || status === 'added') {
+      return [];
+    }
+    return [{ path, status }];
+  });
+  const untracked = paths.flatMap((path) => {
+    const indexContent = getIndexContent(repoPath, path);
+    const worktreeContent = getWorktreeContent(repoPath, path);
+    return indexContent === undefined && worktreeContent !== undefined
+      ? [{ path, status: 'untracked' }]
+      : [];
+  });
+  const changes = [...staged, ...unstaged, ...untracked];
 
   if (repoPath === worktreeAPath) {
     return {
       branch: 'feature/task-a',
       head_commit: null,
-      staged_files: [],
-      unstaged_files: changes.filter((change) => change.status !== 'untracked'),
-      untracked_files: changes.filter((change) => change.status === 'untracked'),
+      staged_files: staged,
+      unstaged_files: unstaged,
+      untracked_files: untracked,
       conflicted_files: [],
       conflictedFiles: [],
       merge_in_progress: false,
@@ -141,9 +172,9 @@ const buildGitStatus = (repoPath: string) => {
     return {
       branch: 'feature/task-b',
       head_commit: null,
-      staged_files: [],
-      unstaged_files: changes.filter((change) => change.status !== 'untracked'),
-      untracked_files: changes.filter((change) => change.status === 'untracked'),
+      staged_files: staged,
+      unstaged_files: unstaged,
+      untracked_files: untracked,
       conflicted_files: [],
       conflictedFiles: [],
       merge_in_progress: false,
@@ -177,12 +208,18 @@ const gitDiffMock = mock(async ({ repoPath, paths }: { repoPath: string; paths?:
 });
 
 const gitReadFilePairMock = mock(async ({ repoPath, path }: { repoPath: string; path: string }) => {
-  const original = initialOriginalFiles[repoPath]?.[path] ?? '';
-  const override = currentFiles[repoPath]?.[path];
-  const modified = override === null ? '' : override ?? original;
+  const headContent = getHeadContent(repoPath, path);
+  const indexContent = getIndexContent(repoPath, path);
+  const worktreeContent = getWorktreeContent(repoPath, path);
   return {
-    originalContent: original,
-    modifiedContent: modified,
+    headExists: headContent !== undefined,
+    headContent: headContent ?? '',
+    indexExists: indexContent !== undefined,
+    indexContent: indexContent ?? '',
+    worktreeExists: worktreeContent !== undefined,
+    worktreeContent: worktreeContent ?? '',
+    originalContent: headContent ?? '',
+    modifiedContent: worktreeContent ?? '',
   };
 });
 
@@ -201,16 +238,41 @@ const fsWriteFileMock = mock(async ({ path, content }: { path: string; content: 
   };
 });
 
-const gitRestorePathsMock = mock(async ({ repoPath, paths }: { repoPath: string; paths: string[] }) => {
+const gitRestorePathsMock = mock(async ({
+  repoPath,
+  paths,
+  target,
+}: {
+  repoPath: string;
+  paths: string[];
+  target?: 'worktree' | 'staged_and_worktree';
+}) => {
   currentFiles[repoPath] ||= {};
+  stagedFiles[repoPath] ||= {};
   for (const path of paths) {
+    if (target === 'staged_and_worktree') {
+      delete stagedFiles[repoPath][path];
+    }
     delete currentFiles[repoPath][path];
   }
 });
 
-const gitAddMock = mock(async () => undefined);
+const gitAddMock = mock(async ({ repoPath, paths }: { repoPath: string; paths: string[] }) => {
+  stagedFiles[repoPath] ||= {};
+  currentFiles[repoPath] ||= {};
+  for (const path of paths) {
+    const headContent = getHeadContent(repoPath, path);
+    const worktreeContent = getWorktreeContent(repoPath, path);
+    if (worktreeContent === headContent) {
+      delete stagedFiles[repoPath][path];
+    } else {
+      stagedFiles[repoPath][path] = worktreeContent ?? null;
+    }
+    delete currentFiles[repoPath][path];
+  }
+});
 const gitCommitMock = mock(async ({ repoPath }: { repoPath: string }) => {
-  currentFiles[repoPath] = {};
+  stagedFiles[repoPath] = {};
   return repoPath === worktreeAPath ? 'hash-a' : 'hash-b';
 });
 
@@ -219,7 +281,7 @@ const tasksById = {
     id: 'task-1',
     title: 'Implement multi repo flow',
     description: 'Test task',
-    status: 'InReview' as const,
+    status: 'InProgress' as const,
     task_source: 'architect' as const,
     project_id: 'project-a',
     project_ids: ['project-a', 'project-b'],
@@ -243,7 +305,7 @@ const tasksById = {
     id: 'task-2',
     title: 'Follow-up review task',
     description: 'Second task',
-    status: 'InReview' as const,
+    status: 'InProgress' as const,
     task_source: 'architect' as const,
     project_id: 'project-a',
     project_ids: ['project-a', 'project-b'],
@@ -267,7 +329,7 @@ const tasksById = {
     id: 'task-3',
     title: 'Same branch without dedicated worktree',
     description: 'Missing worktree mapping',
-    status: 'InReview' as const,
+    status: 'InProgress' as const,
     task_source: 'architect' as const,
     project_id: 'project-b',
     project_ids: ['project-b'],
@@ -366,10 +428,14 @@ describe('useFileChangesStore', () => {
         'README.md': 'Hello\nupdated',
       },
     };
+    stagedFiles = {
+      [worktreeAPath]: {},
+      [worktreeBPath]: {},
+    };
     taskStatuses = {
-      'task-1': 'InReview',
-      'task-2': 'InReview',
-      'task-3': 'InReview',
+      'task-1': 'InProgress',
+      'task-2': 'InProgress',
+      'task-3': 'InProgress',
       'task-4': 'Pending',
     };
     pathsWithEmptyGitDiff = new Set();
@@ -416,9 +482,13 @@ describe('useFileChangesStore', () => {
     const { repositories, reviewSummary } = useFileChangesStore.getState();
     expect(repositories).toHaveLength(2);
     expect(repositories.map((repository: { projectId: string }) => repository.projectId)).toEqual(['project-a', 'project-b']);
-    expect(repositories.map((repository: { stats: { total: number } }) => repository.stats.total)).toEqual([1, 1]);
+    expect(
+      repositories.map((repository: { stats: { pendingVisibleFileCount: number } }) =>
+        repository.stats.pendingVisibleFileCount
+      )
+    ).toEqual([1, 1]);
     expect(reviewSummary.repositoryCount).toBe(2);
-    expect(reviewSummary.nextAction).toBe('review_repository');
+    expect(reviewSummary.nextAction).toBe('validate_repository');
     expect(reviewSummary.currentRepositoryId).toBe(repositoryIdA);
   });
 
@@ -616,7 +686,10 @@ describe('useFileChangesStore', () => {
     expect(session?.isHydratingFullContext).toBe(false);
     expect(change?.contextMode).toBe('focused');
     expect(session?.originalContent).toContain('const value = 1;');
-    expect(gitReadFilePairMock).toHaveBeenCalledTimes(1);
+    expect(gitReadFilePairMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      path: 'src/main.ts',
+    });
     expect(gitDiffMock.mock.calls.length).toBe(initialGitDiffCalls);
   });
 
@@ -638,11 +711,13 @@ describe('useFileChangesStore', () => {
     expect(session?.rightDraftContent).toContain('const value = 2;');
   });
 
-  it('saves the right-side draft, reloads the diff, and marks the file as unreviewed again', async () => {
+  it('saves the right-side draft, reloads the diff, and keeps the file pending', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
 
-    store.markAsReviewed(repositoryIdA, changeIdA);
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+    currentFiles[worktreeAPath]['src/main.ts'] = 'const value = 8;\nconsole.log(value);';
+    await store.loadCurrentChanges();
     store.openDiffModal(repositoryIdA, changeIdA);
     await Promise.resolve();
     await Promise.resolve();
@@ -652,14 +727,15 @@ describe('useFileChangesStore', () => {
 
     const session = useFileChangesStore.getState().getDiffModalSession();
     const change = useFileChangesStore.getState().getChange(repositoryIdA, changeIdA);
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
     expect(fsWriteFileMock).toHaveBeenCalledTimes(1);
     expect(session?.isDirty).toBe(false);
     expect(session?.rightDraftContent).toContain('const value = 9;');
     expect(change?.modifiedContent).toContain('const value = 9;');
-    expect(change?.reviewed).toBe(false);
+    expect(repository?.stats.pendingVisibleFileCount).toBe(1);
   });
 
-  it('applies reviewed state in batch for a repository scope', async () => {
+  it('stages visible changes in batch for a repository scope', async () => {
     currentFiles[worktreeAPath]['src/new.ts'] = 'export const created = true;\n';
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
@@ -668,17 +744,11 @@ describe('useFileChangesStore', () => {
     const changeIds = repository?.changes.map((change) => change.id) ?? [];
     expect(changeIds).toHaveLength(2);
 
-    store.setReviewedState(repositoryIdA, changeIds, true);
+    await store.stageChanges(repositoryIdA, changeIds);
 
     const updatedRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
-    expect(updatedRepository?.stats.reviewed).toBe(2);
-    expect(updatedRepository?.changes.every((change) => change.reviewed)).toBe(true);
-
-    store.setReviewedState(repositoryIdA, changeIds, false);
-
-    const resetRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
-    expect(resetRepository?.stats.reviewed).toBe(0);
-    expect(resetRepository?.changes.every((change) => !change.reviewed)).toBe(true);
+    expect(updatedRepository?.stats.validatedStagedFileCount).toBe(2);
+    expect(updatedRepository?.changes).toHaveLength(0);
   });
 
   it('reverts modified, added, and deleted files then reloads the repository state', async () => {
@@ -703,6 +773,7 @@ describe('useFileChangesStore', () => {
     expect(gitRestorePathsMock).toHaveBeenCalledWith({
       repoPath: worktreeAPath,
       paths: ['src/deleted.ts', 'src/main.ts', 'src/new.ts'],
+      target: 'worktree',
     });
 
     const refreshedRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
@@ -796,46 +867,83 @@ describe('useFileChangesStore', () => {
     expect(state.repositories).toHaveLength(0);
   });
 
-  it('returns the task to in-progress after the last repository commit', async () => {
+  it('keeps the task in progress after repository commits complete', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
 
-    store.markAsReviewed(repositoryIdA, changeIdA);
-    store.markAsReviewed(repositoryIdB, changeIdB);
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+    await store.stageChanges(repositoryIdB, [changeIdB]);
 
-    const firstCommit = await store.commitReviewedChanges(
+    const firstCommit = await store.commitStagedChanges(
       repositoryIdA,
       'feat: commit project a'
     );
     expect(firstCommit.taskCompleted).toBe(false);
+    expect(firstCommit.taskStatus).toBe('InProgress');
     expect(setTaskStatusMock).not.toHaveBeenCalled();
     expect(useFileChangesStore.getState().selectedRepositoryId).toBe(repositoryIdB);
     expect(useFileChangesStore.getState().reviewSummary.hasCommittedRepositories).toBe(true);
     expect(useFileChangesStore.getState().reviewSummary.currentRepositoryId).toBe(repositoryIdB);
 
-    const secondCommit = await store.commitReviewedChanges(
+    const secondCommit = await store.commitStagedChanges(
       repositoryIdB,
       'feat: commit project b'
     );
     expect(secondCommit.taskCompleted).toBe(false);
     expect(secondCommit.taskStatus).toBe('InProgress');
-    expect(setTaskStatusMock).toHaveBeenCalledTimes(1);
-    expect(setTaskStatusMock).toHaveBeenCalledWith('task-1', 'InProgress');
+    expect(setTaskStatusMock).not.toHaveBeenCalled();
   });
 
-  it('does not advance the task out of validation when only the focused subproject is resolved', async () => {
+  it('does not change the task status when only the focused subproject is resolved', async () => {
     appStoreState.selectedProjectId = 'project-a';
     const store = useFileChangesStore.getState();
 
     await store.loadCurrentChanges();
-    store.markAsReviewed(repositoryIdA, changeIdA);
+    await store.stageChanges(repositoryIdA, [changeIdA]);
 
-    const result = await store.commitReviewedChanges(
+    const result = await store.commitStagedChanges(
       repositoryIdA,
       'feat: commit project a'
     );
 
-    expect(result.taskStatus).toBe('InReview');
+    expect(result.taskStatus).toBe('InProgress');
     expect(setTaskStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('shows new unstaged changes again after a file was already validated', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+    expect(useFileChangesStore.getState().reviewSummary.actionCounts.ready_to_commit).toBe(1);
+
+    currentFiles[worktreeAPath]['src/main.ts'] = 'const value = 4;\nconsole.log(value);';
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(repository?.changes[0]?.hasValidatedStage).toBe(true);
+    expect(repository?.stats.validatedStagedFileCount).toBe(1);
+    expect(useFileChangesStore.getState().reviewSummary.actionCounts.pending_validation).toBe(2);
+
+    const commitResult = await store.commitStagedChanges(repositoryIdA, 'feat: commit project a');
+    expect(commitResult.hash).toBe('hash-a');
+  });
+
+  it('stores the normalized backend message when commit fails with an object payload', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+
+    gitCommitMock.mockImplementationOnce(async () => {
+      throw { message: 'Backend exploded' };
+    });
+
+    await expect(
+      store.commitStagedChanges(repositoryIdA, 'feat: commit project a')
+    ).rejects.toEqual({ message: 'Backend exploded' });
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.lastError).toBe('Backend exploded');
+    expect(nextState.getRepository(repositoryIdA)?.lastError).toBe('Backend exploded');
   });
 });

@@ -180,6 +180,12 @@ export interface GitMergeCheckDto {
 }
 
 export interface GitFilePairDto {
+  headExists: boolean;
+  headContent: string;
+  indexExists: boolean;
+  indexContent: string;
+  worktreeExists: boolean;
+  worktreeContent: string;
   originalContent: string;
   modifiedContent: string;
 }
@@ -1314,10 +1320,12 @@ export async function gitAdd(params: {
 export async function gitRestorePaths(params: {
   repoPath: string;
   paths: string[];
+  target?: "worktree" | "staged_and_worktree";
 }): Promise<void> {
   return invoke("git_restore_paths", {
     repoPath: params.repoPath,
     paths: params.paths,
+    target: params.target ?? null,
   });
 }
 
