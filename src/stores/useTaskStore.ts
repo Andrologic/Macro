@@ -2954,8 +2954,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     const branchName = resolveTargetBranch(summary.targetBranch);
+    const taskId = buildPlanFinalizationTaskId(planId);
     set((state) => ({
       lastError: null,
+      ...applyMergeWorkflowRuntimePatch(state, taskId, {
+        taskId,
+        kind: 'plan_finalization',
+        phase: 'archiving',
+        taskStatus: 'InProgress',
+        message: null,
+      }),
       ...applyPlanFinalizationRuntimePatch(state, planId, {
         branchName,
         phase: 'archiving',
@@ -2974,6 +2982,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const normalized = toServiceError(error);
       set((state) => ({
         lastError: normalized.message,
+        ...applyMergeWorkflowRuntimePatch(state, taskId, {
+          taskId,
+          kind: 'plan_finalization',
+          phase: 'failed',
+          taskStatus: 'Failed',
+          message: normalized.message,
+        }),
         ...applyPlanFinalizationRuntimePatch(state, planId, {
           branchName,
           phase: 'failed',
