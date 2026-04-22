@@ -876,6 +876,7 @@
     "deleteTaskDescription": "この独立した機能を削除し、ローカル変更を破棄し、その worktree とローカルブランチを削除し、会話も削除します。",
     "planFilterAll": "すべてのプラン",
     "planFilterStandalone": "プランなし / スタンドアロン",
+    "standaloneBadge": "独立",
     "noTasksForFilter": "このフィルターに一致するタスクはありません。",
     "taskNextActionStart": "次へ: 実装の開始",
     "taskNextActionContinueImplementation": "次へ: 実装の続行",
