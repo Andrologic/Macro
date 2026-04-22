@@ -112,6 +112,9 @@ export interface PlanNode {
   projectId?: string;
   projectIds?: string[];
   estimatedTime?: string;
+  archivedAt?: string | null;
+  archiveReason?: string | null;
+  mergedAt?: string | null;
 }
 
 export interface PlanEdge {

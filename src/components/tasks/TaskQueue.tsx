@@ -238,6 +238,10 @@ const TaskItem: React.FC<TaskItemProps> = ({
       tone: 'draft',
     });
   }
+  const isCompactDraftFeatureCard =
+    task.draft &&
+    task.standalone_kind === 'manual_feature' &&
+    task.description.trim().length === 0;
   const status = isAssistantRunning
     ? { color: 'text-amber-500', bgColor: 'bg-amber-500/10' }
     : statusConfig[task.status] || statusConfig.Pending;
@@ -304,6 +308,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
     <div
       role="button"
       tabIndex={0}
+      data-task-card-variant={isCompactDraftFeatureCard ? 'compact-draft' : 'default'}
       onClick={onSelect}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -312,7 +317,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
         }
       }}
       className={cn(
-        'relative h-[112px] w-full overflow-visible rounded-xl border text-left transition-all duration-200 group cursor-pointer',
+        'relative w-full overflow-visible rounded-xl border text-left transition-all duration-200 group cursor-pointer',
+        isCompactDraftFeatureCard ? 'h-[96px]' : 'h-[112px]',
         isSelected
           ? 'border-primary/30 bg-primary/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
           : 'border-border/70 bg-card/70 hover:border-primary/20 hover:bg-accent/30'
@@ -365,7 +371,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         </div>
 
         <div className="min-h-0 space-y-1">
-          {task.description && (
+          {!isCompactDraftFeatureCard && task.description && (
             <p className="line-clamp-2 text-[13px] leading-[1.15rem] text-muted-foreground">
               {task.description}
             </p>
@@ -828,7 +834,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         nextActionLabel = t('implement.taskNextActionCommitRepository', 'Next: commit {{repository}}', {
           repository: repositoryLabelForSummary(nextRepositoryDescriptor),
         });
-      } else if (reviewSummary.nextAction === 'review_repository' && nextRepositoryDescriptor) {
+      } else if (reviewSummary.nextAction === 'validate_repository' && nextRepositoryDescriptor) {
         nextActionLabel = t('implement.taskNextActionValidateRepository', 'Next: validate {{repository}}', {
           repository: repositoryLabelForSummary(nextRepositoryDescriptor),
         });

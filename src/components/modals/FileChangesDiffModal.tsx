@@ -73,8 +73,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
       .find((candidate) => candidate.id === currentSession.repositoryId)
       ?.changes.find((candidate) => candidate.id === currentSession.changeId);
   });
-  const markAsReviewed = useFileChangesStore((state) => state.markAsReviewed);
-  const markAsUnreviewed = useFileChangesStore((state) => state.markAsUnreviewed);
+  const stageChanges = useFileChangesStore((state) => state.stageChanges);
   const revertChanges = useFileChangesStore((state) => state.revertChanges);
   const updateRightDraft = useFileChangesStore((state) => state.updateRightDraft);
   const resetRightDraft = useFileChangesStore((state) => state.resetRightDraft);
@@ -100,7 +99,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
   const effectivePresentationMode: DiffPresentationMode = showPresentationControls ? presentationMode : 'full';
   const canEdit = Boolean(change?.canEdit && session && !isHydrating && effectivePresentationMode === 'full');
   const canRevertChunks = Boolean(
-    diffLayout === 'split' && change?.canEdit && !change?.reviewed && !isHydrating
+    diffLayout === 'split' && change?.canEdit && !isHydrating
   );
 
   useEffect(() => {
@@ -193,17 +192,12 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
 
   const handleValidate = useCallback(async () => {
     if (!repository || !change || isBusy || isDirty) return;
-    await markAsReviewed(repository.id, change.id);
+    await stageChanges(repository.id, [change.id]);
     onClose();
-  }, [change, isBusy, isDirty, markAsReviewed, onClose, repository]);
-
-  const handleInvalidate = useCallback(() => {
-    if (!repository || !change || isBusy || isDirty) return;
-    markAsUnreviewed(repository.id, change.id);
-  }, [change, isBusy, isDirty, markAsUnreviewed, repository]);
+  }, [change, isBusy, isDirty, onClose, repository, stageChanges]);
 
   const handleRevert = useCallback(async () => {
-    if (!repository || !change || isBusy || isDirty || change.reviewed) return;
+    if (!repository || !change || isBusy || isDirty) return;
     await revertChanges(repository.id, [change.id]);
   }, [change, isBusy, isDirty, repository, revertChanges]);
 
@@ -280,14 +274,24 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
           <div className="p-4">
             <h3 className="truncate text-sm font-semibold tracking-tight">{repository.branchName}</h3>
             <p className="mt-1 text-xs text-muted-foreground">
-              {repository.stats.reviewed} / {repository.stats.total} {t('implement.validatedFiles', 'files validated')}
+              {repository.stats.validatedStagedFileCount > 0 && repository.stats.pendingVisibleFileCount > 0
+                ? t('implement.diffModalPendingAndReady', '{{pending}} pending, {{validated}} staged', {
+                    pending: repository.stats.pendingVisibleFileCount,
+                    validated: repository.stats.validatedStagedFileCount,
+                  })
+                : repository.stats.validatedStagedFileCount > 0
+                  ? t('implement.diffModalReadyOnly', '{{validated}} staged and ready', {
+                      validated: repository.stats.validatedStagedFileCount,
+                    })
+                  : t('implement.diffModalPendingOnly', '{{pending}} pending file(s)', {
+                      pending: repository.stats.pendingVisibleFileCount,
+                    })}
             </p>
           </div>
 
           <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
             {repository.changes.map((candidate) => {
               const isCurrent = candidate.id === change.id;
-              const isPending = !candidate.reviewed;
               const meta = STATUS_META[candidate.status];
 
               return (
@@ -319,7 +323,14 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                     <div className="truncate text-[11px] opacity-70">{getFileDir(candidate.path) || '/'}</div>
                   </div>
 
-                  {isPending && <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />}
+                  <div className="mt-1 flex shrink-0 items-center gap-1">
+                    {candidate.hasValidatedStage && (
+                      <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
+                        {t('implement.stagedBadge', 'Staged')}
+                      </span>
+                    )}
+                    <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                  </div>
                 </button>
               );
             })}
@@ -406,6 +417,8 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 }}
                 onEditorReady={handleDebugEditorReady}
                 revertControls={canRevertChunks ? 'a-to-b' : undefined}
+                validatedRemovedLineNumbers={change.validatedRemovedLineNumbers}
+                validatedAddedLineNumbers={change.validatedAddedLineNumbers}
               />
             )}
           </div>
@@ -421,8 +434,13 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 <span className="font-medium text-amber-500">
                   {t('implement.unsavedDraft', 'Unsaved draft. Save to validate or reset.')}
                 </span>
-              ) : change.reviewed ? (
-                <span className="font-medium text-primary">✓ {t('implement.validated', 'Validated')}</span>
+              ) : change.hasValidatedStage ? (
+                <span className="font-medium text-muted-foreground">
+                  {t(
+                    'implement.validatedStageLegend',
+                    'Validated lines are shown with a softer highlight until commit.'
+                  )}
+                </span>
               ) : null}
             </div>
 
@@ -447,15 +465,6 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                     {t('implement.saveDraft', 'Save draft')}
                   </Button>
                 </>
-              ) : change.reviewed ? (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleInvalidate}
-                  disabled={isBusy}
-                >
-                  {t('implement.invalidateAction', 'Invalidate')}
-                </Button>
               ) : (
                 <>
                   <Button
@@ -470,7 +479,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                     variant="primary"
                     size="sm"
                     onClick={() => void handleValidate()}
-                    disabled={isBusy || change.reviewed}
+                    disabled={isBusy}
                     className="bg-primary text-primary-foreground hover:bg-primary/90"
                   >
                     {t('implement.validateFile', 'Validate file')}
