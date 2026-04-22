@@ -512,6 +512,35 @@ describe('architectGitFlowService', () => {
     expect(gitMergeCheckMock).toHaveBeenCalledTimes(1);
   });
 
+  it('can sync base branches before loading the plan review', async () => {
+    await architectGitFlowService.loadPlanReview({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+      syncBaseBranches: true,
+    });
+
+    expect(gitCheckoutMock).toHaveBeenCalledTimes(2);
+    expect(gitCheckoutMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      branchOrCommit: 'develop',
+      create: false,
+    });
+    expect(gitCheckoutMock).toHaveBeenCalledWith({
+      repoPath: '/repos/api',
+      branchOrCommit: 'develop',
+      create: false,
+    });
+    expect(gitPullMock).toHaveBeenCalledTimes(2);
+    expect(gitPullMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      branch: 'develop',
+    });
+    expect(gitPullMock).toHaveBeenCalledWith({
+      repoPath: '/repos/api',
+      branch: 'develop',
+    });
+  });
+
   it('surfaces already conflicted repositories in the plan review without running merge-check', async () => {
     gitStatusMock.mockImplementation(async (repoPath: string) => {
       if (worktreeStatusByPath.has(repoPath)) {

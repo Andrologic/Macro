@@ -20,12 +20,14 @@ import { toServiceError } from '../../services/contracts/errors';
 import {
   areAllFileChangesRepositoriesResolved,
 } from '../../services/fileChangesReviewScope';
+import { isPlanFinalizationTaskSource } from '../../services/planFinalization';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
 import { Button } from '../ui/Button';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
+import { PlanFinalizationTaskPanel } from '../plan/PlanFinalizationTaskPanel';
 
 interface FileChangesPanelProps {
   className?: string;
@@ -370,13 +372,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     getOverallStats,
   } = useFileChangesStore();
   const hasRepositoryScope = Boolean(selectedGroupId || selectedProjectId);
+  const isPlanFinalizationTask = isPlanFinalizationTaskSource(currentTask?.task_source);
 
   useEffect(() => {
     if (isReadOnlyRemoteMode) {
       resetReviewState();
       return;
     }
-    if (!hasRepositoryScope || !selectedTaskId) {
+    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask) {
       resetReviewState();
       return;
     }
@@ -389,6 +392,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     isDiffModalOpen,
     loadCurrentChanges,
     hasRepositoryScope,
+    isPlanFinalizationTask,
     resetReviewState,
     selectedGroupId,
     selectedProjectId,
@@ -401,7 +405,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (isReadOnlyRemoteMode) {
       return;
     }
-    if (!hasRepositoryScope || !selectedTaskId) {
+    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask) {
       return;
     }
     if (isDiffModalOpen) {
@@ -470,6 +474,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     hasRepositoryScope,
     isCommitting,
     isDiffModalOpen,
+    isPlanFinalizationTask,
     loadCurrentChanges,
     selectedGroupId,
     selectedProjectId,
@@ -725,6 +730,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         </div>
       </aside>
     );
+  }
+
+  if (currentTask && isPlanFinalizationTask) {
+    return <PlanFinalizationTaskPanel task={currentTask} className={className} />;
   }
 
   return (

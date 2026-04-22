@@ -5,10 +5,8 @@ import {
 } from '../services/serviceRuntime';
 import {
   buildPlanFinalizationFailureState,
-  buildPlanFinalizationRefreshState,
-  buildPlanFinalizationSuccessState,
   toBlockedPlanFinalizationState,
-} from './taskStorePlanFinalizationState';
+} from '../services/planFinalization';
 import { getPlanActivationCandidateTask, type ImplementTask } from './useTaskStore';
 
 const { clearPlanRuntimeStateSnapshot } = await import('./planRuntimeState');
@@ -192,7 +190,7 @@ describe('clearPlanRuntimeStateSnapshot', () => {
   });
 });
 
-describe('taskStorePlanFinalizationState', () => {
+describe('planFinalization helpers', () => {
   it('maps a blocked finalization error into typed store state', () => {
     expect(toBlockedPlanFinalizationState(createBlockedFinalizationError())).toEqual({
       planId: 'plan-1',
@@ -205,27 +203,15 @@ describe('taskStorePlanFinalizationState', () => {
 
   it('builds failure state with blocker diagnostics', () => {
     expect(buildPlanFinalizationFailureState(createBlockedFinalizationError())).toEqual({
-      finalizingPlanId: null,
-      blockedPlanFinalization: {
-        planId: 'plan-1',
-        branchName: 'develop',
-        message: 'Cannot finalize plan because /repos/api would conflict in: src/conflict.ts.',
+      lastError: 'Cannot finalize plan because /repos/api would conflict in: src/conflict.ts.',
+      runtimePatch: {
+        phase: 'blocked',
+        taskStatus: 'Blocked',
         repositories: [blockedRepository],
         blockedRepositories: [blockedRepository],
+        message: 'Cannot finalize plan because /repos/api would conflict in: src/conflict.ts.',
+        lastLoadedAt: expect.any(String),
       },
-      lastError: 'Cannot finalize plan because /repos/api would conflict in: src/conflict.ts.',
-    });
-  });
-
-  it('clears blocker state on refresh and explicit retry success', () => {
-    expect(buildPlanFinalizationRefreshState()).toEqual({
-      blockedPlanFinalization: null,
-      lastError: null,
-    });
-    expect(buildPlanFinalizationSuccessState()).toEqual({
-      finalizingPlanId: null,
-      blockedPlanFinalization: null,
-      lastError: null,
     });
   });
 });

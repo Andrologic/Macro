@@ -171,6 +171,7 @@ describe('FileChangesPanel', () => {
       loadState?: 'ready' | 'out_of_scope';
       loadMessage?: string | null;
       taskOverrides?: Record<string, unknown>;
+      taskStoreOverrides?: Record<string, unknown>;
       executionRecords?: Record<string, import('../../stores/useTaskStore').TaskCompletionRepositoryRecord>;
     } = {}
   ) => {
@@ -212,6 +213,7 @@ describe('FileChangesPanel', () => {
       ],
       branchWorktrees: {},
       finishTask: finishTaskMock,
+      ...options.taskStoreOverrides,
     });
 
     loadCurrentChangesMock = mock(async () => undefined);
@@ -451,6 +453,102 @@ describe('FileChangesPanel', () => {
 
     expect(finishTaskMock).toHaveBeenCalledWith('task-1');
     expect(commitStagedChangesMock).not.toHaveBeenCalled();
+  });
+
+  it('renders the dedicated plan finalization panel instead of loading file changes', async () => {
+    const repository = buildRepository(false);
+    const planFinalizationRuntime = {
+      planId: 'plan-1',
+      branchName: 'develop',
+      phase: 'ready',
+      taskStatus: 'Pending',
+      review: {
+        plan: {
+          id: 'plan-1',
+          targetBranch: 'develop',
+        },
+        tasks: [],
+        repositories: [
+          {
+            id: 'repo-1',
+            projectId: 'project-1',
+            repoPath: '/tmp/repo-1',
+            planBranchName: 'plan/checkout-refresh',
+            baseBranchName: 'develop',
+            isClean: true,
+            hasChanges: true,
+            mergeable: true,
+            conflictFiles: [],
+            mergeInProgress: false,
+            diff: 'diff --git a/src/main.ts b/src/main.ts',
+            checkStatus: 'passed',
+            blockingKind: null,
+            nextAction: null,
+            blockingReason: null,
+          },
+        ],
+      },
+      repositories: [
+        {
+          id: 'repo-1',
+          projectId: 'project-1',
+          repoPath: '/tmp/repo-1',
+          planBranchName: 'plan/checkout-refresh',
+          baseBranchName: 'develop',
+          isClean: true,
+          hasChanges: true,
+          mergeable: true,
+          conflictFiles: [],
+          mergeInProgress: false,
+          diff: 'diff --git a/src/main.ts b/src/main.ts',
+          checkStatus: 'passed',
+          blockingKind: null,
+          nextAction: null,
+          blockingReason: null,
+        },
+      ],
+      blockedRepositories: [],
+      message: null,
+      lastLoadedAt: '2026-04-22T10:00:00.000Z',
+    };
+    const loadPlanFinalizationReviewMock = mock(async () => planFinalizationRuntime);
+    seedStores(repository, {
+      taskOverrides: {
+        title: 'Finalize plan: Checkout refresh',
+        description: 'Merge the plan branch into the configured development branches or archive the plan.',
+        task_source: 'plan_finalization',
+        plan_id: 'plan-1',
+        assigned_branch: 'develop',
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'develop',
+            targetBranchName: 'develop',
+            executionKind: 'repository_root',
+            worktreeKey: 'plan-finalization:project-1:project-1',
+          },
+        ],
+      },
+      taskStoreOverrides: {
+        getPlanFinalizationRuntime: (planId: string) =>
+          planId === 'plan-1' ? planFinalizationRuntime : null,
+        loadPlanFinalizationReview: loadPlanFinalizationReviewMock,
+        finalizePlan: mock(async () => undefined),
+        archivePlanFromTask: mock(async () => undefined),
+        resolvePlanFinalizationAutomatically: mock(async () => 'conversation-plan-1'),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Plan finalization');
+    expect(document.body.textContent).toContain('Merge plan');
+    expect(document.body.textContent).toContain('Archive');
+    expect(loadPlanFinalizationReviewMock).toHaveBeenCalledWith('plan-1');
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
   });
 
   it('renders the scoped empty-state message when the task is outside the current repository scope', async () => {
