@@ -209,7 +209,7 @@ const toFrozenPlanNode = (
 const buildNodeSemanticSnapshot = (node: PlanNode) => ({
   id: node.id,
   title: node.title.trim(),
-  description: (node.description || "").trim(),
+  description: (node.description || '').trim(),
   type: node.type,
   status: node.status,
   assignedBranch: getPlanNodeBranchIntent(node).label,
@@ -217,6 +217,9 @@ const buildNodeSemanticSnapshot = (node: PlanNode) => ({
   branchSlug: getPlanNodeBranchIntent(node).branchSlug,
   projectIds: [...normalizeNodeProjectIds(node)].sort(),
   dependencies: [...unique(node.dependencies)].sort(),
+  archivedAt: typeof node.archivedAt === 'string' ? node.archivedAt : null,
+  archiveReason: typeof node.archiveReason === 'string' ? node.archiveReason : null,
+  mergedAt: typeof node.mergedAt === 'string' ? node.mergedAt : null,
 });
 
 const arePlanNodesSemanticallyEqual = (

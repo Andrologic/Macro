@@ -131,6 +131,22 @@ export const codeMirrorDiffHighlightBaseTheme = EditorView.baseTheme({
     backgroundColor: 'rgba(46, 160, 67, 0.26)',
     color: '#f2fff4',
   },
+  '&dark .cm-line.cm-diff-staged-removed': {
+    backgroundColor: 'rgba(248, 81, 73, 0.11)',
+    boxShadow: 'inset 3px 0 0 rgba(248, 81, 73, 0.58)',
+  },
+  '&dark .cm-line.cm-diff-staged-added': {
+    backgroundColor: 'rgba(46, 160, 67, 0.12)',
+    boxShadow: 'inset 3px 0 0 rgba(46, 160, 67, 0.56)',
+  },
+  '&dark .cm-gutterElement.cm-diff-gutter-staged-removed': {
+    backgroundColor: 'rgba(248, 81, 73, 0.12)',
+    color: '#f5c5c2',
+  },
+  '&dark .cm-gutterElement.cm-diff-gutter-staged-added': {
+    backgroundColor: 'rgba(46, 160, 67, 0.12)',
+    color: '#c1e8ca',
+  },
   '&light .cm-line.cm-diff-removed': {
     backgroundColor: 'rgba(248, 81, 73, 0.12)',
     boxShadow: 'inset 3px 0 0 rgb(207 34 46 / 0.85)',
@@ -162,5 +178,21 @@ export const codeMirrorDiffHighlightBaseTheme = EditorView.baseTheme({
   '&light .cm-gutterElement.cm-diff-gutter-modified-right': {
     backgroundColor: 'rgba(46, 160, 67, 0.2)',
     color: '#144926',
+  },
+  '&light .cm-line.cm-diff-staged-removed': {
+    backgroundColor: 'rgba(248, 81, 73, 0.08)',
+    boxShadow: 'inset 3px 0 0 rgba(207, 34, 46, 0.42)',
+  },
+  '&light .cm-line.cm-diff-staged-added': {
+    backgroundColor: 'rgba(46, 160, 67, 0.08)',
+    boxShadow: 'inset 3px 0 0 rgba(26, 127, 55, 0.4)',
+  },
+  '&light .cm-gutterElement.cm-diff-gutter-staged-removed': {
+    backgroundColor: 'rgba(248, 81, 73, 0.1)',
+    color: '#9d5660',
+  },
+  '&light .cm-gutterElement.cm-diff-gutter-staged-added': {
+    backgroundColor: 'rgba(46, 160, 67, 0.1)',
+    color: '#3f7651',
   },
 });

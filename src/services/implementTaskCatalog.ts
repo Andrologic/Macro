@@ -213,24 +213,28 @@ export const deriveImplementTasksFromArchitectPlan = (
     predictedBranches: plan.predictedBranches || [],
     targetBranchesByProjectId,
   });
+  const nodeById = new Map(strategy.nodes.map((node) => [node.id, node]));
 
-  return strategy.tasks.map((task) => ({
-    ...task,
-    task_source: 'architect' as const,
-    plan_title: plan.title,
-    plan_status: plan.status,
-    plan_target_branch: plan.targetBranch,
-    plan_target_branches_by_project_id: targetBranchesByProjectId,
-    has_mixed_target_branches: planHasMixedTargetBranches(plan),
-    draft: false,
-    standalone_kind: 'legacy' as const,
-    base_branch: null,
-    feature_slug: null,
-    conversation_id: null,
-    archived_at: null,
-    archive_reason: null,
-    merged_at: null,
-  }));
+  return strategy.tasks.map((task) => {
+    const planNode = nodeById.get(task.id);
+    return {
+      ...task,
+      task_source: 'architect' as const,
+      plan_title: plan.title,
+      plan_status: plan.status,
+      plan_target_branch: plan.targetBranch,
+      plan_target_branches_by_project_id: targetBranchesByProjectId,
+      has_mixed_target_branches: planHasMixedTargetBranches(plan),
+      draft: false,
+      standalone_kind: 'legacy' as const,
+      base_branch: null,
+      feature_slug: null,
+      conversation_id: null,
+      archived_at: typeof planNode?.archivedAt === 'string' ? planNode.archivedAt : null,
+      archive_reason: typeof planNode?.archiveReason === 'string' ? planNode.archiveReason : null,
+      merged_at: typeof planNode?.mergedAt === 'string' ? planNode.mergedAt : null,
+    };
+  });
 };
 
 const sortCatalogTasks = (tasks: CatalogedImplementTask[]): CatalogedImplementTask[] => {

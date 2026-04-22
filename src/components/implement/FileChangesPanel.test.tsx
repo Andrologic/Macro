@@ -101,13 +101,16 @@ const buildRepository = (reviewedMain: boolean): ReviewRepositoryState => ({
       status: 'modified',
       additions: 3,
       deletions: 1,
-      reviewed: reviewedMain,
       originalContent: 'before();',
+      indexContent: reviewedMain ? 'validated();' : 'before();',
       modifiedContent: 'after();',
       language: 'typescript',
       hunks: [],
       contextMode: 'focused',
       canEdit: true,
+      hasValidatedStage: reviewedMain,
+      validatedRemovedLineNumbers: reviewedMain ? [1] : [],
+      validatedAddedLineNumbers: reviewedMain ? [1] : [],
     },
     {
       id: 'change-2',
@@ -115,19 +118,23 @@ const buildRepository = (reviewedMain: boolean): ReviewRepositoryState => ({
       status: 'added',
       additions: 4,
       deletions: 0,
-      reviewed: false,
       originalContent: '',
+      indexContent: '',
       modifiedContent: 'export const child = true;',
       language: 'typescript',
       hunks: [],
       contextMode: 'focused',
       canEdit: true,
+      hasValidatedStage: false,
+      validatedRemovedLineNumbers: [],
+      validatedAddedLineNumbers: [],
     },
   ],
+  stagedPaths: reviewedMain ? ['src/main.ts'] : [],
   selectedChangeId: 'change-1',
   stats: {
-    total: 2,
-    reviewed: reviewedMain ? 1 : 0,
+    pendingVisibleFileCount: 2,
+    validatedStagedFileCount: reviewedMain ? 1 : 0,
     additions: 7,
     deletions: 1,
   },
@@ -152,12 +159,20 @@ const flushRender = async () => {
 describe('FileChangesPanel', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
-  let setReviewedStateMock: ReturnType<typeof mock>;
+  let stageChangesMock: ReturnType<typeof mock>;
+  let stageAllChangesMock: ReturnType<typeof mock>;
   let loadCurrentChangesMock: ReturnType<typeof mock>;
+  let finishTaskMock: ReturnType<typeof mock>;
+  let commitStagedChangesMock: ReturnType<typeof mock>;
 
   const seedStores = (
     repository: ReviewRepositoryState,
-    options: { loadState?: 'ready' | 'out_of_scope'; loadMessage?: string | null } = {}
+    options: {
+      loadState?: 'ready' | 'out_of_scope';
+      loadMessage?: string | null;
+      taskOverrides?: Record<string, unknown>;
+      executionRecords?: Record<string, import('../../stores/useTaskStore').TaskCompletionRepositoryRecord>;
+    } = {}
   ) => {
     useAppStore.setState({
       ...useAppStore.getState(),
@@ -187,16 +202,16 @@ describe('FileChangesPanel', () => {
         {
           id: 'task-1',
           title: 'Review panel actions',
-          status: 'InReview',
+          status: 'InProgress',
           draft: false,
           project_id: 'project-1',
           assigned_branch: 'feature/review-actions',
           execution_targets: [],
+          ...options.taskOverrides,
         } as never,
       ],
       branchWorktrees: {},
-      startReview: mock(async () => undefined),
-      finishTask: mock(async () => undefined),
+      finishTask: finishTaskMock,
     });
 
     loadCurrentChangesMock = mock(async () => undefined);
@@ -213,18 +228,16 @@ describe('FileChangesPanel', () => {
       isCommitting: false,
       isDiffModalOpen: false,
       lastError: null,
-      executionRecords: {},
+      executionRecords: options.executionRecords ?? {},
       loadCurrentChanges: loadCurrentChangesMock,
       resetReviewState: mock(() => undefined),
       selectRepository: mock(() => undefined),
       openDiffModal: mock(() => undefined),
       closeDiffModal: mock(() => undefined),
-      setReviewedState: setReviewedStateMock,
-      markAllAsReviewed: mock(() => undefined),
+      stageChanges: stageChangesMock,
+      stageAllChanges: stageAllChangesMock,
       revertChanges: mock(async () => undefined),
-      commitReviewedChanges: mock(async () => {
-        throw new Error('unused');
-      }),
+      commitStagedChanges: commitStagedChangesMock,
       setCommitMessageDraft: mock(() => undefined),
       getOverallStats: () => repository.stats,
     });
@@ -235,8 +248,18 @@ describe('FileChangesPanel', () => {
     notifySuccessMock = mock(() => undefined);
     notifyErrorMock = mock(() => undefined);
     await loadFileChangesPanelModules();
-    setReviewedStateMock = mock(() => undefined);
+    stageChangesMock = mock(async () => undefined);
+    stageAllChangesMock = mock(async () => undefined);
     loadCurrentChangesMock = mock(async () => undefined);
+    finishTaskMock = mock(async () => undefined);
+    commitStagedChangesMock = mock(async () => ({
+      hash: 'abc123',
+      taskId: 'task-1',
+      taskCompleted: false,
+      taskStatus: 'InProgress',
+      committedRepositoryId: 'repo-1',
+      repositories: [],
+    }));
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -284,16 +307,20 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    expect(setReviewedStateMock).toHaveBeenCalled();
+    expect(stageChangesMock).toHaveBeenCalled();
   });
 
-  it('renders only invalidate for a fully validated repository scope', async () => {
+  it('hides scope actions once only staged changes remain', async () => {
     const repository = buildRepository(true);
-    repository.changes[1] = {
-      ...repository.changes[1],
-      reviewed: true,
+    repository.changes = [];
+    repository.stagedPaths = ['src/main.ts', 'src/nested/child.ts'];
+    repository.selectedChangeId = null;
+    repository.stats = {
+      pendingVisibleFileCount: 0,
+      validatedStagedFileCount: 2,
+      additions: 0,
+      deletions: 0,
     };
-    repository.stats.reviewed = 2;
     seedStores(repository);
 
     await act(async () => {
@@ -302,11 +329,128 @@ describe('FileChangesPanel', () => {
     });
 
     const buttons = Array.from(document.body.querySelectorAll('button'));
-    const invalidateButtons = buttons.filter((button) => button.getAttribute('aria-label') === 'Invalidate');
+    const validateButtons = buttons.filter((button) => button.getAttribute('aria-label') === 'Validate');
     const revertButtons = buttons.filter((button) => button.getAttribute('aria-label') === 'Revert');
 
-    expect(invalidateButtons.length).toBeGreaterThan(0);
+    expect(validateButtons).toHaveLength(0);
     expect(revertButtons).toHaveLength(0);
+  });
+
+  it('validates the current diff state without moving the task into a review status', async () => {
+    seedStores(buildRepository(false));
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const validateButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Validate changes');
+    expect(validateButton).toBeDefined();
+    loadCurrentChangesMock.mockClear();
+
+    await act(async () => {
+      validateButton?.click();
+      await flushRender();
+    });
+
+    expect(stageAllChangesMock).toHaveBeenCalledWith('repo-1');
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[0]?.status).toBe('InProgress');
+  });
+
+  it('keeps Commit as the primary action while a repository is ready to commit', async () => {
+    const repository = buildRepository(true);
+    seedStores(repository);
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const buttonTexts = Array.from(document.body.querySelectorAll('button'))
+      .map((button) => button.textContent?.trim())
+      .filter((value): value is string => Boolean(value));
+
+    expect(buttonTexts).toContain('Commit');
+    expect(buttonTexts).not.toContain('Finish task');
+  });
+
+  it('shows the backend commit error message when the commit rejects with an object payload', async () => {
+    const repository = buildRepository(true);
+    commitStagedChangesMock = mock(async () => {
+      throw { message: 'Backend exploded' };
+    });
+    seedStores(repository);
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const commitButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit');
+    expect(commitButton).toBeDefined();
+
+    await act(async () => {
+      commitButton?.click();
+      await flushRender();
+    });
+
+    expect(notifyErrorMock).toHaveBeenCalledWith('Backend exploded');
+    expect(notifyErrorMock).not.toHaveBeenCalledWith('[object Object]');
+  });
+
+  it('switches the primary action to Finish task once the task is fully resolved', async () => {
+    const repository: ReviewRepositoryState = {
+      ...buildRepository(true),
+      id: 'project-1::repo-1',
+      changes: [],
+      selectedChangeId: null,
+      stats: {
+        pendingVisibleFileCount: 0,
+        validatedStagedFileCount: 0,
+        additions: 0,
+        deletions: 0,
+      },
+      stagedPaths: [],
+      commitState: 'committed',
+    };
+    seedStores(repository, {
+      taskOverrides: {
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/review-actions',
+            worktreeKey: 'repo-1',
+          },
+        ],
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const buttons = Array.from(document.body.querySelectorAll('button'));
+    const buttonTexts = buttons
+      .map((button) => button.textContent?.trim())
+      .filter((value): value is string => Boolean(value));
+
+    expect(buttonTexts).toContain('Finish task');
+    expect(buttonTexts).not.toContain('Commit');
+
+    const finishButton = buttons.find((button) => button.textContent?.trim() === 'Finish task');
+    expect(finishButton).toBeDefined();
+
+    await act(async () => {
+      finishButton?.click();
+      await flushRender();
+    });
+
+    expect(finishTaskMock).toHaveBeenCalledWith('task-1');
+    expect(commitStagedChangesMock).not.toHaveBeenCalled();
   });
 
   it('renders the scoped empty-state message when the task is outside the current repository scope', async () => {

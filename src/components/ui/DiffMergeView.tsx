@@ -16,6 +16,10 @@ import {
   getCodeMirrorThemeMetadata,
   getCodeMirrorSyntaxExtensions,
 } from './codeMirrorTheme';
+import {
+  createCodeMirrorDiffHighlightExtension,
+  codeMirrorDiffHighlightBaseTheme,
+} from './codeMirrorDiffHighlights';
 import { collectRevertButtonPositions } from './diffMergeRevertAlignment';
 import { mapScrollOffsetByRatio } from './diffMergeScrollSync';
 
@@ -32,6 +36,8 @@ export interface DiffMergeViewProps {
   onEditorReady?: (editor: MergeViewEditorHandle | null) => void;
   revertControls?: 'a-to-b' | 'b-to-a';
   overflowMode?: CodeOverflowMode;
+  validatedRemovedLineNumbers?: number[];
+  validatedAddedLineNumbers?: number[];
 }
 
 export interface MergeViewEditorHandle {
@@ -152,6 +158,8 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   onEditorReady,
   revertControls,
   overflowMode,
+  validatedRemovedLineNumbers = [],
+  validatedAddedLineNumbers = [],
 }, ref) => {
   const { t, i18n } = useTranslation();
   const globalOverflowMode = useAppStore((state) => state.codeOverflowMode);
@@ -182,6 +190,22 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
         : undefined,
     [presentationMode]
   );
+  const leftValidatedHighlights = useMemo(
+    () => validatedRemovedLineNumbers.map((lineNumber) => ({
+      lineNumber,
+      lineClass: 'cm-diff-staged-removed',
+      gutterClass: 'cm-diff-gutter-staged-removed',
+    })),
+    [validatedRemovedLineNumbers]
+  );
+  const rightValidatedHighlights = useMemo(
+    () => validatedAddedLineNumbers.map((lineNumber) => ({
+      lineNumber,
+      lineClass: 'cm-diff-staged-added',
+      gutterClass: 'cm-diff-gutter-staged-added',
+    })),
+    [validatedAddedLineNumbers]
+  );
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -211,6 +235,14 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
     const baseTheme = createCodeMirrorBaseTheme(themeContext?.theme);
     const diffTheme = createCodeMirrorDiffTheme(themeContext?.theme);
     const themeExtensions = getCodeMirrorSyntaxExtensions(themeContext?.theme);
+    const leftHighlightExtensions = createCodeMirrorDiffHighlightExtension(
+      EditorState.create({ doc: originalRef.current }).doc,
+      leftValidatedHighlights
+    );
+    const rightHighlightExtensions = createCodeMirrorDiffHighlightExtension(
+      EditorState.create({ doc: modifiedRef.current }).doc,
+      rightValidatedHighlights
+    );
     const phrasesExtension = EditorState.phrases.of({
       [CODEMIRROR_UNCHANGED_LINES_PHRASE]: unchangedLinesPhrase,
     });
@@ -233,6 +265,8 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
           ...themeExtensions,
           baseTheme,
           diffTheme,
+          codeMirrorDiffHighlightBaseTheme,
+          ...leftHighlightExtensions,
           languageExt,
           phrasesExtension,
           EditorView.updateListener.of((update) => {
@@ -249,6 +283,8 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
           ...themeExtensions,
           baseTheme,
           diffTheme,
+          codeMirrorDiffHighlightBaseTheme,
+          ...rightHighlightExtensions,
           languageExt,
           phrasesExtension,
           EditorView.editable.of(editable),
@@ -419,7 +455,16 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       mergeView.destroy();
       mergeViewRef.current = null;
     };
-  }, [editable, resolvedLanguage, resolvedLocale, resolvedOverflowMode, themeContext?.theme, unchangedLinesPhrase]);
+  }, [
+    editable,
+    leftValidatedHighlights,
+    resolvedLanguage,
+    resolvedLocale,
+    resolvedOverflowMode,
+    rightValidatedHighlights,
+    themeContext?.theme,
+    unchangedLinesPhrase,
+  ]);
 
   useEffect(() => {
     const mergeView = mergeViewRef.current;
