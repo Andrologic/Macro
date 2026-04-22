@@ -18,7 +18,11 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
-import { getFocusedProjectForGroup, getGlobalProjectById } from '../../services/globalProjects';
+import {
+  getFocusedProjectForGroup,
+  getGlobalProjectById,
+  getRepositoryScopedProjectIds,
+} from '../../services/globalProjects';
 import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
 import { getServiceRuntimeCapabilities } from '../../services';
@@ -488,7 +492,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   })));
 
   const [inputValue, setInputValue] = useState('');
-  const [kickoffNotes, setKickoffNotes] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
@@ -611,19 +614,42 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       )
     );
   }, [selectedTask]);
-  const selectedTaskProjectSummary = useMemo(() => {
+  const projectNameById = useMemo(
+    () =>
+      new Map(
+        projectGroups.flatMap((group) =>
+          group.projects.map((project) => [project.id, project.name] as const)
+        )
+      ),
+    [projectGroups]
+  );
+  const repositoryScopedProjectIds = useMemo(
+    () => getRepositoryScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const selectedTaskScopedProjectIds = useMemo(() => {
     if (selectedTaskProjectIds.length === 0) {
+      return [];
+    }
+
+    const scopedProjectIdSet = new Set(repositoryScopedProjectIds);
+    const intersection = selectedTaskProjectIds.filter((projectId) => scopedProjectIdSet.has(projectId));
+    return intersection.length > 0 ? intersection : selectedTaskProjectIds;
+  }, [repositoryScopedProjectIds, selectedTaskProjectIds]);
+  const selectedTaskProjectSummary = useMemo(() => {
+    if (selectedTaskScopedProjectIds.length === 0) {
       return t('implement.noRepositorySelected', 'No repository');
     }
 
-    if (selectedTaskProjectIds.length === 1) {
-      return selectedTaskProjectIds[0]!;
+    if (selectedTaskScopedProjectIds.length === 1) {
+      const scopedProjectId = selectedTaskScopedProjectIds[0]!;
+      return projectNameById.get(scopedProjectId) || scopedProjectId;
     }
 
     return t('implement.multiProjectTask', '{{count}} repositories', {
-      count: selectedTaskProjectIds.length,
+      count: selectedTaskScopedProjectIds.length,
     });
-  }, [selectedTaskProjectIds, t]);
+  }, [projectNameById, selectedTaskScopedProjectIds, t]);
   const canStartImplementExecution = Boolean(
     selectedTaskRequiresKickoff &&
       selectedTask &&
@@ -634,12 +660,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       !isConversationPending &&
       currentMessages.length === 0
   );
-  const isImplementComposerLocked =
+  const isImplementComposerInKickoffMode =
     selectedTaskRequiresKickoff && currentMessages.length === 0;
   const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask;
   const isComposerDisabled =
     isConversationPending ||
-    isImplementComposerLocked ||
     isImplementTaskSelectionMissing ||
     Boolean(activeQuestionnaire) ||
     Boolean(activePendingToolApproval);
@@ -831,15 +856,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         branchName: selectedTask.branch_name,
         dependencies: selectedTask.dependencies,
         estimatedChanges: selectedTask.estimated_changes,
-        notes: params?.notesOverride ?? kickoffNotes,
+        notes: params?.notesOverride ?? composerEditorRef.current?.getTextContent() ?? '',
       });
 
-      setKickoffNotes('');
       await sendMessage({
         conversationId,
         content,
         taskId: selectedTask.id,
       });
+      composerEditorRef.current?.clear();
+      setInputValue('');
       return true;
     } catch (error) {
       if (conversationId) {
@@ -853,7 +879,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     ensureConversation,
     isConversationPending,
     isBusySending,
-    kickoffNotes,
     mode,
     selectedModelId,
     selectedProviderId,
@@ -991,6 +1016,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const handleSend = async () => {
     if (isComposerDisabled || activeQuestionnaire) return;
     const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
+    if (isImplementComposerInKickoffMode) {
+      if (!text || isBusySending) return;
+      try {
+        await handleStartExecution({ notesOverride: text });
+      } catch {
+        // Keep the draft intact. The visible error feedback comes from the chat store.
+      }
+      return;
+    }
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
     const conversationId = await ensureConversation();
     if (!conversationId) return;
@@ -1111,7 +1145,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const canSend =
     !activeQuestionnaire &&
     !isConversationPending &&
-    (Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0);
+    (
+      isImplementComposerInKickoffMode
+        ? Boolean(inputValue.trim())
+        : Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0
+    );
 
   const navigatePromptHistory = useCallback((direction: 'up' | 'down') => {
     if (promptHistory.length === 0) return;
@@ -1429,20 +1467,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     <p className="text-xs text-muted-foreground">
                       {selectedTask.description || t('implement.noTaskDescription', 'No task description provided.')}
                     </p>
-                    <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                      <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/60 px-2 py-1">
-                        <Icon name="git-branch" size={10} />
+                    <div className="flex flex-wrap gap-1.5 text-[10px]">
+                      <span className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border/70 bg-background/40 px-2 py-0.5 font-semibold text-muted-foreground">
+                        <Icon name="git-branch" size={10} className="shrink-0" />
                         {selectedTask.branch_name}
                       </span>
-                      <span className="inline-flex items-center gap-1 rounded border border-border bg-muted/60 px-2 py-1">
-                        <Icon name="folder" size={10} />
-                        {selectedTaskProjectSummary}
+                      <span className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border/70 bg-background/40 px-2 py-0.5 font-semibold text-muted-foreground">
+                        <Icon name="folder" size={10} className="shrink-0" />
+                        <span className="truncate">{selectedTaskProjectSummary}</span>
                       </span>
                     </div>
                   </div>
                   <button
                     type="button"
-                    onClick={() => void handleStartExecution().catch(() => undefined)}
+                    onClick={() => void handleStartExecution({
+                      notesOverride: composerEditorRef.current?.getTextContent() ?? '',
+                    }).catch(() => undefined)}
                     disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId || isBusySending}
                     title={
                       !runtimeCapabilities.implementExecution
@@ -1463,13 +1503,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     {t('implement.startExecution', 'Start execution')}
                   </button>
                 </div>
-                <textarea
-                  value={kickoffNotes}
-                  onChange={(event) => setKickoffNotes(event.target.value)}
-                  rows={3}
-                  placeholder={t('implement.executionNotesPlaceholder', 'Optional guidance for this task kickoff')}
-                  className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary/50"
-                />
               </div>
             )}
 
@@ -1531,10 +1564,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     placeholder={
                       isConversationPending
                         ? t('chat.loadingConversation', 'Restoring conversation...')
-                        : isImplementTaskSelectionMissing
+                      : isImplementTaskSelectionMissing
                         ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
-                        : isImplementComposerLocked
-                        ? t('implement.startExecutionFirst', 'Start execution to begin the task conversation')
+                        : isImplementComposerInKickoffMode
+                        ? t('implement.executionNotesPlaceholder', 'Optional guidance for this task kickoff')
                         : !selectedProviderId || !selectedModelId
                         ? t('chat.selectProvider')
                         : t('chat.typeMessage')
