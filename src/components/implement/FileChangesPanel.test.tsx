@@ -458,43 +458,25 @@ describe('FileChangesPanel', () => {
   it('renders the dedicated plan finalization panel instead of loading file changes', async () => {
     const repository = buildRepository(false);
     const planFinalizationRuntime = {
-      planId: 'plan-1',
-      branchName: 'develop',
+      taskId: 'task-1',
+      kind: 'plan_finalization',
       phase: 'ready',
       taskStatus: 'Pending',
       review: {
-        plan: {
-          id: 'plan-1',
-          targetBranch: 'develop',
-        },
-        tasks: [],
-        repositories: [
-          {
-            id: 'repo-1',
-            projectId: 'project-1',
-            repoPath: '/tmp/repo-1',
-            planBranchName: 'plan/checkout-refresh',
-            baseBranchName: 'develop',
-            isClean: true,
-            hasChanges: true,
-            mergeable: true,
-            conflictFiles: [],
-            mergeInProgress: false,
-            diff: 'diff --git a/src/main.ts b/src/main.ts',
-            checkStatus: 'passed',
-            blockingKind: null,
-            nextAction: null,
-            blockingReason: null,
-          },
-        ],
+        taskId: 'task-1',
+        title: 'Finalize plan: Checkout refresh',
+        taskSource: 'plan_finalization',
+        planId: 'plan-1',
+        planTitle: 'Checkout refresh',
+        targetBranch: 'develop',
       },
       repositories: [
         {
           id: 'repo-1',
           projectId: 'project-1',
           repoPath: '/tmp/repo-1',
-          planBranchName: 'plan/checkout-refresh',
-          baseBranchName: 'develop',
+          sourceBranchName: 'plan/checkout-refresh',
+          targetBranchName: 'develop',
           isClean: true,
           hasChanges: true,
           mergeable: true,
@@ -530,12 +512,12 @@ describe('FileChangesPanel', () => {
         ],
       },
       taskStoreOverrides: {
-        getPlanFinalizationRuntime: (planId: string) =>
-          planId === 'plan-1' ? planFinalizationRuntime : null,
-        loadPlanFinalizationReview: loadPlanFinalizationReviewMock,
-        finalizePlan: mock(async () => undefined),
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? planFinalizationRuntime : null,
+        loadMergeWorkflowReview: loadPlanFinalizationReviewMock,
+        runMergeWorkflow: mock(async () => undefined),
         archivePlanFromTask: mock(async () => undefined),
-        resolvePlanFinalizationAutomatically: mock(async () => 'conversation-plan-1'),
+        resolveMergeWorkflowAutomatically: mock(async () => 'conversation-plan-1'),
       },
     });
 
@@ -547,7 +529,101 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).toContain('Plan finalization');
     expect(document.body.textContent).toContain('Merge plan');
     expect(document.body.textContent).toContain('Archive');
-    expect(loadPlanFinalizationReviewMock).toHaveBeenCalledWith('plan-1');
+    expect(loadPlanFinalizationReviewMock).toHaveBeenCalledWith('task-1');
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+  });
+
+  it('renders the merge workflow panel for a normal task with merge blockers', async () => {
+    const mergeWorkflowRuntime = {
+      taskId: 'task-1',
+      kind: 'task_completion',
+      phase: 'blocked',
+      taskStatus: 'Blocked',
+      review: {
+        taskId: 'task-1',
+        title: 'Review panel actions',
+        taskSource: 'architect',
+        planId: 'plan-1',
+        planTitle: 'Plan 1',
+        targetBranch: 'plan/review-actions',
+      },
+      repositories: [
+        {
+          id: 'repo-1',
+          projectId: 'project-1',
+          repoPath: '/tmp/repo-1',
+          sourceBranchName: 'feature/review-actions',
+          targetBranchName: 'plan/review-actions',
+          isClean: true,
+          hasChanges: true,
+          mergeable: false,
+          conflictFiles: ['src/main.ts'],
+          mergeInProgress: false,
+          diff: 'diff --git a/src/main.ts b/src/main.ts',
+          checkStatus: 'failed',
+          blockingKind: 'merge_conflict',
+          nextAction: 'resolve_conflicts',
+          blockingReason: 'Cannot continue merge because /tmp/repo-1 would conflict in: src/main.ts.',
+        },
+      ],
+      blockedRepositories: [
+        {
+          id: 'repo-1',
+          projectId: 'project-1',
+          repoPath: '/tmp/repo-1',
+          sourceBranchName: 'feature/review-actions',
+          targetBranchName: 'plan/review-actions',
+          isClean: true,
+          hasChanges: true,
+          mergeable: false,
+          conflictFiles: ['src/main.ts'],
+          mergeInProgress: false,
+          diff: 'diff --git a/src/main.ts b/src/main.ts',
+          checkStatus: 'failed',
+          blockingKind: 'merge_conflict',
+          nextAction: 'resolve_conflicts',
+          blockingReason: 'Cannot continue merge because /tmp/repo-1 would conflict in: src/main.ts.',
+        },
+      ],
+      message: 'Resolve the repository blockers before retrying the merge.',
+      lastLoadedAt: '2026-04-22T10:00:00.000Z',
+    };
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/review-actions',
+            planBranchName: 'plan/review-actions',
+            executionKind: 'worktree',
+            worktreeKey: 'repo-1',
+          },
+        ],
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: mock(async () => 'conversation-task-1'),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Merge workflow');
+    expect(document.body.textContent).toContain('Retry merge');
+    expect(document.body.textContent).toContain('Resolve automatically');
+    expect(document.body.textContent).toContain('Conflict files');
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
   });
 

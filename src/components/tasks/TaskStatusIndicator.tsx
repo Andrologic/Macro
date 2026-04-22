@@ -73,6 +73,12 @@ const getIconName = (state: TaskStatusIndicatorState) => {
   switch (state) {
     case 'plan_finalization':
       return 'git-merge';
+    case 'merging':
+      return 'git-merge';
+    case 'merge_blocked':
+      return 'git-merge';
+    case 'merge_failed':
+      return 'alert-circle';
     case 'in_review':
       return 'search';
     case 'completed':
@@ -96,6 +102,7 @@ export const TaskStatusIndicator: React.FC<TaskStatusIndicatorProps> = ({
   dotSize = 8,
 }) => {
   const iconName = getIconName(state);
+  const shouldAnimateIcon = state === 'running' || state === 'merging';
 
   if (state === 'idle_prompt') {
     return (
@@ -164,7 +171,7 @@ export const TaskStatusIndicator: React.FC<TaskStatusIndicatorProps> = ({
       <Icon
         name={iconName || 'circle'}
         size={size}
-        className={cn(state === 'running' && 'animate-spin')}
+        className={cn(shouldAnimateIcon && 'animate-spin')}
       />
     </span>
   );

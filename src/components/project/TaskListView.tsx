@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
+import { useTaskStore } from '../../stores/useTaskStore';
 import { TaskStatus } from '../../types';
 import { Icon } from '../ui/Icon';
 import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
@@ -40,6 +41,9 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
   } =
     useChatStore();
   const [sortOption, setSortOption] = useState<TaskSortOption>('updated');
+  const mergeWorkflowRuntimeByTaskId = useTaskStore(
+    (state) => state.mergeWorkflowRuntimeByTaskId
+  );
   const runningTaskIds = useMemo(
     () =>
       resolveRunningTaskIds({
@@ -135,7 +139,9 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
               const isAssistantRunning = runningTaskIds.has(task.id);
               const indicatorState = resolveTaskStatusIndicatorState(
                 task.status,
-                isAssistantRunning
+                isAssistantRunning,
+                null,
+                mergeWorkflowRuntimeByTaskId[task.id] ?? null
               );
               const indicatorColor = isAssistantRunning
                 ? 'text-amber-500'
