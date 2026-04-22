@@ -876,6 +876,7 @@
     "deleteTaskDescription": "Delete this standalone feature, discard local changes, remove its worktree and local branch, and delete its conversation.",
     "planFilterAll": "All plans",
     "planFilterStandalone": "No plan / standalone",
+    "standaloneBadge": "Standalone",
     "noTasksForFilter": "No task matches this filter.",
     "taskNextActionStart": "Next: start implementation",
     "taskNextActionContinueImplementation": "Next: continue implementation",

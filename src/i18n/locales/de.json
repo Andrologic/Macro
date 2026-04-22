@@ -876,6 +876,7 @@
     "deleteTaskDescription": "Löschen Sie dieses eigenständige Feature, verwerfen Sie lokale Änderungen, entfernen Sie seinen Worktree und lokalen Branch und löschen Sie das Gespräch.",
     "planFilterAll": "Alle Pläne",
     "planFilterStandalone": "Kein Plan / Standalone",
+    "standaloneBadge": "Eigenständig",
     "noTasksForFilter": "Keine Aufgabe entspricht diesem Filter.",
     "taskNextActionStart": "Als nächstes: Beginnen Sie mit der Implementierung",
     "taskNextActionContinueImplementation": "Als nächstes: Umsetzung fortsetzen",
