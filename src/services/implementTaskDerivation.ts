@@ -423,6 +423,7 @@ const buildExecutionTargets = (
       projectId,
       branchName,
       targetBranchName: targetBranchesByProjectId?.[projectId],
+      executionKind: 'worktree',
       worktreeKey: toBranchWorktreeKey(projectId, branchName),
       planBranchName: planBranchName || predictedBranch?.parentBranch || undefined,
       predictedBranchId: predictedBranch?.id ?? null,

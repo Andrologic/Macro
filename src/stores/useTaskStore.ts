@@ -29,6 +29,7 @@ import {
 } from '../services/architectGitFlowService';
 import { shouldSyncTargetBranchBeforeFinish } from '../services/architectGitNaming';
 import {
+  archiveArchitectPlan,
   commitArchitectPlanMetadata,
   getArchitectPlan,
   getArchitectPlanTargetBranchesByProjectId,
@@ -39,6 +40,7 @@ import {
 } from '../services/architectPlanService';
 import {
   deriveFallbackImplementTasks,
+  isPlanFinalizationTask,
   taskMatchesProjectId,
   type CatalogedImplementTask,
   type ImplementTaskPlanSummary,
@@ -52,15 +54,22 @@ import {
 import { isManualDraftPendingInitialization } from '../services/manualDraftInitialization';
 import {
   buildPlanFinalizationFailureState,
-  buildPlanFinalizationRefreshState,
-  buildPlanFinalizationSuccessState,
-  type BlockedPlanFinalizationState,
-} from './taskStorePlanFinalizationState';
+  buildInitialPlanFinalizationRuntimeState,
+  buildPlanFinalizationTaskId,
+  mergePlanFinalizationRuntimeState,
+  type PlanFinalizationRuntimeState,
+} from '../services/planFinalization';
 import {
   getTaskProjectCommand,
   loadTaskProjectCommandRegistry,
 } from '../services/taskProjectCommands';
 import { buildTerminalDisplayMetadata } from '../services/terminalDisplayMetadata';
+import type { InternalAgentProfile } from '../services/internalAgentProfile';
+import {
+  loadPlanFinalizationReviewRuntime,
+  resolvePlanFinalizationActivationContext,
+  sendPlanFinalizationConflictPrompt,
+} from '../services/planFinalizationRuntime';
 
 type TaskSource = 'architect' | 'mixed' | 'fallback' | 'empty';
 
@@ -118,6 +127,7 @@ const getExecutionTargets = (task: CatalogedImplementTask): TaskExecutionTarget[
   return [{
     projectId: task.project_id,
     branchName: task.assigned_branch,
+    executionKind: 'worktree',
     worktreeKey: toBranchWorktreeKey(task.project_id, task.assigned_branch),
   }];
 };
@@ -166,6 +176,17 @@ const isManualStandaloneTask = (task: CatalogedImplementTask): boolean =>
 const isTaskArchived = (task: Pick<CatalogedImplementTask, 'archived_at'>): boolean =>
   Boolean(task.archived_at);
 
+const isPlanFinalizationRuntimeTask = (task: CatalogedImplementTask): boolean =>
+  isPlanFinalizationTask(task);
+
+const createPlanFinalizationRuntimeState = (
+  task: Pick<CatalogedImplementTask, 'plan_id' | 'plan_target_branch'>
+): PlanFinalizationRuntimeState =>
+  buildInitialPlanFinalizationRuntimeState({
+    planId: task.plan_id,
+    branchName: resolveTargetBranch(task.plan_target_branch || getGitFlowBaseBranch()),
+  });
+
 export interface TaskLifecycleCapabilities {
   isPublished: boolean;
   canRename: boolean;
@@ -191,6 +212,47 @@ const getExecutionTargetsWithRepoPaths = (
       return repoPath ? { ...target, repoPath } : null;
     })
     .filter((target): target is TaskExecutionTarget & { repoPath: string } => Boolean(target));
+
+const updatePlanFinalizationRuntimeState = (
+  current: Record<string, PlanFinalizationRuntimeState>,
+  planId: string,
+  patch: Partial<PlanFinalizationRuntimeState> & { branchName: string }
+): Record<string, PlanFinalizationRuntimeState> => ({
+  ...current,
+  [planId]: mergePlanFinalizationRuntimeState(current[planId], {
+    planId,
+    ...patch,
+  }),
+});
+
+const applyPlanFinalizationTaskStatusLocally = (
+  tasks: CatalogedImplementTask[],
+  planId: string,
+  status: TaskStatus
+): CatalogedImplementTask[] =>
+  tasks.map((task) =>
+    isPlanFinalizationRuntimeTask(task) && task.plan_id === planId
+      ? { ...task, status }
+      : task
+  );
+
+const applyPlanFinalizationRuntimePatch = (
+  state: Pick<TaskStore, 'tasks' | 'planFinalizationRuntimeByPlanId'>,
+  planId: string,
+  patch: Partial<PlanFinalizationRuntimeState> & { branchName: string }
+): Pick<TaskStore, 'tasks' | 'planFinalizationRuntimeByPlanId'> => {
+  const planFinalizationRuntimeByPlanId = updatePlanFinalizationRuntimeState(
+    state.planFinalizationRuntimeByPlanId,
+    planId,
+    patch
+  );
+  const nextTaskStatus = planFinalizationRuntimeByPlanId[planId]?.taskStatus ?? 'Pending';
+
+  return {
+    tasks: applyPlanFinalizationTaskStatusLocally(state.tasks, planId, nextTaskStatus),
+    planFinalizationRuntimeByPlanId,
+  };
+};
 
 const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promise<boolean> => {
   if (!tauriIpc.isTauriAvailable() || !isManualStandaloneTask(task) || task.draft || !task.branch_name) {
@@ -374,6 +436,18 @@ export const getTaskLifecycleCapabilities = (
   task: CatalogedImplementTask,
   published = false
 ): TaskLifecycleCapabilities => {
+  if (isPlanFinalizationRuntimeTask(task)) {
+    return {
+      isPublished: false,
+      canRename: false,
+      canDelete: false,
+      canArchive: false,
+      canRestore: false,
+      canReopen: false,
+      deleteBlockReason: null,
+    };
+  }
+
   if (isManualStandaloneTask(task)) {
     const archived = isTaskArchived(task);
     return {
@@ -730,8 +804,7 @@ interface TaskStore {
   hasStandaloneTasks: boolean;
   publishedStandaloneTasks: Record<string, boolean>;
   isLoading: boolean;
-  finalizingPlanId: string | null;
-  blockedPlanFinalization: BlockedPlanFinalizationState | null;
+  planFinalizationRuntimeByPlanId: Record<string, PlanFinalizationRuntimeState>;
   lastError: string | null;
   missingBaseBranchIssue: TaskMissingBaseBranchIssue | null;
   source: TaskSource;
@@ -781,13 +854,19 @@ interface TaskStore {
   cancelTaskCommands: (taskId: string) => Promise<void>;
   finishTask: (taskId: string, options?: CompleteTaskOptions) => Promise<void>;
   completeTask: (taskId: string, options?: CompleteTaskOptions) => Promise<void>;
+  loadPlanFinalizationReview: (planId: string, options?: { force?: boolean }) => Promise<PlanFinalizationRuntimeState | null>;
   finalizePlan: (planId: string) => Promise<void>;
+  archivePlanFromTask: (planId: string) => Promise<void>;
+  resolvePlanFinalizationAutomatically: (
+    planId: string,
+    options?: { internalAgentProfile?: InternalAgentProfile | null }
+  ) => Promise<string | null>;
   markTaskAwaitingResponse: (taskId: string) => Promise<void>;
   markTaskFailed: (taskId: string) => Promise<void>;
   retryTask: (taskId: string) => Promise<void>;
   setTaskStatus: (taskId: string, status: TaskStatus) => Promise<void>;
-  clearPlanFinalizationBlock: () => void;
   clearPlanRuntimeState: (params: ClearPlanRuntimeStateParams) => void;
+  getPlanFinalizationRuntime: (planId: string) => PlanFinalizationRuntimeState | null;
   getTaskById: (taskId: string) => CatalogedImplementTask | undefined;
 }
 
@@ -1030,8 +1109,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   hasStandaloneTasks: false,
   publishedStandaloneTasks: {},
   isLoading: false,
-  finalizingPlanId: null,
-  blockedPlanFinalization: null,
+  planFinalizationRuntimeByPlanId: {},
   lastError: null,
   missingBaseBranchIssue: null,
   source: 'empty',
@@ -1052,22 +1130,39 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   refreshFromPlan: async () => {
     try {
       const catalog = await services.listTasks();
-      const publishedStandaloneTasks = await buildStandalonePublicationMap(catalog.tasks);
+      const nextPlanFinalizationRuntimeByPlanId: Record<string, PlanFinalizationRuntimeState> = {};
+      const tasks = catalog.tasks.map((task) => {
+        if (!isPlanFinalizationRuntimeTask(task)) {
+          return task;
+        }
+
+        const runtimeState = mergePlanFinalizationRuntimeState(
+          get().planFinalizationRuntimeByPlanId[task.plan_id],
+          createPlanFinalizationRuntimeState(task)
+        );
+        nextPlanFinalizationRuntimeByPlanId[task.plan_id] = runtimeState;
+        return {
+          ...task,
+          status: runtimeState.taskStatus,
+        };
+      });
+      const publishedStandaloneTasks = await buildStandalonePublicationMap(tasks);
       set({
-        tasks: catalog.tasks,
+        tasks,
         planSummaries: catalog.plans,
         hasStandaloneTasks: catalog.hasStandaloneTasks,
         publishedStandaloneTasks,
+        planFinalizationRuntimeByPlanId: nextPlanFinalizationRuntimeByPlanId,
         missingBaseBranchIssue: null,
         source: catalog.source,
-        ...buildPlanFinalizationRefreshState(),
+        lastError: null,
         isLoading: false,
       });
 
       const { selectedGroupId, selectedProjectId, projectGroups } = useAppStore.getState();
       const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
       const selectedTaskIdFromApp = useAppStore.getState().selectedTaskId;
-      if (selectedTaskIdFromApp && !catalog.tasks.some((task) => task.id === selectedTaskIdFromApp)) {
+      if (selectedTaskIdFromApp && !tasks.some((task) => task.id === selectedTaskIdFromApp)) {
         useAppStore.getState().setSelectedTask(null);
       }
 
@@ -1078,7 +1173,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           const context = contextKey ? await getLocalProjectContextState(contextKey) : null;
           const candidateTaskId = context?.lastTaskId;
           if (candidateTaskId) {
-            const candidateTask = catalog.tasks.find((task) => task.id === candidateTaskId);
+            const candidateTask = tasks.find((task) => task.id === candidateTaskId);
             if (candidateTask && taskMatchesAnyProjectId(candidateTask, scopedProjectIds)) {
               useAppStore.getState().setSelectedTask(candidateTaskId);
             }
@@ -1128,6 +1223,23 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         activeRepositoryPath: projectPath,
       });
       await syncWorkspaceRoot(projectPath);
+      return;
+    }
+
+    if (isPlanFinalizationRuntimeTask(task)) {
+      const runtime = get().planFinalizationRuntimeByPlanId[task.plan_id] ?? null;
+      const { repoPath, branchName } = resolvePlanFinalizationActivationContext({
+        task,
+        runtime,
+        preferredProjectId: appState.selectedProjectId,
+        resolveRepoPath: resolveTaskRepositoryPath,
+      });
+
+      set({
+        activeBranchName: branchName,
+        activeRepositoryPath: repoPath,
+      });
+      await syncWorkspaceRoot(repoPath);
       return;
     }
 
@@ -1731,6 +1843,42 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       appState.setSelectedTask(task.id);
     }
 
+    if (isPlanFinalizationRuntimeTask(task)) {
+      try {
+        const runtime = await get().loadPlanFinalizationReview(task.plan_id, {
+          force: task.status === 'Failed',
+        });
+        const { repoPath, branchName } = resolvePlanFinalizationActivationContext({
+          task,
+          runtime,
+          preferredProjectId: appState.selectedProjectId,
+          resolveRepoPath: resolveTaskRepositoryPath,
+        });
+
+        set({
+          activeBranchName: branchName,
+          activeRepositoryPath: repoPath,
+          missingBaseBranchIssue: null,
+          lastError: null,
+        });
+
+        await syncWorkspaceRoot(repoPath);
+        return;
+      } catch (error) {
+        const failureState = buildPlanFinalizationFailureState(error);
+        set((state) => ({
+          ...applyPlanFinalizationRuntimePatch(state, task.plan_id, {
+            branchName: resolveTargetBranch(
+              task.plan_target_branch || getGitFlowBaseBranch()
+            ),
+            ...failureState.runtimePatch,
+          }),
+          lastError: failureState.lastError,
+        }));
+        return;
+      }
+    }
+
     try {
       const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
         task,
@@ -2037,6 +2185,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    if (isPlanFinalizationRuntimeTask(task)) {
+      await get().finalizePlan(task.plan_id);
+      return;
+    }
+
     const allowWithoutCodeChanges = options?.allowWithoutCodeChanges === true;
 
     if (task.status !== 'InReview' && task.status !== 'InProgress') {
@@ -2291,6 +2444,61 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     await get().finishTask(taskId, options);
   },
 
+  loadPlanFinalizationReview: async (planId, options) => {
+    const summary = get().planSummaries.find((plan) => plan.id === planId);
+    if (!summary) {
+      return null;
+    }
+
+    const branchName = resolveTargetBranch(summary.targetBranch);
+    const existingRuntime = get().planFinalizationRuntimeByPlanId[planId];
+    if (!options?.force && existingRuntime?.review) {
+      return existingRuntime;
+    }
+
+    set((state) => ({
+      ...applyPlanFinalizationRuntimePatch(state, planId, {
+        branchName,
+        phase: 'loading_review',
+        message: null,
+      }),
+      lastError: null,
+    }));
+
+    try {
+      const nextRuntime = await loadPlanFinalizationReviewRuntime({
+        summary,
+      });
+      const currentTask = get().getTaskById(buildPlanFinalizationTaskId(planId));
+      const nextTaskStatus = currentTask?.status === 'AwaitingResponse'
+        ? currentTask?.status || nextRuntime.taskStatus
+        : nextRuntime.taskStatus;
+
+      set((state) => ({
+        ...applyPlanFinalizationRuntimePatch(state, planId, {
+          ...nextRuntime,
+          taskStatus: nextTaskStatus,
+        }),
+        lastError: null,
+      }));
+
+      return {
+        ...nextRuntime,
+        taskStatus: nextTaskStatus,
+      };
+    } catch (error) {
+      const failureState = buildPlanFinalizationFailureState(error);
+      set((state) => ({
+        ...applyPlanFinalizationRuntimePatch(state, planId, {
+          branchName,
+          ...failureState.runtimePatch,
+        }),
+        lastError: failureState.lastError,
+      }));
+      throw toServiceError(error);
+    }
+  },
+
   finalizePlan: async (planId) => {
     const summary = get().planSummaries.find((plan) => plan.id === planId);
     if (!summary) {
@@ -2304,11 +2512,20 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    set({ finalizingPlanId: planId, lastError: null });
+    const branchName = resolveTargetBranch(summary.targetBranch);
+    set((state) => ({
+      lastError: null,
+      ...applyPlanFinalizationRuntimePatch(state, planId, {
+        branchName,
+        phase: 'merging',
+        taskStatus: 'InProgress',
+        message: null,
+      }),
+    }));
 
     try {
       const result = await finalizePlanIntoBaseBranch({
-        branchName: resolveTargetBranch(summary.targetBranch),
+        branchName,
         planId,
       });
       get().clearPlanRuntimeState({
@@ -2320,18 +2537,93 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       await get().refreshFromPlan();
       try {
         await commitArchitectPlanMetadata({
-          branchName: resolveTargetBranch(summary.targetBranch),
+          branchName,
           planId,
           commitMessage: `chore(metadata): finalize architect plan ${planId}`,
         });
       } catch (error) {
         set({ lastError: toServiceError(error).message });
       }
-      set(buildPlanFinalizationSuccessState());
     } catch (error) {
-      set(buildPlanFinalizationFailureState(error));
-      throw error;
+      const failureState = buildPlanFinalizationFailureState(error);
+      set((state) => ({
+        ...applyPlanFinalizationRuntimePatch(state, planId, {
+          branchName,
+          ...failureState.runtimePatch,
+        }),
+        lastError: failureState.lastError,
+      }));
+      throw toServiceError(error);
     }
+  },
+
+  archivePlanFromTask: async (planId) => {
+    const summary = get().planSummaries.find((plan) => plan.id === planId);
+    if (!summary) {
+      return;
+    }
+
+    const branchName = resolveTargetBranch(summary.targetBranch);
+    set((state) => ({
+      lastError: null,
+      ...applyPlanFinalizationRuntimePatch(state, planId, {
+        branchName,
+        phase: 'archiving',
+        taskStatus: 'InProgress',
+        message: null,
+      }),
+    }));
+
+    try {
+      await archiveArchitectPlan(branchName, planId);
+      if (useAppStore.getState().selectedTaskId === buildPlanFinalizationTaskId(planId)) {
+        useAppStore.getState().setSelectedTask(null);
+      }
+      await get().refreshFromPlan();
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set((state) => ({
+        lastError: normalized.message,
+        ...applyPlanFinalizationRuntimePatch(state, planId, {
+          branchName,
+          phase: 'failed',
+          taskStatus: 'Failed',
+          message: normalized.message,
+        }),
+      }));
+      throw normalized;
+    }
+  },
+
+  resolvePlanFinalizationAutomatically: async (planId, options) => {
+    const taskId = buildPlanFinalizationTaskId(planId);
+    const task = get().getTaskById(taskId);
+    if (!task || !isPlanFinalizationRuntimeTask(task)) {
+      return null;
+    }
+
+    const runtime =
+      get().planFinalizationRuntimeByPlanId[planId] ||
+      (await get().loadPlanFinalizationReview(planId, { force: true }));
+    if (!runtime || runtime.blockedRepositories.length === 0) {
+      return null;
+    }
+
+    const appState = useAppStore.getState();
+    const chatStore = useChatStore.getState();
+    return sendPlanFinalizationConflictPrompt({
+      task,
+      runtime,
+      selectedGroupId: appState.selectedGroupId,
+      selectedTaskId: appState.selectedTaskId,
+      ensureConversationForCurrentMode: chatStore.ensureConversationForCurrentMode,
+      createConversation: chatStore.createConversation,
+      sendMessage: chatStore.sendMessage,
+      activateTask: get().activateTask,
+      setMode: appState.setMode,
+      setSelectedTask: appState.setSelectedTask,
+      internalAgentProfile: options?.internalAgentProfile ?? 'repo_auditor',
+    });
   },
 
   markTaskAwaitingResponse: async (taskId) => {
@@ -2471,6 +2763,27 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     const optimisticTaskStatus = applyOptimisticTaskStatus();
 
+    if (isPlanFinalizationRuntimeTask(currentTask)) {
+      const branchName = resolveTargetBranch(currentTask.plan_target_branch || getGitFlowBaseBranch());
+      set((state) => ({
+        ...applyPlanFinalizationRuntimePatch(state, currentTask.plan_id, {
+          branchName,
+          taskStatus: status,
+          phase:
+            status === 'Blocked'
+              ? 'blocked'
+              : status === 'Failed'
+                ? 'failed'
+                : state.planFinalizationRuntimeByPlanId[currentTask.plan_id]?.phase === 'loading_review'
+                  ? 'loading_review'
+                  : state.planFinalizationRuntimeByPlanId[currentTask.plan_id]?.phase ||
+                    'ready',
+        }),
+        lastError: null,
+      }));
+      return;
+    }
+
     if (currentTask.task_source === 'standalone') {
       let persisted = false;
       try {
@@ -2530,6 +2843,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       branchWorktrees: nextRuntimeState.branchWorktrees,
       activeBranchName: nextRuntimeState.activeBranchName,
       activeRepositoryPath: nextRuntimeState.activeRepositoryPath,
+      planFinalizationRuntimeByPlanId: Object.fromEntries(
+        Object.entries(get().planFinalizationRuntimeByPlanId).filter(([candidatePlanId]) => candidatePlanId !== planId)
+      ),
     });
 
     if (nextRuntimeState.shouldClearActivePlan) {
@@ -2545,9 +2861,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
   },
 
-  clearPlanFinalizationBlock: () => {
-    set({ blockedPlanFinalization: null });
-  },
+  getPlanFinalizationRuntime: (planId) => get().planFinalizationRuntimeByPlanId[planId] ?? null,
 
   getTaskById: (taskId) => get().tasks.find((task) => task.id === taskId),
   });

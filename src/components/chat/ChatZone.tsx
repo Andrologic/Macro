@@ -597,7 +597,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     mode === 'Implement' &&
       selectedTask &&
       !selectedTask.draft &&
-      selectedTask.task_source !== 'standalone'
+      selectedTask.task_source === 'architect'
   );
   const selectedTaskProjectIds = useMemo(() => {
     if (!selectedTask) {
