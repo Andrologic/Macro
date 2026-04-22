@@ -876,6 +876,7 @@
     "deleteTaskDescription": "Supprime cette fonctionnalité autonome, ignore les changements locaux, supprime son worktree et sa branche locale, et efface sa conversation.",
     "planFilterAll": "Tous les plans",
     "planFilterStandalone": "Pas de plan / autonome",
+    "standaloneBadge": "Indépendant",
     "noTasksForFilter": "Aucune tâche ne correspond à ce filtre.",
     "taskNextActionStart": "Suivant : démarrer la mise en œuvre",
     "taskNextActionContinueImplementation": "Suivant : poursuivre la mise en œuvre",
