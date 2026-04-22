@@ -18,7 +18,6 @@ import {
 } from './implementTaskDerivation';
 import {
   renderGitFlowBranchName,
-  shouldSyncTargetBranchBeforeFinish,
 } from './architectGitNaming';
 import { toServiceError } from './contracts/errors';
 import { getPlanNodeBranchIntent, getPredictedBranchIntentKey, type WorkBranchIntent } from './gitFlowBranchIntents';
@@ -664,6 +663,7 @@ export const loadPlanReview = async (params: {
   branchName: string;
   planId: string;
   repoPath?: string;
+  syncBaseBranches?: boolean;
 }): Promise<PlanReviewResult> => getDefaultArchitectGitFlowService().loadPlanReview(params);
 
 export const finalizePlanIntoBaseBranch = async (params: {
@@ -989,10 +989,13 @@ export const createArchitectGitFlowService = (
   const preflightPlanRepositoriesWithDeps = async (params: {
     plan: ArchitectPlanRecord;
     explicitRepoPath?: string;
+    repositories?: ResolvedProjectRepository[];
   }): Promise<PlanReviewRepositoryResult[]> => {
-    const repositories = resolvePlanProjectRepoPathsWithDeps(params.plan, params.explicitRepoPath, {
-      logContext: 'preflight',
-    });
+    const repositories =
+      params.repositories ||
+      resolvePlanProjectRepoPathsWithDeps(params.plan, params.explicitRepoPath, {
+        logContext: 'preflight',
+      });
 
     return Promise.all(
       repositories.map(async (repository) => {
@@ -1046,6 +1049,32 @@ export const createArchitectGitFlowService = (
         };
       })
     );
+  };
+
+  const syncPlanRepositoriesToBaseBranchesWithDeps = async (params: {
+    plan: ArchitectPlanRecord;
+    explicitRepoPath?: string;
+  }): Promise<ResolvedProjectRepository[]> => {
+    const repositories = resolvePlanProjectRepoPathsWithDeps(params.plan, params.explicitRepoPath, {
+      logContext: 'finalize_sync',
+    });
+
+    await Promise.all(
+      repositories.map(async (repository) => {
+        const baseBranchName = resolvePlanProjectBaseBranchName(params.plan, repository.projectId);
+        await deps.tauri.gitCheckout({
+          repoPath: repository.repoPath,
+          branchOrCommit: baseBranchName,
+          create: false,
+        });
+        await deps.tauri.gitPull({
+          repoPath: repository.repoPath,
+          branch: baseBranchName,
+        });
+      })
+    );
+
+    return repositories;
   };
 
   const provisionPlanBranchesWithDeps = async (
@@ -1243,11 +1272,19 @@ export const createArchitectGitFlowService = (
     branchName: string;
     planId: string;
     repoPath?: string;
+    syncBaseBranches?: boolean;
   }): Promise<PlanReviewResult> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
     if (!plan || plan.status === 'deleted') {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
+
+    const repositories = params.syncBaseBranches
+      ? await syncPlanRepositoriesToBaseBranchesWithDeps({
+        plan,
+        explicitRepoPath: params.repoPath,
+      })
+      : undefined;
 
     return {
       plan,
@@ -1255,6 +1292,7 @@ export const createArchitectGitFlowService = (
       repositories: await preflightPlanRepositoriesWithDeps({
         plan,
         explicitRepoPath: params.repoPath,
+        repositories,
       }),
     };
   };
@@ -1283,24 +1321,15 @@ export const createArchitectGitFlowService = (
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
     assertPlanReadyForFinalization(plan);
-
-    if (shouldSyncTargetBranchBeforeFinish()) {
-      const repositories = resolvePlanProjectRepoPathsWithDeps(plan, params.repoPath, {
-        logContext: 'finalize_sync',
-      });
-      await Promise.all(
-        repositories.map((repository) =>
-          deps.tauri.gitPull({
-            repoPath: repository.repoPath,
-            branch: resolvePlanProjectBaseBranchName(plan, repository.projectId),
-          })
-        )
-      );
-    }
+    const repositories = await syncPlanRepositoriesToBaseBranchesWithDeps({
+      plan,
+      explicitRepoPath: params.repoPath,
+    });
 
     const preflightRepositories = await preflightPlanRepositoriesWithDeps({
       plan,
       explicitRepoPath: params.repoPath,
+      repositories,
     });
 
     if (preflightRepositories.some((repository) => repository.blockingReason)) {

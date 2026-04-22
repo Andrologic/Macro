@@ -140,6 +140,9 @@ export interface TaskExecutionTarget {
   projectId: string;
   branchName: string;
   targetBranchName?: string;
+  // `worktree` tasks run in dedicated task worktrees, while
+  // `repository_root` targets operate directly in the parent repository.
+  executionKind?: 'worktree' | 'repository_root';
   worktreeKey: string;
   repoPath?: string;
   planBranchName?: string;

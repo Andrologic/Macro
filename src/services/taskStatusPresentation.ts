@@ -3,11 +3,13 @@ import type {
   PlanNodeStatus,
   TaskStatus,
 } from '../types';
+import { isPlanFinalizationTaskSource } from './planFinalization';
 
 export type TaskStatusIndicatorState =
   | 'idle_prompt'
   | 'awaiting_response'
   | 'running'
+  | 'plan_finalization'
   | 'in_review'
   | 'completed'
   | 'failed'
@@ -46,8 +48,11 @@ export const resolveRunningTaskIds = ({
 
 export const resolveTaskStatusIndicatorState = (
   status: TaskStatus,
-  isAssistantRunning: boolean
+  isAssistantRunning: boolean,
+  taskSource?: string | null
 ): TaskStatusIndicatorState => {
+  const isPlanFinalizationTask = isPlanFinalizationTaskSource(taskSource);
+
   if (isAssistantRunning) {
     return 'running';
   }
@@ -57,7 +62,7 @@ export const resolveTaskStatusIndicatorState = (
       return 'awaiting_response';
     case 'Pending':
     case 'InProgress':
-      return 'idle_prompt';
+      return isPlanFinalizationTask ? 'plan_finalization' : 'idle_prompt';
     case 'InReview':
       return 'in_review';
     case 'Completed':
@@ -67,7 +72,7 @@ export const resolveTaskStatusIndicatorState = (
     case 'Blocked':
       return 'blocked';
     default:
-      return 'idle_prompt';
+      return isPlanFinalizationTask ? 'plan_finalization' : 'idle_prompt';
   }
 };
 

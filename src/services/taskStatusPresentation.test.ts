@@ -21,6 +21,15 @@ describe('taskStatusPresentation', () => {
     );
   });
 
+  it('uses the dedicated finalization indicator for synthetic plan finalization tasks', () => {
+    expect(resolveTaskStatusIndicatorState('Pending', false, 'plan_finalization')).toBe(
+      'plan_finalization'
+    );
+    expect(resolveTaskStatusIndicatorState('InProgress', false, 'plan_finalization')).toBe(
+      'plan_finalization'
+    );
+  });
+
   it('forces the running state only for the streamed task', () => {
     const runningTaskIds = resolveRunningTaskIds({
       conversations: [

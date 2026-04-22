@@ -71,6 +71,8 @@ const getAwaitingResponseLayoutMetrics = (
 
 const getIconName = (state: TaskStatusIndicatorState) => {
   switch (state) {
+    case 'plan_finalization':
+      return 'git-merge';
     case 'in_review':
       return 'search';
     case 'completed':
