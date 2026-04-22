@@ -27,7 +27,7 @@ import { notify } from '../ui/toastService';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
 import { Button } from '../ui/Button';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
-import { PlanFinalizationTaskPanel } from '../plan/PlanFinalizationTaskPanel';
+import { MergeWorkflowTaskPanel } from '../plan/MergeWorkflowTaskPanel';
 
 interface FileChangesPanelProps {
   className?: string;
@@ -332,6 +332,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
   );
+  const currentMergeWorkflowRuntime = useTaskStore((state) =>
+    selectedTaskId ? state.getMergeWorkflowRuntime(selectedTaskId) : null
+  );
   const selectedTaskWorktreeKey = useTaskStore((state) => {
     if (!selectedTaskId) return '';
     const task = state.tasks.find((candidate) => candidate.id === selectedTaskId);
@@ -373,13 +376,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   } = useFileChangesStore();
   const hasRepositoryScope = Boolean(selectedGroupId || selectedProjectId);
   const isPlanFinalizationTask = isPlanFinalizationTaskSource(currentTask?.task_source);
+  const hasActiveMergeWorkflow = Boolean(currentMergeWorkflowRuntime);
 
   useEffect(() => {
     if (isReadOnlyRemoteMode) {
       resetReviewState();
       return;
     }
-    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask) {
+    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask || hasActiveMergeWorkflow) {
       resetReviewState();
       return;
     }
@@ -392,6 +396,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     isDiffModalOpen,
     loadCurrentChanges,
     hasRepositoryScope,
+    hasActiveMergeWorkflow,
     isPlanFinalizationTask,
     resetReviewState,
     selectedGroupId,
@@ -405,7 +410,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (isReadOnlyRemoteMode) {
       return;
     }
-    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask) {
+    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask || hasActiveMergeWorkflow) {
       return;
     }
     if (isDiffModalOpen) {
@@ -472,6 +477,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     };
   }, [
     hasRepositoryScope,
+    hasActiveMergeWorkflow,
     isCommitting,
     isDiffModalOpen,
     isPlanFinalizationTask,
@@ -732,8 +738,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     );
   }
 
-  if (currentTask && isPlanFinalizationTask) {
-    return <PlanFinalizationTaskPanel task={currentTask} className={className} />;
+  if (currentTask && (isPlanFinalizationTask || currentMergeWorkflowRuntime)) {
+    return <MergeWorkflowTaskPanel task={currentTask} className={className} />;
   }
 
   return (
