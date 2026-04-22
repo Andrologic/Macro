@@ -29,6 +29,7 @@ interface AppBootstrapDependencies {
   initializeTerminal: () => Promise<void>;
   initializeTools: () => Promise<void>;
   initializeProviders: () => Promise<void>;
+  restoreChatSelectionAfterProviderInit: () => Promise<void>;
   initializeShortcuts: () => Promise<void>;
   checkSession: () => Promise<void>;
   getCurrentMode: () => AppMode;
@@ -158,7 +159,14 @@ export const createAppBootstrapController = (
           void (async () => {
             await Promise.all([
               initWithTracking('Tools Store', dependencies.initializeTools, 'low'),
-              initWithTracking('Provider Store', dependencies.initializeProviders, 'low'),
+              (async () => {
+                await initWithTracking('Provider Store', dependencies.initializeProviders, 'low');
+                await initWithTracking(
+                  'Chat Selection Restore',
+                  dependencies.restoreChatSelectionAfterProviderInit,
+                  'low'
+                );
+              })(),
             ]);
 
             if (!dependencies.isPageShuttingDown()) {
@@ -207,6 +215,8 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   initializeTerminal: useTerminalStore.getState().initialize,
   initializeTools: useToolsStore.getState().loadSettings,
   initializeProviders: useProviderStore.getState().initialize,
+  restoreChatSelectionAfterProviderInit:
+    useChatStore.getState().reapplySelectionForCurrentContext,
   initializeShortcuts: useShortcutsStore.getState().initialize,
   checkSession: useAuthStore.getState().checkSession,
   getCurrentMode: () => useAppStore.getState().mode,
