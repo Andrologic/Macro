@@ -5,6 +5,7 @@ import {
   resolveRunningTaskIds,
   resolveTaskStatusIndicatorState,
 } from './taskStatusPresentation';
+import type { MergeWorkflowRuntimeState } from './mergeWorkflow';
 
 describe('taskStatusPresentation', () => {
   it('resolves idle prompt for pending tasks without streaming', () => {
@@ -70,5 +71,41 @@ describe('taskStatusPresentation', () => {
         isAssistantRunning: true,
       })
     ).toBe('running');
+  });
+
+  it('surfaces merge workflow indicator states ahead of the generic task status', () => {
+    const blockedRuntime: MergeWorkflowRuntimeState = {
+      taskId: 'task-1',
+      kind: 'task_completion',
+      phase: 'blocked',
+      taskStatus: 'Blocked',
+      review: null,
+      repositories: [],
+      blockedRepositories: [],
+      message: 'blocked',
+      lastLoadedAt: null,
+    };
+    const failedRuntime: MergeWorkflowRuntimeState = {
+      ...blockedRuntime,
+      phase: 'failed',
+      taskStatus: 'Failed',
+      message: 'failed',
+    };
+    const mergingRuntime: MergeWorkflowRuntimeState = {
+      ...blockedRuntime,
+      phase: 'merging',
+      taskStatus: 'InProgress',
+      message: null,
+    };
+
+    expect(
+      resolveTaskStatusIndicatorState('Blocked', false, 'architect', blockedRuntime)
+    ).toBe('merge_blocked');
+    expect(
+      resolveTaskStatusIndicatorState('Failed', false, 'architect', failedRuntime)
+    ).toBe('merge_failed');
+    expect(
+      resolveTaskStatusIndicatorState('InProgress', false, 'architect', mergingRuntime)
+    ).toBe('merging');
   });
 });

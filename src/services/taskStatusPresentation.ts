@@ -4,12 +4,19 @@ import type {
   TaskStatus,
 } from '../types';
 import { isPlanFinalizationTaskSource } from './planFinalization';
+import {
+  resolveMergeWorkflowIndicatorState,
+  type MergeWorkflowRuntimeState,
+} from './mergeWorkflow';
 
 export type TaskStatusIndicatorState =
   | 'idle_prompt'
   | 'awaiting_response'
   | 'running'
   | 'plan_finalization'
+  | 'merging'
+  | 'merge_blocked'
+  | 'merge_failed'
   | 'in_review'
   | 'completed'
   | 'failed'
@@ -49,12 +56,20 @@ export const resolveRunningTaskIds = ({
 export const resolveTaskStatusIndicatorState = (
   status: TaskStatus,
   isAssistantRunning: boolean,
-  taskSource?: string | null
+  taskSource?: string | null,
+  mergeWorkflowRuntime?: MergeWorkflowRuntimeState | null
 ): TaskStatusIndicatorState => {
   const isPlanFinalizationTask = isPlanFinalizationTaskSource(taskSource);
 
   if (isAssistantRunning) {
     return 'running';
+  }
+
+  const mergeWorkflowIndicatorState = resolveMergeWorkflowIndicatorState(
+    mergeWorkflowRuntime
+  );
+  if (mergeWorkflowIndicatorState) {
+    return mergeWorkflowIndicatorState;
   }
 
   switch (status) {
