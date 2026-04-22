@@ -263,6 +263,9 @@ describe('TaskQueue', () => {
   const getTaskCardFooter = () =>
     document.body.querySelector('[data-task-card-footer="true"]');
 
+  const getTaskCard = () =>
+    document.body.querySelector('[role="button"][tabindex="0"]');
+
   const getTaskContextBadges = () =>
     Array.from(document.body.querySelectorAll('[data-task-context-badge]')).map((badge) => ({
       key: badge.getAttribute('data-task-context-badge'),
@@ -431,14 +434,42 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    const taskCard = document.body.querySelector('[role="button"][tabindex="0"]');
+    const taskCard = getTaskCard();
 
     expect(taskCard?.querySelector('p')).toBeNull();
+    expect(taskCard?.getAttribute('data-task-card-variant')).toBe('compact-draft');
+    expect(taskCard?.className).toContain('h-[96px]');
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
       { key: 'standalone', text: 'Standalone' },
       { key: 'draft', text: 'Draft' },
     ]);
+  });
+
+  it('keeps the default card height for drafts that include a description', async () => {
+    seedTasks([
+      makeTask('draft-standalone-1', 'Pending', {
+        title: 'Draft standalone task',
+        description: 'Describe the feature before kickoff',
+        draft: true,
+        standalone_kind: 'manual_feature',
+        assigned_branch: '',
+        branch_name: '',
+        execution_targets: [],
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const taskCard = getTaskCard();
+    const description = taskCard?.querySelector('p');
+
+    expect(taskCard?.getAttribute('data-task-card-variant')).toBe('default');
+    expect(taskCard?.className).toContain('h-[112px]');
+    expect(description?.textContent).toBe('Describe the feature before kickoff');
   });
 
   it('keeps virtual row keys stable when draft and blocked sections are inserted', async () => {
