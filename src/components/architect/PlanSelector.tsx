@@ -27,7 +27,6 @@ import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { PlanFormModal } from './PlanFormModal';
-import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { cn } from '../../utils/cn';
 import { formatDate } from '../../i18n/format';
 import {
@@ -123,7 +122,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [planToDelete, setPlanToDelete] = useState<ArchitectPlanSummary | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [planReviewTarget, setPlanReviewTarget] = useState<{ planId: string; branchName: string } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const lastEffectIdRef = useRef<string | null | undefined>(undefined);
   const blankConsolidationPromiseRef = useRef<Promise<void> | null>(null);
@@ -164,8 +162,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   );
   const firstReadOnlyProject = scopedReadOnlyProjects[0] ?? null;
   const isReadOnlyOnlyScope = scopedProjectIds.length > 0 && scopedActionableProjectIds.length === 0;
-  const readyPlanSummaries = useTaskStore((state) => state.planSummaries);
-
   const displayedActivePlanTitle = useMemo(() => {
     if (activePlanContext && activePlanContext.id === activePlanId) {
       return getArchitectPlanPrimaryName(activePlanContext);
@@ -854,7 +850,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const missingCount = plan.missingProjectIds?.length ?? 0;
               const expectedCount = plan.expectedProjectIds?.length ?? getArchitectPlanProjectIds(plan).length;
               const availableCount = expectedCount - missingCount;
-              const readyPlan = readyPlanSummaries.find((candidate) => candidate.id === plan.id && candidate.readyForValidation);
               const isCanonicalPlan = isCanonicalArchitectPlan(plan);
               const primaryName = getArchitectPlanPrimaryName(plan);
               const secondaryLabel = getArchitectPlanSecondaryLabel(plan);
@@ -925,29 +920,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                       <span className={cn('text-[10px] px-1.5 py-0.5 rounded border uppercase', statusClass)}>
                         {t(`architect.status.${plan.status}`, plan.status)}
                       </span>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (!readyPlan) return;
-                          setPlanReviewTarget({
-                            planId: readyPlan.id,
-                            branchName: readyPlan.targetBranch,
-                          });
-                        }}
-                        disabled={!readyPlan}
-                        className={cn(
-                          'w-6 h-6 rounded border flex items-center justify-center',
-                          readyPlan
-                            ? 'border-emerald-500/30 hover:bg-emerald-500/10'
-                            : 'border-border/50 opacity-40 cursor-not-allowed'
-                        )}
-                        title={readyPlan
-                          ? t('implement.planReadyForValidation', 'Plan ready for validation')
-                          : t('implement.finalizePlanUnavailable', 'Complete all tasks to review this plan')}
-                      >
-                        <Icon name="git-merge" size={11} className={readyPlan ? 'text-emerald-500' : 'text-muted-foreground'} />
-                      </button>
                       <button
                         type="button"
                         onClick={(event) => {
@@ -1104,18 +1076,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           }}
           isLoading={formLoading}
           error={formError}
-        />
-      )}
-
-      {planReviewTarget && (
-        <PlanReviewModal
-          isOpen
-          branchName={planReviewTarget.branchName}
-          planId={planReviewTarget.planId}
-          onClose={() => setPlanReviewTarget(null)}
-          onFinalized={() => {
-            void loadPlans(false);
-          }}
         />
       )}
 

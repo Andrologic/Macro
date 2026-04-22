@@ -226,7 +226,6 @@ describe('TaskQueue', () => {
       planSummaries: [],
       hasStandaloneTasks: false,
       publishedStandaloneTasks: {},
-      finalizingPlanId: null,
       taskCommandRuns: {},
       missingBaseBranchIssue: null,
       lastError: null,
@@ -380,8 +379,6 @@ describe('TaskQueue', () => {
           taskCount: 1,
           completedTaskCount: 0,
           activeTaskCount: 1,
-          inReviewTaskCount: 0,
-          readyForValidation: false,
         },
       ] as never,
     });
@@ -414,6 +411,50 @@ describe('TaskQueue', () => {
       { key: 'standalone', text: 'Standalone' },
     ]);
     expect(document.body.querySelector('[data-task-context-badge="plan"]')).toBeNull();
+  });
+
+  it('renders the synthetic plan finalization task without the legacy ready-for-validation callout and excludes it from progress', async () => {
+    seedTasks([
+      makeTask('architect-complete-1', 'Completed', {
+        title: 'Architect task',
+        task_source: 'architect',
+        plan_id: 'plan-1',
+        plan_title: 'Checkout refresh',
+        sequence_index: 0,
+      }),
+      makeTask('plan-finalization:plan-1', 'Pending', {
+        title: 'Finalize plan: Checkout refresh',
+        description: 'Merge the plan branch into the configured development branches or archive the plan.',
+        task_source: 'plan_finalization',
+        plan_id: 'plan-1',
+        plan_title: 'Checkout refresh',
+        assigned_branch: 'develop',
+        branch_name: 'develop',
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'develop',
+            targetBranchName: 'develop',
+            executionKind: 'repository_root',
+            worktreeKey: 'plan-finalization:project-1:project-1',
+          },
+        ],
+        sequence_index: 1,
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).not.toContain('Plan ready for validation');
+    expect(document.body.textContent).toContain('1/1');
+    expect(document.body.querySelector('[data-task-context-badge="plan_finalization"]')?.textContent)
+      .toContain('Plan finalization');
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="plan_finalization"]')
+    ).not.toBeNull();
   });
 
   it('keeps the footer visible for standalone draft tasks even without a description', async () => {

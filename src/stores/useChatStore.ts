@@ -79,6 +79,10 @@ import {
 } from "../services/architectToolSurface";
 import { handleArchitectToolCall } from "../services/architectToolRuntime";
 import {
+  canPlanFinalizationTaskReceiveMessages,
+  isPlanFinalizationTaskSource,
+} from "../services/planFinalization";
+import {
   buildToolRiskLevelSystemInstruction,
   DEFAULT_TOOL_RISK_LEVEL,
   evaluateToolSecurity,
@@ -2392,6 +2396,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   ): Promise<ImplementTask> => {
     const taskStore = useTaskStore.getState();
     const task = taskStore.getTaskById(taskId);
+    const isPlanFinalizationTask = isPlanFinalizationTaskSource(task?.task_source);
 
     if (!task) {
       throw buildSendError(`Unknown task: ${taskId}`);
@@ -2420,12 +2425,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (
+      !isPlanFinalizationTask &&
       refreshedTask.status !== "InProgress" &&
       refreshedTask.status !== "InReview"
     ) {
       throw buildSendError(
         useTaskStore.getState().lastError ||
           `Task ${taskId} is not ready to receive a message (current status: ${refreshedTask.status}).`,
+      );
+    }
+
+    if (
+      isPlanFinalizationTask &&
+      !canPlanFinalizationTaskReceiveMessages(refreshedTask.status)
+    ) {
+      throw buildSendError(
+        useTaskStore.getState().lastError ||
+        `Task ${taskId} is already completed.`,
       );
     }
 

@@ -135,7 +135,7 @@ interface FileChangesTaskLike {
   id: string;
   title: string;
   status: TaskStatus;
-  task_source: 'architect' | 'mixed' | 'fallback' | 'empty' | 'standalone';
+  task_source: 'architect' | 'mixed' | 'fallback' | 'empty' | 'standalone' | 'plan_finalization';
   project_id?: string | null;
   assigned_branch: string;
   execution_targets?: TaskExecutionTarget[];
