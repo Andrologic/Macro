@@ -95,7 +95,11 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         }
       );
     } catch (error) {
-      if (!viewState.isBlocked && !viewState.isFailed) {
+      const nextRuntime = useTaskStore.getState().getMergeWorkflowRuntime(task.id);
+      const nextViewState = resolveMergeWorkflowViewState(nextRuntime, {
+        canArchive: isPlanFinalizationTask,
+      });
+      if (!nextViewState.isBlocked && !nextViewState.isFailed) {
         notify.error(toServiceError(error).message);
       }
     }
