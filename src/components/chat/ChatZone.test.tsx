@@ -168,6 +168,7 @@ type TaskState = {
     estimated_changes?: Array<{ operation: string; path: string }>;
     description?: string;
   }>;
+  getTaskById: (taskId: string) => TaskState['tasks'][number] | null;
   startTask: ReturnType<typeof mock>;
 };
 
@@ -271,6 +272,10 @@ const useTaskStore = createStoreHook(() => taskState, (nextState) => {
 
 const translationMock = {
   t: (key: string, fallbackOrOptions?: string | { defaultValue?: string }, maybeOptions?: { defaultValue?: string }) => {
+    const interpolate = (
+      template: string,
+      values?: Record<string, string | number | undefined>
+    ) => template.replace(/\{\{(\w+)\}\}/g, (_match, token) => String(values?.[token] ?? `{{${token}}}`));
     const explicitTranslations: Record<string, string> = {
       'chat.typeMessage': 'Type your message',
       'chat.stop': 'Stop',
@@ -280,7 +285,7 @@ const translationMock = {
       return explicitTranslations[key]!;
     }
     if (typeof fallbackOrOptions === 'string') {
-      return fallbackOrOptions;
+      return interpolate(fallbackOrOptions, maybeOptions as Record<string, string | number | undefined>);
     }
     return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? key;
   },
@@ -529,6 +534,8 @@ const resetState = () => {
 
   taskState = {
     tasks: [],
+    getTaskById: (taskId: string) =>
+      taskState.tasks.find((task) => task.id === taskId) ?? null,
     startTask: mock(async () => undefined),
   };
   composerEditorValue = '';
@@ -699,7 +706,7 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
   });
 
-  it('keeps implement kickoff manual for planned tasks with an empty conversation', async () => {
+  it('uses the bottom composer as the only kickoff input for planned tasks with an empty conversation', async () => {
     appState = {
       ...appState,
       mode: 'Implement',
@@ -735,10 +742,128 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Start execution');
     const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
     expect(composer).not.toBeNull();
-    expect(composer?.disabled).toBe(true);
-    expect(composer?.getAttribute('placeholder')).toBe('Start execution to begin the task conversation');
+    expect(composer?.disabled).toBe(false);
+    expect(composer?.getAttribute('placeholder')).toBe('Optional guidance for this task kickoff');
+    expect(requireContainer().querySelectorAll('textarea')).toHaveLength(1);
     expect(taskState.startTask).not.toHaveBeenCalled();
     expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('routes the first planned task composer send through the kickoff flow', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await act(async () => {
+      composerEditorValue = 'Need to reuse checkout components.';
+      const onTextChange = latestComposerProps?.onTextChange as
+        | ((value: string) => void)
+        | undefined;
+      onTextChange?.(composerEditorValue);
+    });
+
+    const sendButton = requireContainer()
+      .querySelector('span[data-icon="arrow-up"]')
+      ?.closest('button') as HTMLButtonElement | null;
+    expect(sendButton).not.toBeNull();
+    expect(sendButton?.disabled).toBe(false);
+
+    await act(async () => {
+      sendButton?.click();
+    });
+
+    expect(taskState.startTask).toHaveBeenCalledWith('task-1');
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('DEVELOPER NOTES\nNeed to reuse checkout components.'),
+      taskId: 'task-1',
+    });
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer?.value).toBe('');
+  });
+
+  it('reuses the bottom composer text when clicking Start execution', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await act(async () => {
+      composerEditorValue = 'Focus on a minimal diff.';
+      const onTextChange = latestComposerProps?.onTextChange as
+        | ((value: string) => void)
+        | undefined;
+      onTextChange?.(composerEditorValue);
+    });
+
+    const startExecutionButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Start execution')
+    );
+    expect(startExecutionButton).toBeDefined();
+
+    await act(async () => {
+      startExecutionButton?.click();
+    });
+
+    expect(taskState.startTask).toHaveBeenCalledWith('task-1');
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('DEVELOPER NOTES\nFocus on a minimal diff.'),
+      taskId: 'task-1',
+    });
   });
 
   it('skips kickoff UI for standalone tasks with an empty conversation', async () => {
@@ -841,6 +966,111 @@ describe('ChatZone', () => {
       images: [],
     });
     expect(taskState.startTask).not.toHaveBeenCalled();
+  });
+
+  it('shows the focused subproject name instead of a multi-repository count in the kickoff summary', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+      selectedGroupId: 'group-1',
+      selectedProjectId: 'project-2',
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Platform',
+          projects: [
+            { id: 'project-1', name: 'Web' },
+            { id: 'project-2', name: 'API' },
+            { id: 'project-3', name: 'Worker' },
+          ],
+        },
+      ],
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [
+            { projectId: 'project-1' },
+            { projectId: 'project-2' },
+            { projectId: 'project-3' },
+          ],
+          project_ids: ['project-1', 'project-2', 'project-3'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('API');
+    expect(requireContainer().textContent).not.toContain('3 repositories');
+  });
+
+  it('keeps a repository count in the kickoff summary when the scoped task still targets multiple repos', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+      selectedGroupId: 'group-1',
+      selectedProjectId: null,
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Platform',
+          projects: [
+            { id: 'project-1', name: 'Web' },
+            { id: 'project-2', name: 'API' },
+            { id: 'project-3', name: 'Worker' },
+          ],
+        },
+      ],
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [
+            { projectId: 'project-1' },
+            { projectId: 'project-2' },
+            { projectId: 'project-3' },
+          ],
+          project_ids: ['project-1', 'project-2', 'project-3'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('3 repositories');
   });
 
   it('renders the active questionnaire in the footer and hides the standard composer', async () => {
