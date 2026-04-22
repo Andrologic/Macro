@@ -43,6 +43,7 @@ import {
   resolveRunningTaskIds,
   resolveTaskStatusIndicatorState,
 } from '../../services/taskStatusPresentation';
+import type { MergeWorkflowRuntimeState } from '../../services/mergeWorkflow';
 import { Icon, IconName } from '../ui/Icon';
 import { Select } from '../ui/Select';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -186,6 +187,7 @@ const taskContextBadgeToneClassName: Record<TaskContextBadgeTone, string> = {
 
 interface TaskItemProps {
   task: ImplementTask;
+  mergeWorkflowRuntime?: MergeWorkflowRuntimeState | null;
   isSelected: boolean;
   planLabel: string;
   isAssistantRunning: boolean;
@@ -202,6 +204,7 @@ interface TaskItemProps {
 
 const TaskItem: React.FC<TaskItemProps> = ({
   task,
+  mergeWorkflowRuntime,
   isSelected,
   planLabel,
   isAssistantRunning,
@@ -257,7 +260,12 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const status = isAssistantRunning
     ? { color: 'text-amber-500', bgColor: 'bg-amber-500/10' }
     : statusConfig[task.status] || statusConfig.Pending;
-  const indicatorState = resolveTaskStatusIndicatorState(task.status, isAssistantRunning, task.task_source);
+  const indicatorState = resolveTaskStatusIndicatorState(
+    task.status,
+    isAssistantRunning,
+    task.task_source,
+    mergeWorkflowRuntime
+  );
   const lockTooltip = task.is_blocked
     ? t('implement.blockedBy', 'Blocked by: {{tasks}}', {
       tasks: task.blocked_by.join(', '),
@@ -561,6 +569,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     deleteTask,
     reopenTask,
     taskCommandRuns,
+    mergeWorkflowRuntimeByTaskId,
     runTaskCommands,
     cancelTaskCommands,
     missingBaseBranchIssue,
@@ -580,6 +589,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     deleteTask: state.deleteTask,
     reopenTask: state.reopenTask,
     taskCommandRuns: state.taskCommandRuns,
+    mergeWorkflowRuntimeByTaskId: state.mergeWorkflowRuntimeByTaskId,
     runTaskCommands: state.runTaskCommands,
     cancelTaskCommands: state.cancelTaskCommands,
     missingBaseBranchIssue: state.missingBaseBranchIssue,
@@ -790,6 +800,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     task: ImplementTask,
     reviewSummary: ReviewTaskSummary | null
   ): MultiRepoTaskPresentation | null => {
+    const mergeWorkflowRuntime = mergeWorkflowRuntimeByTaskId[task.id] ?? null;
     const repositoryDescriptors = getTaskRepositoryDescriptors(
       task,
       (projectId) => getProjectById(projectId) ?? null
@@ -834,7 +845,39 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     });
     let nextActionLabel = t('implement.taskNextActionStart', 'Next: start implementation');
 
-    if (reviewSummary && task.status === 'InReview') {
+    if (mergeWorkflowRuntime) {
+      progressLabel = t(
+        'implement.taskMergeWorkflowProgress',
+        '{{count}} repositories in merge workflow',
+        {
+          count: Math.max(
+            mergeWorkflowRuntime.repositories.length,
+            repositoryDescriptors.length
+          ),
+        }
+      );
+
+      if (mergeWorkflowRuntime.phase === 'blocked') {
+        nextActionLabel = t(
+          'implement.taskNextActionResolveMergeBlocked',
+          'Next: resolve merge blockers'
+        );
+      } else if (mergeWorkflowRuntime.phase === 'failed') {
+        nextActionLabel = t(
+          'implement.taskNextActionRetryMerge',
+          'Next: retry merge'
+        );
+      } else if (mergeWorkflowRuntime.phase === 'merging') {
+        nextActionLabel = t(
+          'implement.taskNextActionMerging',
+          'Next: merging repositories'
+        );
+      } else {
+        nextActionLabel = isPlanFinalizationTask(task)
+          ? t('implement.taskNextActionMergePlan', 'Next: merge plan')
+          : t('implement.taskNextActionMergeTask', 'Next: merge task branches');
+      }
+    } else if (reviewSummary && task.status === 'InReview') {
       const resolvedCount = reviewSummary.stateCounts.committed + reviewSummary.stateCounts.no_changes;
       progressLabel = t('implement.taskValidationProgress', '{{resolved}}/{{total}} subprojects resolved', {
         resolved: resolvedCount,
@@ -884,7 +927,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       progressLabel,
       nextActionLabel,
     };
-  }, [getProjectById, t]);
+  }, [getProjectById, mergeWorkflowRuntimeByTaskId, t]);
 
   const scopedProjectIds = useMemo(
     () => getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
@@ -1649,6 +1692,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     ) : (
                       <MemoizedTaskItem
                         task={row.task}
+                        mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
                         isSelected={selectedTaskId === row.task.id}
                         planLabel={getTaskPlanLabel(row.task)}
                         isAssistantRunning={runningTaskIds.has(row.task.id)}

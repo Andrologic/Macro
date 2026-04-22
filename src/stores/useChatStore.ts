@@ -2397,6 +2397,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const taskStore = useTaskStore.getState();
     const task = taskStore.getTaskById(taskId);
     const isPlanFinalizationTask = isPlanFinalizationTaskSource(task?.task_source);
+    const activeMergeWorkflow =
+      typeof taskStore.getMergeWorkflowRuntime === "function"
+        ? taskStore.getMergeWorkflowRuntime(taskId)
+        : null;
 
     if (!task) {
       throw buildSendError(`Unknown task: ${taskId}`);
@@ -2406,9 +2410,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return task;
     }
 
-    if (task.status === "Pending") {
+    if (task.status === "Pending" && !activeMergeWorkflow) {
       await taskStore.startTask(taskId);
-    } else if (task.status === "AwaitingResponse" || task.status === "Failed") {
+    } else if (
+      (task.status === "AwaitingResponse" || task.status === "Failed") &&
+      !activeMergeWorkflow
+    ) {
       await taskStore.retryTask(taskId);
     }
 
@@ -2422,6 +2429,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         useTaskStore.getState().lastError ||
           "Task is still in draft mode and cannot receive messages yet.",
       );
+    }
+
+    if (activeMergeWorkflow) {
+      if (refreshedTask.status === "Completed") {
+        throw buildSendError(
+          useTaskStore.getState().lastError ||
+            `Task ${taskId} is already completed.`,
+        );
+      }
+      return refreshedTask;
     }
 
     if (
