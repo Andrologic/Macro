@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
-import { useAppStore } from '../../stores/useAppStore';
+import { useAppStore, type MetadataSyncRepositoryStatus } from '../../stores/useAppStore';
 import { hasUnreadNotifications, useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
 import { toServiceError } from '../../services/contracts/errors';
 import * as tauriIpc from '../../services/tauriIpc';
@@ -42,8 +42,25 @@ interface RepositorySyncResult {
   message: string;
 }
 
+interface FooterMetadataSyncState {
+  state: tauriIpc.MacroSyncState;
+  error: string | null;
+  reason: tauriIpc.MacroSyncReason | null;
+  nextAction: tauriIpc.MacroSyncNextAction | null;
+  conflictFiles: string[];
+  repositories: MetadataSyncRepositoryStatus[];
+}
+
 const ALL_PROJECTS_OPTION = '__all__';
 const DEFAULT_CODE_STATUS: CodeStatusSnapshot = { branch: null, ahead: 0, behind: 0 };
+const DEFAULT_FOOTER_METADATA_SYNC: FooterMetadataSyncState = {
+  state: 'clean',
+  error: null,
+  reason: null,
+  nextAction: null,
+  conflictFiles: [],
+  repositories: [],
+};
 
 const formatGitOutput = (output: string | null | undefined, t: TranslateFn): string => {
   const normalized = (output || '').trim();
@@ -79,31 +96,22 @@ export const Footer: React.FC = () => {
     selectedGroupId,
     selectedProjectId,
     projectGroups,
-    switchProjectContext,
-    metadataSyncState,
-    metadataSyncError,
-    metadataSyncReason,
-    metadataSyncNextAction,
-    metadataConflictFiles,
-    metadataSyncRepositories,
   } = useAppStore(useShallow((state) => ({
     selectedGroupId: state.selectedGroupId,
     selectedProjectId: state.selectedProjectId,
     projectGroups: state.projectGroups,
-    switchProjectContext: state.switchProjectContext,
-    metadataSyncState: state.metadataSyncState,
-    metadataSyncError: state.metadataSyncError,
-    metadataSyncReason: state.metadataSyncReason,
-    metadataSyncNextAction: state.metadataSyncNextAction,
-    metadataConflictFiles: state.metadataConflictFiles,
-    metadataSyncRepositories: state.metadataSyncRepositories,
   })));
   const notificationItems = useNotificationCenterStore((state) => state.items);
   const isNotificationCenterOpen = useNotificationCenterStore((state) => state.isCenterOpen);
   const setNotificationCenterOpen = useNotificationCenterStore((state) => state.setCenterOpen);
 
+  const [gitScopeProjectId, setGitScopeProjectId] = useState<string | null>(null);
   const [codeStatus, setCodeStatus] = useState(DEFAULT_CODE_STATUS);
+  const [focusedProjectBranch, setFocusedProjectBranch] = useState<string | null>(null);
   const [macroSnapshot, setMacroSnapshot] = useState<tauriIpc.MacroBranchSyncDto | null>(null);
+  const [footerMetadataSync, setFooterMetadataSync] = useState<FooterMetadataSyncState>(
+    DEFAULT_FOOTER_METADATA_SYNC
+  );
   const [syncAction, setSyncAction] = useState<FooterSyncAction | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showConflictModal, setShowConflictModal] = useState(false);
@@ -112,33 +120,67 @@ export const Footer: React.FC = () => {
   const notificationCenterButtonRef = useRef<HTMLButtonElement>(null);
   const lastConflictToastAtRef = useRef(0);
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
+  const footerMetadataSyncRef = useRef(footerMetadataSync);
 
   const selectedGlobalProject = useMemo(
     () => getGlobalProjectById(projectGroups, selectedGroupId),
     [projectGroups, selectedGroupId]
   );
+  const allProjectsById = useMemo(
+    () =>
+      new Map(
+        projectGroups.flatMap((group) =>
+          group.projects.map((project) => [project.id, project] as const)
+        )
+      ),
+    [projectGroups]
+  );
   const focusProjects = useMemo(
     () => getSubProjectsForGroup(projectGroups, selectedGroupId),
     [projectGroups, selectedGroupId]
   );
+  const focusedProject = useMemo(
+    () => (selectedProjectId ? allProjectsById.get(selectedProjectId) ?? null : null),
+    [allProjectsById, selectedProjectId]
+  );
   const scopeProjects = useMemo<ScopedProject[]>(
-    () => (selectedProjectId ? focusProjects.filter((project) => project.id === selectedProjectId) : focusProjects),
-    [focusProjects, selectedProjectId]
+    () => (gitScopeProjectId ? focusProjects.filter((project) => project.id === gitScopeProjectId) : focusProjects),
+    [focusProjects, gitScopeProjectId]
   );
   const selectedProjectLabel = useMemo(
-    () => (selectedProjectId
-      ? focusProjects.find((project) => project.id === selectedProjectId)?.name ?? ''
+    () => (gitScopeProjectId
+      ? focusProjects.find((project) => project.id === gitScopeProjectId)?.name ?? ''
       : t('footer.scope.allProjects', 'Tout le projet')),
-    [focusProjects, selectedProjectId, t]
+    [focusProjects, gitScopeProjectId, t]
   );
+  const setFooterMetadataSyncStatus = useCallback((params: {
+    state: tauriIpc.MacroSyncState;
+    error?: string | null;
+    reason?: tauriIpc.MacroSyncReason | null;
+    nextAction?: tauriIpc.MacroSyncNextAction | null;
+    conflictFiles?: string[];
+    repositories?: MetadataSyncRepositoryStatus[];
+  }) => {
+    setFooterMetadataSync({
+      state: params.state,
+      error: params.error ?? null,
+      reason: params.reason ?? null,
+      nextAction: params.nextAction ?? null,
+      conflictFiles: params.state === 'conflict' ? (params.conflictFiles ?? []) : [],
+      repositories: params.repositories ?? [],
+    });
+  }, []);
   const scopedMacroSyncService = useMemo(
     () => createMacroSyncService({
       tauriIpc,
-      getAppState: () => useAppStore.getState(),
+      getAppState: () => ({
+        ...useAppStore.getState(),
+        setMetadataSyncStatus: setFooterMetadataSyncStatus,
+      }),
       toServiceError,
       resolveTargets: async () => scopeProjects.map((project) => ({ repoPath: project.path, projectId: project.id })),
     }),
-    [scopeProjects]
+    [scopeProjects, setFooterMetadataSyncStatus]
   );
 
   const totalBehind = codeStatus.behind + (macroSnapshot?.behind ?? 0);
@@ -157,6 +199,21 @@ export const Footer: React.FC = () => {
     lastConflictToastAtRef.current = Date.now();
   }, [t]);
 
+  useEffect(() => {
+    setGitScopeProjectId(null);
+  }, [selectedGroupId]);
+
+  useEffect(() => {
+    if (!gitScopeProjectId) return;
+    if (!focusProjects.some((project) => project.id === gitScopeProjectId)) {
+      setGitScopeProjectId(null);
+    }
+  }, [focusProjects, gitScopeProjectId]);
+
+  useEffect(() => {
+    footerMetadataSyncRef.current = footerMetadataSync;
+  }, [footerMetadataSync]);
+
   const refreshCodeStatus = useCallback(async () => {
     if (!isTauriRuntime || scopeProjects.length === 0) {
       setCodeStatus(DEFAULT_CODE_STATUS);
@@ -174,24 +231,40 @@ export const Footer: React.FC = () => {
     }));
 
     setCodeStatus({
-      branch: selectedProjectId ? (statuses[0]?.branch || detachedLabel) : null,
+      branch: gitScopeProjectId ? (statuses[0]?.branch || detachedLabel) : null,
       ahead: statuses.reduce((sum, status) => sum + status.ahead, 0),
       behind: statuses.reduce((sum, status) => sum + status.behind, 0),
     });
-  }, [isTauriRuntime, scopeProjects, selectedProjectId, t]);
+  }, [gitScopeProjectId, isTauriRuntime, scopeProjects, t]);
+
+  const refreshFocusedProjectBranch = useCallback(async () => {
+    if (!isTauriRuntime || !focusedProject?.path) {
+      setFocusedProjectBranch(null);
+      return;
+    }
+
+    const unavailableLabel = t('footer.sync.branchUnavailable', 'unavailable');
+    const detachedLabel = t('footer.sync.branchDetached', 'detached');
+    try {
+      const status = await tauriIpc.gitStatus(focusedProject.path);
+      setFocusedProjectBranch(status.branch || detachedLabel);
+    } catch {
+      setFocusedProjectBranch(unavailableLabel);
+    }
+  }, [focusedProject?.path, isTauriRuntime, t]);
 
   const refreshMacroStatus = useCallback(async (ensure = false) => {
     if (!isTauriRuntime) {
       setMacroSnapshot(null);
+      setFooterMetadataSync(DEFAULT_FOOTER_METADATA_SYNC);
       return null;
     }
     const result = await scopedMacroSyncService.refreshMacroSyncStatus({ ensure });
     if (result) {
       setMacroSnapshot(result);
-      presentConflictIfNeeded(result, 'refresh');
     }
     return result;
-  }, [isTauriRuntime, presentConflictIfNeeded, scopedMacroSyncService]);
+  }, [isTauriRuntime, scopedMacroSyncService]);
 
   const refreshFooterStatus = useCallback(async (options?: { ensureMacro?: boolean; showBusy?: boolean }) => {
     if (refreshRef.current) return refreshRef.current;
@@ -214,8 +287,8 @@ export const Footer: React.FC = () => {
   }, [refreshFooterStatus]);
 
   useEffect(() => {
-    if (metadataSyncState === 'conflict') setShowConflictModal(true);
-  }, [metadataSyncState]);
+    void refreshFocusedProjectBranch();
+  }, [refreshFocusedProjectBranch]);
 
   const runCodeAction = useCallback(async (action: FooterSyncAction): Promise<RepositorySyncResult[]> => {
     const results: RepositorySyncResult[] = [];
@@ -353,29 +426,29 @@ export const Footer: React.FC = () => {
   }, [describeMacroResultForToast, handleCommitMacroMetadata, isTauriRuntime, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, scopeProjects.length, scopedMacroSyncService, syncAction, t]);
 
   const macroConflictEntries = useMemo<ConflictResolutionEntry[]>(() => {
-    const repositories = metadataSyncRepositories.length > 0 ? metadataSyncRepositories : scopeProjects.map((project) => ({
+    const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories : scopeProjects.map((project) => ({
       repoPath: project.path,
       projectId: project.id,
       worktreePath: macroSnapshot?.worktree_path || null,
-      state: metadataSyncState,
-      error: metadataSyncError,
-      reason: metadataSyncReason,
-      nextAction: metadataSyncNextAction,
-      conflictFiles: metadataConflictFiles,
+      state: footerMetadataSync.state,
+      error: footerMetadataSync.error,
+      reason: footerMetadataSync.reason,
+      nextAction: footerMetadataSync.nextAction,
+      conflictFiles: footerMetadataSync.conflictFiles,
     }));
     return toMacroConflictResolutionEntries(repositories);
-  }, [macroSnapshot, metadataConflictFiles, metadataSyncError, metadataSyncNextAction, metadataSyncReason, metadataSyncRepositories, metadataSyncState, scopeProjects]);
+  }, [footerMetadataSync, macroSnapshot, scopeProjects]);
 
   const openAiConflictAssistant = async () => {
-    const repositories = metadataSyncRepositories.length > 0 ? metadataSyncRepositories : scopeProjects.map((project) => ({
+    const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories : scopeProjects.map((project) => ({
       repoPath: project.path,
       projectId: project.id,
       worktreePath: macroSnapshot?.worktree_path || null,
-      state: metadataSyncState,
-      error: metadataSyncError,
-      reason: metadataSyncReason,
-      nextAction: metadataSyncNextAction,
-      conflictFiles: metadataConflictFiles,
+      state: footerMetadataSync.state,
+      error: footerMetadataSync.error,
+      reason: footerMetadataSync.reason,
+      nextAction: footerMetadataSync.nextAction,
+      conflictFiles: footerMetadataSync.conflictFiles,
     }));
     try {
       await openConflictAssistant(buildMacroConflictAssistantPrompt({ repositories }));
@@ -395,7 +468,7 @@ export const Footer: React.FC = () => {
       return;
     }
     await refreshFooterStatus({ ensureMacro: true, showBusy: true });
-    if (useAppStore.getState().metadataSyncState !== 'conflict') setShowConflictModal(false);
+    if (footerMetadataSyncRef.current.state !== 'conflict') setShowConflictModal(false);
   };
 
   return (
@@ -437,8 +510,10 @@ export const Footer: React.FC = () => {
                     </span>
                     <select
                       className="col-start-1 row-start-1 h-6 min-w-0 rounded border border-border bg-card px-2 pr-6 text-[11px] text-foreground"
-                      value={selectedProjectId ?? ALL_PROJECTS_OPTION}
-                      onChange={(event) => void switchProjectContext(event.target.value === ALL_PROJECTS_OPTION ? null : event.target.value)}
+                      value={gitScopeProjectId ?? ALL_PROJECTS_OPTION}
+                      onChange={(event) => setGitScopeProjectId(
+                        event.target.value === ALL_PROJECTS_OPTION ? null : event.target.value
+                      )}
                     >
                       <option value={ALL_PROJECTS_OPTION}>{t('footer.scope.allProjects', 'Tout le projet')}</option>
                       {focusProjects.map((project) => (
@@ -447,10 +522,10 @@ export const Footer: React.FC = () => {
                     </select>
                   </div>
                 )}
-                {selectedProjectId && codeStatus.branch && (
-                  <span className="flex min-w-0 max-w-[10rem] items-center gap-1.5" title={codeStatus.branch}>
+                {selectedProjectId && focusedProjectBranch && (
+                  <span className="flex min-w-0 max-w-[10rem] items-center gap-1.5" title={focusedProjectBranch}>
                     <Icon name="git-branch" size={12} className="shrink-0 text-blue-400" />
-                    <span className="truncate">{codeStatus.branch}</span>
+                    <span className="truncate">{focusedProjectBranch}</span>
                   </span>
                 )}
                 <Button
@@ -485,7 +560,7 @@ export const Footer: React.FC = () => {
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
-            {metadataSyncState === 'conflict' && (
+            {footerMetadataSync.state === 'conflict' && (
               <Button size="sm" variant="error" className="h-6 px-2 text-[11px]" onClick={() => setShowConflictModal(true)}>
                 {t('footer.sync.resolve', 'Resolve')}
               </Button>
@@ -515,7 +590,7 @@ export const Footer: React.FC = () => {
               title={t('footer.sync.macroConflictTitle', '@macro sync conflict')}
               description={t('footer.sync.macroConflictDescription', 'Resolve the reported metadata blockers, then retry the same sync step.')}
               repositories={macroConflictEntries}
-              error={metadataSyncError}
+              error={footerMetadataSync.error}
               retryLabel={t('footer.sync.retrySync', 'Retry sync')}
               retryDisabled={Boolean(syncAction)}
               retryLoading={Boolean(syncAction) || isRefreshing}
