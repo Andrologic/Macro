@@ -10,6 +10,7 @@ describe('appBootstrap', () => {
   let initializeChat: ReturnType<typeof mock>;
   let initializeTools: ReturnType<typeof mock>;
   let initializeProviders: ReturnType<typeof mock>;
+  let restoreChatSelectionAfterProviderInit: ReturnType<typeof mock>;
   let initializeShortcuts: ReturnType<typeof mock>;
   let checkSession: ReturnType<typeof mock>;
   let preloadModeComponents: ReturnType<typeof mock>;
@@ -35,6 +36,9 @@ describe('appBootstrap', () => {
     initializeProviders = mock(async () => {
       callOrder.push('providers');
     });
+    restoreChatSelectionAfterProviderInit = mock(async () => {
+      callOrder.push('restore-chat-selection');
+    });
     initializeShortcuts = mock(async () => {
       callOrder.push('shortcuts');
     });
@@ -54,6 +58,7 @@ describe('appBootstrap', () => {
       initializeTerminal,
       initializeTools,
       initializeProviders,
+      restoreChatSelectionAfterProviderInit,
       initializeShortcuts,
       checkSession,
       getCurrentMode: () => 'Chat',
@@ -97,6 +102,7 @@ describe('appBootstrap', () => {
 
     expect(initializeTools.mock.calls.length).toBe(1);
     expect(initializeProviders.mock.calls.length).toBe(1);
+    expect(restoreChatSelectionAfterProviderInit.mock.calls.length).toBe(1);
     expect(controller.getSnapshot().low).toBe(true);
   });
 });

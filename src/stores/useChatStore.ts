@@ -426,16 +426,31 @@ interface PersistedAISelection {
   updatedAt: string;
 }
 
+interface PersistedAIProviderSelection {
+  modelId: string;
+  reasoningEffort?: ReasoningEffort | null;
+  updatedAt: string;
+}
+
 interface PersistedAIContextSelections {
-  version: 1;
+  version: 2;
   modeSelections: Partial<Record<AISelectionModeKey, PersistedAISelection>>;
   conversationSelections: Record<string, PersistedAISelection>;
+  providerSelectionsByConversationId: Record<
+    string,
+    Record<string, PersistedAIProviderSelection>
+  >;
+  providerSelectionsByMode: Partial<
+    Record<AISelectionModeKey, Record<string, PersistedAIProviderSelection>>
+  >;
 }
 
 const EMPTY_AI_CONTEXT_SELECTIONS: PersistedAIContextSelections = {
-  version: 1,
+  version: 2,
   modeSelections: {},
   conversationSelections: {},
+  providerSelectionsByConversationId: {},
+  providerSelectionsByMode: {},
 };
 
 const getSelectionModeKey = (mode: AppMode): AISelectionModeKey => {
@@ -489,6 +504,55 @@ const normalizePersistedSelection = (
   };
 };
 
+const normalizePersistedProviderSelection = (
+  value: unknown,
+): PersistedAIProviderSelection | null => {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as {
+    modelId?: unknown;
+    reasoningEffort?: unknown;
+    updatedAt?: unknown;
+  };
+
+  if (typeof candidate.modelId !== "string" || !candidate.modelId.trim()) {
+    return null;
+  }
+
+  return {
+    modelId: candidate.modelId,
+    reasoningEffort:
+      candidate.reasoningEffort === null ||
+      typeof candidate.reasoningEffort === "string"
+        ? ((candidate.reasoningEffort as ReasoningEffort | null | undefined) ??
+          null)
+        : null,
+    updatedAt:
+      typeof candidate.updatedAt === "string" &&
+      candidate.updatedAt.trim().length > 0
+        ? candidate.updatedAt
+        : new Date().toISOString(),
+  };
+};
+
+const normalizePersistedProviderSelectionMap = (
+  value: unknown,
+): Record<string, PersistedAIProviderSelection> => {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([providerId, selection]) => [
+        providerId,
+        normalizePersistedProviderSelection(selection),
+      ])
+      .filter((entry): entry is [string, PersistedAIProviderSelection] =>
+        Boolean(entry[1]),
+      ),
+  );
+};
+
 const normalizeAIContextSelections = (
   value: unknown,
 ): PersistedAIContextSelections => {
@@ -500,6 +564,8 @@ const normalizeAIContextSelections = (
     version?: unknown;
     modeSelections?: unknown;
     conversationSelections?: unknown;
+    providerSelectionsByConversationId?: unknown;
+    providerSelectionsByMode?: unknown;
   };
 
   const modeSelections: Partial<
@@ -536,10 +602,53 @@ const normalizeAIContextSelections = (
     }
   }
 
+  const providerSelectionsByConversationId: Record<
+    string,
+    Record<string, PersistedAIProviderSelection>
+  > = {};
+  if (
+    raw.providerSelectionsByConversationId &&
+    typeof raw.providerSelectionsByConversationId === "object"
+  ) {
+    for (const [conversationId, selectionMap] of Object.entries(
+      raw.providerSelectionsByConversationId as Record<string, unknown>,
+    )) {
+      const normalizedSelectionMap =
+        normalizePersistedProviderSelectionMap(selectionMap);
+      if (Object.keys(normalizedSelectionMap).length > 0) {
+        providerSelectionsByConversationId[conversationId] =
+          normalizedSelectionMap;
+      }
+    }
+  }
+
+  const providerSelectionsByMode: Partial<
+    Record<AISelectionModeKey, Record<string, PersistedAIProviderSelection>>
+  > = {};
+  if (
+    raw.providerSelectionsByMode &&
+    typeof raw.providerSelectionsByMode === "object"
+  ) {
+    const rawModeSelections = raw.providerSelectionsByMode as Record<
+      string,
+      unknown
+    >;
+    for (const key of ["Chat", "Architect", "Implement"] as AISelectionModeKey[]) {
+      const normalizedSelectionMap = normalizePersistedProviderSelectionMap(
+        rawModeSelections[key],
+      );
+      if (Object.keys(normalizedSelectionMap).length > 0) {
+        providerSelectionsByMode[key] = normalizedSelectionMap;
+      }
+    }
+  }
+
   return {
-    version: raw.version === 1 ? 1 : 1,
+    version: 2,
     modeSelections,
     conversationSelections,
+    providerSelectionsByConversationId,
+    providerSelectionsByMode,
   };
 };
 
@@ -720,7 +829,7 @@ interface ChatStore {
   appendToLastMessage: (token: string) => void;
   appendToMessage: (messageId: string, tokenChunk: string) => void;
   clearMessages: () => void;
-  selectConversation: (conversationId: string) => void;
+  selectConversation: (conversationId: string) => Promise<boolean>;
   createConversation: (
     title: string,
     taskId: string | null,
@@ -740,6 +849,7 @@ interface ChatStore {
     createdConversation: boolean;
   }>;
   ensureConversationForCurrentMode: () => Promise<string | null>;
+  reapplySelectionForCurrentContext: () => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
   deleteConversation: (
     conversationId: string,
@@ -1248,6 +1358,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
   let hydrationPromise: Promise<void> | null = null;
   let awaitingResponseReconciliationScheduled = false;
+  let suppressedSelectionPersistenceCount = 0;
   const pendingArchitectConversationIdsByPlanKey = new Map<string, string>();
   const pendingToolApprovalResolvers = new Map<
     string,
@@ -1423,6 +1534,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
     void savePreference(PREF_KEYS.AI_CONTEXT_SELECTIONS, aiSelections);
   };
 
+  const withSuppressedSelectionPersistence = async <T>(
+    run: () => Promise<T> | T,
+  ): Promise<T> => {
+    suppressedSelectionPersistenceCount += 1;
+    try {
+      return await run();
+    } finally {
+      suppressedSelectionPersistenceCount = Math.max(
+        0,
+        suppressedSelectionPersistenceCount - 1,
+      );
+    }
+  };
+
   const getCurrentSelection = (): PersistedAISelection | null => {
     const providerState = useProviderStore.getState();
     if (!providerState.selectedProviderId || !providerState.selectedModelId) {
@@ -1434,6 +1559,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
       modelId: providerState.selectedModelId,
       reasoningEffort: providerState.selectedReasoningEffort,
       updatedAt: new Date().toISOString(),
+    };
+  };
+
+  const toPersistedProviderSelection = (
+    selection: PersistedAISelection,
+  ): PersistedAIProviderSelection => ({
+    modelId: selection.modelId!,
+    reasoningEffort: selection.reasoningEffort ?? null,
+    updatedAt: selection.updatedAt,
+  });
+
+  const toPersistedSelectionFromProvider = (
+    providerId: string,
+    selection: PersistedAIProviderSelection | null,
+  ): PersistedAISelection | null => {
+    if (!selection) {
+      return null;
+    }
+
+    return {
+      providerId,
+      modelId: selection.modelId,
+      reasoningEffort: selection.reasoningEffort ?? null,
+      updatedAt: selection.updatedAt,
     };
   };
 
@@ -1452,26 +1601,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     return false;
-  };
-
-  const hasProviderCredentials = (providerId: string): boolean => {
-    const provider = useProviderStore
-      .getState()
-      .providerConfigs.find((candidate) => candidate.id === providerId);
-    if (!provider || !provider.isEnabled) return false;
-    return providerHasCredentials(provider);
-  };
-
-  const hasProviderRuntimeCredentials = (providerId: string): boolean => {
-    const provider = useProviderStore
-      .getState()
-      .providerConfigs.find((candidate) => candidate.id === providerId);
-    if (!provider || !provider.isEnabled) return false;
-    return (
-      provider.isLocal ||
-      !!provider.apiKey?.trim() ||
-      providerHasAuthSession(provider)
-    );
   };
 
   const resolveConversationMetadataProviderContext = async (params: {
@@ -1502,17 +1631,161 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
-  const isSelectionUsable = (
+  const getConversationProviderSelection = (
+    conversationId: string | null,
+    providerId: string,
+  ): PersistedAISelection | null => {
+    if (!conversationId) {
+      return null;
+    }
+
+    return toPersistedSelectionFromProvider(
+      providerId,
+      aiSelections.providerSelectionsByConversationId[conversationId]?.[
+        providerId
+      ] ?? null,
+    );
+  };
+
+  const getModeProviderSelection = (
+    mode: AppMode,
+    providerId: string,
+  ): PersistedAISelection | null =>
+    toPersistedSelectionFromProvider(
+      providerId,
+      aiSelections.providerSelectionsByMode[getSelectionModeKey(mode)]?.[
+        providerId
+      ] ?? null,
+    );
+
+  const cloneAiSelections = (
+    source: PersistedAIContextSelections = aiSelections,
+  ): PersistedAIContextSelections => ({
+    version: source.version,
+    modeSelections: { ...source.modeSelections },
+    conversationSelections: { ...source.conversationSelections },
+    providerSelectionsByConversationId: Object.fromEntries(
+      Object.entries(source.providerSelectionsByConversationId).map(
+        ([conversationId, selectionMap]) => [
+          conversationId,
+          { ...selectionMap },
+        ],
+      ),
+    ),
+    providerSelectionsByMode: Object.fromEntries(
+      Object.entries(source.providerSelectionsByMode).map(
+        ([modeKey, selectionMap]) => [modeKey, { ...selectionMap }],
+      ),
+    ) as PersistedAIContextSelections["providerSelectionsByMode"],
+  });
+
+  const commitAiSelections = (nextSelections: PersistedAIContextSelections) => {
+    aiSelections = nextSelections;
+    persistAiSelections();
+  };
+
+  const upsertSelectionForContext = (
+    target: PersistedAIContextSelections,
+    mode: AppMode,
+    conversationId: string | null,
     selection: PersistedAISelection | null,
   ): boolean => {
-    if (!selection?.providerId || !selection.modelId) return false;
-    if (!hasProviderCredentials(selection.providerId)) return false;
+    if (!selection?.providerId || !selection.modelId) {
+      return false;
+    }
 
-    const providerState = useProviderStore.getState();
-    const models = providerState.modelsByProvider[selection.providerId] || [];
-    return models.some(
-      (model) => model.id === selection.modelId && model.isEnabled !== false,
-    );
+    const providerId = selection.providerId;
+    const modeKey = getSelectionModeKey(mode);
+    target.modeSelections[modeKey] = selection;
+    target.providerSelectionsByMode[modeKey] = {
+      ...(target.providerSelectionsByMode[modeKey] ?? {}),
+      [providerId]: toPersistedProviderSelection(selection),
+    };
+
+    if (conversationId) {
+      target.conversationSelections[conversationId] = selection;
+      target.providerSelectionsByConversationId[conversationId] = {
+        ...(target.providerSelectionsByConversationId[conversationId] ?? {}),
+        [providerId]: toPersistedProviderSelection(selection),
+      };
+    }
+
+    return true;
+  };
+
+  const removeConversationSelectionInTarget = (
+    target: PersistedAIContextSelections,
+    conversationId: string,
+  ): boolean => {
+    if (!target.conversationSelections[conversationId]) {
+      return false;
+    }
+
+    delete target.conversationSelections[conversationId];
+    return true;
+  };
+
+  const removeConversationProviderSelectionInTarget = (
+    target: PersistedAIContextSelections,
+    conversationId: string,
+    providerId: string,
+  ): boolean => {
+    const conversationSelections =
+      target.providerSelectionsByConversationId[conversationId];
+    if (!conversationSelections?.[providerId]) {
+      return false;
+    }
+
+    delete conversationSelections[providerId];
+    if (Object.keys(conversationSelections).length === 0) {
+      delete target.providerSelectionsByConversationId[conversationId];
+    }
+    return true;
+  };
+
+  const removeConversationSelectionDataInTarget = (
+    target: PersistedAIContextSelections,
+    conversationId: string,
+  ): boolean => {
+    const removedConversationSelection =
+      removeConversationSelectionInTarget(target, conversationId);
+    const hadProviderSelections =
+      !!target.providerSelectionsByConversationId[conversationId];
+    if (hadProviderSelections) {
+      delete target.providerSelectionsByConversationId[conversationId];
+    }
+    return removedConversationSelection || hadProviderSelections;
+  };
+
+  const removeModeSelectionInTarget = (
+    target: PersistedAIContextSelections,
+    mode: AppMode,
+  ): boolean => {
+    const modeKey = getSelectionModeKey(mode);
+    if (!target.modeSelections[modeKey]) {
+      return false;
+    }
+
+    delete target.modeSelections[modeKey];
+    return true;
+  };
+
+  const removeModeProviderSelectionInTarget = (
+    target: PersistedAIContextSelections,
+    mode: AppMode,
+    providerId: string,
+  ): boolean => {
+    const modeKey = getSelectionModeKey(mode);
+    const modeSelections = target.providerSelectionsByMode[modeKey];
+    if (!modeSelections?.[providerId]) {
+      return false;
+    }
+
+    delete modeSelections[providerId];
+    if (Object.keys(modeSelections).length === 0) {
+      delete target.providerSelectionsByMode[modeKey];
+    }
+    return true;
   };
 
   const persistSelectionForContext = (
@@ -1522,158 +1795,375 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const selection = getCurrentSelection();
     if (!selection) return;
 
-    const modeKey = getSelectionModeKey(mode);
-    aiSelections = {
-      ...aiSelections,
-      modeSelections: {
-        ...aiSelections.modeSelections,
-        [modeKey]: selection,
-      },
-      conversationSelections: conversationId
-        ? {
-            ...aiSelections.conversationSelections,
-            [conversationId]: selection,
-          }
-        : aiSelections.conversationSelections,
-    };
-    persistAiSelections();
+    const nextSelections = cloneAiSelections();
+    if (!upsertSelectionForContext(nextSelections, mode, conversationId, selection)) {
+      return;
+    }
+
+    commitAiSelections(nextSelections);
   };
 
-  const removeConversationSelection = (conversationId: string) => {
-    if (!aiSelections.conversationSelections[conversationId]) return;
-    const nextConversationSelections = {
-      ...aiSelections.conversationSelections,
-    };
-    delete nextConversationSelections[conversationId];
-    aiSelections = {
-      ...aiSelections,
-      conversationSelections: nextConversationSelections,
-    };
-    persistAiSelections();
-  };
-
-  const applySelection = async (
-    selection: PersistedAISelection | null,
-  ): Promise<boolean> => {
-    if (!selection?.providerId || !selection.modelId) {
-      return false;
-    }
-
-    const providerStore = useProviderStore.getState();
-    const provider = providerStore.providerConfigs.find(
-      (candidate) => candidate.id === selection.providerId,
-    );
-    if (!provider || !provider.isEnabled) {
-      return false;
-    }
-    if (!providerHasCredentials(provider)) {
-      return false;
-    }
-
-    useProviderStore.setState({
-      selectedProviderId: selection.providerId,
-      selectedModelId: selection.modelId,
-      selectedReasoningEffort: selection.reasoningEffort ?? null,
-    });
-
-    let loadedModels = await providerStore.loadProviderModels(
-      selection.providerId,
-    );
-    let modelExists = loadedModels.some(
-      (model) => model.id === selection.modelId && model.isEnabled !== false,
-    );
-
-    if (!modelExists && hasProviderRuntimeCredentials(selection.providerId)) {
-      loadedModels = await providerStore.scanModelsForProvider(
-        selection.providerId,
-      );
-      modelExists = loadedModels.some(
-        (model) => model.id === selection.modelId && model.isEnabled !== false,
-      );
-    }
-
-    if (!modelExists) {
-      return false;
-    }
-
-    useProviderStore.getState().selectModel(selection.modelId);
-    useProviderStore
-      .getState()
-      .selectReasoningEffort(selection.reasoningEffort ?? null);
-    return true;
-  };
-
-  const applyFallbackSelection = async (): Promise<boolean> => {
-    const providerStore = useProviderStore.getState();
-    const candidateProviders = providerStore.providerConfigs.filter(
-      (provider) => providerHasCredentials(provider),
-    );
-
-    for (const provider of candidateProviders) {
-      providerStore.selectProvider(provider.id);
-      const models = await providerStore.loadProviderModels(provider.id);
-      const firstEnabledModel = models.find(
-        (model) => model.isEnabled !== false,
-      );
-      if (firstEnabledModel) {
-        useProviderStore.getState().selectModel(firstEnabledModel.id);
-        return true;
-      }
-      if (!hasProviderRuntimeCredentials(provider.id)) {
-        continue;
-      }
-      const scannedModels = await providerStore.scanModelsForProvider(
-        provider.id,
-      );
-      const firstEnabledScannedModel = scannedModels.find(
-        (model) => model.isEnabled !== false,
-      );
-      if (firstEnabledScannedModel) {
-        useProviderStore.getState().selectModel(firstEnabledScannedModel.id);
-        return true;
-      }
-    }
-
-    return false;
-  };
-
-  const applySelectionForContext = async (
+  const persistSelectionForConversationSwitch = (
     mode: AppMode,
-    conversationId: string | null,
+    previousConversationId: string | null,
+    nextConversationId: string | null,
   ) => {
+    if (!previousConversationId || previousConversationId === nextConversationId) {
+      return;
+    }
+    persistSelectionForContext(mode, previousConversationId);
+  };
+
+  const removeConversationSelectionData = (conversationId: string) => {
+    const nextSelections = cloneAiSelections();
+    if (!removeConversationSelectionDataInTarget(nextSelections, conversationId)) {
+      return;
+    }
+
+    commitAiSelections(nextSelections);
+  };
+
+  type AiSelectionResolutionStep =
+    | {
+        kind: "candidate";
+        selection: PersistedAISelection;
+        invalidate: (target: PersistedAIContextSelections) => boolean;
+      }
+    | { kind: "provider_fallback"; providerId: string }
+    | { kind: "global_fallback"; excludedProviderIds: string[] };
+
+  const buildAiSelectionRestorePlan = (params: {
+    mode: AppMode;
+    conversationId: string | null;
+    preferredProviderId?: string | null;
+    currentSelection: PersistedAISelection | null;
+  }): AiSelectionResolutionStep[] => {
+    const { mode, conversationId, preferredProviderId, currentSelection } =
+      params;
+    const steps: AiSelectionResolutionStep[] = [];
+    const seenSelectionKeys = new Set<string>();
+    const seenFallbackProviders = new Set<string>();
     const modeKey = getSelectionModeKey(mode);
     const conversationSelection = conversationId
-      ? aiSelections.conversationSelections[conversationId] || null
+      ? aiSelections.conversationSelections[conversationId] ?? null
       : null;
+    const modeSelection = aiSelections.modeSelections[modeKey] ?? null;
+    const conversationProviderId =
+      preferredProviderId ??
+      conversationSelection?.providerId ??
+      currentSelection?.providerId ??
+      modeSelection?.providerId ??
+      null;
+    const modeProviderId =
+      preferredProviderId ??
+      modeSelection?.providerId ??
+      currentSelection?.providerId ??
+      conversationSelection?.providerId ??
+      null;
+    const fallbackProviderId =
+      preferredProviderId ??
+      currentSelection?.providerId ??
+      conversationSelection?.providerId ??
+      modeSelection?.providerId ??
+      null;
 
-    if (conversationSelection) {
-      const appliedConversation = await applySelection(conversationSelection);
-      if (appliedConversation) {
+    const pushCandidate = (
+      selection: PersistedAISelection | null,
+      invalidate: (target: PersistedAIContextSelections) => boolean,
+    ) => {
+      if (!selection?.providerId || !selection.modelId) {
+        return;
+      }
+      if (preferredProviderId && selection.providerId !== preferredProviderId) {
         return;
       }
 
-      removeConversationSelection(conversationId!);
-    }
-
-    const modeSelection = aiSelections.modeSelections[modeKey] || null;
-    if (modeSelection) {
-      const appliedMode = await applySelection(modeSelection);
-      if (appliedMode) {
+      const key = `${selection.providerId}::${selection.modelId}::${
+        selection.reasoningEffort ?? ""
+      }`;
+      if (seenSelectionKeys.has(key)) {
         return;
       }
 
-      const nextModeSelections = { ...aiSelections.modeSelections };
-      delete nextModeSelections[modeKey];
-      aiSelections = {
-        ...aiSelections,
-        modeSelections: nextModeSelections,
-      };
-      persistAiSelections();
+      seenSelectionKeys.add(key);
+      seenFallbackProviders.add(selection.providerId);
+      steps.push({
+        kind: "candidate",
+        selection,
+        invalidate,
+      });
+    };
+
+    pushCandidate(conversationSelection, (target) =>
+      conversationId
+        ? removeConversationSelectionInTarget(target, conversationId)
+        : false,
+    );
+
+    if (conversationProviderId) {
+      pushCandidate(
+        getConversationProviderSelection(conversationId, conversationProviderId),
+        (target) =>
+          conversationId
+            ? removeConversationProviderSelectionInTarget(
+                target,
+                conversationId,
+                conversationProviderId,
+              )
+            : false,
+      );
     }
 
-    const currentSelection = getCurrentSelection();
-    if (!isSelectionUsable(currentSelection)) {
-      await applyFallbackSelection();
+    pushCandidate(modeSelection, (target) =>
+      removeModeSelectionInTarget(target, mode),
+    );
+
+    if (modeProviderId) {
+      pushCandidate(getModeProviderSelection(mode, modeProviderId), (target) =>
+        removeModeProviderSelectionInTarget(target, mode, modeProviderId),
+      );
+    }
+
+    if (fallbackProviderId) {
+      seenFallbackProviders.add(fallbackProviderId);
+      steps.push({ kind: "provider_fallback", providerId: fallbackProviderId });
+    }
+
+    steps.push({
+      kind: "global_fallback",
+      excludedProviderIds: Array.from(seenFallbackProviders),
+    });
+
+    return steps;
+  };
+
+  const runAiSelectionRestore = async (params: {
+    mode: AppMode;
+    conversationId: string | null;
+    preferredProviderId?: string | null;
+    requestId?: number;
+    activeContextKey?: ChatContextKey | null;
+    shouldShowResolving?: boolean;
+    clearPendingArchitectPlanSwitchRequestId?: boolean;
+  }): Promise<boolean> => {
+    const stateAtStart = get();
+    const requestId = params.requestId ?? stateAtStart.selectionRequestId + 1;
+
+    set({
+      selectionRequestId: requestId,
+      ...(params.activeContextKey !== undefined
+        ? { activeContextKey: params.activeContextKey }
+        : {}),
+      ...(params.clearPendingArchitectPlanSwitchRequestId
+        ? { pendingArchitectPlanSwitchRequestId: null }
+        : {}),
+      ...(params.shouldShowResolving ?? true
+        ? { restoreStatus: "resolving" as const }
+        : {}),
+      lastError: null,
+    });
+
+    const isCurrentRequest = () => {
+      const state = get();
+      if (state.selectionRequestId !== requestId) {
+        return false;
+      }
+      if (
+        params.activeContextKey !== undefined &&
+        state.activeContextKey !== params.activeContextKey
+      ) {
+        return false;
+      }
+      return true;
+    };
+
+    try {
+      const nextSelections = cloneAiSelections();
+      let selectionsChanged = false;
+      let appliedSelection: PersistedAISelection | null = null;
+      let restoreMessage: string | null = null;
+      const currentSelection = getCurrentSelection();
+      const resolutionPlan = buildAiSelectionRestorePlan({
+        mode: params.mode,
+        conversationId: params.conversationId,
+        preferredProviderId: params.preferredProviderId ?? null,
+        currentSelection,
+      });
+
+      await withSuppressedSelectionPersistence(async () => {
+        for (const step of resolutionPlan) {
+          if (!isCurrentRequest()) {
+            return;
+          }
+
+          if (step.kind === "candidate") {
+            const committed = await useProviderStore
+              .getState()
+              .commitRestoredSelection(
+                {
+                  providerId: step.selection.providerId!,
+                  modelId: step.selection.modelId!,
+                  reasoningEffort: step.selection.reasoningEffort ?? null,
+                },
+                { isActive: isCurrentRequest },
+              );
+
+            if (!isCurrentRequest()) {
+              return;
+            }
+
+            if (committed) {
+              appliedSelection = {
+                providerId: committed.providerId,
+                modelId: committed.modelId,
+                reasoningEffort: committed.reasoningEffort,
+                updatedAt: new Date().toISOString(),
+              };
+              selectionsChanged =
+                upsertSelectionForContext(
+                  nextSelections,
+                  params.mode,
+                  params.conversationId,
+                  appliedSelection,
+                ) || selectionsChanged;
+              return;
+            }
+
+            selectionsChanged =
+              step.invalidate(nextSelections) || selectionsChanged;
+            continue;
+          }
+
+          if (step.kind === "provider_fallback") {
+            const committed = await useProviderStore
+              .getState()
+              .commitRestoredSelection(
+                {
+                  providerId: step.providerId,
+                  modelId: null,
+                  reasoningEffort: null,
+                },
+                { isActive: isCurrentRequest },
+              );
+
+            if (!isCurrentRequest()) {
+              return;
+            }
+
+            if (committed) {
+              appliedSelection = {
+                providerId: committed.providerId,
+                modelId: committed.modelId,
+                reasoningEffort: committed.reasoningEffort,
+                updatedAt: new Date().toISOString(),
+              };
+              selectionsChanged =
+                upsertSelectionForContext(
+                  nextSelections,
+                  params.mode,
+                  params.conversationId,
+                  appliedSelection,
+                ) || selectionsChanged;
+              return;
+            }
+
+            continue;
+          }
+
+          const providerConfigs = useProviderStore
+            .getState()
+            .providerConfigs.filter((provider) => providerHasCredentials(provider))
+            .sort((left, right) => {
+              const leftExcluded = step.excludedProviderIds.includes(left.id);
+              const rightExcluded = step.excludedProviderIds.includes(right.id);
+              if (leftExcluded === rightExcluded) return 0;
+              return leftExcluded ? 1 : -1;
+            });
+
+          for (const provider of providerConfigs) {
+            if (!isCurrentRequest()) {
+              return;
+            }
+
+            const committed = await useProviderStore
+              .getState()
+              .commitRestoredSelection(
+                {
+                  providerId: provider.id,
+                  modelId: null,
+                  reasoningEffort: null,
+                },
+                { isActive: isCurrentRequest },
+              );
+
+            if (!isCurrentRequest()) {
+              return;
+            }
+
+            if (!committed) {
+              continue;
+            }
+
+            appliedSelection = {
+              providerId: committed.providerId,
+              modelId: committed.modelId,
+              reasoningEffort: committed.reasoningEffort,
+              updatedAt: new Date().toISOString(),
+            };
+            selectionsChanged =
+              upsertSelectionForContext(
+                nextSelections,
+                params.mode,
+                params.conversationId,
+                appliedSelection,
+              ) || selectionsChanged;
+            return;
+          }
+        }
+
+        if (!isCurrentRequest()) {
+          return;
+        }
+
+        useProviderStore.setState({
+          selectedProviderId: null,
+          selectedModelId: null,
+          selectedReasoningEffort: null,
+        });
+        restoreMessage =
+          "No available provider or model could be restored for this conversation.";
+      });
+
+      if (!isCurrentRequest()) {
+        return false;
+      }
+
+      if (selectionsChanged) {
+        commitAiSelections(nextSelections);
+      }
+
+      set((current) => ({
+        restoreStatus: "ready",
+        lastError: restoreMessage,
+        ...(params.clearPendingArchitectPlanSwitchRequestId
+          ? { pendingArchitectPlanSwitchRequestId: null }
+          : {}),
+        selectionRequestId: current.selectionRequestId,
+      }));
+
+      return appliedSelection !== null;
+    } catch (error) {
+      const normalized = toServiceError(error);
+      if (isCurrentRequest()) {
+        set({
+          restoreStatus: "error",
+          ...(params.clearPendingArchitectPlanSwitchRequestId
+            ? { pendingArchitectPlanSwitchRequestId: null }
+            : {}),
+          lastError: normalized.message,
+        });
+      }
+      return false;
     }
   };
 
@@ -1691,13 +2181,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
       },
     );
 
-    if (
+    const nextProviderSelectionsByConversationId = Object.fromEntries(
+      Object.entries(aiSelections.providerSelectionsByConversationId).filter(
+        ([conversationId]) => existingConversationIds.has(conversationId),
+      ),
+    );
+
+    const conversationSelectionsChanged =
       Object.keys(nextConversationSelections).length !==
-      Object.keys(aiSelections.conversationSelections).length
-    ) {
+      Object.keys(aiSelections.conversationSelections).length;
+    const providerSelectionsChanged =
+      Object.keys(nextProviderSelectionsByConversationId).length !==
+      Object.keys(aiSelections.providerSelectionsByConversationId).length;
+
+    if (conversationSelectionsChanged || providerSelectionsChanged) {
       aiSelections = {
         ...aiSelections,
         conversationSelections: nextConversationSelections,
+        providerSelectionsByConversationId: nextProviderSelectionsByConversationId,
       };
       persistAiSelections();
     }
@@ -1951,6 +2452,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         const appState = useAppStore.getState();
         const selectedConversationId = get().selectedConversationId;
+
+        if (
+          providerChanged &&
+          nextState.selectedProviderId &&
+          !nextState.selectedModelId
+        ) {
+          void runAiSelectionRestore({
+            mode: appState.mode,
+            conversationId: selectedConversationId,
+            preferredProviderId: nextState.selectedProviderId,
+            activeContextKey: get().activeContextKey,
+            shouldShowResolving: true,
+          });
+          return;
+        }
+
+        if (suppressedSelectionPersistenceCount > 0) {
+          return;
+        }
+
+        if (!nextState.selectedProviderId || !nextState.selectedModelId) {
+          return;
+        }
+
         persistSelectionForContext(appState.mode, selectedConversationId);
       },
     );
@@ -1981,6 +2506,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
             nextState.activeArchitectPlanId !==
               previousState.activeArchitectPlanId ||
             nextArchitectBranch !== previousArchitectBranch);
+
+        if (aiSelectionsLoaded) {
+          const previousConversationId =
+            get().selectedConversationIdsByMode[previousState.mode] ??
+            get().selectedConversationId;
+          if (previousConversationId) {
+            persistSelectionForContext(
+              previousState.mode,
+              previousConversationId,
+            );
+          }
+        }
 
         if (shouldBeginArchitectPlanSwitch) {
           beginArchitectPlanSwitchSelection({
@@ -5151,12 +5688,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (mode === "Implement" && resolvedTaskId) {
       const existingConversation = getLatestConversationForTask(resolvedTaskId);
       if (existingConversation) {
+        const previousConversationId = get().selectedConversationId;
         if (
           selectConversation &&
           applyConversationSelection(existingConversation.id, mode)
         ) {
-          persistSelectionForContext(mode, existingConversation.id);
-          void applySelectionForContext(mode, existingConversation.id);
+          persistSelectionForConversationSwitch(
+            mode,
+            previousConversationId,
+            existingConversation.id,
+          );
+          await runAiSelectionRestore({
+            mode,
+            conversationId: existingConversation.id,
+            activeContextKey: get().activeContextKey,
+            shouldShowResolving: true,
+          });
         }
         return existingConversation;
       }
@@ -5210,12 +5757,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       conversations: [newConversation, ...state.conversations],
     }));
 
+    const previousConversationId = get().selectedConversationId;
     if (
       selectConversation &&
       applyConversationSelection(newConversation.id, mode)
     ) {
+      persistSelectionForConversationSwitch(
+        mode,
+        previousConversationId,
+        newConversation.id,
+      );
       persistSelectionForContext(mode, newConversation.id);
-      void applySelectionForContext(mode, newConversation.id);
+      await runAiSelectionRestore({
+        mode,
+        conversationId: newConversation.id,
+        activeContextKey: get().activeContextKey,
+        shouldShowResolving: true,
+      });
     }
 
     return newConversation;
@@ -6425,14 +6983,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
       void get().ensureConversationForCurrentMode();
     },
 
-    selectConversation: (conversationId) => {
+    selectConversation: async (conversationId) => {
+      if (get().hydrationStatus === "hydrating") {
+        await waitForHydration();
+      }
       const mode = useAppStore.getState().mode;
+      const previousConversationId = get().selectedConversationId;
       const applied = applyConversationSelection(conversationId, mode);
       if (!applied) {
-        return;
+        return false;
       }
-      persistSelectionForContext(mode, conversationId);
-      void applySelectionForContext(mode, conversationId);
+      persistSelectionForConversationSwitch(
+        mode,
+        previousConversationId,
+        conversationId,
+      );
+      await runAiSelectionRestore({
+        mode,
+        conversationId,
+        activeContextKey: get().activeContextKey,
+        shouldShowResolving: true,
+      });
+      return true;
     },
 
     createConversation: async (title, taskId, projectId, groupId) =>
@@ -6464,14 +7036,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       if (ensuredConversation.conversationId) {
         const mode = useAppStore.getState().mode;
+        const previousConversationId = get().selectedConversationId;
         if (
           applyConversationSelection(ensuredConversation.conversationId, mode)
         ) {
-          persistSelectionForContext(mode, ensuredConversation.conversationId);
-          await applySelectionForContext(
+          persistSelectionForConversationSwitch(
             mode,
+            previousConversationId,
             ensuredConversation.conversationId,
           );
+          await runAiSelectionRestore({
+            mode,
+            conversationId: ensuredConversation.conversationId,
+            activeContextKey: get().activeContextKey,
+            shouldShowResolving: true,
+          });
         }
       }
 
@@ -6536,30 +7115,53 @@ export const useChatStore = create<ChatStore>((set, get) => {
             : latestState.selectedConversationId === null &&
               (latestState.selectedConversationIdsByMode[mode] ?? null) === null;
 
-        if (isAlreadySelected) {
-          if (isCurrentRequest()) {
-            set({ restoreStatus: "ready", lastError: null });
+        if (conversationId) {
+          if (
+            !isAlreadySelected &&
+            !applyConversationSelection(conversationId, mode)
+          ) {
+            if (isCurrentRequest()) {
+              set({
+                restoreStatus: "error",
+                pendingArchitectPlanSwitchRequestId: null,
+                lastError: "Failed to select the resolved conversation.",
+              });
+            }
+            return get().selectedConversationId;
           }
+
+          persistSelectionForConversationSwitch(
+            mode,
+            latestState.selectedConversationId,
+            conversationId,
+          );
+          await runAiSelectionRestore({
+            mode,
+            conversationId,
+            requestId,
+            activeContextKey: contextKey,
+            shouldShowResolving,
+            clearPendingArchitectPlanSwitchRequestId: true,
+          });
           return conversationId;
         }
 
-        if (
-          conversationId &&
-          applyConversationSelection(conversationId, mode)
-        ) {
-          persistSelectionForContext(mode, conversationId);
-          await applySelectionForContext(mode, conversationId);
-          if (isCurrentRequest()) {
-            set({ restoreStatus: "ready", lastError: null });
-          }
-          return conversationId;
+        persistSelectionForConversationSwitch(
+          mode,
+          get().selectedConversationId,
+          null,
+        );
+        if (!isAlreadySelected) {
+          clearConversationSelection(mode);
         }
-
-        clearConversationSelection(mode);
-        await applySelectionForContext(mode, null);
-        if (isCurrentRequest()) {
-          set({ restoreStatus: "ready", lastError: null });
-        }
+        await runAiSelectionRestore({
+          mode,
+          conversationId: null,
+          requestId,
+          activeContextKey: contextKey,
+          shouldShowResolving,
+          clearPendingArchitectPlanSwitchRequestId: true,
+        });
         return null;
       } catch (error) {
         const normalized = toServiceError(error);
@@ -6572,6 +7174,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
         return null;
       }
+    },
+
+    reapplySelectionForCurrentContext: async () => {
+      await waitForHydration();
+      const mode = useAppStore.getState().mode;
+      const conversationId =
+        get().selectedConversationIdsByMode[mode] ?? get().selectedConversationId;
+      await runAiSelectionRestore({
+        mode,
+        conversationId: conversationId ?? null,
+        activeContextKey: get().activeContextKey,
+        shouldShowResolving: true,
+      });
     },
 
     renameConversation: async (conversationId, title) => {
@@ -6650,7 +7265,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await tauriIpc.deleteConversation(conversationId);
       }
       conversationCompactionStateCache.delete(conversationId);
-      removeConversationSelection(conversationId);
+      removeConversationSelectionData(conversationId);
       applyLocalConversationRemoval([conversationId]);
     },
 
@@ -6690,7 +7305,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
         uniqueIds.forEach((conversationId) => {
           conversationCompactionStateCache.delete(conversationId);
-          removeConversationSelection(conversationId);
+          removeConversationSelectionData(conversationId);
         });
       } catch (error) {
         restoreConversationRemovalSnapshot(snapshot);

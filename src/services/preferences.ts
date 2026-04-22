@@ -208,9 +208,11 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.RECENT_PROJECTS]: [],
   [PREF_KEYS.MACRO_ENABLED_PROJECTS]: [],
   [PREF_KEYS.AI_CONTEXT_SELECTIONS]: {
-    version: 1,
+    version: 2,
     modeSelections: {},
     conversationSelections: {},
+    providerSelectionsByConversationId: {},
+    providerSelectionsByMode: {},
   },
   [PREF_KEYS.PROMPT_ARCHITECT]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_ARCHITECT],
   [PREF_KEYS.PROMPT_IMPLEMENT]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_IMPLEMENT],
