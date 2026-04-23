@@ -20,6 +20,7 @@ import { toServiceError } from '../../services/contracts/errors';
 import {
   areAllFileChangesRepositoriesResolved,
 } from '../../services/fileChangesReviewScope';
+import { resolveMergeWorkflowViewState } from '../../services/mergeWorkflow';
 import { isPlanFinalizationTaskSource } from '../../services/planFinalization';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
@@ -652,8 +653,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         category: 'task_completed',
       });
     } catch (error) {
-      const messageText = toServiceError(error).message;
-      notify.error(messageText || t('implement.completeTaskFailed', 'Failed to complete task'));
+      const nextRuntime = useTaskStore.getState().getMergeWorkflowRuntime(currentTask.id);
+      const nextViewState = resolveMergeWorkflowViewState(nextRuntime, {
+        canArchive: currentTask.task_source === 'plan_finalization',
+      });
+      if (!nextViewState.isBlocked && !nextViewState.isFailed) {
+        const messageText = toServiceError(error).message;
+        notify.error(messageText || t('implement.completeTaskFailed', 'Failed to complete task'));
+      }
     }
   };
   const primaryAction = canFinishTask

@@ -13,6 +13,7 @@ export type MergeWorkflowPhase =
   | 'idle'
   | 'loading_review'
   | 'ready'
+  | 'partial'
   | 'blocked'
   | 'merging'
   | 'archiving'
@@ -27,6 +28,9 @@ export interface MergeWorkflowRepositoryResult {
   repoPath: string;
   sourceBranchName: string;
   targetBranchName: string;
+  progressState: 'pending' | 'merged' | 'blocked' | 'no_changes';
+  hadChangesAtStart: boolean;
+  mergeAppliedAt: string | null;
   isClean: boolean;
   hasChanges: boolean;
   mergeable: boolean;
@@ -63,6 +67,7 @@ export interface MergeWorkflowRuntimeState {
 export interface MergeWorkflowViewState {
   phase: MergeWorkflowPhase | 'loading';
   isLoading: boolean;
+  isPartial: boolean;
   isBlocked: boolean;
   isFailed: boolean;
   isMerging: boolean;
@@ -76,8 +81,13 @@ export interface MergeWorkflowViewState {
 
 export type MergeWorkflowIndicatorState =
   | 'merging'
+  | 'merge_partial'
   | 'merge_blocked'
   | 'merge_failed';
+
+export interface MergeWorkflowIndicatorSource {
+  phase?: MergeWorkflowPhase | null;
+}
 
 export interface MergeWorkflowBlockedState {
   taskId: string;
@@ -129,6 +139,8 @@ export const resolveMergeWorkflowTaskStatus = (
     case 'merging':
     case 'archiving':
       return 'InProgress';
+    case 'partial':
+      return 'Blocked';
     case 'failed':
       return 'Failed';
     case 'idle':
@@ -172,6 +184,9 @@ export const toMergeWorkflowRepositoryResult = (
   repoPath: repository.repoPath,
   sourceBranchName: repository.planBranchName,
   targetBranchName: repository.baseBranchName,
+  progressState: repository.hasChanges ? 'pending' : 'no_changes',
+  hadChangesAtStart: repository.hasChanges,
+  mergeAppliedAt: null,
   isClean: repository.isClean,
   hasChanges: repository.hasChanges,
   mergeable: repository.mergeable,
@@ -220,6 +235,54 @@ export const toPlanFinalizationMergeWorkflowRuntimeState = (params: {
     lastLoadedAt: params.loadedAt || new Date().toISOString(),
   };
 };
+
+export const resolveMergeWorkflowPhaseFromRepositories = (
+  repositories: Array<
+    Pick<MergeWorkflowRepositoryResult, 'progressState' | 'blockingReason'>
+  >
+): MergeWorkflowPhase => {
+  const mergedCount = repositories.filter(
+    (repository) => repository.progressState === 'merged'
+  ).length;
+  const blockedCount = repositories.filter(
+    (repository) =>
+      repository.progressState === 'blocked' || Boolean(repository.blockingReason)
+  ).length;
+
+  if (blockedCount > 0) {
+    return mergedCount > 0 ? 'partial' : 'blocked';
+  }
+
+  return 'ready';
+};
+
+export const toPendingMergeWorkflowRepositoryResult = (params: {
+  id: string;
+  projectId: string;
+  repoPath: string;
+  sourceBranchName: string;
+  targetBranchName: string;
+  hasChanges?: boolean;
+}): MergeWorkflowRepositoryResult => ({
+  id: params.id,
+  projectId: params.projectId,
+  repoPath: params.repoPath,
+  sourceBranchName: params.sourceBranchName,
+  targetBranchName: params.targetBranchName,
+  progressState: params.hasChanges === false ? 'no_changes' : 'pending',
+  hadChangesAtStart: params.hasChanges !== false,
+  mergeAppliedAt: null,
+  isClean: true,
+  hasChanges: params.hasChanges !== false,
+  mergeable: true,
+  conflictFiles: [],
+  mergeInProgress: false,
+  diff: '',
+  checkStatus: 'not_run',
+  blockingKind: null,
+  nextAction: null,
+  blockingReason: null,
+});
 
 const getMergeWorkflowConflictFiles = (
   status: MergeWorkflowGitStatusLike
@@ -444,14 +507,16 @@ export const resolveMergeWorkflowViewState = (
   const isMerging = phase === 'merging';
   const isArchiving = phase === 'archiving';
   const isBusy = isMerging || isArchiving;
+  const isPartial = phase === 'partial';
   const isBlocked =
-    phase === 'blocked' || Boolean(runtime?.blockedRepositories.length);
+    phase === 'blocked' || isPartial || Boolean(runtime?.blockedRepositories.length);
   const isFailed = phase === 'failed';
   const canArchive = (options?.canArchive ?? false) && !isLoading && !isBusy;
 
   return {
     phase,
     isLoading,
+    isPartial,
     isBlocked,
     isFailed,
     isMerging,
@@ -465,11 +530,13 @@ export const resolveMergeWorkflowViewState = (
 };
 
 export const resolveMergeWorkflowIndicatorState = (
-  runtime: MergeWorkflowRuntimeState | null | undefined
+  runtime: MergeWorkflowIndicatorSource | null | undefined
 ): MergeWorkflowIndicatorState | null => {
   switch (runtime?.phase) {
     case 'merging':
       return 'merging';
+    case 'partial':
+      return 'merge_partial';
     case 'blocked':
       return 'merge_blocked';
     case 'failed':

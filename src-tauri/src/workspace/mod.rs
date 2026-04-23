@@ -10,7 +10,8 @@ use git2::{
     BranchType, IndexAddOption, Oid, Repository, RepositoryInitOptions, ResetType, Signature, Sort,
 };
 use metadata::{
-    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, PlanDto,
+    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto,
+    ManualFeatureMergeWorkflowDto, PlanDto,
     ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto, ProjectAccessMigrationSummaryDto,
     ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
     ProjectMetadataDto, ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto,
@@ -1379,6 +1380,7 @@ pub async fn create_manual_feature_draft(
         project_ids: normalized_project_ids,
         context_project_ids: normalized_context_project_ids,
         execution_targets: Vec::new(),
+        merge_workflow: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -1502,6 +1504,7 @@ pub async fn finalize_manual_feature(
     feature.merged_at = None;
     feature.base_branch = base_branch;
     feature.execution_targets = execution_targets;
+    feature.merge_workflow = None;
     feature.updated_at = Utc::now().to_rfc3339();
     if !state
         .reserved_standalone_feature_slugs
@@ -1581,6 +1584,7 @@ pub async fn revert_manual_feature_to_draft(
     feature.archive_reason = None;
     feature.merged_at = None;
     feature.execution_targets = Vec::new();
+    feature.merge_workflow = None;
     feature.updated_at = Utc::now().to_rfc3339();
 
     if let Some(previous_feature_slug) = previous_feature_slug {
@@ -1879,6 +1883,49 @@ pub async fn update_standalone_task_status(
     )
     .await?;
     Ok(())
+}
+
+pub async fn update_manual_feature_merge_workflow(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+    merge_workflow: Option<ManualFeatureMergeWorkflowDto>,
+) -> Result<ManualFeatureDto> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let normalized_task_id = task_id.trim();
+    let feature = state
+        .manual_features
+        .iter_mut()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Unknown manual feature id: {}",
+                normalized_task_id
+            ))
+        })?;
+
+    feature.merge_workflow = merge_workflow;
+    feature.updated_at = Utc::now().to_rfc3339();
+
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "update_manual_feature_merge_workflow",
+    )
+    .await?;
+
+    sanitized_state
+        .manual_features
+        .iter()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .cloned()
+        .ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Unknown manual feature id: {}",
+                normalized_task_id
+            ))
+        })
 }
 
 pub async fn create_project(
@@ -3080,6 +3127,11 @@ fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
     }
     if let Some(merged_at) = feature.merged_at.as_ref() {
         task.insert("merged_at".to_string(), Value::String(merged_at.clone()));
+    }
+    if let Some(merge_workflow) = feature.merge_workflow.as_ref() {
+        if let Ok(value) = serde_json::to_value(merge_workflow) {
+            task.insert("merge_workflow".to_string(), value);
+        }
     }
 
     if let Some(feature_slug) = feature.feature_slug.as_ref() {
@@ -4913,6 +4965,7 @@ mod tests {
                     worktree_key: "branch-project-web-quick-export".to_string(),
                     repo_path: Some("apps/web".to_string()),
                 }],
+                merge_workflow: None,
                 created_at: "2026-03-14T00:00:00.000Z".to_string(),
                 updated_at: "2026-03-14T00:00:00.000Z".to_string(),
             }],

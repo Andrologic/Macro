@@ -265,6 +265,12 @@ describe('TaskQueue', () => {
   const getTaskCard = () =>
     document.body.querySelector('[role="button"][tabindex="0"]');
 
+  const getTaskCardProgressLabel = () =>
+    document.body.querySelector('[data-task-card-progress-label="true"]');
+
+  const getTaskCardNextAction = () =>
+    document.body.querySelector('[data-task-card-next-action="true"]');
+
   const getTaskContextBadges = () =>
     Array.from(document.body.querySelectorAll('[data-task-context-badge]')).map((badge) => ({
       key: badge.getAttribute('data-task-context-badge'),
@@ -511,6 +517,116 @@ describe('TaskQueue', () => {
     expect(taskCard?.getAttribute('data-task-card-variant')).toBe('default');
     expect(taskCard?.className).toContain('h-[112px]');
     expect(description?.textContent).toBe('Describe the feature before kickoff');
+  });
+
+  it('renders merge partial progress from the live merge workflow runtime', async () => {
+    seedTasks([
+      makeTask('task-1', 'Blocked', {
+        title: 'Merge blocked task',
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': {
+          taskId: 'task-1',
+          kind: 'task_completion',
+          phase: 'partial',
+          taskStatus: 'Blocked',
+          review: null,
+          repositories: [
+            {
+              id: 'repo-a',
+              projectId: 'project-1',
+              repoPath: '/tmp/project-1',
+              sourceBranchName: 'feature/task-1',
+              targetBranchName: 'develop',
+              progressState: 'merged',
+              hadChangesAtStart: true,
+              mergeAppliedAt: '2026-04-23T09:00:00.000Z',
+              isClean: true,
+              hasChanges: true,
+              mergeable: true,
+              conflictFiles: [],
+              mergeInProgress: false,
+              diff: '',
+              checkStatus: 'passed',
+              blockingKind: null,
+              nextAction: null,
+              blockingReason: null,
+            },
+            {
+              id: 'repo-b',
+              projectId: 'project-1',
+              repoPath: '/tmp/project-1',
+              sourceBranchName: 'feature/task-1',
+              targetBranchName: 'develop',
+              progressState: 'blocked',
+              hadChangesAtStart: true,
+              mergeAppliedAt: null,
+              isClean: false,
+              hasChanges: true,
+              mergeable: false,
+              conflictFiles: ['src/conflict.ts'],
+              mergeInProgress: false,
+              diff: '',
+              checkStatus: 'failed',
+              blockingKind: 'merge_conflict',
+              nextAction: 'resolve_conflicts',
+              blockingReason: 'Conflict',
+            },
+          ],
+          blockedRepositories: [],
+          message: 'Conflict',
+          lastLoadedAt: null,
+        },
+      } as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="merge_partial"]')
+    ).not.toBeNull();
+    expect(getTaskCardProgressLabel()?.textContent).toBe('1 merged, 1 remaining');
+    expect(getTaskCardNextAction()?.textContent).toBe(
+      'Next: resolve remaining merge blockers'
+    );
+  });
+
+  it('renders merge partial progress from the persisted task summary after reload', async () => {
+    seedTasks([
+      makeTask('task-1', 'Blocked', {
+        title: 'Persisted merge partial task',
+        merge_workflow_summary: {
+          kind: 'task_completion',
+          phase: 'partial',
+          taskStatus: 'Blocked',
+          repositoryCount: 2,
+          mergedRepositoryCount: 1,
+          blockedRepositoryCount: 0,
+          unresolvedRepositoryCount: 1,
+          updatedAt: '2026-04-23T09:00:00.000Z',
+          message: null,
+        },
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="merge_partial"]')
+    ).not.toBeNull();
+    expect(getTaskCardProgressLabel()?.textContent).toBe('1 merged, 1 remaining');
+    expect(getTaskCardNextAction()?.textContent).toBe(
+      'Next: continue merge for remaining repositories'
+    );
   });
 
   it('keeps virtual row keys stable when draft and blocked sections are inserted', async () => {

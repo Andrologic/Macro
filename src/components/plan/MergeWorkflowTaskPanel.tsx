@@ -52,11 +52,11 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const [isResolvingAutomatically, setIsResolvingAutomatically] = useState(false);
 
   useEffect(() => {
-    if (!isPlanFinalizationTask) {
+    if (!runtime || runtime.review || runtime.phase === 'merging' || runtime.phase === 'archiving') {
       return;
     }
     void loadMergeWorkflowReview(task.id).catch(() => undefined);
-  }, [isPlanFinalizationTask, loadMergeWorkflowReview, task.id]);
+  }, [loadMergeWorkflowReview, runtime, task.id]);
 
   const repositories = runtime?.repositories || [];
   const viewState = resolveMergeWorkflowViewState(runtime, {
