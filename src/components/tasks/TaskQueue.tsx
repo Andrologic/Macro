@@ -44,6 +44,11 @@ import {
   resolveTaskStatusIndicatorState,
 } from '../../services/taskStatusPresentation';
 import type { MergeWorkflowRuntimeState } from '../../services/mergeWorkflow';
+import {
+  resolveTaskMergeWorkflowNextActionLabel,
+  resolveTaskMergeWorkflowPresentationState,
+  resolveTaskMergeWorkflowProgressLabel,
+} from '../../services/taskMergeWorkflowPresentation';
 import { Icon, IconName } from '../ui/Icon';
 import { Select } from '../ui/Select';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -188,6 +193,7 @@ const taskContextBadgeToneClassName: Record<TaskContextBadgeTone, string> = {
 interface TaskItemProps {
   task: ImplementTask;
   mergeWorkflowRuntime?: MergeWorkflowRuntimeState | null;
+  multiRepoPresentation?: MultiRepoTaskPresentation | null;
   isSelected: boolean;
   planLabel: string;
   isAssistantRunning: boolean;
@@ -205,6 +211,7 @@ interface TaskItemProps {
 const TaskItem: React.FC<TaskItemProps> = ({
   task,
   mergeWorkflowRuntime,
+  multiRepoPresentation,
   isSelected,
   planLabel,
   isAssistantRunning,
@@ -260,11 +267,27 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const status = isAssistantRunning
     ? { color: 'text-amber-500', bgColor: 'bg-amber-500/10' }
     : statusConfig[task.status] || statusConfig.Pending;
+  const mergeWorkflowPresentation = useMemo(
+    () =>
+      resolveTaskMergeWorkflowPresentationState(
+        mergeWorkflowRuntime,
+        task.merge_workflow_summary ?? null
+      ),
+    [mergeWorkflowRuntime, task.merge_workflow_summary]
+  );
   const indicatorState = resolveTaskStatusIndicatorState(
     task.status,
     isAssistantRunning,
     task.task_source,
-    mergeWorkflowRuntime
+    mergeWorkflowPresentation
+  );
+  const showMergeWorkflowPresentation = Boolean(
+    multiRepoPresentation &&
+      mergeWorkflowPresentation &&
+      (indicatorState === 'merging' ||
+        indicatorState === 'merge_partial' ||
+        indicatorState === 'merge_blocked' ||
+        indicatorState === 'merge_failed')
   );
   const lockTooltip = task.is_blocked
     ? t('implement.blockedBy', 'Blocked by: {{tasks}}', {
@@ -393,11 +416,26 @@ const TaskItem: React.FC<TaskItemProps> = ({
         </div>
 
         <div className="min-h-0 space-y-1">
-          {!isCompactDraftFeatureCard && task.description && (
+          {showMergeWorkflowPresentation ? (
+            <>
+              <p
+                data-task-card-progress-label="true"
+                className="truncate text-[12px] font-medium leading-[1.05rem] text-foreground/85"
+              >
+                {multiRepoPresentation?.progressLabel}
+              </p>
+              <p
+                data-task-card-next-action="true"
+                className="truncate text-[11px] leading-[1rem] text-muted-foreground"
+              >
+                {multiRepoPresentation?.nextActionLabel}
+              </p>
+            </>
+          ) : !isCompactDraftFeatureCard && task.description ? (
             <p className="line-clamp-2 text-[13px] leading-[1.15rem] text-muted-foreground">
               {task.description}
             </p>
-          )}
+          ) : null}
         </div>
 
         <div className="min-w-0 self-end pr-10">
@@ -801,12 +839,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     reviewSummary: ReviewTaskSummary | null
   ): MultiRepoTaskPresentation | null => {
     const mergeWorkflowRuntime = mergeWorkflowRuntimeByTaskId[task.id] ?? null;
+    const mergeWorkflowPresentation = resolveTaskMergeWorkflowPresentationState(
+      mergeWorkflowRuntime,
+      task.merge_workflow_summary ?? null
+    );
     const repositoryDescriptors = getTaskRepositoryDescriptors(
       task,
       (projectId) => getProjectById(projectId) ?? null
     );
 
-    if (repositoryDescriptors.length <= 1) {
+    if (repositoryDescriptors.length <= 1 && !mergeWorkflowPresentation) {
       return null;
     }
 
@@ -845,38 +887,18 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     });
     let nextActionLabel = t('implement.taskNextActionStart', 'Next: start implementation');
 
-    if (mergeWorkflowRuntime) {
-      progressLabel = t(
-        'implement.taskMergeWorkflowProgress',
-        '{{count}} repositories in merge workflow',
+    if (mergeWorkflowPresentation) {
+      progressLabel = resolveTaskMergeWorkflowProgressLabel(
+        mergeWorkflowPresentation,
+        t
+      );
+      nextActionLabel = resolveTaskMergeWorkflowNextActionLabel(
+        mergeWorkflowPresentation,
+        t,
         {
-          count: Math.max(
-            mergeWorkflowRuntime.repositories.length,
-            repositoryDescriptors.length
-          ),
+          isPlanFinalizationTask: isPlanFinalizationTask(task),
         }
       );
-
-      if (mergeWorkflowRuntime.phase === 'blocked') {
-        nextActionLabel = t(
-          'implement.taskNextActionResolveMergeBlocked',
-          'Next: resolve merge blockers'
-        );
-      } else if (mergeWorkflowRuntime.phase === 'failed') {
-        nextActionLabel = t(
-          'implement.taskNextActionRetryMerge',
-          'Next: retry merge'
-        );
-      } else if (mergeWorkflowRuntime.phase === 'merging') {
-        nextActionLabel = t(
-          'implement.taskNextActionMerging',
-          'Next: merging repositories'
-        );
-      } else {
-        nextActionLabel = isPlanFinalizationTask(task)
-          ? t('implement.taskNextActionMergePlan', 'Next: merge plan')
-          : t('implement.taskNextActionMergeTask', 'Next: merge task branches');
-      }
     } else if (reviewSummary && task.status === 'InReview') {
       const resolvedCount = reviewSummary.stateCounts.committed + reviewSummary.stateCounts.no_changes;
       progressLabel = t('implement.taskValidationProgress', '{{resolved}}/{{total}} subprojects resolved', {
@@ -1693,6 +1715,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                       <MemoizedTaskItem
                         task={row.task}
                         mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
+                        multiRepoPresentation={row.multiRepoPresentation}
                         isSelected={selectedTaskId === row.task.id}
                         planLabel={getTaskPlanLabel(row.task)}
                         isAssistantRunning={runningTaskIds.has(row.task.id)}

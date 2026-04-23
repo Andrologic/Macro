@@ -42,6 +42,10 @@ import {
   resolveTargetBranch,
   setActiveArchitectPlan as persistActiveArchitectPlan,
 } from "../services/architectPlanService";
+import {
+  persistArchitectPlanStrategyPreview,
+  readArchitectPlanRuntime,
+} from "../services/architectPlanRuntimeService";
 import type { StrategyMutationPreview } from "../services/architectStrategyMutationGuard";
 import { taskMatchesProjectId } from "../services/implementTaskCatalog";
 import {
@@ -674,6 +678,47 @@ const hydrateArchitectPlanInStore = async (input: {
     pendingArchitectPlanActivationPayload: activationPayload,
   });
   useNeedsStore.getState().hydrateNeedsForPlan(plan.id, activationPayload.needs);
+
+  const runtime = await readArchitectPlanRuntime({
+    branchName: activationPayload.targetBranch,
+    planId: plan.id,
+    projectIds: plan.projectIds,
+  });
+  const persistedPreview = runtime?.strategyPreview ?? null;
+  if (!persistedPreview) {
+    return;
+  }
+
+  const currentRevision =
+    typeof plan.revision === "number" && Number.isFinite(plan.revision)
+      ? plan.revision
+      : null;
+  const isObsolete =
+    persistedPreview.baseRevision !== null &&
+    currentRevision !== null &&
+    persistedPreview.baseRevision !== currentRevision;
+
+  if (isObsolete) {
+    await persistArchitectPlanStrategyPreview({
+      branchName: activationPayload.targetBranch,
+      plan,
+      preview: null,
+    });
+    return;
+  }
+
+  if (
+    input.requestId > 0 &&
+    !isCurrentArchitectPlanSwitchRequest({
+      requestId: input.requestId,
+      planId: plan.id,
+      targetBranch: activationPayload.targetBranch,
+    })
+  ) {
+    return;
+  }
+
+  useAppStore.setState({ strategyMutationPreview: persistedPreview });
 };
 
 const clearActiveArchitectPlanInStore = (): void => {

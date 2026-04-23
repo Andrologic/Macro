@@ -361,6 +361,25 @@ const tasksById = {
       },
     ],
   },
+  'task-5': {
+    id: 'task-5',
+    title: 'Standalone release merge',
+    description: 'Standalone task with a repo-specific target branch',
+    status: 'InProgress' as const,
+    task_source: 'standalone' as const,
+    project_id: 'project-a',
+    project_ids: ['project-a'],
+    assigned_branch: 'feature/task-a',
+    base_branch: 'develop',
+    execution_targets: [
+      {
+        projectId: 'project-a',
+        branchName: 'feature/task-a',
+        targetBranchName: 'release/project-a',
+        worktreeKey: worktreeKeyA,
+      },
+    ],
+  },
 };
 
 const setTaskStatusMock = mock(async (taskId: string, status: string) => {
@@ -437,6 +456,7 @@ describe('useFileChangesStore', () => {
       'task-2': 'InProgress',
       'task-3': 'InProgress',
       'task-4': 'Pending',
+      'task-5': 'InProgress',
     };
     pathsWithEmptyGitDiff = new Set();
     appStoreState.selectedGroupId = 'group-1';
@@ -490,6 +510,15 @@ describe('useFileChangesStore', () => {
     expect(reviewSummary.repositoryCount).toBe(2);
     expect(reviewSummary.nextAction).toBe('validate_repository');
     expect(reviewSummary.currentRepositoryId).toBe(repositoryIdA);
+  });
+
+  it('uses the execution target branch as the standalone integration branch', async () => {
+    appStoreState.selectedTaskId = 'task-5';
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(repository?.planBranchName).toBe('release/project-a');
   });
 
   it('narrows loaded repositories to the selected subproject scope', async () => {

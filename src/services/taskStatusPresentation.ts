@@ -6,7 +6,7 @@ import type {
 import { isPlanFinalizationTaskSource } from './planFinalization';
 import {
   resolveMergeWorkflowIndicatorState,
-  type MergeWorkflowRuntimeState,
+  type MergeWorkflowIndicatorSource,
 } from './mergeWorkflow';
 
 export type TaskStatusIndicatorState =
@@ -15,6 +15,7 @@ export type TaskStatusIndicatorState =
   | 'running'
   | 'plan_finalization'
   | 'merging'
+  | 'merge_partial'
   | 'merge_blocked'
   | 'merge_failed'
   | 'in_review'
@@ -57,7 +58,7 @@ export const resolveTaskStatusIndicatorState = (
   status: TaskStatus,
   isAssistantRunning: boolean,
   taskSource?: string | null,
-  mergeWorkflowRuntime?: MergeWorkflowRuntimeState | null
+  mergeWorkflowRuntime?: MergeWorkflowIndicatorSource | null
 ): TaskStatusIndicatorState => {
   const isPlanFinalizationTask = isPlanFinalizationTaskSource(taskSource);
 

@@ -626,6 +626,31 @@ export interface WorkspaceManualFeatureExecutionTargetDto {
   repoPath?: string | null;
 }
 
+export interface WorkspaceManualFeatureMergeWorkflowRepositoryDto {
+  id: string;
+  projectId: string;
+  repoPath: string;
+  sourceBranchName: string;
+  targetBranchName: string;
+  state: string;
+  hadChangesAtStart?: boolean;
+  mergeAppliedAt?: string | null;
+  blockingKind?: string | null;
+  blockingReason?: string | null;
+  conflictFiles?: string[];
+}
+
+export interface WorkspaceManualFeatureMergeWorkflowDto {
+  kind: string;
+  phase: string;
+  taskStatus: string;
+  startedAt: string;
+  updatedAt: string;
+  lastLoadedAt?: string | null;
+  message?: string | null;
+  repositories: WorkspaceManualFeatureMergeWorkflowRepositoryDto[];
+}
+
 export interface WorkspaceManualFeatureDto {
   id: string;
   conversationId: string;
@@ -642,6 +667,7 @@ export interface WorkspaceManualFeatureDto {
   projectIds: string[];
   contextProjectIds: string[];
   executionTargets: WorkspaceManualFeatureExecutionTargetDto[];
+  mergeWorkflow?: WorkspaceManualFeatureMergeWorkflowDto | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1867,6 +1893,19 @@ export async function workspaceUpdateStandaloneTaskStatus(params: {
   });
 }
 
+export async function workspaceUpdateManualFeatureMergeWorkflow(params: {
+  taskId: string;
+  mergeWorkflow?: WorkspaceManualFeatureMergeWorkflowDto | null;
+}): Promise<WorkspaceManualFeatureDto> {
+  return invoke<WorkspaceManualFeatureDto>(
+    'workspace_update_manual_feature_merge_workflow',
+    {
+      taskId: params.taskId,
+      mergeWorkflow: params.mergeWorkflow ?? null,
+    }
+  );
+}
+
 // ============ Provider Models ============
 
 export async function listProviderModels(
@@ -2248,10 +2287,17 @@ export async function terminalCloseTab(tabId: string): Promise<void> {
  * Check if we're running in Tauri
  */
 export function isTauriAvailable(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    ("__TAURI__" in window || "__TAURI_INTERNALS__" in window)
-  );
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const tauriWindow = window as Window & {
+    __TAURI_INTERNALS__?: {
+      invoke?: unknown;
+    } | null;
+  };
+
+  return typeof tauriWindow.__TAURI_INTERNALS__?.invoke === 'function';
 }
 
 /**
