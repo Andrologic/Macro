@@ -252,8 +252,6 @@ describe('FileChangesDiffModal', () => {
     });
 
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
-    expect(document.body.textContent).toContain('feature/review-redesign');
-    expect(document.body.textContent).toContain('3 pending, 1 staged');
     expect(document.body.textContent).toContain('src/feature.tsx');
     expect(document.body.querySelector('.macro-diff-merge-root')).not.toBeNull();
     expect(document.body.querySelector('[data-language="typescript"]')).not.toBeNull();

@@ -75,10 +75,13 @@ export const initializeI18n = (): Promise<void> => {
 
   initializationPromise = (async () => {
     const initialLanguage = resolveInitialLanguage();
+    await ensureLanguageResources(DEFAULT_LANGUAGE);
+
     if (initialLanguage !== DEFAULT_LANGUAGE) {
       await ensureLanguageResources(initialLanguage);
       await i18n.changeLanguage(initialLanguage);
     } else {
+      await i18n.changeLanguage(DEFAULT_LANGUAGE);
       syncDocumentLanguage(DEFAULT_LANGUAGE);
     }
   })();

@@ -1,5 +1,6 @@
 .macro
 .codex
+.playwright-cli/
 
 # Logs
 logs

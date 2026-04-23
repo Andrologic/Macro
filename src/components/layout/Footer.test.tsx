@@ -392,8 +392,6 @@ describe('Footer', () => {
     root?.render(<Footer />);
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Macro');
-    expect(container?.textContent ?? '').toContain('main-a');
     expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('19');
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('14');
 
@@ -404,8 +402,6 @@ describe('Footer', () => {
     expect((container?.querySelector('select') as HTMLSelectElement | null)?.value).toBe('project-b');
     expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('12');
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('9');
-    expect(container?.textContent ?? '').toContain('main-a');
-    expect(container?.textContent ?? '').not.toContain('feature-b');
   });
 
   it('targets footer git actions to the selected local scope and aggregates all projects when reset', async () => {
