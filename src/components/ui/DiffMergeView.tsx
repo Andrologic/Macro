@@ -47,6 +47,7 @@ export interface MergeViewEditorHandle {
 }
 
 const CODEMIRROR_UNCHANGED_LINES_PHRASE = '$ unchanged lines';
+const EMPTY_VALIDATED_LINE_NUMBERS: number[] = [];
 
 const hasRevertRelevantLayoutChange = (
   update: Pick<Parameters<Parameters<typeof EditorView.updateListener.of>[0]>[0], 'docChanged' | 'heightChanged' | 'viewportChanged' | 'geometryChanged'>
@@ -158,8 +159,8 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   onEditorReady,
   revertControls,
   overflowMode,
-  validatedRemovedLineNumbers = [],
-  validatedAddedLineNumbers = [],
+  validatedRemovedLineNumbers = EMPTY_VALIDATED_LINE_NUMBERS,
+  validatedAddedLineNumbers = EMPTY_VALIDATED_LINE_NUMBERS,
 }, ref) => {
   const { t, i18n } = useTranslation();
   const globalOverflowMode = useAppStore((state) => state.codeOverflowMode);
@@ -167,7 +168,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   const themeMetadata = getCodeMirrorThemeMetadata(themeContext?.theme);
   const resolvedLanguage = resolveLanguageName(language);
   const resolvedOverflowMode = overflowMode ?? globalOverflowMode;
-  const resolvedLocale = i18n.resolvedLanguage || i18n.language || 'en';
+  const resolvedLocale = i18n?.resolvedLanguage || i18n?.language || 'en';
   const unchangedLinesPhrase = t('diffMergeView.codeMirrorPhrases.unchangedLines', {
     defaultValue: CODEMIRROR_UNCHANGED_LINES_PHRASE,
   });
@@ -345,31 +346,25 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
             return;
           }
 
-          currentMergeView.a.requestMeasure({
-            read: () => {
-              const revertButtons = Array.from(
-                currentMergeView.dom.querySelectorAll('.cm-merge-revert button')
-              ) as HTMLElement[];
+          const revertButtons = Array.from(
+            currentMergeView.dom.querySelectorAll('.cm-merge-revert button')
+          ) as HTMLElement[];
+          const positions = collectRevertButtonPositions(
+            currentMergeView,
+            currentRevertControls,
+            revertButtons
+          );
 
-              return collectRevertButtonPositions(
-                currentMergeView,
-                currentRevertControls,
-                revertButtons
-              );
-            },
-            write: (positions) => {
-              if (mergeViewRef.current !== currentMergeView) {
-                return;
-              }
+          if (mergeViewRef.current !== currentMergeView) {
+            return;
+          }
 
-              for (const { button, top } of positions) {
-                const nextTop = `${top}px`;
-                if (button.style.top !== nextTop) {
-                  button.style.top = nextTop;
-                }
-              }
-            },
-          });
+          for (const { button, top } of positions) {
+            const nextTop = `${top}px`;
+            if (button.style.top !== nextTop) {
+              button.style.top = nextTop;
+            }
+          }
         });
       });
     };

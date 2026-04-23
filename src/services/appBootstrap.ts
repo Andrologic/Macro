@@ -162,7 +162,7 @@ export const createAppBootstrapController = (
               (async () => {
                 await initWithTracking('Provider Store', dependencies.initializeProviders, 'low');
                 await initWithTracking(
-                  'Chat Selection Restore',
+                  'Chat Context Restore',
                   dependencies.restoreChatSelectionAfterProviderInit,
                   'low'
                 );

@@ -115,22 +115,22 @@ export const collectRevertButtonPositions = (
   const editor = anchorSide === 'a' ? mergeView.a : mergeView.b;
   const positions: RevertButtonPosition[] = [];
 
-  for (const button of buttons) {
-    const chunkIndex = Number.parseInt(button.dataset.chunk ?? '', 10);
-    if (!Number.isInteger(chunkIndex)) {
-      continue;
-    }
+  buttons.forEach((button, buttonIndex) => {
+    const parsedChunkIndex = Number.parseInt(button.dataset.chunk ?? '', 10);
+    const chunkIndex = Number.isInteger(parsedChunkIndex)
+      ? parsedChunkIndex
+      : buttonIndex;
 
     const chunk = mergeView.chunks[chunkIndex];
     if (!chunk) {
-      continue;
+      return;
     }
 
     positions.push({
       button,
       top: getChunkAnchorTop(chunk, editor, anchorSide),
     });
-  }
+  });
 
   return positions;
 };

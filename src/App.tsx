@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, Suspense, lazy, useState } from "react";
 import { Header } from "./components/layout/Header";
-import { Toaster } from "./components/ui/Toaster";
 import { useWindowRestoration } from "./hooks/useWindowRestoration";
 import { useUiZoom } from "./hooks/useUiZoom";
 import { PanelResizer } from "./components/layout/PanelResizer";
@@ -30,6 +29,11 @@ const CodeFileViewerModal = lazy(
 const Footer = lazy(() =>
   import("./components/layout/Footer").then((module) => ({
     default: module.Footer,
+  })),
+);
+const Toaster = lazy(() =>
+  import("./components/ui/Toaster").then((module) => ({
+    default: module.Toaster,
   })),
 );
 
@@ -381,8 +385,9 @@ const App: React.FC = () => {
         <CodeFileViewerModal />
       </Suspense>
 
-      {/* Toast Notifications */}
-      <Toaster />
+      <Suspense fallback={null}>
+        <Toaster />
+      </Suspense>
     </div>
   );
 };
