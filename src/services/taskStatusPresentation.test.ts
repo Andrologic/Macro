@@ -107,5 +107,10 @@ describe('taskStatusPresentation', () => {
     expect(
       resolveTaskStatusIndicatorState('InProgress', false, 'architect', mergingRuntime)
     ).toBe('merging');
+    expect(
+      resolveTaskStatusIndicatorState('Blocked', false, 'architect', {
+        phase: 'partial',
+      })
+    ).toBe('merge_partial');
   });
 });

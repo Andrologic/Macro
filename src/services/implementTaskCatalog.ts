@@ -18,6 +18,11 @@ import {
   PLAN_FINALIZATION_TASK_PREFIX,
   shouldCreatePlanFinalizationTask,
 } from './planFinalization';
+import type {
+  MergeWorkflowSummary,
+  PersistedMergeWorkflowSession,
+} from './mergeWorkflowPersistence';
+import { summarizePersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
 
 export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone';
 export type ImplementTaskCatalogSource = 'architect' | 'mixed' | 'fallback' | 'empty';
@@ -52,6 +57,8 @@ export interface CatalogedImplementTask extends DerivedImplementTask {
   archived_at: string | null;
   archive_reason: string | null;
   merged_at: string | null;
+  merge_workflow?: PersistedMergeWorkflowSession | null;
+  merge_workflow_summary?: MergeWorkflowSummary | null;
 }
 
 export const isPlanFinalizationTask = (
@@ -144,6 +151,8 @@ const buildPlanFinalizationTask = (
     archived_at: null,
     archive_reason: null,
     merged_at: null,
+    merge_workflow: null,
+    merge_workflow_summary: null,
   };
 };
 
@@ -196,6 +205,8 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       archived_at?: string | null;
       archive_reason?: string | null;
       merged_at?: string | null;
+      merge_workflow?: PersistedMergeWorkflowSession | null;
+      merge_workflow_summary?: MergeWorkflowSummary | null;
     };
     const isDraft = raw.draft === true;
     const assignedBranch =
@@ -232,6 +243,18 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       archived_at: typeof raw.archived_at === 'string' ? raw.archived_at : null,
       archive_reason: typeof raw.archive_reason === 'string' ? raw.archive_reason : null,
       merged_at: typeof raw.merged_at === 'string' ? raw.merged_at : null,
+      merge_workflow:
+        raw.merge_workflow && typeof raw.merge_workflow === 'object'
+          ? raw.merge_workflow
+          : null,
+      merge_workflow_summary:
+        raw.merge_workflow_summary && typeof raw.merge_workflow_summary === 'object'
+          ? raw.merge_workflow_summary
+          : summarizePersistedMergeWorkflowSession(
+              raw.merge_workflow && typeof raw.merge_workflow === 'object'
+                ? raw.merge_workflow
+                : null
+            ),
       task_source: 'standalone' as const,
       plan_title: null,
       plan_status: null,
@@ -310,6 +333,8 @@ export const deriveImplementTasksFromArchitectPlan = (
       archived_at: typeof planNode?.archivedAt === 'string' ? planNode.archivedAt : null,
       archive_reason: typeof planNode?.archiveReason === 'string' ? planNode.archiveReason : null,
       merged_at: typeof planNode?.mergedAt === 'string' ? planNode.mergedAt : null,
+      merge_workflow: null,
+      merge_workflow_summary: null,
     };
   });
 };

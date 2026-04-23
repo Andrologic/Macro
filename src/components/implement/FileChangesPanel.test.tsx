@@ -529,7 +529,7 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).toContain('Plan finalization');
     expect(document.body.textContent).toContain('Merge plan');
     expect(document.body.textContent).toContain('Archive');
-    expect(loadPlanFinalizationReviewMock).toHaveBeenCalledWith('task-1');
+    expect(loadPlanFinalizationReviewMock).not.toHaveBeenCalled();
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
   });
 

@@ -18,6 +18,7 @@ import type {
 import {
   hasPersistedArchitectStrategy,
 } from "./architectPlanService";
+import { persistArchitectPlanStrategyPreview } from "./architectPlanRuntimeService";
 import { isCanonicalArchitectPlan } from "./architectPlanPresentation";
 import {
   formatArchitectNeedAddToolResult,
@@ -854,6 +855,11 @@ const executeStrategyMutation = async (params: {
     (strategyMutationRepairAttempts.get(repairAttemptKey) || 0) > 0;
 
   params.getAppState().setStrategyMutationPreview(null);
+  await persistArchitectPlanStrategyPreview({
+    branchName: params.targetBranch,
+    plan: params.activePlan,
+    preview: null,
+  });
 
   const preview = params.strategyService.prepareStrategyMutationPreview({
     source: params.source,
@@ -880,6 +886,11 @@ const executeStrategyMutation = async (params: {
 
     if (preview.requiresPreview) {
       params.getAppState().setStrategyMutationPreview(preview);
+      await persistArchitectPlanStrategyPreview({
+        branchName: params.targetBranch,
+        plan: params.activePlan,
+        preview,
+      });
       return {
         outcome: "preview_staged",
         preview,
@@ -894,6 +905,11 @@ const executeStrategyMutation = async (params: {
       params.strategyService.guardDeps,
     );
     params.getAppState().setStrategyMutationPreview(null);
+    await persistArchitectPlanStrategyPreview({
+      branchName: params.targetBranch,
+      plan,
+      preview: null,
+    });
     await hydratePlanContext({
       targetBranch: params.targetBranch,
       planId: plan.id,
@@ -919,6 +935,11 @@ const executeStrategyMutation = async (params: {
 
   strategyMutationRepairAttempts.delete(repairAttemptKey);
   params.getAppState().setStrategyMutationPreview(preview);
+  await persistArchitectPlanStrategyPreview({
+    branchName: params.targetBranch,
+    plan: params.activePlan,
+    preview,
+  });
   return {
     outcome: "blocked",
     preview,

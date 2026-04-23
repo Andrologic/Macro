@@ -13,6 +13,7 @@ export type PlanFinalizationTaskPhase =
   | 'idle'
   | 'loading_review'
   | 'ready'
+  | 'partial'
   | 'blocked'
   | 'merging'
   | 'archiving'
@@ -118,6 +119,8 @@ export const resolvePlanFinalizationTaskStatus = (
     case 'merging':
     case 'archiving':
       return 'InProgress';
+    case 'partial':
+      return 'Blocked';
     case 'failed':
       return 'Failed';
     case 'idle':
@@ -235,8 +238,9 @@ export const resolvePlanFinalizationViewState = (
   const isMerging = phase === 'merging';
   const isArchiving = phase === 'archiving';
   const isBusy = isMerging || isArchiving;
+  const isPartial = phase === 'partial';
   const isBlocked =
-    phase === 'blocked' || Boolean(runtime?.blockedRepositories.length);
+    phase === 'blocked' || isPartial || Boolean(runtime?.blockedRepositories.length);
 
   return {
     phase,
